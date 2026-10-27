@@ -6,10 +6,11 @@
 
 #include <shared_mutex>
 #include <vector>
-#include "runtime/backend/host_function.h"
 #include "runtime/backend/code_cache.h"
-#include "runtime/backend/reg_alloc.h"
+#include "runtime/backend/host_function.h"
+#include "runtime/backend/register_mask.h"
 #include "runtime/common/cityhash.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/common/types.h"
 #include "runtime/include/sruntime.h"
 

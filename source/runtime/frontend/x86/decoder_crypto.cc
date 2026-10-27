@@ -13,13 +13,11 @@
 #include "runtime/frontend/x86/decoder_internal.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 bool HostCryptoExtensions() {
 #if defined(__aarch64__) && defined(__APPLE__)
     int value = 0;
@@ -86,34 +84,36 @@ void X64Decoder::DecodeAes(_DInst& insn, u32 kind) {
             kind < 4 && VecLoweringEnabled(features_.aes_zero_reuse);
     ir::Value zero;
     if (reuse_zero) {
-        zero = __ VecSharedZero().SetType(ir::ValueType::V128);
+        zero = __ VecSharedZero(ir::ValueType::V128);
     }
     ir::Value result;
     switch (kind) {
         case 0:
-            result = reuse_zero ? __ VecAesEncFast(destination, source, zero)
-                                : __ VecAesEnc(destination, source);
+            result = reuse_zero ? __ VecAesEncFast(ir::ValueType::V128, destination, source, zero)
+                                : __ VecAesEnc(ir::ValueType::V128, destination, source);
             break;
         case 1:
-            result = reuse_zero ? __ VecAesEncLastFast(destination, source, zero)
-                                : __ VecAesEncLast(destination, source);
+            result = reuse_zero
+                             ? __ VecAesEncLastFast(ir::ValueType::V128, destination, source, zero)
+                             : __ VecAesEncLast(ir::ValueType::V128, destination, source);
             break;
         case 2:
-            result = reuse_zero ? __ VecAesDecFast(destination, source, zero)
-                                : __ VecAesDec(destination, source);
+            result = reuse_zero ? __ VecAesDecFast(ir::ValueType::V128, destination, source, zero)
+                                : __ VecAesDec(ir::ValueType::V128, destination, source);
             break;
         case 3:
-            result = reuse_zero ? __ VecAesDecLastFast(destination, source, zero)
-                                : __ VecAesDecLast(destination, source);
+            result = reuse_zero
+                             ? __ VecAesDecLastFast(ir::ValueType::V128, destination, source, zero)
+                             : __ VecAesDecLast(ir::ValueType::V128, destination, source);
             break;
         case 4:
             // AESKEYGENASSIST is register/m128 source plus imm8.  distorm
             // supplies it as the same two vector operands as the round ops.
-            result = __ VecAesKeygenAssist(source, ir::Imm(insn.imm.byte));
+            result = __ VecAesKeygenAssist(ir::ValueType::V128, source, ir::Imm(insn.imm.byte));
             break;
         default: PANIC("invalid AES-NI kind");
     }
-    XmmWrite(dst, result.SetType(ir::ValueType::V128));
+    XmmWrite(dst, result);
 }
 
 void X64Decoder::DecodePclmul(_DInst& insn) {
@@ -123,9 +123,11 @@ void X64Decoder::DecodePclmul(_DInst& insn) {
         return;
     }
     const auto dst = static_cast<_RegisterType>(insn.ops[0].index);
-    auto result = __ VecPclMul(XmmRead(dst), LoadSrcVec(insn, insn.ops[1]),
+    auto result = __ VecPclMul(ir::ValueType::V128,
+                               XmmRead(dst),
+                               LoadSrcVec(insn, insn.ops[1]),
                                ir::Imm(insn.imm.byte));
-    XmmWrite(dst, result.SetType(ir::ValueType::V128));
+    XmmWrite(dst, result);
 }
 
 void X64Decoder::DecodeSha(_DInst& insn, u32 kind) {
@@ -139,12 +141,19 @@ void X64Decoder::DecodeSha(_DInst& insn, u32 kind) {
     const auto source = LoadSrcVec(insn, insn.ops[1]);
     ir::Value result;
     switch (kind) {
-        case 0: result = __ VecSha256Msg1(destination, source); break;
-        case 1: result = __ VecSha256Msg2(destination, source); break;
-        case 2: result = __ VecSha256Rnds2(destination, source, XmmRead(R_XMM0)); break;
-        default: PANIC("invalid SHA-NI kind");
+        case 0:
+            result = __ VecSha256Msg1(ir::ValueType::V128, destination, source);
+            break;
+        case 1:
+            result = __ VecSha256Msg2(ir::ValueType::V128, destination, source);
+            break;
+        case 2:
+            result = __ VecSha256Rnds2(ir::ValueType::V128, destination, source, XmmRead(R_XMM0));
+            break;
+        default:
+            PANIC("invalid SHA-NI kind");
     }
-    XmmWrite(dst, result.SetType(ir::ValueType::V128));
+    XmmWrite(dst, result);
 }
 
 u32 X64Decoder::DecodeShaRaw(const u8* code, size_t available) {

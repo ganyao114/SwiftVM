@@ -1,14 +1,23 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/backend/arm64/compile/lower_atomics.h"
+#include "runtime/compile/passes/passes.h"
+#include "runtime/compile/workspace.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <tuple>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
-#include "runtime/backend/arm64/alloc/frozen_gpr_plan.h"
-#include "runtime/backend/arm64/alloc/target_allocation_planner.h"
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "runtime/backend/arm64/compile/scratch.h"
+#include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "runtime/ir/hir_builder.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
 
 using namespace swift;
 using namespace swift::runtime;
@@ -18,16 +27,17 @@ using namespace swift::runtime::ir;
 
 namespace {
 #if defined(__aarch64__)
-template<class Emitter>
-void AtomicBody(Emitter& block, unsigned operation, ValueType type) {
-    auto address = block.LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto first = block.LoadUniform(Uniform{8, type}).SetType(type);
+template <class Emitter> void AtomicBody(Emitter& block, unsigned operation, ValueType type) {
+    auto address = block.LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+    auto first = block.LoadUniform(type, Uniform{8, type});
     Value result;
     if (operation == 0) {
-        auto second = block.LoadUniform(Uniform{16, type}).SetType(type);
-        result = block.CompareAndSwap(address, first, second).SetType(type);
-    } else if (operation == 1) result = block.AtomicExchange(address, first).SetType(type);
-    else result = block.AtomicFetchAdd(address, first).SetType(type);
+        auto second = block.LoadUniform(type, Uniform{16, type});
+        result = block.CompareAndSwap(type, address, first, second);
+    } else if (operation == 1)
+        result = block.AtomicExchange(type, address, first);
+    else
+        result = block.AtomicFetchAdd(type, address, first);
     block.StoreUniform(Uniform{24, type}, result);
 }
 
@@ -55,11 +65,18 @@ void NativeAtomic(unsigned operation, ValueType type, bool lse, bool biased, uns
         }
     }
     function->EndFunction(); function->ComputeRPO(); function->IdByRPO();
-    RegAlloc allocation{function->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(function, &allocation, features);
+    AllocationFixture allocation{function->MaxInstrCount(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    function, allocation, features));
     REQUIRE(CompleteARM64UnitForEmission(module, allocation, nullptr, function));
-    JitContext context{module, allocation}; JitTranslator translator{context};
+    JitContext context{module, allocation, allocation.Actions()};
+    JitTranslator translator{context};
     REQUIRE(translator.Translate(function)); context.Finish();
     const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const u8*>();
     std::printf("[atomic-fallback] op=%u width=%u lse=%u biased=%u blocks=%u code=",
@@ -109,19 +126,23 @@ TEST_CASE("atomic fallback preparation retains eligibility and exact shared keys
             for (unsigned scenario = 0; scenario < 9; ++scenario) {
                 CAPTURE(operation, type, scenario);
                 IntrusivePtr<Block> block{new Block(0, Location{0xbd00})};
-                auto address = block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-                auto first = block->LoadUniform(Uniform{8, type}).SetType(type);
-                auto second = block->LoadUniform(Uniform{16, type}).SetType(type);
+                auto address = block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+                auto first = block->LoadUniform(type, Uniform{8, type});
+                auto second = block->LoadUniform(type, Uniform{16, type});
                 std::array<Value, 2> results;
                 for (auto& result : results) {
-                    if (operation == 0) result = block->CompareAndSwap(address, first, second).SetType(type);
-                    else if (operation == 1) result = block->AtomicExchange(address, first).SetType(type);
-                    else result = block->AtomicFetchAdd(address, first).SetType(type);
+                    if (operation == 0)
+                        result = block->CompareAndSwap(type, address, first, second);
+                    else if (operation == 1)
+                        result = block->AtomicExchange(type, address, first);
+                    else
+                        result = block->AtomicFetchAdd(type, address, first);
                 }
                 // An ordinary instruction must never become a fallback site.
-                auto ordinary = block->Add(first, ir::Operand{second}).SetType(type);
+                auto ordinary = block->Add(type, first, ir::Operand{second});
                 block->ReIdInstr();
-                RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+                AllocationFixture allocation{
+                        block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
                 allocation.MapRegister(address.Id(), HostGPR{7});
                 allocation.MapRegister(first.Id(), HostGPR{8});
                 allocation.MapRegister(second.Id(), HostGPR{9});
@@ -134,26 +155,33 @@ TEST_CASE("atomic fallback preparation retains eligibility and exact shared keys
                 if (scenario == 7) allocation.MapMemSpill(second.Id(), SpillSlot{0});
                 if (scenario == 8) allocation.MapRegister(results[1].Id(), HostGPR{5});
                 const std::array<Block*, 1> blocks{block.get()};
-                REQUIRE(BuildUnalignedAtomicFallbackPlan(blocks, allocation, false, false).keys.empty());
+                REQUIRE(LowerAtomicFallbacks(blocks, allocation, false, false)
+                                .instructions.empty());
                 const bool biased = scenario == 4;
-                const auto plan = BuildUnalignedAtomicFallbackPlan(blocks, allocation, true, biased);
+                const auto plan = LowerAtomicFallbacks(blocks, allocation, true, biased);
                 const bool supported = GetValueSizeByte(type) == 4 || GetValueSizeByte(type) == 8;
                 const bool eligible = supported && scenario != 1 && scenario != 3 && scenario != 5 &&
                         scenario != 6 && !(operation == 0 && (scenario == 2 || scenario == 7));
-                REQUIRE(plan.keys.size() == (eligible ? 2 : 0));
-                REQUIRE_FALSE(plan.keys.contains(ordinary.Def()));
-                if (!eligible) { REQUIRE(plan.counts.empty()); continue; }
-                const auto& key = plan.keys.at(results[0].Def());
+                REQUIRE(plan.instructions.size() == (eligible ? 2 : 0));
+                REQUIRE_FALSE(plan.For(ordinary.Id()));
+                if (!eligible) {
+                    REQUIRE(plan.cohorts.empty());
+                    continue;
+                }
+                const auto* cohort = plan.For(results[0].Id());
+                REQUIRE(cohort);
+                const auto& key = cohort->key;
                 REQUIRE(key.type == type);
                 REQUIRE(key.address == (biased ? vixl::aarch64::mem_scratch.GetCode() : 7));
                 REQUIRE(key.first == 8);
                 REQUIRE(key.second == (operation == 0 ? 9 : 0));
-                REQUIRE(plan.counts.size() == (scenario == 8 ? 2 : 1));
-                REQUIRE(plan.counts.at(key) == (scenario == 8 ? 1 : 2));
+                REQUIRE(plan.cohorts.size() == (scenario == 8 ? 2 : 1));
+                REQUIRE(cohort->count == (scenario == 8 ? 1 : 2));
             }
 }
 
 TEST_CASE("atomic preparation lifecycle rejects stale allocation state and empty inputs stay empty", "[atomic-fallback-lifecycle]") {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
 #if defined(__aarch64__)
     Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
                   .has_local_operation = false, .backend_isa = kArm64};
@@ -164,43 +192,74 @@ TEST_CASE("atomic preparation lifecycle rejects stale allocation state and empty
     IntrusivePtr<Block> block{new Block(0, Location{0xbd40})};
     AtomicBody(*block, 2, ValueType::U64);
     block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
     REQUIRE(CompleteARM64UnitForEmission(module, allocation, block.get(), nullptr));
-    const auto* actions = allocation.GPRPlanViewFor(block.get());
+    const auto* actions = allocation.Actions().ForBlock(block.get());
     REQUIRE(actions != nullptr);
-    REQUIRE(actions->region);
-    REQUIRE(actions->region->unaligned_atomics.keys.size() == 1);
-    REQUIRE(actions->region->MatchesUnit(block.get(), nullptr, allocation, config, features));
-    REQUIRE(actions->region->generation == allocation.GPRLocationGeneration());
-    REQUIRE(actions->region->allocation_attempt == allocation.AllocationAttempt());
+    REQUIRE(allocation.Actions().Certificate());
+    REQUIRE(allocation.Actions().Atomics().instructions.size() == 1);
+    const auto site = allocation.Actions().Atomics().instructions.front().instruction;
+    const auto found = std::find_if(block->GetInstList().begin(),
+                                    block->GetInstList().end(),
+                                    [&](const Inst& inst) { return inst.Id() == site; });
+    REQUIRE(found != block->GetInstList().end());
+    REQUIRE(allocation.Actions().AtomicFor(&*found));
+    REQUIRE_FALSE(allocation.Actions().AtomicFor(nullptr));
+    IntrusivePtr<Block> foreign{new Block(0, Location{0xbd50})};
+    const auto foreign_value = foreign->LoadImm(ValueType::U64, Imm{u64{1}});
+    compile::RewriteContext{foreign.get(), compilation_workspace, nullptr, false}.Change(
+            foreign.get(), foreign_value.Def(), [&](Inst& inst) { inst.SetId(site); });
+    REQUIRE_FALSE(allocation.Actions().AtomicFor(foreign_value.Def()));
+    REQUIRE(allocation.Actions().Certificate()->MatchesUnit(
+            block.get(), nullptr, allocation, allocation.Actions(), config, features));
+    REQUIRE(allocation.Actions().Certificate()->generation == allocation.GPRLocationGeneration());
+    REQUIRE(allocation.Actions().Certificate()->allocation_attempt ==
+            allocation.AllocationAttempt());
     // Directly remapping a frozen allocation is stopped by the allocator's
     // own !gpr_locations_frozen CHECK, so the value-level lifecycle surface
     // is identity binding: an independently built allocation for the same
     // block that never completed register allocation must not match.
-    RegAlloc incomplete{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    REQUIRE_FALSE(actions->region->MatchesUnit(block.get(), nullptr, incomplete, config, features));
+    AllocationFixture incomplete{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    REQUIRE_FALSE(allocation.Actions().Certificate()->MatchesUnit(
+            block.get(), nullptr, incomplete, incomplete.Actions(), config, features));
 
     IntrusivePtr<Block> plain{new Block(0, Location{0xbd60})};
-    auto left = plain->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto sum = plain->Add(left, ir::Operand{Imm{u64{1}}}).SetType(ValueType::U64);
+    auto left = plain->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+    auto sum = plain->Add(ValueType::U64, left, ir::Operand{Imm{u64{1}}});
     plain->StoreUniform(Uniform{8, ValueType::U64}, sum);
     plain->SetTerminal(terminal::ReturnToHost{});
     plain->ReIdInstr();
     const std::array<Block*, 1> plain_blocks{plain.get()};
-    RegAlloc plain_allocation{plain->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+    AllocationFixture plain_allocation{plain->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
     for (bool lse : {false, true}) for (bool biased : {false, true}) {
-        const auto empty = BuildUnalignedAtomicFallbackPlan(plain_blocks, plain_allocation, lse, biased);
-        REQUIRE(empty.keys.empty());
-        REQUIRE(empty.counts.empty());
+            const auto empty = LowerAtomicFallbacks(plain_blocks, plain_allocation, lse, biased);
+            REQUIRE(empty.instructions.empty());
+            REQUIRE(empty.cohorts.empty());
     }
 
     IntrusivePtr<Block> second{new Block(0, Location{0xbd80})};
     AtomicBody(*second, 2, ValueType::U64);
     second->SetTerminal(terminal::ReturnToHost{}); second->ReIdInstr();
-    RegAlloc pair_allocation{std::max(block->MaxInstrId(), second->MaxInstrId()), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+    // Final unit actions use globally unique IDs, as IdByRPO does for functions.
+    for (auto& inst : second->GetInstList())
+        compile::RewriteContext{second.get(), compilation_workspace, nullptr, false}.Change(
+                second.get(), &inst, [&](Inst& target) {
+                    target.SetId(inst.Id() + block->MaxInstrId());
+                });
+    AllocationFixture pair_allocation{
+            block->MaxInstrId() + second->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
     const auto map_atomic = [&](Block& value) {
         unsigned loads = 0;
         for (auto& inst : value.GetInstList()) {
@@ -213,16 +272,20 @@ TEST_CASE("atomic preparation lifecycle rejects stale allocation state and empty
     map_atomic(*second);
     const std::array<Block*, 2> forward{block.get(), second.get()};
     const std::array<Block*, 2> reversed{second.get(), block.get()};
-    const auto forward_plan = BuildUnalignedAtomicFallbackPlan(forward, pair_allocation, true, false);
-    const auto reversed_plan = BuildUnalignedAtomicFallbackPlan(reversed, pair_allocation, true, false);
-    REQUIRE(forward_plan.keys.size() == 2);
-    REQUIRE(forward_plan.counts.size() == 1);
-    REQUIRE(forward_plan.keys.size() == reversed_plan.keys.size());
-    REQUIRE(forward_plan.counts == reversed_plan.counts);
-    for (const auto& [inst, key] : forward_plan.keys) {
-        const auto other = reversed_plan.keys.find(inst);
-        REQUIRE(other != reversed_plan.keys.end());
-        REQUIRE(other->second == key);
+    const auto forward_plan = LowerAtomicFallbacks(forward, pair_allocation, true, false);
+    const auto reversed_plan = LowerAtomicFallbacks(reversed, pair_allocation, true, false);
+    REQUIRE(forward_plan.instructions.size() == 2);
+    REQUIRE(forward_plan.cohorts.size() == 1);
+    REQUIRE(forward_plan.instructions.size() == reversed_plan.instructions.size());
+    REQUIRE(forward_plan.cohorts == reversed_plan.cohorts);
+    REQUIRE(forward_plan.instructions == reversed_plan.instructions);
+    for (const auto& action : forward_plan.instructions) {
+        const auto* first_cohort = forward_plan.For(action.instruction);
+        const auto* second_cohort = reversed_plan.For(action.instruction);
+        REQUIRE(first_cohort);
+        REQUIRE(second_cohort);
+        REQUIRE(first_cohort->key == second_cohort->key);
+        REQUIRE(first_cohort->count == second_cohort->count);
     }
 #else
     SUCCEED("native atomic lifecycle requires AArch64");
@@ -242,7 +305,7 @@ TEST_CASE("flags regs audit diagnostics never change emitted code", "[atomic-fal
         features.flags_regs_audit = audit;
         HIRBuilder builder{3, true, features};
         auto* function = builder.AppendFunction(Location{0xbe00}, Location{0xbe30});
-        auto* first_block = function->GetCurrentBlock();
+        auto* first_block = &function->EditBlock(function->GetCurrentBlock());
         for (unsigned i = 0; i < 3; ++i) {
             AtomicBody(*function, 2, ValueType::U64);
             if (i + 1 == 3) function->EndBlock(terminal::ReturnToHost{});
@@ -252,23 +315,32 @@ TEST_CASE("flags regs audit diagnostics never change emitted code", "[atomic-fal
             }
         }
         function->EndFunction(); function->ComputeRPO(); function->IdByRPO();
-        RegAlloc allocation{function->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(),
-                            space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(function, &allocation, features);
+        AllocationFixture allocation{function->MaxInstrCount(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateFunction(
+                function,
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        function, allocation, features));
         REQUIRE(CompleteARM64UnitForEmission(module, allocation, nullptr, function));
-        const auto& plan = *allocation.GPRPlanViewFor(first_block->GetBlock())->region;
-        JitContext context{module, allocation}; JitTranslator translator{context};
+        const auto& plan = allocation.Actions().Atomics();
+        JitContext context{module, allocation, allocation.Actions()};
+        JitTranslator translator{context};
         REQUIRE(translator.Translate(function)); context.Finish();
         const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const u8*>();
-        return std::pair{plan, std::vector<u8>(bytes, bytes + context.CurrentBufferSize())};
+        return std::tuple{plan,
+                          allocation.Actions().Certificate()->options,
+                          std::vector<u8>(bytes, bytes + context.CurrentBufferSize())};
     };
-    const auto [plain_plan, plain_code] = compile(false);
-    const auto [audit_plan, audit_code] = compile(true);
+    const auto [plain_plan, plain_options, plain_code] = compile(false);
+    const auto [audit_plan, audit_options, audit_code] = compile(true);
     REQUIRE(plain_code == audit_code);
-    REQUIRE(plain_plan.unaligned_atomics.keys.size() == audit_plan.unaligned_atomics.keys.size());
-    REQUIRE(plain_plan.unaligned_atomics.counts == audit_plan.unaligned_atomics.counts);
-    REQUIRE(plain_plan.options.atomic_lse == audit_plan.options.atomic_lse);
-    REQUIRE(plain_plan.options.atomic_memory_base == audit_plan.options.atomic_memory_base);
+    REQUIRE(plain_plan.instructions.size() == audit_plan.instructions.size());
+    REQUIRE(plain_plan.cohorts == audit_plan.cohorts);
+    REQUIRE(plain_options.atomic_lse == audit_options.atomic_lse);
+    REQUIRE(plain_options.atomic_memory_base == audit_options.atomic_memory_base);
 #else
     SUCCEED("native atomic diagnostics requires AArch64");
 #endif
@@ -284,14 +356,21 @@ TEST_CASE("region scratch inputs bind pool and feature drift exactly", "[atomic-
     IntrusivePtr<Block> block{new Block(0, Location{0xbd40})};
     AtomicBody(*block, 2, ValueType::U64);
     block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
     REQUIRE(CompleteARM64UnitForEmission(module, allocation, block.get(), nullptr));
-    const auto* actions = allocation.GPRPlanViewFor(block.get());
+    const auto* actions = allocation.Actions().ForBlock(block.get());
     REQUIRE(actions != nullptr);
-    REQUIRE(actions->region);
-    const auto& plan = *actions->region;
+    REQUIRE(allocation.Actions().Certificate());
+    const auto& plan = *allocation.Actions().Certificate();
     const auto pool = allocation.GetGprs();
     REQUIRE(plan.MatchesScratchInputs(pool, features));
     REQUIRE(plan.scratch_inputs == CaptureScratchPreparationInputs(pool, features));
@@ -312,8 +391,6 @@ TEST_CASE("region scratch inputs bind pool and feature drift exactly", "[atomic-
     REQUIRE_FALSE(plan.MatchesScratchInputs(pool, drifted));
     drifted = features; drifted.fpr_scratch_precise = !drifted.fpr_scratch_precise;
     REQUIRE_FALSE(plan.MatchesScratchInputs(pool, drifted));
-    drifted = features; drifted.sse_nan_coldpath = !drifted.sse_nan_coldpath;
-    REQUIRE_FALSE(plan.MatchesScratchInputs(pool, drifted));
 #else
     SUCCEED("native scratch lifecycle requires AArch64");
 #endif
@@ -329,25 +406,36 @@ TEST_CASE("atomic preparation binds LSE and raw or biased target admission", "[a
     IntrusivePtr<Block> block{new Block(0, Location{0xbd20})};
     AtomicBody(*block, 2, ValueType::U64);
     block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
     REQUIRE(CompleteARM64UnitForEmission(module, allocation, block.get(), nullptr));
-    const auto* actions = allocation.GPRPlanViewFor(block.get());
-    REQUIRE(actions->region->options.atomic_lse);
-    REQUIRE_FALSE(actions->region->options.atomic_memory_base);
-    REQUIRE(actions->region->MatchesUnit(block.get(), nullptr, allocation, config, features));
+    const auto* actions = allocation.Actions().ForBlock(block.get());
+    REQUIRE(allocation.Actions().Certificate()->options.atomic_lse);
+    REQUIRE_FALSE(allocation.Actions().Certificate()->options.atomic_memory_base);
+    REQUIRE(allocation.Actions().Certificate()->MatchesUnit(
+            block.get(), nullptr, allocation, allocation.Actions(), config, features));
     auto drift = config;
     drift.arm64_features &= ~Arm64Features::Atomics;
-    REQUIRE_FALSE(actions->region->MatchesUnit(block.get(), nullptr, allocation, drift, features));
+    REQUIRE_FALSE(allocation.Actions().Certificate()->MatchesUnit(
+            block.get(), nullptr, allocation, allocation.Actions(), drift, features));
     drift = config; drift.memory_base = reinterpret_cast<void*>(4096);
-    REQUIRE_FALSE(actions->region->MatchesTargetInputs(allocation, drift, features));
+    REQUIRE_FALSE(
+            allocation.Actions().Certificate()->MatchesTargetInputs(allocation, drift, features));
     drift = config; drift.page_table = reinterpret_cast<decltype(drift.page_table)>(4096);
-    REQUIRE_FALSE(actions->region->MatchesTargetInputs(allocation, drift, features));
+    REQUIRE_FALSE(
+            allocation.Actions().Certificate()->MatchesTargetInputs(allocation, drift, features));
     // Both mechanisms select the reserved address scratch register.
-    const auto base = CaptureRegionPreparationOptions(drift, features);
+    const auto base = CaptureEdgeOptions(drift, features);
     drift.page_table = nullptr; drift.memory_base = reinterpret_cast<void*>(4096);
-    REQUIRE(CaptureRegionPreparationOptions(drift, features) == base);
+    REQUIRE(CaptureEdgeOptions(drift, features) == base);
     for (unsigned mutation = 0; mutation < 3; ++mutation) {
         CAPTURE(mutation);
         auto incompatible = config;
@@ -355,10 +443,12 @@ TEST_CASE("atomic preparation binds LSE and raw or biased target admission", "[a
         else if (mutation == 1) incompatible.memory_base = reinterpret_cast<void*>(4096);
         else incompatible.page_table = reinterpret_cast<void*>(4096);
         AddressSpace other{incompatible};
-        JitContext rejected{other.GetDefaultModule(), allocation}; JitTranslator emitter{rejected};
+        JitContext rejected{other.GetDefaultModule(), allocation, allocation.Actions()};
+        JitTranslator emitter{rejected};
         REQUIRE_FALSE(emitter.Translate(block.get())); REQUIRE(rejected.CurrentBufferSize() == 0);
     }
-    JitContext context{module, allocation}; JitTranslator translator{context};
+    JitContext context{module, allocation, allocation.Actions()};
+    JitTranslator translator{context};
     REQUIRE(translator.Translate(block.get())); REQUIRE(context.CurrentBufferSize() > 0);
 #else
     SUCCEED("native atomic target admission requires AArch64");

@@ -6,6 +6,9 @@
 // Covers vhaddps/pd, vhsubps/pd, vphaddw/d, vphaddsw, vphsubw/d, vphsubsw and
 // vpmaddubsw -- every one at both VEX.L values and in both operand shapes,
 // which is what source/runtime/frontend/x86/decoder_avx_hadd.cc implements.
+// Floating HADD/HSUB use native quiet-NaN selection only in their written
+// result lanes. Integer results, finite/Inf/zero bits, upper halves, sources
+// and bystanders remain exact; the literal reference data is unchanged.
 //
 // WHY A HARDWARE ORACLE
 // ---------------------
@@ -73,6 +76,7 @@
 #include <string>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include "tests/support/native_nan_test_support.h"
 #include <fmt/format.h>
 #include <sys/mman.h>
 #include "runtime/common/svm_config.h"
@@ -125,6 +129,7 @@ enum : int {
 };
 
 using Vec256 = std::array<u8, 32>;
+using swift::tests::MatchesNativeNaNResult;
 
 u8 Nib(char ch) { return u8(ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10); }
 
@@ -306,7 +311,7 @@ const Entry* EntryFor(const char* name) {
 
 }  // namespace
 
-TEST_CASE("x86 avx horizontal vs rosetta reference") {
+TEST_CASE("x86 avx horizontal vs rosetta reference with native NaN results") {
     if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; VEX horizontal Rosetta differential skipped");
         return;
@@ -507,6 +512,10 @@ TEST_CASE("x86 avx horizontal vs rosetta reference") {
         REQUIRE(code.size() < 0x100);
         REQUIRE(code_addr + 0x100 < stack);
         const Vec256 want = ParseHex32(ref.result);
+        const auto& entry = *EntryFor(ref.name);
+        const bool native_nan = entry.kind == kFAdd || entry.kind == kFSub;
+        const u32 lane_bits = native_nan ? entry.lanes : 32;
+        const u32 written_bytes = native_nan ? ref.width / 8 : 0;
         const auto& a = ins_a[size_t(ref.pair)];
         const auto& b = ins_b[size_t(ref.pair)];
         const std::string label =
@@ -528,7 +537,11 @@ TEST_CASE("x86 avx horizontal vs rosetta reference") {
             }
             continue;
         }
-        if (jit.ymm != itp.ymm || jit.exit != itp.exit) {
+        bool same_vectors = MatchesNativeNaNResult(
+                jit.ymm[0], itp.ymm[0], lane_bits, written_bytes);
+        for (u32 i = 1; i < jit.ymm.size(); ++i)
+            same_vectors &= jit.ymm[i] == itp.ymm[i];
+        if (!same_vectors || jit.exit != itp.exit) {
             if (divergences++ < 15) {
                 problems.push_back(
                         fmt::format("{}: JIT/interpreter divergence (ymm0 {} vs {})", label,
@@ -538,9 +551,18 @@ TEST_CASE("x86 avx horizontal vs rosetta reference") {
 
         for (const auto& [backend, got] : {std::pair<const char*, const Out*>{"jit", &jit},
                                            std::pair<const char*, const Out*>{"interp", &itp}}) {
-            if (got->ymm[0] != want && mismatches++ < 15) {
+            if (!MatchesNativeNaNResult(got->ymm[0], want, lane_bits, written_bytes) &&
+                mismatches++ < 15) {
                 problems.push_back(fmt::format("{} [{}]: got {}, Rosetta says {} (enc {})", label,
                                                backend, Hex(got->ymm[0]), Hex(want), ref.enc));
+            }
+            if (got->ymm[1] != a && bystanders++ < 15) {
+                problems.push_back(fmt::format("{} [{}]: source ymm1 was modified, {} != {}",
+                                               label, backend, Hex(got->ymm[1]), Hex(a)));
+            }
+            if (got->ymm[2] != b && bystanders++ < 15) {
+                problems.push_back(fmt::format("{} [{}]: source ymm2 was modified, {} != {}",
+                                               label, backend, Hex(got->ymm[2]), Hex(b)));
             }
             // No register beyond the destination and the two sources may
             // change -- in particular no bystander's UPPER half may be

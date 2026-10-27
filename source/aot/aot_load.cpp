@@ -13,6 +13,7 @@
 #include <elfio/elfio.hpp>
 #include "fmt/format.h"
 
+#include "base/scope_exit.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/code_serial.h"
 #include "runtime/backend/function_entry_contract.h"
@@ -191,7 +192,7 @@ int InstallArtifact(backend::AddressSpace& address_space,
         for (const auto& branch : unit.region_branches) {
             u32 instruction{};
             std::memcpy(&instruction, artifact.code.data() + unit.code_offset + branch.code_offset, 4);
-            if (instruction != 0x1400'0000u) {
+            if (instruction != branch.UnlinkedInstruction()) {
                 error = "changed shared region branch placeholder";
                 return kAotBadFormat;
             }
@@ -229,8 +230,14 @@ int InstallArtifact(backend::AddressSpace& address_space,
         // published. A corrupt later unit must not leave an earlier unit live.
         auto relocated = std::vector<u8>(artifact.code.begin() + unit.code_offset,
                                          artifact.code.begin() + unit.code_offset + unit.code_size);
-        if (!backend::ApplyRelocations(relocated.data(), relocated.size(), unit.relocs,
-                                      host_image, &error, config.backend_isa)) return kAotRelocFailed;
+        if (!backend::ApplyRelocations(relocated.data(),
+                                       relocated.size(),
+                                       unit.relocs,
+                                       host_image,
+                                       &error,
+                                       config.backend_isa,
+                                       unit.region_branches))
+            return kAotRelocFailed;
         const auto root = std::find_if(unit.blocks.begin(), unit.blocks.end(), [&](const auto& block) {
             return block.IsPublished() && block.guest_start == unit.guest_start &&
                    (config.backend_isa != runtime::kRiscv64 || block.code_offset == 0);
@@ -352,7 +359,8 @@ int InstallArtifact(backend::AddressSpace& address_space,
                                            unit.relocs,
                                            host_image,
                                            &reloc_error,
-                                           config.backend_isa)) {
+                                           config.backend_isa,
+                                           unit.region_branches)) {
                 error = fmt::format(
                         "relocation failed for unit {:#x}: {}", unit.guest_start, reloc_error);
                 return kAotRelocFailed;

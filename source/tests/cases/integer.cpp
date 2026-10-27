@@ -1,5 +1,14 @@
+#include "tests/support/rewrite_fixture.h"
+using swift::runtime::test::RewriteFixture;
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
+
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "runtime/backend/arm64/compile/target.h"
+#include "runtime/compile/analysis/guest_state.h"
 
 TEST_CASE("FEX-style vector immediate shift boundary IR") {
     using namespace swift::runtime;
@@ -40,7 +49,7 @@ TEST_CASE("FEX-style vector immediate shift boundary IR") {
 
     const auto address = reinterpret_cast<VAddr>(code.data());
     Block block{0, Location{address}};
-    Assembler assembler{&block};
+    swift::runtime::compile::IrBuilder assembler{&block};
     X64Decoder decoder{address, &memory, &assembler, true,
                        Arm64Features::None, false, false, FeatureSet{}};
     decoder.Decode();
@@ -90,7 +99,7 @@ TEST_CASE("FEX-style vector immediate shift boundary IR") {
 TEST_CASE("Constant CSE does not reuse a constant computed under a branch") {
     using namespace swift::runtime::ir;
 
-    // ConstFoldingPass deduplicates LoadImm within a sliding window, and resets
+    // FoldValues deduplicates LoadImm within a sliding window, and resets
     // its table at Goto / NotGoto / BindLabel because the x86 front end builds
     // intra-block control flow. BindLabel is the reset that carries the
     // correctness: a constant computed between a forward branch and its
@@ -113,10 +122,10 @@ TEST_CASE("Constant CSE does not reuse a constant computed under a branch") {
     conditional.StoreUniform(Uniform{8, ValueType::U32}, merged);
     conditional.SetTerminal(terminal::ReturnToDispatch{});
 
-    ConstFoldingPass::Run(&conditional, FeatureSet{});
+    swift::runtime::compile::FoldValues(RewriteFixture{&conditional, false}.Get(), FeatureSet{}, swift::runtime::backend::arm64::BuilderTarget());
 
-    auto arg_of_store = [](Block& block, std::uint32_t offset) -> Inst* {
-        Inst* found = nullptr;
+    auto arg_of_store = [](Block& block, std::uint32_t offset) -> const Inst* {
+        const Inst* found = nullptr;
         for (auto& inst : block.GetInstList()) {
             if (inst.GetOp() == OpCode::StoreUniform &&
                 inst.GetArg<Uniform>(0).GetOffset() == offset) {
@@ -142,7 +151,7 @@ TEST_CASE("Constant CSE does not reuse a constant computed under a branch") {
     straight_line.StoreUniform(Uniform{8, ValueType::U32}, second);
     straight_line.SetTerminal(terminal::ReturnToDispatch{});
 
-    ConstFoldingPass::Run(&straight_line, FeatureSet{});
+    swift::runtime::compile::FoldValues(RewriteFixture{&straight_line, false}.Get(), FeatureSet{}, swift::runtime::backend::arm64::BuilderTarget());
 
     REQUIRE(arg_of_store(straight_line, 8) == first.Def());
     REQUIRE(arg_of_store(straight_line, 8) != second.Def());
@@ -157,23 +166,23 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
                           bool expected) {
         Block block{0, Location{0x2280}};
         const auto left = block.LoadUniform(Uniform{0, type});
-        const auto constant = block.LoadImm(immediate).SetType(type);
+        const auto constant = block.LoadImm(type, immediate);
         Value result;
         switch (op) {
             case OpCode::Add:
-                result = block.Add(left, Operand{constant}).SetType(type);
+                result = block.Add(type, left, Operand{constant});
                 break;
             case OpCode::Sub:
-                result = block.Sub(left, Operand{constant}).SetType(type);
+                result = block.Sub(type, left, Operand{constant});
                 break;
             case OpCode::And:
-                result = block.And(left, Operand{constant}).SetType(type);
+                result = block.And(type, left, Operand{constant});
                 break;
             case OpCode::Or:
-                result = block.Or(left, Operand{constant}).SetType(type);
+                result = block.Or(type, left, Operand{constant});
                 break;
             case OpCode::Xor:
-                result = block.Xor(left, Operand{constant}).SetType(type);
+                result = block.Xor(type, left, Operand{constant});
                 break;
             default:
                 FAIL("not an integer-immediate whitelist opcode");
@@ -181,7 +190,7 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
         if (flags != Flags::None) block.SaveFlags(result, flags);
         FeatureSet features{};
         features.int_imm_fold = true;
-        ConstFoldingPass::Run(&block, features);
+        swift::runtime::compile::FoldValues(RewriteFixture{&block, false}.Get(), features, swift::runtime::backend::arm64::BuilderTarget());
         INFO("opcode " << static_cast<unsigned>(op) << " type "
                        << static_cast<unsigned>(type) << " flags "
                        << static_cast<swift::u64>(flags));
@@ -210,11 +219,11 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
     SECTION("gate OFF is byte-for-byte IR inert") {
         Block block{1, Location{0x2290}};
         const auto left = block.LoadUniform(Uniform{0, ValueType::U64});
-        const auto constant = block.LoadImm(Imm{1u}).SetType(ValueType::U64);
-        const auto result = block.Add(left, Operand{constant}).SetType(ValueType::U64);
+        const auto constant = block.LoadImm(ValueType::U64, Imm{1u});
+        const auto result = block.Add(ValueType::U64, left, Operand{constant});
         FeatureSet features{};
         features.int_imm_fold = false;
-        ConstFoldingPass::Run(&block, features);
+        swift::runtime::compile::FoldValues(RewriteFixture{&block, false}.Get(), features, swift::runtime::backend::arm64::BuilderTarget());
         REQUIRE_FALSE(result.Def()->GetArg<Operand>(1).IsImm());
         REQUIRE(result.Def()->GetArg<Operand>(1).GetLeft().value.Def() == constant.Def());
     }
@@ -222,13 +231,13 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
     SECTION("multi-use and observable constants are rejected") {
         Block block{2, Location{0x22a0}};
         const auto left = block.LoadUniform(Uniform{0, ValueType::U64});
-        const auto constant = block.LoadImm(Imm{1u}).SetType(ValueType::U64);
-        const auto add = block.Add(left, Operand{constant}).SetType(ValueType::U64);
-        const auto logical = block.And(left, Operand{constant}).SetType(ValueType::U64);
+        const auto constant = block.LoadImm(ValueType::U64, Imm{1u});
+        const auto add = block.Add(ValueType::U64, left, Operand{constant});
+        const auto logical = block.And(ValueType::U64, left, Operand{constant});
         block.StoreUniform(Uniform{8, ValueType::U64}, constant);
         FeatureSet features{};
         features.int_imm_fold = true;
-        ConstFoldingPass::Run(&block, features);
+        swift::runtime::compile::FoldValues(RewriteFixture{&block, false}.Get(), features, swift::runtime::backend::arm64::BuilderTarget());
         REQUIRE_FALSE(add.Def()->GetArg<Operand>(1).IsImm());
         REQUIRE_FALSE(logical.Def()->GetArg<Operand>(1).IsImm());
         REQUIRE(constant.Def()->GetUses(false) == 3);
@@ -236,13 +245,13 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
 
     SECTION("zero-left Sub becomes a unary Neg and keeps its pseudo flags") {
         Block block{3, Location{0x22b0}};
-        const auto zero = block.LoadImm(Imm{0u}).SetType(ValueType::U16);
+        const auto zero = block.LoadImm(ValueType::U16, Imm{0u});
         const auto source = block.LoadUniform(Uniform{0, ValueType::U16});
-        const auto result = block.Sub(zero, Operand{source}).SetType(ValueType::U16);
+        const auto result = block.Sub(ValueType::U16, zero, Operand{source});
         block.SaveFlags(result, Flags::All);
         FeatureSet features{};
         features.int_imm_fold = true;
-        ConstFoldingPass::Run(&block, features);
+        swift::runtime::compile::FoldValues(RewriteFixture{&block, false}.Get(), features, swift::runtime::backend::arm64::BuilderTarget());
         REQUIRE(result.Def()->GetOp() == OpCode::Neg);
         REQUIRE(result.Def()->GetArg<Value>(0).Def() == source.Def());
         REQUIRE(CollectPseudoOperations(block, result.Def(), OpCode::SaveFlags).size() == 1);
@@ -263,22 +272,27 @@ TEST_CASE("integer immediates fold only into proven single-use ALU consumers") {
         auto module = address_space.MapModule(0x22c0, 0x23c0, module_config);
         auto* block = new Block(0, Location{0x22c0});
         const auto source = block->LoadUniform(Uniform{0, ValueType::U16});
-        const auto zero = block->LoadImm(Imm{0u}).SetType(ValueType::U16);
-        const auto neg = block->Sub(zero, Operand{source}).SetType(ValueType::U16);
+        const auto zero = block->LoadImm(ValueType::U16, Imm{0u});
+        const auto neg = block->Sub(ValueType::U16, zero, Operand{source});
         block->SaveFlags(neg, Flags::All);
         block->StoreUniform(Uniform{8, ValueType::U16}, neg);
         block->SetTerminal(terminal::ReturnToDispatch{});
 
         auto features = ResolveFeatureSet(module_config);
-        ConstFoldingPass::Run(block, features);
-        DeadCodeEliminationPass::Run(block);
+        swift::runtime::compile::FoldValues(RewriteFixture{block, false}.Get(), features, swift::runtime::backend::arm64::BuilderTarget());
+        RewriteFixture{block}.Get().CollectDead();
         block->ReIdInstr();
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block, &alloc, false, features);
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block,
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(block, alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
         context.Finish();
@@ -325,16 +339,16 @@ TEST_CASE("operand copy kill is a fail-closed Mul emitter fast path") {
         Value result;
         switch (op) {
             case OpCode::Mul:
-                result = block->Mul(left, right).SetType(type);
+                result = block->Mul(type, left, right);
                 break;
             case OpCode::Sub:
-                result = block->Sub(left, right).SetType(type);
+                result = block->Sub(type, left, right);
                 break;
             case OpCode::Or:
-                result = block->Or(left, right).SetType(type);
+                result = block->Or(type, left, right);
                 break;
             case OpCode::Xor:
-                result = block->Xor(left, right).SetType(type);
+                result = block->Xor(type, left, right);
                 break;
             default:
                 FAIL("not an operand-copy-kill matrix opcode");
@@ -349,12 +363,18 @@ TEST_CASE("operand copy kill is a fail-closed Mul emitter fast path") {
         block->ReIdInstr();
 
         const auto features = ResolveFeatureSet(module_config);
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -478,16 +498,14 @@ TEST_CASE("zero store zr is value-only and fail-closed") {
         module_config.feature_overrides.Set(FeatureId::zero_store_zr, enabled);
         auto module = address_space.MapModule(0x23d0, 0x24d0, module_config);
         IntrusivePtr<Block> block{new Block(0, Location{0x23d0})};
-        const auto stored = block->LoadImm(Imm{zero ? swift::u64{0}
-                                                    : swift::u64{0x5a}})
-                                    .SetType(type);
+        const auto stored = block->LoadImm(type, Imm{zero ? swift::u64{0} : swift::u64{0x5a}});
         if (observer == Observer::Save) {
             block->SaveFlags(stored, Flags::Parity);
         } else if (observer == Observer::Branch) {
             block->AppendInst(OpCode::BranchOnlyFlags, stored, Flags::NZCV);
         }
         if (cardinality == Cardinality::IncompatibleUse) {
-            const auto other = block->Add(stored, Operand{Imm{1u}}).SetType(type);
+            const auto other = block->Add(type, stored, Operand{Imm{1u}});
             block->StoreUniform(Uniform{24, type}, other);
         }
         if (kind == StoreKind::Uniform) {
@@ -496,8 +514,7 @@ TEST_CASE("zero store zr is value-only and fail-closed") {
                 block->StoreUniform(Uniform{24, type}, stored);
             }
         } else if (kind == StoreKind::Memory) {
-            const auto address = block->LoadImm(Imm{swift::u64{0x100}})
-                                         .SetType(ValueType::U64);
+            const auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x100}});
             block->StoreMemory(Operand{address}, stored);
             if (cardinality == Cardinality::CompatibleStores) {
                 block->StoreMemory(Operand{address}, stored);
@@ -518,15 +535,21 @@ TEST_CASE("zero store zr is value-only and fail-closed") {
         block->ReIdInstr();
 
         const auto features = ResolveFeatureSet(module_config);
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
         if (force_spill) {
             alloc.MapMemSpill(stored.Id(), SpillSlot{0});
         }
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -697,7 +720,7 @@ TEST_CASE("MMX-form shared opcodes are refused instead of run on the XMM file") 
         bytes.push_back(0xF4);  // hlt, so Decode() terminates
         const auto address = reinterpret_cast<VAddr>(bytes.data());
         Block block{0, Location{address}};
-        Assembler assembler{&block};
+        swift::runtime::compile::IrBuilder assembler{&block};
         X64Decoder decoder{address, &memory, &assembler, true,
                            Arm64Features::None, false, false, FeatureSet{}};
         decoder.Decode();
@@ -850,7 +873,7 @@ TEST_CASE("GPR immediate shifts specialize only nonzero in-range counts") {
 
         const auto address = reinterpret_cast<VAddr>(code.data());
         auto block = std::make_unique<Block>(0, Location{address});
-        Assembler assembler{block.get()};
+        swift::runtime::compile::IrBuilder assembler{block.get()};
         X64Decoder decoder{address, &memory, &assembler, true,
                            Arm64Features::None, false, false, FeatureSet{}};
         decoder.Decode();
@@ -1087,14 +1110,14 @@ TEST_CASE("Uniform elimination uses the latest full GPR store for a narrow load"
 
     const auto address = reinterpret_cast<VAddr>(code.data());
     Block block{0, Location{address}};
-    Assembler assembler{&block};
+    swift::runtime::compile::IrBuilder assembler{&block};
     X64Decoder decoder{address, &memory, &assembler, true,
                        Arm64Features::None, false, false, FeatureSet{}};
     decoder.Decode();
 
     const auto rbx_offset = offsetof(ThreadContext64, rbx);
     Value latest_rbx_store{};
-    Inst* narrow_rbx_load = nullptr;
+    const Inst* narrow_rbx_load = nullptr;
     for (auto& inst : block.GetInstList()) {
         if (inst.GetOp() == OpCode::StoreUniform &&
             inst.GetArg<Uniform>(0).GetOffset() == rbx_offset) {
@@ -1110,8 +1133,8 @@ TEST_CASE("Uniform elimination uses the latest full GPR store for a narrow load"
     REQUIRE(latest_rbx_store.Defined());
     REQUIRE(narrow_rbx_load != nullptr);
 
-    UniformInfo info{.uniform_size = sizeof(ThreadContext64)};
-    UniformEliminationPass::Run(&block, info, FeatureSet{});
+    swift::runtime::compile::GuestStateLayout info{.uniform_size = sizeof(ThreadContext64)};
+    swift::runtime::compile::CleanupState(RewriteFixture{&block, false}.Get(), info, FeatureSet{});
 
     REQUIRE(narrow_rbx_load->GetOp() == OpCode::BitExtract);
     REQUIRE(narrow_rbx_load->GetArg<Value>(0) == latest_rbx_store);
@@ -1213,18 +1236,28 @@ TEST_CASE("IR meta consistency") {
     // runtime table summed through the single slot rule, PhysicalSlots.
     constexpr int kPhysByOp[] = {
             0,  // OpCode::Void
-#define INST(name, ret, ...) meta::kPhys_##name,
+#define INST(name, ret, policy, ...) meta::kPhys_##name,
+#include "runtime/ir/ir.inc"
+#undef INST
+    };
+    // Runtime metadata borrows the exact static signature; it must not own a
+    // separately allocated copy or retain a temporary construction buffer.
+    constexpr std::span<const ArgSignature> signatures[] = {
+            {},
+#define INST(name, ret, policy, ...) meta::kArgs_##name,
 #include "runtime/ir/ir.inc"
 #undef INST
     };
     for (int op = 1; op < (int)OpCode::BASE_COUNT; op++) {
         auto& info = GetIRMetaInfo((OpCode)op);
         int runtime_slots = 0;
-        for (auto t : info.arg_types) {
+        for (auto t : info.arguments) {
             runtime_slots += PhysicalSlots(t);
         }
         REQUIRE(runtime_slots == kPhysByOp[op]);
         REQUIRE(runtime_slots <= Inst::max_args);
+        REQUIRE(info.arguments.size() == signatures[op].size());
+        REQUIRE(info.arguments.data() == signatures[op].data());
     }
 
     // (2) StoreMemory(Operand, Value): GetArg<Value>(1) must resolve to the right
@@ -1260,7 +1293,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     auto new_result = overwritten.Add(lhs, Operand{rhs});
     auto* new_save = overwritten.AppendInst(OpCode::SaveFlags, new_result, Flags::NZ);
 
-    FlagsEliminationPass::Run(&overwritten, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&overwritten, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(CollectPseudoOperations(overwritten, old_result.Def(), OpCode::SaveFlags).empty());
     auto new_pseudos = CollectPseudoOperations(overwritten, new_result.Def(), OpCode::SaveFlags);
@@ -1283,7 +1316,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     auto c_new = carry_overwritten.Add(c_lhs, Operand{c_rhs});
     carry_overwritten.AppendInst(OpCode::SaveFlags, c_new, Flags::All);
 
-    FlagsEliminationPass::Run(&carry_overwritten, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&carry_overwritten, true, nullptr}.Get(), FeatureSet{});
 
     const bool carry_elim_off =
             !swift::runtime::GetSvmConfig().flag_carry_elim;
@@ -1304,7 +1337,7 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     auto sbb_result = carry_read.Sbb(carry_lhs, Operand{carry_rhs});
     carry_read.AppendInst(OpCode::SaveFlags, sbb_result, Flags::All);
 
-    FlagsEliminationPass::Run(&carry_read, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&carry_read, true, nullptr}.Get(), FeatureSet{});
 
     // Sbb reads the preceding carry, so its producer stays live. Its mask must
     // remain whole: the JIT cannot safely turn this into a C-only pseudo.
@@ -1319,11 +1352,11 @@ TEST_CASE("Flag elimination keeps live pseudo masks and unlinks dead pseudos") {
     Block partial{0, Location{0x2800}};
     auto p_old = partial.Add(lhs, Operand{rhs});
     auto* p_old_save = partial.AppendInst(OpCode::SaveFlags, p_old, Flags::All);
-    partial.AppendInst(OpCode::TestFlags, Flags::Zero);
+    partial.StoreUniform(Uniform{0, ValueType::U8}, partial.TestFlags(Flags::Zero));
     auto p_new = partial.Add(lhs, Operand{rhs});
     partial.AppendInst(OpCode::SaveFlags, p_new, Flags::All);
 
-    FlagsEliminationPass::Run(&partial, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&partial, true, nullptr}.Get(), FeatureSet{});
 
     const bool full_elim_on = swift::runtime::GetSvmConfig().flag_full_elim;
     REQUIRE(p_old_save->GetArg<Flags>(1) ==
@@ -1340,7 +1373,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
         }
         return count;
     };
-    auto contains = [](Block& block, Inst* wanted) {
+    auto contains = [](Block& block, const Inst* wanted) {
         for (auto& inst : block.GetInstList()) {
             if (&inst == wanted) {
                 return true;
@@ -1375,7 +1408,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
 
         FeatureSet disabled_features{};
         disabled_features.flag_carry_elim = false;
-        FlagsEliminationPass::Run(&disabled, nullptr, disabled_features);
+        swift::runtime::compile::EliminateFlags(RewriteFixture{&disabled, true, nullptr}.Get(), disabled_features);
 
         REQUIRE(contains(disabled, old_save));
         REQUIRE(contains(disabled, old_clear));
@@ -1398,7 +1431,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto* first = append_carry_save(overwritten, lhs, rhs);
     auto* last = append_carry_save(overwritten, lhs, rhs);
 
-    FlagsEliminationPass::Run(&overwritten, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&overwritten, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE_FALSE(contains(overwritten, first));
     REQUIRE(contains(overwritten, last));
@@ -1409,10 +1442,10 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     lhs = read_between.LoadImm(Imm{3u});
     rhs = read_between.LoadImm(Imm{4u});
     first = append_carry_save(read_between, lhs, rhs);
-    read_between.AppendInst(OpCode::TestFlags, Flags::Carry);
+    read_between.StoreUniform(Uniform{0, ValueType::U8}, read_between.TestFlags(Flags::Carry));
     last = append_carry_save(read_between, lhs, rhs);
 
-    FlagsEliminationPass::Run(&read_between, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&read_between, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(contains(read_between, first));
     REQUIRE(contains(read_between, last));
@@ -1424,7 +1457,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     rhs = live_out.LoadImm(Imm{6u});
     auto* only = append_carry_save(live_out, lhs, rhs);
 
-    FlagsEliminationPass::Run(&live_out, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&live_out, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(contains(live_out, only));
     REQUIRE(count_op(live_out, OpCode::SaveFlags) == 1);
@@ -1438,11 +1471,11 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     first = append_carry_save(branched, lhs, rhs);
     auto condition = branched.LoadImm<BOOL>(Imm{1u});
     auto skip_read = branched.NotGoto(condition);
-    branched.AppendInst(OpCode::TestFlags, Flags::Carry);
+    branched.StoreUniform(Uniform{0, ValueType::U8}, branched.TestFlags(Flags::Carry));
     branched.BindLabel(skip_read);
     last = append_carry_save(branched, lhs, rhs);
 
-    FlagsEliminationPass::Run(&branched, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&branched, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(contains(branched, first));
     REQUIRE(contains(branched, last));
@@ -1455,7 +1488,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto* clear = clear_covered.AppendInst(OpCode::ClearFlags, Flags::Carry);
     last = append_carry_save(clear_covered, lhs, rhs);
 
-    FlagsEliminationPass::Run(&clear_covered, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&clear_covered, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE_FALSE(contains(clear_covered, clear));
     REQUIRE(contains(clear_covered, last));
@@ -1468,7 +1501,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto* set = set_covered.AppendInst(OpCode::SetCarry, carry_value);
     last = append_carry_save(set_covered, lhs, rhs);
 
-    FlagsEliminationPass::Run(&set_covered, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&set_covered, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE_FALSE(contains(set_covered, set));
     REQUIRE(contains(set_covered, last));
@@ -1482,7 +1515,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto* invert = invert_covered.AppendInst(OpCode::InvertCarry);
     last = append_carry_save(invert_covered, lhs, rhs);
 
-    FlagsEliminationPass::Run(&invert_covered, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&invert_covered, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE_FALSE(contains(invert_covered, first));
     REQUIRE_FALSE(contains(invert_covered, invert));
@@ -1493,10 +1526,10 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     rhs = invert_read.LoadImm(Imm{16u});
     first = append_carry_save(invert_read, lhs, rhs);
     invert = invert_read.AppendInst(OpCode::InvertCarry);
-    invert_read.AppendInst(OpCode::TestFlags, Flags::Carry);
+    invert_read.StoreUniform(Uniform{0, ValueType::U8}, invert_read.TestFlags(Flags::Carry));
     last = append_carry_save(invert_read, lhs, rhs);
 
-    FlagsEliminationPass::Run(&invert_read, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&invert_read, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(contains(invert_read, first));
     REQUIRE(contains(invert_read, invert));
@@ -1509,10 +1542,11 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto result = zero_condition.Sub(lhs, Operand{rhs});
     first = zero_condition.AppendInst(OpCode::SaveFlags, result, Flags::All);
     invert = zero_condition.AppendInst(OpCode::InvertCarry);
-    zero_condition.LocalCondSet(Cond::EQ);
+    zero_condition.StoreUniform(Uniform{0, ValueType::U8},
+                                zero_condition.LocalCondSet(ValueType::U8, Cond::EQ));
     last = append_carry_save(zero_condition, lhs, rhs);
 
-    FlagsEliminationPass::Run(&zero_condition, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&zero_condition, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(contains(zero_condition, first));
     REQUIRE_FALSE(contains(zero_condition, invert));
@@ -1524,10 +1558,11 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     result = carry_condition.Sub(lhs, Operand{rhs});
     first = carry_condition.AppendInst(OpCode::SaveFlags, result, Flags::All);
     invert = carry_condition.AppendInst(OpCode::InvertCarry);
-    carry_condition.LocalCondSet(Cond::CS);
+    carry_condition.StoreUniform(Uniform{0, ValueType::U8},
+                                 carry_condition.LocalCondSet(ValueType::U8, Cond::CS));
     last = append_carry_save(carry_condition, lhs, rhs);
 
-    FlagsEliminationPass::Run(&carry_condition, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&carry_condition, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(contains(carry_condition, first));
     REQUIRE(contains(carry_condition, invert));
@@ -1543,10 +1578,10 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     carry_value = gate_a.LoadImm<BOOL>(Imm{1u});
     set = gate_a.AppendInst(OpCode::SetCarry, carry_value);
     invert = gate_a.AppendInst(OpCode::InvertCarry);
-    gate_a.Sbb(lhs, Operand{rhs});
+    gate_a.StoreUniform(Uniform{0, ValueType::U32}, gate_a.Sbb(ValueType::U32, lhs, Operand{rhs}));
     last = append_carry_save(gate_a, lhs, rhs);
 
-    FlagsEliminationPass::Run(&gate_a, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&gate_a, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(contains(gate_a, first));
     REQUIRE(contains(gate_a, clear));
@@ -1572,7 +1607,7 @@ TEST_CASE("Flag elimination removes only overwritten in-block carry writes") {
     auto* tail_old = append_carry_save(segmented, lhs, rhs);
     auto* tail_new = append_carry_save(segmented, lhs, rhs);
 
-    FlagsEliminationPass::Run(&segmented, nullptr, FeatureSet{});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{&segmented, true, nullptr}.Get(), FeatureSet{});
 
     REQUIRE(contains(segmented, protected_save));
     REQUIRE(contains(segmented, adc_save));

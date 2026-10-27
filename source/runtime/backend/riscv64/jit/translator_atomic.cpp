@@ -65,7 +65,7 @@ AtomicKernel Kernel(AtomicKind kind) {
 
 }  // namespace
 
-bool JitTranslator::EmitAtomic(ir::Inst* inst) {
+bool JitTranslator::EmitAtomic(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::CompareAndSwap128: case O::CompareAndSwap: case O::AtomicExchange: case O::AtomicFetchAdd: case O::AtomicRMW: break;

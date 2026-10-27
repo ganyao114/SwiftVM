@@ -10,6 +10,10 @@
 // it is supposed to check.  Rosetta 2 on macOS 26/27 executes AVX including
 // the full 256-bit register file, so avx_fp_rosetta_ref.inc holds the literal
 // bytes real x86-64 hardware wrote to memory -- nothing in it is computed here.
+// Ordinary ADD/SUB/MUL/DIV/SQRT now use native NaN selection: only quiet NaN
+// sign/payload in their written result lanes may differ from these unchanged
+// literals. Finite/Inf/zero bits, MIN/MAX, comparisons, conversions, inactive
+// scalar lanes, zeroed upper halves and all other registers remain exact.
 //
 // The instruction table (avx_fp_ops.inc) is shared VERBATIM with the generator
 // (avx_fp_rosetta_ref.c), so the two sides cannot drift onto different
@@ -21,9 +25,8 @@
 //   Operand-1 priority on NaN.  In pair f32nanA lane 7 both operands are NaN
 //   (A = signalling 0x7F800333, B = quiet 0x7FC00222) and vaddps returned
 //   0x7FC00333 -- operand 1's NaN, quieted.  The MIRROR pair f32nanB returned
-//   0x7FC00222, again operand 1's.  ARM64's FADD returns a default NaN for
-//   both, so this pins that the backend's EmitVecFloatNaNFixup is doing real
-//   work rather than being incidentally right.
+//   0x7FC00222, again operand 1's. These literals retain the x86 priority
+//   measurement; native arithmetic may choose a different quiet payload.
 //
 //   min/max are NOT commutative and do NOT quiet.  vmaxps on f32nanA lane 7
 //   returned 0x7FC00222 (operand 2, quiet) and on the mirror 0x7F800333 --
@@ -63,6 +66,7 @@
 #include <string>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include "tests/support/native_nan_test_support.h"
 #include <fmt/format.h>
 #include <sys/mman.h>
 #include "runtime/common/svm_config.h"
@@ -202,6 +206,7 @@ constexpr Entry kEntries[] = {
 constexpr bool CmpIsScalar(const Entry& e) { return e.pp == 2 || e.pp == 3; }
 
 using Vec256 = std::array<u8, 32>;
+using swift::tests::MatchesNativeNaNResult;
 
 Vec256 ParseHex(const char* h) {
     Vec256 v{};
@@ -220,47 +225,18 @@ std::string Hex(const Vec256& v) {
     return s;
 }
 
-// True when `got` differs from `want` ONLY in that some lane holds the
-// POSITIVE default QNaN where the hardware produced the NEGATIVE one.
-//
-// x86 SQRT of a negative operand yields the "QNaN floating-point indefinite",
-// which has the SIGN BIT SET: 0xFFC00000 (f32) / 0xFFF8000000000000 (f64).
-// ARM64's FSQRT yields the positive default NaN instead, and the backend's
-// EmitVecFUnary (translator_alu.cpp) applies no NaN fixup -- unlike VecFAdd /
-// VecFSub / VecFMul / VecFDiv, whose EmitVecFloatNaNFixup already materializes
-// the correct negative constant.  So this is a BACKEND gap in one emitter, not
-// a decoder bug, and it is shared with the legacy SSE sqrtps/sqrtpd/sqrtss/
-// sqrtsd paths, which go through the same IR opcode.
-//
-// The deviation is pinned rather than silenced, and pinned by DIAGNOSIS rather
-// than by "it differs": any lane that disagrees in some other way still counts
-// as a mismatch, so the exemption cannot hide a second, unrelated bug.
-bool OnlySqrtNanSign(const Vec256& got, const Vec256& want, u32 lane_bits) {
-    const size_t step = lane_bits / 8;
-    for (size_t off = 0; off < got.size(); off += step) {
-        if (std::equal(got.begin() + off, got.begin() + off + step, want.begin() + off)) {
-            continue;
-        }
-        // Little-endian: the sign bit is the top bit of the LAST byte.
-        const size_t top = off + step - 1;
-        if (got[top] != u8(want[top] & 0x7F)) {
-            return false;
-        }
-        if (!std::equal(got.begin() + off, got.begin() + top, want.begin() + off)) {
-            return false;
-        }
-        // And the value really is the default QNaN, not any other NaN.
-        const bool f32 = lane_bits == 32;
-        if (want[top] != (f32 ? 0xFFu : 0xFFu) || want[top - 1] != (f32 ? 0xC0u : 0xF8u)) {
-            return false;
-        }
-        for (size_t i = off; i + 2 < top; ++i) {
-            if (want[i] != 0) {
-                return false;
-            }
-        }
+// Opt in only the ordinary arithmetic entries in this instruction table.
+u32 NativeNaNResultBytes(const Entry& entry, u32 width) {
+    if (entry.shape != Shape::Packed && entry.shape != Shape::Scalar &&
+        entry.shape != Shape::Unary) return 0;
+    // ADD, MUL, SUB, DIV and SQRT only. MIN/MAX, estimates, conversions,
+    // comparisons and bitwise operations keep their exact x86 result bits.
+    switch (entry.opcode) {
+        case 0x58: case 0x59: case 0x5C: case 0x5E: case 0x51:
+            return entry.shape == Shape::Scalar ? entry.lane / 8 : width / 8;
+        default:
+            return 0;
     }
-    return true;
 }
 
 // Must agree with SVM_AVXFP_POISON in avx_fp_ops.inc for register 0, which is
@@ -275,11 +251,12 @@ Vec256 Poison(u32 reg) {
 
 }  // namespace
 
-TEST_CASE("x86 avx fp vs rosetta reference") {
+TEST_CASE("x86 avx fp vs rosetta reference with native NaN results") {
     if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; VEX floating-point Rosetta differential skipped");
         return;
     }
+    swift::tests::CheckNativeNaNMatcher();
 
     // ---- properties of the reference data this case depends on ------------
     // Asserted rather than trusted: if a future regeneration or an edit to the
@@ -430,12 +407,8 @@ TEST_CASE("x86 avx fp vs rosetta reference") {
     // Where the answer is read from: the destination register, the capture
     // slot in memory (SETcc bytes), or eax (vmovmsk*).
     enum class Where { Ymm0, Memory, Rax32 };
-    // Expect::SqrtNanSign is the one documented deviation; see OnlySqrtNanSign.
-    enum class Expect { Match, SqrtNanSign };
-    size_t known_sqrt_nan_sign = 0;
-
     const auto check = [&](const std::string& label, CodeBuf code, int pair, const Vec256& want,
-                           Where where, Expect expect = Expect::Match, u32 lane_bits = 32) {
+                           Where where, u32 lane_bits = 32, u32 native_nan_bytes = 0) {
         code.c.push_back(0xF4);  // hlt
         const u64 code_addr = base + 0x1000 + code_cursor * 0x80;
         ++code_cursor;
@@ -458,8 +431,11 @@ TEST_CASE("x86 avx fp vs rosetta reference") {
             }
             return;
         }
-        if (jit.ymm != itp.ymm || jit.mem != itp.mem || jit.rax != itp.rax ||
-            jit.exit != itp.exit) {
+        bool same_vectors = MatchesNativeNaNResult(
+                jit.ymm[0], itp.ymm[0], lane_bits, native_nan_bytes);
+        for (u32 i = 1; i < jit.ymm.size(); ++i)
+            same_vectors &= jit.ymm[i] == itp.ymm[i];
+        if (!same_vectors || jit.mem != itp.mem || jit.rax != itp.rax || jit.exit != itp.exit) {
             if (divergences++ < 15) {
                 problems.push_back(fmt::format(
                         "{}: JIT/interpreter divergence (ymm0 {} vs {}, mem {} vs {}, "
@@ -481,17 +457,21 @@ TEST_CASE("x86 avx fp vs rosetta reference") {
                     problems.push_back(fmt::format("{} [{}]: rax {:#018x}, Rosetta says {:#018x}",
                                                    label, backend, got->rax, want_rax));
                 }
-                continue;
-            }
-            const Vec256& g = (where == Where::Memory) ? got->mem : got->ymm[0];
-            if (g != want) {
-                if (expect == Expect::SqrtNanSign && OnlySqrtNanSign(g, want, lane_bits)) {
-                    // The documented EmitVecFUnary deviation, and nothing else.
-                    ++known_sqrt_nan_sign;
-                } else if (mismatches++ < 15) {
+            } else {
+                const Vec256& g = (where == Where::Memory) ? got->mem : got->ymm[0];
+                if (!MatchesNativeNaNResult(g, want, lane_bits, native_nan_bytes) &&
+                    mismatches++ < 15) {
                     problems.push_back(fmt::format("{} [{}]: got {}, Rosetta says {}", label,
                                                    backend, Hex(g), Hex(want)));
                 }
+            }
+            if (got->ymm[1] != a && bystanders++ < 15) {
+                problems.push_back(fmt::format("{} [{}]: source ymm1 was modified, {} != {}",
+                                               label, backend, Hex(got->ymm[1]), Hex(a)));
+            }
+            if (got->ymm[2] != b && bystanders++ < 15) {
+                problems.push_back(fmt::format("{} [{}]: source ymm2 was modified, {} != {}",
+                                               label, backend, Hex(got->ymm[2]), Hex(b)));
             }
             // No register other than the destination and the two sources may
             // change -- in particular no bystander's UPPER half may be
@@ -520,9 +500,7 @@ TEST_CASE("x86 avx fp vs rosetta reference") {
         const bool l = ref.width == 256;
         const std::string pname = kAvxFpInputs[ref.pair].name;
         const std::string tag = fmt::format("{}.L{}/{}", ref.name, ref.width, pname);
-        // Only the sqrt forms may take the documented NaN-sign exemption.
-        const bool is_sqrt = std::strncmp(ref.name, "vsqrt", 5) == 0;
-        const Expect expect = is_sqrt ? Expect::SqrtNanSign : Expect::Match;
+        const u32 native_nan_bytes = NativeNaNResultBytes(*e, ref.width);
 
         switch (e->shape) {
             case Shape::Packed:
@@ -534,12 +512,12 @@ TEST_CASE("x86 avx fp vs rosetta reference") {
                 {
                     CodeBuf b;
                     VexRR(b, e->pp, e->opcode, 0, 1, 2, l);
-                    check(tag + ".rr", b, ref.pair, want, Where::Ymm0, expect, e->lane);
+                    check(tag + ".rr", b, ref.pair, want, Where::Ymm0, e->lane, native_nan_bytes);
                 }
                 {
                     CodeBuf b;
                     VexRM(b, e->pp, e->opcode, 0, 1, mb, l);
-                    check(tag + ".rm", b, ref.pair, want, Where::Ymm0, expect, e->lane);
+                    check(tag + ".rm", b, ref.pair, want, Where::Ymm0, e->lane, native_nan_bytes);
                 }
                 break;
             }
@@ -549,12 +527,12 @@ TEST_CASE("x86 avx fp vs rosetta reference") {
                 {
                     CodeBuf b;
                     VexRR(b, e->pp, e->opcode, 0, kVexNoSrc1, 1, l);
-                    check(tag + ".rr", b, ref.pair, want, Where::Ymm0, expect, e->lane);
+                    check(tag + ".rr", b, ref.pair, want, Where::Ymm0, e->lane, native_nan_bytes);
                 }
                 {
                     CodeBuf b;
                     VexRM(b, e->pp, e->opcode, 0, kVexNoSrc1, ma, l);
-                    check(tag + ".rm", b, ref.pair, want, Where::Ymm0, expect, e->lane);
+                    check(tag + ".rm", b, ref.pair, want, Where::Ymm0, e->lane, native_nan_bytes);
                 }
                 break;
             }
@@ -651,13 +629,4 @@ TEST_CASE("x86 avx fp vs rosetta reference") {
     }
     CHECK(comparisons == expected);
     CHECK(std::size(kAvxFpRefs) == 1488u);
-    // The ONE known deviation, pinned by exact count so it can neither grow
-    // Pinned at zero: sqrt of a negative operand now returns the negative
-    // "QNaN indefinite" that real hardware returns, on both backends. The fix
-    // is in JitTranslator::EmitVecFUnary (translator_alu.cpp) and
-    // Interpreter::RunVecFUnary (interp/interpreter.cpp) -- both were needed,
-    // and fixing only one produced a JIT/interpreter divergence instead. It
-    // also repairs the legacy SSE sqrt* forms, which share the IR opcode.
-    // Kept as an assertion so a reintroduced exemption cannot pass unnoticed.
-    CHECK(known_sqrt_nan_sign == 0u);
 }

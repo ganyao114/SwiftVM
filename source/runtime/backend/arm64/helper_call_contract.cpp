@@ -32,8 +32,8 @@ HelperCallContract OpaqueContract(const FeatureSet& features) {
 HelperCallContract HelperCallContract::Resolve(const ir::Lambda& lambda,
                                                const FeatureSet& features) {
     HelperCallContract contract{};
-    contract.direct = !lambda.IsValue();
-    if (!contract.direct) {
+    contract.state = ir::HelperStateEffects::Resolve(lambda);
+    if (!contract.state.direct) {
         return contract;
     }
     contract.preserve_all_leaf = LeafHelperABIEnabled(features) &&
@@ -44,13 +44,8 @@ HelperCallContract HelperCallContract::Resolve(const ir::Lambda& lambda,
             lambda.GetHostRegisterEffect() == ir::HostRegisterEffect::GeneralOnly;
     contract.preserves_pinned_state =
             lambda.GetHostRegisterEffect() == ir::HostRegisterEffect::PreservesPinnedState;
-    contract.guest_state_effect = lambda.GetHelperGuestStateEffect();
-    contract.may_fault = lambda.GetHelperFaultEffect() == ir::HelperFaultEffect::MayFault;
-    contract.may_reenter =
-            lambda.GetHelperReentryEffect() == ir::HelperReentryEffect::MayReenter;
     contract.preserves_host_nzcv =
             lambda.GetHostFlagsEffect() == ir::HostFlagsEffect::PreservesNZCV;
-    contract.uniform_effects = lambda.GetUniformEffectId();
     return contract;
 }
 
@@ -65,13 +60,13 @@ std::optional<HelperCallContract> HelperCallContract::Resolve(const ir::Inst& in
             return OpaqueContract(features);
         case ir::OpCode::Sse42Str: {
             HelperCallContract contract{};
-            contract.direct = true;
+            contract.state = {true,
+                              ir::HelperGuestStateEffect::None,
+                              ir::HelperFaultEffect::NoDirectFault,
+                              ir::HelperReentryEffect::NoReentry,
+                              ir::UniformEffectId::None};
             contract.fpcr_transparent = true;
             contract.preserves_pinned_state = true;
-            contract.guest_state_effect = ir::HelperGuestStateEffect::None;
-            contract.may_fault = false;
-            contract.may_reenter = false;
-            contract.uniform_effects = ir::UniformEffectId::None;
             contract.exact_register_clobbers = true;
             const auto imm = static_cast<u8>(inst.GetArg<ir::Imm>(2).Get());
             using ABI = swift::x86::Sse42StrVectorCallABI;
@@ -92,20 +87,6 @@ bool HelperCallContract::InstructionClobbersGPR(const ir::Inst& inst,
                                                 const FeatureSet& features) {
     const auto contract = Resolve(inst, features);
     return contract && contract->ClobbersGPR(code);
-}
-
-bool HelperCallContract::ReadsGuestState() const {
-    return guest_state_effect == ir::HelperGuestStateEffect::MayReadWrite ||
-           guest_state_effect == ir::HelperGuestStateEffect::ReadOnly;
-}
-
-bool HelperCallContract::WritesGuestState() const {
-    return guest_state_effect == ir::HelperGuestStateEffect::MayReadWrite ||
-           guest_state_effect == ir::HelperGuestStateEffect::WriteOnly;
-}
-
-bool HelperCallContract::RequiresGuestStatePublication() const {
-    return ReadsGuestState() || WritesGuestState() || may_fault || may_reenter;
 }
 
 bool HelperCallContract::RetainsPendingNZCV() const {

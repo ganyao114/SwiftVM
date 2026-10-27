@@ -38,17 +38,17 @@ void Hash(u64& hash, u64 value) {
 }
 }
 
-const RetirementPhaseHead* RetirementPhasePlan::Find(ir::Inst* label) const {
-    const auto found = std::find_if(heads.begin(), heads.end(),
-            [&](const auto& head) { return head.label == label; });
+const RetirementPhaseHead* RetirementPhasePlan::Find(const ir::Inst* label) const {
+    const auto found = std::find_if(
+            heads.begin(), heads.end(), [&](const auto& head) { return head.label == label; });
     return found == heads.end() ? nullptr : &*found;
 }
 
 RetirementPhasePlan PrepareRetirementPhases(ir::Block& block, const JitContext& context,
         bool has_phi_moves, bool has_function_flow) {
     RetirementPhasePlan plan;
-    std::vector<ir::Inst*> insts;
-    std::unordered_map<ir::Inst*, u32> positions, labels;
+    std::vector<const ir::Inst*> insts;
+    std::unordered_map<const ir::Inst*, u32> positions, labels;
     std::vector<u64> lexical_pc;
     u64 pc = block.GetStartLocation().Value();
     plan.ir_fingerprint = 1469598103934665603ULL;
@@ -153,7 +153,7 @@ RetirementPhasePlan PrepareRetirementPhases(ir::Block& block, const JitContext& 
         const auto& live = context.LiveAt(insts[to]);
         auto edge_live = context.LiveForBranch(insts[from]);
         const auto by_id = [](auto* a, auto* b) { return a->Id() < b->Id(); };
-        std::vector<ir::Inst*> ordered(live.begin(), live.end());
+        std::vector<const ir::Inst*> ordered(live.begin(), live.end());
         std::sort(ordered.begin(), ordered.end(), by_id);
         std::sort(edge_live.begin(), edge_live.end(), by_id);
         if (ordered != edge_live) Reject("edge-live-mismatch");

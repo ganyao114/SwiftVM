@@ -7,24 +7,24 @@
 namespace swift::runtime::backend::riscv64 {
 
 struct RetirementPhaseHome {
-    ir::Inst* value{};
+    const ir::Inst* value{};
     ir::ValueType type{};
     u32 offset{};
     u32 bytes{}, parts{};
 };
 
 struct RetirementPhaseHead {
-    ir::Inst* label{};
+    const ir::Inst* label{};
     u64 guest_pc{};
     std::vector<RetirementPhaseHome> live;
-    std::vector<ir::Inst*> backedges;
+    std::vector<const ir::Inst*> backedges;
 };
 
 struct RetirementPhasePlan {
     u64 ir_fingerprint{};
     u32 reachable_instructions{};
     std::vector<RetirementPhaseHead> heads;
-    [[nodiscard]] const RetirementPhaseHead* Find(ir::Inst* label) const;
+    [[nodiscard]] const RetirementPhaseHead* Find(const ir::Inst* label) const;
 };
 
 // Throws before body emission if any reachable internal backedge is unproved.

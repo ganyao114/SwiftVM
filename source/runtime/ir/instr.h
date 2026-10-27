@@ -13,92 +13,207 @@
 #include "runtime/ir/opcodes.h"
 
 namespace swift::runtime::ir {
-
 namespace meta {
-// Compile-time argument-count check for the builder INST macros. Exact match
-// against the ir.inc signature, with two documented exceptions:
-//  - CallLambda: trailing host-call argument Values are optional (Lambda +
-//    0..3 Values, see Block::CallHost and the SIMD helpers in the x86 decoder).
-//  - Not: unary logical-not (Value) or bitwise-not (Value, Operand); both
-//    backends dispatch on ArgAt(1).IsVoid() (EmitNot / RunNot).
-constexpr bool ValidArgCount(OpCode op, std::size_t declared, std::size_t actual) {
-    if (op == OpCode::CallLambda || op == OpCode::Not) {
-        return actual >= 1 && actual <= declared;
+// Project C++ construction arguments into the same physical kinds used by
+// ir.inc. Operand::Op is a physical header, never a complete logical Operand.
+template<class T> inline constexpr ArgType ArgumentKind = [] {
+    using A = std::remove_cvref_t<T>;
+    if constexpr (std::is_base_of_v<ir::Value, A>) return ArgType::Value;
+    else if constexpr (std::is_same_v<A, ir::Imm>) return ArgType::Imm;
+    else if constexpr (std::is_same_v<A, ir::Uniform>) return ArgType::Uniform;
+    else if constexpr (std::is_same_v<A, ir::Local>) return ArgType::Local;
+    else if constexpr (std::is_same_v<A, ir::Cond>) return ArgType::Cond;
+    else if constexpr (std::is_same_v<A, ir::Flags>) return ArgType::Flags;
+    else if constexpr (std::is_same_v<A, ir::Operand>) return ArgType::Operand;
+    else if constexpr (std::is_same_v<A, ir::Lambda>) return ArgType::Lambda;
+    else if constexpr (std::is_same_v<A, ir::Params>) return ArgType::Params;
+    else return ArgType::Void;
+}();
+
+template<class... Args> inline constexpr std::size_t ArgumentSlots =
+        (std::size_t{0} + ... + PhysicalSlots(ArgumentKind<Args>));
+
+// Void is allowed by raw setters for incomplete/imported IR. No complete
+// instruction signature accepts it as a logical construction argument.
+template<class... Args> concept ArgumentStorage =
+        ((ArgumentKind<Args> != ArgType::Void ||
+          std::is_same_v<std::remove_cvref_t<Args>, ir::Void>) && ...) &&
+        ArgumentSlots<Args...> <= kMaxPhysSlots;
+
+// Signature kinds do not convey ownership. A Params construction argument
+// transfers its sole chain; lvalues and const owners cannot be consumed.
+template<class... Args> concept OwnershipConstraint =
+        ((!std::is_same_v<std::remove_cvref_t<Args>, ir::Params> ||
+          (!std::is_lvalue_reference_v<Args> &&
+           !std::is_const_v<std::remove_reference_t<Args>> &&
+           !std::is_volatile_v<std::remove_reference_t<Args>>)) && ...);
+
+template<class... Args> concept ConstructionArguments =
+        ArgumentStorage<Args...> && OwnershipConstraint<Args...>;
+
+// Normalize ordinary borrows before instantiating the large creation bodies.
+// Params retains its consuming rvalue category across the same boundary.
+template<class T> constexpr decltype(auto) ForwardConstructionArgument(T&& argument) {
+    if constexpr (std::is_same_v<std::remove_cvref_t<T>, ir::Params>)
+        return std::forward<T>(argument);
+    else
+        return std::as_const(argument);
+}
+
+template<class... Args>
+constexpr bool ValidArgumentPack(std::span<const ArgSignature> signature) {
+    if constexpr (!ArgumentStorage<Args...>) return false;
+    else {
+        constexpr std::array<ArgType, sizeof...(Args)> kinds{ArgumentKind<Args>...};
+        return AcceptsArguments(signature, kinds);
     }
-    return actual == declared;
+}
+
+// A construction opcode proves only the logical C++ argument kinds/count and
+// physical capacity. It carries no value/type/SSA proof and is never stored in
+// the IR. Binding it to normalized kinds lets named and dynamic operations
+// share the same allocation body without checking a known signature again.
+template<ArgType... Kinds> class ConstructionOp;
+template<class... Args> using OperationFor = ConstructionOp<ArgumentKind<Args>...>;
+
+template<ArgType... Kinds> class ConstructionOp {
+public:
+    [[nodiscard]] constexpr OpCode Code() const { return code; }
+
+private:
+    constexpr explicit ConstructionOp(OpCode code) : code(code) {}
+
+    template<class... Args> requires ArgumentStorage<Args...>
+    friend OperationFor<Args...> CheckArgumentPack(OpCode);
+
+    template<OpCode op, class... Args>
+        requires(ValidArgumentPack<Args...>(InstructionSignature<op>::arguments))
+    friend constexpr OperationFor<Args...> KnownOperation();
+
+    OpCode code;
+};
+
+template<class... Args> requires ArgumentStorage<Args...>
+OperationFor<Args...> CheckArgumentPack(OpCode op) {
+    const auto& info = GetIRMetaInfo(op);
+    if (op == OpCode::Void || op >= OpCode::BASE_COUNT ||
+        !ValidArgumentPack<Args...>(info.arguments)) detail::InvalidIRArguments();
+    return OperationFor<Args...>{op};
+}
+
+template<OpCode op, class... Args>
+    requires(ValidArgumentPack<Args...>(InstructionSignature<op>::arguments))
+constexpr OperationFor<Args...> KnownOperation() {
+    return OperationFor<Args...>{op};
+}
+
+inline ValueType Arg0ResultType() { detail::MissingIRResultType(); }
+
+template <typename First, typename... Rest>
+ValueType Arg0ResultType(const First& first, const Rest&...) {
+    ValueType type = ValueType::VOID;
+    if constexpr (std::is_base_of_v<ir::Value, First>) {
+        if (first.Defined()) type = first.Type();
+    } else if constexpr (std::is_same_v<First, ir::Imm> || std::is_same_v<First, ir::Uniform>) {
+        type = first.GetType();
+    } else if constexpr (std::is_same_v<First, ir::Local>) {
+        type = first.type;
+    }
+    if (type == ValueType::VOID) detail::MissingIRResultType();
+    return type;
+}
+
+// The C++ void marker means no hint. TypedValue<VOID> and ValueType::VOID
+// instead declare a real no-result instruction; neither triggers inference.
+template <ResultTypePolicy policy, ValueType fixed, typename Hint = void, typename... Args>
+ValueType ResolveResultType(const Args&... args) {
+    if constexpr (!std::is_void_v<Hint>) {
+        return Hint::TYPE;
+    } else if constexpr (policy == ResultTypePolicy::Fixed || policy == ResultTypePolicy::Void) {
+        return fixed;
+    } else if constexpr (policy == ResultTypePolicy::Arg0) {
+        return Arg0ResultType(args...);
+    } else {
+        static_assert(HasDefaultResultType<policy>, "this instruction requires an explicit result type");
+    }
+}
+
+template <typename Hint = void, typename... Args>
+ValueType ResolveResultType(OpCode op, const Args&... args) {
+    if constexpr (!std::is_void_v<Hint>) {
+        return Hint::TYPE;
+    } else {
+        const auto& info = GetIRMetaInfo(op);
+        switch (info.result_policy) {
+            case ResultTypePolicy::Void:
+            case ResultTypePolicy::Fixed: return info.result_type;
+            case ResultTypePolicy::Arg0: return Arg0ResultType(args...);
+            case ResultTypePolicy::Explicit:
+            case ResultTypePolicy::Call: detail::MissingIRResultType();
+        }
+        detail::MissingIRResultType();
+    }
 }
 }  // namespace meta
 
 class Block;
-class Inst;
-
-template <typename T>
-concept InstAllocator = requires(T allocator, Inst* inst, OpCode code) {
-    { allocator.New(code) } -> std::convertible_to<Inst*>;
-    { allocator.Delete(inst) };
-};
 
 #pragma pack(push, 1)
 class Inst final : public SlabObject<Inst, true> {
 public:
     static constexpr auto max_args = 5;
     static_assert(max_args == meta::kMaxPhysSlots, "keep in sync with ir_meta.h");
+    static constexpr u8 params_arg_index = max_args;
     static constexpr auto invalid_id = UINT16_MAX;
     using Values = StackVector<Value, max_args>;
-    using Pseudos = StackVector<Inst*, 4>;
+    using Pseudos = StackVector<const Inst*, 4>;
 
     ~Inst();
 
-    template <typename... Args> void SetArgs(const Args&... args) {
-        constexpr auto arg_count = sizeof...(args);
-        static_assert(arg_count <= max_args);
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    void SetArgs(Args&&... args) {
         int index{};
-        auto arg_index = [&](const Arg& arg) -> int {
-            auto res = index;
-            // Operand spans op+left+right; slot width comes from PhysicalSlots (ir_types.h).
-            index += PhysicalSlots(arg.IsOperand() ? ArgType::Operand : ArgType::Void);
-            return res;
+        const auto set = [&]<class T>(T&& arg) {
+            const auto slot = index;
+            index += PhysicalSlots(meta::ArgumentKind<T>);
+            SetArg(slot, std::forward<T>(arg));
         };
-        (SetArg(arg_index(args), args), ...);
+        (set(std::forward<Args>(args)), ...);
     }
 
     // Initial construction only: the constructor has already made every slot
     // Void, so SetArg's DestroyArg walk cannot own or unregister anything.
-    // Keeping this separate from SetArgs makes the SVM_IR_FAST=0 path an exact
-    // copy of the historical mutation-capable route.
-    template <typename... Args> void SetArgsFresh(const Args&... args) {
-        constexpr auto arg_count = sizeof...(args);
-        static_assert(arg_count <= max_args);
+    // The slow mode exercises the mutation-capable registration route. Both
+    // routes receive a result type that was fixed before argument writes.
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    void SetArgsFresh(Args&&... args) {
         int index{};
-        auto arg_index = [&](const Arg& arg) -> int {
-            auto res = index;
-            index += PhysicalSlots(arg.IsOperand() ? ArgType::Operand : ArgType::Void);
-            return res;
+        const auto set = [&]<class T>(T&& arg) {
+            const auto slot = index;
+            index += PhysicalSlots(meta::ArgumentKind<T>);
+            SetArgFresh(slot, std::forward<T>(arg));
         };
-        (SetArgFresh(arg_index(args), args), ...);
+        (set(std::forward<Args>(args)), ...);
     }
 
-    template <InstAllocator Allocator, typename... Args>
-    static Inst* Create(Allocator& allocator, OpCode op, const Args&... args) {
-        auto inst = allocator.New(op);
-        inst->SetArgs(args...);
-        return inst;
-    }
-
-    template <typename... Args> static Inst* Create(OpCode op, const Args&... args) {
-        auto inst = new Inst(op);
-        inst->SetArgs(std::forward<const Args&>(args)...);
-        return inst;
-    }
-    static void Validate(Inst* inst);
-    [[nodiscard]] bool HasValidTypeViews() const;
+    static void Validate(const Inst* inst);
+    // Basic presence/range validity; opcode-specific widths and the explicit
+    // low-level result contract are separate from construction defaults.
+    [[nodiscard]] bool HasValidResultType() const;
+    [[nodiscard]] bool HasValidArguments() const;
+    [[nodiscard]] IntegerPredicateKind GetIntegerPredicateKind() const;
+    // A materialized primitive or literal is a complete scalar 0 or 1. Aliases,
+    // guest homes and deferred native conditions need their own contracts.
+    [[nodiscard]] bool HasBooleanResult() const;
 
     explicit Inst() = default;
 
     explicit Inst(OpCode code);
+    Inst(OpCode code, ValueType type);
 
-    Arg& ArgAt(int index);
-    Arg& ArgAt(int index) const;
+    // Queries never lend a mutable operand slot. Construction and rewrites
+    // use SetArg so use counts and rewrite notifications remain authoritative.
+    const Arg& ArgAt(int index) const;
     void SetArg(int index, const Void& arg);
     void SetArg(int index, const Value& arg);
     void SetArg(int index, const Imm& arg);
@@ -109,7 +224,7 @@ public:
     void SetArg(int index, const Uniform& arg);
     void SetArg(int index, const Lambda& arg);
     void SetArg(int index, const Operand& arg);
-    void SetArg(int index, const Params& arg);
+    void SetArg(int index, Params&& arg);
     void SetArgFresh(int index, const Void& arg);
     void SetArgFresh(int index, const Value& arg);
     void SetArgFresh(int index, const Imm& arg);
@@ -120,10 +235,10 @@ public:
     void SetArgFresh(int index, const Uniform& arg);
     void SetArgFresh(int index, const Lambda& arg);
     void SetArgFresh(int index, const Operand& arg);
-    void SetArgFresh(int index, const Params& arg);
+    void SetArgFresh(int index, Params&& arg);
 
     template <typename T>
-    [[nodiscard]] T GetArg(int index) const {
+    [[nodiscard]] auto GetArg(int index) const {
         index = PublicIndex(index);
         if constexpr (std::is_same<T, Operand>::value) {
             ASSERT(arguments[index].IsOperand());
@@ -137,26 +252,55 @@ public:
         }
     }
 
-    template <typename... Args> void SetInst(OpCode op, const Args&... args) {
-        this->op_code = op;
-        this->SetArgs(std::forward<const Args&>(args)...);
+    template <typename... Args>
+        requires meta::ConstructionArguments<Args...>
+    void SetInst(OpCode op, Args&&... args) {
+        CheckMutable();
+        SetInst(meta::CheckArgumentPack<Args...>(op), std::forward<Args>(args)...);
     }
 
-#define INST(name, ret, ...)                                                                        \
-    template <typename... Args> Inst &name(const Args&... args) {                                   \
-        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                  \
-                                          sizeof...(Args)),                                         \
-                    #name ": argument count mismatch (see ir.inc)");                                \
-        this->SetInst(OpCode::name, std::forward<const Args&>(args)...);                            \
-        return *this;                                                                               \
+    template <typename... Args>
+        requires meta::ConstructionArguments<Args...>
+    void SetInst(OpCode op, ValueType type, Args&&... args) {
+        CheckMutable();
+        SetInst(meta::CheckArgumentPack<Args...>(op), type, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args>
+        requires meta::ConstructionArguments<Args...>
+    void SetInst(meta::OperationFor<Args...> operation, Args&&... args) {
+        CheckMutable();
+        // Retain value views and typed label identities. Ordinary void
+        // operations cannot inherit the old definition's result type.
+        const auto type =
+                ret_type == ValueType::VOID ||
+                                (GetIRMetaInfo(operation.Code()).return_type == ArgType::Void &&
+                                 !meta::IsControlToken(operation.Code()))
+                        ? meta::ResolveResultType(operation.Code(), args...)
+                        : ret_type;
+        SetInst(operation, type, std::forward<Args>(args)...);
+    }
+
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    void SetInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        CheckMutable();
+        this->op_code = operation.Code();
+        ret_type = type;
+        SetArgs(std::forward<Args>(args)...);
+    }
+
+#define INST(name, ret, policy, ...)                                                                    \
+    template <typename... Args> requires(meta::ConstructionArguments<Args...> &&                        \
+             meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                      \
+    Inst &name(Args&&... args) {                                                                        \
+        this->SetInst(meta::KnownOperation<OpCode::name, Args...>(), std::forward<Args>(args)...);      \
+        return *this;                                                                                   \
     }
 #include "ir.inc"
 #undef INST
 
-    void Use(const Value& value);
-    void UnUse(const Value& value);
     [[nodiscard]] u32 GetUses(bool exclude_pseudo = true) const;
-    [[nodiscard]] Values GetValues() {
+    [[nodiscard]] Values GetValues() const {
         Values values{};
         ForEachValue([&](Value value) { values.push_back(value); });
         return values;
@@ -164,33 +308,141 @@ public:
     // Visit every occurrence in physical argument order, including Lambda and
     // Params values. Copies preserve each use's type view without exposing IR
     // operands to mutation or building a temporary Values collection.
-    template<class Visitor> void ForEachValue(Visitor&& visit) {
-        for (auto& arg : arguments) {
-            if (arg.IsValue()) {
-                visit(Value{arg.Get<Value>()});
-            } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
-                visit(Value{arg.Get<Lambda>().GetValue()});
-            } else if (arg.IsParams()) {
-                for (auto param : arg.Get<Params>())
-                    if (auto data = param.data; data.IsValue()) visit(data.value);
-            }
-        }
+    template<class Visitor> void ForEachValue(Visitor&& visit) const {
+        VisitValueArguments<false>([&](Value value, u8) { visit(value); });
     }
 
+    // Like ForEachValue, with the physical slot needed by HIR use records.
+    // Params entries use params_arg_index rather than a direct operand slot.
+    template<class Visitor> void ForEachValueUse(Visitor&& visit) const {
+        VisitValueArguments<false>(std::forward<Visitor>(visit));
+    }
+
+    // Check the complete schema and type views during the visit used by final
+    // facts. Invalid data views do not reach the callback; no snapshot or
+    // separate signature traversal is needed.
+    template<class Visitor> bool CheckArguments(Visitor&& visit) const {
+        return VisitValueArguments<true>([&](Value value, u8) { visit(value); });
+    }
+
+private:
+    // Called only after the signature and nested value views are valid.
+    // Reads a fixed set of operands; it never enumerates the uses again.
+    [[nodiscard]] bool HasValidScalarArguments() const;
+
+    template<bool check, class Visitor> bool VisitValueArguments(Visitor&& visit) const {
+        bool valid = true;
+        const IRMeta* info{};
+        u8 logical{}, operand_slots{};
+        bool ended = false;
+        if constexpr (check) {
+            if (op_code == OpCode::Void || op_code >= OpCode::BASE_COUNT) return false;
+            info = &GetIRMetaInfo(op_code);
+        }
+        const auto value = [&](Value value, u8 index) {
+            if constexpr (check) {
+                const bool readable = op_code == OpCode::BindLabel
+                        ? value.HasValidTypeView() : value.HasValidDataView();
+                if (!readable) {
+                    valid = false;
+                    return;
+                }
+            }
+            visit(value, index);
+        };
+        for (u8 index = 0; index < max_args; ++index) {
+            const auto& arg = arguments[index];
+            if constexpr (check) {
+                if (operand_slots) {
+                    const bool right = operand_slots == 1;
+                    --operand_slots;
+                    if (!arg.IsValue() && !arg.IsImm() && !(right && arg.IsVoid())) return false;
+                } else if (logical < info->arguments.size()) {
+                    const auto signature = info->arguments[logical];
+                    if (arg.IsVoid() && IsOptional(signature)) {
+                        ended = true;
+                    } else {
+                        if (ended || !AcceptsArgument(signature, arg.GetType())) return false;
+                        ++logical;
+                        operand_slots = PhysicalSlots(signature) - 1;
+                    }
+                } else if (!arg.IsVoid()) {
+                    return false;
+                }
+                if (arg.IsImm() && !IsValidValueType(arg.Get<Imm>().GetType())) valid = false;
+                if (arg.GetType() == ArgType::Uniform && !IsValidValueType(arg.Get<Uniform>().GetType())) valid = false;
+                if (arg.GetType() == ArgType::Local && !IsValidValueType(arg.Get<Local>().type)) valid = false;
+                if (arg.GetType() == ArgType::Cond && !IsValidCondition(arg.Get<Cond>())) valid = false;
+                if (arg.GetType() == ArgType::Flags &&
+                    (static_cast<u64>(arg.Get<Flags>()) &
+                     ~static_cast<u64>(Flags::All | Flags::Positive))) valid = false;
+                if (arg.IsOperand()) {
+                    const auto op = arg.Get<Operand::Op>();
+                    switch (op.type) {
+                        case OperandOp::None:
+                        case OperandOp::Plus:
+                        case OperandOp::LSL:
+                        case OperandOp::LSR: break;
+                        case OperandOp::PlusExt: valid &= op.shift_ext < 64; break;
+                        default: valid = false;
+                    }
+                }
+            }
+            if (arg.IsValue()) {
+                value(arg.Get<Value>(), index);
+            } else if (arg.IsLambda()) {
+                const auto& lambda = arg.Get<Lambda>();
+                if (lambda.IsValue()) value(lambda.GetValue(), index);
+                else if constexpr (check) {
+                    if (!lambda.IsImm() || !IsValidValueType(lambda.GetImm().GetType())) valid = false;
+                }
+            } else if (arg.IsParams()) {
+                for (auto param : arg.Get<Params>()) {
+                    const auto data = param.data;
+                    if (data.IsValue()) value(data.value, params_arg_index);
+                    else if constexpr (check) {
+                        if (!data.IsImm() || !IsValidValueType(data.imm.GetType())) valid = false;
+                    }
+                }
+            }
+        }
+        if constexpr (check) {
+            if (operand_slots || (logical < info->arguments.size() &&
+                                  !IsOptional(info->arguments[logical]))) return false;
+            // A state store is a byte range. Signedness may differ, but its
+            // source view must have the width declared by that range.
+            if (op_code == OpCode::StoreUniform) {
+                if (!valid || arguments[0].GetType() != ArgType::Uniform || !arguments[1].IsValue()) return false;
+                return GetValueSizeByte(arguments[0].Get<Uniform>().GetType()) ==
+                       GetValueSizeByte(arguments[1].Get<Value>().Type());
+            }
+            return valid && HasValidScalarArguments();
+        }
+        return valid;
+    }
+
+public:
     // Trivial accessors are defined inline: they dominate host compile
     // profiles when emitted out-of-line (simpleperf, 2026-10-20).
     [[nodiscard]] OpCode GetOp() const { return op_code; }
-    void SetId(u16 id_) { id = id_; }
-    void SetReturn(ValueType type) { ret_type = type; }
+    void SetId(u16 id_) {
+        CheckMutable();
+        id = id_;
+    }
+    void SetReturn(ValueType type) {
+        CheckMutable();
+        ret_type = type;
+    }
+    [[nodiscard]] const Block* GetBlock() const { return owner ? owner->block : nullptr; }
     [[nodiscard]] u16 Id() const { return id; }
     [[nodiscard]] ValueType ReturnType() const { return ret_type; }
-    [[nodiscard]] bool HasValue() {
+    [[nodiscard]] bool HasValue() const {
         return meta::HasValue(GetIRMetaInfo(op_code).return_type);
     }
     [[nodiscard]] bool IsPseudoOperation() const;
-    [[nodiscard]] bool IsGetHostRegOperation();
-    [[nodiscard]] bool IsSetHostRegOperation();
-    [[nodiscard]] bool IsBitCastOperation();
+    [[nodiscard]] bool IsGetHostRegOperation() const;
+    [[nodiscard]] bool IsSetHostRegOperation() const;
+    [[nodiscard]] bool IsBitCastOperation() const;
     [[nodiscard]] IREffect GetEffects() const;
     [[nodiscard]] bool HasSideEffects() const;
 
@@ -221,12 +473,6 @@ public:
     // had already freed.
     void ReleaseArgs();
     void Reset();
-
-    [[nodiscard]] u16 VirRegID() const {
-        return vir_reg;
-    }
-
-    void SetVirReg(u16 slot);
 
     // Instruction storage: a per-thread bump arena with a free list.
     //
@@ -264,51 +510,64 @@ public:
     void* operator new(size_t sz);
     void operator delete(void* p);
 
+private:
     IntrusiveListNode list_node{};
+
+public:
+    using List = IntrusiveList<&Inst::list_node>;
 
 private:
     friend class Value;
     friend class Block;
 
+    // One state per owning Block: sealing does not walk or copy its instructions.
+    struct Owner {
+        Block* block;
+        bool sealed{};
+        bool compiling{};
+        u16 hir_order{UINT16_MAX};
+    };
+    void CheckMutable() const { ASSERT(!owner || !owner->sealed); }
+    static void CheckUse(const Value& value) {
+        ASSERT(value.Def());
+        value.Def()->CheckMutable();
+    }
+    void Use(const Value& value);
+    void UnUse(const Value& value);
+
     [[nodiscard]] int PublicIndex(int logical_index) const {
         auto& info = GetIRMetaInfo(op_code);
-        ASSERT(logical_index >= 0 && logical_index < (int)info.arg_types.size());
+        ASSERT(logical_index >= 0 && logical_index < (int)info.arguments.size());
         int physical = logical_index;
         for (int i = 0; i < logical_index; i++) {
-            physical += PhysicalSlots(info.arg_types[i]) - 1;
+            physical += PhysicalSlots(info.arguments[i]) - 1;
         }
         ASSERT(physical < max_args);
         return physical;
     }
 
-    mutable std::array<Arg, max_args> arguments{};
+    std::array<Arg, max_args> arguments{};
     OpCode op_code{OpCode::Void};
-    u32 num_use{};
+    mutable u32 num_use{};
     // Uses of this value by pseudo operations, maintained alongside
     // num_use in Use/UnUse so GetUses can exclude them in O(1)
     // instead of walking the pseudo chain (un-chaining step 3.1).
-    u16 pseudo_use_count{};
+    mutable u16 pseudo_use_count{};
     u16 id{invalid_id};
-    u16 vir_reg{};
     ValueType ret_type{};
+    mutable const Owner* owner{};
 };
 #pragma pack(pop)
 
-using InstList = IntrusiveList<&Inst::list_node>;
+using InstList = Inst::List;
 
-// Process-constant bisect switch. Default on; SVM_IR_FAST=0 restores every
-// construction/append/use-registration path changed by W6.
+// Process-constant registration switch. The slow mode uses mutation-capable
+// argument/link bookkeeping; both modes share type and sealed-IR contracts.
 bool IRBuildFastEnabled();
 
 // Value accessors that dereference the definition live here, where Inst
 // is complete; args.h can only forward-declare it. Inlined for the same
 // host-compile reason as the Inst accessors above.
-inline Value Value::SetType(ValueType type) {
-    ASSERT(Def());
-    Def()->SetReturn(type);
-    return *this;
-}
-
 inline ValueType Value::Type() const {
     ASSERT(Def());
     if (cast_type == ValueType::VOID) {
@@ -316,6 +575,17 @@ inline ValueType Value::Type() const {
     } else {
         return cast_type;
     }
+}
+
+inline bool Value::HasValidTypeView() const {
+    return Defined() && IsValidValueType(Def()->ReturnType()) && IsValidValueType(Type());
+}
+
+inline bool Value::HasValidDataView() const {
+    if (!HasValidTypeView() || !Def()->HasValue()) return false;
+    // These values name branch bindings, not computed data. BindLabel uses
+    // the type-view predicate directly and validates its control relation.
+    return !meta::IsControlToken(Def()->GetOp());
 }
 
 inline u16 Value::Id() const { return Def()->Id(); }

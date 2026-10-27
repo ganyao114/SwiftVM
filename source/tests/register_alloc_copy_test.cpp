@@ -1,14 +1,17 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <memory>
 #include <array>
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -24,7 +27,7 @@ GPRSMask CopyTestGPRs() {
 
 struct CopyAllocation {
     IntrusivePtr<Block> block;
-    std::unique_ptr<RegAlloc> alloc;
+    std::unique_ptr<AllocationFixture> alloc;
     Value source;
     Value bridge;
     Value wrapper;
@@ -34,14 +37,12 @@ CopyAllocation AllocateCopyChain(bool separate_nodes,
                                  bool reuse_bridge,
                                  bool keep_source_live) {
     IntrusivePtr<Block> block{new Block(0, Location{0x8680})};
-    auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
-            Uniform{0, ValueType::U64});
-    auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
-                          .SetType(ValueType::U32);
+    auto source = block->LoadUniform<TypedValue<ValueType::U64>>(Uniform{0, ValueType::U64});
+    auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
     if (separate_nodes) {
         block->AdvancePC(Imm{1u});
     }
-    auto wrapper = block->ZeroExtend32To64(bridge).SetType(ValueType::U64);
+    auto wrapper = block->ZeroExtend32To64(ValueType::U64, bridge);
     block->StoreUniform(Uniform{8, ValueType::U64}, wrapper);
     block->StoreUniform(Uniform{16, ValueType::U64}, wrapper);
     if (reuse_bridge) {
@@ -54,10 +55,14 @@ CopyAllocation AllocateCopyChain(bool separate_nodes,
     block->ReIdInstr();
 
     auto features = FeatureSet{};
-    auto alloc = std::make_unique<RegAlloc>(
-            block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)},
-            features);
-    RegisterAllocPass::Run(block.get(), alloc.get(), false, features);
+    auto alloc = std::make_unique<AllocationFixture>(
+            block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features);
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            alloc.get(),
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), *alloc, features),
+            false);
     return {std::move(block), std::move(alloc), source, bridge, wrapper};
 }
 
@@ -89,11 +94,9 @@ TEST_CASE("ordered stores accept coalesced low32 views during emission") {
         const bool keep_source_live = (variant & 2u) != 0;
         CAPTURE(ordered, keep_source_live);
         IntrusivePtr<Block> block{new Block(0, Location{0x86c0})};
-        auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
-                Uniform{0, ValueType::U64});
-        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
-                              .SetType(ValueType::U32);
-        auto reused_home = block->LoadImm(Imm{7u}).SetType(ValueType::U64);
+        auto source = block->LoadUniform<TypedValue<ValueType::U64>>(Uniform{0, ValueType::U64});
+        auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+        auto reused_home = block->LoadImm(ValueType::U64, Imm{7u});
         block->StoreUniform(Uniform{8, ValueType::U64}, reused_home);
         if (ordered) {
             block->StoreMemoryTSO(Operand{Imm{0x10000u}}, bridge);
@@ -118,12 +121,17 @@ TEST_CASE("ordered stores accept coalesced low32 views during emission") {
         auto module = address_space.MapModule(
                 LocationDescriptor{0x86c0}, LocationDescriptor{0x86d0}, module_config);
         auto features = ResolveFeatureSet(module_config);
-        RegAlloc alloc{block->MaxInstrId(), CopyTestGPRs(),
-                       FPRSMask{~((1u << 8) - 1u)}, features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        AllocationFixture alloc{
+                block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
         REQUIRE(alloc.IsLow32CopyCoalesced(bridge.Id()));
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         REQUIRE_NOTHROW(translator.Translate(block.get()));
         context.Finish();
@@ -138,9 +146,8 @@ TEST_CASE("in-place low32 extensions retain their high-bit clearing write") {
         auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
                 Uniform{0, ValueType::U64});
         block->StoreUniform(Uniform{16, ValueType::U64}, source);
-        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
-                              .SetType(ValueType::U32);
-        auto result = block->ZeroExtend32To64(bridge).SetType(ValueType::U64);
+        auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+        auto result = block->ZeroExtend32To64(ValueType::U64, bridge);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         if (keep_parent_live) {
             block->StoreUniform(Uniform{24, ValueType::U64}, source);
@@ -158,9 +165,14 @@ TEST_CASE("in-place low32 extensions retain their high-bit clearing write") {
         AddressSpace address_space{config};
         auto module = address_space.GetDefaultModule();
         const auto features = ResolveFeatureSet(module->GetModuleConfig());
-        RegAlloc allocation{block->MaxInstrId(), CopyTestGPRs(),
-                            FPRSMask{~((1u << 8) - 1u)}, features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        AllocationFixture allocation{
+                block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
         REQUIRE(allocation.IsLow32CopyCoalesced(bridge.Id()));
         const auto source_reg = allocation.ValueGPR(source).id;
         if (!keep_parent_live) {
@@ -180,8 +192,8 @@ TEST_CASE("in-place low32 extensions retain their high-bit clearing write") {
         const auto result_reg = allocation.ValueGPR(result).id;
         REQUIRE((source_reg == result_reg) == !keep_parent_live);
 
-        allocation.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, allocation};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+        arm64::JitContext context{module, allocation, allocation.Actions()};
         arm64::JitTranslator translator{context};
         REQUIRE_NOTHROW(translator.Translate(block.get()));
         context.Finish();
@@ -206,12 +218,9 @@ TEST_CASE("in-place low32 extensions retain their high-bit clearing write") {
 TEST_CASE("low32 views reuse compatible source and result ownership") {
     auto allocate = [](bool keep_source_live) {
         IntrusivePtr<Block> block{new Block(0, Location{0x8690})};
-        auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
-                Uniform{0, ValueType::U64});
-        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
-                              .SetType(ValueType::U32);
-        auto result = block->Add(bridge, Operand{Imm{1u}})
-                              .SetType(ValueType::U32);
+        auto source = block->LoadUniform<TypedValue<ValueType::U64>>(Uniform{0, ValueType::U64});
+        auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+        auto result = block->Add(ValueType::U32, bridge, Operand{Imm{1u}});
         block->StoreUniform(Uniform{8, ValueType::U32}, result);
         block->StoreUniform(Uniform{16, ValueType::U32}, bridge);
         if (keep_source_live) {
@@ -221,10 +230,14 @@ TEST_CASE("low32 views reuse compatible source and result ownership") {
         block->ReIdInstr();
 
         auto features = FeatureSet{};
-        auto alloc = std::make_unique<RegAlloc>(
-                block->MaxInstrId(), CopyTestGPRs(),
-                FPRSMask{~((1u << 8) - 1u)}, features);
-        RegisterAllocPass::Run(block.get(), alloc.get(), false, features);
+        auto alloc = std::make_unique<AllocationFixture>(
+                block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features);
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                alloc.get(),
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), *alloc, features),
+                false);
         return CopyAllocation{
                 std::move(block), std::move(alloc), source, bridge, result};
     };
@@ -246,14 +259,11 @@ TEST_CASE("low32 ownership transfer preserves guest homes across publication") {
     for (const bool overwrite_home : {false, true}) {
         CAPTURE(overwrite_home);
         IntrusivePtr<Block> block{new Block(0, Location{0x86d0})};
-        auto replacement = block->GetHostGPR(HostRegIndex(0), Imm{0u})
-                                   .SetType(ValueType::U64);
-        auto initial = block->LoadImm(Imm{0x12345678u}).SetType(ValueType::U32);
+        auto replacement = block->GetHostGPR(ValueType::U64, HostRegIndex(0), Imm{0u});
+        auto initial = block->LoadImm(ValueType::U32, Imm{0x12345678u});
         block->SetHostGPR(initial, HostRegIndex(22), Imm{0u});
-        auto source = block->GetHostGPR(HostRegIndex(22), Imm{0u})
-                              .SetType(ValueType::U32);
-        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
-                              .SetType(ValueType::U32);
+        auto source = block->GetHostGPR(ValueType::U32, HostRegIndex(22), Imm{0u});
+        auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
         if (overwrite_home) {
             block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         }
@@ -262,9 +272,14 @@ TEST_CASE("low32 ownership transfer preserves guest homes across publication") {
         block->ReIdInstr();
 
         const auto features = FeatureSet{};
-        RegAlloc allocation{block->MaxInstrId(), CopyTestGPRs(),
-                            FPRSMask{~((1u << 8) - 1u)}, features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        AllocationFixture allocation{
+                block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
         REQUIRE((allocation.IsHostReadCoalesced(source.Id()) || allocation.IsFixedGPRDefinitionElided(source.Id())));
         REQUIRE(allocation.ValueGPR(source).id == 22);
         REQUIRE(allocation.IsLow32CopyCoalesced(bridge.Id()) == !overwrite_home);
@@ -287,15 +302,14 @@ TEST_CASE("low32 recoloring preserves the parent across earlier atomic clobbers"
         }
         Value exchanged;
         if (atomic) {
-            auto address = block->LoadUniform<TypedValue<ValueType::U64>>(
-                    Uniform{128, ValueType::U64});
-            auto input = block->LoadImm(Imm{17u}).SetType(ValueType::U64);
-            exchanged = block->AtomicExchange(address, input).SetType(ValueType::U64);
+            auto address =
+                    block->LoadUniform<TypedValue<ValueType::U64>>(Uniform{128, ValueType::U64});
+            auto input = block->LoadImm(ValueType::U64, Imm{17u});
+            exchanged = block->AtomicExchange(ValueType::U64, address, input);
             block->StoreUniform(Uniform{136, ValueType::U64}, exchanged);
         }
-        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
-                              .SetType(ValueType::U32);
-        auto reused_home = block->LoadImm(Imm{7u}).SetType(ValueType::U64);
+        auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+        auto reused_home = block->LoadImm(ValueType::U64, Imm{7u});
         block->StoreUniform(Uniform{8, ValueType::U64}, reused_home);
         for (unsigned i = 0; i < keep.size(); ++i) {
             block->StoreUniform(Uniform{160 + i * 8, ValueType::U64}, keep[i]);
@@ -306,10 +320,15 @@ TEST_CASE("low32 recoloring preserves the parent across earlier atomic clobbers"
 
         FeatureSet features{};
         features.jit_scratch_xpool = true;
-        RegAlloc allocation{block->MaxInstrId(), CopyTestGPRs(),
-                            FPRSMask{~((1u << 8) - 1u)}, features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        REQUIRE(allocation.ValueType(source) == RegAlloc::GPR);
+        AllocationFixture allocation{
+                block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
+        REQUIRE(allocation.ValueType(source) == AllocationFixture::GPR);
         if (atomic) {
             const auto source_reg = allocation.ValueGPR(source).id;
             REQUIRE((FixedGPRClobbers(*exchanged.Def(), features) &
@@ -326,39 +345,45 @@ TEST_CASE("final-use low32 views transfer or recolor ownership") {
     auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
             Uniform{0, ValueType::U64});
     block->StoreUniform(Uniform{16, ValueType::U64}, source);
-    auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u})
-                          .SetType(ValueType::U32);
+    auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
     block->StoreUniform(Uniform{8, ValueType::U32}, bridge);
     block->StoreUniform(Uniform{12, ValueType::U32}, bridge);
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
     auto features = FeatureSet{};
-    RegAlloc alloc{block->MaxInstrId(), CopyTestGPRs(),
-                   FPRSMask{~((1u << 8) - 1u)}, features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{
+            block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
 
     REQUIRE(alloc.IsLow32CopyCoalesced(bridge.Id()));
     REQUIRE(alloc.Low32CopySource(bridge.Id()) == source.Id());
     REQUIRE(alloc.ValueGPR(bridge).id == alloc.ValueGPR(source).id);
 
     IntrusivePtr<Block> recolor_block{new Block(0, Location{0x86a8})};
-    auto recolor_source = recolor_block->LoadUniform<TypedValue<ValueType::U64>>(
-            Uniform{0, ValueType::U64});
-    auto recolor_bridge = recolor_block->BitExtract(
-            recolor_source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto reused_home = recolor_block->LoadImm(Imm{7u}).SetType(ValueType::U64);
-    recolor_block->StoreUniform(
-            Uniform{8, ValueType::U64}, reused_home);
+    auto recolor_source =
+            recolor_block->LoadUniform<TypedValue<ValueType::U64>>(Uniform{0, ValueType::U64});
+    auto recolor_bridge =
+            recolor_block->BitExtract(ValueType::U32, recolor_source, Imm{0u}, Imm{32u});
+    auto reused_home = recolor_block->LoadImm(ValueType::U64, Imm{7u});
+    recolor_block->StoreUniform(Uniform{8, ValueType::U64}, reused_home);
     recolor_block->StoreUniform(
             Uniform{16, ValueType::U32}, recolor_bridge);
     recolor_block->SetTerminal(terminal::ReturnToDispatch{});
     recolor_block->ReIdInstr();
 
-    RegAlloc recolor_alloc{recolor_block->MaxInstrId(), CopyTestGPRs(),
-                           FPRSMask{~((1u << 8) - 1u)}, features};
-    RegisterAllocPass::Run(
-            recolor_block.get(), &recolor_alloc, false, features);
+    AllocationFixture recolor_alloc{
+            recolor_block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features};
+    ::swift::runtime::compile::AllocateBlock(
+            recolor_block.get(),
+            &recolor_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    recolor_block.get(), recolor_alloc, features),
+            false);
     REQUIRE(recolor_alloc.IsLow32CopyCoalesced(recolor_bridge.Id()));
     REQUIRE(recolor_alloc.AllocationId(recolor_source) == recolor_bridge.Id());
     REQUIRE(recolor_alloc.ValueGPR(recolor_bridge).id ==
@@ -369,36 +394,41 @@ TEST_CASE("final-use low32 views transfer or recolor ownership") {
     IntrusivePtr<Block> atomic_block{new Block(0, Location{0x86b0})};
     auto address = atomic_block->LoadUniform<TypedValue<ValueType::U64>>(
             Uniform{0, ValueType::U64});
-    auto atomic_source = atomic_block->LoadUniform<TypedValue<ValueType::U64>>(
-            Uniform{8, ValueType::U64});
-    auto atomic_bridge = atomic_block->BitExtract(
-            atomic_source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto previous = atomic_block->AtomicExchange(address, atomic_bridge)
-                            .SetType(ValueType::U32);
+    auto atomic_source =
+            atomic_block->LoadUniform<TypedValue<ValueType::U64>>(Uniform{8, ValueType::U64});
+    auto atomic_bridge = atomic_block->BitExtract(ValueType::U32, atomic_source, Imm{0u}, Imm{32u});
+    auto previous = atomic_block->AtomicExchange(ValueType::U32, address, atomic_bridge);
     atomic_block->StoreUniform(Uniform{16, ValueType::U32}, previous);
     atomic_block->SetTerminal(terminal::ReturnToDispatch{});
     atomic_block->ReIdInstr();
 
-    RegAlloc atomic_alloc{atomic_block->MaxInstrId(), CopyTestGPRs(),
-                          FPRSMask{~((1u << 8) - 1u)}, features};
-    RegisterAllocPass::Run(
-            atomic_block.get(), &atomic_alloc, false, features);
+    AllocationFixture atomic_alloc{
+            atomic_block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features};
+    ::swift::runtime::compile::AllocateBlock(
+            atomic_block.get(),
+            &atomic_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    atomic_block.get(), atomic_alloc, features),
+            false);
     REQUIRE(atomic_alloc.IsLow32CopyCoalesced(atomic_bridge.Id()));
     REQUIRE(atomic_alloc.AllocationId(atomic_source) == atomic_bridge.Id());
 
     IntrusivePtr<Block> host_block{new Block(0, Location{0x86b8})};
-    auto host_source = host_block->GetHostGPR(HostRegIndex(6), Imm{0u})
-                               .SetType(ValueType::U64);
-    auto host_bridge = host_block->BitExtract(
-            host_source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto host_reuse = host_block->LoadImm(Imm{7u}).SetType(ValueType::U64);
+    auto host_source = host_block->GetHostGPR(ValueType::U64, HostRegIndex(6), Imm{0u});
+    auto host_bridge = host_block->BitExtract(ValueType::U32, host_source, Imm{0u}, Imm{32u});
+    auto host_reuse = host_block->LoadImm(ValueType::U64, Imm{7u});
     host_block->StoreUniform(Uniform{8, ValueType::U64}, host_reuse);
     host_block->StoreUniform(Uniform{16, ValueType::U32}, host_bridge);
     host_block->SetTerminal(terminal::ReturnToDispatch{});
     host_block->ReIdInstr();
 
-    RegAlloc host_alloc{host_block->MaxInstrId(), CopyTestGPRs(),
-                        FPRSMask{~((1u << 8) - 1u)}, features};
-    RegisterAllocPass::Run(host_block.get(), &host_alloc, false, features);
+    AllocationFixture host_alloc{
+            host_block->MaxInstrId(), CopyTestGPRs(), FPRSMask{~((1u << 8) - 1u)}, features};
+    ::swift::runtime::compile::AllocateBlock(
+            host_block.get(),
+            &host_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    host_block.get(), host_alloc, features),
+            false);
     REQUIRE_FALSE(host_alloc.IsLow32CopyCoalesced(host_bridge.Id()));
 }

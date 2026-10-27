@@ -455,39 +455,71 @@ namespace ams::util {
                 return iterator(node);
             }
 
-            constexpr ALWAYS_INLINE iterator find(const_reference ref) const {
+            constexpr ALWAYS_INLINE iterator find(const_reference ref) {
                 return iterator(this->FindImpl(Traits::GetNode(std::addressof(ref))));
             }
 
-            constexpr ALWAYS_INLINE iterator lower_bound(const_reference ref) const {
+            constexpr ALWAYS_INLINE const_iterator find(const_reference ref) const {
+                return const_iterator(this->FindImpl(Traits::GetNode(std::addressof(ref))));
+            }
+
+            constexpr ALWAYS_INLINE iterator lower_bound(const_reference ref) {
                 return iterator(this->LowerBoundImpl(Traits::GetNode(std::addressof(ref))));
             }
 
-            constexpr ALWAYS_INLINE iterator upper_bound(const_reference ref) const {
+            constexpr ALWAYS_INLINE const_iterator lower_bound(const_reference ref) const {
+                return const_iterator(this->LowerBoundImpl(Traits::GetNode(std::addressof(ref))));
+            }
+
+            constexpr ALWAYS_INLINE iterator upper_bound(const_reference ref) {
                 return iterator(this->UpperBoundImpl(Traits::GetNode(std::addressof(ref))));
             }
 
-            constexpr ALWAYS_INLINE iterator nfind(const_reference ref) const {
+            constexpr ALWAYS_INLINE const_iterator upper_bound(const_reference ref) const {
+                return const_iterator(this->UpperBoundImpl(Traits::GetNode(std::addressof(ref))));
+            }
+
+            constexpr ALWAYS_INLINE iterator nfind(const_reference ref) {
                 return iterator(this->NFindImpl(Traits::GetNode(std::addressof(ref))));
             }
 
-            constexpr ALWAYS_INLINE iterator find_key(const_key_reference ref) const {
+            constexpr ALWAYS_INLINE const_iterator nfind(const_reference ref) const {
+                return const_iterator(this->NFindImpl(Traits::GetNode(std::addressof(ref))));
+            }
+
+            constexpr ALWAYS_INLINE iterator find_key(const_key_reference ref) {
                 return iterator(this->FindKeyImpl(ref));
             }
 
-            constexpr ALWAYS_INLINE iterator nfind_key(const_key_reference ref) const {
+            constexpr ALWAYS_INLINE const_iterator find_key(const_key_reference ref) const {
+                return const_iterator(this->FindKeyImpl(ref));
+            }
+
+            constexpr ALWAYS_INLINE iterator nfind_key(const_key_reference ref) {
                 return iterator(this->NFindKeyImpl(ref));
             }
 
-            constexpr ALWAYS_INLINE iterator find_existing(const_reference ref) const {
+            constexpr ALWAYS_INLINE const_iterator nfind_key(const_key_reference ref) const {
+                return const_iterator(this->NFindKeyImpl(ref));
+            }
+
+            constexpr ALWAYS_INLINE iterator find_existing(const_reference ref) {
                 return iterator(this->FindExistingImpl(Traits::GetNode(std::addressof(ref))));
             }
 
-            constexpr ALWAYS_INLINE iterator find_existing_key(const_key_reference ref) const {
+            constexpr ALWAYS_INLINE const_iterator find_existing(const_reference ref) const {
+                return const_iterator(this->FindExistingImpl(Traits::GetNode(std::addressof(ref))));
+            }
+
+            constexpr ALWAYS_INLINE iterator find_existing_key(const_key_reference ref) {
                 return iterator(this->FindExistingKeyImpl(ref));
             }
 
-            constexpr ALWAYS_INLINE size_t size() {
+            constexpr ALWAYS_INLINE const_iterator find_existing_key(const_key_reference ref) const {
+                return const_iterator(this->FindExistingKeyImpl(ref));
+            }
+
+            constexpr ALWAYS_INLINE size_t size() const {
                 return this->m_impl.m_size;
             }
     };

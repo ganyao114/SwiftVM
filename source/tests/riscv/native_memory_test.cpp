@@ -2,10 +2,9 @@
 
 #include <atomic>
 #include <thread>
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
-
 using T = ir::ValueType;
 using O = ir::OpCode;
 
@@ -31,14 +30,14 @@ bool ProbeRange(void* opaque, u64, u64) {
 void NativeMemoryFrame(bool vector) {
     rv::HostFeatures features{}; features.vector = vector;
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc820})};
-    ir::Assembler as{block.get()};
-    auto address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    auto live = as.LoadUniform(ir::Uniform{32, T::V128}).SetType(T::V128);
-    if (vector) live = as.VecFAdd(live, live, ir::Imm{u64{32}}).SetType(T::V128);
-    auto sum = as.LoadMemory(ir::Operand{address}).SetType(T::U64);
+    compile::IrBuilder as{block.get()};
+    auto address = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    auto live = as.LoadUniform(T::V128, ir::Uniform{32, T::V128});
+    if (vector) live = as.VecFAdd(T::V128, live, live, ir::Imm{u64{32}});
+    auto sum = as.LoadMemory(T::U64, ir::Operand{address});
     for (u32 i = 0; i < 2; ++i) {
-        auto next = as.LoadMemoryTSO(ir::Operand{address}).SetType(T::U64);
-        sum = as.Add(sum, ir::Operand{next}).SetType(T::U64);
+        auto next = as.LoadMemoryTSO(T::U64, ir::Operand{address});
+        sum = as.Add(T::U64, sum, ir::Operand{next});
     }
     as.StoreUniform(ir::Uniform{8, T::U64}, sum);
     as.StoreUniform(ir::Uniform{48, T::V128}, live);
@@ -74,10 +73,10 @@ void NativeMemoryCopy(bool vector, bool zacas) {
     rv::HostFeatures features{}; features.vector = vector; features.zacas = zacas;
     for (auto op : {O::MemoryCopy, O::MemoryCopyTSO}) for (u32 size : {0u, 1u, 2u, 3u, 4u, 5u, 7u, 8u, 9u, 13u, 15u, 16u, 17u, 31u, 32u, 33u, 127u, 128u, 129u, 255u, 256u, 257u, 4096u}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc800})};
-        ir::Assembler as{block.get()};
-        auto live = as.LoadUniform(ir::Uniform{32, T::V128}).SetType(T::V128);
-        auto dst = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto src = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto live = as.LoadUniform(T::V128, ir::Uniform{32, T::V128});
+        auto dst = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto src = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
         block->AppendInst(op, ir::Lambda{dst}, ir::Lambda{src}, ir::Imm{u64(size)});
         as.StoreUniform(ir::Uniform{48, T::V128}, live);
         block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -108,14 +107,15 @@ void NativeMemoryCopy(bool vector, bool zacas) {
         }
     }
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc810})};
-    ir::Assembler as{block.get()};
-    auto address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    auto low = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-    auto high = as.LoadUniform(ir::Uniform{16, T::U64}).SetType(T::U64);
-    auto new_low = as.LoadUniform(ir::Uniform{24, T::U64}).SetType(T::U64);
-    auto new_high = as.LoadUniform(ir::Uniform{32, T::U64}).SetType(T::U64);
-    auto old = as.CompareAndSwap128(address, low, high, new_low, new_high).SetType(T::V128);
-    as.StoreUniform(ir::Uniform{48, T::V128}, old); block->SetTerminal(ir::terminal::ReturnToHost{});
+    compile::IrBuilder as{block.get()};
+    auto address = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    auto low = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+    auto high = as.LoadUniform(T::U64, ir::Uniform{16, T::U64});
+    auto new_low = as.LoadUniform(T::U64, ir::Uniform{24, T::U64});
+    auto new_high = as.LoadUniform(T::U64, ir::Uniform{32, T::U64});
+    auto old = as.CompareAndSwap128(T::V128, address, low, high, new_low, new_high);
+    as.StoreUniform(ir::Uniform{48, T::V128}, old);
+    block->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled cached{block.get(), true, features}, uncached{block.get(), false, features};
     Check(cached.translator.Stats().helpers == 0, "wide CAS calls a fixed atomic kernel without IR dispatch");
     for (u32 offset = 0; offset < 16; ++offset) for (bool match : {false, true}) for (auto* compiled : {&cached, &uncached}) {

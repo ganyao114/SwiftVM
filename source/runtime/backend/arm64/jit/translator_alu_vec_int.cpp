@@ -13,70 +13,70 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
-void JitTranslator::EmitVec4Or(ir::Inst* inst) {
+void JitTranslator::EmitVec4Or(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ Orr(result.V16B(), left.V16B(), right.V16B());
 }
 
-void JitTranslator::EmitVec4Add(ir::Inst* inst) {
+void JitTranslator::EmitVec4Add(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ Add(result.V4S(), left.V4S(), right.V4S());
 }
 
-void JitTranslator::EmitVec4And(ir::Inst* inst) {
+void JitTranslator::EmitVec4And(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ And(result.V16B(), left.V16B(), right.V16B());
 }
 
-void JitTranslator::EmitVec4Mul(ir::Inst* inst) {
+void JitTranslator::EmitVec4Mul(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ Mul(result.V4S(), left.V4S(), right.V4S());
 }
 
-void JitTranslator::EmitVec4Sub(ir::Inst* inst) {
+void JitTranslator::EmitVec4Sub(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ Sub(result.V4S(), left.V4S(), right.V4S());
 }
 
-void JitTranslator::EmitVecXor(ir::Inst* inst) {
+void JitTranslator::EmitVecXor(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ Eor(result.V16B(), left.V16B(), right.V16B());
 }
 
-void JitTranslator::EmitVecAnd(ir::Inst* inst) {
+void JitTranslator::EmitVecAnd(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ And(result.V16B(), left.V16B(), right.V16B());
 }
 
-void JitTranslator::EmitVecOr(ir::Inst* inst) {
+void JitTranslator::EmitVecOr(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ Orr(result.V16B(), left.V16B(), right.V16B());
 }
 
-void JitTranslator::EmitVecAndNot(ir::Inst* inst) {
+void JitTranslator::EmitVecAndNot(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
     __ Bic(result.V16B(), left.V16B(), right.V16B());
 }
 
-void JitTranslator::EmitVecAdd(ir::Inst* inst) {
+void JitTranslator::EmitVecAdd(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -98,7 +98,7 @@ void JitTranslator::EmitVecAdd(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecSub(ir::Inst* inst) {
+void JitTranslator::EmitVecSub(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -120,7 +120,7 @@ void JitTranslator::EmitVecSub(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecCmpEq(ir::Inst* inst) {
+void JitTranslator::EmitVecCmpEq(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -142,7 +142,7 @@ void JitTranslator::EmitVecCmpEq(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecCmpGt(ir::Inst* inst) {
+void JitTranslator::EmitVecCmpGt(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -164,7 +164,7 @@ void JitTranslator::EmitVecCmpGt(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecAvg(ir::Inst* inst) {
+void JitTranslator::EmitVecAvg(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -180,7 +180,7 @@ void JitTranslator::EmitVecAvg(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecMin(ir::Inst* inst) {
+void JitTranslator::EmitVecMin(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -209,7 +209,7 @@ void JitTranslator::EmitVecMin(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecMax(ir::Inst* inst) {
+void JitTranslator::EmitVecMax(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -238,7 +238,7 @@ void JitTranslator::EmitVecMax(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecMul(ir::Inst* inst) {
+void JitTranslator::EmitVecMul(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -257,7 +257,7 @@ void JitTranslator::EmitVecMul(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecMulHigh16(ir::Inst* inst) {
+void JitTranslator::EmitVecMulHigh16(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -291,7 +291,7 @@ void JitTranslator::EmitVecMulHigh16(ir::Inst* inst) {
 // Three host instructions and two vector temporaries.  `result` is only
 // written by the last one, so it may share a physical register with either
 // source without the compaction clobbering an operand that is still needed.
-void JitTranslator::EmitVecMulWiden(ir::Inst* inst) {
+void JitTranslator::EmitVecMulWiden(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -331,7 +331,7 @@ void JitTranslator::EmitVecMulWiden(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecAbsDiffSum8(ir::Inst* inst) {
+void JitTranslator::EmitVecAbsDiffSum8(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -346,7 +346,7 @@ void JitTranslator::EmitVecAbsDiffSum8(ir::Inst* inst) {
     __ Ins(result.V8H(), 4, high.V8H(), 0);
 }
 
-void JitTranslator::EmitVecMadd16(ir::Inst* inst) {
+void JitTranslator::EmitVecMadd16(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -372,7 +372,7 @@ VRegister VecLaneFormat(VRegister reg, u32 lane_bits) {
     }
     return reg;
 }
-void JitTranslator::EmitVecSatAdd(ir::Inst* inst) {
+void JitTranslator::EmitVecSatAdd(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -384,7 +384,7 @@ void JitTranslator::EmitVecSatAdd(ir::Inst* inst) {
         __ Uqadd(VecLaneFormat(result, bits), VecLaneFormat(left, bits), VecLaneFormat(right, bits));
 }
 
-void JitTranslator::EmitVecSatSub(ir::Inst* inst) {
+void JitTranslator::EmitVecSatSub(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -396,7 +396,7 @@ void JitTranslator::EmitVecSatSub(ir::Inst* inst) {
         __ Uqsub(VecLaneFormat(result, bits), VecLaneFormat(left, bits), VecLaneFormat(right, bits));
 }
 
-void JitTranslator::EmitVecPack(ir::Inst* inst) {
+void JitTranslator::EmitVecPack(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -425,7 +425,7 @@ void JitTranslator::EmitVecPack(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecShiftLeft(ir::Inst* inst) {
+void JitTranslator::EmitVecShiftLeft(const ir::Inst* inst) {
     // The scalar count clamp below uses CMP/CSEL, which overwrites NZCV even
     // though the eventual NEON shift is flag-neutral.  Commit a pending guest
     // arithmetic producer before touching PSTATE so FLAGS_REGS can safely
@@ -445,7 +445,7 @@ void JitTranslator::EmitVecShiftLeft(ir::Inst* inst) {
     __ Ushl(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), shift_format);
 }
 
-void JitTranslator::EmitVecShiftRight(ir::Inst* inst) {
+void JitTranslator::EmitVecShiftRight(const ir::Inst* inst) {
     MergeNZCV();
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto count = context.X(inst->GetArg<ir::Value>(1));
@@ -462,7 +462,7 @@ void JitTranslator::EmitVecShiftRight(ir::Inst* inst) {
     __ Ushl(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), shift_format);
 }
 
-void JitTranslator::EmitVecShiftRightArithmetic(ir::Inst* inst) {
+void JitTranslator::EmitVecShiftRightArithmetic(const ir::Inst* inst) {
     MergeNZCV();
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto count = context.X(inst->GetArg<ir::Value>(1));
@@ -479,7 +479,7 @@ void JitTranslator::EmitVecShiftRightArithmetic(ir::Inst* inst) {
     __ Sshl(VecLaneFormat(result, lane_bits), VecLaneFormat(value, lane_bits), shift_format);
 }
 
-void JitTranslator::EmitVecShiftLeftImm(ir::Inst* inst) {
+void JitTranslator::EmitVecShiftLeftImm(const ir::Inst* inst) {
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     const u32 count = inst->GetArg<ir::Imm>(1).Get();
@@ -495,7 +495,7 @@ void JitTranslator::EmitVecShiftLeftImm(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecShiftRightImm(ir::Inst* inst) {
+void JitTranslator::EmitVecShiftRightImm(const ir::Inst* inst) {
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     const u32 count = inst->GetArg<ir::Imm>(1).Get();
@@ -511,7 +511,7 @@ void JitTranslator::EmitVecShiftRightImm(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecShiftRightArithmeticImm(ir::Inst* inst) {
+void JitTranslator::EmitVecShiftRightArithmeticImm(const ir::Inst* inst) {
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     const u32 raw_count = inst->GetArg<ir::Imm>(1).Get();
@@ -526,7 +526,7 @@ void JitTranslator::EmitVecShiftRightArithmeticImm(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecByteShift(ir::Inst* inst) {
+void JitTranslator::EmitVecByteShift(const ir::Inst* inst) {
     auto value = context.V(inst->GetArg<ir::Value>(0));
     auto zero = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -539,7 +539,6 @@ void JitTranslator::EmitVecByteShift(ir::Inst* inst) {
         __ Ext(result.V16B(), value.V16B(), zero.V16B(), count);
     }
 }
-
 
 #undef __
 

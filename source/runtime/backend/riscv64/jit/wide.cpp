@@ -11,7 +11,7 @@ using O = ir::OpCode;
 using T = ir::ValueType;
 
 bool Wide(ir::Value value) { return value.Type() == T::V256; }
-bool Split(ir::Inst* inst) {
+bool Split(const ir::Inst* inst) {
     if (inst->ReturnType() == T::V256) return true;
     if (inst->GetOp() == O::StoreUniform || inst->GetOp() == O::StoreMemory ||
         inst->GetOp() == O::StoreMemoryTSO || inst->GetOp() == O::StoreLocal)
@@ -20,7 +20,7 @@ bool Split(ir::Inst* inst) {
     return false;
 }
 
-void ValidateWideResult(ir::Inst* inst) {
+void ValidateWideResult(const ir::Inst* inst) {
     if (inst->ReturnType() != T::V256) return;
     const auto op = inst->GetOp();
     if ((op >= O::Vec4Add && op <= O::VecFRoundInt) &&
@@ -60,14 +60,16 @@ public:
     }
 private:
     ir::Inst* New(O op, T type) {
-        auto value = std::make_unique<ir::Inst>(op); value->SetReturn(type);
+        auto value = std::make_unique<ir::Inst>(op, type);
         auto* ptr = value.get(); owned.emplace(ptr, std::move(value)); return ptr;
     }
     void Append(ir::Inst* inst) {
         plan.body->AppendInst(inst); owned.at(inst).release(); owned.erase(inst);
     }
-    template<class... Args> ir::Value Emit(O op, T type, const Args&... args) {
-        auto* inst = New(op, type); inst->SetArgs(args...); Append(inst); return ir::Value{inst};
+    template<class... Args> requires ir::meta::ConstructionArguments<Args...>
+    ir::Value Emit(O op, T type, Args&&... args) {
+        ir::meta::CheckArgumentPack<Args...>(op);
+        auto* inst = New(op, type); inst->SetArgs(std::forward<Args>(args)...); Append(inst); return ir::Value{inst};
     }
     ir::Value Part(ir::Value value, u32 part) const {
         auto found = definitions.find(value.Def());
@@ -80,8 +82,12 @@ private:
     void Copy(ir::Inst* target, ir::Value source) {
         target->SetInst(O::BitCast, source); target->SetReturn(T::V128); Append(target);
     }
-    void Clear(ir::Inst* target) { target->SetInst(O::Zero); target->SetReturn(T::V128); Append(target); }
-    void Args(ir::Inst* target, ir::Inst* original, u32 part) {
+    void Clear(ir::Inst* target) {
+        target->SetInst(O::Zero);
+        target->SetReturn(T::V128);
+        Append(target);
+    }
+    void Args(ir::Inst* target, const ir::Inst* original, u32 part) {
         for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
             auto& arg = original->ArgAt(slot);
             switch (arg.GetType()) {
@@ -112,7 +118,7 @@ private:
                         if (param.data.IsValue()) params.Push(Part(param.data.value, part));
                         else params.Push(part ? ir::Imm{u64{0}} : param.data.imm);
                     }
-                    target->SetArg(slot, params); break;
+                    target->SetArg(slot, std::move(params)); break;
                 }
             }
         }
@@ -133,14 +139,14 @@ private:
             else return term;
         });
     }
-    bool ScalarFloat(ir::Inst* inst) {
+    bool ScalarFloat(const ir::Inst* inst) {
         const auto op = inst->GetOp();
         if (op >= O::VecFAddScalar32 && op <= O::VecFDivScalar64) return true;
         if (op == O::VecFUnary || op == O::VecFMinMax || op == O::VecFCmpMask || op == O::VecFRoundInt)
             return inst->GetArg<ir::Imm>(4).Get() != 0;
         return false;
     }
-    void Lower(ir::Inst* original) {
+    void Lower(const ir::Inst* original) {
         const auto op = original->GetOp();
         auto [low, high] = definitions.at(original);
         const auto source = [&](u32 argument, u32 part) { return Part(original->GetArg<ir::Value>(argument), part); };
@@ -273,7 +279,7 @@ private:
     }
     ir::Block* input;
     WidePlan plan;
-    std::unordered_map<ir::Inst*, std::array<ir::Inst*, 2>> definitions;
+    std::unordered_map<const ir::Inst*, std::array<ir::Inst*, 2>> definitions;
     std::unordered_map<ir::Inst*, std::unique_ptr<ir::Inst>> owned;
 };
 } // namespace

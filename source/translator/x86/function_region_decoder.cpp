@@ -34,12 +34,12 @@ LocationDescriptor FunctionRegionDecoder::NearestEntry(LocationDescriptor addres
 }
 
 void FunctionRegionDecoder::DecodeBlock(LocationDescriptor address,
-                                        ir::HIRBlock* block,
+                                        const ir::HIRBlock* block,
                                         LocationDescriptor stop,
                                         ::swift::x86::DecodeStopKind stop_kind) {
     builder.SetCurBlock(block);
-    ir::Assembler assembler{&builder};
-    assembler.EnableUniformBuilder(config.uniform_info, config.features, config.bound_backend);
+    compile::IrBuilder assembler{&builder};
+    assembler.ConfigureGuestState(config.guest_layout, config.features, config.builder_target);
     ::swift::x86::X64Decoder decoder{
             address,
             config.memory,

@@ -25,7 +25,7 @@ u64 FlagMask(ir::Flags requested, bool parity = true) {
 
 }  // namespace
 
-bool JitTranslator::EmitFlags(ir::Inst* inst) {
+bool JitTranslator::EmitFlags(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::GetFlags: case O::SaveFlags: case O::BranchOnlyFlags:

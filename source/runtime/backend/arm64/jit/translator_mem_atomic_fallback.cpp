@@ -6,18 +6,11 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
-Label* JitTranslator::GetUnalignedAtomicFallback(ir::Inst* inst) {
-    ASSERT(region_plan_owner);
-    const auto& plan = region_plan_owner->unaligned_atomics;
-    const auto key = plan.keys.find(inst);
-    if (key == plan.keys.end()) {
-        return nullptr;
-    }
-    const auto count = plan.counts.find(key->second);
-    if (count == plan.counts.end() || count->second < 2) {
-        return nullptr;
-    }
-    auto [it, inserted] = memory_state.unaligned_atomic_fallbacks.try_emplace(key->second);
+Label* JitTranslator::GetUnalignedAtomicFallback(const ir::Inst* inst) {
+    ASSERT(edge_actions);
+    const auto* cohort = context.GetActions().AtomicFor(inst);
+    if (!cohort || cohort->count < 2) return nullptr;
+    auto [it, inserted] = memory_state.unaligned_atomic_fallbacks.try_emplace(cohort->key);
     if (inserted) {
         it->second = std::make_unique<Label>();
     }

@@ -1,10 +1,12 @@
 #include "translator.h"
 
 namespace swift::runtime::backend::arm64 {
-ir::Inst* JitTranslator::PlannedCompoundProducer(ir::Inst* inst) const {
-    if (flags_audit_block_edge == FlagsRegsAuditEdgeKind::RegionInternal ||
-        backedge_flags_recipe || DeadEdgePlan() || !gpr_plan->consumers) return nullptr;
-    const auto found = gpr_plan->consumers->compound_clears.find(inst);
-    return found == gpr_plan->consumers->compound_clears.end() ? nullptr : found->second;
+std::optional<u16> JitTranslator::PlannedCompoundProducer(const ir::Inst* inst) const {
+    if (flags_audit_block_edge == FlagsRegsAuditEdgeKind::RegionInternal || backedge_flags_recipe ||
+        DeadEdgePlan())
+        return std::nullopt;
+    const auto* row = context.GetActions().Consumer(inst->Id());
+    return row && row->Has(ConsumerFlag::CompoundClear) ? std::optional<u16>{row->related}
+                                                        : std::nullopt;
 }
-}
+}  // namespace swift::runtime::backend::arm64

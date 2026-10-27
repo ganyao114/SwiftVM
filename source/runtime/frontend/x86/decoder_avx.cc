@@ -1,7 +1,7 @@
 // VEX.256 (AVX / AVX2) instruction handlers.
 //
 // Contract C1: a YMM register is NEVER a single IR value.  ARM64's V registers
-// are 128 bits and RegAlloc maps one IR value onto one host register, so every
+// are 128 bits and Allocation maps one IR value onto one host register, so every
 // 256-bit operation here expands into two independent V128 operations — one on
 // bits 127:0 (ThreadContext64::xmms[i], reached through the existing SSE
 // helpers) and one on bits 255:128 (ymm_high[i], reached through Agent A's
@@ -98,7 +98,6 @@
 #include "runtime/frontend/x86/decoder_internal.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
@@ -130,8 +129,8 @@ void X64Decoder::StoreAvx256Dst(_DInst& insn, _Operand& op, ir::Value lo, ir::Va
 }
 
 void X64Decoder::WriteAvx256(u32 index, ir::Value lo, ir::Value hi) {
-    XmmWrite(XmmOf(index), lo.SetType(ir::ValueType::V128));
-    YmmHighWrite(index, hi.SetType(ir::ValueType::V128));
+    XmmWrite(XmmOf(index), lo.SetCastType(ir::ValueType::V128));
+    YmmHighWrite(index, hi.SetCastType(ir::ValueType::V128));
 }
 
 // vmovdqu / vmovdqa / vmovups / vmovaps / vmovupd / vmovapd / vmovntdq /
@@ -236,13 +235,12 @@ void X64Decoder::DecodeAvx256Pmovmskb(_DInst& insn) {
     // Rosetta, which decodes `vpmovmskb ecx, ymm5` correctly while distorm
     // renders it as `VPMOVMSKB RCX, XMM1`.
     const u32 rm = VexRmRegister();
-    const auto src = rm != UINT32_MAX
-                             ? rm
-                             : VecIndex(static_cast<_RegisterType>(insn.ops[1].index));
-    auto lo = __ VecMovMask(XmmRead(XmmOf(src)), ir::Imm(8u)).SetType(ir::ValueType::U32);
-    auto hi = __ VecMovMask(YmmHighRead(src), ir::Imm(8u)).SetType(ir::ValueType::U32);
-    auto shifted = __ LslImm(hi, ir::Imm(u64(16))).SetType(ir::ValueType::U32);
-    Dst(insn, insn.ops[0], __ Or(lo, ir::Operand{shifted}).SetType(ir::ValueType::U32));
+    const auto src =
+            rm != UINT32_MAX ? rm : VecIndex(static_cast<_RegisterType>(insn.ops[1].index));
+    auto lo = __ VecMovMask(ir::ValueType::U32, XmmRead(XmmOf(src)), ir::Imm(8u));
+    auto hi = __ VecMovMask(ir::ValueType::U32, YmmHighRead(src), ir::Imm(8u));
+    auto shifted = __ LslImm(ir::ValueType::U32, hi, ir::Imm(u64(16)));
+    Dst(insn, insn.ops[0], __ Or(ir::ValueType::U32, lo, ir::Operand{shifted}));
 }
 
 // vpshufb ymm1, ymm2, ymm3/m256.  AVX2 shuffles WITHIN each 128-bit lane (the
@@ -276,7 +274,7 @@ void X64Decoder::DecodeAvx256BroadcastSS(_DInst& insn) {
     }
     // Build the 64-bit lane pair first: VecDup64 only replicates qwords.
     auto pair = __ Or(dword, ir::Operand{__ LslImm(dword, ir::Imm(u64(32)))});
-    auto value = __ VecDup64(pair).SetType(ir::ValueType::V128);
+    auto value = __ VecDup64(ir::ValueType::V128, pair);
     WriteAvx256(dst, value, value);
 }
 

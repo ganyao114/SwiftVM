@@ -1,4 +1,8 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include "../support/case_support.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 
 TEST_CASE("Trampoline branches reserve space at the end of a code buffer") {
     using namespace swift::runtime;
@@ -17,12 +21,17 @@ TEST_CASE("Trampoline branches reserve space at the end of a code buffer") {
         AddressSpace address_space{config};
         auto module = address_space.GetDefaultModule();
         const auto features = ResolveFeatureSet(module->GetModuleConfig());
-        RegAlloc allocation{0,
-                            address_space.GetTrampolines().GetGPRRegs(),
-                            address_space.GetTrampolines().GetFPRRegs(), features, true};
+        AllocationFixture allocation{0,
+                                     address_space.GetTrampolines().GetGPRRegs(),
+                                     address_space.GetTrampolines().GetFPRRegs(),
+                                     features};
         constexpr size_t capacity = 64;
         vixl::aarch64::MacroAssembler assembler{capacity};
-        arm64::JitContext context{module, allocation, assembler, arm64::JitContext::AssemblerOnlyTag{}};
+        arm64::JitContext context{module,
+                                  allocation,
+                                  allocation.Actions(),
+                                  assembler,
+                                  arm64::JitContext::AssemblerOnlyTag{}};
         for (size_t offset = 0; offset < capacity;
              offset += vixl::aarch64::kInstructionSize) {
             assembler.Nop();
@@ -66,29 +75,34 @@ TEST_CASE("Vector emission grows a full code buffer before writing") {
         AddressSpace address_space{config};
         auto module = address_space.GetDefaultModule();
         IntrusivePtr<Block> block{new Block(0, Location{0x2f00})};
-        auto left = block->GetHostFPR(HostRegIndex(17), Imm{0u})
-                            .SetType(ValueType::V128);
-        auto right = block->GetHostFPR(HostRegIndex(18), Imm{0u})
-                             .SetType(ValueType::V128);
-        auto result = operation == 0
-                ? block->VecMovMask(left, Imm{8u}).SetType(ValueType::U32)
-                : block->VecPclMul(left, right, Imm{operation == 1 ? 0u : 0x11u})
-                          .SetType(ValueType::V128);
+        auto left = block->GetHostFPR(ValueType::V128, HostRegIndex(17), Imm{0u});
+        auto right = block->GetHostFPR(ValueType::V128, HostRegIndex(18), Imm{0u});
+        auto result =
+                operation == 0
+                        ? block->VecMovMask(ValueType::U32, left, Imm{8u})
+                        : block->VecPclMul(
+                                  ValueType::V128, left, right, Imm{operation == 1 ? 0u : 0x11u});
         block->StoreUniform(Uniform{0, result.Type()}, result);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
         const auto features = ResolveFeatureSet(module->GetModuleConfig());
-        RegAlloc allocation{block->MaxInstrId(),
-                            address_space.GetTrampolines().GetGPRRegs(),
-                            address_space.GetTrampolines().GetFPRRegs(), features, true};
-        RegisterAllocPass::Run(block.get(), &allocation, true, features);
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     address_space.GetTrampolines().GetGPRRegs(),
+                                     address_space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                true);
         allocation.MapRegister(left.Id(), HostFPR{17});
         allocation.MapRegister(right.Id(), HostFPR{18});
 
         constexpr size_t capacity = 64;
         vixl::aarch64::MacroAssembler assembler{capacity};
-        allocation.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, allocation, assembler};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+        arm64::JitContext context{module, allocation, allocation.Actions(), assembler};
         arm64::JitTranslator translator{context};
         // Fixed input reads emit no copies, so the vector operation is the
         // first writer after this boundary. It must reserve its own space.

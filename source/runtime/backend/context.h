@@ -143,14 +143,14 @@ struct State {
     bool (*interp_range_check)(void* ctx, u64 addr, u64 size){nullptr};
     void* interp_range_check_ctx{};
     void* unaligned_atomic_lock_address{};
-    // Spill area for RegAlloc::MEM values (linear-scan register allocator):
+    // Spill area for Allocation::MEM values (linear-scan register allocator):
     // fixed u64 slots addressed from JIT code as
     // [state, state_offset_spill_area + slot * 8]; a spilled SIMD value
     // occupies two consecutive slots (16 bytes, hence alignas(16)). Kept
     // inside State, right before the flexible uniform buffer, so no extra
     // allocation or Config plumbing is needed and every uniform-buffer
     // offset keeps resolving through offsetof. The size must match
-    // backend::kMaxSpillSlots (backend/reg_alloc.h) — enforced by a
+    // compile::kMaxSpillSlots (compile/allocate/allocation.h) — enforced by a
     // static_assert in arm64/jit/jit_context.cpp; the allocator panics
     // rather than hand out a slot beyond it.
     alignas(16) std::array<u64, 64> spill_area{};

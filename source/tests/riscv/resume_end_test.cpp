@@ -7,7 +7,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/backend/restricted_instruction_resume.h"
 #include "runtime/backend/runtime.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/include/sruntime.h"
 
 using namespace swift;
@@ -25,10 +25,10 @@ void Check(bool value, const char* message) {
 
 IntrusivePtr<Block> Program(bool wide, u64 end) {
     IntrusivePtr<Block> block{new Block(Location{0x1000})};
-    Assembler as{block.get()};
+    compile::IrBuilder as{block.get()};
     const auto type = wide ? ValueType::V256 : ValueType::U64;
-    auto live = as.LoadUniform(Uniform{0, type}).SetType(type);
-    auto* first = as.LoadUniform(Uniform{64, ValueType::U64}).SetType(ValueType::U64).Def();
+    auto live = as.LoadUniform(type, Uniform{0, type});
+    auto* first = as.LoadUniform(ValueType::U64, Uniform{64, ValueType::U64}).Def();
     as.StoreUniform(Uniform{32, type}, live);
     auto branch = as.Goto(BOOL{Value{first}});
     as.BindLabel(branch);

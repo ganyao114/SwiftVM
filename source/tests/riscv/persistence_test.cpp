@@ -6,7 +6,7 @@
 #include "runtime/backend/riscv64/link.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/ir/hir_builder.h"
 #include <atomic>
 #include <filesystem>
@@ -31,16 +31,16 @@ struct Guest {
 };
 IntrusivePtr<ir::Block> Target(u64 guest, u64 value) {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{guest})};
-    ir::Assembler as{block.get()};
-    auto result = as.LoadImm(ir::Imm{value}).SetType(T::U64);
+    compile::IrBuilder as{block.get()};
+    auto result = as.LoadImm(T::U64, ir::Imm{value});
     as.StoreUniform(ir::Uniform{32, T::U64}, result);
     block->SetTerminal(ir::terminal::ReturnToHost{}); return block;
 }
 IntrusivePtr<ir::Block> Source(u64 guest, u64 target) {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{guest})};
-    ir::Assembler as{block.get()};
-    auto input = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    auto result = as.CallHost(&Helper, input, input, input).SetType(T::U64);
+    compile::IrBuilder as{block.get()};
+    auto input = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    auto result = as.CallHost(T::U64, &Helper, input, input, input);
     as.StoreUniform(ir::Uniform{16, T::U64}, result);
     block->SetTerminal(ir::terminal::LinkBlock{ir::Location{target}}); return block;
 }
@@ -73,14 +73,15 @@ struct Env {
 void ExitPublication() {
     const std::array<UniformMapDesc, 2> bindings{{{0, 8, 3, false}, {16, 16, 19, true}}};
     for (u32 terminal = 0; terminal < 4; ++terminal) {
-        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf000 + terminal})}; ir::Assembler as{block.get()};
-        auto scalar = as.LoadImm(ir::Imm{u64{73}}).SetType(T::U64);
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf000 + terminal})};
+        compile::IrBuilder as{block.get()};
+        auto scalar = as.LoadImm(T::U64, ir::Imm{u64{73}});
         as.SetHostGPR(scalar, ir::Imm{u32{3}}, ir::Imm{u32{0}});
-        auto vector = as.LoadUniform(ir::Uniform{64, T::V128}).SetType(T::V128);
+        auto vector = as.LoadUniform(T::V128, ir::Uniform{64, T::V128});
         as.SetHostFPR(vector, ir::Imm{u32{19}}, ir::Imm{u32{0}});
-        auto lane = as.VecExtract64(vector, ir::Imm{u32{0}}).SetType(T::U64);
+        auto lane = as.VecExtract64(T::U64, vector, ir::Imm{u32{0}});
         as.StoreUniform(ir::Uniform{96, T::U64}, lane);
-        auto cond = as.LoadUniform(ir::Uniform{80, T::U8}).SetType(T::U8);
+        auto cond = as.LoadUniform(T::U8, ir::Uniform{80, T::U8});
         const auto returned = ir::terminal::ReturnToHost{};
         if (!terminal) block->SetTerminal(returned);
         else if (terminal == 1) block->SetTerminal(ir::terminal::If{ir::BOOL{cond}, returned, returned});
@@ -132,9 +133,10 @@ void LiteralRelocations() {
     auto bad = scan.relocs; bad[0].code_offset += 8;
     Check(!backend::ApplyRelocations(copy.data(), copy.size(), bad, image, &error, kRiscv64),
           "a relocation cannot invent another literal slot");
-    IntrusivePtr<ir::Block> raw{new ir::Block(ir::Location{0x300})}; ir::Assembler as{raw.get()};
-    auto pointer = as.LoadImm(ir::Imm{reinterpret_cast<u64>(&Helper)}).SetType(T::U64);
-    (void)as.CallLambda(ir::Lambda{pointer}, pointer, pointer, pointer);
+    IntrusivePtr<ir::Block> raw{new ir::Block(ir::Location{0x300})};
+    compile::IrBuilder as{raw.get()};
+    auto pointer = as.LoadImm(T::U64, ir::Imm{reinterpret_cast<u64>(&Helper)});
+    (void)as.CallLambda(T::VOID, ir::Lambda{pointer}, pointer, pointer, pointer);
     raw->SetTerminal(ir::terminal::ReturnToHost{}); Compiled unsupported{raw.get()};
     Check(!backend::ScanCodeUnit({unsupported.context.GetMasm().GetCodeBuffer().GetOffsetPointer(0),
             unsupported.context.CurrentBufferSize()}, image, 65536, {}, kRiscv64).ok,
@@ -165,15 +167,19 @@ void SmcInstructionBoundary() {
     for (u8 condition : {u8{0}, u8{1}}) {
         Guest guest; auto cfg = guest.ConfigFor(Optimizations::None);
         backend::AddressSpace space{cfg}; auto module = space.GetDefaultModule(); Runtime runtime{&space};
-        IntrusivePtr<ir::Block> source{new ir::Block(ir::Location{0x1000})}; ir::Assembler as{source.get()};
-        auto address = as.LoadImm(ir::Imm{u64{0x1800}}).SetType(T::U64);
-        auto byte = as.LoadImm(ir::Imm{u8{91}}).SetType(T::U8);
+        IntrusivePtr<ir::Block> source{new ir::Block(ir::Location{0x1000})};
+        compile::IrBuilder as{source.get()};
+        auto address = as.LoadImm(T::U64, ir::Imm{u64{0x1800}});
+        auto byte = as.LoadImm(T::U8, ir::Imm{u8{91}});
         as.StoreMemory(ir::Operand{address}, byte);
-        auto cond = as.LoadImm(ir::Imm{condition}).SetType(T::U8);
-        auto skip = as.NotGoto(ir::BOOL{cond}); as.Nop(); as.BindLabel(skip);
-        auto previous = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto next = as.Add(previous, ir::Operand{ir::Imm{u64{1}}}).SetType(T::U64);
-        as.StoreUniform(ir::Uniform{0, T::U64}, next); as.AdvancePC(ir::Imm{u32{1}});
+        auto cond = as.LoadImm(T::U8, ir::Imm{condition});
+        auto skip = as.NotGoto(ir::BOOL{cond});
+        as.Nop();
+        as.BindLabel(skip);
+        auto previous = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto next = as.Add(T::U64, previous, ir::Operand{ir::Imm{u64{1}}});
+        as.StoreUniform(ir::Uniform{0, T::U64}, next);
+        as.AdvancePC(ir::Imm{u32{1}});
         source->SetTerminal(ir::terminal::LinkBlock{ir::Location{0x1001}});
         Check(module->Push(source.get()) && backend::TranslateIR(module, source), "compile intra-instruction SMC fixture");
         Put(runtime.GetState(), 0, 0); runtime.SetLocation(0x1000);
@@ -248,11 +254,14 @@ void FarLinks() {
 void ReturnStack() {
     Guest guest; auto cfg = guest.ConfigFor(Optimizations::ReturnStackBuffer);
     backend::AddressSpace space{cfg}; auto module = space.GetDefaultModule(); Runtime runtime{&space};
-    IntrusivePtr<ir::Block> caller{new ir::Block(ir::Location{0x500})}; ir::Assembler push{caller.get()};
+    IntrusivePtr<ir::Block> caller{new ir::Block(ir::Location{0x500})}; compile::IrBuilder push{caller.get()};
     push.PushRSB(ir::Lambda{ir::Imm{u64{0x600}}}); caller->SetTerminal(ir::terminal::ReturnToHost{});
-    IntrusivePtr<ir::Block> callee{new ir::Block(ir::Location{0x700})}; ir::Assembler pop{callee.get()};
-    auto address = pop.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    pop.SetLocation(ir::Lambda{address}); pop.PopRSB(ir::Lambda{address}); callee->SetTerminal(ir::terminal::PopRSBHint{});
+    IntrusivePtr<ir::Block> callee{new ir::Block(ir::Location{0x700})};
+    compile::IrBuilder pop{callee.get()};
+    auto address = pop.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    pop.SetLocation(ir::Lambda{address});
+    pop.PopRSB(ir::Lambda{address});
+    callee->SetTerminal(ir::terminal::PopRSBHint{});
     auto target = Target(0x600, 0x123456);
     Check(module->Push(caller.get()) && module->Push(callee.get()) && module->Push(target.get()), "publish RSB fixtures");
     auto call = reinterpret_cast<BlockFn>(backend::TranslateIR(module, caller));
@@ -296,15 +305,18 @@ void DiskCache() {
         Check(space.GetJitDiskCache() && space.GetJitDiskCache()->Enabled(), "RV64 disk cache activates for a biased guest");
         auto source = Source(0x100, 0x200), target = Target(0x200, 77);
         source->AddGuestCodeDependency(ir::Location{0x8000}, ir::Location{0x8001});
-        ir::Assembler push{source.get()}; push.PushRSB(ir::Lambda{ir::Imm{u64{0x200}}});
-        IntrusivePtr<ir::Block> returned{new ir::Block(ir::Location{0x700})}; ir::Assembler pop{returned.get()};
-        auto actual = pop.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        pop.SetLocation(ir::Lambda{actual}); pop.PopRSB(ir::Lambda{actual});
+        compile::IrBuilder push{source.get()}; push.PushRSB(ir::Lambda{ir::Imm{u64{0x200}}});
+        IntrusivePtr<ir::Block> returned{new ir::Block(ir::Location{0x700})};
+        compile::IrBuilder pop{returned.get()};
+        auto actual = pop.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        pop.SetLocation(ir::Lambda{actual});
+        pop.PopRSB(ir::Lambda{actual});
         returned->SetTerminal(ir::terminal::PopRSBHint{});
         Check(module->Push(returned.get()) && backend::TranslateIR(module, returned), "cache native RSB return code");
-        IntrusivePtr<ir::Block> memory{new ir::Block(ir::Location{0x300})}; ir::Assembler load{memory.get()};
-        auto address = load.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto value = load.LoadMemory(ir::Operand{address}).SetType(T::U64);
+        IntrusivePtr<ir::Block> memory{new ir::Block(ir::Location{0x300})};
+        compile::IrBuilder load{memory.get()};
+        auto address = load.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto value = load.LoadMemory(T::U64, ir::Operand{address});
         load.StoreUniform(ir::Uniform{64, T::U64}, value);
         memory->SetTerminal(ir::terminal::ReturnToHost{});
         const u64 data = 0x1357acdf2468bdefULL;

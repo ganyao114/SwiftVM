@@ -1,5 +1,8 @@
-#include "support/register_alloc_test_support.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "support/register_alloc_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -13,13 +16,13 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/backend/runtime.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "translator/x86/translator.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -30,13 +33,12 @@ IntrusivePtr<Block> MakeScalarLoad(ValueType load_type, bool zero_high,
                                    bool fault_observer = false) {
     IntrusivePtr<Block> block{new Block(0, Location{0x8810})};
     auto address = block->LoadUniform(Uniform{0, ValueType::U64});
-    auto loaded = block->LoadMemory(Operand{address}).SetType(load_type);
+    auto loaded = block->LoadMemory(load_type, Operand{address});
     auto published = load_type == ValueType::U32 ? block->ZeroExtend64(loaded) : loaded;
-    auto high = block->LoadImm(Imm{static_cast<swift::u64>(zero_high ? 0 : 1)})
-                        .SetType(ValueType::U64);
+    auto high = block->LoadImm(ValueType::U64, Imm{static_cast<swift::u64>(zero_high ? 0 : 1)});
     if (fault_observer) {
         auto observer_address = block->LoadUniform(Uniform{8, ValueType::U64});
-        (void)block->LoadMemory(Operand{observer_address}).SetType(ValueType::U64);
+        (void)block->LoadMemory(ValueType::U64, Operand{observer_address});
     }
     block->AppendInst(
             OpCode::SetHostFPR, published, HostRegIndex(kTarget), Imm{0u});
@@ -49,10 +51,9 @@ IntrusivePtr<Block> MakeScalarLoad(ValueType load_type, bool zero_high,
 
 IntrusivePtr<Block> MakeZeroScalarValue() {
     IntrusivePtr<Block> block{new Block(0, Location{0x8810})};
-    auto low = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
-    auto high = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
-    block->AppendInst(
-            OpCode::SetHostFPR, low, HostRegIndex(kTarget), Imm{0u});
+    auto low = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+    auto high = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+    block->AppendInst(OpCode::SetHostFPR, low, HostRegIndex(kTarget), Imm{0u});
     block->AppendInst(
             OpCode::SetHostFPR, high, HostRegIndex(kTarget), Imm{8u});
     block->SetTerminal(terminal::ReturnToDispatch{});
@@ -64,9 +65,8 @@ IntrusivePtr<Block> MakeSharedHighZero() {
     IntrusivePtr<Block> block{new Block(0, Location{0x8810})};
     auto low0 = block->LoadUniform(Uniform{0, ValueType::U64});
     auto low1 = block->LoadUniform(Uniform{8, ValueType::U64});
-    auto high = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
-    block->AppendInst(
-            OpCode::SetHostFPR, low0, HostRegIndex(kTarget), Imm{0u});
+    auto high = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+    block->AppendInst(OpCode::SetHostFPR, low0, HostRegIndex(kTarget), Imm{0u});
     block->AppendInst(
             OpCode::SetHostFPR, high, HostRegIndex(kTarget), Imm{8u});
     block->AppendInst(
@@ -80,17 +80,15 @@ IntrusivePtr<Block> MakeSharedHighZero() {
 
 IntrusivePtr<Block> MakeSharedHighZeroLoads() {
     IntrusivePtr<Block> block{new Block(0, Location{0x8810})};
-    auto high = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+    auto high = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
     auto address0 = block->LoadUniform(Uniform{0, ValueType::U64});
-    auto low0 = block->LoadMemory(Operand{address0}).SetType(ValueType::U64);
-    block->AppendInst(
-            OpCode::SetHostFPR, low0, HostRegIndex(kTarget), Imm{0u});
+    auto low0 = block->LoadMemory(ValueType::U64, Operand{address0});
+    block->AppendInst(OpCode::SetHostFPR, low0, HostRegIndex(kTarget), Imm{0u});
     block->AppendInst(
             OpCode::SetHostFPR, high, HostRegIndex(kTarget), Imm{8u});
     auto address1 = block->LoadUniform(Uniform{8, ValueType::U64});
-    auto low1 = block->LoadMemory(Operand{address1}).SetType(ValueType::U64);
-    block->AppendInst(
-            OpCode::SetHostFPR, low1, HostRegIndex(kTarget + 1), Imm{0u});
+    auto low1 = block->LoadMemory(ValueType::U64, Operand{address1});
+    block->AppendInst(OpCode::SetHostFPR, low1, HostRegIndex(kTarget + 1), Imm{0u});
     block->AppendInst(
             OpCode::SetHostFPR, high, HostRegIndex(kTarget + 1), Imm{8u});
     block->SetTerminal(terminal::ReturnToDispatch{});
@@ -103,7 +101,7 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
     FPRSMask fprs{0};
     fprs.Mark(kTarget);
     fprs.Mark(kTarget + 1);
-    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     RegisterAllocTestSupport::RunForXmmResidentTest(block.get(), &alloc, true);
 
     Config config{
@@ -117,9 +115,8 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
     auto module = address_space.MapModule(
             LocationDescriptor{0x8810}, LocationDescriptor{0x8830},
             ModuleConfig{});
-    alloc.SetAllocationUnit(block.get(), nullptr, {});
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -146,6 +143,111 @@ std::size_t Count(const std::vector<std::string>& lines, std::string_view text) 
 }
 
 }  // namespace
+
+TEST_CASE("scalar FPR fusion respects raw publication and extension widths") {
+    for (unsigned scenario = 0; scenario < 5; ++scenario) {
+        CAPTURE(scenario);
+        Config config{.loc_start = 0,
+                      .loc_end = 1ull << 48,
+                      .enable_jit = true,
+                      .has_local_operation = false,
+                      .backend_isa = kArm64};
+        config.uniform_buffer_size = 4096;
+        config.stack_alignment = 16;
+        AddressSpace space{config};
+        auto module = space.GetDefaultModule();
+        IntrusivePtr<Block> block{new Block(0, Location{0x8840})};
+        const auto initial = block->LoadUniform(ValueType::V128, Uniform{64, ValueType::V128});
+        block->SetHostFPR(initial, HostRegIndex(kTarget), Imm{0u});
+        const auto address = block->LoadUniform(ValueType::U64, Uniform{2048, ValueType::U64});
+        const auto zero = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+        const auto loaded = block->LoadMemory(
+                scenario == 2 || scenario == 4 ? ValueType::U32 : ValueType::U64, Operand{address});
+        auto published = loaded;
+        if (scenario == 0) published = published.SetCastType(ValueType::U32);
+        if (scenario == 2 || scenario == 4) {
+            if (scenario == 2) published = published.SetCastType(ValueType::U16);
+            // The convenience constructor can retain U32 producer metadata;
+            // its returned U64 edge still denotes a valid full-width result.
+            published = scenario == 4 ? block->ZeroExtend64(published)
+                                      : block->ZeroExtend64(ValueType::U64, published);
+        }
+        block->SetHostFPR(published, HostRegIndex(kTarget), Imm{0u});
+        const auto* low = &block->GetInstList().back();
+        auto high = zero;
+        if (scenario == 1) high = high.SetCastType(ValueType::U32);
+        block->SetHostFPR(high, HostRegIndex(kTarget), Imm{8u});
+        // A separate 64-bit write used to enable the unsafe narrowed pair.
+        const auto ordinary = block->LoadUniform(ValueType::U64, Uniform{2064, ValueType::U64});
+        block->SetHostFPR(ordinary, HostRegIndex(kTarget + 1), Imm{0u});
+        block->SetHostFPR(zero, HostRegIndex(kTarget + 1), Imm{8u});
+        const auto result = block->GetHostFPR(ValueType::V128, HostRegIndex(kTarget), Imm{0u});
+        block->StoreUniform(Uniform{2080, ValueType::V128}, result);
+        const auto other = block->GetHostFPR(ValueType::U64, HostRegIndex(kTarget + 1), Imm{0u});
+        block->StoreUniform(Uniform{2096, ValueType::U64}, other);
+        block->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     FeatureSet{}};
+        RegisterAllocTestSupport::RunForXmmResidentTest(block.get(), &allocation, true);
+        arm64::CompleteARM64Allocation(module, allocation);
+        const auto& actions = allocation.Actions();
+        REQUIRE((actions.ScalarFPRLoad(loaded.Id()) != nullptr) == (scenario >= 3));
+        REQUIRE((actions.ScalarFPRValue(low->Id()) != nullptr) == (scenario == 2));
+        arm64::JitContext context{module, allocation, actions};
+        arm64::JitTranslator translator{context};
+        translator.Translate(block.get());
+        context.Finish();
+        auto& masm = context.GetMasm();
+        auto* first = masm.GetBuffer()->GetStartAddress<const vixl::aarch64::Instruction*>();
+        auto* last = masm.GetBuffer()->GetEndAddress<const vixl::aarch64::Instruction*>();
+        vixl::aarch64::Decoder decoder;
+        vixl::aarch64::Disassembler disassembler;
+        decoder.AppendVisitor(&disassembler);
+        std::vector<std::string> lines;
+        for (auto* instruction = first; instruction < last;
+             instruction = instruction->GetNextInstruction()) {
+            decoder.Decode(instruction);
+            lines.emplace_back(disassembler.GetOutput());
+        }
+        REQUIRE(Count(lines, "ldr d17") == (scenario == 3 ? 1u : 0u));
+        REQUIRE(Count(lines, "ldr s17") == (scenario == 4 ? 1u : 0u));
+#if defined(__aarch64__)
+        const auto [id, buffer] = module->AllocCodeCache(context.CurrentBufferSize(),
+                                                         context.RequiresRegionTrampoline());
+        REQUIRE(id != INVALID_CACHE_ID);
+        context.Flush(buffer);
+        REQUIRE(module->Push(block.get()));
+        space.PushCodeCache(block->GetStartLocation(), buffer.exec_data);
+        const std::array<swift::u64, 2> previous{0xa1b2c3d4e5f60718, 0x192a3b4c5d6e7f80};
+        const swift::u64 input = 0x1122334455667788;
+        const swift::u64 ordinary_value = 0xfedcba9876543210;
+        const auto pointer = reinterpret_cast<uintptr_t>(&input);
+        Runtime runtime{&space};
+        auto uniform = runtime.GetUniformBuffer();
+        std::memcpy(uniform.data() + 64, previous.data(), sizeof(previous));
+        std::memcpy(uniform.data() + 2048, &pointer, sizeof(pointer));
+        std::memcpy(uniform.data() + 2064, &ordinary_value, sizeof(ordinary_value));
+        runtime.SetLocation(block->GetStartLocation().Value());
+        REQUIRE(runtime.Run() == HaltReason::CallHost);
+        std::array<swift::u64, 2> actual{};
+        swift::u64 actual_other{};
+        std::memcpy(actual.data(), uniform.data() + 2080, sizeof(actual));
+        std::memcpy(&actual_other, uniform.data() + 2096, sizeof(actual_other));
+        const swift::u64 expected_low =
+                scenario == 0   ? (previous[0] & 0xffffffff00000000ull) | swift::u32(input)
+                : scenario == 2 ? swift::u16(input)
+                : scenario == 4 ? swift::u32(input)
+                                : input;
+        const swift::u64 expected_high = scenario == 1 ? previous[1] & 0xffffffff00000000ull : 0;
+        REQUIRE(actual[0] == expected_low);
+        REQUIRE(actual[1] == expected_high);
+        REQUIRE(actual_other == ordinary_value);
+#endif
+    }
+}
 
 TEST_CASE("scalar memory load and zero-high publication use one D-register load") {
     const auto fused = Emit(MakeScalarLoad(ValueType::U64, true));

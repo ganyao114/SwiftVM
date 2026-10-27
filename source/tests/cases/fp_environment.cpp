@@ -1,8 +1,12 @@
-#include "../support/case_support.h"
-#include "../support/fp_environment.h"
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
+#include <cmath>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/generators/catch_generators_range.hpp>
-#include <cmath>
+#include "../support/case_support.h"
+#include "../support/fp_environment.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 
 TEST_CASE("AFP scalar unary and minmax preserve lanes under register reuse") {
 #if defined(__aarch64__)
@@ -36,29 +40,34 @@ TEST_CASE("AFP scalar unary and minmax preserve lanes under register reuse") {
     module_config.feature_overrides.Set(FeatureId::sse_afp_minmax, hardware_nan);
     auto module = address_space.MapModule(0x2d00, 0x2d01, module_config);
     IntrusivePtr<Block> block{new Block(0, Location{0x2d00})};
-    auto first = block->LoadUniform(Uniform{
-            offsetof(swift::x86::ThreadContext64, xmm0), ValueType::V128})
-                         .SetType(ValueType::V128);
-    auto second = block->LoadUniform(Uniform{
-            offsetof(swift::x86::ThreadContext64, xmm1), ValueType::V128})
-                          .SetType(ValueType::V128);
-    auto result = Value{block->AppendInst(
-            unary ? OpCode::VecFUnary : OpCode::VecFMinMax,
-            first, second, Imm{bits}, Imm{unary ? kind : operation % 2},
-            Imm{swift::u32{1}})}
-                          .SetType(ValueType::V128);
+    auto first = block->LoadUniform(
+            ValueType::V128, Uniform{offsetof(swift::x86::ThreadContext64, xmm0), ValueType::V128});
+    auto second = block->LoadUniform(
+            ValueType::V128, Uniform{offsetof(swift::x86::ThreadContext64, xmm1), ValueType::V128});
+    auto result = Value{block->AppendInst(unary ? OpCode::VecFUnary : OpCode::VecFMinMax,
+                                          ValueType::V128,
+                                          first,
+                                          second,
+                                          Imm{bits},
+                                          Imm{unary ? kind : operation % 2},
+                                          Imm{swift::u32{1}})};
     block->StoreUniform(Uniform{output, ValueType::V128}, result);
     block->SetTerminal(terminal::LinkBlock{Location{0x2e00}});
     block->ReIdInstr();
     const auto features = ResolveFeatureSet(module->GetModuleConfig());
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features, true};
-    RegisterAllocPass::Run(block.get(), &alloc, true, features);
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            true);
     REQUIRE(alloc.ValueFPR(first).id != alloc.ValueFPR(second).id);
     alloc.MapRegister(result.Id(), alloc.ValueFPR(reuse_second ? second : first));
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     auto [id, buffer] = module->AllocCodeCache(
@@ -150,32 +159,39 @@ TEST_CASE("AFP scalar arithmetic may reuse the right input register") {
             AddressSpace address_space{config};
             auto module = address_space.GetDefaultModule();
             IntrusivePtr<Block> block{new Block(0, Location{0x2b00})};
-            auto left = block->LoadUniform(Uniform{
-                    offsetof(swift::x86::ThreadContext64, xmm0), ValueType::V128})
-                                .SetType(ValueType::V128);
-            auto right = block->LoadUniform(Uniform{
-                    offsetof(swift::x86::ThreadContext64, xmm1), ValueType::V128})
-                                 .SetType(ValueType::V128);
-            constexpr std::array ops32{OpCode::VecFAddScalar32, OpCode::VecFSubScalar32,
-                                       OpCode::VecFMulScalar32, OpCode::VecFDivScalar32};
+            auto left = block->LoadUniform(
+                    ValueType::V128,
+                    Uniform{offsetof(swift::x86::ThreadContext64, xmm0), ValueType::V128});
+            auto right = block->LoadUniform(
+                    ValueType::V128,
+                    Uniform{offsetof(swift::x86::ThreadContext64, xmm1), ValueType::V128});
+            constexpr std::array ops32{OpCode::VecFAddScalar32,
+                                       OpCode::VecFSubScalar32,
+                                       OpCode::VecFMulScalar32,
+                                       OpCode::VecFDivScalar32};
             constexpr std::array ops64{OpCode::VecFAddScalar64, OpCode::VecFSubScalar64,
                                        OpCode::VecFMulScalar64, OpCode::VecFDivScalar64};
             auto result = Value{block->AppendInst(
-                    (single ? ops32 : ops64)[operation], left, right)}
-                                  .SetType(ValueType::V128);
+                    (single ? ops32 : ops64)[operation], ValueType::V128, left, right)};
             block->StoreUniform(Uniform{output, ValueType::V128}, result);
             block->StoreUniform(Uniform{output + 16, ValueType::V128}, left);
             block->SetTerminal(terminal::LinkBlock{Location{0x2c00}});
             block->ReIdInstr();
             const auto features = ResolveFeatureSet(module->GetModuleConfig());
-            RegAlloc alloc{block->MaxInstrId(),
-                           address_space.GetTrampolines().GetGPRRegs(),
-                           address_space.GetTrampolines().GetFPRRegs(), features, true};
-            RegisterAllocPass::Run(block.get(), &alloc, true, features);
+            AllocationFixture alloc{block->MaxInstrId(),
+                                    address_space.GetTrampolines().GetGPRRegs(),
+                                    address_space.GetTrampolines().GetFPRRegs(),
+                                    features};
+            ::swift::runtime::compile::AllocateBlock(
+                    block.get(),
+                    &alloc,
+                    ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                            block.get(), alloc, features),
+                    true);
             REQUIRE(alloc.ValueFPR(left).id != alloc.ValueFPR(right).id);
             alloc.MapRegister(result.Id(), alloc.ValueFPR(right));
-            alloc.CompleteGPRAllocation(module);
-            arm64::JitContext context{module, alloc};
+            ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+            arm64::JitContext context{module, alloc, alloc.Actions()};
             arm64::JitTranslator translator{context};
             translator.Translate(block.get());
             auto [id, buffer] = module->AllocCodeCache(
@@ -248,16 +264,13 @@ TEST_CASE("AFP guest FPCR is rebuilt from MXCSR across host-call boundaries") {
             Uniform{offsetof(swift::x86::ThreadContext64, xmm0), ValueType::V128});
     auto rhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
             Uniform{offsetof(swift::x86::ThreadContext64, xmm1), ValueType::V128});
-    raw_block->StoreUniform(
-            Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
-            raw_block->LoadImm(Imm{swift::u32{kMxcsrRoundUp}}).SetType(ValueType::U32));
+    raw_block->StoreUniform(Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
+                            raw_block->LoadImm(ValueType::U32, Imm{swift::u32{kMxcsrRoundUp}}));
     auto before = raw_block->VecFAddScalar32<TypedValue<ValueType::V128>>(lhs, rhs);
     raw_block->StoreUniform(Uniform{kResultBeforeOffset, ValueType::V128}, before);
-    auto host_fpcr = raw_block
-                             ->CallLambda(Lambda{Imm{swift::u64{
-                                     reinterpret_cast<swift::VAddr>(
-                                             FptrCast(&ReadFPCRFromHostHelper))}}})
-                             .SetType(ValueType::U64);
+    auto host_fpcr = raw_block->CallLambda(ValueType::U64,
+                                           Lambda{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
+                                                   FptrCast(&ReadFPCRFromHostHelper))}}});
     raw_block->StoreUniform(Uniform{kHostFPCRSeenOffset, ValueType::U64}, host_fpcr);
     auto after = raw_block->VecFAddScalar32<TypedValue<ValueType::V128>>(lhs, rhs);
     raw_block->StoreUniform(Uniform{kResultAfterOffset, ValueType::V128}, after);
@@ -265,19 +278,14 @@ TEST_CASE("AFP guest FPCR is rebuilt from MXCSR across host-call boundaries") {
     // Direct helpers are opaque: cold handlers and restore helpers may update
     // context.mxcsr.  Mutate it behind the JIT's back and prove that the
     // post-call cache comparison takes the miss path and rebuilds guest FPCR.
-    auto context_address =
-            raw_block->GetUniformAddress(Imm{swift::u64{0}}).SetType(ValueType::U64);
-    auto nearest_mxcsr = raw_block->LoadImm(Imm{swift::u64{0x1f80}})
-                                 .SetType(ValueType::U64);
-    (void)raw_block
-            ->CallLambda(
-                    Lambda{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
-                            FptrCast(&WriteMXCSRFromHostHelper))}}},
-                    context_address,
-                    nearest_mxcsr)
-            .SetType(ValueType::U64);
-    auto after_helper_mutation =
-            raw_block->VecFAddScalar32<TypedValue<ValueType::V128>>(lhs, rhs);
+    auto context_address = raw_block->GetUniformAddress(ValueType::U64, Imm{swift::u64{0}});
+    auto nearest_mxcsr = raw_block->LoadImm(ValueType::U64, Imm{swift::u64{0x1f80}});
+    (void)raw_block->CallLambda(ValueType::U64,
+                                Lambda{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
+                                        FptrCast(&WriteMXCSRFromHostHelper))}}},
+                                context_address,
+                                nearest_mxcsr);
+    auto after_helper_mutation = raw_block->VecFAddScalar32<TypedValue<ValueType::V128>>(lhs, rhs);
     raw_block->StoreUniform(
             Uniform{kHelperMutationResultOffset, ValueType::V128},
             after_helper_mutation);
@@ -286,22 +294,18 @@ TEST_CASE("AFP guest FPCR is rebuilt from MXCSR across host-call boundaries") {
             Uniform{offsetof(swift::x86::ThreadContext64, xmm2), ValueType::V128});
     auto daz_rhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
             Uniform{offsetof(swift::x86::ThreadContext64, xmm3), ValueType::V128});
-    raw_block->StoreUniform(
-            Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
-            raw_block->LoadImm(Imm{swift::u32{0x1fc0}}).SetType(ValueType::U32));
-    auto daz_result =
-            raw_block->VecFMulScalar32<TypedValue<ValueType::V128>>(daz_lhs, daz_rhs);
+    raw_block->StoreUniform(Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
+                            raw_block->LoadImm(ValueType::U32, Imm{swift::u32{0x1fc0}}));
+    auto daz_result = raw_block->VecFMulScalar32<TypedValue<ValueType::V128>>(daz_lhs, daz_rhs);
     raw_block->StoreUniform(Uniform{kDazResultOffset, ValueType::V128}, daz_result);
 
     auto ftz_lhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
             Uniform{offsetof(swift::x86::ThreadContext64, xmm4), ValueType::V128});
     auto ftz_rhs = raw_block->LoadUniform<TypedValue<ValueType::V128>>(
             Uniform{offsetof(swift::x86::ThreadContext64, xmm5), ValueType::V128});
-    raw_block->StoreUniform(
-            Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
-            raw_block->LoadImm(Imm{swift::u32{0x9f80}}).SetType(ValueType::U32));
-    auto ftz_result =
-            raw_block->VecFMulScalar32<TypedValue<ValueType::V128>>(ftz_lhs, ftz_rhs);
+    raw_block->StoreUniform(Uniform{offsetof(swift::x86::ThreadContext64, mxcsr), ValueType::U32},
+                            raw_block->LoadImm(ValueType::U32, Imm{swift::u32{0x9f80}}));
+    auto ftz_result = raw_block->VecFMulScalar32<TypedValue<ValueType::V128>>(ftz_lhs, ftz_rhs);
     raw_block->StoreUniform(Uniform{kFtzResultOffset, ValueType::V128}, ftz_result);
     raw_block->SetTerminal(terminal::LinkBlock{Location{kGuestPC + 0x100}});
     raw_block->ReIdInstr();
@@ -563,7 +567,7 @@ TEST_CASE("AFP mode terminates units after architectural MXCSR restores") {
 
         const auto address = reinterpret_cast<VAddr>(bytes.data());
         Block block{0, Location{address}};
-        Assembler assembler{&block};
+        swift::runtime::compile::IrBuilder assembler{&block};
         X64Decoder decoder{address, &memory, &assembler, true,
                            Arm64Features::AFP, true, false, FeatureSet{}};
         decoder.Decode();
@@ -619,13 +623,19 @@ TEST_CASE("AFP mode brackets direct MemoryCopy host calls with native FPCR") {
     block->SetTerminal(terminal::LinkBlock{Location{0x2c00}});
     block->ReIdInstr();
 
-    RegAlloc reg_alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(),
-                       FeatureSet{}};
-    RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
-    reg_alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
+    AllocationFixture reg_alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &reg_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), reg_alloc, FeatureSet{}),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              reg_alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc, reg_alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -677,14 +687,13 @@ TEST_CASE("AFP transparent helper calls retain guest FPCR without changing FPSR"
     };
     AddressSpace address_space{config};
     IntrusivePtr<Block> block{new Block(0, Location{kGuestPC})};
-    const auto result =
-            block->CallLambda(
-                         Lambda{DataClass{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
-                                        FptrCast(&ObserveFPEnvironmentFromTransparentHelper))}}},
-                                HelperCallTraits{
-                                        .host_fp = HostFpEffect::FPCRTransparent,
-                                }})
-                    .SetType(ValueType::U64);
+    const auto result = block->CallLambda(
+            ValueType::U64,
+            Lambda{DataClass{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
+                           FptrCast(&ObserveFPEnvironmentFromTransparentHelper))}}},
+                   HelperCallTraits{
+                           .host_fp = HostFpEffect::FPCRTransparent,
+                   }});
     block->StoreUniform(Uniform{kResultOffset, ValueType::U64}, result);
     block->SetTerminal(terminal::LinkBlock{Location{kGuestPC + 0x100}});
     block->ReIdInstr();
@@ -739,20 +748,26 @@ TEST_CASE("AFP transparent helper call shape omits only its FPCR switch pair") {
         };
         AddressSpace address_space{config};
         IntrusivePtr<Block> block{new Block(0, Location{0x2cc0})};
-        (void)block->CallLambda(
+        (void)block->CallLambda(ValueType::VOID,
                 Lambda{DataClass{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
                                FptrCast(&ObserveFPEnvironmentFromTransparentHelper))}}},
                        HelperCallTraits{.host_fp = effect}});
         block->SetTerminal(terminal::LinkBlock{Location{0x2dc0}});
         block->ReIdInstr();
 
-        RegAlloc reg_alloc{block->MaxInstrId(),
-                           address_space.GetTrampolines().GetGPRRegs(),
-                           address_space.GetTrampolines().GetFPRRegs(),
-                           FeatureSet{}};
-        RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
-        reg_alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-        arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc};
+        AllocationFixture reg_alloc{block->MaxInstrId(),
+                                    address_space.GetTrampolines().GetGPRRegs(),
+                                    address_space.GetTrampolines().GetFPRRegs(),
+                                    FeatureSet{}};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &reg_alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), reg_alloc, FeatureSet{}),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                                  reg_alloc);
+        arm64::JitContext context{address_space.GetDefaultModule(), reg_alloc, reg_alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -835,7 +850,7 @@ TEST_CASE("x87 FPCR-transparent dispatcher target is effective-AFP gated") {
         std::array<swift::u8, 16> bytes{0xd9, 0xe8, 0xf4};
         const auto address = reinterpret_cast<VAddr>(bytes.data());
         Block block{0, Location{address}};
-        Assembler assembler{&block};
+        swift::runtime::compile::IrBuilder assembler{&block};
         X64Decoder decoder{address, &memory, &assembler, true,
                            effective_afp ? Arm64Features::AFP
                                          : Arm64Features::None,

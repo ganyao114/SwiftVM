@@ -31,6 +31,7 @@ struct RegionLinkTrampolineCode {
     u32 canonical_offset{};
     u32 pending_flags_offset{};
     u32 return_offset{};
+    u32 pair_call_offset{};
     std::array<u32, 16> flags_mask_offsets{};
     std::array<u32, 16> flags_mask_token_offsets{};
 };

@@ -9,6 +9,7 @@
 #include "runtime/backend/context.h"
 #include "runtime/common/div128.h"
 #include "runtime/common/svm_config.h"
+#include "runtime/compile/analysis/effects.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -19,6 +20,7 @@ namespace {
 struct AuxiliaryCarryInputs {
     Register left;
     Operand right;
+    bool owns_left{};
 };
 
 AuxiliaryCarryInputs CaptureAuxiliaryCarryInputs(
@@ -43,36 +45,27 @@ AuxiliaryCarryInputs CaptureAuxiliaryCarryInputs(
         const auto amount = right.IsShiftedRegister() ? right.GetShiftAmount() : 0;
         __ Eor(captured, left.X(), Operand{right.GetRegister().X(), shift, amount});
     }
-    return {captured, Operand{0}};
+    return {captured, Operand{0}, true};
 }
 
 }  // namespace
 
-void JitTranslator::EmitAdd(ir::Inst* inst) {
+void JitTranslator::EmitAdd(const ir::Inst* inst) {
     if (const auto* fusion = NarrowCarryFor(inst)) {
         const auto result = context.R(ir::Value{inst});
-        const auto value = context.R(fusion->value, true);
+        const auto value = context.R(fusion->Source(*inst), true);
         // The carry-test/add pair is normally fed directly by a pending host
         // NZCV producer.  A preceding boundary flush can legally have already
         // committed that producer, though; the static fusion proof still
         // identifies the same carry source, but PSTATE is no longer the
         // authoritative copy.  Restore it from the canonical flags word before
         // consuming ADC rather than asserting on a bookkeeping detail.
-        if (True(flag_state.flags_clear & ir::Flags::Carry)) {
-            // A preceding logical op can defer its CF clear until the next
-            // boundary.  ADC must observe that architectural clear instead of
-            // consuming the producer's stale host carry.
-            FlushFlags();
-            LoadNZCVFromFlags();
-        } else if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
-            LoadNZCVFromFlags();
-        }
+        PrepareCarryInput();
         __ Adc(result.W(), value.W(), Operand{wzr});
         return;
     }
-    if (auto update = gpr_plan->load_update_instructions.find(inst);
-        update != gpr_plan->load_update_instructions.end() &&
-        inst == update->second.update) {
+    if (const auto* update = context.GetActions().MemoryTransfer(inst->Id());
+        update && update->kind == MemoryTransferAction::LoadUpdate) {
         return;
     }
     auto left = inst->GetArg<ir::Value>(0);
@@ -184,7 +177,7 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
         }
         if (!pseudo_flags.branch_only &&
             True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result);
+            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result, af_inputs.owns_left);
         }
         FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     } else {
@@ -192,23 +185,24 @@ void JitTranslator::EmitAdd(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitSub(ir::Inst* inst) {
-    if (MatchPreIndexMemoryUpdate(inst) || MatchBiasedMemoryUpdate(inst)) {
+void JitTranslator::EmitSub(const ir::Inst* inst) {
+    if (PreparedMemoryUpdate(inst, MemoryTransferAction::PreIndex) ||
+        PreparedMemoryUpdate(inst, MemoryTransferAction::Biased)) {
         return;
     }
     if (const auto* candidate = NarrowCompareFor(inst)) {
         auto pseudo_flags = GetPseudoFlags(inst);
         pseudo_flags.set = ir::Flags::Carry;
         const auto result = FlagsResultRegister(inst, pseudo_flags);
-        const auto pinned = context.PlannedGPR<WRegister>(candidate->left, inst);
-        const auto left = pinned ? *pinned : context.W(candidate->left);
+        const auto pinned = context.PlannedGPR<WRegister>(candidate->Source(*inst), inst);
+        const auto left = pinned ? *pinned : context.W(candidate->Source(*inst));
         if (!pseudo_flags.branch_only) {
             BeginFlagsTokenProducer(pseudo_flags);
         }
-        if (candidate->right) {
-            __ Cmp(left, context.W(*candidate->right));
+        if (candidate->Right(*inst)) {
+            __ Cmp(left, context.W(*candidate->Right(*inst)));
         } else {
-            __ Cmp(left, candidate->immediate);
+            __ Cmp(left, candidate->argument);
         }
         const auto guest_nzcv = pseudo_flags.set & ir::Flags::NZCV;
         if (!pseudo_flags.branch_only) {
@@ -221,8 +215,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
         return context.PlannedGPR<WRegister>(value, inst);
     };
-    if (DeadNarrowPlan() &&
-        DeadNarrowPlan()->producer == inst) {
+    if (DeadNarrowPlan() && DeadNarrowPlan()->producer == inst->Id()) {
         const auto left = inst->GetArg<ir::Value>(0);
         const auto left_input = ResolveNarrowFlagsInput(left, inst);
         const auto result = context.W(ir::Value{inst});
@@ -383,7 +376,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
         }
         if (!pseudo_flags.branch_only &&
             True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result);
+            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result, af_inputs.owns_left);
         }
         FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     } else {
@@ -391,7 +384,7 @@ void JitTranslator::EmitSub(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitNeg(ir::Inst* inst) {
+void JitTranslator::EmitNeg(const ir::Inst* inst) {
     ASSERT(context.GetFeatures().int_imm_fold);
     const auto source = inst->GetArg<ir::Value>(0);
     const auto source_input = ResolveNarrowFlagsInput(source, inst);
@@ -456,7 +449,7 @@ void JitTranslator::EmitNeg(ir::Inst* inst) {
     FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
 }
 
-void JitTranslator::EmitAdc(ir::Inst* inst) {
+void JitTranslator::EmitAdc(const ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto right_operand = EmitOperand(right);
@@ -464,15 +457,7 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
     auto result = FlagsResultRegister(inst, pseudo_flags);
     auto left_register = context.R(left, true);
 
-    // Bring the guest carry flag into host C.
-    if (True(flag_state.flags_clear & ir::Flags::Carry)) {
-        // Logical instructions clear CF lazily in the canonical flags word;
-        // materialize that clear before ADC consumes host carry.
-        FlushFlags();
-        LoadNZCVFromFlags();
-    } else if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
-        LoadNZCVFromFlags();
-    }
+    PrepareCarryInput();
 
     if (!pseudo_flags.Null()) {
         auto af_inputs = CaptureAuxiliaryCarryInputs(
@@ -499,7 +484,7 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
         }
         if (!pseudo_flags.branch_only &&
             True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result);
+            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result, af_inputs.owns_left);
         }
         FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     } else {
@@ -507,7 +492,7 @@ void JitTranslator::EmitAdc(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitSbb(ir::Inst* inst) {
+void JitTranslator::EmitSbb(const ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto right_operand = EmitOperand(right);
@@ -515,15 +500,8 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
     auto result = FlagsResultRegister(inst, pseudo_flags);
     auto left_register = context.R(left, true);
 
-    // The carry is stored with host (ARM) semantics, so SBC matches the guest borrow.
-    if (True(flag_state.flags_clear & ir::Flags::Carry)) {
-        // Logical instructions clear CF lazily in the canonical flags word;
-        // materialize that clear before SBB consumes host carry.
-        FlushFlags();
-        LoadNZCVFromFlags();
-    } else if (!(flag_state.save_in_nzcv && flag_state.nzcv_dirty)) {
-        LoadNZCVFromFlags();
-    }
+    // Carry uses host (ARM) semantics, so SBC matches the guest borrow.
+    PrepareCarryInput();
 
     if (!pseudo_flags.Null()) {
         auto af_inputs = CaptureAuxiliaryCarryInputs(
@@ -549,7 +527,7 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
         }
         if (!pseudo_flags.branch_only &&
             True(pseudo_flags.set & ir::Flags::AuxiliaryCarry)) {
-            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result);
+            SaveAuxiliaryCarry(af_inputs.left, af_inputs.right, result, af_inputs.owns_left);
         }
         FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
     } else {
@@ -557,26 +535,22 @@ void JitTranslator::EmitSbb(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitAnd(ir::Inst* inst) {
-    if (auto masked = NarrowBits().shift_masks.find(inst);
-        masked != NarrowBits().shift_masks.end()) {
-__ Ubfx(context.R(ir::Value{inst}), context.R(masked->second.source),
-                masked->second.offset, 1);
+void JitTranslator::EmitAnd(const ir::Inst* inst) {
+    if (const auto* masked = context.GetActions().Narrow(inst->Id());
+        masked && masked->kind == NarrowAction::ShiftMask) {
+        __ Ubfx(context.R(ir::Value{inst}), context.R(masked->Source(*inst)), masked->parameter, 1);
         return;
     }
-    if (DeadEdgePlan() &&
-        DeadEdgePlan()->producer == inst &&
-        DeadEdgePlan()->zero_target) {
+    if (DeadEdgePlan() && DeadEdgePlan()->producer == inst->Id() && DeadEdgePlan()->ZeroTarget()) {
         return;
     }
-    if (local_conditions.contains(inst)) {
+    if (local_conditions.contains(inst->Id())) {
         return;
     }
     auto left = inst->GetArg<ir::Value>(0);
-    if (auto masked = NarrowBits().masks.find(inst);
-        masked != NarrowBits().masks.end()) {
-        left = masked->second.source;
-    }
+    if (const auto* masked = context.GetActions().Narrow(inst->Id());
+        masked && masked->kind == NarrowAction::Mask)
+        left = masked->Source(*inst);
     auto right = inst->GetArg<ir::Operand>(1);
     auto pinned_w = [&](ir::Value value) -> std::optional<WRegister> {
         return context.PlannedGPR<WRegister>(value, inst);
@@ -623,11 +597,11 @@ __ Ubfx(context.R(ir::Value{inst}), context.R(masked->second.source),
     }
 }
 
-void JitTranslator::EmitAddPhi(ir::Inst* inst) {
+void JitTranslator::EmitAddPhi(const ir::Inst* inst) {
     PANIC("ARM64 Phi must be lowered on predecessor edges before emission");
 }
 
-void JitTranslator::EmitAndNot(ir::Inst* inst) {
+void JitTranslator::EmitAndNot(const ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto right_operand = EmitOperand(right);
@@ -658,8 +632,8 @@ void JitTranslator::EmitAndNot(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitOr(ir::Inst* inst) {
-    if (local_conditions.contains(inst)) {
+void JitTranslator::EmitOr(const ir::Inst* inst) {
+    if (local_conditions.contains(inst->Id())) {
         return;
     }
     auto left = inst->GetArg<ir::Value>(0);
@@ -713,10 +687,10 @@ void JitTranslator::EmitOr(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitXor(ir::Inst* inst) {
+void JitTranslator::EmitXor(const ir::Inst* inst) {
     auto pseudo_flags = GetPseudoFlags(inst);
     auto result = context.R(ir::Value{inst});
-    if (ScalarPreparation().copies.IsSelfXor(inst)) {
+    if (context.GetActions().HasScalar(inst->Id(), ScalarFlag::SelfXor)) {
         if (!pseudo_flags.Null()) {
             if (!pseudo_flags.branch_only) {
                 BeginFlagsTokenProducer(pseudo_flags);
@@ -762,72 +736,15 @@ void JitTranslator::EmitXor(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitNot(ir::Inst* inst) {
-    auto value = inst->GetArg<ir::Value>(0);
-    auto result = context.R(ir::Value{inst});
-    if (inst->ArgAt(1).IsVoid()) {
-        // Unary form: logical not (used for zero checks), result is 0/1.
-        MergeNZCV();
-        __ Cmp(context.R(value), 0);
-        __ Cset(result.W(), eq);
-    } else {
-        auto right = inst->GetArg<ir::Operand>(1);
-        __ Mvn(result, EmitOperand(right));
-    }
-}
-
-void JitTranslator::EmitAsrImm(ir::Inst* inst) {
-    if (NarrowBits().masked_shifts.contains(inst)) {
-        return;
-    }
-    auto value = inst->GetArg<ir::Value>(0);
-    auto asr = inst->GetArg<ir::Imm>(1).Get();
-    auto result = context.R(ir::Value{inst});
-    __ Asr(result, context.R(value), asr);
-}
-
-void JitTranslator::EmitLslImm(ir::Inst* inst) {
-    auto value = inst->GetArg<ir::Value>(0);
-    auto lsl = inst->GetArg<ir::Imm>(1).Get();
-    auto result = context.R(ir::Value{inst});
-    __ Lsl(result, context.R(value), lsl);
-}
-
-void JitTranslator::EmitLsrImm(ir::Inst* inst) {
-    if (NarrowBits().masked_shifts.contains(inst)) {
-        return;
-    }
-    if (auto fused = NarrowBits().extract_shifts.find(inst);
-        fused != NarrowBits().extract_shifts.end()) {
-        const auto candidate = NarrowBits().extensions.find(fused->second);
-        ASSERT(candidate != NarrowBits().extensions.end() && candidate->second.shift == inst);
-        const u32 lsr = inst->GetArg<ir::Imm>(1).Get();
-        __ Ubfx(context.W(ir::Value{inst}), context.W(candidate->second.source), lsr,
-                candidate->second.width * 8 - lsr);
-        return;
-    }
-    auto value = inst->GetArg<ir::Value>(0);
-    auto lsr = inst->GetArg<ir::Imm>(1).Get();
-    auto result = context.R(ir::Value{inst});
-    __ Lsr(result, context.R(value), lsr);
-}
-
-void JitTranslator::EmitRorImm(ir::Inst* inst) {
-    auto value = inst->GetArg<ir::Value>(0);
-    auto ror = inst->GetArg<ir::Imm>(1).Get();
-    auto result = context.R(ir::Value{inst});
-    __ Ror(result, context.R(value), ror);
-}
-
-void JitTranslator::EmitByteSwap(ir::Inst* inst) {
+void JitTranslator::EmitByteSwap(const ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
     auto result = context.R(ir::Value{inst});
     const u32 width = inst->GetArg<ir::Imm>(1).Get();
     switch (width) {
         case 16:
-            ASSERT_MSG(inst->ReturnType() == ir::ValueType::U16,
-                       "16-bit byte swap lost its narrow-result proof");
             __ Rev16(result.W(), context.W(value));
+            if (ir::GetValueSizeByte(inst->ReturnType()) > 2)
+                __ Uxth(result.W(), result.W());
             break;
         case 32:
             __ Rev(result.W(), context.W(value));
@@ -840,13 +757,13 @@ void JitTranslator::EmitByteSwap(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitCountLeadingZeros64(ir::Inst* inst) {
+void JitTranslator::EmitCountLeadingZeros64(const ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
-    ASSERT(value.Type() == ir::ValueType::U64);
+    ASSERT(ir::IsScalarIntegerType(value.Type(), 64));
     __ Clz(context.X(ir::Value{inst}), context.X(value));
 }
 
-void JitTranslator::EmitPopCount(ir::Inst* inst) {
+void JitTranslator::EmitPopCount(const ir::Inst* inst) {
     const auto input = context.X(inst->GetArg<ir::Value>(0));
     const auto result = context.W(ir::Value{inst});
     const auto bytes = context.GetTmpV();
@@ -856,12 +773,12 @@ void JitTranslator::EmitPopCount(ir::Inst* inst) {
     __ Umov(result, bytes.V16B(), 0);
 }
 
-void JitTranslator::EmitCrc32c(ir::Inst* inst) {
+void JitTranslator::EmitCrc32c(const ir::Inst* inst) {
     const auto acc = context.W(inst->GetArg<ir::Value>(0));
     const auto data = context.X(inst->GetArg<ir::Value>(1));
     const auto result = context.W(ir::Value{inst});
     const u32 width = inst->GetArg<ir::Imm>(2).Get();
-    ASSERT(width == 8 || width == 16 || width == 32 || width == 64);
+    ASSERT(ir::IsScalarBitWidth(width));
     if (True(context.GetConfig().arm64_features & Arm64Features::CRC32)) {
         vixl::CPUFeaturesScope scope{&masm, vixl::CPUFeatures::kCRC32};
         switch (width) {
@@ -895,33 +812,33 @@ void JitTranslator::EmitCrc32c(ir::Inst* inst) {
     __ Mov(result, state.W());
 }
 
-void JitTranslator::EmitCountTrailingZeros64(ir::Inst* inst) {
+void JitTranslator::EmitCountTrailingZeros64(const ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
-    ASSERT(value.Type() == ir::ValueType::U64);
+    ASSERT(ir::IsScalarIntegerType(value.Type(), 64));
     auto result = context.X(ir::Value{inst});
     __ Rbit(result, context.X(value));
     __ Clz(result, result);
 }
 
-void JitTranslator::EmitCountLeadingZeros32(ir::Inst* inst) {
+void JitTranslator::EmitCountLeadingZeros32(const ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
-    ASSERT(value.Type() == ir::ValueType::U32);
+    ASSERT(ir::IsScalarIntegerType(value.Type(), 32));
     __ Clz(context.W(ir::Value{inst}), context.W(value));
 }
 
-void JitTranslator::EmitCountTrailingZeros32(ir::Inst* inst) {
+void JitTranslator::EmitCountTrailingZeros32(const ir::Inst* inst) {
     auto value = inst->GetArg<ir::Value>(0);
-    ASSERT(value.Type() == ir::ValueType::U32);
+    ASSERT(ir::IsScalarIntegerType(value.Type(), 32));
     auto result = context.W(ir::Value{inst});
     __ Rbit(result, context.W(value));
     __ Clz(result, result);
 }
 
-void JitTranslator::EmitBitCast(ir::Inst* inst) {
+void JitTranslator::EmitBitCast(const ir::Inst* inst) {
     // Ignore
 }
 
-void JitTranslator::EmitLoadImm(ir::Inst* inst) {
+void JitTranslator::EmitLoadImm(const ir::Inst* inst) {
     auto value = inst->GetArg<ir::Imm>(0);
     if (CanUseZeroStoreRegister(ir::Value{inst})) {
         return;
@@ -935,9 +852,7 @@ void JitTranslator::EmitLoadImm(ir::Inst* inst) {
     __ Mov(result, value.Get());
 }
 
-
-
-void JitTranslator::EmitDiv(ir::Inst* inst) {
+void JitTranslator::EmitDiv(const ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto type = left.Type();
@@ -987,19 +902,19 @@ void JitTranslator::EmitDiv(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitSignedDiv64(ir::Inst* inst) {
+void JitTranslator::EmitSignedDiv64(const ir::Inst* inst) {
     auto dividend = context.R(inst->GetArg<ir::Value>(0), true);
     auto divisor = context.R(inst->GetArg<ir::Value>(1), true);
     ASSERT(dividend.Is64Bits() && divisor.Is64Bits());
     __ Sdiv(context.X(ir::Value{inst}), dividend.X(), divisor.X());
 }
 
-void JitTranslator::EmitDiv128(ir::Inst* inst) {
+void JitTranslator::EmitDiv128(const ir::Inst* inst) {
     const bool sign = inst->GetArg<ir::Imm>(3).Get() != 0;
     const auto high = inst->GetArg<ir::Value>(0);
     const auto low = inst->GetArg<ir::Value>(1);
     const auto divisor = inst->GetArg<ir::Value>(2);
-    auto* secondary = PairSecondaryResult(inst, ir::OpCode::Div128Remainder);
+    const auto secondary = PairSecondaryResult(inst, ir::OpCode::Div128Remainder);
     if (context.Div128CanLowerNatively()) {
         const auto low_register = context.X(low);
         const auto divisor_register = context.X(divisor);
@@ -1013,8 +928,7 @@ void JitTranslator::EmitDiv128(ir::Inst* inst) {
             return;
         }
 
-        const XRegister remainder{context.RForWrite(
-                ir::Value{secondary}).GetCode()};
+        const XRegister remainder{context.RForWrite(*secondary, ir::ValueType::U64).GetCode()};
         context.ReserveTmpX(remainder);
         const auto quotient_tmp = context.GetTmpX();
         if (sign) {
@@ -1045,9 +959,9 @@ void JitTranslator::EmitDiv128(ir::Inst* inst) {
                             ir::HostRegisterEffect::GeneralOnly);
 }
 
-void JitTranslator::EmitDiv128Remainder(ir::Inst*) {}
+void JitTranslator::EmitDiv128Remainder(const ir::Inst*) {}
 
-void JitTranslator::EmitCpuid(ir::Inst* inst) {
+void JitTranslator::EmitCpuid(const ir::Inst* inst) {
     const std::array<ir::DataClass, 3> args{
             inst->GetArg<ir::Value>(0),
             inst->GetArg<ir::Value>(1),
@@ -1060,9 +974,9 @@ void JitTranslator::EmitCpuid(ir::Inst* inst) {
                             ir::HostRegisterEffect::GeneralOnly);
 }
 
-void JitTranslator::EmitCpuidUpper(ir::Inst*) {}
+void JitTranslator::EmitCpuidUpper(const ir::Inst*) {}
 
-void JitTranslator::EmitMul(ir::Inst* inst) {
+void JitTranslator::EmitMul(const ir::Inst* inst) {
     auto left = inst->GetArg<ir::Value>(0);
     auto right = inst->GetArg<ir::Operand>(1);
     auto type = left.Type();
@@ -1130,7 +1044,7 @@ void JitTranslator::EmitMul(ir::Inst* inst) {
     FinishFlagsTokenProducer(result, inst->ReturnType(), pseudo_flags, inst);
 }
 
-void JitTranslator::EmitMulSub(ir::Inst* inst) {
+void JitTranslator::EmitMulSub(const ir::Inst* inst) {
     const auto left = inst->GetArg<ir::Value>(0);
     const auto right = inst->GetArg<ir::Value>(1);
     const auto accumulator = inst->GetArg<ir::Value>(2);
@@ -1141,12 +1055,12 @@ void JitTranslator::EmitMulSub(ir::Inst* inst) {
             context.R(accumulator));
 }
 
-void JitTranslator::EmitCondSelect(ir::Inst* inst) {
+void JitTranslator::EmitCondSelect(const ir::Inst* inst) {
     auto cond = inst->GetArg<ir::Cond>(0);
     auto true_value = inst->GetArg<ir::Value>(1);
     auto false_value = inst->GetArg<ir::Value>(2);
     auto result = context.R(ir::Value{inst});
-    if (!PendingNZCVCovers(FlagsForCondition(cond))) {
+    if (!PendingNZCVCovers(compile::ConditionFlags(cond).value_or(ir::Flags::NZCV))) {
         if (flag_state.save_in_nzcv && flag_state.nzcv_dirty) {
             MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
                       flags_audit_block_edge);
@@ -1156,27 +1070,28 @@ void JitTranslator::EmitCondSelect(ir::Inst* inst) {
     __ Csel(result, context.R(true_value), context.R(false_value), MapCond(cond));
 }
 
-void JitTranslator::EmitCondSet(ir::Inst* inst) {
-    ASSERT(gpr_plan->consumers);
-    const auto& action = gpr_plan->consumers->booleans.at(inst);
-    if (action.logical_user && local_conditions.contains(action.logical_user)) return;
+void JitTranslator::EmitCondSet(const ir::Inst* inst) {
+    const auto* prepared = context.GetActions().Consumer(inst->Id());
+    ASSERT(prepared && prepared->Has(ConsumerFlag::Boolean));
+    const auto& action = *prepared;
+    if (action.related != UINT16_MAX && local_conditions.contains(action.related)) return;
     auto cond = inst->GetArg<ir::Cond>(0);
+    const auto required = compile::ConditionFlags(cond).value_or(ir::Flags::NZCV);
     // Cond is untyped, so Inst::SetArg cannot infer a return type here and a
     // front end that forgets SetType leaves it VOID.  That is silent in this
-    // back end (RegAlloc keys off the opcode's meta return type) and silent
+    // back end (AllocationPreparation keys off the opcode's meta return type) and silent
     // data loss in the interpreter, so refuse it in both.
     ASSERT(inst->ReturnType() != ir::ValueType::VOID);
-    if (action.last_instruction && flag_state.save_in_nzcv &&
-        flag_state.nzcv_dirty && RecordLocalCondition(inst, cond)) {
+    if (action.Has(ConsumerFlag::Last) && PendingNZCVCovers(required) &&
+        RecordLocalCondition(inst, cond)) {
         return;
     }
     auto result = context.R(ir::Value{inst});
-    if (flag_state.save_in_nzcv && flag_state.nzcv_dirty &&
-        !PendingNZCVCovers(FlagsForCondition(cond))) {
+    if (flag_state.save_in_nzcv && flag_state.nzcv_dirty && !PendingNZCVCovers(required)) {
         MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
                   flags_audit_block_edge);
     }
-    if (!PendingNZCVCovers(FlagsForCondition(cond))) {
+    if (!PendingNZCVCovers(required)) {
         if (TryEmitCondSetFromFlags(inst, cond)) {
             return;
         }
@@ -1185,9 +1100,8 @@ void JitTranslator::EmitCondSet(ir::Inst* inst) {
     __ Cset(result, MapCond(cond));
 }
 
-void JitTranslator::EmitLocalCondSet(ir::Inst* inst) {
-    auto cond = DeadEdgeIntegerBranchCondition(inst).value_or(
-            inst->GetArg<ir::Cond>(0));
+void JitTranslator::EmitLocalCondSet(const ir::Inst* inst) {
+    auto cond = DeadEdgeIntegerBranchCondition(inst).value_or(inst->GetArg<ir::Cond>(0));
     ASSERT(inst->ReturnType() != ir::ValueType::VOID);
     if (RecordLocalCondition(inst, cond)) {
         return;
@@ -1195,7 +1109,7 @@ void JitTranslator::EmitLocalCondSet(ir::Inst* inst) {
     __ Cset(context.R(ir::Value{inst}), MapCond(cond));
 }
 
-void JitTranslator::EmitLocalParitySet(ir::Inst* inst) {
+void JitTranslator::EmitLocalParitySet(const ir::Inst* inst) {
     auto result = context.R(ir::Value{inst}).W();
     auto source = context.R(inst->GetArg<ir::Value>(0)).W();
     __ Mov(result, source);
@@ -1218,9 +1132,9 @@ void JitTranslator::EmitLocalParitySet(ir::Inst* inst) {
     __ Eor(result, result, 1u ^ invert);
 }
 
-void JitTranslator::EmitBranchOnlyEdges(ir::Inst* inst) {}
+void JitTranslator::EmitBranchOnlyEdges(const ir::Inst* inst) {}
 
-void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
+void JitTranslator::EmitFCmpCondSet(const ir::Inst* inst) {
     auto cond = inst->GetArg<ir::Cond>(1);
     auto fcmp = inst->GetArg<ir::Value>(0);
     ASSERT(fcmp.Def() && fcmp.Def()->GetOp() == ir::OpCode::VecFCmp);
@@ -1231,8 +1145,7 @@ void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
         return;
     }
 
-    if (RawFCmpCondition(fcmp.Def(), inst) == inst ||
-        (gpr_plan->consumers && gpr_plan->consumers->raw_fcmp_conditions.contains(inst))) {
+    if (RawFCmpCondition(fcmp.Def(), inst)) {
         if (RecordLocalCondition(inst, cond)) {
             return;
         }
@@ -1245,11 +1158,13 @@ void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
         // changes that representation before this consumer; follow the emitted
         // operations rather than assuming that AXFLAG's carry is still live.
         bool inverted_carry = true;
-        ASSERT(gpr_plan->consumers);
-        const auto found = gpr_plan->consumers->carry_inversions.find(inst);
-        if (found != gpr_plan->consumers->carry_inversions.end())
-            for (auto* inversion : found->second)
-                if (inversion != flag_state.raw_carry_pending) inverted_carry = !inverted_carry;
+        const auto* comparison = context.GetActions().Consumer(fcmp.Id());
+        ASSERT(comparison && comparison->Has(ConsumerFlag::FCmp));
+        if (const auto* reader = context.GetActions().Consumer(inst->Id())) {
+            const u32 pending =
+                    flag_state.raw_carry_pending ? flag_state.raw_carry_pending->Id() : UINT32_MAX;
+            inverted_carry = reader->CarryInverted(pending);
+        }
         if (!inverted_carry && (cond == ir::Cond::GT || cond == ir::Cond::LE)) {
             // Direct CF and ZF need two predicates for JA/JBE. Keep NZCV
             // intact because later guest instructions can still observe it.
@@ -1315,7 +1230,7 @@ void JitTranslator::EmitFCmpCondSet(ir::Inst* inst) {
     __ And(result, result, 1);
 }
 
-void JitTranslator::EmitZero(ir::Inst* inst) {
+void JitTranslator::EmitZero(const ir::Inst* inst) {
     auto self = ir::Value{inst};
     if (ir::IsFloatValueType(inst->ReturnType())) {
         __ Fmov(context.V(self).D(), 0.0);
@@ -1324,7 +1239,7 @@ void JitTranslator::EmitZero(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitGetResult(ir::Inst* inst) {
+void JitTranslator::EmitGetResult(const ir::Inst* inst) {
     auto src = inst->GetArg<ir::Value>(0);
     auto self = ir::Value{inst};
     if (!context.HasAllocation(self)) {
@@ -1342,7 +1257,7 @@ void JitTranslator::EmitGetResult(ir::Inst* inst) {
 // be materialised anyway, and the IR therefore takes Value rather than
 // Operand.  `true` on the source R() calls asks for the value in a register
 // rather than a spill slot.
-void JitTranslator::EmitMulHigh(ir::Inst* inst) {
+void JitTranslator::EmitMulHigh(const ir::Inst* inst) {
     auto left = context.R(inst->GetArg<ir::Value>(0), true);
     auto right = context.R(inst->GetArg<ir::Value>(1), true);
     auto result = context.R(ir::Value{inst});

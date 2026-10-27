@@ -1,5 +1,5 @@
 #include "test_support.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/backend/atomic_fallback.h"
 #include <barrier>
 #include <bit>
@@ -20,18 +20,23 @@ enum class Event { Read, Write, Fence };
 struct Step { Event event; u32 address{}; u32 output{}; };
 struct Program {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf900})};
-    ir::Assembler as{block.get()};
+    compile::IrBuilder as{block.get()};
     std::unique_ptr<Compiled> code;
     Program(std::initializer_list<Step> steps, T type, bool ordered = true) {
         for (auto step : steps) {
-            if (step.event == Event::Fence) { as.MemoryBarrierTSO(); continue; }
-            auto address = as.LoadImm(ir::Imm{u64(step.address)}).SetType(T::U64);
+            if (step.event == Event::Fence) {
+                as.MemoryBarrierTSO();
+                continue;
+            }
+            auto address = as.LoadImm(T::U64, ir::Imm{u64(step.address)});
             if (step.event == Event::Write) {
-                auto value = as.LoadImm(ir::Imm{u64{1}}).SetType(type);
-                if (ordered) as.StoreMemoryTSO(ir::Operand{address}, value);
+                auto value = as.LoadImm(type, ir::Imm{u64{1}});
+                if (ordered)
+                    as.StoreMemoryTSO(ir::Operand{address}, value);
                 else as.StoreMemory(ir::Operand{address}, value);
             } else {
-                auto value = (ordered ? as.LoadMemoryTSO(ir::Operand{address}) : as.LoadMemory(ir::Operand{address})).SetType(type);
+                auto value = (ordered ? as.LoadMemoryTSO(type, ir::Operand{address})
+                                      : as.LoadMemory(type, ir::Operand{address}));
                 as.StoreUniform(ir::Uniform{step.output * 8, type}, value);
             }
         }
@@ -159,13 +164,13 @@ bool Range(void* opaque, u64 address, u64 size) {
 void MixedObservers() {
     for (auto type : {T::U8, T::U16, T::U32, T::U64}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xfa00})};
-        ir::Assembler as{block.get()};
-        auto address = as.LoadImm(ir::Imm{u64{64}}).SetType(T::U64);
-        auto value = as.LoadImm(ir::Imm{u64{1}}).SetType(type);
+        compile::IrBuilder as{block.get()};
+        auto address = as.LoadImm(T::U64, ir::Imm{u64{64}});
+        auto value = as.LoadImm(type, ir::Imm{u64{1}});
         as.StoreMemoryTSO(ir::Operand{address}, value);
-        auto vector = as.LoadMemoryTSO(ir::Operand{address}).SetType(T::V128);
+        auto vector = as.LoadMemoryTSO(T::V128, ir::Operand{address});
         as.StoreUniform(ir::Uniform{32, T::V128}, vector);
-        auto scalar = as.LoadMemoryTSO(ir::Operand{address}).SetType(type);
+        auto scalar = as.LoadMemoryTSO(type, ir::Operand{address});
         as.StoreUniform(ir::Uniform{8, type}, scalar);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled code{block.get()};
@@ -196,30 +201,31 @@ void SoftwareCAS128(T reader_type, bool anonymous) {
     constexpr u32 rounds = 5000, read_count = rounds * 4;
     auto features = rv::HostFeatures::Detect(); features.zacas = false;
     IntrusivePtr<ir::Block> writer_block{new ir::Block(ir::Location{0xfb00})};
-    ir::Assembler writer_as{writer_block.get()};
-    auto address = writer_as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    auto before = writer_as.LoadMemoryTSO(ir::Operand{address}).SetType(T::U64);
+    compile::IrBuilder writer_as{writer_block.get()};
+    auto address = writer_as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    auto before = writer_as.LoadMemoryTSO(T::U64, ir::Operand{address});
     writer_as.StoreUniform(ir::Uniform{56, T::U64}, before);
     std::array<ir::Value, 4> arguments;
     for (u32 index = 0; index < arguments.size(); ++index)
-        arguments[index] = writer_as.LoadUniform(ir::Uniform{8 + index * 8, T::U64}).SetType(T::U64);
-    auto old = writer_as.CompareAndSwap128(address, arguments[0], arguments[1], arguments[2], arguments[3]).SetType(T::V128);
+        arguments[index] = writer_as.LoadUniform(T::U64, ir::Uniform{8 + index * 8, T::U64});
+    auto old = writer_as.CompareAndSwap128(
+            T::V128, address, arguments[0], arguments[1], arguments[2], arguments[3]);
     writer_as.StoreUniform(ir::Uniform{40, T::V128}, old);
-    auto after_low = writer_as.LoadMemoryTSO(ir::Operand{address}).SetType(T::U64);
-    auto high_address = writer_as.Add(address, ir::Operand{ir::Imm{u64{8}}}).SetType(T::U64);
-    auto after_high = writer_as.LoadMemoryTSO(ir::Operand{high_address}).SetType(T::U64);
+    auto after_low = writer_as.LoadMemoryTSO(T::U64, ir::Operand{address});
+    auto high_address = writer_as.Add(T::U64, address, ir::Operand{ir::Imm{u64{8}}});
+    auto after_high = writer_as.LoadMemoryTSO(T::U64, ir::Operand{high_address});
     writer_as.StoreUniform(ir::Uniform{64, T::U64}, after_low);
     writer_as.StoreUniform(ir::Uniform{72, T::U64}, after_high);
     writer_block->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled writer{writer_block.get(), true, features};
 
     IntrusivePtr<ir::Block> reader_block{new ir::Block(ir::Location{0xfb10})};
-    ir::Assembler reader_as{reader_block.get()};
-    auto base = reader_as.LoadImm(ir::Imm{u64{0}}).SetType(T::U64);
-    auto scalar_low = reader_as.LoadMemoryTSO(ir::Operand{base}).SetType(reader_type);
-    auto vector = reader_as.LoadMemoryTSO(ir::Operand{base}).SetType(T::V128);
-    auto high = reader_as.LoadImm(ir::Imm{u64{8}}).SetType(T::U64);
-    auto scalar_high = reader_as.LoadMemoryTSO(ir::Operand{high}).SetType(reader_type);
+    compile::IrBuilder reader_as{reader_block.get()};
+    auto base = reader_as.LoadImm(T::U64, ir::Imm{u64{0}});
+    auto scalar_low = reader_as.LoadMemoryTSO(reader_type, ir::Operand{base});
+    auto vector = reader_as.LoadMemoryTSO(T::V128, ir::Operand{base});
+    auto high = reader_as.LoadImm(T::U64, ir::Imm{u64{8}});
+    auto scalar_high = reader_as.LoadMemoryTSO(reader_type, ir::Operand{high});
     reader_as.StoreUniform(ir::Uniform{64, reader_type}, scalar_low);
     reader_as.StoreUniform(ir::Uniform{80, T::V128}, vector);
     reader_as.StoreUniform(ir::Uniform{104, reader_type}, scalar_high);

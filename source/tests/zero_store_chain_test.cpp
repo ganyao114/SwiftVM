@@ -1,4 +1,8 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <string>
@@ -8,25 +12,24 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
 
 IntrusivePtr<Block> MakeZeroStore(bool nested, bool observed) {
     IntrusivePtr<Block> block{new Block(0, Location{0x8c40})};
-    auto zero = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
-    auto narrowed = block->ZeroExtend32(zero).SetType(ValueType::U32);
+    auto zero = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+    auto narrowed = block->ZeroExtend32(ValueType::U32, zero);
     Value stored = narrowed;
     if (nested) {
-        stored = block->ZeroExtend32To64(narrowed).SetType(ValueType::U64);
+        stored = block->ZeroExtend32To64(ValueType::U64, narrowed);
     }
     if (observed) {
-        auto one = block->LoadImm(Imm{swift::u64{1}}).SetType(stored.Type());
-        (void)block->Add(stored, Operand{one}).SetType(stored.Type());
+        auto one = block->LoadImm(stored.Type(), Imm{swift::u64{1}});
+        (void)block->Add(stored.Type(), stored, Operand{one});
     }
     auto address = block->LoadUniform(Uniform{0, ValueType::U64});
     block->StoreMemory(Operand{address}, stored);
@@ -46,13 +49,17 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
     AddressSpace address_space{config};
     auto module = address_space.GetDefaultModule();
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(),
-                   features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();

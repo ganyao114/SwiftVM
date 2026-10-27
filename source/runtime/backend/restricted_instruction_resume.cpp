@@ -15,12 +15,13 @@ InstructionCodePin::~InstructionCodePin() {
 bool ValidateInstructionResumeHomes(const InstructionResumeDescriptor& d) {
     if (!d.original || !d.emitted || d.completion_pc != d.emitted->GetEndLocation().Value()) return false;
     auto& insts = d.emitted->GetInstList();
-    const auto find = [&](u32 id) -> ir::Inst* {
-        ir::Inst* result{};
-        for (auto& inst : insts) if (inst.Id() == id) {
-            if (result) return nullptr;
-            result = &inst;
-        }
+    const auto find = [&](u32 id) -> const ir::Inst* {
+        const ir::Inst* result{};
+        for (auto& inst : insts)
+            if (inst.Id() == id) {
+                if (result) return nullptr;
+                result = &inst;
+            }
         return result;
     };
     auto* head = find(d.head_id);

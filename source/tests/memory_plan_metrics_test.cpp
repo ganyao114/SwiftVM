@@ -1,11 +1,15 @@
-#include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <vector>
+#include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "support/jit_translator_test_support.h"
 
 namespace {
@@ -27,16 +31,17 @@ Metrics Compile(unsigned shape, unsigned length, Phases* phases = nullptr) {
     struct Homes { Value address, loaded, result; };
     std::vector<Homes> homes;
     for (unsigned i = 0; i < length; ++i) {
-        const auto address = block->LoadUniform(Uniform{2048, ValueType::U64}).SetType(ValueType::U64);
-        const auto loaded = block->LoadMemory(Operand{address}).SetType(shape == 0 || shape == 3 ? ValueType::U16 : ValueType::U64);
+        const auto address = block->LoadUniform(ValueType::U64, Uniform{2048, ValueType::U64});
+        const auto loaded = block->LoadMemory(
+                shape == 0 || shape == 3 ? ValueType::U16 : ValueType::U64, Operand{address});
         Value result;
         if (shape == 0 || shape == 3) {
-            result = block->SignExtend(loaded).SetType(ValueType::S64);
+            result = block->SignExtend(ValueType::S64, loaded);
             block->StoreUniform(Uniform{2056, ValueType::S64}, result);
             if (shape == 3) block->StoreUniform(Uniform{2064, ValueType::U16}, loaded);
         } else {
             if (shape == 2) block->UniformBarrier();
-            result = block->Add(address, Operand{Imm{swift::u64{8}}}).SetType(ValueType::U64);
+            result = block->Add(ValueType::U64, address, Operand{Imm{swift::u64{8}}});
             block->StoreUniform(Uniform{2056, ValueType::U64}, loaded);
             block->StoreUniform(Uniform{2064, ValueType::U64}, result);
         }
@@ -46,9 +51,15 @@ Metrics Compile(unsigned shape, unsigned length, Phases* phases = nullptr) {
     block->ReIdInstr();
     auto reserved = space.GetTrampolines().GetGPRRegs();
     for (unsigned reg : {8u, 9u, 13u}) reserved.Mark(reg);
-    RegAlloc allocation{block->MaxInstrId(), reserved, space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
+    AllocationFixture allocation{
+            block->MaxInstrId(), reserved, space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, FeatureSet{});
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, FeatureSet{}),
+            false);
     const auto allocation_end = phases ? std::chrono::steady_clock::now() : begin;
     for (const auto& item : homes) {
         allocation.MapRegister(item.address.Id(), HostGPR{13});
@@ -59,8 +70,8 @@ Metrics Compile(unsigned shape, unsigned length, Phases* phases = nullptr) {
     FPRSMask fprs = space.GetTrampolines().GetFPRRegs();
     for (const auto& node : block->GetInstList()) allocation.SetActiveRegs(node.Id(), active, fprs);
     const auto mapping_end = phases ? std::chrono::steady_clock::now() : begin;
-    allocation.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, allocation};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+    arm64::JitContext context{module, allocation, allocation.Actions()};
     const auto planning_end = phases ? std::chrono::steady_clock::now() : begin;
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
@@ -80,19 +91,24 @@ Metrics Compile(unsigned shape, unsigned length, Phases* phases = nullptr) {
     }
     result.bytes = context.CurrentBufferSize();
     result.spills = allocation.SpillCount();
-    result.reloads = allocation.RAShape().spill_loads;
-    result.stores = allocation.RAShape().spill_stores;
+    result.reloads = context.GetRAShapeCounters().spill_loads;
+    result.stores = context.GetRAShapeCounters().spill_stores;
     for (const auto& item : homes) {
         if (!arm64::JitTranslatorTestSupport::IsInstructionSuppressed(translator, item.result.Def())) continue;
         ++result.covered;
         if (shape == 0 || shape == 3) { ++result.narrow; ++result.direct; }
         else ++result.writebacks;
     }
-    if (const auto plan = allocation.GPRPlanFor(block.get()); plan->memory) {
-        REQUIRE(result.narrow == plan->memory->narrow_loads.size());
-        REQUIRE(result.writebacks == plan->memory->writebacks.size());
-        REQUIRE(result.covered == plan->memory->covered.size());
+    swift::u64 narrow{}, writebacks{}, covered{};
+    for (const auto& item : homes) {
+        const auto* action = allocation.Actions().Memory(item.loaded.Id());
+        narrow += action && action->Has(arm64::MemoryAction::Narrow);
+        writebacks += action && action->Has(arm64::MemoryAction::PostIndex);
+        covered += allocation.Actions().InstructionCovered(item.result.Id());
     }
+    REQUIRE(result.narrow == narrow);
+    REQUIRE(result.writebacks == writebacks);
+    REQUIRE(result.covered == covered);
     const auto* code = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < result.bytes; ++i) result.hash = (result.hash ^ code[i]) * 1099511628211ull;
     return result;

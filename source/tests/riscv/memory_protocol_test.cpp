@@ -1,6 +1,6 @@
 #include "test_support.h"
 #include "runtime/backend/atomic_fallback.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/backend/interp/interpreter.h"
 #include "runtime/backend/guest_memory_scope.h"
 #include "runtime/frontend/x86/x87.h"
@@ -11,8 +11,8 @@ using T = ir::ValueType;
 namespace {
 struct AtomicFixture {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf800})};
-    ir::Assembler as{block.get()};
-    ir::Value address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+    compile::IrBuilder as{block.get()};
+    ir::Value address = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
     void Finish() { block->SetTerminal(ir::terminal::ReturnToHost{}); }
 };
 }
@@ -20,14 +20,17 @@ struct AtomicFixture {
 void MemoryProtocol() {
     AtomicFixture wide;
     std::array<ir::Value, 4> args;
-    for (u32 i = 0; i < 4; ++i) args[i] = wide.as.LoadUniform(ir::Uniform{8 + i * 8, T::U64}).SetType(T::U64);
-    auto old = wide.as.CompareAndSwap128(wide.address, args[0], args[1], args[2], args[3]).SetType(T::V128);
-    wide.as.StoreUniform(ir::Uniform{40, T::V128}, old); wide.Finish();
+    for (u32 i = 0; i < 4; ++i)
+        args[i] = wide.as.LoadUniform(T::U64, ir::Uniform{8 + i * 8, T::U64});
+    auto old = wide.as.CompareAndSwap128(T::V128, wide.address, args[0], args[1], args[2], args[3]);
+    wide.as.StoreUniform(ir::Uniform{40, T::V128}, old);
+    wide.Finish();
     auto software_features = rv::HostFeatures::Detect(); software_features.zacas = false;
     Compiled compare{wide.block.get(), true, software_features};
     AtomicFixture narrow;
-    auto amount = narrow.as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-    (void)narrow.as.AtomicFetchAdd(narrow.address, amount).SetType(T::U64); narrow.Finish();
+    auto amount = narrow.as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+    (void)narrow.as.AtomicFetchAdd(T::U64, narrow.address, amount);
+    narrow.Finish();
     Compiled increment{narrow.block.get()};
     alignas(16) std::array<u64, 2> memory{};
     constexpr u32 count = 1000;
@@ -76,8 +79,9 @@ void MemoryProtocol() {
     }
 
     AtomicFixture reader;
-    auto observed = reader.as.LoadMemory(ir::Operand{reader.address}).SetType(T::V128);
-    reader.as.StoreUniform(ir::Uniform{16, T::V128}, observed); reader.Finish();
+    auto observed = reader.as.LoadMemory(T::V128, ir::Operand{reader.address});
+    reader.as.StoreUniform(ir::Uniform{16, T::V128}, observed);
+    reader.Finish();
     Compiled read{reader.block.get()};
     memory = {}; start = false; failed = false;
     std::atomic<bool> complete{};
@@ -108,12 +112,13 @@ void MemoryProtocol() {
     // An x87 Float80 load spans two host reads. Both must observe the same
     // software CAS128 publication even though X87Op releases the JIT lease.
     AtomicFixture x87;
-    auto context = x87.as.GetUniformAddress(ir::Imm{u64{256}}).SetType(T::U64);
-    auto output = x87.as.LoadImm(ir::Imm{u64{32}}).SetType(T::U64);
-    (void)x87.as.X87Op(context, ir::Imm{swift::x86::MakeX87Command(swift::x86::X87Action::Init)}, x87.address);
-    (void)x87.as.X87Op(context, ir::Imm{swift::x86::MakeX87Command(
+    auto context = x87.as.GetUniformAddress(T::U64, ir::Imm{u64{256}});
+    auto output = x87.as.LoadImm(T::U64, ir::Imm{u64{32}});
+    (void)x87.as.X87Op(T::U64,
+            context, ir::Imm{swift::x86::MakeX87Command(swift::x86::X87Action::Init)}, x87.address);
+    (void)x87.as.X87Op(T::U64, context, ir::Imm{swift::x86::MakeX87Command(
             swift::x86::X87Action::LoadFloat, swift::x86::X87Format::Float80)}, x87.address);
-    (void)x87.as.X87Op(context, ir::Imm{swift::x86::MakeX87Command(
+    (void)x87.as.X87Op(T::U64, context, ir::Imm{swift::x86::MakeX87Command(
             swift::x86::X87Action::StoreFloat, swift::x86::X87Format::Float80, 0, 0,
             swift::x86::X87Pop)}, output);
     x87.Finish();
@@ -152,12 +157,14 @@ void MemoryProtocol() {
     // The unaligned halfword and aligned word add to the very same bits;
     // neighboring bytes must survive both protocols.
     AtomicFixture halfword;
-    auto half_amount = halfword.as.LoadImm(ir::Imm{u16{1}}).SetType(T::U16);
-    (void)halfword.as.AtomicFetchAdd(halfword.address, half_amount).SetType(T::U16); halfword.Finish();
+    auto half_amount = halfword.as.LoadImm(T::U16, ir::Imm{u16{1}});
+    (void)halfword.as.AtomicFetchAdd(T::U16, halfword.address, half_amount);
+    halfword.Finish();
     Compiled unaligned{halfword.block.get()};
     AtomicFixture word;
-    auto word_amount = word.as.LoadImm(ir::Imm{u32{256}}).SetType(T::U32);
-    (void)word.as.AtomicFetchAdd(word.address, word_amount).SetType(T::U32); word.Finish();
+    auto word_amount = word.as.LoadImm(T::U32, ir::Imm{u32{256}});
+    (void)word.as.AtomicFetchAdd(T::U32, word.address, word_amount);
+    word.Finish();
     Compiled aligned{word.block.get()};
     memory[0] = 0xa000007f; start = false; failed = false;
     const auto run = [&](Compiled& compiled, u64 address) {

@@ -22,8 +22,10 @@ RetirementControl::ExitRegistration::ExitRegistration(
     if (next_) next_->previous_ = this;
     owner_->exit_registrations_ = this;
     owner_->attached_owners_.fetch_add(1, std::memory_order_seq_cst);
-    if (owner_->IsClosed())
+    if (owner_->IsClosed()) {
         std::atomic_ref<u64>(*request_).fetch_or(kRetirementExitRequest, std::memory_order_release);
+        if (poll_) poll_->Arm();
+    }
 }
 
 RetirementControl::ExitRegistration::~ExitRegistration() {
@@ -106,9 +108,13 @@ RetirementControl::Ticket RetirementControl::RequestDrain(
         ++generation;
         owner->generation_.store(generation, std::memory_order_seq_cst);
     }
-    for (auto* entry = owner->exit_registrations_; entry; entry = entry->next_)
+    for (auto* entry = owner->exit_registrations_; entry; entry = entry->next_) {
         std::atomic_ref<u64>(*entry->request_)
                 .fetch_or(kRetirementExitRequest, std::memory_order_release);
+        // Static links use fault-only polls when the latch is enabled.
+        // Publish the request before protecting the page, as Signal and SMC do.
+        if (entry->poll_) entry->poll_->Arm();
+    }
     return {owner, generation};
 }
 

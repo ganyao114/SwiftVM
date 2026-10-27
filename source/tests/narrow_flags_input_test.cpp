@@ -1,4 +1,10 @@
+#include "tests/support/rewrite_fixture.h"
+using swift::runtime::test::RewriteFixture;
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <string>
@@ -7,13 +13,12 @@
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/actions.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
-#include "runtime/ir/opts/flags_elimination_pass.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
+#include "runtime/compile/passes/passes.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -33,24 +38,21 @@ std::vector<std::string> EmitNarrowSub(ValueType type,
     };
     AddressSpace address_space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0x8b00})};
-    auto source = block->GetHostGPR(HostRegIndex(22), Imm{0u})
-                          .SetType(ValueType::U64);
+    auto source = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
     const auto bits = ir::GetValueSizeByte(type) * 8;
     auto right = Operand{Imm{3u}};
     if (branch_only) {
-        right = Operand{block->LoadImm(Imm{3u}).SetType(type)};
+        right = Operand{block->LoadImm(type, Imm{3u})};
     }
-    auto extract = memory_source
-            ? block->LoadMemory(Operand{source}).SetType(type)
-            : block->BitExtract(source, Imm{0u}, Imm{bits}).SetType(type);
-    auto result = block->Sub(extract, right).SetType(type);
+    auto extract = memory_source ? block->LoadMemory(type, Operand{source})
+                                 : block->BitExtract(type, source, Imm{0u}, Imm{bits});
+    auto result = block->Sub(type, extract, right);
     block->SaveFlags(result, Flags::All);
     if (branch_only) {
         block->InvertCarry();
         block->AdvancePC(Imm{2u});
         block->BranchOnlyEdges();
-        const auto condition = block->LocalCondSet(Cond::EQ)
-                                       .SetType(ValueType::U8);
+        const auto condition = block->LocalCondSet(ValueType::U8, Cond::EQ);
         block->SetTerminal(terminal::If{
                 condition,
                 terminal::LinkBlock{Location{0x8b10}},
@@ -65,14 +67,19 @@ std::vector<std::string> EmitNarrowSub(ValueType type,
     }
     FeatureSet features{};
     if (branch_only) {
-        FlagsEliminationPass::Run(block.get(), nullptr, features);
+        swift::runtime::compile::EliminateFlags(RewriteFixture{block.get(), true, nullptr}.Get(), features);
     }
     block->ReIdInstr();
 
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
     if (source_spilled) {
         const auto source_reg = alloc.ValueGPR(source);
         alloc.MapMemSpill(source.Id(), SpillSlot{2});
@@ -81,28 +88,31 @@ std::vector<std::string> EmitNarrowSub(ValueType type,
         alloc.MapSpillReload(source.Id(), source.Id(), extract.Id(),
                              source_reg, true);
     }
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    const auto frozen = alloc.GPRPlanFor(block.get());
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    const auto frozen = alloc.Actions().ForBlock(block.get());
     REQUIRE(frozen);
-    const bool forwarded = !reuse_extract && !memory_source &&
-                           alloc.ValueType(source) != RegAlloc::MEM;
-    REQUIRE((frozen->integer_flags && frozen->integer_flags->inputs.contains(extract.Def())) == forwarded);
+    const bool forwarded =
+            !reuse_extract && !memory_source && alloc.ValueType(source) != AllocationFixture::MEM;
+    REQUIRE((alloc.Actions().FlagsInput(extract.Id()) != nullptr) == forwarded);
     if (forwarded) {
-        const auto& input = frozen->integer_flags->inputs.at(extract.Def());
-        REQUIRE(input.source.Def() == (alloc.GPRLowView(extract.Id()) ? extract.Def() : source.Def()));
-        REQUIRE(input.consumer == result.Def());
+        const auto* input = alloc.Actions().FlagsInput(extract.Id());
+        REQUIRE(input->Source(*result.Def()).Def() ==
+                (alloc.GPRLowView(extract.Id()) ? extract.Def() : source.Def()));
+        REQUIRE(input->argument == result.Id());
     }
 
     if (branch_only) {
-        const auto plan = alloc.GPRPlanFor(block.get());
+        const auto plan = alloc.Actions().ForBlock(block.get());
         REQUIRE(plan);
-        REQUIRE(plan->integer_branch);
-        REQUIRE(plan->integer_branch->edge.producer == result.Def());
-        REQUIRE(plan->integer_branch->narrow);
-        REQUIRE(plan->integer_branch->narrow->immediate == 3);
-        REQUIRE(plan->integer_branch->narrow->width == ir::GetValueSizeByte(type));
+        const auto* branch = alloc.Actions().IntegerBranch(block.get());
+        REQUIRE(branch);
+        REQUIRE(branch->producer == result.Id());
+        REQUIRE(branch->IsNarrow());
+        REQUIRE(branch->immediate == 3);
+        REQUIRE(branch->width == ir::GetValueSizeByte(type));
     }
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();

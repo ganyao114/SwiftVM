@@ -1,4 +1,8 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <array>
@@ -13,25 +17,22 @@
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/smc_tracker.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "translator/x86/translator.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
 
 std::vector<std::string> EmitPinnedLoadUpdate() {
     IntrusivePtr<Block> block{new Block(0, Location{0x9210})};
-    auto base = block->GetHostGPR(HostRegIndex(23), Imm{0u})
-                        .SetType(ValueType::U64);
-    auto loaded = block->LoadMemory(Operand{base, Imm{1u}})
-                          .SetType(ValueType::U8);
-    auto widened = block->ZeroExtend32(loaded).SetType(ValueType::U32);
-    auto published = block->ZeroExtend32To64(widened).SetType(ValueType::U64);
+    auto base = block->GetHostGPR(ValueType::U64, HostRegIndex(23), Imm{0u});
+    auto loaded = block->LoadMemory(ValueType::U8, Operand{base, Imm{1u}});
+    auto widened = block->ZeroExtend32(ValueType::U32, loaded);
+    auto published = block->ZeroExtend32To64(ValueType::U64, widened);
     block->SetHostGPR(published, HostRegIndex(29), Imm{0u});
-    auto updated = block->Add(base, Operand{Imm{1u}}).SetType(ValueType::U64);
+    auto updated = block->Add(ValueType::U64, base, Operand{Imm{1u}});
     block->SetHostGPR(updated, HostRegIndex(23), Imm{0u});
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
@@ -45,12 +46,19 @@ std::vector<std::string> EmitPinnedLoadUpdate() {
             .global_opts = Optimizations::All,
     };
     AddressSpace address_space{config};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
-    RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), alloc, FeatureSet{}),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();

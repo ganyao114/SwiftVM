@@ -1,7 +1,6 @@
 #include "arm64_frontend_internal.h"
 
 namespace swift::arm64 {
-
 #define __ assembler->
 
 void A64Decoder::AddSubHelper(const Instruction* instr, const ir::DataClass& op2) {
@@ -14,11 +13,11 @@ void A64Decoder::AddSubHelper(const Instruction* instr, const ir::DataClass& op2
 
     ir::Value result;
     if (is64) {
-        result = is_sub ? __ Sub<ir::U64>(rn, SingleOperand(op2)).SetType(ir::ValueType::U64)
-                        : __ Add<ir::U64>(rn, SingleOperand(op2)).SetType(ir::ValueType::U64);
+        result = is_sub ? __ Sub(ir::ValueType::U64, rn, SingleOperand(op2))
+                        : __ Add(ir::ValueType::U64, rn, SingleOperand(op2));
     } else {
-        result = is_sub ? __ Sub<ir::U32>(rn, SingleOperand(op2)).SetType(ir::ValueType::U32)
-                        : __ Add<ir::U32>(rn, SingleOperand(op2)).SetType(ir::ValueType::U32);
+        result = is_sub ? __ Sub(ir::ValueType::U32, rn, SingleOperand(op2))
+                        : __ Add(ir::ValueType::U32, rn, SingleOperand(op2));
     }
 
     if (set_flags) {
@@ -74,15 +73,13 @@ void A64Decoder::VisitAddSubWithCarry(const Instruction* instr) {
     // carry flag (C = NOT borrow) consumed directly.
     ir::Value operand2 = rm;
     if (is_sub) {
-        operand2 = is64
-                ? __ Xor<ir::U64>(rm, SingleOperand(ir::Imm{u64(-1)}))
-                          .SetType(ir::ValueType::U64)
-                : __ Xor<ir::U32>(rm, SingleOperand(ir::Imm{u32(-1)}))
-                          .SetType(ir::ValueType::U32);
+        operand2 = is64 ? __ Xor(ir::ValueType::U64, rm, SingleOperand(ir::Imm{u64(-1)}))
+
+                        : __ Xor(ir::ValueType::U32, rm, SingleOperand(ir::Imm{u32(-1)}));
     }
 
-    ir::Value result = is64 ? __ Adc<ir::U64>(rn, SingleOperand(operand2)).SetType(ir::ValueType::U64)
-                            : __ Adc<ir::U32>(rn, SingleOperand(operand2)).SetType(ir::ValueType::U32);
+    ir::Value result = is64 ? __ Adc(ir::ValueType::U64, rn, SingleOperand(operand2))
+                            : __ Adc(ir::ValueType::U32, rn, SingleOperand(operand2));
     if (set_flags) {
         __ SaveFlags(result, ir::Flags::NZCV);
     }
@@ -107,23 +104,23 @@ void A64Decoder::VisitLogicalImmediate(const Instruction* instr) {
     switch (instr->Mask(LogicalImmediateMask)) {
         case AND_w_imm:
         case AND_x_imm:
-            result = is64 ? __ And<ir::U64>(rn, SingleOperand(op2)).SetType(type)
-                          : __ And<ir::U32>(rn, SingleOperand(op2)).SetType(type);
+            result = is64 ? __ And(type, rn, SingleOperand(op2))
+                          : __ And(type, rn, SingleOperand(op2));
             break;
         case ORR_w_imm:
         case ORR_x_imm:
-            result = is64 ? __ Or<ir::U64>(rn, SingleOperand(op2)).SetType(type)
-                          : __ Or<ir::U32>(rn, SingleOperand(op2)).SetType(type);
+            result = is64 ? __ Or(type, rn, SingleOperand(op2))
+                          : __ Or(type, rn, SingleOperand(op2));
             break;
         case EOR_w_imm:
         case EOR_x_imm:
-            result = is64 ? __ Xor<ir::U64>(rn, SingleOperand(op2)).SetType(type)
-                          : __ Xor<ir::U32>(rn, SingleOperand(op2)).SetType(type);
+            result = is64 ? __ Xor(type, rn, SingleOperand(op2))
+                          : __ Xor(type, rn, SingleOperand(op2));
             break;
         case ANDS_w_imm:
         case ANDS_x_imm:
-            result = is64 ? __ And<ir::U64>(rn, SingleOperand(op2)).SetType(type)
-                          : __ And<ir::U32>(rn, SingleOperand(op2)).SetType(type);
+            result = is64 ? __ And(type, rn, SingleOperand(op2))
+                          : __ And(type, rn, SingleOperand(op2));
             set_flags = true;
             break;
         default:
@@ -154,24 +151,21 @@ void A64Decoder::VisitLogicalShifted(const Instruction* instr) {
     ir::Value result{};
     bool set_flags = false;
     auto and_ = [&] {
-        return is64 ? __ And<ir::U64>(rn, SingleOperand(op2)).SetType(type)
-                    : __ And<ir::U32>(rn, SingleOperand(op2)).SetType(type);
+        return is64 ? __ And(type, rn, SingleOperand(op2)) : __ And(type, rn, SingleOperand(op2));
     };
     auto bic_ = [&] {
-        return is64 ? __ AndNot<ir::U64>(rn, SingleOperand(op2)).SetType(type)
-                    : __ AndNot<ir::U32>(rn, SingleOperand(op2)).SetType(type);
+        return is64 ? __ AndNot(type, rn, SingleOperand(op2))
+                    : __ AndNot(type, rn, SingleOperand(op2));
     };
     auto or_ = [&](const ir::DataClass& o) {
-        return is64 ? __ Or<ir::U64>(rn, SingleOperand(o)).SetType(type)
-                    : __ Or<ir::U32>(rn, SingleOperand(o)).SetType(type);
+        return is64 ? __ Or(type, rn, SingleOperand(o)) : __ Or(type, rn, SingleOperand(o));
     };
     auto xor_ = [&](const ir::DataClass& o) {
-        return is64 ? __ Xor<ir::U64>(rn, SingleOperand(o)).SetType(type)
-                    : __ Xor<ir::U32>(rn, SingleOperand(o)).SetType(type);
+        return is64 ? __ Xor(type, rn, SingleOperand(o)) : __ Xor(type, rn, SingleOperand(o));
     };
     auto not_ = [&](ir::Value value) {
-        return is64 ? __ Xor<ir::U64>(value, SingleOperand(ir::Imm{u64(-1)})).SetType(type)
-                    : __ Xor<ir::U32>(value, SingleOperand(ir::Imm{u32(-1)})).SetType(type);
+        return is64 ? __ Xor(type, value, SingleOperand(ir::Imm{u64(-1)}))
+                    : __ Xor(type, value, SingleOperand(ir::Imm{u32(-1)}));
     };
 
     switch (instr->Mask(LogicalShiftedMask)) {
@@ -246,12 +240,10 @@ void A64Decoder::VisitMoveWideImmediate(const Instruction* instr) {
         case MOVK_w:
         case MOVK_x: {
             auto prev = ReadRegister(instr->GetRd(), type);
-            auto imm16 = __ LoadImm<ir::U16>(ir::Imm{u16(instr->GetImmMoveWide())})
-                                   .SetType(ir::ValueType::U16);
-            new_val = is64 ? __ BitInsert<ir::U64>(prev, imm16, ir::Imm{u8(shift)}, ir::Imm{u8(16)})
-                                   .SetType(type)
-                           : __ BitInsert<ir::U32>(prev, imm16, ir::Imm{u8(shift)}, ir::Imm{u8(16)})
-                                   .SetType(type);
+            auto imm16 = __ LoadImm(ir::ValueType::U16, ir::Imm{u16(instr->GetImmMoveWide())});
+            new_val = is64 ? __ BitInsert(type, prev, imm16, ir::Imm{u8(shift)}, ir::Imm{u8(16)})
+
+                           : __ BitInsert(type, prev, imm16, ir::Imm{u8(shift)}, ir::Imm{u8(16)});
             break;
         }
         case MOVZ_w:
@@ -316,16 +308,15 @@ void A64Decoder::VisitBitfield(const Instruction* instr) {
     if (R == 0) {
         rotated = src;
     } else if (is64) {
-        rotated = __ RorImm<ir::U64>(src, ir::Imm{u32(R)}).SetType(ir::ValueType::U64);
+        rotated = __ RorImm(ir::ValueType::U64, src, ir::Imm{u32(R)});
     } else {
         // 32 bit rotate of a zero extended value.
-        auto lo = __ LsrImm<ir::U64>(src, ir::Imm{u32(R)}).SetType(ir::ValueType::U64);
-        auto hi = __ LslImm<ir::U64>(src, ir::Imm{u32(reg_size - R)}).SetType(ir::ValueType::U64);
-        rotated = __ Or<ir::U64>(lo, SingleOperand(hi)).SetType(ir::ValueType::U64);
+        auto lo = __ LsrImm(ir::ValueType::U64, src, ir::Imm{u32(R)});
+        auto hi = __ LslImm(ir::ValueType::U64, src, ir::Imm{u32(reg_size - R)});
+        rotated = __ Or(ir::ValueType::U64, lo, SingleOperand(hi));
     }
 
-    ir::Value result =
-            __ And<ir::U64>(rotated, SingleOperand(ir::Imm{mask})).SetType(ir::ValueType::U64);
+    ir::Value result = __ And(ir::ValueType::U64, rotated, SingleOperand(ir::Imm{mask}));
 
     if (extend) {
         // Sign bits: replicate bit S of the source across all bits above it,
@@ -335,20 +326,17 @@ void A64Decoder::VisitBitfield(const Instruction* instr) {
         if (S == 63) {
             sign_extended = src;
         } else {
-            auto shl = __ LslImm<ir::U64>(src, ir::Imm{u32(63 - S)}).SetType(ir::ValueType::U64);
-            sign_extended =
-                    __ AsrImm<ir::U64>(shl, ir::Imm{u32(63 - S)}).SetType(ir::ValueType::U64);
+            auto shl = __ LslImm(ir::ValueType::U64, src, ir::Imm{u32(63 - S)});
+            sign_extended = __ AsrImm(ir::ValueType::U64, shl, ir::Imm{u32(63 - S)});
         }
-        auto signbits = __ And<ir::U64>(sign_extended, SingleOperand(ir::Imm{topbits}))
-                                .SetType(ir::ValueType::U64);
-        result = __ Or<ir::U64>(result, SingleOperand(signbits)).SetType(ir::ValueType::U64);
+        auto signbits = __ And(ir::ValueType::U64, sign_extended, SingleOperand(ir::Imm{topbits}));
+        result = __ Or(ir::ValueType::U64, result, SingleOperand(signbits));
     }
 
     if (!inzero) {
         auto dst = Widen(ReadRegister(instr->GetRd(), type));
-        auto dst_masked = __ And<ir::U64>(dst, SingleOperand(ir::Imm{~mask}))
-                                  .SetType(ir::ValueType::U64);
-        result = __ Or<ir::U64>(result, SingleOperand(dst_masked)).SetType(ir::ValueType::U64);
+        auto dst_masked = __ And(ir::ValueType::U64, dst, SingleOperand(ir::Imm{~mask}));
+        result = __ Or(ir::ValueType::U64, result, SingleOperand(dst_masked));
     }
 
     if (is64) {
@@ -371,15 +359,12 @@ void A64Decoder::VisitExtract(const Instruction* instr) {
         result = rm;
     } else if (instr->GetRn() == instr->GetRm()) {
         // ROR alias.
-        result = is64 ? __ RorImm<ir::U64>(rm, ir::Imm{lsb}).SetType(type)
-                      : __ RorImm<ir::U32>(rm, ir::Imm{lsb}).SetType(type);
+        result = is64 ? __ RorImm(type, rm, ir::Imm{lsb}) : __ RorImm(type, rm, ir::Imm{lsb});
     } else {
-        auto lo = is64 ? __ LsrImm<ir::U64>(rm, ir::Imm{lsb}).SetType(type)
-                       : __ LsrImm<ir::U32>(rm, ir::Imm{lsb}).SetType(type);
-        auto hi = is64 ? __ LslImm<ir::U64>(rn, ir::Imm{64 - lsb}).SetType(type)
-                       : __ LslImm<ir::U32>(rn, ir::Imm{32 - lsb}).SetType(type);
-        result = is64 ? __ Or<ir::U64>(lo, SingleOperand(hi)).SetType(type)
-                      : __ Or<ir::U32>(lo, SingleOperand(hi)).SetType(type);
+        auto lo = is64 ? __ LsrImm(type, rm, ir::Imm{lsb}) : __ LsrImm(type, rm, ir::Imm{lsb});
+        auto hi = is64 ? __ LslImm(type, rn, ir::Imm{64 - lsb})
+                       : __ LslImm(type, rn, ir::Imm{32 - lsb});
+        result = is64 ? __ Or(type, lo, SingleOperand(hi)) : __ Or(type, lo, SingleOperand(hi));
     }
 
     if (is64) {
@@ -404,47 +389,39 @@ void A64Decoder::VisitDataProcessing2Source(const Instruction* instr) {
         case UDIV_x:
             // NOTE: AArch64 returns 0 on division by zero; enforcing that is
             // left to the backend's Div implementation.
-            result = is64 ? __ Div<ir::U64>(rn, SingleOperand(rm)).SetType(type)
-                          : __ Div<ir::U32>(rn, SingleOperand(rm)).SetType(type);
+            result = is64 ? __ Div(type, rn, SingleOperand(rm))
+                          : __ Div(type, rn, SingleOperand(rm));
             break;
         case SDIV_w:
         case SDIV_x: {
             auto l = rn.SetCastType(stype);
             auto r = rm.SetCastType(stype);
-            result = is64 ? __ Div<ir::U64>(l, SingleOperand(r)).SetType(type)
-                          : __ Div<ir::U32>(l, SingleOperand(r)).SetType(type);
+            result = is64 ? __ Div(type, l, SingleOperand(r)) : __ Div(type, l, SingleOperand(r));
             break;
         }
         case LSLV_w:
         case LSLV_x: {
-            auto amount = __ And<ir::U32>(rm, SingleOperand(ir::Imm{width - 1}))
-                                  .SetType(ir::ValueType::U32);
-            result = is64 ? __ LslValue<ir::U64>(rn, amount).SetType(type)
-                          : __ LslValue<ir::U32>(rn, amount).SetType(type);
+            auto amount = __ And(ir::ValueType::U32, rm, SingleOperand(ir::Imm{width - 1}));
+            result = is64 ? __ LslValue(type, rn, amount) : __ LslValue(type, rn, amount);
             break;
         }
         case LSRV_w:
         case LSRV_x: {
-            auto amount = __ And<ir::U32>(rm, SingleOperand(ir::Imm{width - 1}))
-                                  .SetType(ir::ValueType::U32);
-            result = is64 ? __ LsrValue<ir::U64>(rn, amount).SetType(type)
-                          : __ LsrValue<ir::U32>(rn, amount).SetType(type);
+            auto amount = __ And(ir::ValueType::U32, rm, SingleOperand(ir::Imm{width - 1}));
+            result = is64 ? __ LsrValue(type, rn, amount) : __ LsrValue(type, rn, amount);
             break;
         }
         case ASRV_w:
         case ASRV_x: {
-            auto amount = __ And<ir::U32>(rm, SingleOperand(ir::Imm{width - 1}))
-                                  .SetType(ir::ValueType::U32);
-            result = is64 ? __ AsrValue<ir::U64>(rn.SetCastType(stype), amount).SetType(type)
-                          : __ AsrValue<ir::U32>(rn.SetCastType(stype), amount).SetType(type);
+            auto amount = __ And(ir::ValueType::U32, rm, SingleOperand(ir::Imm{width - 1}));
+            result = is64 ? __ AsrValue(type, rn.SetCastType(stype), amount)
+                          : __ AsrValue(type, rn.SetCastType(stype), amount);
             break;
         }
         case RORV_w:
         case RORV_x: {
-            auto amount = __ And<ir::U32>(rm, SingleOperand(ir::Imm{width - 1}))
-                                  .SetType(ir::ValueType::U32);
-            result = is64 ? __ RorValue<ir::U64>(rn, amount).SetType(type)
-                          : __ RorValue<ir::U32>(rn, amount).SetType(type);
+            auto amount = __ And(ir::ValueType::U32, rm, SingleOperand(ir::Imm{width - 1}));
+            result = is64 ? __ RorValue(type, rn, amount) : __ RorValue(type, rn, amount);
             break;
         }
         default:
@@ -471,10 +448,10 @@ void A64Decoder::VisitDataProcessing3Source(const Instruction* instr) {
             auto rn = ReadRegister(instr->GetRn(), type);
             auto rm = ReadRegister(instr->GetRm(), type);
             auto ra = ReadRegister(instr->GetRa(), type);
-            auto mul = is64 ? __ Mul<ir::U64>(rn, SingleOperand(rm)).SetType(type)
-                            : __ Mul<ir::U32>(rn, SingleOperand(rm)).SetType(type);
-            result = is64 ? __ Add<ir::U64>(ra, SingleOperand(mul)).SetType(type)
-                          : __ Add<ir::U32>(ra, SingleOperand(mul)).SetType(type);
+            auto mul = is64 ? __ Mul(type, rn, SingleOperand(rm))
+                            : __ Mul(type, rn, SingleOperand(rm));
+            result = is64 ? __ Add(type, ra, SingleOperand(mul))
+                          : __ Add(type, ra, SingleOperand(mul));
             if (is64) {
                 WriteXRegister(instr->GetRd(), result);
             } else {
@@ -487,10 +464,10 @@ void A64Decoder::VisitDataProcessing3Source(const Instruction* instr) {
             auto rn = ReadRegister(instr->GetRn(), type);
             auto rm = ReadRegister(instr->GetRm(), type);
             auto ra = ReadRegister(instr->GetRa(), type);
-            auto mul = is64 ? __ Mul<ir::U64>(rn, SingleOperand(rm)).SetType(type)
-                            : __ Mul<ir::U32>(rn, SingleOperand(rm)).SetType(type);
-            result = is64 ? __ Sub<ir::U64>(ra, SingleOperand(mul)).SetType(type)
-                          : __ Sub<ir::U32>(ra, SingleOperand(mul)).SetType(type);
+            auto mul = is64 ? __ Mul(type, rn, SingleOperand(rm))
+                            : __ Mul(type, rn, SingleOperand(rm));
+            result = is64 ? __ Sub(type, ra, SingleOperand(mul))
+                          : __ Sub(type, ra, SingleOperand(mul));
             if (is64) {
                 WriteXRegister(instr->GetRd(), result);
             } else {
@@ -503,22 +480,20 @@ void A64Decoder::VisitDataProcessing3Source(const Instruction* instr) {
             auto rn = ReadWRegister(instr->GetRn());
             auto rm = ReadWRegister(instr->GetRm());
             auto ra = ReadXRegister(instr->GetRa());
-            auto l = __ ZeroExtend64(rn).SetType(ir::ValueType::U64);
-            auto r = __ ZeroExtend64(rm).SetType(ir::ValueType::U64);
-            auto mul = __ Mul<ir::U64>(l, SingleOperand(r)).SetType(ir::ValueType::U64);
-            WriteXRegister(instr->GetRd(),
-                           __ Add<ir::U64>(ra, SingleOperand(mul)).SetType(ir::ValueType::U64));
+            auto l = __ ZeroExtend64(ir::ValueType::U64, rn);
+            auto r = __ ZeroExtend64(ir::ValueType::U64, rm);
+            auto mul = __ Mul(ir::ValueType::U64, l, SingleOperand(r));
+            WriteXRegister(instr->GetRd(), __ Add(ir::ValueType::U64, ra, SingleOperand(mul)));
             return;
         }
         case UMSUBL_x: {
             auto rn = ReadWRegister(instr->GetRn());
             auto rm = ReadWRegister(instr->GetRm());
             auto ra = ReadXRegister(instr->GetRa());
-            auto l = __ ZeroExtend64(rn).SetType(ir::ValueType::U64);
-            auto r = __ ZeroExtend64(rm).SetType(ir::ValueType::U64);
-            auto mul = __ Mul<ir::U64>(l, SingleOperand(r)).SetType(ir::ValueType::U64);
-            WriteXRegister(instr->GetRd(),
-                           __ Sub<ir::U64>(ra, SingleOperand(mul)).SetType(ir::ValueType::U64));
+            auto l = __ ZeroExtend64(ir::ValueType::U64, rn);
+            auto r = __ ZeroExtend64(ir::ValueType::U64, rm);
+            auto mul = __ Mul(ir::ValueType::U64, l, SingleOperand(r));
+            WriteXRegister(instr->GetRd(), __ Sub(ir::ValueType::U64, ra, SingleOperand(mul)));
             return;
         }
         case SMADDL_x: {
@@ -528,8 +503,7 @@ void A64Decoder::VisitDataProcessing3Source(const Instruction* instr) {
             auto l = SignExtendValue(rn, 32);
             auto r = SignExtendValue(rm, 32);
             auto mul = __ Mul<ir::U64>(l, SingleOperand(r));
-            WriteXRegister(instr->GetRd(),
-                           __ Add<ir::U64>(ra, SingleOperand(mul)).SetType(ir::ValueType::U64));
+            WriteXRegister(instr->GetRd(), __ Add(ir::ValueType::U64, ra, SingleOperand(mul)));
             return;
         }
         case SMSUBL_x: {
@@ -539,8 +513,7 @@ void A64Decoder::VisitDataProcessing3Source(const Instruction* instr) {
             auto l = SignExtendValue(rn, 32);
             auto r = SignExtendValue(rm, 32);
             auto mul = __ Mul<ir::U64>(l, SingleOperand(r));
-            WriteXRegister(instr->GetRd(),
-                           __ Sub<ir::U64>(ra, SingleOperand(mul)).SetType(ir::ValueType::U64));
+            WriteXRegister(instr->GetRd(), __ Sub(ir::ValueType::U64, ra, SingleOperand(mul)));
             return;
         }
         case SMULH_x:
@@ -548,52 +521,36 @@ void A64Decoder::VisitDataProcessing3Source(const Instruction* instr) {
             auto left = ReadXRegister(instr->GetRn());
             auto right = ReadXRegister(instr->GetRm());
             auto low32 = [&](ir::Value value) {
-                return __ And<ir::U64>(value, SingleOperand(ir::Imm{0xFFFFFFFF}))
-                        .SetType(ir::ValueType::U64);
+                return __ And(ir::ValueType::U64, value, SingleOperand(ir::Imm{0xFFFFFFFF}));
             };
-            auto left_high = __ LsrImm<ir::U64>(left, ir::Imm{32})
-                                     .SetType(ir::ValueType::U64);
-            auto right_high = __ LsrImm<ir::U64>(right, ir::Imm{32})
-                                      .SetType(ir::ValueType::U64);
-            auto product00 = __ Mul<ir::U64>(low32(left), SingleOperand(low32(right)))
-                                     .SetType(ir::ValueType::U64);
-            auto product01 = __ Mul<ir::U64>(low32(left), SingleOperand(right_high))
-                                     .SetType(ir::ValueType::U64);
-            auto product10 = __ Mul<ir::U64>(left_high, SingleOperand(low32(right)))
-                                     .SetType(ir::ValueType::U64);
-            auto product11 = __ Mul<ir::U64>(left_high, SingleOperand(right_high))
-                                     .SetType(ir::ValueType::U64);
-            auto middle = __ Add<ir::U64>(
-                    __ LsrImm<ir::U64>(product00, ir::Imm{32}),
-                    SingleOperand(low32(product01)))
-                                  .SetType(ir::ValueType::U64);
-            middle = __ Add<ir::U64>(middle, SingleOperand(low32(product10)))
-                             .SetType(ir::ValueType::U64);
-            auto high = __ Add<ir::U64>(
-                    product11,
-                    SingleOperand(__ LsrImm<ir::U64>(product01, ir::Imm{32})))
-                                .SetType(ir::ValueType::U64);
-            high = __ Add<ir::U64>(
-                    high,
-                    SingleOperand(__ LsrImm<ir::U64>(product10, ir::Imm{32})))
-                           .SetType(ir::ValueType::U64);
-            high = __ Add<ir::U64>(
-                    high,
-                    SingleOperand(__ LsrImm<ir::U64>(middle, ir::Imm{32})))
-                           .SetType(ir::ValueType::U64);
+            auto left_high = __ LsrImm(ir::ValueType::U64, left, ir::Imm{32});
+            auto right_high = __ LsrImm(ir::ValueType::U64, right, ir::Imm{32});
+            auto product00 = __ Mul(ir::ValueType::U64, low32(left), SingleOperand(low32(right)));
+            auto product01 = __ Mul(ir::ValueType::U64, low32(left), SingleOperand(right_high));
+            auto product10 = __ Mul(ir::ValueType::U64, left_high, SingleOperand(low32(right)));
+            auto product11 = __ Mul(ir::ValueType::U64, left_high, SingleOperand(right_high));
+            auto middle = __ Add(ir::ValueType::U64,
+                                 __ LsrImm<ir::U64>(product00, ir::Imm{32}),
+                                 SingleOperand(low32(product01)));
+            middle = __ Add(ir::ValueType::U64, middle, SingleOperand(low32(product10)));
+            auto high = __ Add(ir::ValueType::U64,
+                               product11,
+                               SingleOperand(__ LsrImm<ir::U64>(product01, ir::Imm{32})));
+            high = __ Add(ir::ValueType::U64,
+                          high,
+                          SingleOperand(__ LsrImm<ir::U64>(product10, ir::Imm{32})));
+            high = __ Add(ir::ValueType::U64,
+                          high,
+                          SingleOperand(__ LsrImm<ir::U64>(middle, ir::Imm{32})));
             if (instr->Mask(DataProcessing3SourceMask) == SMULH_x) {
-                auto left_sign = __ AsrImm<ir::U64>(left, ir::Imm{63})
-                                         .SetType(ir::ValueType::U64);
-                auto right_sign = __ AsrImm<ir::U64>(right, ir::Imm{63})
-                                          .SetType(ir::ValueType::U64);
-                high = __ Sub<ir::U64>(
-                        high,
-                        SingleOperand(__ And<ir::U64>(left_sign, SingleOperand(right))))
-                               .SetType(ir::ValueType::U64);
-                high = __ Sub<ir::U64>(
-                        high,
-                        SingleOperand(__ And<ir::U64>(right_sign, SingleOperand(left))))
-                               .SetType(ir::ValueType::U64);
+                auto left_sign = __ AsrImm(ir::ValueType::U64, left, ir::Imm{63});
+                auto right_sign = __ AsrImm(ir::ValueType::U64, right, ir::Imm{63});
+                high = __ Sub(ir::ValueType::U64,
+                              high,
+                              SingleOperand(__ And<ir::U64>(left_sign, SingleOperand(right))));
+                high = __ Sub(ir::ValueType::U64,
+                              high,
+                              SingleOperand(__ And<ir::U64>(right_sign, SingleOperand(left))));
             }
             WriteXRegister(instr->GetRd(), high);
             return;
@@ -620,26 +577,25 @@ void A64Decoder::VisitConditionalSelect(const Instruction* instr) {
             break;
         case CSINC_w:
         case CSINC_x:
-            false_val = is64 ? __ Add<ir::U64>(rm, SingleOperand(ir::Imm{u32(1)})).SetType(type)
-                             : __ Add<ir::U32>(rm, SingleOperand(ir::Imm{u32(1)})).SetType(type);
+            false_val = is64 ? __ Add(type, rm, SingleOperand(ir::Imm{u32(1)}))
+                             : __ Add(type, rm, SingleOperand(ir::Imm{u32(1)}));
             break;
         case CSINV_w:
         case CSINV_x:
-            false_val = is64
-                    ? __ Xor<ir::U64>(rm, SingleOperand(ir::Imm{u64(-1)})).SetType(type)
-                    : __ Xor<ir::U32>(rm, SingleOperand(ir::Imm{u32(-1)})).SetType(type);
+            false_val = is64 ? __ Xor(type, rm, SingleOperand(ir::Imm{u64(-1)}))
+                             : __ Xor(type, rm, SingleOperand(ir::Imm{u32(-1)}));
             break;
         case CSNEG_w:
         case CSNEG_x:
-            false_val = is64 ? __ Sub<ir::U64>(ImmValue(0, type), SingleOperand(rm)).SetType(type)
-                             : __ Sub<ir::U32>(ImmValue(0, type), SingleOperand(rm)).SetType(type);
+            false_val = is64 ? __ Sub(type, ImmValue(0, type), SingleOperand(rm))
+                             : __ Sub(type, ImmValue(0, type), SingleOperand(rm));
             break;
         default:
             Interrupt(InterruptReason::FALLBACK, current_pc);
             return;
     }
 
-    auto result = __ CondSelect(cond, rn, false_val).SetType(type);
+    auto result = __ CondSelect(type, cond, rn, false_val);
     if (is64) {
         WriteXRegister(instr->GetRd(), result);
     } else {
@@ -660,30 +616,23 @@ void A64Decoder::ConditionalCompareHelper(const Instruction* instr,
     const bool z = (nzcv & 4) != 0;
     const u8 c = (nzcv >> 1) & 1;
     const u8 v = nzcv & 1;
-    auto fallback = is64
-            ? __ Sub<ir::U64>(ImmValue(1, type), SingleOperand(ir::Imm{0}))
-                      .SetType(type)
-            : __ Sub<ir::U32>(ImmValue(1, type), SingleOperand(ir::Imm{0}))
-                      .SetType(type);
+    auto fallback = is64 ? __ Sub(type, ImmValue(1, type), SingleOperand(ir::Imm{0}))
+
+                         : __ Sub(type, ImmValue(1, type), SingleOperand(ir::Imm{0}));
     __ SaveFlags(fallback, ir::Flags::NZ);
     __ SetCarry(ImmValue(c, ir::ValueType::U8));
     if (n) {
-        auto negative = is64
-                ? __ Sub<ir::U64>(
-                          ImmValue(0, type), SingleOperand(ir::Imm{u64(1) << 63}))
-                          .SetType(type)
-                : __ Sub<ir::U32>(
-                          ImmValue(0, type), SingleOperand(ir::Imm{u32(1) << 31}))
-                          .SetType(type);
+        auto negative =
+                is64 ? __ Sub(type, ImmValue(0, type), SingleOperand(ir::Imm{u64(1) << 63}))
+
+                     : __ Sub(type, ImmValue(0, type), SingleOperand(ir::Imm{u32(1) << 31}));
         __ SaveFlags(negative, ir::Flags::Negate);
         __ SetCarry(ImmValue(c, ir::ValueType::U8));
     }
     if (z) {
-        auto zero = is64
-                ? __ Sub<ir::U64>(ImmValue(0, type), SingleOperand(ir::Imm{0}))
-                          .SetType(type)
-                : __ Sub<ir::U32>(ImmValue(0, type), SingleOperand(ir::Imm{0}))
-                          .SetType(type);
+        auto zero = is64 ? __ Sub(type, ImmValue(0, type), SingleOperand(ir::Imm{0}))
+
+                         : __ Sub(type, ImmValue(0, type), SingleOperand(ir::Imm{0}));
         __ SaveFlags(zero, ir::Flags::Zero);
         __ SetCarry(ImmValue(c, ir::ValueType::U8));
     }
@@ -692,21 +641,17 @@ void A64Decoder::ConditionalCompareHelper(const Instruction* instr,
 
     __ BindLabel(compare);
     const bool is_ccmp = instr->Mask(ConditionalCompareMask) == CCMP;
-    auto result = is64
-        ? (is_ccmp
-                   ? __ Sub<ir::U64>(rn, SingleOperand(op2)).SetType(type)
-                   : __ Add<ir::U64>(rn, SingleOperand(op2)).SetType(type))
-        : (is_ccmp
-                   ? __ Sub<ir::U32>(rn, SingleOperand(op2)).SetType(type)
-                   : __ Add<ir::U32>(rn, SingleOperand(op2)).SetType(type));
+    auto result = is64 ? (is_ccmp ? __ Sub(type, rn, SingleOperand(op2))
+                                  : __ Add(type, rn, SingleOperand(op2)))
+                       : (is_ccmp ? __ Sub(type, rn, SingleOperand(op2))
+                                  : __ Add(type, rn, SingleOperand(op2)));
     __ SaveFlags(result, ir::Flags::NZCV);
     // GetFlags commits the JIT's lazy NZCV before this path rejoins the
     // immediate-NZCV fallback path. Keep its value data-dependent so DCE
     // cannot discard the commit.
-    auto committed = __ GetFlags(result, ir::Flags::NZCV).SetType(ir::ValueType::U64);
+    auto committed = __ GetFlags(ir::ValueType::U64, result, ir::Flags::NZCV);
     auto carry = CondPassed(cs);
-    __ SetCarry(__ Select(__ TestNotZero(committed), carry, carry)
-                        .SetType(ir::ValueType::U8));
+    __ SetCarry(__ Select(ir::ValueType::U8, __ TestNotZero(committed), carry, carry));
     __ BindLabel(done);
 }
 
@@ -730,42 +675,75 @@ void A64Decoder::VisitDataProcessing1Source(const Instruction* instr) {
 
     // Helper: byte-swap within each 16-bit half-pair (REV16 step).
     auto swap_bytes_in_pairs = [&](ir::Value x) -> ir::Value {
-        return __ Or<ir::U64>(
-            __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xFF00FF00FF00FF00)})).SetType(ir::ValueType::U64), ir::Imm{8}).SetType(ir::ValueType::U64),
-            SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x00FF00FF00FF00FF)})).SetType(ir::ValueType::U64), ir::Imm{8}).SetType(ir::ValueType::U64))
-        ).SetType(ir::ValueType::U64);
+        return __
+        Or(ir::ValueType::U64,
+           __ LsrImm(ir::ValueType::U64,
+                     __ And(ir::ValueType::U64, x, SingleOperand(ir::Imm{u64(0xFF00FF00FF00FF00)})),
+                     ir::Imm{8}),
+           SingleOperand(__ LslImm(
+                   ir::ValueType::U64,
+                   __ And(ir::ValueType::U64, x, SingleOperand(ir::Imm{u64(0x00FF00FF00FF00FF)})),
+                   ir::Imm{8})));
     };
     auto swap16 = [&](ir::Value x) -> ir::Value {
-        return __ Or<ir::U64>(
-            __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xFFFF0000FFFF0000)})).SetType(ir::ValueType::U64), ir::Imm{16}).SetType(ir::ValueType::U64),
-            SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x0000FFFF0000FFFF)})).SetType(ir::ValueType::U64), ir::Imm{16}).SetType(ir::ValueType::U64))
-        ).SetType(ir::ValueType::U64);
+        return __
+        Or(ir::ValueType::U64,
+           __ LsrImm(ir::ValueType::U64,
+                     __ And(ir::ValueType::U64, x, SingleOperand(ir::Imm{u64(0xFFFF0000FFFF0000)})),
+                     ir::Imm{16}),
+           SingleOperand(__ LslImm(
+                   ir::ValueType::U64,
+                   __ And(ir::ValueType::U64, x, SingleOperand(ir::Imm{u64(0x0000FFFF0000FFFF)})),
+                   ir::Imm{16})));
     };
     auto swap32 = [&](ir::Value x) -> ir::Value {
-        return __ Or<ir::U64>(
-            __ LsrImm<ir::U64>(x, ir::Imm{32}).SetType(ir::ValueType::U64),
-            SingleOperand(__ LslImm<ir::U64>(x, ir::Imm{32}).SetType(ir::ValueType::U64))
-        ).SetType(ir::ValueType::U64);
+        return __ Or(ir::ValueType::U64,
+                     __ LsrImm(ir::ValueType::U64, x, ir::Imm{32}),
+                     SingleOperand(__ LslImm(ir::ValueType::U64, x, ir::Imm{32})));
     };
 
     switch (opcode) {
         case 0x00: {  // RBIT
             auto x = Widen(rn);
             // Swap odd/even bits
-            x = __ Or<ir::U64>(
-                __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xAAAAAAAAAAAAAAAA)})).SetType(ir::ValueType::U64), ir::Imm{1}).SetType(ir::ValueType::U64),
-                SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x5555555555555555)})).SetType(ir::ValueType::U64), ir::Imm{1}).SetType(ir::ValueType::U64))
-            ).SetType(ir::ValueType::U64);
+            x = __ Or(
+                    ir::ValueType::U64,
+                    __ LsrImm(ir::ValueType::U64,
+                              __ And(ir::ValueType::U64,
+                                     x,
+                                     SingleOperand(ir::Imm{u64(0xAAAAAAAAAAAAAAAA)})),
+                              ir::Imm{1}),
+                    SingleOperand(__ LslImm(ir::ValueType::U64,
+                                            __ And(ir::ValueType::U64,
+                                                   x,
+                                                   SingleOperand(ir::Imm{u64(0x5555555555555555)})),
+                                            ir::Imm{1})));
             // Swap pairs
-            x = __ Or<ir::U64>(
-                __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xCCCCCCCCCCCCCCCC)})).SetType(ir::ValueType::U64), ir::Imm{2}).SetType(ir::ValueType::U64),
-                SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x3333333333333333)})).SetType(ir::ValueType::U64), ir::Imm{2}).SetType(ir::ValueType::U64))
-            ).SetType(ir::ValueType::U64);
+            x = __ Or(
+                    ir::ValueType::U64,
+                    __ LsrImm(ir::ValueType::U64,
+                              __ And(ir::ValueType::U64,
+                                     x,
+                                     SingleOperand(ir::Imm{u64(0xCCCCCCCCCCCCCCCC)})),
+                              ir::Imm{2}),
+                    SingleOperand(__ LslImm(ir::ValueType::U64,
+                                            __ And(ir::ValueType::U64,
+                                                   x,
+                                                   SingleOperand(ir::Imm{u64(0x3333333333333333)})),
+                                            ir::Imm{2})));
             // Swap nibbles
-            x = __ Or<ir::U64>(
-                __ LsrImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0xF0F0F0F0F0F0F0F0)})).SetType(ir::ValueType::U64), ir::Imm{4}).SetType(ir::ValueType::U64),
-                SingleOperand(__ LslImm<ir::U64>(__ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x0F0F0F0F0F0F0F0F)})).SetType(ir::ValueType::U64), ir::Imm{4}).SetType(ir::ValueType::U64))
-            ).SetType(ir::ValueType::U64);
+            x = __ Or(
+                    ir::ValueType::U64,
+                    __ LsrImm(ir::ValueType::U64,
+                              __ And(ir::ValueType::U64,
+                                     x,
+                                     SingleOperand(ir::Imm{u64(0xF0F0F0F0F0F0F0F0)})),
+                              ir::Imm{4}),
+                    SingleOperand(__ LslImm(ir::ValueType::U64,
+                                            __ And(ir::ValueType::U64,
+                                                   x,
+                                                   SingleOperand(ir::Imm{u64(0x0F0F0F0F0F0F0F0F)})),
+                                            ir::Imm{4})));
             x = swap_bytes_in_pairs(x);
             x = swap16(x);
             if (is64) x = swap32(x);
@@ -792,52 +770,41 @@ void A64Decoder::VisitDataProcessing1Source(const Instruction* instr) {
         }
         case 0x04: {  // CLZ
             auto x = Widen(rn);
-            x = __ Or<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{1})))
-                        .SetType(ir::ValueType::U64);
-            x = __ Or<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{2})))
-                        .SetType(ir::ValueType::U64);
-            x = __ Or<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{4})))
-                        .SetType(ir::ValueType::U64);
-            x = __ Or<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{8})))
-                        .SetType(ir::ValueType::U64);
-            x = __ Or<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{16})))
-                        .SetType(ir::ValueType::U64);
+            x = __ Or(ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{1})));
+            x = __ Or(ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{2})));
+            x = __ Or(ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{4})));
+            x = __ Or(ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{8})));
+            x = __ Or(ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{16})));
             if (is64) {
-                x = __ Or<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{32})))
-                            .SetType(ir::ValueType::U64);
+                x = __ Or(ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{32})));
             }
-            auto pairs = __ And<ir::U64>(
-                    __ LsrImm<ir::U64>(x, ir::Imm{1}),
-                    SingleOperand(ir::Imm{u64(0x5555555555555555)}))
-                                 .SetType(ir::ValueType::U64);
-            x = __ Sub<ir::U64>(x, SingleOperand(pairs)).SetType(ir::ValueType::U64);
-            auto quarters = __ And<ir::U64>(
-                    __ LsrImm<ir::U64>(x, ir::Imm{2}),
-                    SingleOperand(ir::Imm{u64(0x3333333333333333)}))
-                                    .SetType(ir::ValueType::U64);
-            x = __ Add<ir::U64>(
-                    __ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x3333333333333333)})),
-                    SingleOperand(quarters))
-                        .SetType(ir::ValueType::U64);
-            x = __ And<ir::U64>(
-                    __ Add<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{4}))),
-                    SingleOperand(ir::Imm{u64(0x0F0F0F0F0F0F0F0F)}))
-                        .SetType(ir::ValueType::U64);
-            x = __ Add<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{8})))
-                        .SetType(ir::ValueType::U64);
-            x = __ Add<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{16})))
-                        .SetType(ir::ValueType::U64);
+            auto pairs = __ And(ir::ValueType::U64,
+                                __ LsrImm<ir::U64>(x, ir::Imm{1}),
+                                SingleOperand(ir::Imm{u64(0x5555555555555555)}));
+            x = __ Sub(ir::ValueType::U64, x, SingleOperand(pairs));
+            auto quarters = __ And(ir::ValueType::U64,
+                                   __ LsrImm<ir::U64>(x, ir::Imm{2}),
+                                   SingleOperand(ir::Imm{u64(0x3333333333333333)}));
+            x = __ Add(ir::ValueType::U64,
+                       __ And<ir::U64>(x, SingleOperand(ir::Imm{u64(0x3333333333333333)})),
+                       SingleOperand(quarters));
+            x = __ And(ir::ValueType::U64,
+                       __ Add<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{4}))),
+                       SingleOperand(ir::Imm{u64(0x0F0F0F0F0F0F0F0F)}));
+            x = __ Add(ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{8})));
+            x = __ Add(ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{16})));
             if (is64) {
-                x = __ Add<ir::U64>(x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{32})))
-                            .SetType(ir::ValueType::U64);
+                x = __ Add(
+                        ir::ValueType::U64, x, SingleOperand(__ LsrImm<ir::U64>(x, ir::Imm{32})));
             }
-            auto pop = __ And<ir::U64>(x, SingleOperand(ir::Imm{is64 ? 0x7F : 0x3F}))
-                               .SetType(ir::ValueType::U64);
-            auto count = __ Sub<ir::U64>(
-                    ImmValue(is64 ? 64 : 32, ir::ValueType::U64),
-                    SingleOperand(pop))
-                                 .SetType(ir::ValueType::U64);
-            if (is64) WriteXRegister(rd, count); else WriteWRegister(rd, count);
+            auto pop = __ And(ir::ValueType::U64, x, SingleOperand(ir::Imm{is64 ? 0x7F : 0x3F}));
+            auto count = __ Sub(ir::ValueType::U64,
+                                ImmValue(is64 ? 64 : 32, ir::ValueType::U64),
+                                SingleOperand(pop));
+            if (is64)
+                WriteXRegister(rd, count);
+            else
+                WriteWRegister(rd, count);
             break;
         }
         case 0x05: {  // CLS

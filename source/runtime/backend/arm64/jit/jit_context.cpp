@@ -1,6 +1,6 @@
-#include "runtime/backend/arm64/alloc/target_analysis_traits.h"
-#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
 #include "base/logging.h"
+#include "runtime/backend/arm64/compile/actions.h"
+#include "runtime/backend/arm64/compile/effects.h"
 //
 // Created by 甘尧 on 2023/9/15.
 //
@@ -24,114 +24,56 @@ namespace swift::runtime::backend::arm64 {
 #define __ masm.
 
 // The spill slot count reserved in State must match the allocator's limit.
-static_assert(kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
-              "spill slot count mismatch between reg_alloc.h and context.h");
-
-namespace {
-
-bool IsSpillForwardBarrier(ir::OpCode op) {
-    using O = ir::OpCode;
-    switch (op) {
-        case O::LoadMemory:
-        case O::StoreMemory:
-        case O::LoadMemoryTSO:
-        case O::StoreMemoryTSO:
-        case O::MemoryCopy:
-        case O::MemoryCopyTSO:
-        case O::CompareAndSwap:
-        case O::CompareAndSwap128:
-        case O::CheckMemoryAlignment:
-        case O::AtomicExchange:
-        case O::AtomicFetchAdd:
-        case O::AtomicRMW:
-        case O::CallLambda:
-        case O::CallLocation:
-        case O::CallDynamic:
-        case O::X87Op:
-        case O::Sse42Str:
-        case O::Goto:
-        case O::NotGoto:
-        case O::BindLabel:
-            return true;
-        default:
-            return false;
-    }
-}
-
-bool IsPortableSpillForwardConsumer(ir::OpCode op) {
-    using O = ir::OpCode;
-    switch (op) {
-        case O::Add:
-        case O::Sub:
-        case O::Adc:
-        case O::Sbb:
-        case O::And:
-        case O::Or:
-        case O::Xor:
-        case O::Not:
-        case O::Select:
-        case O::SelectZero:
-        case O::CondSelect:
-        case O::LslImm:
-        case O::LsrImm:
-        case O::AsrImm:
-        case O::LslValue:
-        case O::LsrValue:
-        case O::AsrValue:
-        case O::GetOperand:
-        case O::SetHostGPR:
-        case O::StoreUniform:
-            return true;
-        default:
-            return false;
-    }
-}
-
-bool IsFlagsOnlySpillConsumer(ir::OpCode op) {
-    return op == ir::OpCode::SaveFlags || op == ir::OpCode::BranchOnlyFlags;
-}
-
-}  // namespace
+static_assert(compile::kMaxSpillSlots == sizeof(State::spill_area) / sizeof(u64),
+              "spill slot count mismatch between Allocation and State");
 
 JitContext::JitContext(const std::shared_ptr<Module>& module,
-                       RegAlloc& reg_alloc,
+                       compile::AllocationView reg_alloc,
+                       const UnitActions& actions,
                        bool enable_direct_link)
-        : module(module), features(ResolveFeatureSet(module->GetModuleConfig())),
-          reg_alloc(reg_alloc), owned_masm(std::make_unique<MacroAssembler>()),
-          masm(*owned_masm) {
+        : module(module)
+        , features(ResolveFeatureSet(module->GetModuleConfig()))
+        , reg_alloc(reg_alloc)
+        , unit_actions(actions)
+        , owned_masm(std::make_unique<MacroAssembler>())
+        , masm(*owned_masm) {
     Initialize(enable_direct_link);
     if (reg_alloc.GPRLocationsFrozen())
-        BindFrozenGPRPlan(reg_alloc.GPRLocationGeneration(), reg_alloc.AllocationAttempt());
+        BindAllocationForEmission(reg_alloc.GPRLocationGeneration(), reg_alloc.AllocationAttempt());
 }
 
-bool JitContext::RequireGPRPlan(const ir::Block* block) const {
-    if (assembler_only_context || !reg_alloc.GPRAllocationComplete() ||
-        !reg_alloc.GPRLocationsFrozen() ||
-        gpr_generation != reg_alloc.GPRLocationGeneration() ||
-        gpr_attempt != reg_alloc.AllocationAttempt()) return false;
-    const auto* actions = reg_alloc.GPRPlanViewFor(block);
+bool JitContext::RequireBlockForEmission(const ir::Block* block) const {
+    if (!HasBoundAllocation()) return false;
+    const auto* certificate = unit_actions.Certificate();
     const auto& config = GetSvmConfig();
     const bool alu_split_audit = config.density_prof && config.ra_hot_coalesce_all;
     const bool encoder_alu_split_audit = density_profile_enabled && config.ra_hot_coalesce_all;
-    return actions && actions->pinned && actions->region &&
-           actions->region->options.alu_split_audit == alu_split_audit &&
-           encoder_alu_split_audit == alu_split_audit && actions->pinned->MatchesAllocation();
+    return certificate && unit_actions.HasPreparedScratch(block) &&
+           certificate->options.alu_split_audit == alu_split_audit &&
+           encoder_alu_split_audit == alu_split_audit;
 }
 
 JitContext::JitContext(const std::shared_ptr<Module>& module,
-                       RegAlloc& reg_alloc,
+                       compile::AllocationView reg_alloc,
+                       const UnitActions& actions,
                        MacroAssembler& assembler,
                        bool enable_direct_link)
-        : module(module), features(ResolveFeatureSet(module->GetModuleConfig())),
-          reg_alloc(reg_alloc), masm(assembler) {
+        : module(module)
+        , features(ResolveFeatureSet(module->GetModuleConfig()))
+        , reg_alloc(reg_alloc)
+        , unit_actions(actions)
+        , masm(assembler) {
     Initialize(enable_direct_link);
     if (reg_alloc.GPRLocationsFrozen())
-        BindFrozenGPRPlan(reg_alloc.GPRLocationGeneration(), reg_alloc.AllocationAttempt());
+        BindAllocationForEmission(reg_alloc.GPRLocationGeneration(), reg_alloc.AllocationAttempt());
 }
 
-JitContext::JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc,
-        MacroAssembler& assembler, AssemblerOnlyTag)
-        : JitContext(module, reg_alloc, assembler, false) {
+JitContext::JitContext(const std::shared_ptr<Module>& module,
+                       compile::AllocationView reg_alloc,
+                       const UnitActions& actions,
+                       MacroAssembler& assembler,
+                       AssemblerOnlyTag)
+        : JitContext(module, reg_alloc, actions, assembler, false) {
     assembler_only_context = true;
 }
 
@@ -189,6 +131,7 @@ void JitContext::AbsorbEmissionState(JitContext& region) {
     append(pending_return_sites, region.pending_return_sites);
     append(flags_merge_sites, region.flags_merge_sites);
     append(cycle_reason_sites, region.cycle_reason_sites);
+    append(pair_call_sites, region.pair_call_sites);
 }
 
 u64 JitContext::GetPairCallTrampoline() const {
@@ -330,59 +273,26 @@ void JitContext::RecordHotSpillWriteback() {
     RecordHotCounter(HotCoalesceCounter::SpillWritebacks);
 }
 
-void JitContext::BeginHotNaNGuard(u32 instruction_count) {
-    if (density_profile_enabled) {
-        ASSERT(!density_nan_open);
-        density_nan_start = CurrentBufferSize();
-        density_nan_open = true;
-    }
-    if (hot_coalesce_enabled) {
-        ASSERT(!hot_nan_open);
-        RecordHotCounter(HotCoalesceCounter::NaNGuardInstructions,
-                         instruction_count);
-        hot_nan_start = CurrentBufferSize();
-        hot_nan_expected = instruction_count;
-        hot_nan_open = true;
-        hot_shape.nan_guard_instructions += instruction_count;
-    }
-}
-
-void JitContext::EndHotNaNGuard() {
-    const u32 end = CurrentBufferSize();
-    if (density_profile_enabled) {
-        ASSERT(density_nan_open);
-        ASSERT(end >= density_nan_start);
-        density_nan_bytes += end - density_nan_start;
-        density_nan_open = false;
-    }
-    if (hot_coalesce_enabled) {
-        ASSERT(hot_nan_open);
-        ASSERT(end >= hot_nan_start);
-        ASSERT((end - hot_nan_start) / vixl::aarch64::kInstructionSize ==
-               hot_nan_expected);
-        hot_nan_ranges.push_back({hot_nan_start, end});
-        hot_nan_open = false;
-        hot_nan_expected = 0;
-    }
-}
-
 bool JitContext::HasAllocation(const ir::Value& value) {
-    return reg_alloc.ValueType(value) != RegAlloc::NONE;
+    return reg_alloc.ValueType(value) != compile::Allocation::NONE;
 }
 
 bool JitContext::SharesGPR(const ir::Value& left, const ir::Value& right) {
     if (cur_inst && (reg_alloc.PreservedGPRDefinitionAt(left.Id()) ||
                      reg_alloc.PreservedGPRDefinitionAt(right.Id()))) {
-        const auto a = reg_alloc.GPRLocationAt(left, cur_inst->Id(), RegAlloc::GPRView::WholeValue);
-        const auto b = reg_alloc.GPRLocationAt(right, cur_inst->Id(), RegAlloc::GPRView::WholeValue);
-        return a.kind == RegAlloc::GPR && b.kind == RegAlloc::GPR && a.slot == b.slot;
+        const auto a = reg_alloc.GPRLocationAt(
+                left, cur_inst->Id(), compile::Allocation::GPRView::WholeValue);
+        const auto b = reg_alloc.GPRLocationAt(
+                right, cur_inst->Id(), compile::Allocation::GPRView::WholeValue);
+        return a.kind == compile::Allocation::GPR && b.kind == compile::Allocation::GPR &&
+               a.slot == b.slot;
     }
     return SharesAllocatedGPR(reg_alloc, left, right);
 }
 
 bool JitContext::SharesFPR(const ir::Value& left, const ir::Value& right) {
-    return reg_alloc.ValueType(left) == RegAlloc::FPR &&
-           reg_alloc.ValueType(right) == RegAlloc::FPR &&
+    return reg_alloc.ValueType(left) == compile::Allocation::FPR &&
+           reg_alloc.ValueType(right) == compile::Allocation::FPR &&
            reg_alloc.ValueFPR(left).id == reg_alloc.ValueFPR(right).id;
 }
 
@@ -393,12 +303,12 @@ bool JitContext::IsFloatValue(const ir::Value& value) {
 
 CPUReg JitContext::Get(const ir::Value& value) {
     switch (reg_alloc.ValueType(value)) {
-        case RegAlloc::GPR:
+        case compile::Allocation::GPR:
             return X(value);
-        case RegAlloc::FPR:
+        case compile::Allocation::FPR:
             // BitCast may expose an integer view of a physical FPR.
             return V(value);
-        case RegAlloc::MEM:
+        case compile::Allocation::MEM:
             return IsFloatValue(value) ? CPUReg{SpillFPR(value)} : CPUReg{X(value)};
         default:
             ASSERT_MSG(false, "value has no register allocation");
@@ -409,25 +319,24 @@ CPUReg JitContext::Get(const ir::Value& value) {
 
 Register JitContext::UseGPR(const ir::Value& value, const ir::Inst* consumer) {
     const auto location = OperandLocation(value, consumer);
-    if (location.kind == RegAlloc::MEM) {
+    if (location.kind == compile::Allocation::MEM) {
         const auto reloaded = SpillGPR(value);
         return Register{reloaded.GetCode(), location.bits};
     }
-    ASSERT_MSG(location.kind == RegAlloc::GPR, "value has no GPR allocation");
+    ASSERT_MSG(location.kind == compile::Allocation::GPR, "value has no GPR allocation");
     return Register{location.slot, location.bits};
 }
 
-RegAlloc::GPRLocation JitContext::OperandLocation(
-        ir::Value value, const ir::Inst* consumer,
-        RegAlloc::GPRView view) const {
+compile::Allocation::GPRLocation JitContext::OperandLocation(
+        ir::Value value, const ir::Inst* consumer, compile::Allocation::GPRView view) const {
     ASSERT(!assembler_only_context && reg_alloc.GPRLocationsFrozen() &&
                 gpr_generation == reg_alloc.GPRLocationGeneration() && gpr_attempt == reg_alloc.AllocationAttempt());
-    const RegAlloc& locations = reg_alloc;
+    compile::AllocationView locations = reg_alloc;
     return locations.GPRLocationAt(value, consumer ? consumer->Id() : UINT32_MAX, view);
 }
 
 Register JitContext::R(const ir::Value& value, bool auto_cast) {
-    if (value.Type() == ir::ValueType::U64) {
+    if (ir::IsScalarIntegerType(value.Type(), 64)) {
         return X(value);
     } else {
         if (auto_cast && value.Def()->IsGetHostRegOperation()) {
@@ -449,35 +358,43 @@ Register JitContext::R(const ir::Value& value, bool auto_cast) {
 }
 
 Register JitContext::RForWrite(const ir::Value& value) {
-    const auto location = reg_alloc.GPRLocationAt(
-            value, cur_inst ? cur_inst->Id() : UINT32_MAX, RegAlloc::GPRView::WholeValue);
-    if (location.kind == RegAlloc::MEM) return SpillGPR(value, true);
-    ASSERT(location.kind == RegAlloc::GPR);
-    return Register{location.slot, value.Type() == ir::ValueType::U64 ? 64u : 32u};
+    return RForWrite(value.Id(), value.Type());
+}
+
+Register JitContext::RForWrite(u32 id, ir::ValueType type) {
+    const auto location = reg_alloc.GPRLocationAt(id,
+                                                  type,
+                                                  cur_inst ? cur_inst->Id() : UINT32_MAX,
+                                                  compile::Allocation::GPRView::WholeValue);
+    if (location.kind == compile::Allocation::MEM) return SpillGPR(id, true);
+    ASSERT(location.kind == compile::Allocation::GPR);
+    return Register{location.slot, ir::IsScalarIntegerType(type, 64) ? 64u : 32u};
 }
 
 XRegister JitContext::X(const ir::Value& value) {
-    const auto location = reg_alloc.GPRLocationAt(
-            value, cur_inst ? cur_inst->Id() : UINT32_MAX, RegAlloc::GPRView::WholeValue);
-    if (location.kind == RegAlloc::MEM) {
+    const auto location = reg_alloc.GPRLocationAt(value,
+                                                  cur_inst ? cur_inst->Id() : UINT32_MAX,
+                                                  compile::Allocation::GPRView::WholeValue);
+    if (location.kind == compile::Allocation::MEM) {
         return XRegister(SpillGPR(value).GetCode());
     }
-    ASSERT(location.kind == RegAlloc::GPR);
+    ASSERT(location.kind == compile::Allocation::GPR);
     return XRegister(location.slot);
 }
 
 WRegister JitContext::W(const ir::Value& value) {
-    const auto location = reg_alloc.GPRLocationAt(
-            value, cur_inst ? cur_inst->Id() : UINT32_MAX, RegAlloc::GPRView::WholeValue);
-    if (location.kind == RegAlloc::MEM) {
+    const auto location = reg_alloc.GPRLocationAt(value,
+                                                  cur_inst ? cur_inst->Id() : UINT32_MAX,
+                                                  compile::Allocation::GPRView::WholeValue);
+    if (location.kind == compile::Allocation::MEM) {
         return WRegister(SpillGPR(value).GetCode());
     }
-    ASSERT(location.kind == RegAlloc::GPR);
+    ASSERT(location.kind == compile::Allocation::GPR);
     return WRegister(location.slot);
 }
 
 VRegister JitContext::V(const ir::Value& value) {
-    if (reg_alloc.ValueType(value) == RegAlloc::MEM) {
+    if (reg_alloc.ValueType(value) == compile::Allocation::MEM) {
         return SpillFPR(value);
     }
     auto reg = reg_alloc.ValueFPR(value);
@@ -485,25 +402,28 @@ VRegister JitContext::V(const ir::Value& value) {
 }
 
 Register JitContext::SpillGPR(const ir::Value& value, bool definition) {
-    const auto slot = reg_alloc.ValueMem(value);
-    ASSERT_MSG(slot.offset < kMaxSpillSlots, "spill slot beyond reserved area");
+    ASSERT(value.Defined());
+    return SpillGPR(value.Id(), definition || value.Def() == cur_inst);
+}
+
+Register JitContext::SpillGPR(u32 id, bool definition) {
+    const auto slot = reg_alloc.ValueMem(id);
+    ASSERT_MSG(slot.offset < compile::kMaxSpillSlots, "spill slot beyond reserved area");
     const u32 offset = state_offset_spill_area + slot.offset * sizeof(u64);
     if (cur_inst) {
-        if (const auto* reload = reg_alloc.SpillReloadAt(value, cur_inst->Id())) {
+        if (const auto* reload = reg_alloc.SpillReloadAt(id, cur_inst->Id())) {
             auto resident = XRegister(reload->reg);
             if (active_spill_reload_regions.size() <= reload->region) {
                 active_spill_reload_regions.resize(reload->region + 1);
                 slot_backed_spill_reload_regions.resize(reload->region + 1);
             }
-            if (definition || (value.Defined() && value.Def() == cur_inst)) {
+            if (definition) {
                 active_spill_reload_regions[reload->region] = true;
                 slot_backed_spill_reload_regions[reload->region] = false;
-                if (reload->fault_backed &&
-                    !spill_def_scratch.contains(value.Id())) {
-                    spill_def_scratch.emplace(value.Id(), reload->reg);
+                if (reload->fault_backed && !spill_def_scratch.contains(id)) {
+                    spill_def_scratch.emplace(id, reload->reg);
                     pending_spill_writes.push_back(
-                            {value.Id(), slot.offset,
-                             static_cast<u8>(reload->reg), false, true});
+                            {id, slot.offset, static_cast<u8>(reload->reg), false, true});
                 }
                 return resident;
             }
@@ -511,7 +431,7 @@ Register JitContext::SpillGPR(const ir::Value& value, bool definition) {
                 active_spill_reload_regions[reload->region] = true;
                 slot_backed_spill_reload_regions[reload->region] = true;
                 __ Ldr(resident, MemOperand(state, offset));
-                if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
+                if (RAShapeProfEnabled()) ++GetRAShapeCounters().spill_loads;
                 RecordHotSpillReload();
             } else if (slot_backed_spill_reload_regions[reload->region]) {
                 // The establishing reload may have been emitted on a
@@ -519,23 +439,22 @@ Register JitContext::SpillGPR(const ir::Value& value, bool definition) {
                 // unaligned-atomic path); reload again so the register is
                 // valid on the path reaching here.
                 __ Ldr(resident, MemOperand(state, offset));
-                if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
+                if (RAShapeProfEnabled()) ++GetRAShapeCounters().spill_loads;
                 RecordHotSpillReload();
             }
             return resident;
         }
     }
-    if (definition || (value.Defined() && value.Def() == cur_inst)) {
+    if (definition) {
         // Def access: nothing to reload yet. Hand out (or reuse) the
         // scratch register the emitter will compute into and queue the
         // deferred write-back (flushed at the next TickIR / block exit).
-        if (auto it = spill_def_scratch.find(value.Id()); it != spill_def_scratch.end()) {
+        if (auto it = spill_def_scratch.find(id); it != spill_def_scratch.end()) {
             return XRegister(it->second);
         }
         auto tmp = GetSpillTmpX();
-        spill_def_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
-        pending_spill_writes.push_back(
-                {value.Id(), slot.offset, static_cast<u8>(tmp.GetCode()), false});
+        spill_def_scratch.emplace(id, static_cast<u8>(tmp.GetCode()));
+        pending_spill_writes.push_back({id, slot.offset, static_cast<u8>(tmp.GetCode()), false});
         return tmp;
     }
     // Use access: reload from the spill slot. Any write-back of a value
@@ -553,27 +472,27 @@ Register JitContext::SpillGPR(const ir::Value& value, bool definition) {
     // does not dominate this use (e.g. an unaligned-atomic path skipped by a
     // forward branch), so reload the slot again -- unless the entry is a
     // forwarded def, whose register-only value the slot does not hold.
-    if (auto it = spill_use_scratch.find(value.Id()); it != spill_use_scratch.end()) {
+    if (auto it = spill_use_scratch.find(id); it != spill_use_scratch.end()) {
         const auto resident = XRegister(it->second);
-        if (!forwarded_spill_use_scratch.contains(value.Id())) {
+        if (!forwarded_spill_use_scratch.contains(id)) {
             __ Ldr(resident, MemOperand(state, offset));
-            if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
+            if (RAShapeProfEnabled()) ++GetRAShapeCounters().spill_loads;
             RecordHotSpillReload();
         }
         return resident;
     }
     auto tmp = GetSpillTmpX();
     __ Ldr(tmp, MemOperand(state, offset));
-    if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
+    if (RAShapeProfEnabled()) ++GetRAShapeCounters().spill_loads;
     RecordHotSpillReload();
-    spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
+    spill_use_scratch.emplace(id, static_cast<u8>(tmp.GetCode()));
     return tmp;
 }
 
 VRegister JitContext::SpillFPR(const ir::Value& value) {
     const auto slot = reg_alloc.ValueMem(value);
     // A spilled SIMD value occupies two consecutive u64 slots (16 bytes).
-    ASSERT_MSG(slot.offset + 1 < kMaxSpillSlots, "spill slot beyond reserved area");
+    ASSERT_MSG(slot.offset + 1 < compile::kMaxSpillSlots, "spill slot beyond reserved area");
     const u32 offset = state_offset_spill_area + slot.offset * sizeof(u64);
     if (value.Defined() && value.Def() == cur_inst) {
         if (auto it = spill_def_scratch.find(value.Id()); it != spill_def_scratch.end()) {
@@ -591,13 +510,13 @@ VRegister JitContext::SpillFPR(const ir::Value& value) {
     if (auto it = spill_use_scratch.find(value.Id()); it != spill_use_scratch.end()) {
         const auto resident = VRegister::GetVRegFromCode(it->second);
         __ Ldr(resident.Q(), MemOperand(state, offset));
-        if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
+        if (RAShapeProfEnabled()) ++GetRAShapeCounters().spill_loads;
         RecordHotSpillReload();
         return resident;
     }
     auto tmp = GetSpillTmpV();
     __ Ldr(tmp.Q(), MemOperand(state, offset));
-    if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_loads;
+    if (RAShapeProfEnabled()) ++GetRAShapeCounters().spill_loads;
     RecordHotSpillReload();
     spill_use_scratch.emplace(value.Id(), static_cast<u8>(tmp.GetCode()));
     return tmp;
@@ -621,8 +540,7 @@ std::optional<u32> JitContext::PendingScalarSpillValue() const {
     return value;
 }
 
-bool JitContext::AdoptPendingSpillWrite(
-        const PendingSpillWrite& write, ir::Inst* consumer) {
+bool JitContext::AdoptPendingSpillWrite(const PendingSpillWrite& write, const ir::Inst* consumer) {
     if (!consumer || write.is_fpr) {
         return false;
     }
@@ -652,7 +570,7 @@ void JitContext::EmitSpillWriteback(const PendingSpillWrite& write) {
     } else {
         __ Str(XRegister(write.reg), MemOperand(state, offset));
     }
-    if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_stores;
+    if (RAShapeProfEnabled()) ++GetRAShapeCounters().spill_stores;
     RecordHotSpillWriteback();
 }
 
@@ -660,14 +578,15 @@ void JitContext::ExecuteGPRPreservations(u32 instruction) {
     ASSERT(reg_alloc.GPRLocationsFrozen() && cur_inst && cur_inst->Id() == instruction);
     for (const auto& copy : reg_alloc.GPRPreservationsBefore(instruction)) {
         const auto source = XRegister(copy.source);
-        if (copy.destination_kind == RegAlloc::GPR) {
+        if (copy.destination_kind == compile::Allocation::GPR) {
             ASSERT(cur_dirty_gprs.Get(copy.destination));
             if (copy.width == 8 && copy.bit_offset == 0)
                 __ Mov(XRegister(copy.destination), source);
             else
                 __ Ubfx(XRegister(copy.destination), source, copy.bit_offset, copy.width * 8);
         } else {
-            ASSERT(copy.destination_kind == RegAlloc::MEM && copy.destination < kMaxSpillSlots);
+            ASSERT(copy.destination_kind == compile::Allocation::MEM &&
+                   copy.destination < compile::kMaxSpillSlots);
             auto stored = source;
             if (copy.width != 8 || copy.bit_offset) {
                 const auto* owned_reload = reg_alloc.SpillReloadAt(copy.value, instruction);
@@ -677,39 +596,29 @@ void JitContext::ExecuteGPRPreservations(u32 instruction) {
                 __ Ubfx(stored, source, copy.bit_offset, copy.width * 8);
             }
             __ Str(stored, MemOperand(state, state_offset_spill_area + copy.destination * sizeof(u64)));
-            if (RAShapeProfEnabled()) ++reg_alloc.RAShape().spill_stores;
+            if (RAShapeProfEnabled()) ++GetRAShapeCounters().spill_stores;
             RecordHotSpillWriteback();
         }
     }
 }
 
-std::optional<u8> JitContext::FlushSpillWrites(
-        ir::Inst* consumer,
-        bool forward_spilled_width_input,
-        bool adopt_pending_spill_write,
-        std::optional<u32> forward_spilled_memory_input,
-        bool consumer_deferred) {
+std::optional<u8> JitContext::FlushSpillWrites(const ir::Inst* consumer,
+                                               const InstructionScratchFacts* scratch,
+                                               bool forward_spilled_width_input,
+                                               bool adopt_pending_spill_write,
+                                               std::optional<u32> forward_spilled_memory_input,
+                                               bool consumer_deferred) {
     std::optional<u8> forwarded;
     if (pending_spill_writes.empty()) return forwarded;
+    ASSERT(!consumer || scratch);
     std::optional<PendingSpillWrite> retained;
     // Missing or stale facts cannot authorize a pending scratch forward.
-    std::optional<u32> fixed;
-    const FrozenGPRPlan* spill_plan = nullptr;
-    const FrozenGPRPlan::OperandPlan* spill_consumer = nullptr;
-    if (consumer && cur_block && RequireGPRPlan(cur_block)) {
-        const auto* actions = reg_alloc.GPRPlanViewFor(cur_block);
-        if (actions->region && actions->region->MatchesTargetInputs(reg_alloc, GetConfig(), features)) {
-            spill_plan = actions->pinned.get();
-            spill_consumer = spill_plan->SpillConsumerFor(consumer);
-            if (spill_consumer) fixed = spill_consumer->spill_clobbers;
-        }
-    }
-    // Reuse the exact clobber lookup for the frozen opcode qualification.
-    // No-input instructions have a scratch record; manual encoders without
-    // an admitted record use the allocator's compatibility classifier.
-    const auto* scratch = !spill_consumer && spill_plan ? spill_plan->ScratchFor(consumer) : nullptr;
-    const auto consumer_kind = spill_consumer ? spill_consumer->spill_consumer :
-            scratch ? scratch->spill_consumer : PrepareSpillForwardConsumer(consumer);
+    const bool prepared_spill = consumer && RequireBlockForEmission(cur_block) &&
+                               unit_actions.MatchesTargetInputs(reg_alloc, GetConfig(), features);
+    const auto fixed = prepared_spill ? std::optional<u32>{scratch->fixed_clobbers}
+                                     : std::nullopt;
+    const auto consumer_kind = prepared_spill ? scratch->spill_consumer
+                                            : SpillForwardConsumerKind::Ordinary;
     for (auto& write : pending_spill_writes) {
         if (write.required_backing) {
             EmitSpillWriteback(write);
@@ -717,19 +626,19 @@ std::optional<u8> JitContext::FlushSpillWrites(
         }
         // Consume only a certified pair; required backing and FPR handling win.
         if (!write.is_fpr && consumer && consumer_kind == SpillForwardConsumerKind::FlagsOnly &&
-            cur_block && RequireGPRPlan(cur_block)) {
-            const auto* actions = reg_alloc.GPRPlanViewFor(cur_block);
-            if (actions->flags_only_spills.Discards(consumer, write.value)) continue;
+            cur_block && RequireBlockForEmission(cur_block)) {
+            if (consumer->GetBlock() == cur_block &&
+                unit_actions.DiscardsFlagsOnlySpill(consumer, write.value))
+                continue;
         }
         bool fixed_forward = false;
 #if defined(__linux__) && !defined(__ANDROID__)
         fixed_forward = write.reg == spill_scratch.GetCode();
 #endif
-        const auto input = consumer && !write.is_fpr
-                ? (spill_plan && spill_plan->UsesUnitScratchInputs()
-                        ? spill_plan->SpillInputFor(consumer, write.value)
-                        : PrepareSpillInput(consumer, write.value))
-                : SpillInputFacts{};
+        const auto input =
+                prepared_spill && !write.is_fpr
+                        ? unit_actions.SpillInputFor(consumer, write.value)
+                        : SpillInputFacts{};
         auto* definition = input.definition;
         if (definition && adopt_pending_spill_write &&
             AdoptPendingSpillWrite(write, consumer)) {
@@ -770,7 +679,7 @@ std::optional<u8> JitContext::FlushSpillWrites(
     return forwarded;
 }
 
-backend::ScratchNeed JitContext::CurrentBudget() const {
+compile::ScratchNeed JitContext::CurrentBudget() const {
     if (auxiliary_scratch) {
         return {7, backend::kDefaultScratchFPR};
     }
@@ -781,14 +690,8 @@ backend::ScratchNeed JitContext::CurrentBudget() const {
 }
 
 UnitScratchFacts JitContext::CurrentUnitScratch() const {
-    // Unit admission binds the exact strong owner; TickIR additionally checks
-    // the per-block identity. Temporary acquisitions only need to reject a
-    // retired allocation epoch, rather than repeatedly looking up that owner.
-    if (!assembler_only_context && instruction_scratch_plan &&
-        reg_alloc.GPRAllocationComplete() && reg_alloc.GPRLocationsFrozen() &&
-        instruction_scratch_plan->MatchesAllocation())
-        return instruction_scratch_plan->UnitScratch();
-    return PrepareUnitScratch(reg_alloc.GetGprs(), features);
+    ASSERT(HasBoundAllocation() && unit_actions.UnitScratch().prepared);
+    return unit_actions.UnitScratch();
 }
 
 XRegister JitContext::GetTmpX() {
@@ -854,7 +757,7 @@ VRegister JitContext::GetSpillTmpV() {
 
 Register JitContext::GetTmpGPR(ir::ValueType type) {
     auto x = GetTmpX();
-    return type == ir::ValueType::U64 ? x : x.W();
+    return ir::IsScalarIntegerType(type, 64) ? x : x.W();
 }
 
 VRegister JitContext::GetTmpV() {
@@ -891,7 +794,7 @@ bool JitContext::TryGetConsecutiveTmpV2(VRegister& first, VRegister& second) {
             return true;
         }
     }
-    if (RAShapeProfEnabled()) ++reg_alloc.RAShape().consecutive_pair_fallbacks;
+    if (RAShapeProfEnabled()) ++GetRAShapeCounters().consecutive_pair_fallbacks;
     return false;
 }
 
@@ -914,14 +817,12 @@ std::optional<JitContext::FaultRange>
 JitContext::PollCycleExit(ir::Location target, Label* exit, bool publish_frame) {
     if (!exit) return std::nullopt;
     if (module->GetAddressSpace().ExitLatchEnabled()) {
-        // Fault-only backedge poll: every exit_request publisher
-        // arms the latch page (SMC publish, SignalInterrupt, and
-        // the RCpc adaptive generation bump), so when a request is
-        // pending this dummy load faults into the same service
-        // veneer the ldarb branch below would take. Emitting the
-        // ldarb+cbz sequence as well would charge every backedge
-        // two extra instructions for a path the fault already
-        // covers. The fault range keeps publish_frame semantics.
+        // Every exit_request publisher arms the latch page: SMC,
+        // SignalInterrupt, retirement and the RCpc adaptive generation bump.
+        // A pending request faults this load into the same service veneer as
+        // the full-width request poll below. Adding ldar+cbz would cost two
+        // instructions per backedge without observing any additional requests.
+        // The fault range keeps publish_frame semantics.
         const u32 begin = CurrentBufferSize();
         __ Ldr(wzr, MemOperand(state, state_offset_interrupt_poll));
         return FaultRange{begin, CurrentBufferSize(), publish_frame};
@@ -930,16 +831,10 @@ JitContext::PollCycleExit(ir::Location target, Label* exit, bool publish_frame) 
     Label resume;
     const auto request = publish_frame && shared_tmp_gpr == ip2.GetCode()
             ? GetTmpX() : GetSharedTmpX();
-    // This poll observes byte 0 of exit_request -- the SMC
-    // generation counter -- despite the +7 below: LDARB has no
-    // offset encoding and VIXL silently drops it (its assert is
-    // compiled out in release). Signal (bit 63) and retirement
-    // (bit 62) reach the thread through the armed exit-latch fault
-    // and the full-width polls in trampolines/region edges, not
-    // through this byte. A plain Ldrb was measured (DN1) to give
-    // no slope change, so the acquire form stays.
-    __ Ldarb(request.W(), MemOperand(state, state_offset_exit_request + 7));
-    __ Cbz(request.W(), &resume);
+    // Without a protected latch, the request word itself must cover SMC,
+    // Signal and retirement. A byte load misses the two high request bits.
+    __ Ldar(request, MemOperand(state, state_offset_exit_request));
+    __ Cbz(request, &resume);
     __ Mov(request, target.Value());
     __ Str(request, MemOperand(state, state_offset_current_loc));
     if (publish_frame) ContinuationContract::PublishExternalFrame(masm);
@@ -955,7 +850,7 @@ JitContext::PollTerminalExit(ir::Location target, Label* exit, bool publish_fram
         // Fault-only terminal poll, like PollCycleExit: every
         // exit_request publisher arms the latch page, so the dummy
         // load faults into the request-exit veneer and the
-        // ldarb+cbz sequence would be dead weight. The caller
+        // ldar+cbz sequence would be dead weight. The caller
         // registers the returned range with this poll's target as
         // the resume location.
         const u32 begin = CurrentBufferSize();
@@ -966,16 +861,10 @@ JitContext::PollTerminalExit(ir::Location target, Label* exit, bool publish_fram
     const auto request = publish_frame && shared_tmp_gpr == ip2.GetCode()
             ? GetTmpX() : GetSharedTmpX();
     Label resume;
-    // This poll observes byte 0 of exit_request -- the SMC
-    // generation counter -- despite the +7 below: LDARB has no
-    // offset encoding and VIXL silently drops it (its assert is
-    // compiled out in release). Signal (bit 63) and retirement
-    // (bit 62) reach the thread through the armed exit-latch fault
-    // and the full-width polls in trampolines/region edges, not
-    // through this byte. A plain Ldrb was measured (DN1) to give
-    // no slope change, so the acquire form stays.
-    __ Ldarb(request.W(), MemOperand(state, state_offset_exit_request + 7));
-    __ Cbz(request.W(), &resume);
+    // Without a protected latch, the request word itself must cover SMC,
+    // Signal and retirement. A byte load misses the two high request bits.
+    __ Ldar(request, MemOperand(state, state_offset_exit_request));
+    __ Cbz(request, &resume);
     __ Mov(request, target.Value());
     __ Str(request, MemOperand(state, state_offset_current_loc));
     if (publish_frame) ContinuationContract::PublishExternalFrame(masm);
@@ -990,16 +879,10 @@ void JitContext::PollTerminalExit(std::optional<XRegister> target, Label* exit,
     if (target) ReserveTmpX(*target);
     const auto request = GetSharedTmpX();
     Label resume;
-    // This poll observes byte 0 of exit_request -- the SMC
-    // generation counter -- despite the +7 below: LDARB has no
-    // offset encoding and VIXL silently drops it (its assert is
-    // compiled out in release). Signal (bit 63) and retirement
-    // (bit 62) reach the thread through the armed exit-latch fault
-    // and the full-width polls in trampolines/region edges, not
-    // through this byte. A plain Ldrb was measured (DN1) to give
-    // no slope change, so the acquire form stays.
-    __ Ldarb(request.W(), MemOperand(state, state_offset_exit_request + 7));
-    __ Cbz(request.W(), &resume);
+    // Without a protected latch, the request word itself must cover SMC,
+    // Signal and retirement. A byte load misses the two high request bits.
+    __ Ldar(request, MemOperand(state, state_offset_exit_request));
+    __ Cbz(request, &resume);
     if (target) __ Str(*target, MemOperand(state, state_offset_current_loc));
     if (pop_frame) __ Add(rsb_ptr, rsb_ptr, 16);
     if (publish_frame) ContinuationContract::PublishExternalFrame(masm);
@@ -1007,12 +890,16 @@ void JitContext::PollTerminalExit(std::optional<XRegister> target, Label* exit,
     __ Bind(&resume);
 }
 
-JitContext::StaticForwardResult
-JitContext::ForwardStatic(ir::Location location,
-                          Label* cycle_exit,
-                          LinkSiteKind direct_link_kind,
-                          DirectLinkFlagsBypass flags_bypass,
-                          Label* request_exit) {
+JitContext::StaticForwardResult JitContext::ForwardStatic(ir::Location location,
+                                                          Label* cycle_exit,
+                                                          LinkSiteKind direct_link_kind,
+                                                          DirectLinkFlagsBypass flags_bypass,
+                                                          Label* request_exit,
+                                                          bool preserve_unit_state) {
+    if (preserve_unit_state && direct_link_kind != LinkSiteKind::Call &&
+        CanCarryUnitState(location)) {
+        return {true, ForwardPublishedEntry(location, cycle_exit, request_exit)};
+    }
     // Same-module only, like the BlockLink path in Forward(): a slot filled by
     // another module outlives this module's view of it. The lookup also keeps
     // dispatch slots (a finite shared table) from being reserved for addresses
@@ -1071,7 +958,8 @@ JitContext::Forward(ir::Location location,
     if (!self_forward && cur_function) {
         self_forward = location == cur_function->GetStartLocation();
     }
-    if (self_forward) {
+    const bool carries_unit_state = !publish_frame && CanCarryUnitState(location);
+    if (carries_unit_state || (self_forward && !RequiresUnitState(location))) {
         auto self_label = self_target ? self_target : GetLabel(location.Value());
         __ B(self_label);
     } else {
@@ -1173,6 +1061,13 @@ bool JitContext::EmitDirectLink(ir::Location location,
     return true;
 }
 
+void JitContext::EmitPairCallBranch() {
+    ASSERT(CanUseRegionTrampoline());
+    SingleEmissionCheckScope emission{&masm};
+    pair_call_sites.push_back(CurrentBufferSize());
+    __ dc32(*EncodeBL(0));
+}
+
 void JitContext::EmitFlagsMergeBranch(FlagsMergeTrampolineKind kind, u8 mask) {
     // Reserve before recording the relocation: pool emission may move the site.
     SingleEmissionCheckScope emission{&masm};
@@ -1225,6 +1120,17 @@ bool JitContext::CanBypassDispatcher(ir::Location location) const {
     return module->GetAddressSpace().GetModule(location.Value()) == module;
 }
 
+bool JitContext::RequiresUnitState(ir::Location location) const {
+    const auto* target = unit_actions.Edges().Block(location.Value());
+    return target && target->requires_unit_state;
+}
+
+bool JitContext::CanCarryUnitState(ir::Location location) const {
+    return cur_function && cur_block &&
+           unit_actions.Edges().CarriesUnitState(cur_block->GetStartLocation().Value(),
+                                                 location.Value());
+}
+
 std::optional<JitContext::FaultRange>
 JitContext::ForwardLocal(ir::Location location,
                          Label* cycle_exit,
@@ -1245,6 +1151,7 @@ std::optional<JitContext::FaultRange>
 JitContext::ForwardPublishedEntry(ir::Location location, Label* cycle_exit,
                                   Label* request_exit, bool publish_frame) {
     ASSERT(cur_block);
+    ASSERT(!RequiresUnitState(location) || (!publish_frame && CanCarryUnitState(location)));
     FlushSpillWrites();
     auto poll_fault = PollCycleExit(location, cycle_exit, publish_frame);
     if (!cycle_exit) poll_fault = PollTerminalExit(location, request_exit, publish_frame);
@@ -1510,8 +1417,8 @@ void JitContext::Finish() {
     __ FinalizeCode();
     MaybeDumpHostBytes();
     if (RAShapeProfEnabled() && !ra_shape_submitted) {
-        reg_alloc.RAShape().host_bytes = CurrentBufferSize();
-        RAShapeSubmitUnit(reg_alloc.RAShape());
+        GetRAShapeCounters().host_bytes = CurrentBufferSize();
+        RAShapeSubmitUnit(GetRAShapeCounters());
         ra_shape_submitted = true;
     }
 }
@@ -1538,7 +1445,6 @@ void JitContext::FinishHotCoalesceBlock() {
         return;
     }
     ASSERT(hot_collecting);
-    ASSERT(!hot_nan_open);
     hot_collecting = false;
     const u32 end = CurrentBufferSize();
     ASSERT(end >= hot_code_start);
@@ -1560,7 +1466,7 @@ void JitContext::FinishHotCoalesceBlock() {
             (end - hot_code_start) / vixl::aarch64::kInstructionSize -
             check_instructions;
 
-    for (const auto& helper : reg_alloc.RAShape().helpers) {
+    for (const auto& helper : GetRAShapeCounters().helpers) {
         ASSERT(helper.calls <= UINT32_MAX);
         ASSERT(helper.capture_instructions <= UINT32_MAX);
         ASSERT(helper.capture_code_bytes <= UINT32_MAX);
@@ -1581,8 +1487,7 @@ void JitContext::FinishHotCoalesceBlock() {
     if (hot_coalesce_enabled) {
         for (u32 offset = hot_code_start; offset < end;
              offset += vixl::aarch64::kInstructionSize) {
-            if (in_range(offset, hot_check_ranges) ||
-                in_range(offset, hot_nan_ranges)) {
+            if (in_range(offset, hot_check_ranges)) {
                 continue;
             }
             const auto* instruction =
@@ -1599,7 +1504,6 @@ void JitContext::FinishHotCoalesceBlock() {
             : kHotCoalesceInvalidSlot;
     hot_coalesce_slot = kHotCoalesceInvalidSlot;
     hot_check_ranges.clear();
-    hot_nan_ranges.clear();
 }
 
 u8* JitContext::Flush(const CodeBuffer& code_cache) {
@@ -1686,6 +1590,18 @@ u8* JitContext::Flush(const CodeBuffer& code_cache) {
             const auto branch = EncodeB(trampoline - rx_site);
             ASSERT(branch);
             std::memcpy(emitted + site.code_offset, &*branch, sizeof(*branch));
+        }
+    }
+    if (!pair_call_sites.empty()) {
+        auto* cache = module->GetCodeCache(code_cache.exec_data);
+        ASSERT(cache);
+        const auto* target = static_cast<const u8*>(cache->GetPairCallRegionTrampoline());
+        ASSERT(target && cache->GetRegion().ContainsRx(target));
+        auto* emitted = masm.GetBuffer()->GetStartAddress<u8*>();
+        for (const auto offset : pair_call_sites) {
+            const auto branch = EncodeBL(target - (code_cache.exec_data + offset));
+            ASSERT(branch);
+            std::memcpy(emitted + offset, &*branch, sizeof(*branch));
         }
     }
     if (!pending_direct_link_sites.empty()) {
@@ -1879,15 +1795,16 @@ void JitContext::EmitPendingFlagsCallEntry(LocationDescriptor location) {
 }
 
 bool JitContext::IsUniform(const Register& reg) {
-    auto &uniform_info = module->GetAddressSpace().GetUniformInfo();
+    auto &guest_layout = module->GetAddressSpace().GetGuestStateLayout();
     if (reg.IsV()) {
-        return uniform_info.uni_fprs.Get(reg.GetCode());
+        return guest_layout.uni_fprs.Get(reg.GetCode());
     } else {
-        return uniform_info.uni_gprs.Get(reg.GetCode());
+        return guest_layout.uni_gprs.Get(reg.GetCode());
     }
 }
 
-void JitContext::SetCurrent(ir::Block* block, bool split_backedge_entry,
+void JitContext::SetCurrent(const ir::Block* block,
+                            bool split_backedge_entry,
                             bool defer_published_entry) {
     cur_block = block;
     rcpc_force_checks = GetConfig().rcpc_fault_emulate &&
@@ -1929,7 +1846,6 @@ void JitContext::SetCurrent(ir::Block* block, bool split_backedge_entry,
             hot_coalesce_slots.push_back(hot_coalesce_slot);
         }
         hot_check_ranges.clear();
-        hot_nan_ranges.clear();
         hot_collecting = false;
     }
     if (!split_backedge_entry) {
@@ -1962,7 +1878,7 @@ void JitContext::BeginBackedgeBody() {
     }
 }
 
-void JitContext::SetCurrent(ir::Function* function) {
+void JitContext::SetCurrent(const ir::Function* function) {
     cur_function = function;
     rcpc_force_checks = false;
     if (GetConfig().rcpc_fault_emulate &&
@@ -1987,22 +1903,25 @@ void JitContext::SetCurrent(ir::Function* function) {
     }
 }
 
-void JitContext::TickIR(ir::Inst* instr,
+void JitContext::TickIR(const ir::Inst* instr,
                         bool forward_spilled_width_input,
                         bool adopt_pending_spill_write,
                         std::optional<u32> forward_spilled_memory_input,
                         bool consumer_deferred) {
+    ASSERT_MSG(HasBoundBlockActions(cur_block) && instr && instr->GetBlock() == cur_block,
+               "IR emission requires bound prepared block actions");
+    const auto* planned_scratch = instruction_scratch.For(instr, instruction_scratch_next);
+    ASSERT_MSG(planned_scratch, "missing prepared scratch range at IR {}", instr->Id());
     EndVixlScratch();
     spill_def_scratch.clear();
     spill_use_scratch.clear();
     forwarded_spill_use_scratch.clear();
     const auto forwarded_spill = FlushSpillWrites(
-            instr, forward_spilled_width_input, adopt_pending_spill_write,
+            instr, planned_scratch, forward_spilled_width_input, adopt_pending_spill_write,
             forward_spilled_memory_input, consumer_deferred);
     cur_inst = instr;
-    reg_alloc.SetCurrent(instr);
-    cur_dirty_gprs = reg_alloc.GetDirtyGPR();
-    cur_dirty_fprs = reg_alloc.GetDirtyFPR();
+    cur_dirty_gprs = reg_alloc.DirtyGPR(instr->Id());
+    cur_dirty_fprs = reg_alloc.DirtyFPR(instr->Id());
     if (forwarded_spill) {
         cur_dirty_gprs.Mark(*forwarded_spill);
     }
@@ -2013,19 +1932,7 @@ void JitContext::TickIR(ir::Inst* instr,
     spill_tmp_fprs = 0;
     shared_tmp_gpr = -1;
     auxiliary_scratch = false;
-    const InstructionScratchFacts* planned_scratch = nullptr;
-    if (cur_block && scratch_plan_block == cur_block && instruction_scratch_plan &&
-        !assembler_only_context && reg_alloc.GPRAllocationComplete() && reg_alloc.GPRLocationsFrozen() &&
-        gpr_generation == reg_alloc.GPRLocationGeneration() && gpr_attempt == reg_alloc.AllocationAttempt()) {
-        const auto* plan = reg_alloc.GPRPlanViewFor(cur_block);
-        if (plan && plan->pinned == instruction_scratch_plan)
-            planned_scratch = instruction_scratch_plan->ScratchFor(instr, instruction_scratch_next);
-    }
-    // The public manual encoder API also permits TickIR without unit admission.
-    // Its compatibility preparation uses the independent allocation helper;
-    // normal translation consumes the facts sealed with the final mapping.
-    const auto scratch = planned_scratch ? *planned_scratch
-            : PrepareInstructionScratchWithBlock(*instr, reg_alloc.GetGprs(), features, cur_block);
+    const auto& scratch = *planned_scratch;
     instruction_scratch_budget = scratch.budget;
     instruction_audit_clobbers = scratch.audit_clobbers;
     instruction_vixl_x87 = scratch.vixl_x87;

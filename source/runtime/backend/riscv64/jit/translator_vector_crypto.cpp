@@ -56,7 +56,7 @@ alignas(64) constexpr auto kDecTable = RoundTable(true);
 
 }  // namespace
 
-bool JitTranslator::EmitVectorCrypto(ir::Inst* inst) {
+bool JitTranslator::EmitVectorCrypto(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::VecAesEnc: case O::VecAesEncLast: case O::VecAesDec: case O::VecAesDecLast:

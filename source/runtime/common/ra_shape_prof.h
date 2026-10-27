@@ -31,8 +31,8 @@ struct RAShapeHelperCounters {
     u64 capture_memory_bytes{};
 };
 
-// One compilation unit's local accumulator.  RegAlloc owns it; JitContext
-// adds emission facts and submits it once FinalizeCode succeeds.
+// Allocation records immutable allocation inputs. Each JitContext starts its
+// own accumulator from them, adds emission facts and submits successful code.
 struct RAShapeUnitCounters {
     bool ra_valid{};
     u32 gpr_pool{};
@@ -47,11 +47,6 @@ struct RAShapeUnitCounters {
     u64 spill_stores{};
     u64 consecutive_pair_fallbacks{};
     u64 host_bytes{};
-    u64 fixed_affinity_reads{};
-    u64 fixed_affinity_writes{};
-    u64 fixed_hazards{};
-    u64 fixed_evictions{};
-    u64 fixed_copies_elided{};
 
     std::array<RAShapeHelperCounters,
                static_cast<std::size_t>(RAShapeHelperABI::Count)>

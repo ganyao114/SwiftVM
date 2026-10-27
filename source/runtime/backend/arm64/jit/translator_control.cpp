@@ -1,5 +1,6 @@
 #include "translator.h"
 
+#include <algorithm>
 #include <array>
 #include <limits>
 
@@ -43,9 +44,9 @@ void JitTranslator::RestoreStaticFPRUniforms() {
     }
 }
 
-void JitTranslator::EmitAdvancePC(ir::Inst* inst) {
+void JitTranslator::EmitAdvancePC(const ir::Inst* inst) {
     if (backedge_flags_recipe && backedge_flags_recipe->optimized &&
-        backedge_flags_recipe->plan.final_advance == inst) {
+        inst->GetBlock() == cur_block && inst->Id() >= backedge_flags_recipe->plan.final_advance) {
         // This is the last architectural boundary before the proven self/
         // single-cold terminal. Keep the requested NZCV live for the self
         // edge; both cold exits materialize it in their veneers.
@@ -60,7 +61,7 @@ void JitTranslator::EmitAdvancePC(ir::Inst* inst) {
     FlushFlags();
 }
 
-void JitTranslator::EmitPopRSB(ir::Inst* inst) {
+void JitTranslator::EmitPopRSB(const ir::Inst* inst) {
     // Deliberate no-op: the frontend emits PopRSB immediately before Return(),
     // so the block always ends in a PopRSBHint terminal. The actual RSB pop +
     // predict is emitted there (see EmitTerminal) after guest flags have been
@@ -69,26 +70,26 @@ void JitTranslator::EmitPopRSB(ir::Inst* inst) {
     // is kept as a frontend marker pairing the ret with its RSB frame.
 }
 
-void JitTranslator::EmitNotGoto(ir::Inst* inst) {
+void JitTranslator::EmitNotGoto(const ir::Inst* inst) {
     auto cond = inst->GetArg<ir::Value>(0);
     if (auto local = LocalConditionFor(cond)) {
         __ B(GetLocalLabel(inst),
              static_cast<Condition>(static_cast<u8>(*local) ^ 1));
         return;
     }
-    __ Cbz(context.W(cond), GetLocalLabel(inst));
+    __ Cbz(ConditionRegister(cond), GetLocalLabel(inst));
 }
 
-void JitTranslator::EmitGoto(ir::Inst* inst) {
+void JitTranslator::EmitGoto(const ir::Inst* inst) {
     auto cond = inst->GetArg<ir::Value>(0);
     if (auto local = LocalConditionFor(cond)) {
         __ B(GetLocalLabel(inst), *local);
         return;
     }
-    __ Cbnz(context.W(cond), GetLocalLabel(inst));
+    __ Cbnz(ConditionRegister(cond), GetLocalLabel(inst));
 }
 
-void JitTranslator::EmitBindLabel(ir::Inst* inst) {
+void JitTranslator::EmitBindLabel(const ir::Inst* inst) {
     // A local join may be reached without executing the alignment check
     // that proved a congruence class earlier in the block.
     memory_state.home_alignment_mod8.clear();
@@ -96,7 +97,7 @@ void JitTranslator::EmitBindLabel(ir::Inst* inst) {
     __ Bind(GetLocalLabel(value.Def()));
 }
 
-void JitTranslator::EmitPushRSB(ir::Inst* inst) {
+void JitTranslator::EmitPushRSB(const ir::Inst* inst) {
     // When RSB is disabled rsb_ptr (x25) is neither reserved in the register
     // mask nor loaded at runtime entry, so emitting any push would clobber an
     // allocated guest register — bail out entirely.
@@ -120,36 +121,17 @@ void JitTranslator::EmitPushRSB(ir::Inst* inst) {
     context.EmitRSBPush(ret_addr, context.GetDispatchIndex(ret_addr));
 }
 
-void JitTranslator::EmitCallReturn(ir::Inst* inst) {
+void JitTranslator::EmitCallReturn(const ir::Inst* inst) {
     call_return_value = inst->GetArg<ir::Value>(0);
     call_return_pc = inst->GetArg<ir::Imm>(1).Get();
 }
 
-void JitTranslator::PrepareHostCallThunks(const std::vector<ir::Block*>& blocks) {
+void JitTranslator::BindHostCallThunks() {
     host_call_thunks.clear();
-    for (auto* block : blocks) {
-        for (auto& inst : block->GetInstList()) {
-            VAddr target{};
-            if (inst.GetOp() == ir::OpCode::CallLambda) {
-                const auto lambda = inst.GetArg<ir::Lambda>(0);
-                if (!lambda.IsValue()) {
-                    target = lambda.GetImm().Get();
-                }
-            } else if (inst.GetOp() == ir::OpCode::Sse42Str) {
-                target = swift::x86::Sse42StrVectorHelperAddress(
-                        u8(inst.GetArg<ir::Imm>(2).Get()));
-            }
-            if (target) {
-                ++host_call_thunks[target].uses;
-            }
-        }
-    }
-    std::erase_if(host_call_thunks, [](const auto& item) {
-        return item.second.uses < 2;
-    });
-    for (auto& item : host_call_thunks) {
-        item.second.entry = std::make_unique<Label>();
-    }
+    const auto targets = context.GetActions().SharedHostCallTargets();
+    host_call_thunks.reserve(targets.size());
+    for (const auto target : targets)
+        host_call_thunks.push_back({target, std::make_unique<Label>()});
 }
 
 void JitTranslator::MaterializeHostCallTarget(u64 target) {
@@ -165,11 +147,11 @@ bool JitTranslator::TryEmitSharedHostCall(const ir::Lambda& lambda) {
     if (lambda.IsValue()) {
         return false;
     }
-    const auto it = host_call_thunks.find(lambda.GetImm().Get());
-    if (it == host_call_thunks.end()) {
+    auto* entry = FindHostCallThunk(lambda.GetImm().Get());
+    if (!entry) {
         return false;
     }
-    __ Bl(it->second.entry.get());
+    __ Bl(entry);
     return true;
 }
 
@@ -177,18 +159,27 @@ bool JitTranslator::TryEmitSharedHostBranch(const ir::Lambda& lambda) {
     if (lambda.IsValue()) {
         return false;
     }
-    const auto it = host_call_thunks.find(lambda.GetImm().Get());
-    if (it == host_call_thunks.end()) {
+    auto* entry = FindHostCallThunk(lambda.GetImm().Get());
+    if (!entry) {
         return false;
     }
-    __ B(it->second.entry.get());
+    __ B(entry);
     return true;
 }
 
+Label* JitTranslator::FindHostCallThunk(u64 target) const {
+    const auto it =
+            std::lower_bound(host_call_thunks.begin(),
+                             host_call_thunks.end(),
+                             target,
+                             [](const auto& thunk, u64 address) { return thunk.target < address; });
+    return it != host_call_thunks.end() && it->target == target ? it->entry.get() : nullptr;
+}
+
 void JitTranslator::EmitHostCallThunks() {
-    for (auto& [target, thunk] : host_call_thunks) {
+    for (auto& thunk : host_call_thunks) {
         __ Bind(thunk.entry.get());
-        MaterializeHostCallTarget(target);
+        MaterializeHostCallTarget(thunk.target);
         __ Br(ip);
     }
     host_call_thunks.clear();
@@ -208,7 +199,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     }
 
     // Materialize value arguments before taking the register capture. In
-    // function mode an argument can be RegAlloc::MEM; context.X() then reloads
+    // function mode an argument can be compile::Allocation::MEM; context.X() then reloads
     // it into a caller-saved scratch register. If that reload happens after
     // the capture and argument setup subsequently reads the register's saved
     // slot, it passes the stale pre-reload value to the helper.
@@ -257,7 +248,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     // only guarantees the low 64 bits of v8-v15 and the function-wide
     // allocator can keep a V128 live across CallLambda.
     //
-    // "Live" is context.GetLiveGPRs/GetLiveFPRs: RegAlloc's per-instruction
+    // "Live" is context.GetLiveGPRs/GetLiveFPRs: AllocationPreparation's per-instruction
     // live set (a conservative superset), the runtime's reserved registers,
     // and every scratch handed out while emitting this instruction -- which
     // includes the reloads context.X() just did above for spilled arguments.
@@ -266,8 +257,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     // This used to save all 17 caller-saved GPRs and all 32 Q registers
     // unconditionally: 672 bytes of stack and ~94 instructions at every call
     // site, which is 90.8% of the emitted code on the x87 default path
-    // (docs/perf-baseline.md 5.3).  An integer-only block has just the four
-    // reserved ipv0-ipv3 marked out of 32 FPRs.
+    // (docs/perf-baseline.md 5.3).
     GPRSMask live_gprs = context.GetLiveGPRs();
     GPRSMask argument_gprs{};
     // Argument registers are unioned in explicitly instead of trusting the
@@ -462,7 +452,7 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
         __ Str(x1, MemOperand(sp, kSecondaryResultSlot));
     }
     if (sse_afp_nan && !fpcr_transparent) {
-        // A helper such as XRSTOR or a NaN cold handler may have updated
+        // A helper such as XRSTOR may have updated
         // context.mxcsr. Every helper takes the same compare path; none is
         // trusted through a target-specific cleanliness exemption.
         EmitSseAFPRestoreGuestFPCRCached(
@@ -503,22 +493,24 @@ void JitTranslator::EmitHostCall(const ir::Lambda& lambda,
     }
 }
 
-ir::Inst* JitTranslator::PairSecondaryResult(ir::Inst* inst, ir::OpCode secondary) const {
-    ASSERT_MSG(gpr_plan && gpr_plan->consumers && gpr_plan->consumers->valid,
-               "pair-result plan was not admitted");
-    const auto& results = gpr_plan->consumers->pair_results;
-    const auto found = results.find(inst);
-    ASSERT_MSG(found != results.end() && found->second.secondary_opcode == secondary,
-               "missing prepared pair-result fact");
-    return found->second.secondary;
+std::optional<u16> JitTranslator::PairSecondaryResult(const ir::Inst* inst,
+                                                      ir::OpCode secondary) const {
+    const auto* row = context.GetActions().Consumer(inst->Id());
+    ASSERT_MSG(row && row->Has(ConsumerFlag::Pair), "pair-result action was not admitted");
+    const auto op = inst->GetOp();
+    ASSERT_MSG((op == ir::OpCode::Div128 && secondary == ir::OpCode::Div128Remainder) ||
+                       (op == ir::OpCode::Cpuid && secondary == ir::OpCode::CpuidUpper),
+               "prepared pair-result kind diverged");
+    return row->related == UINT16_MAX ? std::nullopt : std::optional<u16>{row->related};
 }
 
-void JitTranslator::EmitPreserveAllPairCall(ir::Inst* inst,
+void JitTranslator::EmitPreserveAllPairCall(const ir::Inst* inst,
                                             VAddr target,
                                             const std::array<ir::DataClass, 3>& args,
-                                            ir::Inst* secondary,
+                                            std::optional<u16> secondary,
                                             ir::HostRegisterEffect host_registers) {
     ASSERT(host_registers == ir::HostRegisterEffect::GeneralOnly);
+    ASSERT(ip.GetCode() == PairCallFrame::TargetRegister);
     MergeNZCV(FlagsRegsAuditMergeCause::Helper,
               FlagsRegsAuditEdgeKind::Host);
     FlushFlags();
@@ -530,10 +522,9 @@ void JitTranslator::EmitPreserveAllPairCall(ir::Inst* inst,
         }
     }
     const auto primary_result = context.R(ir::Value{inst});
-    const auto secondary_result = !secondary
-            ? std::optional<Register>{}
-            : std::optional<Register>{
-                      context.RForWrite(ir::Value{secondary})};
+    const auto secondary_result =
+            !secondary ? std::optional<Register>{}
+                       : std::optional<Register>{context.RForWrite(*secondary, ir::ValueType::U64)};
 
     __ Sub(sp, sp, PairCallFrame::Size);
     __ Stp(x30, ip, MemOperand(sp, PairCallFrame::Link));
@@ -551,16 +542,20 @@ void JitTranslator::EmitPreserveAllPairCall(ir::Inst* inst,
         }
     }
     MaterializeHostCallTarget(target);
-    const u64 trampoline = context.GetPairCallTrampoline();
-    ASSERT(trampoline);
-    {
-        vixl::EmissionCheckScope emission{&masm, 4 * kInstructionSize};
-        __ movz(ip0, trampoline & 0xFFFFu, 0);
-        __ movk(ip0, (trampoline >> 16) & 0xFFFFu, 16);
-        __ movk(ip0, (trampoline >> 32) & 0xFFFFu, 32);
-        __ movk(ip0, (trampoline >> 48) & 0xFFFFu, 48);
+    if (context.CanUseRegionTrampoline()) {
+        context.EmitPairCallBranch();
+    } else {
+        const u64 trampoline = context.GetPairCallTrampoline();
+        ASSERT(trampoline);
+        {
+            vixl::EmissionCheckScope emission{&masm, 4 * kInstructionSize};
+            __ movz(ip0, trampoline & 0xFFFFu, 0);
+            __ movk(ip0, (trampoline >> 16) & 0xFFFFu, 16);
+            __ movk(ip0, (trampoline >> 32) & 0xFFFFu, 32);
+            __ movk(ip0, (trampoline >> 48) & 0xFFFFu, 48);
+        }
+        __ Blr(ip0);
     }
-    __ Blr(ip0);
     __ Ldp(x30, ip, MemOperand(sp, PairCallFrame::Link));
     __ Ldr(ip0, MemOperand(sp, PairCallFrame::SavedX16));
     __ Ldr(primary_result,
@@ -572,7 +567,7 @@ void JitTranslator::EmitPreserveAllPairCall(ir::Inst* inst,
     __ Add(sp, sp, PairCallFrame::Size);
 }
 
-void JitTranslator::EmitCallLambda(ir::Inst* inst) {
+void JitTranslator::EmitCallLambda(const ir::Inst* inst) {
     auto lambda = inst->GetArg<ir::Lambda>(0);
     std::vector<ir::DataClass> args{};
     for (int i = 1; i < 4; i++) {
@@ -591,18 +586,16 @@ void JitTranslator::EmitCallLambda(ir::Inst* inst) {
     EmitHostCall(lambda, args, has_result, result);
 }
 
-void JitTranslator::EmitGetOperand(ir::Inst* inst) {
-    if (const auto address = gpr_plan->addresses.find(inst);
-        address != gpr_plan->addresses.end()) {
-        if (address->second.offset == 0) {
+void JitTranslator::EmitGetOperand(const ir::Inst* inst) {
+    if (const auto* address = context.GetActions().Address(inst->Id())) {
+        if (address->offset == 0) {
             return;
         }
         if (context.IsSpilled(ir::Value{inst})) {
             memory_state.spilled_memory_operands.emplace(
                     inst,
-                    SpilledMemoryOperand{address->second.memory,
-                                         XRegister(address->second.target),
-                                         address->second.offset});
+                    SpilledMemoryOperand{
+                            address->memory, XRegister(address->home), address->offset});
             return;
         }
     }
@@ -673,11 +666,11 @@ void JitTranslator::EmitGetOperand(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitCallDynamic(ir::Inst* inst) {
+void JitTranslator::EmitCallDynamic(const ir::Inst* inst) {
     auto lambda = inst->GetArg<ir::Lambda>(0);
     auto params = inst->GetArg<ir::Params>(1);
     std::vector<ir::DataClass> args{};
-    for (auto& param : params) {
+    for (const auto& param : params) {
         args.emplace_back(param.data);
     }
     auto self = ir::Value{inst};
@@ -689,9 +682,9 @@ void JitTranslator::EmitCallDynamic(ir::Inst* inst) {
     EmitHostCall(lambda, args, has_result, result);
 }
 
-void JitTranslator::EmitDefineLocal(ir::Inst* inst) {}
+void JitTranslator::EmitDefineLocal(const ir::Inst* inst) {}
 
-void JitTranslator::EmitGetLocation(ir::Inst* inst) {
+void JitTranslator::EmitGetLocation(const ir::Inst* inst) {
     __ Ldr(context.X(ir::Value{inst}), MemOperand(state, state_offset_current_loc));
 }
 
@@ -704,7 +697,7 @@ void JitTranslator::PublishPendingStaticLocation() {
     static_next_loc.reset();
 }
 
-void JitTranslator::EmitSetLocation(ir::Inst* inst) {
+void JitTranslator::EmitSetLocation(const ir::Inst* inst) {
     auto location = inst->GetArg<ir::Lambda>(0);
     // Any SetLocation invalidates an earlier constant, including a dynamic one:
     // SetLocation is *not* only emitted just before a terminal (decoder_x87.cc
@@ -714,14 +707,12 @@ void JitTranslator::EmitSetLocation(ir::Inst* inst) {
     // into the middle of the same block.
     static_next_loc.reset();
     dynamic_next_loc.reset();
-    dynamic_location_miss = nullptr;
+    dynamic_location_deferred = false;
     if (location.IsValue()) {
-        const auto target = context.X(location.GetValue());
-        if (!terminal_location_publication.Defers(inst)) {
+        dynamic_location_deferred = context.GetActions().DefersTerminalLocation(inst);
+        if (!dynamic_location_deferred) {
+            const auto target = context.X(location.GetValue());
             __ Str(target, MemOperand(state, state_offset_current_loc));
-        } else {
-            dynamic_location_miss =
-                    terminal_location_publication.GetOrCreateMissLabel(target);
         }
         dynamic_next_loc = location.GetValue();
     } else {
@@ -732,7 +723,7 @@ void JitTranslator::EmitSetLocation(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitCheckMemoryAlignment(ir::Inst* inst) {
+void JitTranslator::EmitCheckMemoryAlignment(const ir::Inst* inst) {
     const auto address = context.X(inst->GetArg<ir::Value>(0));
     const auto mask = inst->GetArg<ir::Imm>(1).Get();
     Label aligned;
@@ -750,12 +741,12 @@ void JitTranslator::EmitCheckMemoryAlignment(ir::Inst* inst) {
     __ Bind(&aligned);
 }
 
-void JitTranslator::EmitCallLocation(ir::Inst* inst) {
+void JitTranslator::EmitCallLocation(const ir::Inst* inst) {
     // TODO: semantics assumed to be a host C-ABI call with params, same as CallDynamic.
     auto lambda = inst->GetArg<ir::Lambda>(0);
     auto params = inst->GetArg<ir::Params>(1);
     std::vector<ir::DataClass> args{};
-    for (auto& param : params) {
+    for (const auto& param : params) {
         args.emplace_back(param.data);
     }
     auto self = ir::Value{inst};
@@ -767,6 +758,6 @@ void JitTranslator::EmitCallLocation(ir::Inst* inst) {
     EmitHostCall(lambda, args, has_result, result);
 }
 
-void JitTranslator::EmitNop(ir::Inst* inst) {}
+void JitTranslator::EmitNop(const ir::Inst* inst) {}
 
 }  // namespace swift::runtime::backend::arm64

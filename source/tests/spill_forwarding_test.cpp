@@ -1,24 +1,295 @@
-#include "support/register_alloc_test_support.h"
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/compile/workspace.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "runtime/compile/passes/passes.h"
+#include "support/register_alloc_test_support.h"
 
+#include <algorithm>
+#include <array>
 #include <bit>
 #include <cstring>
-#include "runtime/backend/runtime.h"
-#include <algorithm>
 #include <iterator>
+#include <map>
+#include <ranges>
 #include <string>
 #include <utility>
 #include <vector>
+#include "runtime/backend/runtime.h"
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
-#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
-#include "runtime/backend/arm64/jit/block_analysis_index.h"
+#include "runtime/backend/arm64/compile/actions.h"
+#include "runtime/backend/arm64/compile/lower_scalar.h"
+#include "runtime/backend/arm64/compile/scratch_preparation.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
-#include "runtime/backend/arm64/jit/div128_narrowing_analysis.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/compile/allocate/allocation.h"
+#include "runtime/compile/analysis/block_index.h"
+#include "runtime/compile/analysis/semantic_facts.h"
 #include "runtime/frontend/x86/x87.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+
+TEST_CASE("scratch MEM transport uses exact occurrences without a consumer graph",
+          "[scratch-facts][spill-forward]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    for (unsigned shape = 0; shape < 14; ++shape) {
+        CAPTURE(shape);
+        IntrusivePtr<Block> block{new Block(0, Location{0x2520})};
+        IntrusivePtr<Block> foreign{new Block(0, Location{0x2528})};
+        const auto unused = block->LoadImm(ValueType::U64, Imm{swift::u64{3}});
+        (void)block->BitCast(ValueType::U32, unused);
+        const auto input = block->LoadImm(ValueType::U64, Imm{swift::u64{9}});
+        const auto producer = block->Xor(ValueType::U64, input, Operand{input});
+        const auto second = block->LoadImm(ValueType::U64, Imm{swift::u64{11}});
+        const auto external = foreign->LoadImm(ValueType::U64, Imm{swift::u64{13}});
+        block->AdvancePC(Imm{swift::u64{1}});
+        const auto* gap = &block->GetInstList().back();
+        if (shape == 5) block->SaveFlags(producer, Flags::None);
+        if (shape == 6) block->BranchOnlyFlags(producer, Flags::Carry);
+        const Inst* consumer{};
+        if (shape == 11) {
+            block->SaveFlags(producer, Flags::NZCV);
+            consumer = &block->GetInstList().back();
+        } else if (shape == 0) {
+            block->StoreUniform(Uniform{0, ValueType::U64}, producer);
+            consumer = &block->GetInstList().back();
+        } else {
+            Params params;
+            const unsigned count = shape == 10 ? 300 : 3;
+            for (unsigned i = 0; i < count; ++i) {
+                const auto value = (shape == 7 && i == 1) || shape == 9 ? external
+                                   : shape == 12 && i % 2               ? second
+                                                                        : producer;
+                params.Push(Value{value}.SetCastType(i % 2 ? ValueType::U8 : ValueType::U64));
+            }
+            const auto call = block->CallDynamic(ValueType::VOID, Lambda{shape == 9 ? external : producer}, std::move(params));
+            consumer = call.Def();
+            if (shape == 13) {
+                Params next;
+                for (unsigned i = 0; i < count; ++i) next.Push(producer);
+                (void)block->CallDynamic(ValueType::VOID, Lambda{producer}, std::move(next));
+            }
+        }
+        if (shape == 2) block->StoreUniform(Uniform{8, ValueType::U64}, producer);
+        if (shape == 3) foreign->StoreUniform(Uniform{0, ValueType::U64}, producer);
+        if (shape == 4) foreign->SaveFlags(producer, Flags::Parity);
+        block->SetTerminal(terminal::ReturnToHost{});
+        foreign->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+        foreign->ReIdInstr();
+        if (shape == 7 || shape == 9) {
+            compile::CompileWorkspace editing_workspace;
+            compile::RewriteContext editing{foreign.get(), editing_workspace, nullptr, false};
+            editing.Change(foreign.get(), external.Def(), [&](Inst& inst) {
+                inst.SetId(shape == 7 ? producer.Id() : gap->Id());
+            });
+        }
+        FeatureSet features{};
+        features.scratch_precise = true;
+        AllocationFixture allocation{
+                block->MaxInstrId(), GPRSMask{~((1u << 8) - 1u)}, FPRSMask{}, features};
+        for (const auto& inst : block->GetInstList())
+            if (inst.HasValue()) allocation.MapRegister(inst.Id(), HostGPR{8});
+        if (shape != 8 && shape != 9) allocation.MapMemSpill(producer.Id(), SpillSlot{0});
+        if (shape == 9) allocation.MapMemSpill(gap->Id(), SpillSlot{0});
+        if (shape == 12) allocation.MapMemSpill(second.Id(), SpillSlot{1});
+        auto& index = allocation.PrepareFacts(block.get()).PrepareIndex(block.get());
+        REQUIRE_FALSE(index.UsesReady());
+        REQUIRE_FALSE(index.ResolvedUsesReady());
+        const auto unit = arm64::PrepareUnitScratch(allocation.GetGprs(), features);
+        arm64::ScratchActions lowered;
+        if (shape == 8 || shape == 9) {
+            compile::InstructionRowScope held{allocation.Workspace(), 1};
+            held[0] = 19;
+            lowered = arm64::PrepareScratch(
+                    block.get(), allocation, features, unit, index, allocation.Workspace());
+            REQUIRE(held.Find(0) == 19);
+            REQUIRE(lowered.inputs.empty());
+        } else
+            lowered = arm64::PrepareScratch(
+                    block.get(), allocation, features, unit, index, allocation.Workspace());
+        const bool pseudo = shape == 4 || shape == 5 || shape == 6 || shape == 11;
+        REQUIRE(index.Summary().HasPseudoConsumers() == pseudo);
+        REQUIRE(index.UsesReady() == pseudo);
+        REQUIRE_FALSE(index.ResolvedUsesReady());
+
+        // The old relationship is expressed independently through reverse
+        // edges, including every raw Params/Lambda occurrence and foreign key.
+        compile::BlockAnalysisIndex reference;
+        reference.Build(block.get(), nullptr, true);
+        struct Expected {
+            const Inst* definition{};
+            bool last{}, seen{}, conflict{};
+        };
+        std::map<std::pair<swift::u16, swift::u16>, Expected> expected;
+        for (const auto* inst : reference.Instructions())
+            inst->ForEachValue([&](Value value) {
+                if (!value.Defined() || value.Id() >= allocation.MapCount() ||
+                    allocation.ValueType(value) != compile::Allocation::MEM)
+                    return;
+                const Inst* definition = value.Def();
+                bool last = false;
+                if (!reference.Contains(definition)) {
+                    const auto* local = reference.FindInstruction(value.Id());
+                    if (!local || !local->HasValue()) return;
+                    definition = nullptr;
+                } else {
+                    const auto uses = reference.Uses(definition);
+                    last = uses.size() == 1 && uses.front().consumer == inst &&
+                           uses.front().count == definition->GetUses(false);
+                }
+                auto& row = expected[{inst->Id(), value.Id()}];
+                if (row.seen)
+                    row.conflict |= row.definition != definition || row.last != last;
+                else
+                    row = {definition, last, true, false};
+            });
+        allocation.BeginTargetPlanning();
+        allocation.DeclareBlock(block.get(), index.Summary(), index.PseudoFlags().View());
+        allocation.StoreScratch(block.get(), lowered);
+        allocation.EndTargetPlanning();
+        const auto& actions = allocation.Actions();
+        for (const auto& [key, row] : expected) {
+            const auto actual =
+                    actions.SpillInputFor(reference.FindInstruction(key.first), key.second);
+            REQUIRE(actual.definition == (row.conflict ? nullptr : row.definition));
+            if (actual.definition) REQUIRE(actual.last_use == row.last);
+        }
+        for (const auto* inst : reference.Instructions()) {
+            const auto* facts = actions.ScratchFor(inst);
+            REQUIRE(facts);
+            REQUIRE(*facts == arm64::PrepareInstructionScratchWithBlock(
+                                      *inst, allocation.GetGprs(), features, block.get()));
+        }
+        if (shape == 7 || shape == 8 || shape == 9)
+            REQUIRE(actions.SpillInputFor(consumer, producer.Id()).definition == nullptr);
+        if (shape == 10) {
+            REQUIRE(producer.Def()->GetUses(false) == 301);
+            REQUIRE(lowered.inputs.size() == 1);
+            REQUIRE(actions.SpillInputFor(consumer, producer.Id()).last_use);
+        }
+        const auto repeated = arm64::PrepareScratch(
+                block.get(), allocation, features, unit, index, allocation.Workspace());
+        REQUIRE(repeated.ranges.size() == lowered.ranges.size());
+        REQUIRE(repeated.inputs.size() == lowered.inputs.size());
+        for (size_t i = 0; i < lowered.ranges.size(); ++i) {
+            REQUIRE(repeated.ranges[i].first == lowered.ranges[i].first);
+            REQUIRE(repeated.ranges[i].last == lowered.ranges[i].last);
+            REQUIRE(repeated.ranges[i].facts == lowered.ranges[i].facts);
+        }
+    }
+}
+
+TEST_CASE("scratch ranges preserve dense sparse and block boundary lookup", "[scratch-facts]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    for (bool sparse : {false, true}) {
+        CAPTURE(sparse);
+        IntrusivePtr<Block> block{new Block(0, Location{0x2530})};
+        auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{1}});
+        for (unsigned i = 0; i < 128; ++i)
+            value = block->Add(ValueType::U64, value, Operand{Imm{swift::u64{1}}});
+        block->StoreUniform(Uniform{0, ValueType::U64}, value);
+        block->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+        if (sparse) {
+            compile::CompileWorkspace editing_workspace;
+            compile::RewriteContext editing{block.get(), editing_workspace, nullptr, false};
+            for (const auto& inst : block->GetInstList())
+                editing.Change(
+                        block.get(), &inst, [](Inst& node) { node.SetId(100 + node.Id() * 3); });
+        }
+        FeatureSet features{};
+        features.scratch_precise = true;
+        AllocationFixture allocation{1000, GPRSMask{~((1u << 8) - 1u)}, FPRSMask{}, features};
+        for (const auto& inst : block->GetInstList())
+            if (inst.HasValue()) allocation.MapRegister(inst.Id(), HostGPR{8});
+        auto& index = allocation.PrepareFacts(block.get()).PrepareIndex(block.get());
+        const auto lowered =
+                arm64::PrepareScratch(block.get(),
+                                      allocation,
+                                      features,
+                                      arm64::PrepareUnitScratch(allocation.GetGprs(), features),
+                                      index,
+                                      allocation.Workspace());
+        REQUIRE_FALSE(index.UsesReady());
+        REQUIRE_FALSE(index.ResolvedUsesReady());
+        const auto nodes = index.Instructions();
+        REQUIRE(lowered.ranges.capacity() <= nodes.size());
+        if (sparse)
+            REQUIRE(lowered.ranges.size() == nodes.size());
+        else
+            REQUIRE(lowered.ranges.size() < nodes.size() / 8);
+        allocation.BeginTargetPlanning();
+        allocation.DeclareBlock(block.get(), index.Summary());
+        allocation.StoreScratch(block.get(), lowered);
+        allocation.EndTargetPlanning();
+        const auto view = allocation.Actions().ScratchForBlock(block.get());
+        size_t cursor{};
+        const auto check = [&](const Inst* inst) {
+            const auto* facts = view.For(inst, cursor);
+            REQUIRE(facts == allocation.Actions().ScratchFor(inst));
+            REQUIRE(facts);
+            REQUIRE(*facts == arm64::PrepareInstructionScratchWithBlock(
+                                      *inst, allocation.GetGprs(), features, block.get()));
+        };
+        for (const auto* inst : nodes) check(inst);
+        for (const auto* inst : std::views::reverse(nodes)) check(inst);
+        for (size_t i = 0; i < nodes.size(); i += 7) check(nodes[i]);
+        REQUIRE(view.For(nullptr, cursor) == nullptr);
+        if (sparse) {
+            auto incomplete = lowered.ranges;
+            const auto absent = incomplete[incomplete.size() / 2].first;
+            incomplete.erase(incomplete.begin() + incomplete.size() / 2);
+            const arm64::InstructionScratchView missing{incomplete, block.get()};
+            REQUIRE(missing.For(index.FindInstruction(absent)) == nullptr);
+        }
+    }
+    // Equal facts at the boundary still belong to two separately owned blocks.
+    std::array<IntrusivePtr<Block>, 2> blocks{IntrusivePtr<Block>{new Block(0, Location{0x2540})},
+                                              IntrusivePtr<Block>{new Block(1, Location{0x2548})}};
+    for (unsigned b = 0; b < 2; ++b) {
+        for (unsigned i = 0; i < 32; ++i) blocks[b]->AdvancePC(Imm{swift::u64{1}});
+        blocks[b]->SetTerminal(terminal::ReturnToHost{});
+        blocks[b]->ReIdInstr();
+        if (b) {
+            compile::CompileWorkspace editing_workspace;
+            compile::RewriteContext editing{blocks[b].get(), editing_workspace, nullptr, false};
+            for (const auto& inst : blocks[b]->GetInstList())
+                editing.Change(
+                        blocks[b].get(), &inst, [](Inst& node) { node.SetId(node.Id() + 32); });
+        }
+    }
+    AllocationFixture allocation{64, GPRSMask{}, FPRSMask{}, FeatureSet{}};
+    allocation.BeginTargetPlanning();
+    for (const auto& block : blocks) {
+        compile::BlockAnalysisIndex index;
+        index.Build(block.get());
+        allocation.DeclareBlock(block.get(), index.Summary());
+        const auto lowered =
+                arm64::PrepareScratch(block.get(),
+                                      allocation,
+                                      FeatureSet{},
+                                      arm64::PrepareUnitScratch(allocation.GetGprs(), FeatureSet{}),
+                                      index,
+                                      allocation.Workspace());
+        REQUIRE(lowered.ranges.size() == 1);
+        allocation.StoreScratch(block.get(), lowered);
+    }
+    allocation.EndTargetPlanning();
+    for (unsigned b = 0; b < 2; ++b) {
+        const auto view = allocation.Actions().ScratchForBlock(blocks[b].get());
+        REQUIRE(view.ranges.size() == 1);
+        REQUIRE(view.ranges.front().first == b * 32);
+        REQUIRE(view.ranges.front().last == b * 32 + 31);
+        REQUIRE(view.For(&blocks[1 - b]->GetInstList().front()) == nullptr);
+    }
+}
 
 TEST_CASE("Div128 uniform proofs stop at control flow joins", "[div128-cfg]") {
     using namespace swift::runtime;
@@ -28,15 +299,18 @@ TEST_CASE("Div128 uniform proofs stop at control flow joins", "[div128-cfg]") {
         unsigned branch;
         swift::u64 low, divisor, high, quotient, remainder;
         bool native;
+        bool sign{};
     };
     const Sample samples[] = {
-        {0, 100, 7, 0, 14, 2, true},
-        {1, 3, 5, 1, 3689348814741910323ull, 4, false},
-        {2, 3, 5, 1, 3689348814741910323ull, 4, false},
-        {3, 100, 7, 0, 14, 2, true},
+            {0, 100, 7, 0, 14, 2, true},
+            {1, 3, 5, 1, 3689348814741910323ull, 4, false},
+            {2, 3, 5, 1, 3689348814741910323ull, 4, false},
+            {3, 100, 7, 0, 14, 2, true},
+            {0, swift::u64(-100), 7, ~swift::u64{0}, swift::u64(-14), swift::u64(-2), true, true},
+            {3, swift::u64(-100), 7, ~swift::u64{0}, swift::u64(-14), swift::u64(-2), true, true},
     };
     for (const auto& sample : samples) {
-        INFO("branch=" << sample.branch);
+        INFO("branch=" << sample.branch << " signed=" << sample.sign);
         constexpr swift::u32 low_offset = 512, divisor_offset = 520, high_offset = 528;
         constexpr swift::u32 quotient_offset = 544, remainder_offset = 552;
         Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
@@ -47,39 +321,49 @@ TEST_CASE("Div128 uniform proofs stop at control flow joins", "[div128-cfg]") {
         AddressSpace space{config};
         auto module = space.GetDefaultModule();
         IntrusivePtr<Block> block{new Block(0, Location{0x2500 + sample.branch * 4})};
-        const auto low = block->LoadUniform(Uniform{low_offset, ValueType::U64}).SetType(ValueType::U64);
-        const auto divisor = block->LoadUniform(Uniform{divisor_offset, ValueType::U64}).SetType(ValueType::U64);
-        auto high = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+        const auto low = block->LoadUniform(ValueType::U64, Uniform{low_offset, ValueType::U64});
+        const auto divisor =
+                block->LoadUniform(ValueType::U64, Uniform{divisor_offset, ValueType::U64});
+        auto high = sample.sign ? block->AsrImm(ValueType::U64, low, Imm{swift::u32{63}})
+                                : block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
         if (sample.branch == 3) {
             block->StoreUniform(Uniform{high_offset, ValueType::U64}, high);
-            high = block->LoadUniform(Uniform{high_offset, ValueType::U64}).SetType(ValueType::U64);
+            high = block->LoadUniform(ValueType::U64, Uniform{high_offset, ValueType::U64});
         } else if (sample.branch != 0) {
             // The taken branch skips the zero store, preserving incoming high=1.
-            const auto condition = block->LoadImm(Imm{swift::u32{sample.branch == 1 ? 1u : 0u}})
-                    .SetType(ValueType::U32);
-            const auto join = sample.branch == 1 ? block->Goto(condition) : block->NotGoto(condition);
+            const auto condition =
+                    block->LoadImm(ValueType::U32, Imm{swift::u32{sample.branch == 1 ? 1u : 0u}});
+            const auto join =
+                    sample.branch == 1 ? block->Goto(condition) : block->NotGoto(condition);
             block->StoreUniform(Uniform{high_offset, ValueType::U64}, high);
             block->BindLabel(join);
-            high = block->LoadUniform(Uniform{high_offset, ValueType::U64}).SetType(ValueType::U64);
+            high = block->LoadUniform(ValueType::U64, Uniform{high_offset, ValueType::U64});
         }
-        const auto quotient = block->Div128(high, low, divisor, Imm{swift::u64{0}}).SetType(ValueType::U64);
-        const auto remainder = block->Div128Remainder(quotient).SetType(ValueType::U64);
+        const auto quotient =
+                block->Div128(ValueType::U64, high, low, divisor, Imm{swift::u64{sample.sign}});
+        const auto remainder = block->Div128Remainder(ValueType::U64, quotient);
         block->StoreUniform(Uniform{quotient_offset, ValueType::U64}, quotient);
         block->StoreUniform(Uniform{remainder_offset, ValueType::U64}, remainder);
         block->SetTerminal(terminal::ReturnToHost{});
         block->ReIdInstr();
         const auto features = FeatureSet{};
-        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                            space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        allocation.CompleteGPRAllocation(module);
-        CHECK(arm64::Div128NarrowingAnalysis{block.get()}.CanLowerNatively(quotient.Def()) == sample.native);
-        const auto plan = allocation.GPRPlanFor(block.get());
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+        const auto plan = allocation.Actions().ForBlock(block.get());
         REQUIRE(plan);
-        const auto* scratch = plan->pinned->ScratchFor(quotient.Def());
+        const auto* scratch = allocation.Actions().ScratchFor(quotient.Def());
         REQUIRE(scratch);
         CHECK(scratch->div128_native == sample.native);
-        arm64::JitContext context{module, allocation};
+        arm64::JitContext context{module, allocation, allocation.Actions()};
         arm64::JitTranslator translator{context};
         REQUIRE(translator.Translate(block.get()));
         context.Finish();
@@ -120,6 +404,7 @@ TEST_CASE("Div128 uniform proofs stop at control flow joins", "[div128-cfg]") {
 }
 
 TEST_CASE("Div128 scratch proofs require local uniform membership", "[scratch-facts][div128-cfg]") {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
@@ -127,27 +412,34 @@ TEST_CASE("Div128 scratch proofs require local uniform membership", "[scratch-fa
         CAPTURE(sign, alias);
         IntrusivePtr<Block> parent{new Block(0, Location{0x2510})};
         IntrusivePtr<Block> block{new Block(0, Location{0x2514})};
-        const auto low = block->LoadUniform(Uniform{512, ValueType::U64}).SetType(ValueType::U64);
-        const auto divisor = block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
-        const auto source = sign ? block->AsrImm(low, Imm{swift::u32{63}}).SetType(ValueType::U64) :
-                block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+        const auto low = block->LoadUniform(ValueType::U64, Uniform{512, ValueType::U64});
+        const auto divisor = block->LoadImm(ValueType::U64, Imm{swift::u64{7}});
+        const auto source = sign ? block->AsrImm(ValueType::U64, low, Imm{swift::u32{63}})
+                                 : block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
         block->StoreUniform(Uniform{528, ValueType::U64}, source);
-        auto local = block->LoadUniform(Uniform{528, ValueType::U64}).SetType(ValueType::U64);
-        auto incoming = parent->LoadUniform(Uniform{528, ValueType::U64}).SetType(ValueType::U64);
+        auto local = block->LoadUniform(ValueType::U64, Uniform{528, ValueType::U64});
+        auto incoming = parent->LoadUniform(ValueType::U64, Uniform{528, ValueType::U64});
         auto* local_load = local.Def();
         auto* incoming_load = incoming.Def();
         if (alias) {
-            local = block->BitCast(local).SetType(ValueType::U64);
-            incoming = block->BitCast(incoming).SetType(ValueType::U64);
+            local = block->BitCast(ValueType::U64, local);
+            incoming = block->BitCast(ValueType::U64, incoming);
         }
-        const auto local_div = block->Div128(local, low, divisor, Imm{swift::u64{sign}}).SetType(ValueType::U64);
-        const auto incoming_div = block->Div128(incoming, low, divisor, Imm{swift::u64{sign}}).SetType(ValueType::U64);
-        const auto pure_div = block->Div128(source, low, divisor, Imm{swift::u64{sign}}).SetType(ValueType::U64);
+        const auto local_div =
+                block->Div128(ValueType::U64, local, low, divisor, Imm{swift::u64{sign}});
+        const auto incoming_div =
+                block->Div128(ValueType::U64, incoming, low, divisor, Imm{swift::u64{sign}});
+        const auto pure_div =
+                block->Div128(ValueType::U64, source, low, divisor, Imm{swift::u64{sign}});
         block->ReIdInstr();
-        incoming_load->SetId(local_load->Id());
-        const arm64::Div128NarrowingAnalysis proof{block.get()};
-        CHECK(proof.CanLowerNatively(local_div.Def()));
-        CHECK_FALSE(proof.CanLowerNatively(incoming_div.Def()));
+        compile::RewriteContext{parent.get(), compilation_workspace, nullptr, false}.Change(
+                parent.get(), incoming_load, [&](Inst& target) { target.SetId(local_load->Id()); });
+        compile::SemanticFacts facts{block.get()};
+        const auto& index = facts.PrepareIndex(block.get());
+        CHECK_FALSE(index.UsesReady());
+        CHECK(arm64::SelectNativeDiv128(*local_div.Def(), index));
+        CHECK_FALSE(arm64::SelectNativeDiv128(*incoming_div.Def(), index));
+        CHECK_FALSE(index.UsesReady());
         const GPRSMask pool{};
         const FeatureSet features{};
         CHECK_FALSE(arm64::PrepareInstructionScratch(*local_div.Def(), pool, features).div128_native);
@@ -165,17 +457,50 @@ TEST_CASE("Div128 uniform scratch proofs stop at partial stores and barriers", "
     for (unsigned boundary = 0; boundary < 3; ++boundary) {
         CAPTURE(boundary);
         IntrusivePtr<Block> block{new Block(0, Location{0x2518})};
-        const auto low = block->LoadImm(Imm{swift::u64{100}}).SetType(ValueType::U64);
-        const auto divisor = block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
-        const auto zero = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+        const auto low = block->LoadImm(ValueType::U64, Imm{swift::u64{100}});
+        const auto divisor = block->LoadImm(ValueType::U64, Imm{swift::u64{7}});
+        const auto zero = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
         block->StoreUniform(Uniform{528, ValueType::U64}, zero);
         if (boundary == 1) block->StoreUniform(Uniform{532, ValueType::U32}, Value{divisor}.SetCastType(ValueType::U32));
         if (boundary == 2) block->AppendInst(OpCode::UniformBarrier);
-        const auto high = block->LoadUniform(Uniform{528, ValueType::U64}).SetType(ValueType::U64);
-        const auto quotient = block->Div128(high, low, divisor, Imm{swift::u64{0}}).SetType(ValueType::U64);
+        const auto high = block->LoadUniform(ValueType::U64, Uniform{528, ValueType::U64});
+        const auto quotient = block->Div128(ValueType::U64, high, low, divisor, Imm{swift::u64{0}});
         block->ReIdInstr();
-        CHECK(arm64::Div128NarrowingAnalysis{block.get()}.CanLowerNatively(quotient.Def()) == (boundary == 0));
+        compile::SemanticFacts facts{block.get()};
+        const auto& index = facts.PrepareIndex(block.get());
+        CHECK_FALSE(index.UsesReady());
+        CHECK(arm64::SelectNativeDiv128(*quotient.Def(), index) == (boundary == 0));
+        CHECK_FALSE(index.UsesReady());
     }
+    for (const bool sign : {false, true})
+        for (const bool operand_wrappers : {false, true})
+            for (const unsigned depth : {15u, 16u, 17u}) {
+                CAPTURE(sign, operand_wrappers, depth);
+                Block block{0, Location{0x251c}};
+                const auto low = block.LoadUniform(ValueType::U64, Uniform{512, ValueType::U64});
+                const auto divisor = block.LoadImm(ValueType::U64, Imm{swift::u64{7}});
+                auto high = sign ? block.AsrImm(ValueType::U64, low, Imm{swift::u32{63}})
+                                 : block.LoadImm(ValueType::U64, Imm{swift::u64{0}});
+                for (unsigned i = 0; i < depth; ++i)
+                    high = operand_wrappers
+                                   ? block.GetOperand(
+                                             ValueType::U64,
+                                             Operand{DataClass{high}, DataClass{}, OperandNone})
+                                   : block.BitCast(ValueType::U64, high);
+                const auto quotient =
+                        block.Div128(ValueType::U64, high, low, divisor, Imm{swift::u64{sign}});
+                block.ReIdInstr();
+                compile::CompileWorkspace workspace;
+                compile::RewriteContext editing{&block, workspace, nullptr, false};
+                for (const auto& inst : block.GetInstList())
+                    editing.Change(
+                            &block, &inst, [](Inst& node) { node.SetId(100 + node.Id() * 3); });
+                compile::SemanticFacts facts{&block};
+                const auto& index = facts.PrepareIndex(&block);
+                CHECK(arm64::SelectNativeDiv128(*quotient.Def(), index) == (depth <= 16));
+                CHECK(arm64::PrepareManualDiv128(*quotient.Def(), nullptr) == (depth <= 16));
+                CHECK_FALSE(index.UsesReady());
+            }
 }
 
 TEST_CASE("prepared scratch preserves fixed and audit exclusions", "[scratch-facts][regression]") {
@@ -192,19 +517,32 @@ TEST_CASE("prepared scratch preserves fixed and audit exclusions", "[scratch-fac
         FeatureSet features{};
         features.jit_scratch_xpool = requested_xpool;
         IntrusivePtr<Block> block{new Block(0, Location{0x251a})};
-        const auto scalar = block->LoadImm(Imm{swift::u64{1}}).SetType(ValueType::U64);
-        const auto vector = block->LoadUniform(Uniform{512, ValueType::V128}).SetType(ValueType::V128);
-        const auto add = block->Add(scalar, Operand{scalar}).SetType(ValueType::U64);
-        const auto atomic = block->CompareAndSwap(scalar, scalar, scalar).SetType(ValueType::U64);
-        const auto fp = block->VecFAdd(vector, vector, Imm{swift::u32{32}}).SetType(ValueType::V128);
-        const auto x87 = block->X87Op(scalar, Imm{static_cast<swift::u64>(swift::x86::X87Action::Compare)}, scalar)
-                .SetType(ValueType::U64);
+        const auto scalar = block->LoadImm(ValueType::U64, Imm{swift::u64{1}});
+        const auto vector = block->LoadUniform(ValueType::V128, Uniform{512, ValueType::V128});
+        const auto add = block->Add(ValueType::U64, scalar, Operand{scalar});
+        const auto atomic = block->CompareAndSwap(ValueType::U64, scalar, scalar, scalar);
+        const auto fp = block->VecFAdd(ValueType::V128, vector, vector, Imm{swift::u32{32}});
+        const auto x87 = block->X87Op(ValueType::U64,
+                                      scalar,
+                                      Imm{static_cast<swift::u64>(swift::x86::X87Action::Compare)},
+                                      scalar);
         auto* xchg = block->AppendInst(OpCode::XchgBarrier, Imm{swift::u32{3}});
         block->SetTerminal(terminal::ReturnToHost{});
         block->ReIdInstr();
-        RegAlloc allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
-        const auto plan = arm64::FrozenGPRPlan::SealWithSpillClobbers(
-                allocation, {block.get(), {}, {}}, features);
+        AllocationFixture allocation{block->MaxInstrId(), pool, FPRSMask{}, features};
+        compile::BlockAnalysisIndex index;
+        index.Build(block.get(), nullptr, true);
+        allocation.BeginTargetPlanning();
+        allocation.DeclareBlock(block.get(), index.Summary());
+        allocation.StoreScratch(
+                block.get(),
+                arm64::PrepareScratch(block.get(),
+                                      allocation,
+                                      features,
+                                      arm64::PrepareUnitScratch(allocation.GetGprs(), features),
+                                      index,
+                                      allocation.Workspace()));
+        allocation.EndTargetPlanning();
         const bool scratch_only = GetSvmConfig().x86_pin_ext >= 2 && !xpool &&
                 missing != 0 && missing != 12;
         const swift::u32 profile = xpool && GetSvmConfig().exec_prof ? ip0 | ip1 : 0;
@@ -220,15 +558,15 @@ TEST_CASE("prepared scratch preserves fixed and audit exclusions", "[scratch-fac
         const Expected expected[] = {
             {add.Def(), 0, 0, 0, true},
             {atomic.Def(), x11 | x12 | x13, x11 | x12 | x13, 0},
-            {fp.Def(), x13, x13, 0},
+            {fp.Def(), 0, 0, 0},
             {x87.Def(), ip0 | x12 | x13, 0, 0},
             {xchg, 0, 0, published_home},
         };
         for (const auto& row : expected) {
-            const auto* frozen = plan->ScratchFor(row.inst);
+            const auto* frozen = allocation.Actions().ScratchFor(row.inst);
             REQUIRE(frozen);
             const auto manual = arm64::PrepareInstructionScratch(*row.inst, pool, features);
-            // RegAlloc restores x12/x13 reservations without XPOOL. Manual
+            // AllocationFixture restores x12/x13 reservations without XPOOL. Manual
             // preparation receives the supplied mask without normalization.
             for (const auto [facts, scratch] : {
                     std::pair{frozen, planned_scratch_only}, std::pair{&manual, scratch_only}}) {
@@ -253,32 +591,41 @@ TEST_CASE("unit scratch admission rejects changed feature policy", "[scratch-fac
     AddressSpace space{config};
     auto module = space.GetDefaultModule();
     IntrusivePtr<Block> block{new Block(0, Location{0x251c})};
-    const auto value = block->LoadImm(Imm{swift::u64{42}}).SetType(ValueType::U64);
+    const auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{42}});
     block->StoreUniform(Uniform{0, ValueType::U64}, value);
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
     const FeatureSet features{};
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    allocation.CompleteGPRAllocation(module);
-    const auto plan = allocation.GPRPlanFor(block.get());
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+    const auto plan = allocation.Actions().ForBlock(block.get());
     REQUIRE(plan);
-    REQUIRE(plan->pinned->UsesUnitScratchInputs());
-    REQUIRE(plan->pinned->MatchesScratchInputs(allocation.GetGprs(), features));
-    REQUIRE(plan->region->MatchesUnit(block.get(), nullptr, allocation, config, features));
+    REQUIRE(allocation.Actions().HasPreparedScratch(block.get()));
+    REQUIRE(allocation.Actions().MatchesScratchInputs(block.get(), allocation.GetGprs(), features));
+    REQUIRE(allocation.Actions().Certificate()->MatchesUnit(
+            block.get(), nullptr, allocation, allocation.Actions(), config, features));
     for (auto field : {&FeatureSet::jit_scratch_xpool, &FeatureSet::scratch_precise,
-                       &FeatureSet::fpr_scratch_precise, &FeatureSet::sse_nan_coldpath}) {
+                       &FeatureSet::fpr_scratch_precise}) {
         auto changed = features;
         changed.*field = !(changed.*field);
-        CHECK_FALSE(plan->pinned->MatchesScratchInputs(allocation.GetGprs(), changed));
-        CHECK_FALSE(plan->region->MatchesUnit(block.get(), nullptr, allocation, config, changed));
+        CHECK_FALSE(allocation.Actions().MatchesScratchInputs(
+                block.get(), allocation.GetGprs(), changed));
+        CHECK_FALSE(allocation.Actions().Certificate()->MatchesUnit(
+                block.get(), nullptr, allocation, allocation.Actions(), config, changed));
     }
-    CHECK(plan->pinned->MatchesScratchInputs(allocation.GetGprs(), features));
+    CHECK(allocation.Actions().MatchesScratchInputs(block.get(), allocation.GetGprs(), features));
 }
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -315,10 +662,8 @@ SpillForwardingBlock MakeSpillWidthTransferBlock(
     const auto longest = block->LoadImm(Imm{swift::u64{1}});
     const auto middle = block->LoadImm(Imm{swift::u64{2}});
     const auto shortest = block->LoadImm(Imm{swift::u64{3}});
-    const auto arriving = block->LoadImm(Imm{swift::u64{4}})
-                                  .SetType(ValueType::U32);
-    const auto extended = block->ZeroExtend32To64(arriving)
-                                  .SetType(ValueType::U64);
+    const auto arriving = block->LoadImm(ValueType::U32, Imm{swift::u64{4}});
+    const auto extended = block->ZeroExtend32To64(ValueType::U64, arriving);
     Value total;
     if (shape == WidthSpillShape::DeferredPublication) {
         block->SetHostGPR(extended, HostRegIndex(22), Imm{0u});
@@ -359,9 +704,8 @@ SpillForwardingBlock MakeSpillAddressBlock() {
     const auto middle = block->LoadImm(Imm{swift::u64{2}});
     const auto shortest = block->LoadImm(Imm{swift::u64{3}});
     const auto arriving = block->LoadImm(Imm{swift::u64{4}});
-    const auto address = block->GetOperand(
-            Operand{arriving, Imm{swift::u64{16}}, OperandPlus})
-                                 .SetType(ValueType::U64);
+    const auto address =
+            block->GetOperand(ValueType::U64, Operand{arriving, Imm{swift::u64{16}}, OperandPlus});
     const auto first = block->Add(shortest, Operand{middle});
     const auto total = block->Add(first, Operand{longest});
     block->StoreUniform(Uniform{0, ValueType::U64}, address);
@@ -378,8 +722,7 @@ SpillForwardingBlock MakeSpillMemoryAddressBlock(bool multi_use,
     const auto middle = block->LoadImm(Imm{swift::u64{2}});
     const auto shortest = block->LoadImm(Imm{swift::u64{3}});
     const auto arriving = block->LoadImm(Imm{swift::u64{4}});
-    const auto loaded = block->LoadMemory(Operand{arriving})
-                                .SetType(ValueType::U64);
+    const auto loaded = block->LoadMemory(ValueType::U64, Operand{arriving});
     if (spill_result) {
         block->StoreUniform(Uniform{8, ValueType::U64}, loaded);
     } else {
@@ -402,8 +745,7 @@ SpillForwardingBlock MakeSpillMemoryAddressNoRegionBlock() {
     const auto middle = block->LoadImm(Imm{swift::u64{2}});
     const auto shortest = block->LoadImm(Imm{swift::u64{3}});
     const auto arriving = block->LoadImm(Imm{swift::u64{4}});
-    const auto loaded = block->LoadMemory(Operand{arriving})
-                                .SetType(ValueType::U64);
+    const auto loaded = block->LoadMemory(ValueType::U64, Operand{arriving});
     block->AppendInst(OpCode::TestNotZero, loaded);
     const auto first = block->Add(shortest, Operand{middle});
     const auto total = block->Add(first, Operand{longest});
@@ -419,11 +761,9 @@ SpillForwardingBlock MakeSpillMemoryOwnedAddressBlock() {
     const auto middle = block->LoadImm(Imm{swift::u64{2}});
     const auto shortest = block->LoadImm(Imm{swift::u64{3}});
     const auto base = block->LoadImm(Imm{swift::u64{4}});
-    const auto address = block->GetOperand(
-            Operand{base, Imm{swift::u64{16}}, OperandPlus})
-                                 .SetType(ValueType::U64);
-    const auto loaded = block->LoadMemory(Operand{address})
-                                .SetType(ValueType::U64);
+    const auto address =
+            block->GetOperand(ValueType::U64, Operand{base, Imm{swift::u64{16}}, OperandPlus});
+    const auto loaded = block->LoadMemory(ValueType::U64, Operand{address});
     block->StoreUniform(Uniform{8, ValueType::U64}, loaded);
     const auto first = block->Add(shortest, Operand{middle});
     const auto total = block->Add(first, Operand{longest});
@@ -524,11 +864,9 @@ SpillForwardingBlock MakeSpilledPublicationWindowBlock(bool faulting = false) {
     const auto longest = block->LoadImm(Imm{swift::u64{1}});
     const auto middle = block->LoadImm(Imm{swift::u64{2}});
     const auto shortest = block->LoadImm(Imm{swift::u64{3}});
-    const auto published = block->GetOperand(Operand{Imm{swift::u64{0x1234}}})
-                                   .SetType(ValueType::U64);
+    const auto published = block->GetOperand(ValueType::U64, Operand{Imm{swift::u64{0x1234}}});
     if (faulting) {
-        (void)block->LoadMemory(Operand{Imm{swift::u64{0x1000}}})
-                .SetType(ValueType::U64);
+        (void)block->LoadMemory(ValueType::U64, Operand{Imm{swift::u64{0x1000}}});
     } else {
         block->ClearFlags(Flags::Carry | Flags::Overflow);
     }
@@ -547,8 +885,7 @@ SpillForwardingBlock MakeSpilledBitExtractPublicationBlock() {
     const auto middle = block->LoadImm(Imm{swift::u64{2}});
     const auto shortest = block->LoadImm(Imm{swift::u64{3}});
     const auto source = block->LoadImm(Imm{swift::u64{0x123400}});
-    const auto published = block->BitExtract(source, Imm{16u}, Imm{8u})
-                                   .SetType(ValueType::U64);
+    const auto published = block->BitExtract(ValueType::U64, source, Imm{16u}, Imm{8u});
     block->AppendInst(OpCode::SetHostGPR, published, HostRegIndex(29), Imm{0u});
     const auto first = block->Add(longest, Operand{middle});
     const auto total = block->Add(first, Operand{shortest});
@@ -560,12 +897,16 @@ SpillForwardingBlock MakeSpilledBitExtractPublicationBlock() {
 
 std::vector<std::string> Emit(SpillForwardingBlock input, GPRSMask gprs) {
     FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    AllocationFixture alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     // These fixtures explicitly exercise arriving spill backing; the initial
     // target-home optimization is covered separately by the pin-plan tests.
-    alloc.FinishFixedGPRConstraints();
-    RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, false);
-    REQUIRE(alloc.ValueType(input.arriving) == RegAlloc::MEM);
+    auto features = FeatureSet{};
+    features.ra_spill_evict = false;
+    auto prepared = ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+            input.block.get(), alloc, features);
+    prepared.fixed.clear();
+    RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, std::move(prepared));
+    REQUIRE(alloc.ValueType(input.arriving) == AllocationFixture::MEM);
 
     Config config{
             .loc_start = 0,
@@ -577,8 +918,8 @@ std::vector<std::string> Emit(SpillForwardingBlock input, GPRSMask gprs) {
     AddressSpace address_space{config};
     auto module = address_space.MapModule(
             LocationDescriptor{0x2400}, LocationDescriptor{0x2500}, ModuleConfig{});
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(input.block.get());
     context.Finish();
@@ -1077,17 +1418,361 @@ TEST_CASE("spill reload regions stop at local control flow") {
 
     GPRSMask gprs{~((1u << 5) - 1u) & ~(1u << 18)};
     FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     RegisterAllocTestSupport::RunForSpillEvictTest(block.get(), &alloc, false);
 
-    REQUIRE(alloc.ValueType(arriving) == RegAlloc::MEM);
+    REQUIRE(alloc.ValueType(arriving) == AllocationFixture::MEM);
     REQUIRE_FALSE(alloc.HasSpillReload(arriving.Id(), first.Id()));
     REQUIRE_FALSE(alloc.HasSpillReload(arriving.Id(), second.Id()));
 }
 
-// Proposal only: append to the existing ARM spill_forwarding_test.cpp.
-// No production or test source has been changed, compiled, or executed.
-TEST_CASE("normal allocation preserves flags-only spilled XOR and surviving uses", "[spill-flags-only][regression]") {
+TEST_CASE("prepared spill segments drive physical ownership and respect local boundaries",
+          "[allocation][spill-inputs]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    enum Shape { Ordinary, ClearedInput, LocalBoundary };
+    for (const auto shape : {Ordinary, ClearedInput, LocalBoundary}) {
+        CAPTURE(shape);
+        IntrusivePtr<Block> block{new Block(0, Location{0x2464})};
+        const auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{7}});
+        block->StoreUniform(Uniform{0, ValueType::U64}, value);
+        const auto* first = &block->GetInstList().back();
+        if (shape == LocalBoundary) {
+            const auto condition = block->LoadImm<BOOL>(Imm{swift::u64{1}});
+            const auto label = block->NotGoto(condition);
+            block->BindLabel(label);
+        }
+        block->StoreUniform(Uniform{8, ValueType::U64}, value);
+        const auto* last = &block->GetInstList().back();
+        block->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+        const FeatureSet features{};
+        const GPRSMask pool{~0x1fu};
+        AllocationFixture allocation{block->MaxInstrId(), pool, FPRSMask{~0xffffu}, features};
+        auto inputs = arm64::PrepareAllocationInputs(block.get(), allocation, features);
+        REQUIRE(inputs.spill);
+        const auto* range = inputs.spill->BlockFor(block.get());
+        REQUIRE(range);
+        REQUIRE(inputs.spill->Segments(*range).size() == (shape == LocalBoundary ? 2 : 1));
+        if (shape == ClearedInput) inputs.spill.reset();
+        const auto* payload = inputs.spill.get();
+        auto moved = std::move(inputs);
+        REQUIRE(moved.spill.get() == payload);
+        for (const auto& inst : block->GetInstList()) {
+            if (inst.HasValue()) {
+                if (inst.Id() == value.Id())
+                    allocation.MapMemSpill(inst.Id(), SpillSlot{0});
+                else
+                    allocation.MapRegister(inst.Id(), HostGPR{4});
+            }
+            allocation.SetActiveRegs(inst.Id(), allocation.GetGprs(), allocation.GetFprs());
+        }
+        RegisterAllocTestSupport::BuildSpillReloadsForTest(block.get(), &allocation, moved);
+        REQUIRE(allocation.HasSpillReload(value.Id(), first->Id()) == (shape == Ordinary));
+        REQUIRE(allocation.HasSpillReload(value.Id(), last->Id()) == (shape == Ordinary));
+        if (shape == Ordinary) {
+            const auto* reload = allocation.SpillReloadAt(value.Id(), first->Id());
+            REQUIRE(reload);
+            REQUIRE(reload->owns_all_uses);
+        }
+        allocation.FreezeGPRLocations();
+    }
+}
+TEST_CASE("spill ownership keeps occurrence counts separate from consumer positions and aliases",
+          "[allocation][spill-inputs]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    enum Shape {
+        Repeated,
+        External,
+        Pseudo,
+        Terminal,
+        RawAlias,
+        BoundAlias,
+        Params,
+        Split,
+        TwoValues,
+        Sparse,
+        ShiftedSegment,
+        NestedTerminal
+    };
+    for (const auto shape : {Repeated,
+                             External,
+                             Pseudo,
+                             Terminal,
+                             RawAlias,
+                             BoundAlias,
+                             Params,
+                             Split,
+                             TwoValues,
+                             Sparse,
+                             ShiftedSegment,
+                             NestedTerminal}) {
+        CAPTURE(shape);
+        IntrusivePtr<Block> block{new Block(0, Location{0x2466})};
+        IntrusivePtr<Block> foreign{new Block(0, Location{0x2468})};
+        if (shape == ShiftedSegment) {
+            const auto condition = block->LoadImm<BOOL>(Imm{swift::u64{1}});
+            const auto label = block->NotGoto(condition);
+            block->BindLabel(label);
+        }
+        const auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{7}});
+        const Inst* removed{};
+        if (shape == Sparse) {
+            block->AdvancePC(Imm{swift::u64{1}});
+            removed = &block->GetInstList().back();
+        }
+        const auto second =
+                shape == TwoValues ? block->LoadImm(ValueType::U64, Imm{swift::u64{9}}) : Value{};
+        const auto alias = shape == RawAlias || shape == BoundAlias
+                                   ? block->BitCast(ValueType::U32, value)
+                                   : Value{};
+        const auto input = alias.Defined() ? alias : value;
+        Value first;
+        if (shape == Params) {
+            ir::Params params;
+            for (unsigned i = 0; i < 300; ++i)
+                params.Push(Value{value}.SetCastType(i % 2 ? ValueType::U8 : ValueType::U64));
+            first = block->CallDynamic(ValueType::VOID, Lambda{value}, std::move(params));
+        } else
+            first = block->Add(
+                    ValueType::U64,
+                    Value{input}.SetCastType(ValueType::U64),
+                    Operand{Value{second.Defined() ? second : input}.SetCastType(ValueType::U8)});
+        if (shape == External) foreign->StoreUniform(Uniform{0, ValueType::U64}, value);
+        if (shape == Pseudo) block->SaveFlags(value, Flags::None);
+        if (shape == Split) {
+            const auto condition = block->LoadImm<BOOL>(Imm{swift::u64{1}});
+            const auto label = block->NotGoto(condition);
+            block->BindLabel(label);
+        }
+        block->StoreUniform(Uniform{0, ValueType::U64}, value);
+        const auto* last = &block->GetInstList().back();
+        if (second.Defined()) block->StoreUniform(Uniform{8, ValueType::U64}, second);
+        if (shape == Terminal)
+            block->SetTerminal(
+                    terminal::If{BOOL{value}, terminal::ReturnToHost{}, terminal::ReturnToHost{}});
+        else if (shape == NestedTerminal) {
+            const Vector<terminal::Switch::Case> cases{
+                    {Imm{swift::u32{0}},
+                     terminal::If{BOOL{value}, terminal::ReturnToHost{}, terminal::ReturnToHost{}}},
+                    {Imm{swift::u32{1}}, terminal::ReturnToHost{}}};
+            block->SetTerminal(terminal::CheckHalt{terminal::Condition{
+                    Cond::EQ,
+                    terminal::If{BOOL{value}, terminal::ReturnToHost{}, terminal::ReturnToHost{}},
+                    terminal::Switch{Value{value}.SetCastType(ValueType::U32), cases}}});
+        } else
+            block->SetTerminal(terminal::ReturnToHost{});
+        foreign->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+        foreign->ReIdInstr();
+        if (removed) block->DestroyInst(removed);
+        FeatureSet features{};
+        features.scratch_precise = true;
+        AllocationFixture allocation{
+                block->MaxInstrId(), GPRSMask{~0x1fu}, FPRSMask{~0xffffu}, features};
+        const auto inputs = arm64::PrepareAllocationInputs(block.get(), allocation, features);
+        REQUIRE(inputs.spill);
+        const auto* graph = allocation.PrepareFacts().FindIndex(block.get());
+        REQUIRE(graph);
+        REQUIRE(graph->DenseInstructionIDs() == (shape != Sparse));
+        for (const auto& inst : block->GetInstList()) {
+            if (inst.HasValue()) allocation.MapRegister(inst.Id(), HostGPR{4});
+            allocation.SetActiveRegs(inst.Id(), allocation.GetGprs(), allocation.GetFprs());
+        }
+        allocation.MapMemSpill(value.Id(), SpillSlot{0});
+        if (second.Defined()) allocation.MapMemSpill(second.Id(), SpillSlot{1});
+        if (alias.Defined()) {
+            if (shape == BoundAlias)
+                allocation.MapReference(value.Id(), alias.Id());
+            else
+                allocation.MapMemSpill(alias.Id(), SpillSlot{2});
+        }
+        RegisterAllocTestSupport::BuildSpillReloadsForTest(block.get(), &allocation, inputs);
+        const auto* begin = allocation.SpillReloadAt(value.Id(), first.Id());
+        const auto* end = allocation.SpillReloadAt(value.Id(), last->Id());
+        if (shape == Split) {
+            REQUIRE_FALSE(begin);
+            REQUIRE_FALSE(end);
+        } else {
+            REQUIRE(begin);
+            REQUIRE(end);
+            REQUIRE(begin->region == end->region);
+            const bool complete = shape == Repeated || shape == TwoValues || shape == Sparse ||
+                                  shape == ShiftedSegment;
+            REQUIRE(begin->owns_all_uses == complete);
+            REQUIRE(end->owns_all_uses == complete);
+            if (complete) REQUIRE(allocation.HasSpillReload(value.Id(), value.Id()));
+        }
+        if (shape == Params) REQUIRE(value.Def()->GetUses(false) == 302);
+        if (shape == RawAlias) REQUIRE_FALSE(allocation.HasSpillReload(alias.Id(), first.Id()));
+        if (second.Defined()) {
+            const auto* other = allocation.SpillReloadAt(second.Id(), first.Id());
+            REQUIRE(other);
+            REQUIRE(other->owns_all_uses);
+            REQUIRE(other->reg != begin->reg);
+        }
+        allocation.FreezeGPRLocations();
+    }
+}
+
+TEST_CASE("spill load ownership preserves segment membership and exact instruction adjacency",
+          "[allocation][spill-inputs]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::backend;
+    using namespace swift::runtime::ir;
+    enum Shape { Ordinary, PrefixSegment, IdGap, LocalBoundary, ExtraInputUse, TerminalResult };
+    for (bool sparse : {false, true})
+        for (const auto shape :
+             {Ordinary, PrefixSegment, IdGap, LocalBoundary, ExtraInputUse, TerminalResult}) {
+            CAPTURE(sparse, shape);
+            IntrusivePtr<Block> block{new Block(0, Location{0x246a})};
+            if (shape == PrefixSegment) {
+                const auto condition = block->LoadImm<BOOL>(Imm{swift::u64{1}});
+                const auto label = block->NotGoto(condition);
+                block->BindLabel(label);
+            }
+            const auto address =
+                    block->GetOperand(ValueType::U64, Operand{Imm{swift::u64{0x4000}}});
+            const Inst* adjacency_gap{};
+            if (shape == IdGap) {
+                block->AdvancePC(Imm{swift::u64{1}});
+                adjacency_gap = &block->GetInstList().back();
+            }
+            if (shape == LocalBoundary) {
+                const auto condition = block->LoadImm<BOOL>(Imm{swift::u64{1}});
+                const auto label = block->NotGoto(condition);
+                block->BindLabel(label);
+            }
+            const auto loaded = block->LoadMemory(ValueType::U64, Operand{address});
+            const Inst* sparse_gap{};
+            if (sparse) {
+                block->AdvancePC(Imm{swift::u64{1}});
+                sparse_gap = &block->GetInstList().back();
+            }
+            block->StoreUniform(Uniform{0, ValueType::U64}, loaded);
+            const auto* first = &block->GetInstList().back();
+            block->StoreUniform(Uniform{8, ValueType::U64}, loaded);
+            const auto* last = &block->GetInstList().back();
+            if (shape == ExtraInputUse) block->StoreUniform(Uniform{16, ValueType::U64}, address);
+            if (shape == TerminalResult)
+                block->SetTerminal(terminal::CheckHalt{terminal::If{
+                        BOOL{loaded}, terminal::ReturnToHost{}, terminal::ReturnToHost{}}});
+            else
+                block->SetTerminal(terminal::ReturnToHost{});
+            block->ReIdInstr();
+            if (adjacency_gap) block->DestroyInst(adjacency_gap);
+            if (sparse_gap) block->DestroyInst(sparse_gap);
+            FeatureSet features{};
+            features.scratch_precise = true;
+            AllocationFixture allocation{
+                    block->MaxInstrId(), GPRSMask{~0x1fu}, FPRSMask{~0xffffu}, features};
+            const auto inputs = arm64::PrepareAllocationInputs(block.get(), allocation, features);
+            REQUIRE(inputs.spill);
+            const auto* graph = allocation.PrepareFacts().FindIndex(block.get());
+            REQUIRE(graph);
+            REQUIRE(graph->DenseInstructionIDs() == (!sparse && shape != IdGap));
+            for (const auto& inst : block->GetInstList()) {
+                if (inst.HasValue()) allocation.MapRegister(inst.Id(), HostGPR{4});
+                allocation.SetActiveRegs(inst.Id(), allocation.GetGprs(), allocation.GetFprs());
+            }
+            allocation.MapMemSpill(address.Id(), SpillSlot{0});
+            allocation.MapMemSpill(loaded.Id(), SpillSlot{1});
+            RegisterAllocTestSupport::BuildSpillReloadsForTest(block.get(), &allocation, inputs);
+            const bool pair = shape == Ordinary || shape == PrefixSegment;
+            const auto* input = allocation.SpillReloadAt(address.Id(), loaded.Id());
+            REQUIRE((input != nullptr) == (pair || shape == ExtraInputUse));
+            if (input) {
+                REQUIRE(input->fault_backed == pair);
+                REQUIRE(input->owns_all_uses == pair);
+                REQUIRE(allocation.HasSpillReload(address.Id(), address.Id()) == pair);
+            }
+            const auto* begin = allocation.SpillReloadAt(loaded.Id(), first->Id());
+            const auto* end = allocation.SpillReloadAt(loaded.Id(), last->Id());
+            REQUIRE(begin);
+            REQUIRE(end);
+            REQUIRE(begin->region == end->region);
+            REQUIRE(begin->owns_all_uses == (shape != TerminalResult));
+            if (input) REQUIRE(input->reg != begin->reg);
+            allocation.FreezeGPRLocations();
+        }
+}
+
+TEST_CASE("prepared scratch keeps local demand and exact repeated spill inputs",
+          "[scratch-facts][spill-forward][regression]") {
+    for (unsigned shape : {0u, 1u, 2u, 3u}) {
+        CAPTURE(shape);
+        IntrusivePtr<Block> block{new Block(0, Location{0x24a0})};
+        IntrusivePtr<Block> foreign{new Block(0, Location{0x24a8})};
+        const auto producer = block->LoadImm(ValueType::U64, Imm{swift::u64{7}});
+        const auto input = block->LoadImm(ValueType::U64, Imm{swift::u64{9}});
+        const auto empty_save = block->Xor(ValueType::U64, input, Operand{input});
+        block->SaveFlags(empty_save, Flags::None);
+        const auto foreign_flags = block->Xor(ValueType::U64, input, Operand{input});
+        const auto external = foreign->LoadImm(ValueType::U64, Imm{swift::u64{11}});
+        Params params;
+        params.Push(Value{producer}.SetCastType(ValueType::U8));
+        params.Push(Imm{swift::u64{1}});
+        params.Push(Value{producer}.SetCastType(ValueType::U64));
+        params.Push(shape == 2 ? external : producer);
+        const auto call = block->CallDynamic(ValueType::VOID, Lambda{producer}, std::move(params));
+        if (shape == 1) block->StoreUniform(Uniform{0, ValueType::U64}, producer);
+        foreign->SaveFlags(foreign_flags, Flags::NZCV | Flags::Parity);
+        if (shape == 3) foreign->SaveFlags(producer, Flags::Carry);
+        block->ReIdInstr();
+        foreign->ReIdInstr();
+        REQUIRE(external.Id() == producer.Id());
+        FeatureSet features{};
+        features.scratch_precise = true;
+        AllocationFixture allocation{
+                block->MaxInstrId(), GPRSMask{~((1u << 8) - 1u)}, FPRSMask{}, features};
+        allocation.BeginTargetPlanning();
+        allocation.MapMemSpill(producer.Id(), SpillSlot{0});
+        {
+            compile::BlockAnalysisIndex index;
+            index.Build(block.get(), nullptr, true);
+            allocation.DeclareBlock(block.get(), index.Summary(), index.PseudoFlags().View());
+            allocation.StoreScratch(
+                    block.get(),
+                    arm64::PrepareScratch(block.get(),
+                                          allocation,
+                                          features,
+                                          arm64::PrepareUnitScratch(allocation.GetGprs(), features),
+                                          index,
+                                          allocation.Workspace()));
+        }
+        allocation.EndTargetPlanning();
+        const auto& actions = allocation.Actions();
+        for (const auto& inst : block->GetInstList()) {
+            const auto* planned = actions.ScratchFor(&inst);
+            REQUIRE(planned);
+            // Independent manual preparation scans this block. It observes the
+            // zero-mask save, and excludes the save in the foreign block.
+            const auto manual = arm64::PrepareInstructionScratchWithBlock(
+                    inst, allocation.GetGprs(), features, block.get());
+            REQUIRE(*planned == manual);
+        }
+        const auto facts = actions.SpillInputFor(call.Def(), producer.Id());
+        if (shape == 2)
+            REQUIRE(facts.definition == nullptr);
+        else {
+            REQUIRE(facts.definition == producer.Def());
+            REQUIRE(facts.last_use == (shape == 0));
+        }
+        REQUIRE(actions.SpillInputFor(call.Def(), input.Id()).definition == nullptr);
+        REQUIRE(actions.SpillInputFor(nullptr, producer.Id()).definition == nullptr);
+        REQUIRE(actions.SpillInputFor(call.Def(), UINT32_MAX).definition == nullptr);
+        REQUIRE(actions.ScratchFor(external.Def()) == nullptr);
+        allocation.ResetAllocations();
+        REQUIRE(actions.ScratchFor(call.Def()) == nullptr);
+        REQUIRE(actions.SpillInputFor(call.Def(), producer.Id()).definition == nullptr);
+    }
+}
+
+TEST_CASE("normal allocation preserves flags-only spilled XOR and surviving uses",
+          "[spill-flags-only][regression]") {
     for (unsigned shape : {0u, 1u, 2u}) {
         Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
                       .has_local_operation = false, .backend_isa = kArm64};
@@ -1100,48 +1785,56 @@ TEST_CASE("normal allocation preserves flags-only spilled XOR and surviving uses
         // AF is explicitly initialized then preserved; XOR's undefined x86 AF
         // is not used as an oracle for a new AF publication contract.
         block->ClearFlags(Flags::AuxiliaryCarry);
-        const auto left = block->LoadUniform(Uniform{64, ValueType::U64}).SetType(ValueType::U64);
-        const auto right = block->LoadUniform(Uniform{72, ValueType::U64}).SetType(ValueType::U64);
+        const auto left = block->LoadUniform(ValueType::U64, Uniform{64, ValueType::U64});
+        const auto right = block->LoadUniform(ValueType::U64, Uniform{72, ValueType::U64});
         std::vector<Value> live;
         for (unsigned i = 0; i < 36; ++i)
-            live.push_back(block->LoadUniform(Uniform{128 + i * 8, ValueType::U64}).SetType(ValueType::U64));
-        const auto result = block->Xor(left, Operand{right}).SetType(ValueType::U64);
+            live.push_back(
+                    block->LoadUniform(ValueType::U64, Uniform{128 + i * 8, ValueType::U64}));
+        const auto result = block->Xor(ValueType::U64, left, Operand{right});
         block->SaveFlags(result, Flags::NZCV | Flags::Parity);
         const auto* flags_consumer = &block->GetInstList().back();
         const Flags tests[] = {Flags::Parity, Flags::AuxiliaryCarry, Flags::Carry,
                                Flags::Overflow, Flags::Zero, Flags::Negate};
         for (unsigned i = 0; i < 6; ++i) {
-            const auto bit = block->TestFlags(tests[i]).SetType(ValueType::U8);
+            const auto bit = block->TestFlags(ValueType::U8, tests[i]);
             block->StoreUniform(Uniform{i, ValueType::U8}, bit);
         }
         if (shape == 1) block->StoreUniform(Uniform{8, ValueType::U64}, result);
         if (shape == 2) {
-            const auto alias = block->BitCast(result).SetType(ValueType::U64);
+            const auto alias = block->BitCast(ValueType::U64, result);
             block->StoreUniform(Uniform{8, ValueType::U64}, alias);
         }
-        auto total = block->Add(left, Operand{right}).SetType(ValueType::U64);
-        for (const auto value : live) total = block->Add(total, Operand{value}).SetType(ValueType::U64);
+        auto total = block->Add(ValueType::U64, left, Operand{right});
+        for (const auto value : live) total = block->Add(ValueType::U64, total, Operand{value});
         block->StoreUniform(Uniform{16, ValueType::U64}, total);
         block->SetTerminal(terminal::ReturnToHost{});
         block->ReIdInstr();
         auto features = FeatureSet{};
         features.ra_spill_evict = false;
-        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                            space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        allocation.CompleteGPRAllocation(module);
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
         INFO("shape=" << shape);
-        REQUIRE(allocation.ValueType(result) == RegAlloc::MEM);
-        REQUIRE(allocation.GPRLocationAt(result, result.Id(), RegAlloc::GPRView::WholeValue).kind == RegAlloc::MEM);
-        const auto actions = allocation.GPRPlanFor(block.get()); REQUIRE(actions);
-        [&]<class Actions>(const Actions* selected) {
-            if constexpr (requires { selected->flags_only_spills.Discards(flags_consumer, result.Id()); }) {
-                CHECK(selected->flags_only_spills.Discards(flags_consumer, result.Id()) == (shape == 0));
-                CHECK_FALSE(selected->flags_only_spills.Discards(flags_consumer, left.Id()));
-            }
-        }(actions.get());
+        REQUIRE(allocation.ValueType(result) == AllocationFixture::MEM);
+        REQUIRE(allocation
+                        .GPRLocationAt(result, result.Id(), AllocationFixture::GPRView::WholeValue)
+                        .kind == AllocationFixture::MEM);
+        const auto actions = allocation.Actions().ForBlock(block.get());
+        REQUIRE(actions);
+        CHECK(allocation.Actions().DiscardsFlagsOnlySpill(flags_consumer, result.Id()) ==
+              (shape == 0));
+        CHECK_FALSE(allocation.Actions().DiscardsFlagsOnlySpill(flags_consumer, left.Id()));
 
-        arm64::JitContext context{module, allocation};
+        arm64::JitContext context{module, allocation, allocation.Actions()};
         arm64::JitTranslator translator{context};
         REQUIRE(translator.Translate(block.get()));
         context.Finish();

@@ -1,7 +1,11 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include "../support/allocation_inputs.h"
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
 #include "../support/jit_translator_test_support.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 
 TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
     using namespace swift::runtime::ir;
@@ -38,8 +42,13 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
 #endif
     auto check_and_emit = [&](Block* raw, int expected_spill = -1) {
         swift::runtime::IntrusivePtr<Block> block{raw};
-        RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-        RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
+        AllocationFixture reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &reg_alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), reg_alloc, FeatureSet{}),
+                false);
 #if defined(__linux__) && !defined(__ANDROID__)
         const bool has_spill = reg_alloc.SpillCount() != 0;
         saw_spill_unit |= has_spill;
@@ -60,7 +69,7 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
             unsigned reloads_gpr = 0, reloads_fpr = 0;
             std::vector<std::uint32_t> counted;
             auto count = [&](const Value& value) {
-                if (!value.Defined() || reg_alloc.ValueType(value) != RegAlloc::MEM) {
+                if (!value.Defined() || reg_alloc.ValueType(value) != AllocationFixture::MEM) {
                     return;
                 }
                 if (reg_alloc.HasSpillReload(value.Id(), inst.Id())) {
@@ -89,8 +98,8 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
         // 2. And the JIT must actually emit it. GetTmpX panics through
         //    AssertFailed, so reaching the end of Translate is the assertion:
         //    a scratch shortfall aborts here rather than returning.
-        reg_alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, reg_alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, reg_alloc);
+        arm64::JitContext context{module, reg_alloc, reg_alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -113,7 +122,7 @@ TEST_CASE("Scratch pool survives a register file saturated across a VecFAdd") {
     // Reload pressure: values read twice across a saturated file, and one
     // instruction naming the same spilled value twice. Capped below the point
     // where the 64-slot State::spill_area runs out -- an unrelated limit
-    // (backend::kMaxSpillSlots) with its own loud assert.
+    // (compile::kMaxSpillSlots) with its own loud assert.
     for (unsigned live : {12u, 20u, 28u}) {
         INFO("values read twice across a saturated file: " << live);
         check_and_emit(BuildReloadPressureBlock(live));
@@ -148,13 +157,18 @@ TEST_CASE("SSE4.2 string lowering stays within its declared scratch contract") {
         Block block{0, Location{0x1c00 + imm}};
         auto left = block.LoadUniform(Uniform{0, ValueType::V128});
         auto right = block.LoadUniform(Uniform{16, ValueType::V128});
-        auto result = block.Sse42Str(left, right, Imm{imm}).SetType(ValueType::U64);
+        auto result = block.Sse42Str(ValueType::U64, left, right, Imm{imm});
         block.StoreUniform(Uniform{32, ValueType::U64}, result);
         block.SetTerminal(terminal::ReturnToDispatch{});
         block.ReIdInstr();
 
-        RegAlloc alloc{block.MaxInstrId(), gprs, fprs, FeatureSet{}};
-        RegisterAllocPass::Run(&block, &alloc, false, FeatureSet{});
+        AllocationFixture alloc{block.MaxInstrId(), gprs, fprs, FeatureSet{}};
+        ::swift::runtime::compile::AllocateBlock(
+                &block,
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        &block, alloc, FeatureSet{}),
+                false);
 #if defined(__aarch64__)
         const swift::u32 expected_gprs =
                 swift::x86::Sse42StrVectorHelperAddress(swift::u8(imm))
@@ -165,10 +179,10 @@ TEST_CASE("SSE4.2 string lowering stays within its declared scratch contract") {
 #endif
         REQUIRE(ScratchBudget(*result.Def(), FeatureSet{}, {}).gpr == expected_gprs);
 
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
-        context.SetCurrent(&block);
+        arm64::JitTranslatorTestSupport::BeginBlock(translator, block);
         context.TickIR(result.Def());
         translator.EmitSse42Str(result.Def());
         context.EndInstructionScratch();
@@ -182,11 +196,10 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
     using namespace swift::runtime::backend;
 
     enum class RightShape { Reg, LargeImm, Shift, Composite };
-    auto make_price = [](ValueType type, Flags flags, bool branch_only,
-                         RightShape shape) {
+    auto make_price = [](ValueType type, Flags flags, bool branch_only, RightShape shape) {
         Block block{0, Location{0x1d00}};
-        auto left = block.LoadImm(Imm{7u}).SetType(type);
-        auto other = block.LoadImm(Imm{3u}).SetType(type);
+        auto left = block.LoadImm(type, Imm{7u});
+        auto other = block.LoadImm(type, Imm{3u});
         Operand right{other};
         switch (shape) {
             case RightShape::Reg:
@@ -201,7 +214,7 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
                 right = Operand{left, other, OperandPlus};
                 break;
         }
-        auto result = block.Add(left, right).SetType(type);
+        auto result = block.Add(type, left, right);
         FlagsDemand demand{};
         if (branch_only) {
             block.AppendInst(OpCode::BranchOnlyFlags, result, flags);
@@ -230,8 +243,8 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
 
     auto make_host_price = [](ValueType type, Flags flags) {
         Block block{0, Location{0x1d80}};
-        auto left = block.GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(type);
-        auto result = block.Add(left, Operand{left}).SetType(type);
+        auto left = block.GetHostGPR(type, HostRegIndex(22), Imm{0u});
+        auto result = block.Add(type, left, Operand{left});
         FlagsDemand demand{};
         if (flags != Flags::None) {
             block.SaveFlags(result, flags);
@@ -256,21 +269,22 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
     const auto fprs = address_space.GetTrampolines().GetFPRRegs();
 
     Block allocation_contract{0, Location{0x1dc0}};
-    auto contract_left =
-            allocation_contract.LoadImm(Imm{7u}).SetType(ValueType::U16);
-    auto contract_right =
-            allocation_contract.LoadImm(Imm{3u}).SetType(ValueType::U16);
-    auto contract_result = allocation_contract
-                                   .Add(contract_left, Operand{contract_right})
-                                   .SetType(ValueType::U16);
+    auto contract_left = allocation_contract.LoadImm(ValueType::U16, Imm{7u});
+    auto contract_right = allocation_contract.LoadImm(ValueType::U16, Imm{3u});
+    auto contract_result =
+            allocation_contract.Add(ValueType::U16, contract_left, Operand{contract_right});
     allocation_contract.SaveFlags(contract_result, Flags::All);
     allocation_contract.ReIdInstr();
-    RegAlloc contract_alloc{allocation_contract.MaxInstrId(), gprs, fprs,
-                            FeatureSet{}};
-    RegisterAllocPass::Run(&allocation_contract, &contract_alloc, false, FeatureSet{});
-    REQUIRE(contract_alloc.ValueType(contract_left) == RegAlloc::GPR);
-    REQUIRE(contract_alloc.ValueType(contract_right) == RegAlloc::GPR);
-    REQUIRE(contract_alloc.ValueType(contract_result) == RegAlloc::GPR);
+    AllocationFixture contract_alloc{allocation_contract.MaxInstrId(), gprs, fprs, FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            &allocation_contract,
+            &contract_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    &allocation_contract, contract_alloc, FeatureSet{}),
+            false);
+    REQUIRE(contract_alloc.ValueType(contract_left) == AllocationFixture::GPR);
+    REQUIRE(contract_alloc.ValueType(contract_right) == AllocationFixture::GPR);
+    REQUIRE(contract_alloc.ValueType(contract_result) == AllocationFixture::GPR);
     REQUIRE(contract_alloc.ValueGPR(contract_result).id !=
             contract_alloc.ValueGPR(contract_left).id);
     REQUIRE(contract_alloc.ValueGPR(contract_result).id !=
@@ -282,13 +296,13 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
         Value left;
         Value other;
         if (host_read) {
-            left = block.GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(type);
-            other = block.GetHostGPR(HostRegIndex(23), Imm{0u}).SetType(type);
+            left = block.GetHostGPR(type, HostRegIndex(22), Imm{0u});
+            other = block.GetHostGPR(type, HostRegIndex(23), Imm{0u});
         } else {
-            left = block.LoadImm(Imm{7u}).SetType(type);
-            other = block.LoadImm(Imm{3u}).SetType(type);
+            left = block.LoadImm(type, Imm{7u});
+            other = block.LoadImm(type, Imm{3u});
         }
-        auto pending = block.Add(left, Operand{other}).SetType(ValueType::U64);
+        auto pending = block.Add(ValueType::U64, left, Operand{other});
         block.SaveFlags(pending, Flags::All);
         Operand right{left};
         switch (shape) {
@@ -304,7 +318,7 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
                 right = Operand{left, other, OperandPlus};
                 break;
         }
-        auto target = block.Add(left, right).SetType(type);
+        auto target = block.Add(type, left, right);
         if (branch_only) {
             block.AppendInst(OpCode::BranchOnlyFlags, target, flags);
         } else if (flags != Flags::None) {
@@ -312,7 +326,7 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
         }
         block.ReIdInstr();
 
-        RegAlloc alloc{block.MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture alloc{block.MaxInstrId(), gprs, fprs, FeatureSet{}};
         alloc.MapRegister(left.Id(), HostGPR{22});
         alloc.MapRegister(other.Id(), HostGPR{23});
         alloc.MapRegister(pending.Id(), HostGPR{24});
@@ -326,13 +340,12 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
 
         // This isolated encoder measurement supplies the final physical mapping.
         // Register its actual IR unit before the explicit planning boundary.
-        alloc.SetAllocationUnit(&block, nullptr, {});
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        alloc.SetAllocationUnit(&block, nullptr);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
-        context.SetCurrent(&block);
+        arm64::JitTranslatorTestSupport::BeginBlock(translator, block);
         context.TickIR(pending.Def());
-        arm64::JitTranslatorTestSupport::BindPseudoFlags(translator, block);
         translator.EmitAdd(pending.Def());
         context.EndInstructionScratch();
         context.TickIR(target.Def());
@@ -380,7 +393,7 @@ TEST_CASE("Add Sub precise scratch prices cover emitted peaks") {
 // number of stack slots the unit needs is a small constant while the number of
 // spill *events* is proportional to the churn. That difference is the whole
 // point: a linear scan that never returns a slot consumes one per event and
-// dies on backend::kMaxSpillSlots; one that recycles stays flat.
+// dies on compile::kMaxSpillSlots; one that recycles stays flat.
 
 static swift::runtime::ir::Block* BuildSpillChurnBlock(unsigned anchors, unsigned churn) {
     using namespace swift::runtime::ir;
@@ -574,7 +587,7 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
 
     auto check_recycling = [&](Block* raw, unsigned expect_min_spills) {
         swift::runtime::IntrusivePtr<Block> block{raw};
-        RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         // Pre-fix this call itself threw ("spill area exhausted: slot 64 (+1)
         // >= 64 reserved slots") long before any assertion below could run.
         // Select the historical spill-current policy explicitly: this test's
@@ -599,7 +612,7 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
                 continue;
             }
             Value value{&inst};
-            if (reg_alloc.ValueType(value) != RegAlloc::MEM) {
+            if (reg_alloc.ValueType(value) != AllocationFixture::MEM) {
                 continue;
             }
             const auto type = inst.ReturnType();
@@ -624,7 +637,7 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
             }
             // 3. Never past the reservation: beyond it the Str walks into the
             //    uniform buffer that follows State::spill_area.
-            REQUIRE(s.slot + s.width <= kMaxSpillSlots);
+            REQUIRE(s.slot + s.width <= swift::runtime::compile::kMaxSpillSlots);
         }
 
         // 4. Two values that are live at the same time must not share a slot.
@@ -656,8 +669,8 @@ TEST_CASE("Spill slots are recycled, not merely handed out") {
         // 6. Finally the JIT has to emit it. GetTmpX/GetTmpV and
         //    SpillGPR/SpillFPR assert through AssertFailed, so reaching the end
         //    of Translate is itself the assertion.
-        reg_alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, reg_alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, reg_alloc);
+        arm64::JitContext context{module, reg_alloc, reg_alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -704,12 +717,9 @@ TEST_CASE("peeled GetOperand keeps its address live through the memory use") {
 
     auto* raw_block = new Block(0, Location{0x6f00});
     IntrusivePtr<Block> block{raw_block};
-    auto address =
-            raw_block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto memory_address =
-            raw_block->GetOperand(Operand{address}).SetType(ValueType::U64);
-    auto value =
-            raw_block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    auto address = raw_block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+    auto memory_address = raw_block->GetOperand(ValueType::U64, Operand{address});
+    auto value = raw_block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
     raw_block->StoreMemory(Operand{memory_address}, value);
     raw_block->SetTerminal(terminal::ReturnToDispatch{});
     raw_block->ReIdInstr();
@@ -723,25 +733,30 @@ TEST_CASE("peeled GetOperand keeps its address live through the memory use") {
     };
     AddressSpace address_space{config};
     auto module = address_space.GetDefaultModule();
-    RegAlloc reg_alloc{raw_block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(),
-                       FeatureSet{}};
-    RegisterAllocPass::Run(raw_block, &reg_alloc, false, FeatureSet{});
+    AllocationFixture reg_alloc{raw_block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            raw_block,
+            &reg_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    raw_block, reg_alloc, FeatureSet{}),
+            false);
 
     const bool enabled = swift::runtime::GetSvmConfig().mem_narrow_fuse;
     if (enabled) {
-        REQUIRE(reg_alloc.ValueType(address) == RegAlloc::GPR);
-        REQUIRE(reg_alloc.ValueType(memory_address) == RegAlloc::GPR);
-        REQUIRE(reg_alloc.ValueType(value) == RegAlloc::GPR);
+        REQUIRE(reg_alloc.ValueType(address) == AllocationFixture::GPR);
+        REQUIRE(reg_alloc.ValueType(memory_address) == AllocationFixture::GPR);
+        REQUIRE(reg_alloc.ValueType(value) == AllocationFixture::GPR);
         REQUIRE(reg_alloc.ValueGPR(address).id ==
                 reg_alloc.ValueGPR(memory_address).id);
         REQUIRE(reg_alloc.ValueGPR(memory_address).id !=
                 reg_alloc.ValueGPR(value).id);
     }
 
-    reg_alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, reg_alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, reg_alloc);
+    arm64::JitContext context{module, reg_alloc, reg_alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(raw_block);
     context.Finish();
@@ -755,9 +770,9 @@ TEST_CASE("address EA tie transfers a terminal fixed alias") {
 
     auto* raw = new Block(0, Location{0x6f20});
     IntrusivePtr<Block> block{raw};
-    auto source = raw->GetHostGPR(HostRegIndex(6), Imm{0u}).SetType(ValueType::U64);
-    auto address = raw->GetOperand(Operand{source}).SetType(ValueType::U64);
-    auto value = raw->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    auto source = raw->GetHostGPR(ValueType::U64, HostRegIndex(6), Imm{0u});
+    auto address = raw->GetOperand(ValueType::U64, Operand{source});
+    auto value = raw->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
     raw->StoreMemory(Operand{address}, value);
     raw->SetTerminal(terminal::ReturnToDispatch{});
     raw->ReIdInstr();
@@ -765,8 +780,12 @@ TEST_CASE("address EA tie transfers a terminal fixed alias") {
     // x6 模拟静态映射的固定家；普通线性扫描不能把其它值分配到它。
     const GPRSMask gprs{~((1u << 19) - 1u) | (1u << 6)};
     const FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::Run(raw, &alloc, false, FeatureSet{});
+    AllocationFixture alloc{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            raw,
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(raw, alloc, FeatureSet{}),
+            false);
 
     const bool enabled = swift::runtime::GetSvmConfig().addr_ea_tie;
     REQUIRE(alloc.ValueGPR(source).id == 6);
@@ -793,7 +812,7 @@ TEST_CASE("composite memory EA survives only in direct mode") {
         const auto pc = reinterpret_cast<VAddr>(bytes.data());
         auto* raw = new Block(0, Location{pc});
         IntrusivePtr<Block> block{raw};
-        Assembler assembler{raw};
+        swift::runtime::compile::IrBuilder assembler{raw};
         X64Decoder decoder{pc,
                            &memory,
                            &assembler,
@@ -857,14 +876,12 @@ TEST_CASE("absolute GetOperand materializes directly into its result") {
     };
     AddressSpace address_space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0x7800})};
-    auto address =
-            block->GetOperand(Operand{Imm{swift::u64{0x004c7e10}}})
-                    .SetType(ValueType::U64);
+    auto address = block->GetOperand(ValueType::U64, Operand{Imm{swift::u64{0x004c7e10}}});
     block->ReIdInstr();
 
     const GPRSMask gprs{~((1u << 8) - 1u)};
     const FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     alloc.MapRegister(address.Id(), HostGPR{6});
     auto active_gprs = gprs;
     auto active_fprs = fprs;
@@ -873,10 +890,12 @@ TEST_CASE("absolute GetOperand materializes directly into its result") {
 
     alloc.FreezeGPRLocations();
 
-    alloc.SetAllocationUnit(block.get(), nullptr, {});
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    alloc.SetAllocationUnit(block.get(), nullptr);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
+    arm64::JitTranslatorTestSupport::BeginBlock(translator, *block);
     context.TickIR(address.Def());
     const auto begin = context.CurrentBufferSize();
     translator.EmitGetOperand(address.Def());
@@ -918,12 +937,10 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
                 LocationDescriptor{0x79a0}, LocationDescriptor{0x79e0}, module_config);
 
         IntrusivePtr<Block> block{new Block(0, Location{0x79a0})};
-        Inst* publish = nullptr;
+        const Inst* publish = nullptr;
         if (coalesce) {
-            auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
-                                 .SetType(ValueType::U64);
-            publish = block->AppendInst(
-                    OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+            auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{0x123456789abcdef0}});
+            publish = block->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
         }
         auto target = block->LoadUniform<TypedValue<ValueType::U64>>(
                 Uniform{0, ValueType::U64});
@@ -949,12 +966,17 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
         }
         const FPRSMask fprs{~((1u << 8) - 1u)};
         auto features = ResolveFeatureSet(module_config);
-        RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
         const bool host_write = publish && alloc.IsHostWriteCoalesced(publish->Id());
 
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -991,7 +1013,7 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
     };
     const auto l1_flags_restore = GetSvmConfig().flags_regs
             ? vixl::aarch64::kInstructionSize : 0;
-    // LDARB/CBZ/STR/B poll the retained target; the cold reason tail has
+    // Full-width LDAR/CBZ/STR/B poll the retained target; the cold reason tail has
     // LDAR, two TBNZ, three MOV, two B, STR and RET.
     constexpr auto request_exit_bytes = 14 * vixl::aarch64::kInstructionSize;
     INFO("indirect off=" << off.bytes << " l1=" << l1.bytes);
@@ -1001,8 +1023,8 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
     REQUIRE(count(off, "br") == 0);
     REQUIRE(count(l1, "br") == 1);
     REQUIRE(count(l1, "ret") == count(off, "ret"));
-    REQUIRE(count(l1, "ldar") == count(off, "ldar") + 1);
-    REQUIRE(count(l1, "ldarb") == count(off, "ldarb") + 1);
+    REQUIRE(count(l1, "ldar") == count(off, "ldar") + 2);
+    REQUIRE(count(l1, "ldarb") == count(off, "ldarb"));
     REQUIRE(count(l1, "lsr") == count(off, "lsr"));
     REQUIRE(count(l1, "tbnz") == count(off, "tbnz") + 2);
     REQUIRE(count(l1, "str") == count(off, "str") + 2);
@@ -1025,8 +1047,8 @@ TEST_CASE("indirect L1 and lean shadow stack select compatible return paths") {
             call_off.bytes - 2 * vixl::aarch64::kInstructionSize);
     REQUIRE(call_both.bytes == call_l1.bytes);
     REQUIRE(count(call_l1, "stp") + 1 == count(call_off, "stp"));
-    REQUIRE(count(call_l1, "ldar") == count(call_off, "ldar") + 1);
-    REQUIRE(count(call_l1, "ldarb") == count(call_off, "ldarb") + 1);
+    REQUIRE(count(call_l1, "ldar") == count(call_off, "ldar") + 2);
+    REQUIRE(count(call_l1, "ldarb") == count(call_off, "ldarb"));
     REQUIRE(count(call_l1, "tbnz") == count(call_off, "tbnz") + 2);
 
     const auto ret_off = run(false, false, Shape::Return, false, false);

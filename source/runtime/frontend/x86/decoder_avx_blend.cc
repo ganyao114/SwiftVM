@@ -142,13 +142,11 @@
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 // DecodeAvxIntBinary hands its per-half callback ONE opaque u32, so the lane
 // width and the imm8 travel packed together.  Same convention as
 // decoder_avx_int.cc; kept file-local because that one is too.
@@ -159,23 +157,21 @@ constexpr u32 Flag(u32 param) { return param >> 16; }
 // Materialize an arbitrary 128-bit constant.  The IR has no vector-immediate
 // opcode, so this goes through the scalar path: VecDup64 broadcasts a GPR into
 // both qwords and a 64-bit Zip1 takes lane 0 of each of two broadcasts.
-ir::Value VecConst(ir::Assembler* as, u64 lo, u64 hi) {
-    auto low = as->VecDup64(as->LoadImm(ir::Imm(lo)).SetType(ir::ValueType::U64))
-                       .SetType(ir::ValueType::V128);
+ir::Value VecConst(compile::IrBuilder* as, u64 lo, u64 hi) {
+    auto low = as->VecDup64(ir::ValueType::V128, as->LoadImm(ir::ValueType::U64, ir::Imm(lo)));
     if (lo == hi) {
         return low;
     }
-    auto high = as->VecDup64(as->LoadImm(ir::Imm(hi)).SetType(ir::ValueType::U64))
-                        .SetType(ir::ValueType::V128);
-    return as->VecZip(low, high, ir::Imm(64u), ir::Imm(0u)).SetType(ir::ValueType::V128);
+    auto high = as->VecDup64(ir::ValueType::V128, as->LoadImm(ir::ValueType::U64, ir::Imm(hi)));
+    return as->VecZip(ir::ValueType::V128, low, high, ir::Imm(64u), ir::Imm(0u));
 }
 
 // result = (b & mask) | (a & ~mask), lane-agnostic.  This is the neutral
 // bit-select every blend in this file funnels into.
-ir::Value BitSelect(ir::Assembler* as, ir::Value a, ir::Value b, ir::Value mask) {
-    return as->VecOr(as->VecAnd(b, mask).SetType(ir::ValueType::V128),
-                     as->VecAndNot(a, mask).SetType(ir::ValueType::V128))
-            .SetType(ir::ValueType::V128);
+ir::Value BitSelect(compile::IrBuilder* as, ir::Value a, ir::Value b, ir::Value mask) {
+    return as->VecOr(ir::ValueType::V128,
+                     as->VecAnd(ir::ValueType::V128, b, mask),
+                     as->VecAndNot(ir::ValueType::V128, a, mask));
 }
 
 // vblendps / vblendpd, as a DecodeAvxIntBinary per-half callback.
@@ -190,7 +186,7 @@ ir::Value BitSelect(ir::Assembler* as, ir::Value a, ir::Value b, ir::Value mask)
 // SDM cases: VEX.128 uses imm8[3:0] / imm8[1:0] (half is always 0) and VEX.256
 // uses imm8[7:0] / imm8[3:0].  Bits above the used range are ignored, which
 // falls out of never reading them.
-ir::Value OpBlendFpImm(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32 half) {
+ir::Value OpBlendFpImm(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32 half) {
     const u32 imm = Flag(param);
     const u32 lane_bits = Lane(param);
     const u32 count = 128u / lane_bits;
@@ -226,10 +222,10 @@ void X64Decoder::DecodeAvxBlendVar(const VexInsn& v, u32 lane_bits) {
     const u32 selector = v.is4_register;
     const auto expand = [&](ir::Value raw) -> ir::Value {
         return __ VecShiftRightArithmetic(
-                        raw,
-                        __ LoadImm(ir::Imm(u64(lane_bits - 1))).SetType(ir::ValueType::U64),
-                        ir::Imm(lane_bits))
-                .SetType(ir::ValueType::V128);
+                ir::ValueType::V128,
+                raw,
+                __ LoadImm(ir::ValueType::U64, ir::Imm(u64(lane_bits - 1))),
+                ir::Imm(lane_bits));
     };
     if (v.Is256()) {
         auto a_lo = XmmRead(XmmOf(v.vvvv));
@@ -269,26 +265,24 @@ void X64Decoder::DecodeAvxInsertPs(const VexInsn& v) {
     if (v.RmIsRegister()) {
         const u32 count_s = (v.imm8 >> 6) & 3u;
         auto source = XmmRead(XmmOf(v.rm));
-        auto container = __ VecExtract64(source, ir::Imm(count_s / 2)).SetType(ir::ValueType::U64);
+        auto container = __ VecExtract64(ir::ValueType::U64, source, ir::Imm(count_s / 2));
         if (count_s % 2 != 0) {
-            container = __ LsrImm(container, ir::Imm(32u)).SetType(ir::ValueType::U64);
+            container = __ LsrImm(ir::ValueType::U64, container, ir::Imm(32u));
         }
-        element = __ And(container, ir::Operand{ir::Imm(u64(0xFFFFFFFF))})
-                          .SetType(ir::ValueType::U64);
+        element = __ And(ir::ValueType::U64, container, ir::Operand{ir::Imm(u64(0xFFFFFFFF))});
     } else {
-        element = __ ZeroExtend64(MemLoad(ir::Operand{VexAddress(v)},
-                                         ir::ValueType::U32,
-                                         VexTsoOrdered(v)))
-                          .SetType(ir::ValueType::U64);
+        element = __ ZeroExtend64(
+                ir::ValueType::U64,
+                MemLoad(ir::Operand{VexAddress(v)}, ir::ValueType::U32, VexTsoOrdered(v)));
     }
 
     // VecInsert16 is the IR's only element write; a 32-bit lane is two of them.
     auto result = XmmRead(XmmOf(v.vvvv));
-    result = __ VecInsert16(result, element, ir::Imm(count_d * 2)).SetType(ir::ValueType::V128);
-    result = __ VecInsert16(result,
-                            __ LsrImm(element, ir::Imm(16u)).SetType(ir::ValueType::U64),
-                            ir::Imm(count_d * 2 + 1))
-                     .SetType(ir::ValueType::V128);
+    result = __ VecInsert16(ir::ValueType::V128, result, element, ir::Imm(count_d * 2));
+    result = __ VecInsert16(ir::ValueType::V128,
+                            result,
+                            __ LsrImm(ir::ValueType::U64, element, ir::Imm(16u)),
+                            ir::Imm(count_d * 2 + 1));
 
     if (zmask != 0) {
         u64 keep[2] = {~u64(0), ~u64(0)};
@@ -297,8 +291,7 @@ void X64Decoder::DecodeAvxInsertPs(const VexInsn& v) {
                 keep[lane / 2] &= ~(0xFFFFFFFFull << ((lane % 2) * 32));
             }
         }
-        result = __ VecAnd(result, VecConst(assembler, keep[0], keep[1]))
-                         .SetType(ir::ValueType::V128);
+        result = __ VecAnd(ir::ValueType::V128, result, VecConst(assembler, keep[0], keep[1]));
     }
     VexWrite128(v.reg, result);
 }
@@ -360,7 +353,7 @@ void X64Decoder::DecodeAvxMaskMov(const VexInsn& v, u32 lane_bits, bool store) {
         // that is the architectural result, and for VEX.128 it is contract C3
         // -- one step covering both.  Doing it before the loop also means the
         // per-element merge never has to preserve anything.
-        auto zero = __ LoadImm(ir::Imm(u64(0))).SetType(ir::ValueType::U64);
+        auto zero = __ LoadImm(ir::ValueType::U64, ir::Imm(u64(0)));
         XmmLo(XmmOf(v.reg), zero);
         XmmHi(XmmOf(v.reg), zero);
         YmmHighLo(v.reg, zero);
@@ -379,8 +372,7 @@ void X64Decoder::DecodeAvxMaskMov(const VexInsn& v, u32 lane_bits, bool store) {
             if (store) {
                 auto value = shift == 0
                                      ? source_q[q]
-                                     : __ LsrImm(source_q[q], ir::Imm(shift))
-                                               .SetType(ir::ValueType::U64);
+                                     : __ LsrImm(ir::ValueType::U64, source_q[q], ir::Imm(shift));
                 MemStore(ir::Operand{address, offset, ir::OperandPlus},
                          NarrowTo(value, element_type),
                          VexTsoOrdered(v));
@@ -407,11 +399,11 @@ void X64Decoder::DecodeAvxMaskMov(const VexInsn& v, u32 lane_bits, bool store) {
                                    : q == 1 ? XmmHi(XmmOf(v.reg))
                                    : q == 2 ? YmmHighLo(v.reg)
                                             : YmmHighHi(v.reg);
-                    auto merged = __ BitInsert(current,
+                    auto merged = __ BitInsert(ir::ValueType::U64,
+                                               current,
                                                __ ZeroExtend64(value),
                                                ir::Imm(shift),
-                                               ir::Imm(32u))
-                                          .SetType(ir::ValueType::U64);
+                                               ir::Imm(32u));
                     if (q == 0) {
                         XmmLo(XmmOf(v.reg), merged);
                     } else if (q == 1) {

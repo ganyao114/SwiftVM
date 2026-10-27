@@ -7,6 +7,7 @@
 #include "aarch64/macro-assembler-aarch64.h"
 #include "runtime/backend/arm64/continuation_contract.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
+#include "runtime/backend/arm64/pair_call_trampoline.h"
 #include "runtime/common/alignment.h"
 #include "runtime/common/svm_config.h"
 #include "runtime/externals/vixl/svm-vixl-prof.h"
@@ -340,6 +341,8 @@ RegionLinkTrampolineCode BuildRegionLinkTrampoline(
         emit_mask_merge(mask, false);
         emit_mask_merge(mask, true);
     }
+    const auto pair_call_offset = static_cast<u32>(masm.GetBuffer()->GetSizeInBytes());
+    EmitPairCallTrampoline(masm);
     masm.FinalizeCode();
 
     const size_t size = masm.GetBuffer()->GetSizeInBytes();
@@ -348,6 +351,7 @@ RegionLinkTrampolineCode BuildRegionLinkTrampoline(
             .canonical_offset = canonical_offset,
             .pending_flags_offset = pending_flags_offset,
             .return_offset = return_offset,
+            .pair_call_offset = pair_call_offset,
             .flags_mask_offsets = flags_mask_offsets,
             .flags_mask_token_offsets = flags_mask_token_offsets,
     };

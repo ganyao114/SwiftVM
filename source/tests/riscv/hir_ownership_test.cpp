@@ -57,10 +57,10 @@ static void BodyAndEmptyPublication() {
     {
         ir::HIRBuilder builder{1, true, features};
         auto* function = builder.AppendFunction(ir::Location{0x200}, ir::Location{0x210});
-        auto* hir = function->GetCurrentBlock();
+        auto* hir = &function->EditBlock(function->GetCurrentBlock());
         body_raw = hir->GetBlock();
-        auto old = function->LoadUniform(ir::Uniform{0, ir::ValueType::U64}).SetType(ir::ValueType::U64);
-        auto next = function->Add(old, ir::Operand{ir::Imm{u64{7}}}).SetType(ir::ValueType::U64);
+        auto old = function->LoadUniform(ir::ValueType::U64, ir::Uniform{0, ir::ValueType::U64});
+        auto next = function->Add(ir::ValueType::U64, old, ir::Operand{ir::Imm{u64{7}}});
         function->StoreUniform(ir::Uniform{8, ir::ValueType::U64}, next);
         function->StoreUniform(ir::Uniform{16, ir::ValueType::U64}, old);
         function->EndBlock(ir::terminal::ReturnToHost{});
@@ -87,7 +87,7 @@ static void BodyAndEmptyPublication() {
         {
             ir::HIRBuilder nested{1, true, features};
             auto* empty_function = nested.AppendFunction(ir::Location{0x240}, ir::Location{0x250});
-            auto* empty_hir = empty_function->GetCurrentBlock();
+            auto* empty_hir = &empty_function->EditBlock(empty_function->GetCurrentBlock());
             empty_raw = empty_hir->GetBlock();
             empty_function->EndBlock(ir::terminal::ReturnToHost{});
             Complete(empty_function);
@@ -120,7 +120,7 @@ static void RollbackRetryAndPartialPreflight() {
     {
         ir::HIRBuilder builder{1, true, features};
         auto* function = builder.AppendFunction(ir::Location{0x300}, ir::Location{0x310});
-        auto* hir = function->GetCurrentBlock();
+        auto* hir = &function->EditBlock(function->GetCurrentBlock());
         raw = hir->GetBlock();
         function->EndBlock(ir::terminal::ReturnToHost{});
         Complete(function);
@@ -153,7 +153,7 @@ static void RollbackRetryAndPartialPreflight() {
               "direct RV Function span rejects a partial Function");
         ir::HIRBuilder valid_builder{1, true, features};
         auto* valid = valid_builder.AppendFunction(ir::Location{0x320}, ir::Location{0x330});
-        auto* valid_raw = valid->GetCurrentBlock()->GetBlock();
+        auto* valid_raw = valid->EditBlock(valid->GetCurrentBlock()).GetBlock();
         valid->EndBlock(ir::terminal::ReturnToHost{});
         Complete(valid);
         const auto preserved = [&] {
@@ -190,7 +190,7 @@ static void UnfinishedAndPublishedOwners() {
     {
         ir::HIRBuilder builder{1, true, features};
         auto* function = builder.AppendFunction(ir::Location{0x340}, ir::Location{0x350});
-        auto* hir = function->GetCurrentBlock();
+        auto* hir = &function->EditBlock(function->GetCurrentBlock());
         raw = hir->GetBlock();
         canonical = function->GetFunction();
         function->EndBlock(ir::terminal::ReturnToHost{});

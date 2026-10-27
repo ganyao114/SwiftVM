@@ -1,11 +1,15 @@
-#include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <vector>
+#include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "support/jit_translator_test_support.h"
 
 namespace {
@@ -25,22 +29,23 @@ Metrics Compile(unsigned shape, unsigned length, unsigned pressure) {
     IntrusivePtr<Block> block{new Block(0, Location{0xbf80})};
     std::vector<Value> live, conditions, constants, selects;
     for (unsigned i = 0; i < pressure; ++i)
-        live.push_back(block->LoadUniform(Uniform{static_cast<swift::u16>(i * 8), ValueType::U64})
-                .SetType(ValueType::U64));
+        live.push_back(block->LoadUniform(ValueType::U64,
+                                          Uniform{static_cast<swift::u16>(i * 8), ValueType::U64}));
     for (unsigned i = 0; i < length; ++i) {
-        const auto input = block->LoadUniform(Uniform{2048, ValueType::U32}).SetType(ValueType::U32);
+        const auto input = block->LoadUniform(ValueType::U32, Uniform{2048, ValueType::U32});
         Value condition;
         if (shape < 2) {
-            const auto result = block->Sub(input, Operand{input}).SetType(ValueType::U32);
+            const auto result = block->Sub(ValueType::U32, input, Operand{input});
             block->SaveFlags(result, Flags::NZCV);
-            condition = block->CondSet(Cond::EQ).SetType(ValueType::U8);
+            condition = block->CondSet(ValueType::U8, Cond::EQ);
         } else if (shape == 2) {
-            condition = block->LoadUniform(Uniform{2056, ValueType::U8}).SetType(ValueType::U8);
-        } else condition = block->TestZero(input).SetType(ValueType::U8);
+            condition = block->LoadUniform(ValueType::U8, Uniform{2056, ValueType::U8});
+        } else
+            condition = block->TestZero(ValueType::U8, input);
         const auto type = shape == 1 ? ValueType::U64 : ValueType::U8;
-        const auto yes = block->LoadImm(Imm{swift::u64{shape == 1 ? 11u : 1u}}).SetType(type);
-        const auto no = block->LoadImm(Imm{swift::u64{shape == 1 ? 22u : 0u}}).SetType(type);
-        const auto selected = block->Select(condition, yes, no).SetType(type);
+        const auto yes = block->LoadImm(type, Imm{swift::u64{shape == 1 ? 11u : 1u}});
+        const auto no = block->LoadImm(type, Imm{swift::u64{shape == 1 ? 22u : 0u}});
+        const auto selected = block->Select(type, condition, yes, no);
         block->StoreUniform(Uniform{2064, type}, selected);
         conditions.push_back(condition);
         constants.push_back(yes); constants.push_back(no);
@@ -49,12 +54,19 @@ Metrics Compile(unsigned shape, unsigned length, unsigned pressure) {
     for (auto value : live) block->StoreUniform(Uniform{2072, ValueType::U64}, value);
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 FeatureSet{}};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, FeatureSet{});
-    allocation.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, allocation};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, FeatureSet{}),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+    arm64::JitContext context{module, allocation, allocation.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -63,8 +75,8 @@ Metrics Compile(unsigned shape, unsigned length, unsigned pressure) {
             std::chrono::steady_clock::now() - begin).count();
     result.bytes = context.CurrentBufferSize();
     result.spills = allocation.SpillCount();
-    result.reloads = allocation.RAShape().spill_loads;
-    result.stores = allocation.RAShape().spill_stores;
+    result.reloads = context.GetRAShapeCounters().spill_loads;
+    result.stores = context.GetRAShapeCounters().spill_stores;
     for (auto condition : conditions)
         result.direct += arm64::JitTranslatorTestSupport::IsInstructionSuppressed(translator, condition.Def());
     size_t constant_coverage = 0;
@@ -72,10 +84,11 @@ Metrics Compile(unsigned shape, unsigned length, unsigned pressure) {
         constant_coverage += arm64::JitTranslatorTestSupport::IsInstructionSuppressed(translator, value.Def());
     result.boolean = constant_coverage / 2;
     result.covered = result.direct + constant_coverage;
-    if (const auto plan = allocation.GPRPlanFor(block.get()); plan->boolean_selects) {
-        REQUIRE(plan->boolean_selects->actions.size() == selects.size());
-        REQUIRE(plan->boolean_selects->covered.size() == result.covered);
-    }
+    for (const auto selected : selects) REQUIRE(allocation.Actions().Select(selected.Id()));
+    size_t frozen_covered = 0;
+    for (const auto& inst : block->GetInstList())
+        frozen_covered += allocation.Actions().InstructionCovered(inst.Id());
+    REQUIRE(frozen_covered == result.covered);
     const auto* code = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < result.bytes; ++i) { result.hash ^= code[i]; result.hash *= 1099511628211ull; }
     return result;

@@ -1,10 +1,14 @@
-#include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "support/jit_translator_test_support.h"
 
 namespace {
@@ -21,13 +25,13 @@ Metrics Compile(unsigned shape, unsigned length) {
     config.uniform_buffer_size = 128;
     AddressSpace space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0xdc00})};
-    const auto zero = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
-    const auto address = block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
+    const auto zero = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+    const auto address = block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
     for (unsigned i = 0; i < length; ++i) {
-        auto low = shape == 1 ? block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64)
-                : block->LoadMemory(Operand{address, Imm{swift::u64{i * 8}}})
-                      .SetType(shape == 2 ? ValueType::U32 : ValueType::U64);
-        if (shape == 2) low = block->ZeroExtend64(low).SetType(ValueType::U64);
+        auto low = shape == 1 ? block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64})
+                              : block->LoadMemory(shape == 2 ? ValueType::U32 : ValueType::U64,
+                                                  Operand{address, Imm{swift::u64{i * 8}}});
+        if (shape == 2) low = block->ZeroExtend64(ValueType::U64, low);
         if (shape == 3) block->UniformBarrier();
         block->SetHostFPR(low, HostRegIndex(17), Imm{0u});
         block->SetHostFPR(zero, HostRegIndex(17), Imm{8u});
@@ -35,24 +39,32 @@ Metrics Compile(unsigned shape, unsigned length) {
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
     FeatureSet features{};
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    allocation.CompleteGPRAllocation(space.GetDefaultModule());
-    arm64::JitContext context{space.GetDefaultModule(), allocation};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(), allocation);
+    arm64::JitContext context{space.GetDefaultModule(), allocation, allocation.Actions()};
     Metrics result;
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
     result.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
-    const auto counts = arm64::JitTranslatorTestSupport::ScalarPublicationCounts(translator);
-    result.loads = counts.first;
-    result.values = counts.second;
+    for (const auto& inst : block->GetInstList()) {
+        result.loads += allocation.Actions().ScalarFPRLoad(inst.Id()) != nullptr;
+        result.values += allocation.Actions().ScalarFPRValue(inst.Id()) != nullptr;
+    }
     result.bytes = context.CurrentBufferSize();
     result.spills = allocation.SpillCount();
-    result.reloads = allocation.RAShape().spill_loads;
-    result.stores = allocation.RAShape().spill_stores;
+    result.reloads = context.GetRAShapeCounters().spill_loads;
+    result.stores = context.GetRAShapeCounters().spill_stores;
     const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < result.bytes; ++i) result.hash = (result.hash ^ bytes[i]) * 1099511628211ull;
     return result;

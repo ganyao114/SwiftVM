@@ -99,7 +99,7 @@ void Cycle(const char* shape) {
     if (region_shape) {
         HIRBuilder builder{1, true, ResolveFeatureSet(ModuleConfig{})};
         auto* function = builder.AppendFunction(Location{0x1000}, Location{0x2004});
-        auto* source_block = function->GetCurrentBlock();
+        auto* source_block = &function->EditBlock(function->GetCurrentBlock());
         auto* target_block = function->AppendBlock(Location{0x2000});
         function->AddEdge(source_block, target_block);
         function->AddEdge(target_block, source_block);

@@ -1,10 +1,14 @@
+#include "runtime/compile/passes/passes.h"
+#include "runtime/compile/workspace.h"
+#include "runtime/compile/unit.h"
 #include "test_support.h"
 
 #include <algorithm>
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/backend/address_space.h"
+#include "runtime/backend/riscv64/jit/compile.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
-
 using T = ir::ValueType;
 using O = ir::OpCode;
 
@@ -27,8 +31,14 @@ u64 MutateUniforms(u64 pointer, u64, u64, u64, u64, u64, u64, u64) {
     return observed;
 }
 
-void MoveBefore(ir::Block* block, ir::Inst* inst, ir::Inst* before) {
-    block->RemoveInst(inst); block->InsertBefore(inst, before); block->ReIdInstr();
+void MoveBefore(ir::Block* block, const ir::Inst* inst, const ir::Inst* before) {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
+    compile::RewriteContext{block, compilation_workspace, nullptr, false}.Change(
+            block, inst, [&](ir::Inst& target) {
+                block->RemoveInst(&target);
+                block->InsertBefore(&target, before);
+            });
+    block->ReIdInstr();
 }
 }
 
@@ -37,10 +47,10 @@ void NativeHostRegisters(bool vector) {
     const std::array<UniformMapDesc, 2> bindings{{{0, 8, 3, false}, {16, 16, 19, true}}};
     {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xdff0})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         for (u32 i = 0; i < 50; ++i) {
-            auto value = as.GetHostGPR(ir::Imm{u32{3}}, ir::Imm{u32{0}}).SetType(T::U64);
-            auto next = as.Add(value, ir::Operand{ir::Imm{u64{1}}}).SetType(T::U64);
+            auto value = as.GetHostGPR(T::U64, ir::Imm{u32{3}}, ir::Imm{u32{0}});
+            auto next = as.Add(T::U64, value, ir::Operand{ir::Imm{u64{1}}});
             as.SetHostGPR(next, ir::Imm{u32{3}}, ir::Imm{u32{0}});
         }
         block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -55,13 +65,13 @@ void NativeHostRegisters(bool vector) {
     }
     for (u32 bytes : {1u, 2u, 4u, 8u}) for (u32 offset = 0; offset + bytes <= 8; ++offset) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe000})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         const auto type = ir::GetIRValueType(bytes);
-        auto captured = as.GetHostGPR(ir::Imm{u32{3}}, ir::Imm{u32{0}}).SetType(T::U64);
-        auto read = as.GetHostGPR(ir::Imm{u32{3}}, ir::Imm{offset}).SetType(type);
-        auto replacement = as.LoadImm(ir::Imm{u64{0x97614583abcd1269}}).SetType(type);
+        auto captured = as.GetHostGPR(T::U64, ir::Imm{u32{3}}, ir::Imm{u32{0}});
+        auto read = as.GetHostGPR(type, ir::Imm{u32{3}}, ir::Imm{offset});
+        auto replacement = as.LoadImm(type, ir::Imm{u64{0x97614583abcd1269}});
         as.SetHostGPR(replacement, ir::Imm{u32{3}}, ir::Imm{offset});
-        auto current = as.GetHostGPR(ir::Imm{u32{3}}, ir::Imm{u32{0}}).SetType(T::U64);
+        auto current = as.GetHostGPR(T::U64, ir::Imm{u32{3}}, ir::Imm{u32{0}});
         as.StoreUniform(ir::Uniform{64, T::U64}, captured);
         as.StoreUniform(ir::Uniform{72, type}, read);
         as.StoreUniform(ir::Uniform{80, T::U64}, current);
@@ -94,13 +104,13 @@ void NativeHostRegisters(bool vector) {
         for (bool scalar : {false, true}) {
             if (scalar && bytes > 8) continue;
             IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe080})};
-            ir::Assembler as{block.get()};
+            compile::IrBuilder as{block.get()};
             const auto type = scalar ? ir::GetIRValueType(bytes) : ir::GetVecIRValueType(bytes);
-            auto captured = as.GetHostFPR(ir::Imm{u32{19}}, ir::Imm{u32{0}}).SetType(T::V128);
-            auto read = as.GetHostFPR(ir::Imm{u32{19}}, ir::Imm{offset}).SetType(type);
-            auto replacement = as.LoadUniform(ir::Uniform{32, type}).SetType(type);
+            auto captured = as.GetHostFPR(T::V128, ir::Imm{u32{19}}, ir::Imm{u32{0}});
+            auto read = as.GetHostFPR(type, ir::Imm{u32{19}}, ir::Imm{offset});
+            auto replacement = as.LoadUniform(type, ir::Uniform{32, type});
             as.SetHostFPR(replacement, ir::Imm{u32{19}}, ir::Imm{offset});
-            auto current = as.GetHostFPR(ir::Imm{u32{19}}, ir::Imm{u32{0}}).SetType(T::V128);
+            auto current = as.GetHostFPR(T::V128, ir::Imm{u32{19}}, ir::Imm{u32{0}});
             as.StoreUniform(ir::Uniform{64, T::V128}, captured);
             as.StoreUniform(ir::Uniform{80, type}, read);
             as.StoreUniform(ir::Uniform{96, T::V128}, current);
@@ -130,12 +140,12 @@ void NativeHostRegisters(bool vector) {
         const u32 base = fpr ? 16 : 0, full_size = fpr ? 16 : 8;
         const auto full_type = fpr ? T::V128 : T::U64;
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe0c0})};
-        ir::Assembler as{block.get()};
-        auto captured = as.LoadUniform(ir::Uniform{base, full_type}).SetType(full_type);
-        auto read = as.LoadUniform(ir::Uniform{base + offset, type}).SetType(type);
-        auto replacement = as.LoadUniform(ir::Uniform{32, type}).SetType(type);
+        compile::IrBuilder as{block.get()};
+        auto captured = as.LoadUniform(full_type, ir::Uniform{base, full_type});
+        auto read = as.LoadUniform(type, ir::Uniform{base + offset, type});
+        auto replacement = as.LoadUniform(type, ir::Uniform{32, type});
         as.StoreUniform(ir::Uniform{base + offset, type}, replacement);
-        auto current = as.LoadUniform(ir::Uniform{base, full_type}).SetType(full_type);
+        auto current = as.LoadUniform(full_type, ir::Uniform{base, full_type});
         as.StoreUniform(ir::Uniform{64, full_type}, captured);
         as.StoreUniform(ir::Uniform{80, type}, read);
         as.StoreUniform(ir::Uniform{96, full_type}, current);
@@ -159,16 +169,17 @@ void NativeHostRegisters(bool vector) {
     }
     {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe100})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadImm(ir::Imm{u64{0x73619842abcd3591}}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadImm(T::U64, ir::Imm{u64{0x73619842abcd3591}});
         as.SetHostGPR(input, ir::Imm{u32{3}}, ir::Imm{u32{0}});
-        auto captured = as.GetHostGPR(ir::Imm{u32{3}}, ir::Imm{u32{0}}).SetType(T::U64);
-        auto captured_vector = as.GetHostFPR(ir::Imm{u32{19}}, ir::Imm{u32{0}}).SetType(T::V128);
-        auto pointer = as.GetUniformAddress(ir::Imm{u32{0}}).SetType(T::U64);
-        auto observed = as.CallHost(&MutateUniforms, pointer).SetType(T::U64);
-        auto updated = as.GetHostGPR(ir::Imm{u32{3}}, ir::Imm{u32{0}}).SetType(T::U64);
-        auto updated_vector = as.GetHostFPR(ir::Imm{u32{19}}, ir::Imm{u32{0}}).SetType(T::V128);
-        as.StoreUniform(ir::Uniform{64, T::U64}, observed); as.StoreUniform(ir::Uniform{72, T::U64}, captured);
+        auto captured = as.GetHostGPR(T::U64, ir::Imm{u32{3}}, ir::Imm{u32{0}});
+        auto captured_vector = as.GetHostFPR(T::V128, ir::Imm{u32{19}}, ir::Imm{u32{0}});
+        auto pointer = as.GetUniformAddress(T::U64, ir::Imm{u32{0}});
+        auto observed = as.CallHost(T::U64, &MutateUniforms, pointer);
+        auto updated = as.GetHostGPR(T::U64, ir::Imm{u32{3}}, ir::Imm{u32{0}});
+        auto updated_vector = as.GetHostFPR(T::V128, ir::Imm{u32{19}}, ir::Imm{u32{0}});
+        as.StoreUniform(ir::Uniform{64, T::U64}, observed);
+        as.StoreUniform(ir::Uniform{72, T::U64}, captured);
         as.StoreUniform(ir::Uniform{80, T::U64}, updated); as.StoreUniform(ir::Uniform{96, T::V128}, captured_vector);
         as.StoreUniform(ir::Uniform{112, T::V128}, updated_vector);
         block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -187,11 +198,12 @@ void NativeHostRegisters(bool vector) {
         std::vector<UniformMapDesc> pressure;
         for (u32 i = 0; i < 16; ++i) pressure.emplace_back(i * 16, fpr ? 16 : 8, i, fpr);
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe180})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         std::array<ir::Value, 16> captured;
         const auto type = fpr ? T::V128 : T::U64;
         for (u32 i = 0; i < 16; ++i)
-            captured[i] = ir::Value{block->AppendInst(fpr ? O::GetHostFPR : O::GetHostGPR, ir::Imm{i}, ir::Imm{u32{0}})}.SetType(type);
+            captured[i] = ir::Value{block->AppendInst(
+                    fpr ? O::GetHostFPR : O::GetHostGPR, type, ir::Imm{i}, ir::Imm{u32{0}})};
         for (u32 i = 0; i < 16; ++i)
             block->AppendInst(fpr ? O::SetHostFPR : O::SetHostGPR, captured[(i + 1) % 16], ir::Imm{i}, ir::Imm{u32{0}});
         block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -208,17 +220,20 @@ void NativeHostRegisters(bool vector) {
 }
 
 void NativePhi(bool vector) {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     rv::HostFeatures features{}; features.vector = vector;
     for (bool invert : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe200})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::U8}).SetType(T::U8);
-        auto original = as.LoadImm(ir::Imm{u64{31}}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::U8, ir::Uniform{0, T::U8});
+        auto original = as.LoadImm(T::U64, ir::Imm{u64{31}});
         auto edge = invert ? as.NotGoto(ir::BOOL{input}) : as.Goto(ir::BOOL{input});
-        auto updated = as.LoadImm(ir::Imm{u64{73}}).SetType(T::U64);
+        auto updated = as.LoadImm(T::U64, ir::Imm{u64{73}});
         as.BindLabel(edge);
-        ir::Params inputs; inputs.Push(original); inputs.Push(updated);
-        auto selected = as.AddPhi(inputs).SetType(T::U64);
+        ir::Params inputs;
+        inputs.Push(original);
+        inputs.Push(updated);
+        auto selected = as.AddPhi(T::U64, std::move(inputs));
         as.StoreUniform(ir::Uniform{16, T::U64}, selected);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};
@@ -235,26 +250,39 @@ void NativePhi(bool vector) {
     // after the phi definitions, so the two copies form a real cycle.
     for (bool packed : {false, true}) for (bool callback : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe280})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         const auto type = packed ? T::V128 : T::U64;
-        auto initial_a = as.LoadUniform(ir::Uniform{0, type}).SetType(type);
-        auto initial_b = as.LoadUniform(ir::Uniform{16, type}).SetType(type);
-        auto count = as.LoadUniform(ir::Uniform{32, T::U64}).SetType(T::U64);
-        auto a = as.AddPhi(ir::Params{}).SetType(type);
-        auto b = as.AddPhi(ir::Params{}).SetType(type);
-        auto n = as.AddPhi(ir::Params{}).SetType(T::U64);
+        auto initial_a = as.LoadUniform(type, ir::Uniform{0, type});
+        auto initial_b = as.LoadUniform(type, ir::Uniform{16, type});
+        auto count = as.LoadUniform(T::U64, ir::Uniform{32, T::U64});
+        auto a = as.AddPhi(type, ir::Params{});
+        auto b = as.AddPhi(type, ir::Params{});
+        auto n = as.AddPhi(T::U64, ir::Params{});
 #if defined(__riscv) && __riscv_xlen == 64
-        if (callback && vector) (void)as.CallHost(&SwiftRiscvVectorRange).SetType(T::U64);
+        if (callback && vector) (void)as.CallHost(T::U64, &SwiftRiscvVectorRange);
 #endif
-        auto next = as.Sub(n, ir::Operand{ir::Imm{u64{1}}}).SetType(T::U64);
+        auto next = as.Sub(T::U64, n, ir::Operand{ir::Imm{u64{1}}});
         auto active = as.TestNotZero(next);
         auto edge = as.Goto(active);
         as.BindLabel(edge); auto* label = &block->GetInstList().back();
         MoveBefore(block.get(), label, a.Def());
-        ir::Params a_inputs; a_inputs.Push(initial_a); a_inputs.Push(b); a.Def()->SetArg(0, a_inputs);
-        ir::Params b_inputs; b_inputs.Push(initial_b); b_inputs.Push(a); b.Def()->SetArg(0, b_inputs);
-        ir::Params n_inputs; n_inputs.Push(count); n_inputs.Push(next); n.Def()->SetArg(0, n_inputs);
-        as.StoreUniform(ir::Uniform{64, type}, a); as.StoreUniform(ir::Uniform{80, type}, b);
+        ir::Params a_inputs;
+        a_inputs.Push(initial_a);
+        a_inputs.Push(b);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), a.Def(), 0, std::move(a_inputs));
+        ir::Params b_inputs;
+        b_inputs.Push(initial_b);
+        b_inputs.Push(a);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), b.Def(), 0, std::move(b_inputs));
+        ir::Params n_inputs;
+        n_inputs.Push(count);
+        n_inputs.Push(next);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), n.Def(), 0, std::move(n_inputs));
+        as.StoreUniform(ir::Uniform{64, type}, a);
+        as.StoreUniform(ir::Uniform{80, type}, b);
         as.StoreUniform(ir::Uniform{96, T::U64}, next);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};
@@ -275,20 +303,27 @@ void NativePhi(bool vector) {
     }
     {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe300})};
-        ir::Assembler as{block.get()};
-        auto count = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto count = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
         std::array<ir::Value, 10> phis;
-        for (auto& phi : phis) phi = as.AddPhi(ir::Params{}).SetType(T::U64);
-        auto n = as.AddPhi(ir::Params{}).SetType(T::U64);
-        auto next = as.Sub(n, ir::Operand{ir::Imm{u64{1}}}).SetType(T::U64);
+        for (auto& phi : phis) phi = as.AddPhi(T::U64, ir::Params{});
+        auto n = as.AddPhi(T::U64, ir::Params{});
+        auto next = as.Sub(T::U64, n, ir::Operand{ir::Imm{u64{1}}});
         auto edge = as.Goto(as.TestNotZero(next));
         as.BindLabel(edge); MoveBefore(block.get(), &block->GetInstList().back(), phis.front().Def());
         for (u32 i = 0; i < phis.size(); ++i) {
-            ir::Params inputs; inputs.Push(ir::Imm{u64(i + 1)}); inputs.Push(phis[(i + 1) % phis.size()]);
-            phis[i].Def()->SetArg(0, inputs);
+            ir::Params inputs;
+            inputs.Push(ir::Imm{u64(i + 1)});
+            inputs.Push(phis[(i + 1) % phis.size()]);
+            compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                    block.get(), phis[i].Def(), 0, std::move(inputs));
             as.StoreUniform(ir::Uniform{16 + i * 8, T::U64}, phis[i]);
         }
-        ir::Params inputs; inputs.Push(count); inputs.Push(next); n.Def()->SetArg(0, inputs);
+        ir::Params inputs;
+        inputs.Push(count);
+        inputs.Push(next);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), n.Def(), 0, std::move(inputs));
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};
         for (u64 iterations : {u64{1}, u64{2}, u64{11}, u64{24}}) {
@@ -301,24 +336,33 @@ void NativePhi(bool vector) {
     }
     for (bool callback : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe340})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         constexpr u32 lanes = 13; // one more than the resident phi RVV pool
         std::array<ir::Value, lanes> initial, phis;
-        for (u32 i = 0; i < lanes; ++i) initial[i] = as.LoadUniform(ir::Uniform{i * 16, T::V128}).SetType(T::V128);
-        auto count = as.LoadUniform(ir::Uniform{256, T::U64}).SetType(T::U64);
-        for (auto& phi : phis) phi = as.AddPhi(ir::Params{}).SetType(T::V128);
-        auto n = as.AddPhi(ir::Params{}).SetType(T::U64);
+        for (u32 i = 0; i < lanes; ++i)
+            initial[i] = as.LoadUniform(T::V128, ir::Uniform{i * 16, T::V128});
+        auto count = as.LoadUniform(T::U64, ir::Uniform{256, T::U64});
+        for (auto& phi : phis) phi = as.AddPhi(T::V128, ir::Params{});
+        auto n = as.AddPhi(T::U64, ir::Params{});
 #if defined(__riscv) && __riscv_xlen == 64
-        if (callback && vector) (void)as.CallHost(&SwiftRiscvVectorRange).SetType(T::U64);
+        if (callback && vector) (void)as.CallHost(T::U64, &SwiftRiscvVectorRange);
 #endif
-        auto next = as.Sub(n, ir::Operand{ir::Imm{u64{1}}}).SetType(T::U64);
+        auto next = as.Sub(T::U64, n, ir::Operand{ir::Imm{u64{1}}});
         auto edge = as.Goto(as.TestNotZero(next));
         as.BindLabel(edge); MoveBefore(block.get(), &block->GetInstList().back(), phis.front().Def());
         for (u32 i = 0; i < lanes; ++i) {
-            ir::Params inputs; inputs.Push(initial[i]); inputs.Push(phis[(i + 1) % lanes]); phis[i].Def()->SetArg(0, inputs);
+            ir::Params inputs;
+            inputs.Push(initial[i]);
+            inputs.Push(phis[(i + 1) % lanes]);
+            compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                    block.get(), phis[i].Def(), 0, std::move(inputs));
             as.StoreUniform(ir::Uniform{512 + i * 16, T::V128}, phis[i]);
         }
-        ir::Params inputs; inputs.Push(count); inputs.Push(next); n.Def()->SetArg(0, inputs);
+        ir::Params inputs;
+        inputs.Push(count);
+        inputs.Push(next);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), n.Def(), 0, std::move(inputs));
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};
         for (u64 iterations : {u64{1}, u64{2}, u64{14}, u64{29}}) {
@@ -335,9 +379,10 @@ void NativePhi(bool vector) {
     }
     for (auto type : {T::U8, T::U16, T::U32, T::U64, T::V128}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe380})};
-        ir::Assembler as{block.get()};
-        ir::Params inputs; inputs.Push(ir::Imm{UINT64_MAX});
-        auto phi = as.AddPhi(inputs).SetType(type);
+        compile::IrBuilder as{block.get()};
+        ir::Params inputs;
+        inputs.Push(ir::Imm{UINT64_MAX});
+        auto phi = as.AddPhi(type, std::move(inputs));
         as.StoreUniform(ir::Uniform{0, type}, phi);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};
@@ -349,35 +394,130 @@ void NativePhi(bool vector) {
     }
     for (u32 malformed = 0; malformed < 4; ++malformed) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe400})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         if (malformed == 0) {
-            auto edge = as.Goto(ir::BOOL{as.LoadImm(ir::Imm{u8{1}}).SetType(T::U8)});
+            auto edge = as.Goto(ir::BOOL{as.LoadImm(T::U8, ir::Imm{u8{1}})});
             as.BindLabel(edge);
-            ir::Params inputs; inputs.Push(ir::Imm{u64{7}});
-            (void)as.AddPhi(inputs).SetType(T::U64); // two edges, one input
+            ir::Params inputs;
+            inputs.Push(ir::Imm{u64{7}});
+            (void)as.AddPhi(T::U64, std::move(inputs));  // two edges, one input
         } else if (malformed == 1) {
-            auto later = as.LoadImm(ir::Imm{u64{7}}).SetType(T::U64);
-            auto edge = as.Goto(ir::BOOL{as.LoadImm(ir::Imm{u8{1}}).SetType(T::U8)});
+            auto later = as.LoadImm(T::U64, ir::Imm{u64{7}});
+            auto edge = as.Goto(ir::BOOL{as.LoadImm(T::U8, ir::Imm{u8{1}})});
             as.BindLabel(edge);
-            ir::Params inputs; inputs.Push(later); inputs.Push(later);
-            auto phi = as.AddPhi(inputs).SetType(T::U64);
-            block->RemoveInst(later.Def()); block->InsertAfter(later.Def(), phi.Def()); block->ReIdInstr();
+            ir::Params inputs;
+            inputs.Push(later);
+            inputs.Push(later);
+            auto phi = as.AddPhi(T::U64, std::move(inputs));
+            compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.Change(
+                    block.get(), later.Def(), [&](ir::Inst& target) {
+                        block->RemoveInst(&target);
+                        block->InsertAfter(&target, phi.Def());
+                    });
+            block->ReIdInstr();
         } else if (malformed == 2) {
-            auto value = as.LoadImm(ir::Imm{u32{7}}).SetType(T::U32);
-            auto edge = as.Goto(ir::BOOL{as.LoadImm(ir::Imm{u8{1}}).SetType(T::U8)});
+            auto value = as.LoadImm(T::U32, ir::Imm{u32{7}});
+            auto edge = as.Goto(ir::BOOL{as.LoadImm(T::U8, ir::Imm{u8{1}})});
             as.BindLabel(edge);
-            ir::Params inputs; inputs.Push(value); inputs.Push(value);
-            (void)as.AddPhi(inputs).SetType(T::U64); // width mismatch
+            ir::Params inputs;
+            inputs.Push(value);
+            inputs.Push(value);
+            (void)as.AddPhi(T::U64, std::move(inputs));  // width mismatch
         } else {
-            (void)as.LoadImm(ir::Imm{u64{7}}).SetType(T::U64);
-            ir::Params inputs; inputs.Push(ir::Imm{u64{11}});
-            (void)as.AddPhi(inputs).SetType(T::U64); // outside the phi header
+            (void)as.LoadImm(T::U64, ir::Imm{u64{7}});
+            ir::Params inputs;
+            inputs.Push(ir::Imm{u64{11}});
+            (void)as.AddPhi(T::U64, std::move(inputs));  // outside the phi header
         }
         block->SetTerminal(ir::terminal::ReturnToHost{});
         bool rejected{};
         try { Compiled compiled{block.get(), true, features}; }
         catch (const std::runtime_error&) { rejected = true; }
         Check(rejected, "malformed phi count, dominance, width or placement is rejected before code publication");
+    }
+    backend::AddressSpace admission_space{TestConfig()};
+    const auto admission_module = admission_space.GetDefaultModule();
+    for (u32 malformed = 0; malformed < 20; ++malformed) {
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xe500})};
+        compile::IrBuilder as{block.get()};
+        const auto source = as.LoadImm(T::U64, ir::Imm{u64{7}});
+        const auto sum = as.Add(T::U64, source, ir::Operand{ir::Imm{u64{1}}});
+        as.StoreUniform(ir::Uniform{0, T::U64}, sum);
+        const auto* store = &block->GetInstList().back();
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        compile::CompileWorkspace workspace;
+        compile::RewriteContext rewrite{block.get(), workspace};
+        if (malformed < 2)
+            rewrite.Change(block.get(), source.Def(), [&](ir::Inst& inst) {
+                inst.SetReturn(malformed ? static_cast<T>(255) : T::VOID);
+            });
+        else if (malformed == 2)
+            rewrite.SetArg(block.get(), sum.Def(), 1,
+                           ir::Operand{ir::Value{source}.SetCastType(static_cast<T>(255))});
+        else if (malformed < 5)
+            rewrite.SetArg(block.get(), store, 0,
+                           ir::Uniform{0, malformed == 3 ? T::U8 : static_cast<T>(255)});
+        if (malformed == 5) {
+            const auto call = as.CallLambda(T::U64, ir::Lambda{ir::Imm{u64{1}}});
+            block->SetTerminal(ir::terminal::If{ir::BOOL{call},
+                    ir::terminal::ReturnToHost{}, ir::terminal::ReturnToHost{}});
+            rewrite.Change(block.get(), call.Def(), [](ir::Inst& inst) { inst.SetReturn(T::VOID); });
+        } else if (malformed == 6) {
+            block->SetTerminal(ir::terminal::Switch{
+                    ir::Value{source}.SetCastType(static_cast<T>(255)), {}});
+        }
+        compile::CompileUnit unit{block};
+        if (malformed == 7) {
+            const auto call = as.CallLambda(T::U64, ir::Lambda{ir::Imm{u64{1}}});
+            std::array<const ir::Inst*, 1> anchors{call.Def()};
+            unit.SetLoopHoistMetadata(block.get(), {call.Def(), anchors, 1, 0});
+            rewrite.Change(block.get(), call.Def(), [](ir::Inst& inst) { inst.SetReturn(T::VOID); });
+        }
+        if (malformed == 8) {
+            rewrite.Change(block.get(), store, [](ir::Inst& inst) { inst.SetReturn(T::U64); });
+            block->SetTerminal(ir::terminal::If{ir::Value{store}.SetCastType(T::U8),
+                                               ir::terminal::ReturnToHost{}, ir::terminal::ReturnToHost{}});
+        }
+        if (malformed == 9) {
+            const auto branch = as.Goto(ir::Value{source}.SetCastType(T::U8));
+            as.BindLabel(branch);
+            rewrite.SetArg(block.get(), sum.Def(), 1, ir::Operand{branch});
+        }
+        if (malformed == 10) {
+            std::array<const ir::Inst*, 1> anchors{nullptr};
+            unit.SetLoopHoistMetadata(block.get(), {source.Def(), anchors, 1, 0});
+        }
+        if (malformed == 11) rewrite.SetArg(block.get(), sum.Def(), 2, ir::Cond::EQ);
+        if (malformed == 12) rewrite.SetArg(block.get(), sum.Def(), 1, ir::Void{nullptr});
+        if (malformed == 13) rewrite.SetArg(block.get(), sum.Def(), 4, source);
+        if (malformed >= 14 && malformed <= 17) {
+            const auto call = as.CallLambda(T::U64, ir::Lambda{ir::Imm{u64{1}}});
+            if (malformed == 14) rewrite.SetArg(block.get(), call.Def(), 0, ir::Lambda{});
+            if (malformed == 15) {
+                ir::Params params;
+                params.Push(source);
+                rewrite.SetArg(block.get(), call.Def(), 1, std::move(params));
+            }
+            if (malformed == 16) rewrite.SetArg(block.get(), call.Def(), 3, source);
+            if (malformed == 17) rewrite.SetArg(block.get(), call.Def(), 4, ir::Imm{u64{1}});
+        }
+        if (malformed == 18) rewrite.SetArg(block.get(), source.Def(), 0, ir::Cond::EQ);
+        if (malformed == 19) rewrite.SetArg(block.get(), sum.Def(), 3, ir::Flags::Carry);
+        rv::JitContext context{true, features};
+        rv::JitTranslator translator{context};
+        const auto before = context.CurrentBufferSize();
+        bool rejected{};
+        try { translator.Translate(block.get()); }
+        catch (const std::runtime_error&) { rejected = true; }
+        Check(rejected && context.CurrentBufferSize() == before,
+              "invalid types or signatures reject before any RV64 code or frame bytes");
+        if (malformed >= 11) {
+            bool prepare_rejected{};
+            try { (void)rv::CompileBlock(admission_module, block.get()); }
+            catch (const std::runtime_error&) { prepare_rejected = true; }
+            Check(prepare_rejected && !admission_space.GetCodeCache(block->GetStartLocation()),
+                  "RV64 production preparation rejects malformed signatures before ABI queries or publication");
+        }
     }
     std::cout << "PASS native scalar/vector phi edges, NotGoto, loop-carried swaps and ABI clobbers\n";
 }

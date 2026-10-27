@@ -1,12 +1,16 @@
-#include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <vector>
+#include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/arm64/pshufd_direct.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
 using namespace swift::runtime;
@@ -26,22 +30,24 @@ Metrics Compile(unsigned shape, unsigned pressure, unsigned length) {
     auto module = space.MapModule(LocationDescriptor{0xdd00}, LocationDescriptor{0xde00}, module_config);
     IntrusivePtr<Block> block{new Block(0, Location{0xdd00})};
     std::vector<Value> live;
-    if (pressure) for (unsigned i = 0; i < 32; ++i)
-        live.push_back(block->LoadUniform(Uniform{128 + i * 16, ValueType::V128}).SetType(ValueType::V128));
-    auto value = block->LoadUniform(Uniform{0, ValueType::V128}).SetType(ValueType::V128);
+    if (pressure)
+        for (unsigned i = 0; i < 32; ++i)
+            live.push_back(
+                    block->LoadUniform(ValueType::V128, Uniform{128 + i * 16, ValueType::V128}));
+    auto value = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
     const auto [low, high] = arm64::PshufdIndexMask(0x4e);
     Value shared;
     if (shape == 0 || shape == 3)
-        shared = block->VecLoadConst(Imm{low}, Imm{high}).SetType(ValueType::V128);
+        shared = block->VecLoadConst(ValueType::V128, Imm{low}, Imm{high});
     for (unsigned i = 0; i < length; ++i) {
         if (shape == 2) {
-            value = block->VecShuffle32TwoSrc(value, value, Imm{0xe0u}).SetType(ValueType::V128);
+            value = block->VecShuffle32TwoSrc(ValueType::V128, value, value, Imm{0xe0u});
         } else {
-            const auto mask = shape == 1
-                    ? block->VecLoadConst(Imm{low}, Imm{high}).SetType(ValueType::V128) : shared;
-            value = block->VecShuffle32Indexed(value, mask).SetType(ValueType::V128);
+            const auto mask =
+                    shape == 1 ? block->VecLoadConst(ValueType::V128, Imm{low}, Imm{high}) : shared;
+            value = block->VecShuffle32Indexed(ValueType::V128, value, mask);
             if (shape == 3) {
-                const auto other = block->VecTableLookup8(value, shared).SetType(ValueType::V128);
+                const auto other = block->VecTableLookup8(ValueType::V128, value, shared);
                 block->StoreUniform(Uniform{48, ValueType::V128}, other);
             }
         }
@@ -53,12 +59,19 @@ Metrics Compile(unsigned shape, unsigned pressure, unsigned length) {
     block->ReIdInstr();
     FeatureSet features{};
     features.sse_shufps_imm = true;
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    allocation.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, allocation};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+    arm64::JitContext context{module, allocation, allocation.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -66,18 +79,18 @@ Metrics Compile(unsigned shape, unsigned pressure, unsigned length) {
     result.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
     result.bytes = context.CurrentBufferSize();
     result.spills = allocation.SpillCount();
-    result.reloads = allocation.RAShape().spill_loads;
-    result.stores = allocation.RAShape().spill_stores;
+    result.reloads = context.GetRAShapeCounters().spill_loads;
+    result.stores = context.GetRAShapeCounters().spill_stores;
     for (const auto& node : block->GetInstList()) {
         if (allocation.IsPshufdDirect(node.Id())) {
             result.direct += node.GetOp() == OpCode::VecShuffle32Indexed;
             result.masks += node.GetOp() == OpCode::VecLoadConst;
         }
         if (node.GetOp() == OpCode::VecShuffle32TwoSrc &&
-            allocation.ValueType(Value{const_cast<Inst*>(&node)}) == RegAlloc::FPR &&
-            allocation.ValueType(node.GetArg<Value>(0)) == RegAlloc::FPR &&
-            allocation.ValueFPR(Value{const_cast<Inst*>(&node)}).id ==
-            allocation.ValueFPR(node.GetArg<Value>(0)).id) ++result.ties;
+            allocation.ValueType(Value{&node}) == AllocationFixture::FPR &&
+            allocation.ValueType(node.GetArg<Value>(0)) == AllocationFixture::FPR &&
+            allocation.ValueFPR(Value{&node}).id == allocation.ValueFPR(node.GetArg<Value>(0)).id)
+            ++result.ties;
     }
     const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < result.bytes; ++i) result.hash = (result.hash ^ bytes[i]) * 1099511628211ull;

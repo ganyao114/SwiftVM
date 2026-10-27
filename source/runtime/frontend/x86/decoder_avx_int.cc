@@ -52,8 +52,8 @@
 // these declarations added to the private section of X64Decoder, next to the
 // DecodeAvxFp* block:
 //
-//     using AvxIntBinFn = ir::Value (*)(ir::Assembler*, ir::Value, ir::Value, u32, u32);
-//     using AvxIntUnFn = ir::Value (*)(ir::Assembler*, ir::Value, u32);
+//     using AvxIntBinFn = ir::Value (*)(compile::IrBuilder*, ir::Value, ir::Value, u32, u32);
+//     using AvxIntUnFn = ir::Value (*)(compile::IrBuilder*, ir::Value, u32);
 //     bool DecodeAvxInt(const VexInsn& v);
 //     void DecodeAvxIntBinary(const VexInsn& v, AvxIntBinFn fn, u32 param);
 //     void DecodeAvxIntUnary(const VexInsn& v, AvxIntUnFn fn, u32 param);
@@ -109,13 +109,11 @@
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 // Handler parameters are packed into one u32 because the two dispatch helpers
 // take a single opaque value: bits 15:0 are a lane/element width in bits, bits
 // 31:16 a per-operation flag (signedness, high/low half, shift kind, imm8).
@@ -137,25 +135,23 @@ constexpr u64 Replicate(u32 lane_bits, u64 value) {
 // opcode, so this goes through the scalar path: VecDup64 broadcasts a GPR into
 // both qwords, and the 64-bit Zip1 takes lane 0 of each operand, which selects
 // one qword from each of two broadcasts.
-ir::Value VecConst(ir::Assembler* as, u64 lo, u64 hi) {
-    auto low = as->VecDup64(as->LoadImm(ir::Imm(lo)).SetType(ir::ValueType::U64))
-                       .SetType(ir::ValueType::V128);
+ir::Value VecConst(compile::IrBuilder* as, u64 lo, u64 hi) {
+    auto low = as->VecDup64(ir::ValueType::V128, as->LoadImm(ir::ValueType::U64, ir::Imm(lo)));
     if (lo == hi) {
         return low;
     }
-    auto high = as->VecDup64(as->LoadImm(ir::Imm(hi)).SetType(ir::ValueType::U64))
-                        .SetType(ir::ValueType::V128);
-    return as->VecZip(low, high, ir::Imm(64u), ir::Imm(0u)).SetType(ir::ValueType::V128);
+    auto high = as->VecDup64(ir::ValueType::V128, as->LoadImm(ir::ValueType::U64, ir::Imm(hi)));
+    return as->VecZip(ir::ValueType::V128, low, high, ir::Imm(64u), ir::Imm(0u));
 }
 
 // The V128 whose low qword is q0 and high qword is q1.
-ir::Value VecPairQ(ir::Assembler* as, ir::Value q0, ir::Value q1) {
-    auto a = as->VecDup64(q0.SetType(ir::ValueType::U64)).SetType(ir::ValueType::V128);
-    auto b = as->VecDup64(q1.SetType(ir::ValueType::U64)).SetType(ir::ValueType::V128);
-    return as->VecZip(a, b, ir::Imm(64u), ir::Imm(0u)).SetType(ir::ValueType::V128);
+ir::Value VecPairQ(compile::IrBuilder* as, ir::Value q0, ir::Value q1) {
+    auto a = as->VecDup64(ir::ValueType::V128, q0.SetCastType(ir::ValueType::U64));
+    auto b = as->VecDup64(ir::ValueType::V128, q1.SetCastType(ir::ValueType::U64));
+    return as->VecZip(ir::ValueType::V128, a, b, ir::Imm(64u), ir::Imm(0u));
 }
 
-ir::Value VecZeroConst(ir::Assembler* as) { return VecConst(as, 0, 0); }
+ir::Value VecZeroConst(compile::IrBuilder* as) { return VecConst(as, 0, 0); }
 
 // --- the per-lane binary operations ---------------------------------------
 // Every one of these takes the two 128-bit lane values and returns the lane
@@ -163,49 +159,44 @@ ir::Value VecZeroConst(ir::Assembler* as) { return VecConst(as, 0, 0); }
 // VEX.256 form.  `half` is 0 for a VEX.128 result and the lane index for a
 // VEX.256 one; only the blends look at it.
 
-ir::Value OpMul(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecMul(a, b, ir::Imm(Lane(param))).SetType(ir::ValueType::V128);
+ir::Value OpMul(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecMul(ir::ValueType::V128, a, b, ir::Imm(Lane(param)));
 }
 
-ir::Value OpMulHigh(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecMulHigh16(a, b, ir::Imm(Flag(param))).SetType(ir::ValueType::V128);
+ir::Value OpMulHigh(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecMulHigh16(ir::ValueType::V128, a, b, ir::Imm(Flag(param)));
 }
 
-ir::Value OpMadd(ir::Assembler* as, ir::Value a, ir::Value b, u32, u32) {
-    return as->VecMadd16(a, b).SetType(ir::ValueType::V128);
+ir::Value OpMadd(compile::IrBuilder* as, ir::Value a, ir::Value b, u32, u32) {
+    return as->VecMadd16(ir::ValueType::V128, a, b);
 }
 
-ir::Value OpSadbw(ir::Assembler* as, ir::Value a, ir::Value b, u32, u32) {
-    return as->VecAbsDiffSum8(a, b).SetType(ir::ValueType::V128);
+ir::Value OpSadbw(compile::IrBuilder* as, ir::Value a, ir::Value b, u32, u32) {
+    return as->VecAbsDiffSum8(ir::ValueType::V128, a, b);
 }
 
-ir::Value OpAvg(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecAvg(a, b, ir::Imm(Lane(param))).SetType(ir::ValueType::V128);
+ir::Value OpAvg(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecAvg(ir::ValueType::V128, a, b, ir::Imm(Lane(param)));
 }
 
-ir::Value OpSatAdd(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecSatAdd(a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)))
-            .SetType(ir::ValueType::V128);
+ir::Value OpSatAdd(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecSatAdd(ir::ValueType::V128, a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)));
 }
 
-ir::Value OpSatSub(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecSatSub(a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)))
-            .SetType(ir::ValueType::V128);
+ir::Value OpSatSub(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecSatSub(ir::ValueType::V128, a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)));
 }
 
-ir::Value OpMin(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecMin(a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)))
-            .SetType(ir::ValueType::V128);
+ir::Value OpMin(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecMin(ir::ValueType::V128, a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)));
 }
 
-ir::Value OpMax(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecMax(a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)))
-            .SetType(ir::ValueType::V128);
+ir::Value OpMax(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecMax(ir::ValueType::V128, a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)));
 }
 
-ir::Value OpPack(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecPack(a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)))
-            .SetType(ir::ValueType::V128);
+ir::Value OpPack(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecPack(ir::ValueType::V128, a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)));
 }
 
 // PACKUSDW cannot use VecPack: the backend honours the unsigned-destination
@@ -215,68 +206,65 @@ ir::Value OpPack(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
 // (which makes the narrowing exact) and then gather the low halfwords.
 // VecTableLookup8's control is masked with 0x8F, so an index of 0x80 selects
 // nothing and yields a zero byte, which is what lets the two halves be OR-ed.
-ir::Value OpPackUsdw(ir::Assembler* as, ir::Value a, ir::Value b, u32, u32) {
+ir::Value OpPackUsdw(compile::IrBuilder* as, ir::Value a, ir::Value b, u32, u32) {
     auto zero = VecZeroConst(as);
     const u64 cap = Replicate(32, 0xFFFF);
     auto ceiling = VecConst(as, cap, cap);
     const auto lanes = ir::Imm(32u);
     const auto sign = ir::Imm(1u);
-    auto ca = as->VecMin(as->VecMax(a, zero, lanes, sign).SetType(ir::ValueType::V128),
+    auto ca = as->VecMin(ir::ValueType::V128,
+                         as->VecMax(ir::ValueType::V128, a, zero, lanes, sign),
                          ceiling,
                          lanes,
-                         sign)
-                      .SetType(ir::ValueType::V128);
-    auto cb = as->VecMin(as->VecMax(b, zero, lanes, sign).SetType(ir::ValueType::V128),
+                         sign);
+    auto cb = as->VecMin(ir::ValueType::V128,
+                         as->VecMax(ir::ValueType::V128, b, zero, lanes, sign),
                          ceiling,
                          lanes,
-                         sign)
-                      .SetType(ir::ValueType::V128);
+                         sign);
     // Bytes 0,1,4,5,8,9,12,13 are the low halfword of each dword.
     constexpr u64 kGather = 0x0D0C090805040100ull;
     constexpr u64 kNone = 0x8080808080808080ull;
-    auto from_a = as->VecTableLookup8(ca, VecConst(as, kGather, kNone))
-                          .SetType(ir::ValueType::V128);
-    auto from_b = as->VecTableLookup8(cb, VecConst(as, kNone, kGather))
-                          .SetType(ir::ValueType::V128);
-    return as->VecOr(from_a, from_b).SetType(ir::ValueType::V128);
+    auto from_a = as->VecTableLookup8(ir::ValueType::V128, ca, VecConst(as, kGather, kNone));
+    auto from_b = as->VecTableLookup8(ir::ValueType::V128, cb, VecConst(as, kNone, kGather));
+    return as->VecOr(ir::ValueType::V128, from_a, from_b);
 }
 
-ir::Value OpZip(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
-    return as->VecZip(a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)))
-            .SetType(ir::ValueType::V128);
+ir::Value OpZip(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
+    return as->VecZip(ir::ValueType::V128, a, b, ir::Imm(Lane(param)), ir::Imm(Flag(param)));
 }
 
 // PSIGN: dst = b < 0 ? -a : (b == 0 ? 0 : a).  The zero case is a separate
 // clause in the Intel definition, not a consequence of the negation, so it
 // needs its own mask.
-ir::Value OpSign(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
+ir::Value OpSign(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
     const auto lanes = ir::Imm(Lane(param));
     auto zero = VecZeroConst(as);
-    auto negative = as->VecCmpGt(zero, b, lanes).SetType(ir::ValueType::V128);
-    auto is_zero = as->VecCmpEq(b, zero, lanes).SetType(ir::ValueType::V128);
-    auto negated = as->VecSub(zero, a, lanes).SetType(ir::ValueType::V128);
+    auto negative = as->VecCmpGt(ir::ValueType::V128, zero, b, lanes);
+    auto is_zero = as->VecCmpEq(ir::ValueType::V128, b, zero, lanes);
+    auto negated = as->VecSub(ir::ValueType::V128, zero, a, lanes);
     // VecAndNot(x, y) is x AND NOT y.
-    auto picked = as->VecOr(as->VecAnd(negated, negative).SetType(ir::ValueType::V128),
-                            as->VecAndNot(a, negative).SetType(ir::ValueType::V128))
-                          .SetType(ir::ValueType::V128);
-    return as->VecAndNot(picked, is_zero).SetType(ir::ValueType::V128);
+    auto picked = as->VecOr(ir::ValueType::V128,
+                            as->VecAnd(ir::ValueType::V128, negated, negative),
+                            as->VecAndNot(ir::ValueType::V128, a, negative));
+    return as->VecAndNot(ir::ValueType::V128, picked, is_zero);
 }
 
 // PABS.  max(x, -x) is exact including the INT_MIN case, where x86 leaves
 // INT_MIN unchanged because the true absolute value does not fit -- and
 // max(INT_MIN, -INT_MIN) is INT_MIN for the same wrapping reason.
-ir::Value OpAbs(ir::Assembler* as, ir::Value a, u32 param) {
+ir::Value OpAbs(compile::IrBuilder* as, ir::Value a, u32 param) {
     const auto lanes = ir::Imm(Lane(param));
     auto zero = VecZeroConst(as);
-    auto negated = as->VecSub(zero, a, lanes).SetType(ir::ValueType::V128);
-    return as->VecMax(a, negated, lanes, ir::Imm(1u)).SetType(ir::ValueType::V128);
+    auto negated = as->VecSub(ir::ValueType::V128, zero, a, lanes);
+    return as->VecMax(ir::ValueType::V128, a, negated, lanes, ir::Imm(1u));
 }
 
 // vpblendw (element 16, one 8-bit control shared by both lanes) and vpblendd
 // (element 32, control bits 3:0 for the low lane and 7:4 for the high one).
 // The control is a decode-time constant, so the selector becomes a constant
 // mask and the blend becomes three bitwise ops.
-ir::Value OpBlendImm(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32 half) {
+ir::Value OpBlendImm(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32 half) {
     const u32 imm = Flag(param);
     const u32 element = Lane(param);
     const u32 bytes = element / 8;
@@ -293,28 +281,27 @@ ir::Value OpBlendImm(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32
         }
     }
     auto selector = VecConst(as, mask[0], mask[1]);
-    return as->VecOr(as->VecAnd(b, selector).SetType(ir::ValueType::V128),
-                     as->VecAndNot(a, selector).SetType(ir::ValueType::V128))
-            .SetType(ir::ValueType::V128);
+    return as->VecOr(ir::ValueType::V128,
+                     as->VecAnd(ir::ValueType::V128, b, selector),
+                     as->VecAndNot(ir::ValueType::V128, a, selector));
 }
 
-ir::Value OpAlignr(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
+ir::Value OpAlignr(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
     const u32 imm = Flag(param);
     if (imm >= 32) {
-        return as->VecSharedZero().SetType(ir::ValueType::V128);
+        return as->VecSharedZero(ir::ValueType::V128);
     }
     if (imm == 0) {
         return b;
     }
     if (imm < 16) {
-        return as->VecExtractBytes(b, a, ir::Imm(imm)).SetType(ir::ValueType::V128);
+        return as->VecExtractBytes(ir::ValueType::V128, b, a, ir::Imm(imm));
     }
     if (imm == 16) {
         return a;
     }
-    auto zero = as->VecSharedZero().SetType(ir::ValueType::V128);
-    return as->VecByteShift(a, zero, ir::Imm(imm - 16), ir::Imm(0))
-            .SetType(ir::ValueType::V128);
+    auto zero = as->VecSharedZero(ir::ValueType::V128);
+    return as->VecByteShift(ir::ValueType::V128, a, zero, ir::Imm(imm - 16), ir::Imm(0));
 }
 
 // vpsllv/vpsrlv/vpsrav: every lane shifts by ITS OWN count.  The IR's packed
@@ -334,48 +321,46 @@ ir::Value OpAlignr(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) 
 // VPSLLVQ / VPSRLVQ count to 32 bits and shifts by 1 for a count of
 // 0x0000000100000001 where hardware produces zero.  avx_int_test.cpp excludes
 // the two affected reference rows and records the check that established it.
-ir::Value OpShiftVar(ir::Assembler* as, ir::Value a, ir::Value counts, u32 param, u32) {
+ir::Value OpShiftVar(compile::IrBuilder* as, ir::Value a, ir::Value counts, u32 param, u32) {
     const u32 lane = Lane(param);
     const u32 kind = Flag(param);  // 0 = left, 1 = logical right, 2 = arithmetic right
     const auto lanes = ir::Imm(lane);
     ir::Value effective = counts;
     if (kind == 2) {
         const u64 cap = Replicate(lane, lane - 1);
-        effective = as->VecMin(counts, VecConst(as, cap, cap), lanes, ir::Imm(0u))
-                            .SetType(ir::ValueType::V128);
+        effective =
+                as->VecMin(ir::ValueType::V128, counts, VecConst(as, cap, cap), lanes, ir::Imm(0u));
     }
     ir::Value value = a;
     for (u32 bit = 0; (u32(1) << bit) < lane; ++bit) {
         const u64 step = u64(1) << bit;
         const u64 rep = Replicate(lane, step);
         auto check = VecConst(as, rep, rep);
-        auto selected = as->VecCmpEq(as->VecAnd(effective, check).SetType(ir::ValueType::V128),
+        auto selected = as->VecCmpEq(ir::ValueType::V128,
+                                     as->VecAnd(ir::ValueType::V128, effective, check),
                                      check,
-                                     lanes)
-                                .SetType(ir::ValueType::V128);
-        auto amount = as->LoadImm(ir::Imm(step)).SetType(ir::ValueType::U64);
+                                     lanes);
+        auto amount = as->LoadImm(ir::ValueType::U64, ir::Imm(step));
         ir::Value shifted;
         if (kind == 0) {
-            shifted = as->VecShiftLeft(value, amount, lanes).SetType(ir::ValueType::V128);
+            shifted = as->VecShiftLeft(ir::ValueType::V128, value, amount, lanes);
         } else if (kind == 1) {
-            shifted = as->VecShiftRight(value, amount, lanes).SetType(ir::ValueType::V128);
+            shifted = as->VecShiftRight(ir::ValueType::V128, value, amount, lanes);
         } else {
-            shifted = as->VecShiftRightArithmetic(value, amount, lanes)
-                              .SetType(ir::ValueType::V128);
+            shifted = as->VecShiftRightArithmetic(ir::ValueType::V128, value, amount, lanes);
         }
-        value = as->VecOr(as->VecAnd(shifted, selected).SetType(ir::ValueType::V128),
-                          as->VecAndNot(value, selected).SetType(ir::ValueType::V128))
-                        .SetType(ir::ValueType::V128);
+        value = as->VecOr(ir::ValueType::V128,
+                          as->VecAnd(ir::ValueType::V128, shifted, selected),
+                          as->VecAndNot(ir::ValueType::V128, value, selected));
     }
     if (kind != 2) {
         const u64 over = Replicate(lane, ~u64(0) << (lane == 64 ? 6 : (lane == 32 ? 5 : 4)));
-        auto in_range = as->VecCmpEq(
-                                as->VecAnd(counts, VecConst(as, over, over))
-                                        .SetType(ir::ValueType::V128),
-                                VecZeroConst(as),
-                                lanes)
-                                .SetType(ir::ValueType::V128);
-        value = as->VecAnd(value, in_range).SetType(ir::ValueType::V128);
+        auto in_range =
+                as->VecCmpEq(ir::ValueType::V128,
+                             as->VecAnd(ir::ValueType::V128, counts, VecConst(as, over, over)),
+                             VecZeroConst(as),
+                             lanes);
+        value = as->VecAnd(ir::ValueType::V128, value, in_range);
     }
     return value;
 }
@@ -405,7 +390,7 @@ ir::Value X64Decoder::AvxIntNarrowSrc(const VexInsn& v, u32 bytes) {
     }
     // VecDup64 puts the bytes in the low qword, which is all the consumers
     // (Zip1 chains and VecDup64 broadcasts) ever read.
-    return __ VecDup64(widened).SetType(ir::ValueType::V128);
+    return __ VecDup64(ir::ValueType::V128, widened);
 }
 
 // dst = src1 (VEX.vvvv) OP src2 (r/m), computed per 128-bit lane.
@@ -460,12 +445,12 @@ void X64Decoder::DecodeAvxIntShiftCount(const VexInsn& v, u32 kind, u32 lane_bit
     const auto lanes = ir::Imm(lane_bits);
     const auto apply = [&](ir::Value value) -> ir::Value {
         if (kind == 0) {
-            return __ VecShiftLeft(value, count, lanes).SetType(ir::ValueType::V128);
+            return __ VecShiftLeft(ir::ValueType::V128, value, count, lanes);
         }
         if (kind == 1) {
-            return __ VecShiftRight(value, count, lanes).SetType(ir::ValueType::V128);
+            return __ VecShiftRight(ir::ValueType::V128, value, count, lanes);
         }
-        return __ VecShiftRightArithmetic(value, count, lanes).SetType(ir::ValueType::V128);
+        return __ VecShiftRightArithmetic(ir::ValueType::V128, value, count, lanes);
     };
     if (v.l) {
         VexWrite256(v.reg, apply(XmmRead(XmmOf(v.vvvv))), apply(YmmHighRead(v.vvvv)));
@@ -484,29 +469,26 @@ void X64Decoder::DecodeAvxIntShiftImm(const VexInsn& v, u32 kind, u32 lane_bits)
     // shares one scalar count between both 128-bit lanes.
     ir::Value count;
     if (!use_imm) {
-        count = __ LoadImm(ir::Imm(u64(v.imm8))).SetType(ir::ValueType::U64);
+        count = __ LoadImm(ir::ValueType::U64, ir::Imm(u64(v.imm8)));
     }
     const auto apply = [&](ir::Value value) -> ir::Value {
         if (use_imm) {
             if (kind == 0) {
-                return __ VecShiftLeftImm(value, ir::Imm(u64(v.imm8)), lanes)
-                        .SetType(ir::ValueType::V128);
+                return __ VecShiftLeftImm(ir::ValueType::V128, value, ir::Imm(u64(v.imm8)), lanes);
             }
             if (kind == 1) {
-                return __ VecShiftRightImm(value, ir::Imm(u64(v.imm8)), lanes)
-                        .SetType(ir::ValueType::V128);
+                return __ VecShiftRightImm(ir::ValueType::V128, value, ir::Imm(u64(v.imm8)), lanes);
             }
             return __ VecShiftRightArithmeticImm(
-                            value, ir::Imm(u64(v.imm8)), lanes)
-                    .SetType(ir::ValueType::V128);
+                    ir::ValueType::V128, value, ir::Imm(u64(v.imm8)), lanes);
         }
         if (kind == 0) {
-            return __ VecShiftLeft(value, count, lanes).SetType(ir::ValueType::V128);
+            return __ VecShiftLeft(ir::ValueType::V128, value, count, lanes);
         }
         if (kind == 1) {
-            return __ VecShiftRight(value, count, lanes).SetType(ir::ValueType::V128);
+            return __ VecShiftRight(ir::ValueType::V128, value, count, lanes);
         }
-        return __ VecShiftRightArithmetic(value, count, lanes).SetType(ir::ValueType::V128);
+        return __ VecShiftRightArithmetic(ir::ValueType::V128, value, count, lanes);
     };
     if (v.l) {
         VexWrite256(v.vvvv, apply(XmmRead(XmmOf(v.rm))), apply(YmmHighRead(v.rm)));
@@ -547,16 +529,18 @@ void X64Decoder::DecodeAvxIntExtend(const VexInsn& v, u32 src_bits, u32 dst_bits
     ir::Value lo, hi;
     for (u32 width = src_bits; width < dst_bits; width *= 2) {
         const auto lanes = ir::Imm(width);
-        auto filler = is_signed ? __ VecCmpGt(VecConst(assembler, 0, 0), value, lanes)
-                                          .SetType(ir::ValueType::V128)
-                                : VecConst(assembler, 0, 0);
+        auto filler =
+                is_signed
+                        ? __ VecCmpGt(ir::ValueType::V128, VecConst(assembler, 0, 0), value, lanes)
+
+                        : VecConst(assembler, 0, 0);
         if (width * 2 == dst_bits) {
-            lo = __ VecZip(value, filler, lanes, ir::Imm(0u)).SetType(ir::ValueType::V128);
+            lo = __ VecZip(ir::ValueType::V128, value, filler, lanes, ir::Imm(0u));
             if (v.l) {
-                hi = __ VecZip(value, filler, lanes, ir::Imm(1u)).SetType(ir::ValueType::V128);
+                hi = __ VecZip(ir::ValueType::V128, value, filler, lanes, ir::Imm(1u));
             }
         } else {
-            value = __ VecZip(value, filler, lanes, ir::Imm(0u)).SetType(ir::ValueType::V128);
+            value = __ VecZip(ir::ValueType::V128, value, filler, lanes, ir::Imm(0u));
         }
     }
     if (v.l) {
@@ -576,10 +560,11 @@ void X64Decoder::DecodeAvxIntExtend(const VexInsn& v, u32 src_bits, u32 dst_bits
 void X64Decoder::DecodeAvxIntBroadcast(const VexInsn& v, u32 element_bits) {
     ir::Value element;
     if (v.RmIsRegister()) {
-        element = XmmLo(XmmOf(v.rm)).SetType(ir::ValueType::U64);
+        element = XmmLo(XmmOf(v.rm));
         if (element_bits < 64) {
-            element = __ And(element, ir::Operand{ir::Imm((u64(1) << element_bits) - 1)})
-                              .SetType(ir::ValueType::U64);
+            element = __ And(ir::ValueType::U64,
+                             element,
+                             ir::Operand{ir::Imm((u64(1) << element_bits) - 1)});
         }
     } else {
         auto raw = MemLoad(ir::Operand{VexAddress(v)},
@@ -592,13 +577,13 @@ void X64Decoder::DecodeAvxIntBroadcast(const VexInsn& v, u32 element_bits) {
     }
     // Fill the qword by repeated doubling; VecDup64 then covers 128 bits.
     for (u32 width = element_bits; width < 64; width *= 2) {
-        element = __ Or(element, ir::Operand{__ LslImm(element, ir::Imm(u64(width)))
-                                                     .SetType(ir::ValueType::U64)})
-                          .SetType(ir::ValueType::U64);
+        element = __ Or(ir::ValueType::U64,
+                        element,
+                        ir::Operand{__ LslImm(ir::ValueType::U64, element, ir::Imm(u64(width)))});
     }
-    auto value = __ VecDup64(element).SetType(ir::ValueType::V128);
+    auto value = __ VecDup64(ir::ValueType::V128, element);
     if (v.l) {
-        VexWrite256(v.reg, value, __ VecDup64(element).SetType(ir::ValueType::V128));
+        VexWrite256(v.reg, value, __ VecDup64(ir::ValueType::V128, element));
     } else {
         VexWrite128(v.reg, value);
     }
@@ -636,9 +621,7 @@ void X64Decoder::DecodeAvxIntExtract128(const VexInsn& v) {
     if (v.RmIsRegister()) {
         VexWrite128(v.rm, value);
     } else {
-        MemStore(ir::Operand{VexAddress(v)},
-                 value.SetType(ir::ValueType::V128),
-                 VexTsoOrdered(v));
+        MemStore(ir::Operand{VexAddress(v)}, value, VexTsoOrdered(v));
     }
 }
 
@@ -695,8 +678,8 @@ void X64Decoder::DecodeAvxIntPermq(const VexInsn& v) {
     bool cached[4] = {false, false, false, false};
     const auto qword = [&](u32 index) -> ir::Value {
         if (!cached[index]) {
-            cache[index] = __ VecExtract64(index < 2 ? src.lo : src.hi, ir::Imm(index & 1u))
-                                   .SetType(ir::ValueType::U64);
+            cache[index] = __ VecExtract64(
+                    ir::ValueType::U64, index < 2 ? src.lo : src.hi, ir::Imm(index & 1u));
             cached[index] = true;
         }
         return cache[index];
@@ -743,34 +726,28 @@ void X64Decoder::DecodeAvxIntPermd(const VexInsn& v) {
         // dword index -> byte indices.  index & 7 is at most 7, so multiplying
         // the dword by 0x04040404 puts 4*index in every byte of it without
         // carrying between bytes; adding {0,1,2,3} completes the four bytes.
-        auto masked = __ VecAnd(index, VecConst(assembler, kSeven, kSeven))
-                              .SetType(ir::ValueType::V128);
-        auto scaled = __ VecMul(masked,
+        auto masked = __ VecAnd(ir::ValueType::V128, index, VecConst(assembler, kSeven, kSeven));
+        auto scaled = __ VecMul(ir::ValueType::V128,
+                                masked,
                                 VecConst(assembler, kTimesFour, kTimesFour),
-                                ir::Imm(32u))
-                              .SetType(ir::ValueType::V128);
-        auto bytes = __ VecAdd(scaled,
+                                ir::Imm(32u));
+        auto bytes = __ VecAdd(ir::ValueType::V128,
+                               scaled,
                                VecConst(assembler, kByteInDword, kByteInDword),
-                               ir::Imm(8u))
-                             .SetType(ir::ValueType::V128);
+                               ir::Imm(8u));
         // 0x80 exactly where the index names the HIGH source lane.
-        auto high_flag =
-                __ VecShiftLeft(__ VecAnd(bytes, VecConst(assembler, kBit4, kBit4))
-                                        .SetType(ir::ValueType::V128),
-                                __ LoadImm(ir::Imm(u64(3))).SetType(ir::ValueType::U64),
-                                ir::Imm(8u))
-                        .SetType(ir::ValueType::V128);
-        auto low_flag = __ VecXor(high_flag, VecConst(assembler, kBit7, kBit7))
-                                .SetType(ir::ValueType::V128);
+        auto high_flag = __ VecShiftLeft(
+                ir::ValueType::V128,
+                __ VecAnd(ir::ValueType::V128, bytes, VecConst(assembler, kBit4, kBit4)),
+                __ LoadImm(ir::ValueType::U64, ir::Imm(u64(3))),
+                ir::Imm(8u));
+        auto low_flag =
+                __ VecXor(ir::ValueType::V128, high_flag, VecConst(assembler, kBit7, kBit7));
         auto from_low = __ VecTableLookup8(
-                                table.lo,
-                                __ VecOr(bytes, high_flag).SetType(ir::ValueType::V128))
-                                .SetType(ir::ValueType::V128);
+                ir::ValueType::V128, table.lo, __ VecOr(ir::ValueType::V128, bytes, high_flag));
         auto from_high = __ VecTableLookup8(
-                                 table.hi,
-                                 __ VecOr(bytes, low_flag).SetType(ir::ValueType::V128))
-                                 .SetType(ir::ValueType::V128);
-        return __ VecOr(from_low, from_high).SetType(ir::ValueType::V128);
+                ir::ValueType::V128, table.hi, __ VecOr(ir::ValueType::V128, bytes, low_flag));
+        return __ VecOr(ir::ValueType::V128, from_low, from_high);
     };
     auto lo = lane(index_lo);
     auto hi = lane(index_hi);
@@ -784,14 +761,15 @@ void X64Decoder::DecodeAvxIntPermd(const VexInsn& v) {
 void X64Decoder::DecodeAvxIntBlendv(const VexInsn& v) {
     const u32 selector = v.is4_register;
     const auto expand = [&](ir::Value raw) -> ir::Value {
-        return __ VecShiftRightArithmetic(
-                        raw, __ LoadImm(ir::Imm(u64(7))).SetType(ir::ValueType::U64), ir::Imm(8u))
-                .SetType(ir::ValueType::V128);
+        return __ VecShiftRightArithmetic(ir::ValueType::V128,
+                                          raw,
+                                          __ LoadImm(ir::ValueType::U64, ir::Imm(u64(7))),
+                                          ir::Imm(8u));
     };
     const auto blend = [&](ir::Value a, ir::Value b, ir::Value mask) -> ir::Value {
-        return __ VecOr(__ VecAnd(b, mask).SetType(ir::ValueType::V128),
-                        __ VecAndNot(a, mask).SetType(ir::ValueType::V128))
-                .SetType(ir::ValueType::V128);
+        return __ VecOr(ir::ValueType::V128,
+                        __ VecAnd(ir::ValueType::V128, b, mask),
+                        __ VecAndNot(ir::ValueType::V128, a, mask));
     };
     if (v.l) {
         auto a_lo = XmmRead(XmmOf(v.vvvv));
@@ -829,7 +807,7 @@ bool X64Decoder::DecodeAvxInt(const VexInsn& v) {
                     case VexPP::P66:
                         DecodeAvxIntUnary(
                                 v,
-                                [](ir::Assembler* as, ir::Value a, u32 param) {
+                                [](compile::IrBuilder* as, ir::Value a, u32 param) {
                                     return VecShuffle32Lowered(
                                             as, a, param & 0xffu,
                                             (param & 0x100u) != 0);
@@ -840,11 +818,11 @@ bool X64Decoder::DecodeAvxInt(const VexInsn& v) {
                     case VexPP::PF3:  // vpshufhw
                         DecodeAvxIntUnary(
                                 v,
-                                [](ir::Assembler* as, ir::Value a, u32 param) {
-                                    return as->VecShuffle16(a,
+                                [](compile::IrBuilder* as, ir::Value a, u32 param) {
+                                    return as->VecShuffle16(ir::ValueType::V128,
+                                                            a,
                                                             ir::Imm(Lane(param)),
-                                                            ir::Imm(Flag(param)))
-                                            .SetType(ir::ValueType::V128);
+                                                            ir::Imm(Flag(param)));
                                 },
                                 Pack(v.imm8, v.pp == VexPP::PF3 ? 1u : 0u));
                         return true;

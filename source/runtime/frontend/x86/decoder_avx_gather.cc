@@ -164,13 +164,11 @@
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 // VexInsn register numbers are architectural (0..15); distorm's enum uses the
 // same order within each block.  Local copy: decoder_avx_fp.cc's identical
 // helper lives in that file's anonymous namespace.
@@ -265,7 +263,7 @@ void X64Decoder::DecodeAvxGatherOp(const VexInsn& v, u32 element_bits, u32 index
         const u32 m_shift = (i * element_bits) % 64u;
         const u64 m_bit = u64(1) << (m_shift + element_bits - 1u);
         auto enabled = __ TestNotZero(
-                __ And(mask_slot[m_slot], ir::Operand{ir::Imm(m_bit)}).SetType(ir::ValueType::U64));
+                __ And(ir::ValueType::U64, mask_slot[m_slot], ir::Operand{ir::Imm(m_bit)}));
         auto skip = __ NotGoto(enabled);
 
         // ---- address: base + SignExtend(index[i]) * scale + disp -----------
@@ -276,31 +274,25 @@ void X64Decoder::DecodeAvxGatherOp(const VexInsn& v, u32 element_bits, u32 index
         if (index_bits == 64) {
             offset = index_slot[i];
         } else {
-            // Sign-extend dword i out of its slot.  Shift-left-then-arithmetic-
-            // shift-right rather than SignExtend(value.SetType(U32)): SetType
-            // rewrites the DEFINING instruction's return type (ir::Value::
-            // SetType calls Def()->SetReturn), so retyping a shared LoadUniform
-            // would corrupt the other element that reads the same slot.
+            // Extract and sign-extend this dword with 64-bit shifts. Keep the
+            // shared slot definition intact for the other element.
             const u32 i_slot = (i * 32u) / 64u;
             const bool high = (i % 2u) != 0;
             auto wide = high ? index_slot[i_slot]
-                             : __ LslImm(index_slot[i_slot], ir::Imm(32u))
-                                       .SetType(ir::ValueType::U64);
-            offset = __ AsrImm(wide, ir::Imm(32u)).SetType(ir::ValueType::U64);
+                             : __ LslImm(ir::ValueType::U64, index_slot[i_slot], ir::Imm(32u));
+            offset = __ AsrImm(ir::ValueType::U64, wide, ir::Imm(32u));
         }
         ir::Value scaled = scale_shift == 0
                                    ? offset
-                                   : __ LslImm(offset, ir::Imm(scale_shift))
-                                             .SetType(ir::ValueType::U64);
-        ir::Value addr = have_base ? __ Add(base, ir::Operand{scaled}).SetType(addr_type) : scaled;
+                                   : __ LslImm(ir::ValueType::U64, offset, ir::Imm(scale_shift));
+        ir::Value addr = have_base ? __ Add(addr_type, base, ir::Operand{scaled}) : scaled;
         if (disp != 0) {
-            addr = __ Add(addr, ir::Operand{ir::Imm(static_cast<u64>(disp))}).SetType(addr_type);
+            addr = __ Add(addr_type, addr, ir::Operand{ir::Imm(static_cast<u64>(disp))});
         }
         if (!is_64bit) {
             // 32-bit addressing: the effective address wraps at 4 GiB.  Also
             // adjusts the type when the address is a bare scaled index.
-            addr = __ And(addr, ir::Operand{ir::Imm(static_cast<u64>(addr_mask))})
-                           .SetType(addr_type);
+            addr = __ And(addr_type, addr, ir::Operand{ir::Imm(static_cast<u64>(addr_mask))});
         }
 
         auto loaded = MemLoad(ir::Operand{addr}, load_type, VexTsoOrdered(v));
@@ -317,9 +309,11 @@ void X64Decoder::DecodeAvxGatherOp(const VexInsn& v, u32 element_bits, u32 index
         } else {
             const u32 d_shift = (i * element_bits) % 64u;
             auto current = GatherSlotRead(dst, d_slot);
-            GatherSlotWrite(dst, d_slot,
-                            __ BitInsert(current, loaded, ir::Imm(d_shift), ir::Imm(32u))
-                                    .SetType(ir::ValueType::U64));
+            GatherSlotWrite(
+                    dst,
+                    d_slot,
+                    __ BitInsert(
+                            ir::ValueType::U64, current, loaded, ir::Imm(d_shift), ir::Imm(32u)));
         }
         __ BindLabel(skip);
     }

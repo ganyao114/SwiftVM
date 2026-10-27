@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime/compile/analysis/guest_state.h"
+
 #include <functional>
 #include <vector>
 
@@ -10,7 +12,7 @@
 namespace swift::runtime {
 class MemoryInterface;
 namespace ir {
-struct UniformInfo;
+
 }
 }
 
@@ -25,8 +27,8 @@ struct FunctionRegionDecodeConfig {
     bool sse_afp_nan{};
     bool native_memory{};
     runtime::FeatureSet features{};
-    const runtime::ir::UniformInfo* uniform_info{};
-    bool bound_backend{};
+    const runtime::compile::GuestStateLayout* guest_layout{};
+    runtime::compile::BuilderCapabilities builder_target{};
     runtime::TsoMode tso_mode{runtime::TsoMode::Relaxed};
     VAddr decode_limit{};
     std::function<bool(runtime::LocationDescriptor)> local_target;
@@ -54,7 +56,7 @@ private:
                                                            VAddr upper);
     void DecodeBlock(
             runtime::LocationDescriptor address,
-            runtime::ir::HIRBlock* block,
+            const runtime::ir::HIRBlock* block,
             runtime::LocationDescriptor stop,
             ::swift::x86::DecodeStopKind stop_kind = ::swift::x86::DecodeStopKind::Internal);
 

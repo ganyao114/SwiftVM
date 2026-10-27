@@ -58,7 +58,7 @@ void EmitCryptoInstruction(MacroAssembler& assembler, u32 encoding) {
 
 }  // namespace
 
-void JitTranslator::EmitVecAesEnc(ir::Inst* inst) {
+void JitTranslator::EmitVecAesEnc(const ir::Inst* inst) {
     auto data = context.V(inst->GetArg<ir::Value>(0));
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -73,7 +73,7 @@ void JitTranslator::EmitVecAesEnc(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
-void JitTranslator::EmitVecAesEncLast(ir::Inst* inst) {
+void JitTranslator::EmitVecAesEncLast(const ir::Inst* inst) {
     auto data = context.V(inst->GetArg<ir::Value>(0));
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -84,7 +84,7 @@ void JitTranslator::EmitVecAesEncLast(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
-void JitTranslator::EmitVecAesDec(ir::Inst* inst) {
+void JitTranslator::EmitVecAesDec(const ir::Inst* inst) {
     auto data = context.V(inst->GetArg<ir::Value>(0));
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -96,7 +96,7 @@ void JitTranslator::EmitVecAesDec(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
-void JitTranslator::EmitVecAesDecLast(ir::Inst* inst) {
+void JitTranslator::EmitVecAesDecLast(const ir::Inst* inst) {
     auto data = context.V(inst->GetArg<ir::Value>(0));
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -107,14 +107,15 @@ void JitTranslator::EmitVecAesDecLast(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
-void JitTranslator::EmitVecAesEncFast(ir::Inst* inst) {
+void JitTranslator::EmitVecAesEncFast(const ir::Inst* inst) {
     auto data = context.V(inst->GetArg<ir::Value>(0));
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto zero = context.V(inst->GetArg<ir::Value>(2));
     auto result = context.V(ir::Value{inst});
     if (context.IsAesChainTied(inst->Id())) {
-        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::AesTie),
-                   "AES ownership-chain proof diverged at IR {}", inst->Id());
+        ASSERT_MSG(context.GetActions().FPRVerified(inst->Id(), FPRAction::AesTie),
+                   "AES ownership-chain proof diverged at IR {}",
+                   inst->Id());
     }
     if (result.GetCode() != data.GetCode()) {
         __ Orr(result.V16B(), data.V16B(), data.V16B());
@@ -124,14 +125,15 @@ void JitTranslator::EmitVecAesEncFast(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
-void JitTranslator::EmitVecAesEncLastFast(ir::Inst* inst) {
+void JitTranslator::EmitVecAesEncLastFast(const ir::Inst* inst) {
     auto data = context.V(inst->GetArg<ir::Value>(0));
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto zero = context.V(inst->GetArg<ir::Value>(2));
     auto result = context.V(ir::Value{inst});
     if (context.IsAesChainTied(inst->Id())) {
-        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::AesTie),
-                   "AES ownership-chain proof diverged at IR {}", inst->Id());
+        ASSERT_MSG(context.GetActions().FPRVerified(inst->Id(), FPRAction::AesTie),
+                   "AES ownership-chain proof diverged at IR {}",
+                   inst->Id());
     }
     if (result.GetCode() != data.GetCode()) {
         __ Orr(result.V16B(), data.V16B(), data.V16B());
@@ -140,7 +142,7 @@ void JitTranslator::EmitVecAesEncLastFast(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
-void JitTranslator::EmitVecAesDecFast(ir::Inst* inst) {
+void JitTranslator::EmitVecAesDecFast(const ir::Inst* inst) {
     auto data = context.V(inst->GetArg<ir::Value>(0));
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto zero = context.V(inst->GetArg<ir::Value>(2));
@@ -153,7 +155,7 @@ void JitTranslator::EmitVecAesDecFast(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
-void JitTranslator::EmitVecAesDecLastFast(ir::Inst* inst) {
+void JitTranslator::EmitVecAesDecLastFast(const ir::Inst* inst) {
     auto data = context.V(inst->GetArg<ir::Value>(0));
     auto key = context.V(inst->GetArg<ir::Value>(1));
     auto zero = context.V(inst->GetArg<ir::Value>(2));
@@ -165,7 +167,7 @@ void JitTranslator::EmitVecAesDecLastFast(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), key.V16B());
 }
 
-void JitTranslator::EmitVecAesKeygenAssist(ir::Inst* inst) {
+void JitTranslator::EmitVecAesKeygenAssist(const ir::Inst* inst) {
     auto source = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     auto sbox_shifted = context.GetTmpV();
@@ -211,7 +213,7 @@ void JitTranslator::EmitVecAesKeygenAssist(ir::Inst* inst) {
     __ Eor(result.V16B(), result.V16B(), rcon.V16B());
 }
 
-void JitTranslator::EmitVecPclMul(ir::Inst* inst) {
+void JitTranslator::EmitVecPclMul(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -240,7 +242,7 @@ void JitTranslator::EmitVecPclMul(ir::Inst* inst) {
     EmitCryptoInstruction(masm, Crypto3(kPmull, result, left, right));
 }
 
-void JitTranslator::EmitVecSha256Msg1(ir::Inst* inst) {
+void JitTranslator::EmitVecSha256Msg1(const ir::Inst* inst) {
     auto destination = context.V(inst->GetArg<ir::Value>(0));
     auto source = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -248,7 +250,7 @@ void JitTranslator::EmitVecSha256Msg1(ir::Inst* inst) {
     EmitCryptoInstruction(masm, Crypto2(kSha256Su0, result, source));
 }
 
-void JitTranslator::EmitVecSha256Msg2(ir::Inst* inst) {
+void JitTranslator::EmitVecSha256Msg2(const ir::Inst* inst) {
     auto destination = context.V(inst->GetArg<ir::Value>(0));
     auto source = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -262,7 +264,7 @@ void JitTranslator::EmitVecSha256Msg2(ir::Inst* inst) {
     EmitCryptoInstruction(masm, Crypto3(kSha256Su1, result, src1, dup));
 }
 
-void JitTranslator::EmitVecSha256Rnds2(ir::Inst* inst) {
+void JitTranslator::EmitVecSha256Rnds2(const ir::Inst* inst) {
     auto destination = context.V(inst->GetArg<ir::Value>(0));
     auto source = context.V(inst->GetArg<ir::Value>(1));
     auto xmm0 = context.V(inst->GetArg<ir::Value>(2));
@@ -284,7 +286,6 @@ void JitTranslator::EmitVecSha256Rnds2(ir::Inst* inst) {
     __ Zip2(result.V2D(), h2.V2D(), abcd.V2D());
     __ Rev64(result.V4S(), result.V4S());
 }
-
 
 #undef __
 

@@ -62,6 +62,13 @@ public:
         node = &chunks.front();
     }
 
+    // Destruction-only path: release live objects without capacity maintenance
+    // or allocation, including after a failed ReleaseContents reallocation.
+    void DestroyContents() {
+        ASSERT_MSG(!constructing, "pool release during construction is not supported");
+        for (auto& chunk : chunks) chunk.Release();
+    }
+
 private:
     struct NonTrivialDummy {
         NonTrivialDummy() noexcept {}

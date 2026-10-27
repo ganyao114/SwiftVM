@@ -1,5 +1,9 @@
-#include "support/register_alloc_test_support.h"
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "support/register_alloc_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -16,11 +20,10 @@
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "translator/x86/translator.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -54,23 +57,26 @@ std::vector<std::string> EmitPushShape(bool store_rsp, bool biased_memory) {
     auto module = address_space.GetDefaultModule();
 
     IntrusivePtr<Block> block{new Block(0, Location{0x8920})};
-    auto rsp = block->GetHostGPR(HostRegIndex(4), Imm{0u}).SetType(ValueType::U64);
-    auto stored =
-            store_rsp ? rsp : block->GetHostGPR(HostRegIndex(3), Imm{0u}).SetType(ValueType::U64);
-    auto updated = block->Sub(rsp, Operand{Imm{swift::u64{8}}}).SetType(ValueType::U64);
+    auto rsp = block->GetHostGPR(ValueType::U64, HostRegIndex(4), Imm{0u});
+    auto stored = store_rsp ? rsp : block->GetHostGPR(ValueType::U64, HostRegIndex(3), Imm{0u});
+    auto updated = block->Sub(ValueType::U64, rsp, Operand{Imm{swift::u64{8}}});
     block->StoreMemory(Operand{updated}, stored);
     block->SetHostGPR(updated, HostRegIndex(4), Imm{0u});
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(),
-                   features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -81,19 +87,16 @@ std::vector<std::string> EmitSpilledPushShape() {
     IntrusivePtr<Block> block{new Block(0, Location{0x8940})};
     std::vector<Value> retained;
     for (swift::u64 value = 1; value <= 6; ++value) {
-        retained.push_back(block->LoadImm(Imm{value}).SetType(ValueType::U64));
+        retained.push_back(block->LoadImm(ValueType::U64, Imm{value}));
     }
-    const auto rsp = block->GetHostGPR(HostRegIndex(4), Imm{0u})
-                             .SetType(ValueType::U64);
-    const auto stored = block->GetHostGPR(HostRegIndex(3), Imm{0u})
-                                .SetType(ValueType::U64);
-    const auto updated = block->Sub(rsp, Operand{Imm{swift::u64{8}}})
-                                 .SetType(ValueType::U64);
+    const auto rsp = block->GetHostGPR(ValueType::U64, HostRegIndex(4), Imm{0u});
+    const auto stored = block->GetHostGPR(ValueType::U64, HostRegIndex(3), Imm{0u});
+    const auto updated = block->Sub(ValueType::U64, rsp, Operand{Imm{swift::u64{8}}});
     block->StoreMemory(Operand{updated}, stored);
     block->SetHostGPR(updated, HostRegIndex(4), Imm{0u});
     auto total = retained.front();
     for (std::size_t i = 1; i < retained.size(); ++i) {
-        total = block->Add(total, Operand{retained[i]}).SetType(ValueType::U64);
+        total = block->Add(ValueType::U64, total, Operand{retained[i]});
     }
     block->StoreUniform(Uniform{0, ValueType::U64}, total);
     block->SetTerminal(terminal::ReturnToDispatch{});
@@ -101,9 +104,9 @@ std::vector<std::string> EmitSpilledPushShape() {
 
     const GPRSMask gprs{~((1u << 6) - 1u)};
     const FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     RegisterAllocTestSupport::RunForSpillEvictTest(block.get(), &alloc, false);
-    REQUIRE(alloc.ValueType(updated) == RegAlloc::MEM);
+    REQUIRE(alloc.ValueType(updated) == AllocationFixture::MEM);
 
     Config config{
             .loc_start = 0,
@@ -114,8 +117,9 @@ std::vector<std::string> EmitSpilledPushShape() {
             .page_table = reinterpret_cast<void*>(0x1000),
     };
     AddressSpace address_space{config};
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();

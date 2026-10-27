@@ -1,7 +1,12 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,10 +17,10 @@
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
+#include "runtime/ir/hir_builder.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -48,10 +53,8 @@ std::vector<std::string> EmitHelperBoundary(bool exact) {
     };
     AddressSpace address_space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0xb140})};
-    auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
-            Uniform{0, ValueType::U64});
-    auto first = block->Add(source, Operand{Imm{swift::u64{1}}})
-                         .SetType(ValueType::U64);
+    auto source = block->LoadUniform<TypedValue<ValueType::U64>>(Uniform{0, ValueType::U64});
+    auto first = block->Add(ValueType::U64, source, Operand{Imm{swift::u64{1}}});
     block->SaveFlags(first, Flags::NZCV);
 
     HelperCallTraits traits{};
@@ -61,22 +64,27 @@ std::vector<std::string> EmitHelperBoundary(bool exact) {
         traits.reentry = HelperReentryEffect::NoReentry;
         traits.host_flags = HostFlagsEffect::PreservesNZCV;
     }
-    (void)block->CallLambda(Lambda{DataClass{Imm{swift::u64{1}}}, traits});
+    (void)block->CallLambda(ValueType::VOID, Lambda{DataClass{Imm{swift::u64{1}}}, traits});
 
-    auto second = block->Sub(source, Operand{Imm{swift::u64{1}}})
-                          .SetType(ValueType::U64);
+    auto second = block->Sub(ValueType::U64, source, Operand{Imm{swift::u64{1}}});
     block->SaveFlags(second, Flags::NZCV);
     block->StoreUniform(Uniform{8, ValueType::U64}, second);
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -133,8 +141,7 @@ Sse42HelperEmission EmitSse42HelperBoundary(swift::u8 imm,
     auto carry = block->LoadUniform(Uniform{0, ValueType::V128});
     auto left = block->LoadUniform(Uniform{16, ValueType::V128});
     auto right = block->LoadUniform(Uniform{32, ValueType::V128});
-    auto result = block->Sse42Str(left, right, Imm{swift::u64{imm}})
-                          .SetType(ValueType::U64);
+    auto result = block->Sse42Str(ValueType::U64, left, right, Imm{swift::u64{imm}});
     block->StoreUniform(Uniform{48, ValueType::U64}, result);
     block->StoreUniform(Uniform{64, ValueType::V128}, carry);
     block->StoreUniform(Uniform{104, ValueType::U64}, scalar_carry);
@@ -145,15 +152,21 @@ Sse42HelperEmission EmitSse42HelperBoundary(swift::u8 imm,
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
     const auto carry_fpr = alloc.ValueFPR(carry).id;
     const auto left_fpr = alloc.ValueFPR(left).id;
     const auto right_fpr = alloc.ValueFPR(right).id;
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -163,6 +176,62 @@ Sse42HelperEmission EmitSse42HelperBoundary(swift::u8 imm,
 
 #if defined(__aarch64__)
 extern "C" swift::u64 SwiftRepStos1Resident(swift::u64, swift::u64, swift::u64);
+
+swift::u64 SharedCallTransform(swift::u64 value) { return value * 3 + 7; }
+
+swift::u64 RunRepeatedHostCalls(unsigned shape, bool dynamic) {
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .uniform_buffer_size = 16,
+            .static_program = true,
+    };
+    AddressSpace space{config};
+    constexpr swift::u64 guest = 0xb1c0;
+    HIRBuilder builder{1, false, FeatureSet{}};
+    auto* function =
+            shape ? builder.AppendFunction(Location{guest}, Location{guest + 0x41}) : nullptr;
+    IntrusivePtr<Block> block{shape ? nullptr : new Block{0, Location{guest}}};
+    const auto call = [&](Value input) {
+        const auto address = reinterpret_cast<swift::VAddr>(&SharedCallTransform);
+        if (function) {
+            const auto lambda = dynamic ? Lambda{function->LoadImm(ValueType::U64, Imm{address})}
+                                        : Lambda{Imm{address}};
+            return function->CallLambda(ValueType::U64, lambda, input);
+        }
+        const auto lambda = dynamic ? Lambda{block->LoadImm(ValueType::U64, Imm{address})}
+                                    : Lambda{Imm{address}};
+        return block->CallLambda(ValueType::U64, lambda, input);
+    };
+    const auto input = function ? function->LoadImm(ValueType::U64, Imm{swift::u64{5}})
+                                : block->LoadImm(ValueType::U64, Imm{swift::u64{5}});
+    const auto first = call(input);
+    if (shape == 2)
+        builder.SetCurBlock(builder.LinkBlock(terminal::LinkBlock{Location{guest + 0x40}}));
+    const auto result = call(first);
+    if (function) {
+        function->StoreUniform(Uniform{0, ValueType::U64}, result);
+        function->EndBlock(terminal::ReturnToHost{});
+        function->EndFunction();
+    } else {
+        block->StoreUniform(Uniform{0, ValueType::U64}, result);
+        block->SetTerminal(terminal::ReturnToHost{});
+        block->ReIdInstr();
+    }
+    const auto module = space.GetDefaultModule();
+    auto* entry = function ? TranslateIR(module, function) : TranslateIR(module, block);
+    REQUIRE(entry);
+    space.PushCodeCache(guest, entry);
+    Runtime runtime{&space};
+    runtime.SetLocation(guest);
+    REQUIRE(runtime.Run() == HaltReason::CallHost);
+    swift::u64 value{};
+    std::memcpy(&value, runtime.GetUniformBuffer().data(), sizeof(value));
+    return value;
+}
 
 swift::u64 RunPendingFlags(bool call_helper) {
     Config config{
@@ -178,14 +247,16 @@ swift::u64 RunPendingFlags(bool call_helper) {
     constexpr swift::u64 guest = 0xb180;
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     std::memset(&block->GetJitCache(), 0, sizeof(JitCache));
-    auto left = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
-    auto result = block->Sub(left, Operand{Imm{swift::u64{1}}})
-                          .SetType(ValueType::U64);
-    auto token = block->SaveFlags(result, Flags::NZCV);
+    auto left = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+    auto result = block->Sub(ValueType::U64, left, Operand{Imm{swift::u64{1}}});
+    block->SaveFlags(result, Flags::All);
+    // A transparent helper must retain PF/AF result state as well as NZCV,
+    // even when a partial architectural clear is still waiting to commit.
+    block->ClearFlags(Flags::Carry);
     if (call_helper) {
         const auto helper_address = reinterpret_cast<swift::VAddr>(
                 &SwiftRepStos1Resident);
-        (void)block->CallLambda(
+        (void)block->CallLambda(ValueType::VOID,
                 Lambda{DataClass{Imm{helper_address}},
                        HelperCallTraits{
                                .host_fp = HostFpEffect::FPCRTransparent,
@@ -199,7 +270,7 @@ swift::u64 RunPendingFlags(bool call_helper) {
                 Imm{swift::u64{0}},
                 Imm{swift::u64{0}});
     }
-    auto flags = block->GetFlags(token, Flags::NZCV).SetType(ValueType::U64);
+    auto flags = block->GetFlags(ValueType::U64, result, Flags::NZCV);
     block->StoreUniform(Uniform{0, ValueType::U64}, flags);
     block->SetTerminal(terminal::LinkBlock{Location{guest + 1}});
     block->ReIdInstr();
@@ -240,10 +311,62 @@ TEST_CASE("resident string helper preserves pending NZCV",
           "[helper-effects][production]") {
 #if defined(__aarch64__)
     const auto baseline = RunPendingFlags(false);
-    REQUIRE(baseline != 0);
+    REQUIRE((baseline & 0xf0000000u) == 0x80000000u);  // 0 - 1, with C explicitly cleared.
     REQUIRE(RunPendingFlags(true) == baseline);
 #else
     SUCCEED("resident string helper requires an AArch64 host");
+#endif
+}
+
+TEST_CASE("prepared shared host calls outlive builders and execute both call policies",
+          "[helper-effects][production][ownership]") {
+#if defined(__aarch64__)
+    Config config{
+            .loc_start = 0,
+            .loc_end = 1ull << 48,
+            .enable_jit = true,
+            .has_local_operation = false,
+            .backend_isa = kArm64,
+            .uniform_buffer_size = 16,
+    };
+    AddressSpace space{config};
+    const auto module = space.GetDefaultModule();
+    const auto address = reinterpret_cast<swift::VAddr>(&SharedCallTransform);
+    std::optional<arm64::Arm64PreparedUnit> pending;
+    const swift::u64* target_storage{};
+    {
+        HIRBuilder builder{1, false, FeatureSet{}};
+        auto* function = builder.AppendFunction(Location{0xb1e0}, Location{0xb221});
+        const auto first =
+                function->CallLambda(ValueType::U64, Lambda{Imm{address}}, Imm{swift::u64{5}});
+        builder.SetCurBlock(builder.LinkBlock(terminal::LinkBlock{Location{0xb220}}));
+        const auto result = function->CallLambda(ValueType::U64, Lambda{Imm{address}}, first);
+        function->StoreUniform(Uniform{0, ValueType::U64}, result);
+        function->EndBlock(terminal::ReturnToHost{});
+        function->EndFunction();
+        pending = arm64::PrepareFunction(module, function);
+        REQUIRE(pending);
+        const auto targets = pending->Actions().SharedHostCallTargets();
+        REQUIRE(targets.size() == 1);
+        REQUIRE(targets.front() == address);
+        target_storage = targets.data();
+    }
+    arm64::Arm64PreparedUnit moved{std::move(*pending)};
+    pending.reset();
+    REQUIRE(moved.ReadyForEmission(module));
+    REQUIRE(moved.Actions().SharedHostCallTargets().data() == target_storage);
+    arm64::JitContext context{module, moved.Allocation(), moved.Actions(), false};
+    arm64::JitTranslator translator{context};
+    REQUIRE(translator.Translate(moved.Function()));
+    context.Finish();
+    REQUIRE(Count(Disassemble(context), "bl ") == 2);
+    for (const unsigned shape : {0u, 1u, 2u})
+        for (const bool dynamic : {false, true}) {
+            CAPTURE(shape, dynamic);
+            REQUIRE(RunRepeatedHostCalls(shape, dynamic) == 73);
+        }
+#else
+    SUCCEED("shared host calls require an AArch64 host");
 #endif
 }
 

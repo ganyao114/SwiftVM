@@ -69,16 +69,13 @@ void Inst::operator delete(void* p) {
     tls_inst_free_head = p;
 }
 
-Inst::Inst(OpCode code) : op_code(code) {
-    // These predicates only take Flags, so argument-based inference cannot
-    // supply their scalar result type. Canonical interpreters need it too.
-    if (code == OpCode::TestFlags || code == OpCode::TestNotFlags)
-        ret_type = ValueType::U8;
+Inst::Inst(OpCode code) : Inst(code, meta::ResolveResultType(code)) {}
+
+Inst::Inst(OpCode code, ValueType type) : op_code(code), ret_type(type) {
+    (void)GetIRMetaInfo(code);
 }
 
-Arg& Inst::ArgAt(int index) { return arguments[index]; }
-
-Arg& Inst::ArgAt(int index) const { return arguments[index]; }
+const Arg& Inst::ArgAt(int index) const { return arguments[index]; }
 
 void Inst::SetArg(int index, const Void& arg) {
     DestroyArg(index);
@@ -86,24 +83,17 @@ void Inst::SetArg(int index, const Void& arg) {
 }
 
 void Inst::SetArg(int index, const Value& arg) {
+    CheckUse(arg);
     DestroyArg(index);
     arguments[index] = arg;
     Use(arg);
 
-    // default ret type
-    if (HasValue() && ret_type == ValueType::VOID) {
-        ret_type = arg.Type();
-    }
 }
 
 void Inst::SetArg(int index, const Imm& arg) {
     DestroyArg(index);
     arguments[index] = arg;
 
-    // default ret type
-    if (HasValue() && ret_type == ValueType::VOID) {
-        ret_type = arg.GetType();
-    }
 }
 
 void Inst::SetArg(int index, const Cond& arg) {
@@ -120,25 +110,16 @@ void Inst::SetArg(int index, const Local& arg) {
     DestroyArg(index);
     arguments[index] = arg;
 
-    // default ret type
-    if (ret_type == ValueType::VOID) {
-        if (GetIRMetaInfo(op_code).return_type != ArgType::Void) {
-            ret_type = arg.type;
-        }
-    }
 }
 
 void Inst::SetArg(int index, const Uniform& arg) {
     DestroyArg(index);
     arguments[index] = arg;
 
-    // default ret type
-    if (HasValue() && ret_type == ValueType::VOID) {
-        ret_type = arg.GetType();
-    }
 }
 
 void Inst::SetArg(int index, const Lambda& arg) {
+    if (arg.IsValue()) CheckUse(arg.GetValue());
     DestroyArg(index);
     arguments[index] = arg;
     if (arg.IsValue()) {
@@ -152,6 +133,8 @@ void Inst::SetArg(int index, const Operand::Op& arg) {
 }
 
 void Inst::SetArg(int index, const Operand& arg) {
+    if (arg.left.IsValue()) CheckUse(arg.left.value);
+    if (arg.right.IsValue()) CheckUse(arg.right.value);
     ASSERT(index + PhysicalSlots(ArgType::Operand) - 1 < max_args);
     DestroyArg(index);
     arguments[index++] = arg;
@@ -167,10 +150,14 @@ void Inst::SetArg(int index, const Operand& arg) {
     }
 }
 
-void Inst::SetArg(int index, const Params& params) {
+void Inst::SetArg(int index, Params&& params) {
+    CheckMutable();
+    ASSERT(index >= 0 && index < max_args);
+    for (auto param : params)
+        if (param.data.IsValue()) CheckUse(param.data.value);
     DestroyArg(index);
-    arguments[index] = params;
-    for (auto param : params) {
+    arguments[index].AdoptParams(std::move(params));
+    for (auto param : arguments[index].Get<Params>()) {
         if (auto data = param.data; data.IsValue()) {
             Use(data.value);
         }
@@ -178,54 +165,52 @@ void Inst::SetArg(int index, const Params& params) {
 }
 
 void Inst::SetArgFresh(int index, const Void& arg) {
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
 }
 
 void Inst::SetArgFresh(int index, const Value& arg) {
+    CheckUse(arg);
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
     Use(arg);
-    if (HasValue() && ret_type == ValueType::VOID) {
-        ret_type = arg.Type();
-    }
 }
 
 void Inst::SetArgFresh(int index, const Imm& arg) {
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
-    if (HasValue() && ret_type == ValueType::VOID) {
-        ret_type = arg.GetType();
-    }
 }
 
 void Inst::SetArgFresh(int index, const Cond& arg) {
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
 }
 
 void Inst::SetArgFresh(int index, const Flags& arg) {
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
 }
 
 void Inst::SetArgFresh(int index, const Local& arg) {
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
-    if (ret_type == ValueType::VOID && GetIRMetaInfo(op_code).return_type != ArgType::Void) {
-        ret_type = arg.type;
-    }
 }
 
 void Inst::SetArgFresh(int index, const Uniform& arg) {
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
-    if (HasValue() && ret_type == ValueType::VOID) {
-        ret_type = arg.GetType();
-    }
 }
 
 void Inst::SetArgFresh(int index, const Lambda& arg) {
+    if (arg.IsValue()) CheckUse(arg.GetValue());
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
     if (arg.IsValue()) {
@@ -234,11 +219,15 @@ void Inst::SetArgFresh(int index, const Lambda& arg) {
 }
 
 void Inst::SetArgFresh(int index, const Operand::Op& arg) {
+    CheckMutable();
     assert(arguments[index].IsVoid());
     arguments[index] = arg;
 }
 
 void Inst::SetArgFresh(int index, const Operand& arg) {
+    if (arg.left.IsValue()) CheckUse(arg.left.value);
+    if (arg.right.IsValue()) CheckUse(arg.right.value);
+    CheckMutable();
     ASSERT(index + PhysicalSlots(ArgType::Operand) - 1 < max_args);
     assert(arguments[index].IsVoid());
     arguments[index++] = arg;
@@ -254,10 +243,14 @@ void Inst::SetArgFresh(int index, const Operand& arg) {
     }
 }
 
-void Inst::SetArgFresh(int index, const Params& params) {
-    assert(arguments[index].IsVoid());
-    arguments[index] = params;
-    for (auto param : params) {
+void Inst::SetArgFresh(int index, Params&& params) {
+    CheckMutable();
+    ASSERT(index >= 0 && index < max_args);
+    ASSERT(arguments[index].IsVoid());
+    for (auto param : params)
+        if (param.data.IsValue()) CheckUse(param.data.value);
+    arguments[index].AdoptParams(std::move(params));
+    for (auto param : arguments[index].Get<Params>()) {
         if (auto data = param.data; data.IsValue()) {
             Use(data.value);
         }
@@ -276,8 +269,10 @@ void Inst::Use(const Value& value) {
 }
 
 void Inst::UnUse(const Value& value) {
+    CheckMutable();
     auto def = value.Def();
     ASSERT_MSG(def, "Value used by {} is null!", op_code);
+    def->CheckMutable();
     ASSERT(def->num_use != 0);
     def->num_use--;
 
@@ -298,38 +293,34 @@ bool Inst::IsPseudoOperation() const {
            op_code == OpCode::Div128Remainder || op_code == OpCode::CpuidUpper;
 }
 
-bool Inst::IsGetHostRegOperation() {
+bool Inst::IsGetHostRegOperation() const {
     if (op_code == OpCode::GetHostGPR || op_code == OpCode::GetHostFPR) {
         return GetArg<Imm>(1).Get() == 0;
     }
     return false;
 }
 
-bool Inst::IsSetHostRegOperation() {
+bool Inst::IsSetHostRegOperation() const {
     if (op_code == OpCode::SetHostGPR || op_code == OpCode::SetHostFPR) {
         return GetArg<Imm>(2).Get() == 0;
     }
     return false;
 }
 
-bool Inst::IsBitCastOperation() {
+bool Inst::IsBitCastOperation() const {
     return op_code == OpCode::BitCast;
 }
 
 IREffect Inst::GetEffects() const {
     auto effects = GetIRMetaInfo(op_code).effects;
     if (op_code == OpCode::CallLambda && ArgAt(0).IsLambda()) {
-        const auto helper = GetArg<Lambda>(0);
+        const auto helper = HelperStateEffects::Resolve(GetArg<Lambda>(0));
         // Only direct helpers can carry audited traits. Memory effects remain
         // conservative: guest-state traits say nothing about pointed-to memory.
-        if (!helper.IsValue() && helper.GetHelperReentryEffect() == HelperReentryEffect::NoReentry) {
-            const auto state = helper.GetHelperGuestStateEffect();
-            if (state == HelperGuestStateEffect::None || state == HelperGuestStateEffect::WriteOnly)
-                effects &= ~IREffect::ReadGuestState;
-            if (state == HelperGuestStateEffect::None || state == HelperGuestStateEffect::ReadOnly)
-                effects &= ~IREffect::WriteGuestState;
-            if (helper.GetHelperFaultEffect() == HelperFaultEffect::NoDirectFault)
-                effects &= ~IREffect::MayFault;
+        if (helper.direct && !helper.MayReenter()) {
+            if (!helper.ReadsGuestState()) effects &= ~IREffect::ReadGuestState;
+            if (!helper.WritesGuestState()) effects &= ~IREffect::WriteGuestState;
+            if (!helper.MayFault()) effects &= ~IREffect::MayFault;
         }
     }
     return effects;
@@ -340,7 +331,8 @@ bool Inst::HasSideEffects() const {
 }
 
 void Inst::DestroyArg(u8 arg_idx) {
-    auto &arg = ArgAt(arg_idx);
+    CheckMutable();
+    auto& arg = arguments[arg_idx];
     // An empty slot has nothing to unregister and is already blank. Most
     // instructions use one or two of the five, and ~Inst runs this over all
     // five again after ReleaseArgs has blanked them.
@@ -352,13 +344,13 @@ void Inst::DestroyArg(u8 arg_idx) {
     } else if (arg.IsLambda() && arg.Get<Lambda>().IsValue()) {
         UnUse(arg.Get<Lambda>().GetValue());
     } else if (arg.IsParams()) {
-        auto &params = arg.Get<Params>();
+        const auto params = arg.Get<Params>();
         for (auto param : params) {
             if (auto data = param.data; data.IsValue()) {
                 UnUse(data.value);
             }
         }
-        params.Destroy();
+        arg.DestroyParams();
     }
     arg = {};
 }
@@ -370,15 +362,15 @@ void Inst::DestroyArgs() {
 }
 
 void Inst::ReleaseArgs() {
+    CheckMutable();
     for (auto& arg : arguments) {
         if (arg.IsVoid()) {
             continue;
         }
         if (arg.IsParams()) {
-            // The only argument that owns heap memory. Params::Destroy does
-            // not null first_param, so blanking the slot below is what keeps
-            // ~Inst from walking a freed chain.
-            arg.Get<Params>().Destroy();
+            // Release only owned storage: every definition may already have
+            // been freed by this whole-IR teardown.
+            arg.DestroyParams();
         }
         arg = {};
     }
@@ -391,64 +383,146 @@ void Inst::Reset() {
     op_code = OpCode::Void;
 }
 
-void Inst::SetVirReg(u16 slot) {
-    vir_reg = slot;
+bool Inst::HasValidResultType() const {
+    if (op_code == OpCode::Void || op_code >= OpCode::BASE_COUNT) return false;
+    // Function lowering can use an untyped branch or a typed label identity;
+    // neither representation materializes a data result.
+    if (meta::IsControlToken(op_code))
+        return ret_type == ValueType::VOID || IsValidValueType(ret_type);
+    const auto& info = GetIRMetaInfo(op_code);
+    if (info.return_type == ArgType::Void) return ret_type == ValueType::VOID;
+    if (ret_type != ValueType::VOID) return IsValidValueType(ret_type);
+    return info.result_policy == ResultTypePolicy::Call;
 }
 
-bool Inst::HasValidTypeViews() const {
-    for (auto value : const_cast<Inst*>(this)->GetValues()) {
-        if (!value.Defined() || value.Def()->ReturnType() == ValueType::VOID ||
-            value.Type() <= ValueType::VOID || value.Type() > ValueType::V256)
-            return false;
-    }
-    // Uniform ranges are byte ranges. Signed/unsigned aliases are legal, but
-    // a store view must agree with the range width consumed by state analyses.
-    if (op_code == OpCode::StoreUniform && ArgAt(0).GetType() == ArgType::Uniform &&
-        ArgAt(1).IsValue()) {
-        const auto uniform = GetArg<Uniform>(0);
-        const auto value = GetArg<Value>(1);
-        if (uniform.GetType() == ValueType::VOID ||
-            GetValueSizeByte(uniform.GetType()) != GetValueSizeByte(value.Type()))
-            return false;
-    }
-    return true;
+bool Inst::HasValidArguments() const {
+    return CheckArguments([](Value) {});
 }
 
-void Inst::Validate(Inst* inst) {
+IntegerPredicateKind Inst::GetIntegerPredicateKind() const {
+    switch (op_code) {
+        case OpCode::TestZero: return IntegerPredicateKind::Zero;
+        case OpCode::TestNotZero: return IntegerPredicateKind::Nonzero;
+        case OpCode::TestBit: return IntegerPredicateKind::Bit;
+        case OpCode::Not:
+            return arguments[1].IsVoid() ? IntegerPredicateKind::Zero : IntegerPredicateKind::None;
+        default: return IntegerPredicateKind::None;
+    }
+}
+
+bool Inst::HasBooleanResult() const {
+    if (!IsScalarIntegerType(ret_type)) return false;
+    if (GetIntegerPredicateKind() != IntegerPredicateKind::None) return true;
+    switch (op_code) {
+        case OpCode::LoadImm:
+            return arguments[0].IsImm() && arguments[0].Get<Imm>().Get() <= 1;
+        case OpCode::TestFlags: case OpCode::TestNotFlags:
+        case OpCode::CondSet: case OpCode::LocalCondSet:
+        case OpCode::LocalParitySet: case OpCode::FCmpCondSet:
+            return true;
+        default: return false;
+    }
+}
+
+bool Inst::HasValidScalarArguments() const {
+    const auto scalar = [&](u8 index) {
+        if (!arguments[index].IsValue()) return false;
+        const auto& value = arguments[index].Get<Value>();
+        return value.Defined() && IsScalarIntegerType(value.Type());
+    };
+    const auto unary = [&] { return IsScalarIntegerType(ret_type) && scalar(0); };
+    const auto integer_imm = [&](u8 index) {
+        return arguments[index].IsImm() &&
+               IsScalarIntegerType(arguments[index].Get<Imm>().GetType());
+    };
+    const auto scalar_data = [&](u8 index) {
+        return arguments[index].IsImm() ? integer_imm(index) : scalar(index);
+    };
+    if (const auto kind = GetIntegerPredicateKind(); kind != IntegerPredicateKind::None) {
+        return unary() && (kind != IntegerPredicateKind::Bit ||
+                (integer_imm(1) && arguments[1].Get<Imm>().Get() < 64));
+    }
+    if (ClassifyIntegerShift(op_code) != IntegerShiftKind::None) {
+        return unary() && (arguments[1].IsImm() ? integer_imm(1) : scalar(1));
+    }
+    const auto field = [&](u8 index) {
+        if (!arguments[index].IsImm() || !arguments[index + 1].IsImm()) return false;
+        const auto& position = arguments[index].Get<Imm>();
+        const auto& length = arguments[index + 1].Get<Imm>();
+        if (!IsScalarIntegerType(position.GetType()) || !IsScalarIntegerType(length.GetType()))
+            return false;
+        const u64 lsb = position.Get();
+        const u64 width = length.Get();
+        // Keep the subtraction guarded: large/overflowing immediates must
+        // not wrap into a valid field. A zero-width field is well-defined.
+        return lsb < 64 && width <= 64 - lsb;
+    };
+    switch (op_code) {
+        case OpCode::Add:
+        case OpCode::Sub:
+        case OpCode::Adc:
+        case OpCode::Sbb:
+        case OpCode::Mul:
+        case OpCode::Div:
+        case OpCode::And:
+        case OpCode::Or:
+        case OpCode::Xor:
+        case OpCode::AndNot:
+        case OpCode::Not:
+            // The Operand header occupies slot1; both present data slots
+            // belong to the integer domain. Unary Not returned above.
+            return unary() && scalar_data(2) &&
+                   (arguments[3].IsVoid() || scalar_data(3));
+        case OpCode::MulSub: return unary() && scalar(1) && scalar(2);
+        case OpCode::SignedDiv64: return unary() && scalar(1);
+        case OpCode::MulHigh: return unary() && scalar(1) && integer_imm(2);
+        case OpCode::Div128: return unary() && scalar(1) && scalar(2) && integer_imm(3);
+        case OpCode::Select:
+        case OpCode::SelectZero:
+        case OpCode::Goto:
+        case OpCode::NotGoto: return scalar(0);
+        case OpCode::BitExtract:
+        case OpCode::BitClear: return unary() && field(1);
+        case OpCode::BitInsert: return unary() && scalar(1) && field(2);
+        case OpCode::ByteSwap: {
+            if (!arguments[1].IsImm()) return false;
+            const auto bits = arguments[1].Get<Imm>().Get();
+            return unary() && bits >= 16 && IsScalarBitWidth(bits);
+        }
+        case OpCode::Crc32c:
+            return unary() && scalar(1) && arguments[2].IsImm() &&
+                   IsScalarBitWidth(arguments[2].Get<Imm>().Get());
+        case OpCode::CountLeadingZeros32:
+        case OpCode::CountTrailingZeros32: {
+            if (!arguments[0].IsValue() || !arguments[0].Get<Value>().Defined()) return false;
+            const auto type = arguments[0].Get<Value>().Type();
+            return IsScalarIntegerType(ret_type) && IsScalarIntegerType(type, 32);
+        }
+        case OpCode::CountLeadingZeros64:
+        case OpCode::CountTrailingZeros64: {
+            if (!arguments[0].IsValue() || !arguments[0].Get<Value>().Defined()) return false;
+            const auto type = arguments[0].Get<Value>().Type();
+            return IsScalarIntegerType(ret_type) && IsScalarIntegerType(type, 64);
+        }
+        case OpCode::ZeroExtend32:
+        case OpCode::ZeroExtend32To64:
+        case OpCode::ZeroExtend64:
+        case OpCode::SignExtend:
+        case OpCode::Neg:
+        case OpCode::PopCount: return unary();
+        default: return true;
+    }
+}
+
+void Inst::Validate(const Inst* inst) {
     ASSERT(inst);
     ASSERT(inst->op_code >= OpCode::Void && inst->op_code < OpCode::COUNT);
-    ASSERT_MSG(inst->HasValidTypeViews(), "{} has an invalid operand type view", inst->op_code);
-    if (inst->op_code == OpCode::CallLambda) {
-        ASSERT_MSG(inst->ArgAt(0).IsLambda(), "CallLambda arg 0 must be Lambda type!");
-        return;
-    }
-    if (inst->op_code == OpCode::CallLocation) {
-        ASSERT_MSG(inst->ArgAt(0).IsLambda(), "CallLocation arg 0 must be Lambda type!");
-        return;
-    }
-    if (inst->op_code == OpCode::CallDynamic) {
-        ASSERT_MSG(inst->ArgAt(0).IsLambda(), "CallDynamic arg 0 must be Lambda type!");
-        return;
-    }
-    if (inst->op_code > OpCode::Void && inst->op_code < OpCode::BASE_COUNT) {
-        auto& ir_info = GetIRMetaInfo(inst->op_code);
-        int inner_arg_index{};
-        int arg_index{};
-        while (inner_arg_index < Inst::max_args && arg_index < ir_info.arg_types.size()) {
-            auto& inst_arg = inst->ArgAt(inner_arg_index);
-            auto arg_type = ir_info.arg_types[arg_index];
-            ASSERT_MSG(inst_arg.GetType() == arg_type, "{} has invalid arg!", inst->op_code);
-            arg_index++;
-            inner_arg_index += PhysicalSlots(arg_type);
-        }
-    } else {
-        // SetLocation and every other base opcode are handled above (they are all
-        // < BASE_COUNT); anything reaching here is not a real instruction.
-        ASSERT_MSG(false, "Unk Instr {}!", inst->op_code);
-    }
+    ASSERT_MSG(inst->HasValidResultType(), "{} has an invalid result type", inst->op_code);
+    ASSERT_MSG(inst->HasValidArguments(), "{} has invalid arguments", inst->op_code);
 }
 
 Inst::~Inst() {
+    ASSERT(!owner);
     DestroyArgs();
 }
 

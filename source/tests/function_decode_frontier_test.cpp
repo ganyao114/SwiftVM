@@ -33,8 +33,9 @@ TEST_CASE("function region decode stops at unavailable external roots",
         HIRBuilder builder{8, true, false, FeatureSet{}};
         auto* function = builder.AppendFunction(Location{kStart});
         builder.AdvancePC(Imm{8u});
-        function->GetCurrentBlock()->GetBlock()->SetTerminal(
-                terminal::ReturnToDispatch{});
+        function->EditBlock(function->GetCurrentBlock())
+                .GetBlock()
+                ->SetTerminal(terminal::ReturnToDispatch{});
         for (LocationDescriptor source : {0x6100, 0x6200, 0x6300}) {
             builder.SetCurBlock(function->CreateOrGetBlock(Location{source}));
             builder.RegisterExternalDirectLink(Location{kTarget});
@@ -77,7 +78,7 @@ TEST_CASE("function region decode preserves already queued published entries",
         constexpr LocationDescriptor kTarget = kStart + 4;
         HIRBuilder builder{8, true, false, FeatureSet{}};
         auto* function = builder.AppendFunction(Location{kStart});
-        auto* owner = function->GetCurrentBlock();
+        auto* owner = &function->EditBlock(function->GetCurrentBlock());
         builder.AdvancePC(Imm{8u});
         owner->GetBlock()->SetTerminal(terminal::ReturnToDispatch{});
         function->CreateOrGetBlock(Location{kTarget});
@@ -110,7 +111,7 @@ TEST_CASE("function decode frontier preserves split provenance",
 
     HIRBuilder builder{4, true, false, FeatureSet{}};
     auto* function = builder.AppendFunction(Location{kStart});
-    auto* owner = function->GetCurrentBlock();
+    auto* owner = &function->EditBlock(function->GetCurrentBlock());
     builder.AdvancePC(Imm{kEnd - kStart});
     builder.AddGuestCodeDependency(Location{kStart + 1}, Location{kTarget});
     REQUIRE(function->CreateOrGetBlock(Location{kTarget}) != nullptr);
@@ -141,6 +142,37 @@ TEST_CASE("function decode frontier preserves split provenance",
                     {Location{kStart + 1}, Location{kTarget}}});
 }
 
+TEST_CASE("function decode frontier rejects overlapping owners with original provenance",
+          "[function-entry][frontier]") {
+    constexpr LocationDescriptor kStart = 0x1800;
+    HIRBuilder builder{4, true, false, FeatureSet{}};
+    auto* function = builder.AppendFunction(Location{kStart});
+    builder.AdvancePC(Imm{8u});
+    builder.AddGuestCodeDependency(Location{kStart + 1}, Location{kStart + 3});
+    auto* overlap = function->CreateOrGetBlock(Location{kStart + 4});
+    builder.SetCurBlock(overlap);
+    builder.AdvancePC(Imm{12u});
+    auto* later = function->CreateOrGetBlock(Location{kStart + 32});
+    builder.SetCurBlock(later);
+    builder.AdvancePC(Imm{4u});
+
+    FunctionDecodeFrontier frontier{function};
+    REQUIRE_FALSE(frontier.FindSplit(kStart));
+    const auto single = frontier.FindSplit(kStart + 2);
+    REQUIRE(single);
+    REQUIRE(single->provenance->owner_end == Location{kStart + 8});
+    REQUIRE_FALSE(frontier.FindExternalSplit(kStart + 6));
+    const auto* ambiguous = frontier.FindProvenance(kStart + 6);
+    REQUIRE(ambiguous);
+    REQUIRE(ambiguous->rejection == FunctionEntryRejection::AmbiguousOwner);
+    REQUIRE(ambiguous->owner_start == Location{kStart});
+    REQUIRE(ambiguous->owner_end == Location{kStart + 8});
+    REQUIRE(ambiguous->dependencies == std::vector<FunctionEntrySourceRange>{
+            {Location{kStart + 1}, Location{kStart + 3}}});
+    REQUIRE_FALSE(frontier.FindSplit(kStart + 6));
+    REQUIRE_FALSE(frontier.FindSplit(kStart + 16));
+}
+
 TEST_CASE("function decode frontier transfers call return ownership",
           "[function-entry][frontier]") {
     constexpr LocationDescriptor kStart = 0x2000;
@@ -150,7 +182,7 @@ TEST_CASE("function decode frontier transfers call return ownership",
 
     HIRBuilder builder{4, true, false, FeatureSet{}};
     auto* function = builder.AppendFunction(Location{kStart});
-    auto* owner = function->GetCurrentBlock();
+    auto* owner = &function->EditBlock(function->GetCurrentBlock());
     builder.AdvancePC(Imm{kEnd - kStart});
     builder.RegisterCallReturn(Location{kReturn});
     auto* return_block = function->CreateOrGetBlock(Location{kReturn});
@@ -212,7 +244,7 @@ TEST_CASE("function decode frontier keeps an internal predecessor for external r
 
     HIRBuilder builder{4, true, false, FeatureSet{}};
     auto* function = builder.AppendFunction(Location{kStart});
-    auto* owner = function->GetCurrentBlock();
+    auto* owner = &function->EditBlock(function->GetCurrentBlock());
     builder.AdvancePC(Imm{kEnd - kStart});
 
     FunctionDecodeFrontier frontier{function};

@@ -750,7 +750,7 @@ struct FuzzEnv {
             void* GetPointer(void* src) override { return src; }
         } mem_if;
         swift::runtime::ir::Block block{0, swift::runtime::ir::Location{code_addr}};
-        swift::runtime::ir::Assembler assembler{&block};
+        swift::runtime::compile::IrBuilder assembler{&block};
         X64Decoder decoder{code_addr, &mem_if, &assembler, true,
                            swift::runtime::Arm64Features::None, false, false,
                            swift::runtime::FeatureSet{}};
@@ -1080,7 +1080,7 @@ TEST_CASE("Fuzz x86 debug repro") {
         std::memcpy(env.host_mem, evex.data(), evex.size());
         u64 addr = env.base;
         swift::runtime::ir::Block blk{0, swift::runtime::ir::Location{addr}};
-        swift::runtime::ir::Assembler asmb{&blk};
+        swift::runtime::compile::IrBuilder asmb{&blk};
         try {
             X64Decoder dec{addr, &mem_if, &asmb, true,
                            swift::runtime::Arm64Features::None, false, false,
@@ -2370,7 +2370,7 @@ TEST_CASE("Fuzz x86 decode robustness") {
                 uintptr_t end;
             } mem_if{env.base, FuzzEnv::kMemSize};
             swift::runtime::ir::Block block{0, swift::runtime::ir::Location{code_addr}};
-            swift::runtime::ir::Assembler assembler{&block};
+            swift::runtime::compile::IrBuilder assembler{&block};
             X64Decoder decoder{code_addr, &mem_if, &assembler, true,
                                swift::runtime::Arm64Features::None, false, false,
                                swift::runtime::FeatureSet{}};

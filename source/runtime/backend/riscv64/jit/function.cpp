@@ -10,8 +10,8 @@ using O = ir::OpCode;
 
 class Builder {
 public:
-    Builder(ir::HIRFunction* function, std::span<ir::HIRBlock* const> blocks)
-        : function(function), blocks(blocks) {
+    Builder(const ir::HIRFunction* function, std::span<const ir::HIRBlock* const> blocks)
+            : function(function), blocks(blocks) {
         plan.body = new ir::Block(function->GetFunction()->GetStartLocation());
         for (auto* block : blocks) {
             auto* label = Label();
@@ -19,8 +19,7 @@ public:
             plan.locations.emplace(label, block->GetBlock()->GetStartLocation());
             locations.emplace(block->GetBlock()->GetStartLocation().Value(), block);
             for (auto& inst : block->GetInstList()) {
-                auto* clone = New(inst.GetOp());
-                clone->SetReturn(inst.ReturnType());
+                auto* clone = New(inst.GetOp(), inst.ReturnType());
                 clones.emplace(&inst, clone);
             }
         }
@@ -54,7 +53,7 @@ public:
                 const auto predecessors = block->GetPredecessors();
                 if (inputs.size() != predecessors.size())
                     throw std::runtime_error("RV64 function phi input count differs from HIR predecessors");
-                const auto input = [&](ir::HIRBlock* predecessor) {
+                const auto input = [&](const ir::HIRBlock* predecessor) {
                     for (size_t i = 0; i < predecessors.size(); ++i)
                         if (predecessors[i] == predecessor) return inputs[i];
                     throw std::runtime_error("RV64 function terminal edge is absent from HIR predecessors");
@@ -67,7 +66,7 @@ public:
                 };
                 if (block == blocks.front()) push(input(function->GetEntryBlock()));
                 for (const auto& edge : edges) if (edge.to == block) push(input(edge.from));
-                clones.at(&inst)->SetArg(0, params);
+                clones.at(&inst)->SetArg(0, std::move(params));
             }
         }
         plan.body->SetTerminal(ir::terminal::ReturnToDispatch{});
@@ -78,21 +77,23 @@ public:
     }
 
 private:
-    struct Edge { ir::HIRBlock* from; ir::HIRBlock* to; };
+    struct Edge {
+        const ir::HIRBlock* from;
+        const ir::HIRBlock* to;
+    };
     ir::Value Remap(ir::Value value) const {
         auto found = clones.find(value.Def());
         if (found == clones.end()) throw std::runtime_error("RV64 SSA input belongs to another function");
         return ir::Value{found->second}.SetCastType(value.Type());
     }
-    ir::Inst* New(O op) {
-        auto owner = std::make_unique<ir::Inst>(op);
+    ir::Inst* New(O op, ir::ValueType type) {
+        auto owner = std::make_unique<ir::Inst>(op, type);
         auto* result = owner.get(); owned.emplace(result, std::move(owner)); return result;
     }
     ir::Inst* Label() {
-        auto* label = New(O::BindLabel);
+        auto* label = New(O::BindLabel, ir::ValueType::U8);
         // These self-references are control tokens, not SSA reads. Give them
         // a valid type view; BindLabel's metadata still has no runtime value.
-        label->SetReturn(ir::ValueType::U8);
         label->SetArgs(ir::Value{label});
         return label;
     }
@@ -100,10 +101,12 @@ private:
         plan.body->AppendInst(inst);
         owned.at(inst).release(); owned.erase(inst);
     }
-    template<class... Args> ir::Inst* Inst(O op, ir::ValueType type, const Args&... args) {
-        auto* inst = New(op); inst->SetArgs(args...); inst->SetReturn(type); Append(inst); return inst;
+    template<class... Args> requires ir::meta::ConstructionArguments<Args...>
+    ir::Inst* Inst(O op, ir::ValueType type, Args&&... args) {
+        ir::meta::CheckArgumentPack<Args...>(op);
+        auto* inst = New(op, type); inst->SetArgs(std::forward<Args>(args)...); Append(inst); return inst;
     }
-    void CloneArgs(ir::Inst* original) {
+    void CloneArgs(const ir::Inst* original) {
         auto* clone = clones.at(original);
         for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
             auto& arg = original->ArgAt(slot);
@@ -127,12 +130,12 @@ private:
                         if (param.data.IsValue()) params.Push(Remap(param.data.value));
                         else params.Push(param.data.imm);
                     }
-                    clone->SetArg(slot, params); break;
+                    clone->SetArg(slot, std::move(params)); break;
                 }
             }
         }
     }
-    void SetLocation(ir::HIRBlock* block) {
+    void SetLocation(const ir::HIRBlock* block) {
         if (block != blocks.front()) return; // Internal edges commit before the target poll.
         // This marker runs after the phi header. Guest state remains accurate
         // through callbacks, interrupts and faults in the shared frame.
@@ -148,7 +151,7 @@ private:
     ir::Value Always() {
         return ir::Value{Inst(O::LoadImm, ir::ValueType::U8, ir::Imm{u8{1}})};
     }
-    void Terminal(ir::HIRBlock* source, const ir::Terminal& terminal) {
+    void Terminal(const ir::HIRBlock* source, const ir::Terminal& terminal) {
         VisitVariant<void>(terminal, [&](const auto& term) {
             using T = std::decay_t<decltype(term)>;
             if constexpr (std::is_same_v<T, ir::terminal::LinkBlock> ||
@@ -186,18 +189,19 @@ private:
         auto* marker = Inst(O::Nop, ir::ValueType::VOID);
         plan.exits.emplace(marker, terminal); plan.stops.insert(marker);
     }
-    ir::HIRFunction* function;
-    std::span<ir::HIRBlock* const> blocks;
+    const ir::HIRFunction* function;
+    std::span<const ir::HIRBlock* const> blocks;
     FunctionPlan plan;
-    std::unordered_map<ir::Inst*, ir::Inst*> clones;
-    std::unordered_map<ir::HIRBlock*, ir::Inst*> labels;
-    std::unordered_map<u64, ir::HIRBlock*> locations;
+    std::unordered_map<const ir::Inst*, ir::Inst*> clones;
+    std::unordered_map<const ir::HIRBlock*, ir::Inst*> labels;
+    std::unordered_map<u64, const ir::HIRBlock*> locations;
     std::vector<Edge> edges;
     std::unordered_map<ir::Inst*, std::unique_ptr<ir::Inst>> owned;
 };
 } // namespace
 
-FunctionPlan FunctionPlan::Build(ir::HIRFunction* function, std::span<ir::HIRBlock* const> blocks) {
+FunctionPlan FunctionPlan::Build(const ir::HIRFunction* function,
+                                 std::span<const ir::HIRBlock* const> blocks) {
     return Builder{function, blocks}.Run();
 }
 } // namespace swift::runtime::backend::riscv64

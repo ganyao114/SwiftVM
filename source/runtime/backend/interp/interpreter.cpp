@@ -41,6 +41,10 @@ u64 Interpreter::ReadScalar(InterpStack& stack, ir::Value value) {
     return GetReg<u64>(stack, value);
 }
 
+bool Interpreter::ReadBoolean(InterpStack& stack, ir::Value value) {
+    return (ReadScalar(stack, value) & MaskBits(ir::GetScalarIntegerBits(value.Type()))) != 0;
+}
+
 u64 Interpreter::ReadScalarBits(InterpStack& stack, ir::Value value) {
     return ir::IsFloatValueType(value.Type()) ? static_cast<u64>(ReadVec(stack, value))
                                               : ReadScalar(stack, value);
@@ -50,7 +54,7 @@ Interpreter::u128 Interpreter::ReadVec(InterpStack& stack, ir::Value value) {
     return GetReg<u128>(stack, value);
 }
 
-void Interpreter::WriteScalar(InterpStack& stack, ir::Inst* inst, u64 value) {
+void Interpreter::WriteScalar(InterpStack& stack, const ir::Inst* inst, u64 value) {
     const auto type = inst->ReturnType();
     if (type == ValueType::VOID) {
         return;
@@ -59,19 +63,18 @@ void Interpreter::WriteScalar(InterpStack& stack, ir::Inst* inst, u64 value) {
         WriteVec(stack, inst, static_cast<u128>(value));
         return;
     }
-    // Slots always hold the value zero-extended / masked to its type width, so
-    // basic u64 compares (TestZero, terminals, Select) behave like the JIT's
-    // width-correct register compares.
+    // Numeric results are masked. Raw aliases may retain wider bits, so
+    // logical consumers must still observe their own input views.
     value &= MaskFor(type);
-    SetReg(stack, ir::Value{inst}, value);
+    SetReg(stack, inst, value);
 }
 
-void Interpreter::WriteVec(InterpStack& stack, ir::Inst* inst, u128 value) {
-    SetReg(stack, ir::Value{inst}, value);
+void Interpreter::WriteVec(InterpStack& stack, const ir::Inst* inst, u128 value) {
+    SetReg(stack, inst, value);
 }
 
 void Interpreter::WritePairResult(InterpStack& stack,
-                                  ir::Inst* inst,
+                                  const ir::Inst* inst,
                                   const HostPairResult& result,
                                   ir::OpCode secondary) {
     WriteScalar(stack, inst, result.first);
@@ -158,7 +161,11 @@ u64 Interpreter::CallHostFunc(InterpStack& stack,
 // ---------------------------------------------------------------------------
 
 HaltReason Interpreter::Run() {
-    auto& insts = block->GetInstList();
+    if (!ir::CheckTerminal(block->GetTerminal(), [](ir::Value) {})) {
+        state.halt_reason = HaltReason::IllegalCode;
+        return state.halt_reason;
+    }
+    const auto& insts = block->GetInstList();
     // Function-mode instruction ids are global across the RPO, while
     // Block::max_instr_id is only maintained by Block::ReIdInstr for flat
     // block translation. Size from the actual maximum so entering any block
@@ -168,11 +175,21 @@ HaltReason Interpreter::Run() {
         // Portable homes and vector kernels are 128-bit. RV64 legalizes V256
         // before native emission; never copy 32 bytes into a portable home.
         bool wide = inst.ReturnType() == ValueType::V256;
-        for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
-            auto& arg = inst.ArgAt(slot);
-            wide |= arg.IsValue() && arg.Get<ir::Value>().Type() == ValueType::V256;
-            wide |= arg.GetType() == ir::ArgType::Uniform && arg.Get<ir::Uniform>().GetType() == ValueType::V256;
-            wide |= arg.GetType() == ir::ArgType::Local && arg.Get<ir::Local>().type == ValueType::V256;
+        const bool valid = inst.HasValidResultType() && inst.CheckArguments([&](ir::Value value) {
+            wide |= value.Type() == ValueType::V256;
+        });
+        if (!valid) { state.halt_reason = HaltReason::IllegalCode; return state.halt_reason; }
+        switch (inst.GetOp()) {
+            case ir::OpCode::LoadUniform:
+            case ir::OpCode::StoreUniform:
+                wide |= inst.GetArg<ir::Uniform>(0).GetType() == ValueType::V256;
+                break;
+            case ir::OpCode::DefineLocal:
+            case ir::OpCode::LoadLocal:
+            case ir::OpCode::StoreLocal:
+                wide |= inst.GetArg<ir::Local>(0).type == ValueType::V256;
+                break;
+            default: break;
         }
         if (wide) { state.halt_reason = HaltReason::IllegalCode; return state.halt_reason; }
         max_inst_id = std::max<u32>(max_inst_id, inst.Id());
@@ -185,7 +202,7 @@ HaltReason Interpreter::Run() {
     // Block-local labels for Goto / NotGoto: the JIT lowers them to local
     // labels + Cbz/Cbnz where BindLabel(arg = the Goto's value) marks the
     // jump target (JitTranslator::EmitGoto / EmitBindLabel).
-    std::unordered_map<ir::Inst*, ir::Inst*> labels;
+    std::unordered_map<const ir::Inst*, const ir::Inst*> labels;
     for (auto& inst : insts) {
         if (inst.GetOp() == ir::OpCode::BindLabel) {
             labels[inst.GetArg<ir::Value>(0).Def()] = &inst;
@@ -195,7 +212,7 @@ HaltReason Interpreter::Run() {
     for (auto it = insts.begin(); it != insts.end(); ++it) {
         const auto op = it->GetOp();
         if (op == ir::OpCode::Goto || op == ir::OpCode::NotGoto) {
-            const bool cond = GetReg<u64>(stack, it->GetArg<ir::Value>(0)) != 0;
+            const bool cond = ReadBoolean(stack, it->GetArg<ir::Value>(0));
             const bool jump = (op == ir::OpCode::Goto) == cond;
             if (jump) {
                 if (auto target = labels.find(&*it); target != labels.end()) {
@@ -216,7 +233,7 @@ HaltReason Interpreter::Run() {
     return RunTerminal(block->GetTerminal(), stack);
 }
 
-HaltReason Interpreter::Run(ir::Inst* inst, InterpStack& stack) {
+HaltReason Interpreter::Run(const ir::Inst* inst, InterpStack& stack) {
     switch (inst->GetOp()) {
 #define INST(name, ...)                                                                            \
     case ir::OpCode::name:                                                                         \
@@ -233,7 +250,9 @@ HaltReason Interpreter::Run(ir::Inst* inst, InterpStack& stack) {
 
 HaltReason Interpreter::RunTerminal(const ir::Terminal& terminal, InterpStack& stack) {
     HaltReason result{HaltReason::None};
-    VisitVariant<void>(terminal, [&](auto term) {
+    // Terminal evaluation is synchronous; dispatch happens after Run returns.
+    // Borrow recursive alternatives rather than copying their child trees.
+    VisitVariant<void>(terminal, [&](const auto& term) {
         using T = std::decay_t<decltype(term)>;
         if constexpr (std::is_same_v<T, ir::terminal::Invalid>) {
             // Flat decoded blocks already wrote the next location via a
@@ -261,7 +280,7 @@ HaltReason Interpreter::RunTerminal(const ir::Terminal& terminal, InterpStack& s
             // ReturnToDispatch. current_loc was set by a SetLocation inst.
             result = HaltReason::None;
         } else if constexpr (std::is_same_v<T, ir::terminal::If>) {
-            const bool cond = GetReg<u64>(stack, term.cond) != 0;
+            const bool cond = ReadBoolean(stack, term.cond);
             result = RunTerminal(cond ? term.then_ : term.else_, stack);
         } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
             result = RunTerminal(EvalCondition(term.cond) ? term.then_ : term.else_, stack);
@@ -292,42 +311,40 @@ HaltReason Interpreter::RunTerminal(const ir::Terminal& terminal, InterpStack& s
 // Instructions
 // ---------------------------------------------------------------------------
 
-
-
-void Interpreter::RunGoto(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunGoto(const ir::Inst* inst, InterpStack& stack) {
     // Handled in Interpreter::Run's instruction loop (block-local jump).
 }
 
-void Interpreter::RunNotGoto(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunNotGoto(const ir::Inst* inst, InterpStack& stack) {
     // Handled in Interpreter::Run's instruction loop (block-local jump).
 }
 
-void Interpreter::RunSelect(ir::Inst* inst, InterpStack& stack) {
-    const bool cond = ReadScalar(stack, inst->GetArg<ir::Value>(0)) != 0;
+void Interpreter::RunSelect(const ir::Inst* inst, InterpStack& stack) {
+    const bool cond = ReadBoolean(stack, inst->GetArg<ir::Value>(0));
     const auto selected = inst->GetArg<ir::Value>(cond ? 1 : 2);
     if (IsVector(inst->ReturnType())) WriteVec(stack, inst, ReadVec(stack, selected));
     else WriteScalar(stack, inst, ReadScalar(stack, selected));
 }
 
-void Interpreter::RunSelectZero(ir::Inst* inst, InterpStack& stack) {
-    const bool zero = ReadScalar(stack, inst->GetArg<ir::Value>(0)) == 0;
+void Interpreter::RunSelectZero(const ir::Inst* inst, InterpStack& stack) {
+    const bool zero = !ReadBoolean(stack, inst->GetArg<ir::Value>(0));
     const auto selected = inst->GetArg<ir::Value>(zero ? 1 : 2);
     if (IsVector(inst->ReturnType())) WriteVec(stack, inst, ReadVec(stack, selected));
     else WriteScalar(stack, inst, ReadScalar(stack, selected));
 }
 
-void Interpreter::RunCondSelect(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCondSelect(const ir::Inst* inst, InterpStack& stack) {
     const bool cond = EvalCondition(inst->GetArg<ir::Cond>(0));
     const auto selected = inst->GetArg<ir::Value>(cond ? 1 : 2);
     if (IsVector(inst->ReturnType())) WriteVec(stack, inst, ReadVec(stack, selected));
     else WriteScalar(stack, inst, ReadScalar(stack, selected));
 }
 
-void Interpreter::RunBindLabel(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunBindLabel(const ir::Inst* inst, InterpStack& stack) {
     // Marker only; resolved up-front in Interpreter::Run.
 }
 
-void Interpreter::RunCallLambda(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCallLambda(const ir::Inst* inst, InterpStack& stack) {
     auto lambda = inst->GetArg<ir::Lambda>(0);
     // Keep argument storage on the stack: fault recovery can abandon this frame.
     std::array<ir::DataClass, 3> args{};
@@ -342,7 +359,7 @@ void Interpreter::RunCallLambda(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, CallHostFunc(stack, lambda, std::span{args.data(), count}));
 }
 
-void Interpreter::RunDiv128(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunDiv128(const ir::Inst* inst, InterpStack& stack) {
     const auto high = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto low = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     const auto divisor = ReadScalar(stack, inst->GetArg<ir::Value>(2));
@@ -352,9 +369,9 @@ void Interpreter::RunDiv128(ir::Inst* inst, InterpStack& stack) {
     WritePairResult(stack, inst, result, ir::OpCode::Div128Remainder);
 }
 
-void Interpreter::RunDiv128Remainder(ir::Inst*, InterpStack&) {}
+void Interpreter::RunDiv128Remainder(const ir::Inst*, InterpStack&) {}
 
-void Interpreter::RunCpuid(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCpuid(const ir::Inst* inst, InterpStack& stack) {
     using Helper = HostPairResult (*)(u64, u64, u64);
     const auto helper = reinterpret_cast<Helper>(inst->GetArg<ir::Imm>(3).Get());
     const auto result = helper(ReadScalar(stack, inst->GetArg<ir::Value>(0)),
@@ -363,9 +380,9 @@ void Interpreter::RunCpuid(ir::Inst* inst, InterpStack& stack) {
     WritePairResult(stack, inst, result, ir::OpCode::CpuidUpper);
 }
 
-void Interpreter::RunCpuidUpper(ir::Inst*, InterpStack&) {}
+void Interpreter::RunCpuidUpper(const ir::Inst*, InterpStack&) {}
 
-void Interpreter::RunSse42Str(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSse42Str(const ir::Inst* inst, InterpStack& stack) {
     const u128 a = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const u128 b = ReadVec(stack, inst->GetArg<ir::Value>(1));
     WriteScalar(stack,
@@ -378,59 +395,59 @@ void Interpreter::RunSse42Str(ir::Inst* inst, InterpStack& stack) {
                         inst->GetArg<ir::Imm>(2).Get()));
 }
 
-void Interpreter::RunX87Op(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunX87Op(const ir::Inst* inst, InterpStack& stack) {
     const auto context = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto command = inst->GetArg<ir::Imm>(1).Get();
     const auto address = ReadScalar(stack, inst->GetArg<ir::Value>(2));
     WriteScalar(stack, inst, swift::x86::X87Dispatch(context, command, address));
 }
 
-void Interpreter::RunCallLocation(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCallLocation(const ir::Inst* inst, InterpStack& stack) {
     // Same as the JIT: treated as a host C-ABI call with params.
     auto lambda = inst->GetArg<ir::Lambda>(0);
     std::array<ir::DataClass, 8> args{};
     size_t count{};
-    for (auto& param : inst->GetArg<ir::Params>(1)) {
+    for (const auto& param : inst->GetArg<ir::Params>(1)) {
         if (count == args.size()) break;
         args[count++] = param.data;
     }
     WriteScalar(stack, inst, CallHostFunc(stack, lambda, std::span{args.data(), count}));
 }
 
-void Interpreter::RunCallDynamic(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCallDynamic(const ir::Inst* inst, InterpStack& stack) {
     auto lambda = inst->GetArg<ir::Lambda>(0);
     std::array<ir::DataClass, 8> args{};
     size_t count{};
-    for (auto& param : inst->GetArg<ir::Params>(1)) {
+    for (const auto& param : inst->GetArg<ir::Params>(1)) {
         if (count == args.size()) break;
         args[count++] = param.data;
     }
     WriteScalar(stack, inst, CallHostFunc(stack, lambda, std::span{args.data(), count}));
 }
 
-void Interpreter::RunAddPhi(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunAddPhi(const ir::Inst* inst, InterpStack& stack) {
     // HIR phi nodes never appear in the flat decoded blocks the interpreter
     // executes (the JIT's EmitAddPhi is empty as well).
 }
 
-void Interpreter::RunNop(ir::Inst* inst, InterpStack& stack) {}
+void Interpreter::RunNop(const ir::Inst* inst, InterpStack& stack) {}
 
-void Interpreter::RunAdvancePC(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunAdvancePC(const ir::Inst* inst, InterpStack& stack) {
     // Decode-progress marker; the guest PC is tracked through SetLocation and
     // block terminals, so there is nothing to do (the JIT only flushes its
     // lazy flag state here, which the interpreter keeps eagerly coherent).
 }
 
-void Interpreter::RunSetLocation(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSetLocation(const ir::Inst* inst, InterpStack& stack) {
     auto location = inst->GetArg<ir::Lambda>(0);
     state.current_loc = EvalLambda(stack, location);
 }
 
-void Interpreter::RunGetLocation(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunGetLocation(const ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, state.current_loc.Value());
 }
 
-void Interpreter::RunZero(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunZero(const ir::Inst* inst, InterpStack& stack) {
     if (IsVector(inst->ReturnType())) {
         WriteVec(stack, inst, 0);
     } else {
@@ -438,81 +455,81 @@ void Interpreter::RunZero(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunGetHostGPR(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunGetHostGPR(const ir::Inst* inst, InterpStack& stack) {
     // No static host-register allocation on this configuration
     // (Config::buffers_static_alloc is empty; the JIT also no-ops when the
     // offset arg is 0). Yield 0.
     WriteScalar(stack, inst, 0);
 }
 
-void Interpreter::RunGetHostFPR(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunGetHostFPR(const ir::Inst* inst, InterpStack& stack) {
     // See RunGetHostGPR.
     WriteScalar(stack, inst, 0);
 }
 
-void Interpreter::RunSetHostGPR(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSetHostGPR(const ir::Inst* inst, InterpStack& stack) {
     // No-op: no static host-register mapping (see RunGetHostGPR).
 }
 
-void Interpreter::RunSetHostFPR(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSetHostFPR(const ir::Inst* inst, InterpStack& stack) {
     // No-op: no static host-register mapping (see RunGetHostGPR).
 }
 
-void Interpreter::RunBitCast(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunBitCast(const ir::Inst* inst, InterpStack& stack) {
     // Pure re-interpretation: copy the raw 16-byte slot.
     WriteVec(stack, inst, ReadVec(stack, inst->GetArg<ir::Value>(0)));
 }
 
-void Interpreter::RunGetOperand(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunGetOperand(const ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, EvalOperand(stack, inst->GetArg<ir::Operand>(0)));
 }
 
-void Interpreter::RunGetResult(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunGetResult(const ir::Inst* inst, InterpStack& stack) {
     // Pseudo op chained on arg0's def: copy the referenced value (the JIT
     // moves the allocated register; raw slot copy covers vectors too).
     WriteVec(stack, inst, ReadVec(stack, inst->GetArg<ir::Value>(0)));
 }
 
-void Interpreter::RunLoadImm(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunLoadImm(const ir::Inst* inst, InterpStack& stack) {
     // Matches the JIT's Mov(result, imm.Get()).
     WriteScalar(stack, inst, inst->GetArg<ir::Imm>(0).Get());
 }
 
-void Interpreter::RunPushRSB(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunPushRSB(const ir::Inst* inst, InterpStack& stack) {
     // TODO: ReturnStackBuffer support; safe to ignore while the optimization
     // is off (same as the JIT).
 }
 
-void Interpreter::RunCallReturn(ir::Inst* inst, InterpStack& stack) {}
+void Interpreter::RunCallReturn(const ir::Inst* inst, InterpStack& stack) {}
 
-void Interpreter::RunPopRSB(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunPopRSB(const ir::Inst* inst, InterpStack& stack) {
     // TODO: ReturnStackBuffer support; safe to ignore (same as the JIT).
 }
 
-void Interpreter::RunAdd(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunAdd(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     WriteScalar(stack, inst, l + r);
 }
 
-void Interpreter::RunSub(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSub(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     WriteScalar(stack, inst, l - r);
 }
 
-void Interpreter::RunNeg(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunNeg(const ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, u64{0} - ReadScalar(stack, inst->GetArg<ir::Value>(0)));
 }
 
-void Interpreter::RunAdc(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunAdc(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     const u64 cin = (state.host_cpu_flags >> kHostFlagC) & 1;
     WriteScalar(stack, inst, l + r + cin);
 }
 
-void Interpreter::RunSbb(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSbb(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     // Carry is stored with host (ARM) semantics: C = NOT borrow.
@@ -520,20 +537,20 @@ void Interpreter::RunSbb(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, l - r - bin);
 }
 
-void Interpreter::RunMul(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunMul(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     WriteScalar(stack, inst, l * r);
 }
 
-void Interpreter::RunMulSub(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunMulSub(const ir::Inst* inst, InterpStack& stack) {
     const u64 left = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 right = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     const u64 accumulator = ReadScalar(stack, inst->GetArg<ir::Value>(2));
     WriteScalar(stack, inst, accumulator - left * right);
 }
 
-void Interpreter::RunDiv(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunDiv(const ir::Inst* inst, InterpStack& stack) {
     const auto left = inst->GetArg<ir::Value>(0);
     const auto type = left.Type();
     const u32 bits = TypeBits(type);
@@ -559,9 +576,8 @@ void Interpreter::RunDiv(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, result);
 }
 
-void Interpreter::RunSignedDiv64(ir::Inst* inst, InterpStack& stack) {
-    const auto dividend = static_cast<s64>(
-            ReadScalar(stack, inst->GetArg<ir::Value>(0)));
+void Interpreter::RunSignedDiv64(const ir::Inst* inst, InterpStack& stack) {
+    const auto dividend = static_cast<s64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
     const auto divisor = static_cast<s64>(
             ReadScalar(stack, inst->GetArg<ir::Value>(1)));
     u64 result{};
@@ -573,108 +589,109 @@ void Interpreter::RunSignedDiv64(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, result);
 }
 
-void Interpreter::RunZeroExtend32(ir::Inst* inst, InterpStack& stack) {
-    // Slots already hold zero-extended values; the write masks to U32.
-    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)));
+void Interpreter::RunZeroExtend32(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerConversion(inst, stack);
 }
 
-void Interpreter::RunZeroExtend32To64(ir::Inst* inst, InterpStack& stack) {
-    // Unlike ZeroExtend32, this result is U64-typed; apply the opcode's
-    // 32-bit semantic mask explicitly before the U64 WriteScalar.
-    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)) & UINT32_MAX);
+void Interpreter::RunZeroExtend32To64(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerConversion(inst, stack);
 }
 
-void Interpreter::RunZeroExtend64(ir::Inst* inst, InterpStack& stack) {
-    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)));
+void Interpreter::RunZeroExtend64(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerConversion(inst, stack);
 }
 
-void Interpreter::RunSignExtend(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSignExtend(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerConversion(inst, stack);
+}
+
+void Interpreter::RunIntegerConversion(const ir::Inst* inst, InterpStack& stack) {
     const auto value = inst->GetArg<ir::Value>(0);
-    const u32 bits = TypeBits(value.Type());
-    WriteScalar(stack, inst, SignExtendTo(ReadScalar(stack, value), bits));
+    const u32 bits = ir::IntegerConversionInputBits(inst->GetOp(), ir::GetScalarIntegerBits(value.Type()));
+    const u64 input = ReadScalar(stack, value) & MaskBits(bits);
+    WriteScalar(stack, inst, inst->GetOp() == ir::OpCode::SignExtend ? SignExtendTo(input, bits) : input);
 }
 
-void Interpreter::RunAnd(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunAnd(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     WriteScalar(stack, inst, l & r);
 }
 
-void Interpreter::RunOr(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunOr(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     WriteScalar(stack, inst, l | r);
 }
 
-void Interpreter::RunXor(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunXor(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     WriteScalar(stack, inst, l ^ r);
 }
 
-void Interpreter::RunNot(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunNot(const ir::Inst* inst, InterpStack& stack) {
     if (inst->ArgAt(1).IsVoid()) {
-        // Unary form: logical not (used for zero checks), result is 0/1.
-        WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)) == 0 ? 1 : 0);
+        RunIntegerPredicate(inst, stack);
     } else {
         WriteScalar(stack, inst, ~EvalOperand(stack, inst->GetArg<ir::Operand>(1)));
     }
 }
 
-void Interpreter::RunAndNot(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunAndNot(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = EvalOperand(stack, inst->GetArg<ir::Operand>(1));
     WriteScalar(stack, inst, l & ~r);
 }
 
-void Interpreter::RunGetFlags(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunGetFlags(const ir::Inst* inst, InterpStack& stack) {
     // The JIT moves the whole flags register, ignoring the mask argument.
     WriteScalar(stack, inst, state.host_cpu_flags);
 }
 
-void Interpreter::RunSaveFlags(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSaveFlags(const ir::Inst* inst, InterpStack& stack) {
     // Pseudo op executed at its position in the instruction list: capture the
     // requested guest flags from the referenced def's operation.
     SaveGuestFlags(stack, inst->GetArg<ir::Value>(0).Def(), inst->GetArg<ir::Flags>(1));
 }
 
-void Interpreter::RunBranchOnlyFlags(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunBranchOnlyFlags(const ir::Inst* inst, InterpStack& stack) {
     // The interpreter has no ambient host NZCV lifetime to exploit. Preserve
     // the exact architectural result for the following LocalCondSet; the
     // function-level liveness proof guarantees no successor observes it.
     SaveGuestFlags(stack, inst->GetArg<ir::Value>(0).Def(), inst->GetArg<ir::Flags>(1));
 }
 
-void Interpreter::RunTestFlags(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunTestFlags(const ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, TestGuestFlags(inst->GetArg<ir::Flags>(0)) ? 1 : 0);
 }
 
-void Interpreter::RunTestNotFlags(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunTestNotFlags(const ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, TestGuestFlags(inst->GetArg<ir::Flags>(0)) ? 0 : 1);
 }
 
-void Interpreter::RunClearFlags(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunClearFlags(const ir::Inst* inst, InterpStack& stack) {
     ClearGuestFlags(inst->GetArg<ir::Flags>(0));
 }
 
-void Interpreter::RunSetCarry(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSetCarry(const ir::Inst* inst, InterpStack& stack) {
     // Mirrors JitTranslator::EmitSetCarry: set guest CF from a computed bit.
     const bool on = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & 1;
     u64& fl = state.host_cpu_flags;
     fl = on ? (fl | (u64(1) << kHostFlagC)) : (fl & ~(u64(1) << kHostFlagC));
 }
 
-void Interpreter::RunSetOverflow(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunSetOverflow(const ir::Inst* inst, InterpStack& stack) {
     const bool on = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & 1;
     u64& fl = state.host_cpu_flags;
     fl = on ? (fl | (u64(1) << kHostFlagV)) : (fl & ~(u64(1) << kHostFlagV));
 }
 
-void Interpreter::RunInvertCarry(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunInvertCarry(const ir::Inst* inst, InterpStack& stack) {
     state.host_cpu_flags ^= u64(1) << kHostFlagC;
 }
 
-void Interpreter::RunPublishFCmpFlags(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunPublishFCmpFlags(const ir::Inst* inst, InterpStack& stack) {
     const u64 packed = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const bool compact = inst->GetArg<ir::Imm>(1).Get() != 0;
     constexpr u64 replaced =
@@ -694,7 +711,7 @@ void Interpreter::RunPublishFCmpFlags(ir::Inst* inst, InterpStack& stack) {
     flags |= (((packed >> 1) & 1) ^ 1) << kHostParityByte;
 }
 
-void Interpreter::RunPublishSse42StrFlags(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunPublishSse42StrFlags(const ir::Inst* inst, InterpStack& stack) {
     const u64 packed = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto requested = inst->GetArg<ir::Flags>(1);
     u64& flags = state.host_cpu_flags;
@@ -717,11 +734,11 @@ void Interpreter::RunPublishSse42StrFlags(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunLocalCondSet(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunLocalCondSet(const ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, EvalCondition(inst->GetArg<ir::Cond>(0)) ? 1 : 0);
 }
 
-void Interpreter::RunLocalParitySet(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunLocalParitySet(const ir::Inst* inst, InterpStack& stack) {
     const u8 value = static_cast<u8>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
     bool even = (std::popcount(value) & 1u) == 0;
     if (inst->GetArg<ir::Imm>(1).Get() != 0) {
@@ -730,9 +747,9 @@ void Interpreter::RunLocalParitySet(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, even ? 1 : 0);
 }
 
-void Interpreter::RunBranchOnlyEdges(ir::Inst* inst, InterpStack& stack) {}
+void Interpreter::RunBranchOnlyEdges(const ir::Inst* inst, InterpStack& stack) {}
 
-void Interpreter::RunFCmpCondSet(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunFCmpCondSet(const ir::Inst* inst, InterpStack& stack) {
     const u64 packed = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const bool less = (packed & 7) == 1;
     const bool equal = (packed & 7) == 4;
@@ -764,67 +781,62 @@ void Interpreter::RunFCmpCondSet(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, take ? 1 : 0);
 }
 
-void Interpreter::RunLslImm(ir::Inst* inst, InterpStack& stack) {
-    const u32 bits = TypeBits(inst->ReturnType());
-    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);
-    const u64 amount = inst->GetArg<ir::Imm>(1).Get() & (bits - 1);
-    WriteScalar(stack, inst, value << amount);
+void Interpreter::RunLslImm(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerShift(inst, stack);
 }
 
-void Interpreter::RunLslValue(ir::Inst* inst, InterpStack& stack) {
-    const u32 bits = TypeBits(inst->ReturnType());
-    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);
-    const u64 amount = ReadScalar(stack, inst->GetArg<ir::Value>(1)) & (bits - 1);
-    WriteScalar(stack, inst, value << amount);
+void Interpreter::RunLslValue(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerShift(inst, stack);
 }
 
-void Interpreter::RunLsrImm(ir::Inst* inst, InterpStack& stack) {
-    const u32 bits = TypeBits(inst->ReturnType());
-    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);
-    const u64 amount = inst->GetArg<ir::Imm>(1).Get() & (bits - 1);
-    WriteScalar(stack, inst, value >> amount);
+void Interpreter::RunLsrImm(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerShift(inst, stack);
 }
 
-void Interpreter::RunLsrValue(ir::Inst* inst, InterpStack& stack) {
-    const u32 bits = TypeBits(inst->ReturnType());
-    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);
-    const u64 amount = ReadScalar(stack, inst->GetArg<ir::Value>(1)) & (bits - 1);
-    WriteScalar(stack, inst, value >> amount);
+void Interpreter::RunLsrValue(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerShift(inst, stack);
 }
 
-void Interpreter::RunAsrImm(ir::Inst* inst, InterpStack& stack) {
-    const auto value = inst->GetArg<ir::Value>(0);
-    const u32 bits = TypeBits(inst->ReturnType());
-    const u64 amount = inst->GetArg<ir::Imm>(1).Get() & (bits - 1);
-    const auto extended =
-            static_cast<s64>(SignExtendTo(ReadScalar(stack, value), TypeBits(value.Type())));
-    WriteScalar(stack, inst, static_cast<u64>(extended >> amount));
+void Interpreter::RunAsrImm(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerShift(inst, stack);
 }
 
-void Interpreter::RunAsrValue(ir::Inst* inst, InterpStack& stack) {
-    const auto value = inst->GetArg<ir::Value>(0);
-    const u32 bits = TypeBits(inst->ReturnType());
-    const u64 amount = ReadScalar(stack, inst->GetArg<ir::Value>(1)) & (bits - 1);
-    const auto extended =
-            static_cast<s64>(SignExtendTo(ReadScalar(stack, value), TypeBits(value.Type())));
-    WriteScalar(stack, inst, static_cast<u64>(extended >> amount));
+void Interpreter::RunAsrValue(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerShift(inst, stack);
 }
 
-void Interpreter::RunRorImm(ir::Inst* inst, InterpStack& stack) {
-    const u32 bits = TypeBits(inst->ReturnType());
-    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);
-    const u32 amount = inst->GetArg<ir::Imm>(1).Get() & (bits - 1);
-    WriteScalar(stack, inst, amount ? ((value >> amount) | (value << (bits - amount))) : value);
+void Interpreter::RunRorImm(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerShift(inst, stack);
 }
 
-void Interpreter::RunRorValue(ir::Inst* inst, InterpStack& stack) {
-    const u32 bits = TypeBits(inst->ReturnType());
-    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0)) & MaskBits(bits);
-    const u32 amount = ReadScalar(stack, inst->GetArg<ir::Value>(1)) & (bits - 1);
-    WriteScalar(stack, inst, amount ? ((value >> amount) | (value << (bits - amount))) : value);
+void Interpreter::RunRorValue(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerShift(inst, stack);
 }
 
-void Interpreter::RunByteSwap(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunIntegerShift(const ir::Inst* inst, InterpStack& stack) {
+    const auto input = inst->GetArg<ir::Value>(0);
+    const u32 bits = ir::GetScalarIntegerBits(inst->ReturnType());
+    const u32 input_bits = ir::IntegerShiftInputBits(ir::GetScalarIntegerBits(input.Type()), bits);
+    const u64 count = inst->ArgAt(1).IsImm() ? inst->GetArg<ir::Imm>(1).Get()
+            : ReadScalar(stack, inst->GetArg<ir::Value>(1));
+    const u32 amount = ir::NormalizeIntegerShiftCount(count, bits);
+    const u64 value = ReadScalar(stack, input) & MaskBits(input_bits);
+    u64 result{};
+    switch (ir::ClassifyIntegerShift(inst->GetOp())) {
+        case ir::IntegerShiftKind::Left: result = value << amount; break;
+        case ir::IntegerShiftKind::Right: result = value >> amount; break;
+        case ir::IntegerShiftKind::ArithmeticRight:
+            result = static_cast<u64>(static_cast<s64>(SignExtendTo(value, input_bits)) >> amount);
+            break;
+        case ir::IntegerShiftKind::RotateRight:
+            result = amount ? (value >> amount) | (value << (bits - amount)) : value;
+            break;
+        case ir::IntegerShiftKind::None: break;
+    }
+    WriteScalar(stack, inst, result);
+}
+
+void Interpreter::RunByteSwap(const ir::Inst* inst, InterpStack& stack) {
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u32 width = inst->GetArg<ir::Imm>(1).Get();
     switch (width) {
@@ -842,23 +854,23 @@ void Interpreter::RunByteSwap(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunCountLeadingZeros64(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCountLeadingZeros64(const ir::Inst* inst, InterpStack& stack) {
     const auto source = inst->GetArg<ir::Value>(0);
-    ASSERT(source.Type() == ir::ValueType::U64);
+    ASSERT(ir::IsScalarIntegerType(source.Type(), 64));
     const u64 value = ReadScalar(stack, source);
     WriteScalar(stack, inst, std::countl_zero(value));
 }
 
-void Interpreter::RunPopCount(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunPopCount(const ir::Inst* inst, InterpStack& stack) {
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     WriteScalar(stack, inst, std::popcount(value));
 }
 
-void Interpreter::RunCrc32c(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCrc32c(const ir::Inst* inst, InterpStack& stack) {
     u32 crc = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     u64 data = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     const u32 width = inst->GetArg<ir::Imm>(2).Get();
-    ASSERT(width == 8 || width == 16 || width == 32 || width == 64);
+    ASSERT(ir::IsScalarBitWidth(width));
     for (u32 byte = 0; byte < width / 8; ++byte) {
         crc ^= u32(data & 0xff);
         data >>= 8;
@@ -869,35 +881,35 @@ void Interpreter::RunCrc32c(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, crc);
 }
 
-void Interpreter::RunCountTrailingZeros64(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCountTrailingZeros64(const ir::Inst* inst, InterpStack& stack) {
     const auto source = inst->GetArg<ir::Value>(0);
-    ASSERT(source.Type() == ir::ValueType::U64);
+    ASSERT(ir::IsScalarIntegerType(source.Type(), 64));
     const u64 value = ReadScalar(stack, source);
     WriteScalar(stack, inst, std::countr_zero(value));
 }
 
-void Interpreter::RunCountLeadingZeros32(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCountLeadingZeros32(const ir::Inst* inst, InterpStack& stack) {
     const auto source = inst->GetArg<ir::Value>(0);
-    ASSERT(source.Type() == ir::ValueType::U32);
+    ASSERT(ir::IsScalarIntegerType(source.Type(), 32));
     const u32 value = ReadScalar(stack, source);
     WriteScalar(stack, inst, std::countl_zero(value));
 }
 
-void Interpreter::RunCountTrailingZeros32(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCountTrailingZeros32(const ir::Inst* inst, InterpStack& stack) {
     const auto source = inst->GetArg<ir::Value>(0);
-    ASSERT(source.Type() == ir::ValueType::U32);
+    ASSERT(ir::IsScalarIntegerType(source.Type(), 32));
     const u32 value = ReadScalar(stack, source);
     WriteScalar(stack, inst, std::countr_zero(value));
 }
 
-void Interpreter::RunBitExtract(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunBitExtract(const ir::Inst* inst, InterpStack& stack) {
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 lsb = inst->GetArg<ir::Imm>(1).Get();
     const u64 width = inst->GetArg<ir::Imm>(2).Get();
     WriteScalar(stack, inst, (value >> lsb) & MaskBits(u32(width)));
 }
 
-void Interpreter::RunBitInsert(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunBitInsert(const ir::Inst* inst, InterpStack& stack) {
     const u64 dest = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 src = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     const u64 lsb = inst->GetArg<ir::Imm>(2).Get();
@@ -906,33 +918,44 @@ void Interpreter::RunBitInsert(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, (dest & ~mask) | ((src << lsb) & mask));
 }
 
-void Interpreter::RunBitClear(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunBitClear(const ir::Inst* inst, InterpStack& stack) {
     const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 lsb = inst->GetArg<ir::Imm>(1).Get();
     const u64 width = inst->GetArg<ir::Imm>(2).Get();
     WriteScalar(stack, inst, value & ~(MaskBits(u32(width)) << lsb));
 }
 
-void Interpreter::RunTestBit(ir::Inst* inst, InterpStack& stack) {
-    const u64 value = ReadScalar(stack, inst->GetArg<ir::Value>(0));
-    const u64 bit = inst->GetArg<ir::Imm>(1).Get();
-    WriteScalar(stack, inst, (value >> bit) & 1);
+void Interpreter::RunTestBit(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerPredicate(inst, stack);
 }
 
-void Interpreter::RunTestZero(ir::Inst* inst, InterpStack& stack) {
-    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)) == 0 ? 1 : 0);
+void Interpreter::RunTestZero(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerPredicate(inst, stack);
 }
 
-void Interpreter::RunTestNotZero(ir::Inst* inst, InterpStack& stack) {
-    WriteScalar(stack, inst, ReadScalar(stack, inst->GetArg<ir::Value>(0)) != 0 ? 1 : 0);
+void Interpreter::RunTestNotZero(const ir::Inst* inst, InterpStack& stack) {
+    RunIntegerPredicate(inst, stack);
 }
 
-
+void Interpreter::RunIntegerPredicate(const ir::Inst* inst, InterpStack& stack) {
+    const auto input = inst->GetArg<ir::Value>(0);
+    const auto kind = inst->GetIntegerPredicateKind();
+    u64 result;
+    if (kind == ir::IntegerPredicateKind::Bit) {
+        const auto bit = inst->GetArg<ir::Imm>(1).Get();
+        result = bit < ir::GetScalarIntegerBits(input.Type())
+                ? (ReadScalar(stack, input) >> bit) & 1 : 0;
+    } else {
+        const bool nonzero = ReadBoolean(stack, input);
+        result = kind == ir::IntegerPredicateKind::Nonzero ? nonzero : !nonzero;
+    }
+    WriteScalar(stack, inst, result);
+}
 
 // Upper 64 bits of a 64x64 product; Imm selects signedness.  Kept in step with
 // EmitMulHigh -- a one-sided change here produces a back end divergence, which
 // is worse than the defect it would fix.
-void Interpreter::RunMulHigh(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunMulHigh(const ir::Inst* inst, InterpStack& stack) {
     const u64 l = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 r = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     u64 high;
@@ -951,7 +974,7 @@ void Interpreter::RunMulHigh(ir::Inst* inst, InterpStack& stack) {
 // and 0, and it must stay that way: EvalCondition is the single definition of
 // what each ir::Cond means for this back end, so routing CondSet through it is
 // what keeps the interpreter and EmitCondSet (CSET) from drifting apart.
-void Interpreter::RunCondSet(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCondSet(const ir::Inst* inst, InterpStack& stack) {
     // WriteScalar drops the store when the return type is VOID, and a Cond
     // argument gives Inst::SetArg nothing to infer one from -- so a front end
     // that forgets SetType would leave the condition reading as stack garbage

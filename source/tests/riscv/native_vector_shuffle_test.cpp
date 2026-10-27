@@ -3,10 +3,9 @@
 #include <algorithm>
 
 #include "runtime/backend/interp/interpreter.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
-
 using T = ir::ValueType;
 using O = ir::OpCode;
 
@@ -23,26 +22,66 @@ void NativeVectorShuffle(bool vector) {
                     op == O::VecByteShift || op == O::VecExtractBytes ? 15 : 1;
             for (u32 mode = 0; mode < 2; ++mode) for (u32 first = 0; first < controls; first += 32) {
                 IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc400})};
-                ir::Assembler as{block.get()};
-                auto left = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-                auto right = as.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128);
+                compile::IrBuilder as{block.get()};
+                auto left = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+                auto right = as.LoadUniform(T::V128, ir::Uniform{16, T::V128});
                 const u32 count = std::min(32u, controls - first);
                 for (u32 variant = 0; variant < count; ++variant) {
                 const u32 control = first + variant;
                 ir::Value result;
                 switch (op) {
-                    case O::VecByteShift: result = as.VecByteShift(left, right, ir::Imm{u64(control + 1)}, ir::Imm{u64(mode)}); break;
-                    case O::VecExtractBytes: result = as.VecExtractBytes(left, right, ir::Imm{u64(control + 1)}); break;
-                    case O::VecShuffle32: result = as.VecShuffle32(left, ir::Imm{u64(control)}); break;
-                    case O::VecShuffle32TwoSrc: result = as.VecShuffle32TwoSrc(left, right, ir::Imm{u64(control)}); break;
-                    case O::VecShuffle16: result = as.VecShuffle16(left, ir::Imm{u64(control)}, ir::Imm{u64(mode)}); break;
-                    case O::VecZip: case O::VecUnzip:
-                        result = ir::Value{block->AppendInst(op, left, right, ir::Imm{u64(bits)}, ir::Imm{u64(mode)})}; break;
-                    case O::VecDupPairs32: result = as.VecDupPairs32(left, ir::Imm{u64(mode)}); break;
-                    case O::VecMovMask: result = as.VecMovMask(left, ir::Imm{u64(bits)}); break;
-                    default: result = ir::Value{block->AppendInst(op, left, right)}; break;
+                    case O::VecByteShift:
+                        result = as.VecByteShift(op == O::VecMovMask ? T::U64 : T::V128,
+                                                 left,
+                                                 right,
+                                                 ir::Imm{u64(control + 1)},
+                                                 ir::Imm{u64(mode)});
+                        break;
+                    case O::VecExtractBytes:
+                        result = as.VecExtractBytes(op == O::VecMovMask ? T::U64 : T::V128,
+                                                    left,
+                                                    right,
+                                                    ir::Imm{u64(control + 1)});
+                        break;
+                    case O::VecShuffle32:
+                        result = as.VecShuffle32(op == O::VecMovMask ? T::U64 : T::V128,
+                                                 left,
+                                                 ir::Imm{u64(control)});
+                        break;
+                    case O::VecShuffle32TwoSrc:
+                        result = as.VecShuffle32TwoSrc(op == O::VecMovMask ? T::U64 : T::V128,
+                                                       left,
+                                                       right,
+                                                       ir::Imm{u64(control)});
+                        break;
+                    case O::VecShuffle16:
+                        result = as.VecShuffle16(op == O::VecMovMask ? T::U64 : T::V128,
+                                                 left,
+                                                 ir::Imm{u64(control)},
+                                                 ir::Imm{u64(mode)});
+                        break;
+                    case O::VecZip:
+                    case O::VecUnzip:
+                        result = ir::Value{block->AppendInst(op,
+                                                             op == O::VecMovMask ? T::U64 : T::V128,
+                                                             left,
+                                                             right,
+                                                             ir::Imm{u64(bits)},
+                                                             ir::Imm{u64(mode)})};
+                        break;
+                    case O::VecDupPairs32:
+                        result = as.VecDupPairs32(
+                                op == O::VecMovMask ? T::U64 : T::V128, left, ir::Imm{u64(mode)});
+                        break;
+                    case O::VecMovMask:
+                        result = as.VecMovMask(
+                                op == O::VecMovMask ? T::U64 : T::V128, left, ir::Imm{u64(bits)});
+                        break;
+                    default:
+                        result = ir::Value{block->AppendInst(
+                                op, op == O::VecMovMask ? T::U64 : T::V128, left, right)};
+                        break;
                 }
-                result = result.SetType(op == O::VecMovMask ? T::U64 : T::V128);
                 as.StoreUniform(ir::Uniform{128 + variant * 16, result.Type()}, result);
                 }
                 // Keep both inputs live while executing the result operation.

@@ -91,22 +91,19 @@
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 // One 128-bit lane of (V)PMULUDQ / (V)PMULDQ.
 //
 // SDM, VPMULUDQ:  DEST[63:0] <- SRC1[31:0] * SRC2[31:0]
 //                 DEST[127:64] <- SRC1[95:64] * SRC2[95:64]
 // which is source dwords 0 and 2 -- the EVEN ones -- widened to 64 bits.
 // VPMULDQ is the same selection with signed widening.
-ir::Value MulWiden32(ir::Assembler* as, ir::Value a, ir::Value b, bool is_signed) {
-    return as->VecMulWiden(a, b, ir::Imm(32u), ir::Imm(is_signed ? 1u : 0u))
-            .SetType(ir::ValueType::V128);
+ir::Value MulWiden32(compile::IrBuilder* as, ir::Value a, ir::Value b, bool is_signed) {
+    return as->VecMulWiden(ir::ValueType::V128, a, b, ir::Imm(32u), ir::Imm(is_signed ? 1u : 0u));
 }
 
 }  // namespace

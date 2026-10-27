@@ -8,6 +8,9 @@ enum class FaultRecoveryKind : u8 {
     GuestFault,
     IndirectCallMiss,
     ExternalContinuation,
+    // Coarse committed-state fallback for an emitted block. Precise memory,
+    // poll and call sites remain separate single-instruction records.
+    GuestRange,
 };
 
 struct FaultEntry {

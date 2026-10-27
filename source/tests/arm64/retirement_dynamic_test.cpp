@@ -55,16 +55,16 @@ template<class Predicate> bool Await(Predicate ready) {
 }
 
 void WriteFlags(HIRFunction* function) {
-    const auto left = function->LoadImm(Imm{u64{~u64{0}}}).SetType(ValueType::U64);
-    const auto one = function->LoadImm(Imm{u64{1}}).SetType(ValueType::U64);
-    const auto result = function->Add(left, Operand{one}).SetType(ValueType::U64);
+    const auto left = function->LoadImm(ValueType::U64, Imm{u64{~u64{0}}});
+    const auto one = function->LoadImm(ValueType::U64, Imm{u64{1}});
+    const auto result = function->Add(ValueType::U64, left, Operand{one});
     function->SaveFlags(result, Flags::All);
     function->StoreUniform(Uniform{40, ValueType::U64}, result);
 }
 
 void MarkerAndFlags(HIRFunction* function, bool source, bool pending_target) {
     if (pending_target) {
-        auto* entry = function->GetCurrentBlock();
+        auto* entry = &function->EditBlock(function->GetCurrentBlock());
         WriteFlags(function);
         function->AdvancePC(Imm{u64{1}});
         auto* body = function->AppendBlock(Location{target_pc + 1});
@@ -81,14 +81,15 @@ void MarkerAndFlags(HIRFunction* function, bool source, bool pending_target) {
 u8* Compile(const std::shared_ptr<Module>& module, u64 guest, bool source,
             bool cycle, bool rsb, bool continuation, bool call, bool pending_target = false) {
     HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
-    auto* function = builder.AppendFunction(Location{guest}, Location{call ? return_pc + 4 : guest + 4});
-    const auto next = function->LoadUniform<TypedValue<ValueType::U64>>(
-            Uniform{source ? 16u : 24u, ValueType::U64}).SetType(ValueType::U64);
+    auto* function =
+            builder.AppendFunction(Location{guest}, Location{call ? return_pc + 4 : guest + 4});
+    const auto next =
+            function->LoadUniform(ValueType::U64, Uniform{source ? 16u : 24u, ValueType::U64});
     MarkerAndFlags(function, source, pending_target);
     if (!cycle && !source) {
         function->EndBlock(terminal::ReturnToHost{});
     } else if (call) {
-        const auto return_value = function->LoadImm(Imm{return_pc}).SetType(ValueType::U64);
+        const auto return_value = function->LoadImm(ValueType::U64, Imm{return_pc});
         function->CallReturn(return_value, Imm{return_pc}, Lambda{next});
         function->SetLocation(Lambda{next});
         builder.RegisterCallReturn(Location{return_pc});

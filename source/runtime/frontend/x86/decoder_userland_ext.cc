@@ -9,13 +9,11 @@
 #include "runtime/frontend/x86/decoder_internal.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 _RegisterType Gpr(u32 index, u32 width) {
     return static_cast<_RegisterType>((width == 64 ? R_RAX : R_EAX) + index);
 }
@@ -100,8 +98,7 @@ void X64Decoder::DecodeFsgsbase(_DInst& insn, bool write, bool gs) {
         // The 32-bit form writes a zero-extended E-register. The 64-bit form
         // writes the full R-register. Both update the exact storage used by
         // SegmentBase for FS:/GS: address generation.
-        value = operand.size == 64 ? value.SetType(ir::ValueType::U64)
-                                   : __ ZeroExtend64(__ ZeroExtend32(value));
+        value = operand.size == 64 ? value : __ ZeroExtend64(__ ZeroExtend32(value));
         __ StoreUniform(base, value);
     } else {
         Dst(insn, operand, __ LoadUniform(base));
@@ -138,13 +135,11 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
                     auto eax = R(R_EAX);
                     auto ecx = R(R_ECX);
                     auto edx = R(R_EDX);
-                    faulted = __ CallHostUniformPure(&WritePkru, eax, ecx, edx)
-                                      .SetType(ir::ValueType::U64);
+                    faulted = __ CallHostUniformPure(ir::ValueType::U64, &WritePkru, eax, ecx, edx);
                     auto succeeded = __ TestZero(faulted);
-                    auto old_pkru = __ LoadUniform(uni_pkru).SetType(ir::ValueType::U32);
+                    auto old_pkru = __ LoadUniform(ir::ValueType::U32, uni_pkru);
                     __ StoreUniform(uni_pkru,
-                                    __ Select(succeeded, eax, old_pkru)
-                                            .SetType(ir::ValueType::U32));
+                                    __ Select(ir::ValueType::U32, succeeded, eax, old_pkru));
                     auto no_fault = __ NotGoto(__ TestNotZero(faulted));
                     __ StoreUniform(
                             uni_interrupt,
@@ -152,11 +147,9 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
                                     static_cast<u32>(InterruptReason::ILL_CODE))));
                     __ BindLabel(no_fault);
                 } else {
-                    auto context =
-                            __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+                    auto context = __ GetUniformAddress(ir::ValueType::U64, ir::Imm(0));
                     faulted = __ CallHostWithUniformEffects(
-                                      WritePkruEffects(), &WritePkruContext, context)
-                                      .SetType(ir::ValueType::U64);
+                            ir::ValueType::U64, WritePkruEffects(), &WritePkruContext, context);
                 }
                 __ SetLocation(ir::Lambda{ir::Imm{pc}});
                 __ If(ir::terminal::If{__ TestNotZero(faulted),
@@ -335,7 +328,7 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
         auto cf = CarryValue();
         __ SetCarry(cf);
         carry_ = CarryPolarity::Direct;
-        result = __ Adc(left, ir::Operand{right}).SetType(GetSize(width));
+        result = __ Adc(GetSize(width), left, ir::Operand{right});
         __ SaveFlags(result, ir::Flags::Carry);
         StorePolarity(false);
     } else {
@@ -344,13 +337,13 @@ u32 X64Decoder::DecodeUserlandRaw(const u8* code, size_t available) {
         // the carry-out is computed, restore CF and write ONLY OF. This
         // deliberately converts the preserved CF representation to Direct;
         // no other flag bit is rewritten.
-        auto old_of = __ TestFlags(ir::Flags::Overflow).SetType(ir::ValueType::U8);
+        auto old_of = __ TestFlags(ir::ValueType::U8, ir::Flags::Overflow);
         auto old_cf = CarryValue();
         __ SetCarry(old_of);
         carry_ = CarryPolarity::Direct;
-        result = __ Adc(left, ir::Operand{right}).SetType(GetSize(width));
+        result = __ Adc(GetSize(width), left, ir::Operand{right});
         __ SaveFlags(result, ir::Flags::Carry);
-        auto carry_out = __ TestFlags(ir::Flags::Carry).SetType(ir::ValueType::U8);
+        auto carry_out = __ TestFlags(ir::ValueType::U8, ir::Flags::Carry);
         __ SetCarry(old_cf);
         __ SetOverflow(carry_out);
         StorePolarity(false);

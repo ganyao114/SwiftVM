@@ -14,7 +14,7 @@ void JitContext::LeaveFloatMode() {
     if (vector_float) { Load(t5, frame, float_mode_offset); masm.FSRM(t5); }
 }
 
-std::array<GPR, 2> JitContext::ResultPair(ir::Inst* inst) {
+std::array<GPR, 2> JitContext::ResultPair(const ir::Inst* inst) {
     if (!cache_scalars) return {t0, t1};
     // Split V256 chains already have eight live operand GPRs. Reuse a
     // dying input pair in place instead of spilling it merely to allocate
@@ -41,7 +41,7 @@ std::array<GPR, 2> JitContext::ResultPair(ir::Inst* inst) {
     return {low, high};
 }
 
-void JitContext::WritePair(ir::Inst* inst, const std::array<GPR, 2>& registers) {
+void JitContext::WritePair(const ir::Inst* inst, const std::array<GPR, 2>& registers) {
     for (u32 part = 0; part < 2; ++part) {
         if (!cache_scalars) {
             Store(registers[part], values, static_cast<s64>(inst->Id()) * kValueStride + part * 8);
@@ -85,7 +85,7 @@ void JitContext::SpillVector(size_t index) {
     ++value_stats.stores;
 }
 
-Vec JitContext::ResultVector(ir::Inst*) {
+Vec JitContext::ResultVector(const ir::Inst*) {
     ASSERT(features.vector);
     if (!cache_scalars) return v3;
     auto index = next_vector;
@@ -124,7 +124,7 @@ Vec JitContext::SourceVector(ir::Value value, Vec scratch) {
     return scratch;
 }
 
-void JitContext::WriteVector(ir::Inst* inst, Vec value) {
+void JitContext::WriteVector(const ir::Inst* inst, Vec value) {
     if (cache_scalars) {
         const auto index = value.Index() - 8;
         ASSERT(index < cached_vectors.size() && !cached_vectors[index]);

@@ -6,7 +6,6 @@
 #include "runtime/frontend/x86/xsave.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
@@ -131,7 +130,7 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeBaseOpcode(_DInst& insn) {
             break;
         case I_CALL: {
             auto ret_type = is_64bit ? ir::ValueType::U64 : ir::ValueType::U32;
-            auto return_value = __ LoadImm(ir::Imm(pc)).SetType(ret_type);
+            auto return_value = __ LoadImm(ret_type, ir::Imm(pc));
             // An indirect CALL resolves its target before pushing the return
             // address.  This matters for RSP-relative operands: resolving
             // call *disp(%rsp) after Push would read eight bytes below the
@@ -488,19 +487,19 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeBaseOpcode(_DInst& insn) {
             break;
         case I_CBW: {
             auto al = R(_RegisterType::R_AL);
-            R(_RegisterType::R_AX, __ SignExtend(al).SetType(ir::ValueType::S16));
+            R(_RegisterType::R_AX, __ SignExtend(ir::ValueType::S16, al));
             break;
         }
         case I_LAHF: {
             // AH = SF:ZF:0:AF:0:PF:1:CF
             auto cf = CheckCond(Cond::BT);
             auto pf = CheckCond(Cond::PA);
-            auto af = __ TestFlags(ir::Flags::AuxiliaryCarry).SetType(ir::ValueType::U8);
+            auto af = __ TestFlags(ir::ValueType::U8, ir::Flags::AuxiliaryCarry);
             // TestFlags reads the guest flag shadow directly.  CondSelect
             // would observe whatever host NZCV the preceding PF/AF query
             // happened to leave behind (notably after UCOMIS*).
-            auto zf = __ TestFlags(ir::Flags::Zero).SetType(ir::ValueType::U8);
-            auto sf = __ TestFlags(ir::Flags::Negate).SetType(ir::ValueType::U8);
+            auto zf = __ TestFlags(ir::ValueType::U8, ir::Flags::Zero);
+            auto sf = __ TestFlags(ir::ValueType::U8, ir::Flags::Negate);
             auto lo = __ Or(cf, ir::Operand{__ LslImm(pf, ir::Imm(2u))});
             auto mid = __ Or(__ LslImm(af, ir::Imm(4u)), ir::Operand{__ LslImm(zf, ir::Imm(6u))});
             auto ah = __ Or(
@@ -513,7 +512,7 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeBaseOpcode(_DInst& insn) {
             // SF:ZF:0:AF:0:PF:1:CF <- AH.  Save each independently because
             // SAHF permits combinations (notably SF+ZF) that no single ALU
             // result can represent.
-            auto ah = R(_RegisterType::R_AH).SetType(ir::ValueType::U64);
+            auto ah = __ ZeroExtend64(ir::ValueType::U64, R(_RegisterType::R_AH));
             auto bit = [&](u32 position) {
                 return __ And(__ LsrImm(ah, ir::Imm(position)),
                               ir::Operand{ir::Imm(u64(1))});
@@ -522,19 +521,18 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeBaseOpcode(_DInst& insn) {
             auto zero = __ LoadImm(ir::Imm(u64(0)));
 
             auto pf = bit(2);
-            auto parity_value = __ Select(__ TestNotZero(pf), zero, one);
+            auto parity_value = __ Select(ir::ValueType::U64, __ TestNotZero(pf), zero, one);
             __ SaveFlags(__ Or(parity_value, ir::Operand{ir::Imm(u64(0))}),
                          ir::Flags::Parity);
 
             auto zf = bit(6);
-            auto zero_value = __ Select(__ TestNotZero(zf), zero, one);
+            auto zero_value = __ Select(ir::ValueType::U64, __ TestNotZero(zf), zero, one);
             __ SaveFlags(__ Or(zero_value, ir::Operand{ir::Imm(u64(0))}),
                          ir::Flags::Zero);
 
             auto sf = bit(7);
-            auto sign_value = __ LslImm(sf, ir::Imm(63u)).SetType(ir::ValueType::U64);
-            __ SaveFlags(__ Or(sign_value, ir::Operand{ir::Imm(u64(0))}),
-                         ir::Flags::Negate);
+            auto sign_value = __ LslImm(ir::ValueType::U64, sf, ir::Imm(63u));
+            __ SaveFlags(__ Or(sign_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Negate);
 
             // 0xF + AFbit has an auxiliary carry exactly when AFbit is one.
             auto auxiliary_value =
@@ -548,26 +546,26 @@ SVM_DISPATCH_STAGE bool X64Decoder::DecodeBaseOpcode(_DInst& insn) {
         }
         case I_CWDE: {
             auto ax = R(_RegisterType::R_AX);
-            R(_RegisterType::R_EAX, __ SignExtend(ax).SetType(ir::ValueType::S32));
+            R(_RegisterType::R_EAX, __ SignExtend(ir::ValueType::S32, ax));
             break;
         }
         case I_CDQE: {
             auto eax = R(_RegisterType::R_EAX);
-            R(_RegisterType::R_RAX, __ SignExtend(eax).SetType(ir::ValueType::U64));
+            R(_RegisterType::R_RAX, __ SignExtend(ir::ValueType::U64, eax));
             break;
         }
         case I_CWD: {
-            auto ax = __ SignExtend(R(_RegisterType::R_AX)).SetType(ir::ValueType::S32);
+            auto ax = __ SignExtend(ir::ValueType::S32, R(_RegisterType::R_AX));
             R(_RegisterType::R_DX, __ AsrImm(ax, ir::Imm(15u)));
             break;
         }
         case I_CDQ: {
-            auto eax = __ SignExtend(R(_RegisterType::R_EAX)).SetType(ir::ValueType::U64);
+            auto eax = __ SignExtend(ir::ValueType::U64, R(_RegisterType::R_EAX));
             R(_RegisterType::R_EDX, __ AsrImm(eax, ir::Imm(31u)));
             break;
         }
         case I_CQO: {
-            auto rax = R(_RegisterType::R_RAX).SetType(ir::ValueType::U64);
+            auto rax = R(_RegisterType::R_RAX);
             R(_RegisterType::R_RDX, __ AsrImm(rax, ir::Imm(63u)));
             break;
         }

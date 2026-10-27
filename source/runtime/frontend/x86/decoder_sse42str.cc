@@ -338,13 +338,11 @@
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime;
 
 #define __ assembler->
 
 namespace {
-
 constexpr auto kV128 = ir::ValueType::V128;
 constexpr auto kU64 = ir::ValueType::U64;
 
@@ -1033,13 +1031,13 @@ u64 Sse42StrEval(u64 b_lo, u64 b_hi, u64 token) {
 
 // Materialize an arbitrary 128-bit constant.  Byte-identical to VecConst in
 // decoder_sse4.cc / decoder_avx_int.cc (they should all become one helper).
-ir::Value VecConst(ir::Assembler* as, u64 lo, u64 hi) {
-    auto low = as->VecDup64(as->LoadImm(ir::Imm(lo)).SetType(kU64)).SetType(kV128);
+ir::Value VecConst(compile::IrBuilder* as, u64 lo, u64 hi) {
+    auto low = as->VecDup64(kV128, as->LoadImm(kU64, ir::Imm(lo)));
     if (lo == hi) {
         return low;
     }
-    auto high = as->VecDup64(as->LoadImm(ir::Imm(hi)).SetType(kU64)).SetType(kV128);
-    return as->VecZip(low, high, ir::Imm(64u), ir::Imm(0u)).SetType(kV128);
+    auto high = as->VecDup64(kV128, as->LoadImm(kU64, ir::Imm(hi)));
+    return as->VecZip(kV128, low, high, ir::Imm(64u), ir::Imm(0u));
 }
 
 }  // namespace
@@ -1127,14 +1125,14 @@ extern "C" u64 SwiftSse42StrEvalImplicit(u64 a_lo,
 // a compare because n is 8 or 16, both powers of two, so `abs & (n-1)` is
 // already the answer whenever the high bits are clear.
 ir::Value X64Decoder::Sse42StrLength(ir::Value raw, u32 elements) {
-    auto zero = __ LoadImm(ir::Imm(u64(0))).SetType(kU64);
-    auto negated = __ Sub(zero, ir::Operand{raw}).SetType(kU64);
-    auto absolute = __ Select(__ TestBit(raw, ir::Imm(63u)), negated, raw).SetType(kU64);
+    auto zero = __ LoadImm(kU64, ir::Imm(u64(0)));
+    auto negated = __ Sub(kU64, zero, ir::Operand{raw});
+    auto absolute = __ Select(kU64, __ TestBit(raw, ir::Imm(63u)), negated, raw);
     const u32 shift = elements == 16 ? 4u : 3u;
-    auto high = __ LsrImm(absolute, ir::Imm(shift)).SetType(kU64);
-    auto low = __ And(absolute, ir::Operand{ir::Imm(u64(elements - 1))}).SetType(kU64);
-    auto saturated = __ LoadImm(ir::Imm(u64(elements))).SetType(kU64);
-    return __ Select(__ TestNotZero(high), saturated, low).SetType(kU64);
+    auto high = __ LsrImm(kU64, absolute, ir::Imm(shift));
+    auto low = __ And(kU64, absolute, ir::Operand{ir::Imm(u64(elements - 1))});
+    auto saturated = __ LoadImm(kU64, ir::Imm(u64(elements)));
+    return __ Select(kU64, __ TestNotZero(high), saturated, low);
 }
 
 // ---------------------------------------------------------------------------
@@ -1168,14 +1166,13 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
         auto raw2 = wide ? R(R_RDX) : Extend(R(R_EDX), kU64, true);
         auto len1 = Sse42StrLength(raw1, elements);
         auto len2 = Sse42StrLength(raw2, elements);
-        auto base = __ LoadImm(ir::Imm(u64(imm8) | (u64(1) << kCtlExplicitBit))).SetType(kU64);
-        auto packed_lengths = __ Or(__ LslImm(len1, ir::Imm(kCtlLen1Shift)).SetType(kU64),
-                                    ir::Operand{__ LslImm(len2, ir::Imm(kCtlLen2Shift))
-                                                        .SetType(kU64)})
-                                      .SetType(kU64);
-        ctl = __ Or(base, ir::Operand{packed_lengths}).SetType(kU64);
+        auto base = __ LoadImm(kU64, ir::Imm(u64(imm8) | (u64(1) << kCtlExplicitBit)));
+        auto packed_lengths = __ Or(kU64,
+                                    __ LslImm(kU64, len1, ir::Imm(kCtlLen1Shift)),
+                                    ir::Operand{__ LslImm(kU64, len2, ir::Imm(kCtlLen2Shift))});
+        ctl = __ Or(kU64, base, ir::Operand{packed_lengths});
     } else {
-        ctl = __ LoadImm(ir::Imm(u64(imm8))).SetType(kU64);
+        ctl = __ LoadImm(kU64, ir::Imm(u64(imm8)));
     }
 
     ir::Value packed;
@@ -1185,27 +1182,25 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
         // the two vectors and compile-time imm8 directly to the JIT emitter.
         // The memory form was loaded above and keeps the existing guest-fault
         // path.  OFF does not construct this node at all.
-        packed = __ Sse42Str(XmmRead(reg1), src2, ir::Imm(imm8)).SetType(kU64);
+        packed = __ Sse42Str(kU64, XmmRead(reg1), src2, ir::Imm(imm8));
     } else {
         // Historical path, intentionally unchanged for default-OFF and for
         // explicit-length PCMPESTRI/M.
-        auto token = __ CallLambda(ir::Lambda{
-                                           ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(
-                                                   &Sse42StrStage)}},
-                                           ir::HelperCallTraits{
-                                                   .abi = SVM_HELPER_TLS_IS_LEAF
-                                                           ? ir::HelperABI::PreserveAllLeaf
-                                                           : ir::HelperABI::NormalAAPCS,
-                                                   .host_fp = ir::HostFpEffect::FPCRTransparent,
-                                           }},
-                                   XmmLo(reg1),
-                                   XmmHi(reg1),
-                                   ctl);
-        packed = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Sse42StrEval)}},
-                               __ VecExtract64(src2, ir::Imm(0u)).SetType(kU64),
-                               __ VecExtract64(src2, ir::Imm(1u)).SetType(kU64),
-                               token)
-                         .SetType(kU64);
+        auto token = __ CallLambda(ir::ValueType::U64,
+                ir::Lambda{ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(&Sse42StrStage)}},
+                           ir::HelperCallTraits{
+                                   .abi = SVM_HELPER_TLS_IS_LEAF ? ir::HelperABI::PreserveAllLeaf
+                                                                 : ir::HelperABI::NormalAAPCS,
+                                   .host_fp = ir::HostFpEffect::FPCRTransparent,
+                           }},
+                XmmLo(reg1),
+                XmmHi(reg1),
+                ctl);
+        packed = __ CallLambda(kU64,
+                               ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Sse42StrEval)}},
+                               __ VecExtract64(kU64, src2, ir::Imm(0u)),
+                               __ VecExtract64(kU64, src2, ir::Imm(1u)),
+                               token);
     }
 
     Sse42StrFlags(packed);
@@ -1214,7 +1209,7 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
         // The destination is the IMPLICIT XMM0.  distorm reports no operand for
         // it (ops[2] is the immediate), unlike the BLENDV family where it does,
         // so it is named architecturally here.
-        auto intres2 = __ And(packed, ir::Operand{ir::Imm(u64(0xFFFF))}).SetType(kU64);
+        auto intres2 = __ And(kU64, packed, ir::Operand{ir::Imm(u64(0xFFFF))});
         if ((imm8 & 0x40u) == 0) {
             // Bit mask: IntRes2 zero-extended to 128 bits.
             XmmLo(R_XMM0, intres2);
@@ -1231,10 +1226,9 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
                           : VecConst(assembler, 0x0000000000000000ull, 0x0101010101010101ull);
             auto bits = words ? VecConst(assembler, 0x0008000400020001ull, 0x0080004000200010ull)
                               : VecConst(assembler, 0x8040201008040201ull, 0x8040201008040201ull);
-            auto spread = __ VecTableLookup8(__ VecDup64(intres2).SetType(kV128), spread_control)
-                                  .SetType(kV128);
-            auto selected = __ VecAnd(spread, bits).SetType(kV128);
-            auto mask = __ VecCmpEq(selected, bits, ir::Imm(words ? 16u : 8u)).SetType(kV128);
+            auto spread = __ VecTableLookup8(kV128, __ VecDup64(kV128, intres2), spread_control);
+            auto selected = __ VecAnd(kV128, spread, bits);
+            auto mask = __ VecCmpEq(kV128, selected, bits, ir::Imm(words ? 16u : 8u));
             XmmWrite(R_XMM0, mask);
         }
         // C3: a VEX write zeroes bits 255:128, a legacy write preserves them.
@@ -1244,11 +1238,8 @@ void X64Decoder::DecodeSse42StrBody(_RegisterType reg1,
     } else {
         // The architectural ECX write zeroes RCX[63:32]. BitExtract already
         // produces the same full-width zero-extended value, so publish it as RCX.
-        R(R_RCX, __ BitExtract(packed, ir::Imm(kResIndexShift),
-                               ir::Imm(8u))
-                         .SetType(kU64));
+        R(R_RCX, __ BitExtract(kU64, packed, ir::Imm(kResIndexShift), ir::Imm(8u)));
     }
-
 }
 
 // ---------------------------------------------------------------------------

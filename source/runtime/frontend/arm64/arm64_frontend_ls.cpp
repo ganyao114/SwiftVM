@@ -1,7 +1,6 @@
 #include "arm64_frontend_internal.h"
 
 namespace swift::arm64 {
-
 #define __ assembler->
 
 void A64Decoder::VisitLoadLiteral(const Instruction* instr) {
@@ -59,7 +58,7 @@ void A64Decoder::LoadStoreHelper(const Instruction* instr,
         if (offset.IsImm()) {
             return AddressAdd(b, offset.imm.GetSigned());
         }
-        return __ Add<ir::U64>(b, SingleOperand(offset.value)).SetType(ir::ValueType::U64);
+        return __ Add(ir::ValueType::U64, b, SingleOperand(offset.value));
     };
 
     ir::Value address;
@@ -379,21 +378,21 @@ void A64Decoder::VisitAtomicMemory(const Instruction* instr) {
         u32 opc = (bits >> 12) & 0x7;
         ir::Value new_val{};
         switch (opc) {
-            case 0: // LDADD
-                new_val = is64 ? __ Add<ir::U64>(old_val, SingleOperand(rs_val)).SetType(type)
-                               : __ Add<ir::U32>(old_val, SingleOperand(rs_val)).SetType(type);
+            case 0:  // LDADD
+                new_val = is64 ? __ Add(type, old_val, SingleOperand(rs_val))
+                               : __ Add(type, old_val, SingleOperand(rs_val));
                 break;
-            case 1: // LDCLR
-                new_val = is64 ? __ AndNot<ir::U64>(old_val, SingleOperand(rs_val)).SetType(type)
-                               : __ AndNot<ir::U32>(old_val, SingleOperand(rs_val)).SetType(type);
+            case 1:  // LDCLR
+                new_val = is64 ? __ AndNot(type, old_val, SingleOperand(rs_val))
+                               : __ AndNot(type, old_val, SingleOperand(rs_val));
                 break;
-            case 2: // LDEOR
-                new_val = is64 ? __ Xor<ir::U64>(old_val, SingleOperand(rs_val)).SetType(type)
-                               : __ Xor<ir::U32>(old_val, SingleOperand(rs_val)).SetType(type);
+            case 2:  // LDEOR
+                new_val = is64 ? __ Xor(type, old_val, SingleOperand(rs_val))
+                               : __ Xor(type, old_val, SingleOperand(rs_val));
                 break;
-            case 3: // LDSET
-                new_val = is64 ? __ Or<ir::U64>(old_val, SingleOperand(rs_val)).SetType(type)
-                               : __ Or<ir::U32>(old_val, SingleOperand(rs_val)).SetType(type);
+            case 3:  // LDSET
+                new_val = is64 ? __ Or(type, old_val, SingleOperand(rs_val))
+                               : __ Or(type, old_val, SingleOperand(rs_val));
                 break;
             default:
                 Interrupt(InterruptReason::FALLBACK, current_pc);

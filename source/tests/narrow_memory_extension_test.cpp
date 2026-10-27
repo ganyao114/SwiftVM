@@ -1,4 +1,10 @@
+#include "tests/support/rewrite_fixture.h"
+using swift::runtime::test::RewriteFixture;
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <cstring>
@@ -10,13 +16,11 @@
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/deadcode_elimination_pass.h"
-#include "runtime/ir/opts/integer_width_elimination_pass.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/passes/passes.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "runtime/ir/hir_builder.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -49,18 +53,23 @@ TEST_CASE("a narrow load writes an adjacent extension register directly") {
     };
     AddressSpace address_space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0x8a00})};
-    auto address = block->GetHostGPR(HostRegIndex(29), Imm{0u})
-                           .SetType(ValueType::U64);
-    auto loaded = block->LoadMemory(Operand{address}).SetType(ValueType::U16);
-    auto extended = block->SignExtend(loaded).SetType(ValueType::S32);
+    auto address = block->GetHostGPR(ValueType::U64, HostRegIndex(29), Imm{0u});
+    auto loaded = block->LoadMemory(ValueType::U16, Operand{address});
+    auto extended = block->SignExtend(ValueType::S32, loaded);
     block->StoreUniform(Uniform{64, ValueType::S32}, extended);
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
-    RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), alloc, FeatureSet{}),
+            false);
     alloc.MapRegister(address.Id(), HostGPR{29});
     alloc.MapRegister(loaded.Id(), HostGPR{8});
     alloc.MapRegister(extended.Id(), HostGPR{9});
@@ -73,8 +82,9 @@ TEST_CASE("a narrow load writes an adjacent extension register directly") {
     REQUIRE(alloc.ValueGPR(address).id == 29);
     REQUIRE(alloc.ValueGPR(loaded).id != alloc.ValueGPR(extended).id);
 
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -100,31 +110,37 @@ TEST_CASE("an adjacent narrow extract extends in one instruction") {
     };
     AddressSpace address_space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0x8a20})};
-    auto source = block->GetHostGPR(HostRegIndex(22), Imm{0u})
-                          .SetType(ValueType::U64);
-    auto extract = block->BitExtract(source, Imm{0u}, Imm{16u})
-                           .SetType(ValueType::U16);
-    auto extended = block->ZeroExtend32(extract).SetType(ValueType::U16);
+    auto source = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+    auto extract = block->BitExtract(ValueType::U16, source, Imm{0u}, Imm{16u});
+    auto extended = block->ZeroExtend32(ValueType::U16, extract);
     block->StoreUniform(Uniform{64, ValueType::U16}, Value{extended}.SetCastType(ValueType::U16));
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
-    RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), alloc, FeatureSet{}),
+            false);
     alloc.MapRegister(source.Id(), HostGPR{8});
     alloc.MapRegister(extract.Id(), HostGPR{9});
     alloc.MapRegister(extended.Id(), HostGPR{10});
     REQUIRE(alloc.ValueGPR(extract).id != alloc.ValueGPR(extended).id);
 
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    const auto plan = alloc.GPRPlanFor(block.get()); REQUIRE(plan);
-    REQUIRE(plan->narrow_bits);
-    REQUIRE(plan->narrow_bits->extensions.contains(extended.Def()));
-    REQUIRE(plan->narrow_bits->extracts.at(extract.Def()) == extended.Def());
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    const auto plan = alloc.Actions().ForBlock(block.get());
+    REQUIRE(plan);
+    REQUIRE(alloc.Actions().Narrow(extended.Id()));
+    REQUIRE(alloc.Actions().Narrow(extended.Id())->kind == arm64::NarrowAction::Extend);
+    REQUIRE(alloc.Actions().HasScalar(extract.Id(), arm64::ScalarFlag::BitInputCovered));
 
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -152,25 +168,29 @@ TEST_CASE("an adjacent narrow extract and right shift emit one bitfield extract"
         };
         AddressSpace address_space{config};
         IntrusivePtr<Block> block{new Block(0, Location{0x8a30})};
-        auto source = block->LoadImm(Imm{swift::u32{0x12345678}})
-                              .SetType(ValueType::U32);
+        auto source = block->LoadImm(ValueType::U32, Imm{swift::u32{0x12345678}});
         const auto bits = ir::GetValueSizeByte(type) * 8;
-        auto extract = block->BitExtract(source, Imm{0u}, Imm{bits})
-                               .SetType(type);
-        auto extended = block->ZeroExtend32(extract).SetType(type);
-        auto shifted = block->LsrImm(extended, Imm{1u})
-                               .SetType(ValueType::U32);
+        auto extract = block->BitExtract(type, source, Imm{0u}, Imm{bits});
+        auto extended = block->ZeroExtend32(type, extract);
+        auto shifted = block->LsrImm(ValueType::U32, extended, Imm{1u});
         block->StoreUniform(Uniform{64, ValueType::U32}, shifted);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
 
         FeatureSet features{};
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-        arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                                  alloc);
+        arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -201,28 +221,32 @@ TEST_CASE("a narrow AND mask subsumes its low extract only when high bits are cl
         };
         AddressSpace address_space{config};
         IntrusivePtr<Block> block{new Block(0, Location{0x8a38})};
-        auto source = block->LoadImm(Imm{swift::u32{0xffff1234}})
-                              .SetType(ValueType::U32);
-        auto extract = block->BitExtract(source, Imm{0u}, Imm{16u})
-                               .SetType(ValueType::U16);
-        auto mask_value = block->LoadImm(Imm{mask}).SetType(ValueType::U16);
-        auto result = block->And(extract, Operand{mask_value})
-                              .SetType(ValueType::U16);
+        auto source = block->LoadImm(ValueType::U32, Imm{swift::u32{0xffff1234}});
+        auto extract = block->BitExtract(ValueType::U16, source, Imm{0u}, Imm{16u});
+        auto mask_value = block->LoadImm(ValueType::U16, Imm{mask});
+        auto result = block->And(ValueType::U16, extract, Operand{mask_value});
         block->StoreUniform(Uniform{64, ValueType::U16}, result);
         block->SetTerminal(terminal::ReturnToDispatch{});
         if (fold) {
-            IntegerWidthEliminationPass::Run(block.get());
-            DeadCodeEliminationPass::Run(block.get());
+            swift::runtime::compile::NormalizeWidths(RewriteFixture{block.get(), false}.Get());
+            RewriteFixture{block.get()}.Get().CollectDead();
         }
         block->ReIdInstr();
 
         FeatureSet features{};
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-        arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                                  alloc);
+        arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -260,27 +284,32 @@ TEST_CASE("a zero-extended narrow load needs no self extension") {
     };
     AddressSpace address_space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0x8a40})};
-    auto loaded = block->LoadMemory(Operand{Imm{swift::u64{0x1000}}})
-                          .SetType(ValueType::U16);
-    auto extract = block->BitExtract(loaded, Imm{0u}, Imm{16u})
-                           .SetType(ValueType::U16);
-    auto extended = block->ZeroExtend32(extract).SetType(ValueType::U16);
+    auto loaded = block->LoadMemory(ValueType::U16, Operand{Imm{swift::u64{0x1000}}});
+    auto extract = block->BitExtract(ValueType::U16, loaded, Imm{0u}, Imm{16u});
+    auto extended = block->ZeroExtend32(ValueType::U16, extract);
     block->StoreUniform(Uniform{64, ValueType::U16}, Value{extended}.SetCastType(ValueType::U16));
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
-    RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), alloc, FeatureSet{}),
+            false);
     alloc.MapRegister(loaded.Id(), HostGPR{8});
     alloc.MapRegister(extract.Id(), HostGPR{9});
     alloc.MapRegister(extended.Id(), HostGPR{8});
     REQUIRE(alloc.ValueGPR(loaded).id == alloc.ValueGPR(extended).id);
     REQUIRE(alloc.ValueGPR(loaded).id != alloc.ValueGPR(extract).id);
 
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -306,39 +335,50 @@ TEST_CASE("frozen bit and funnel actions preserve values under spill pressure", 
         AddressSpace space{config}; auto module = space.GetDefaultModule(); FeatureSet features{};
         IntrusivePtr<Block> block{new Block(0, Location{0x8da0})};
         std::vector<Value> live;
-        if (pressure) for (unsigned i = 0; i < 36; ++i)
-            live.push_back(block->LoadUniform(Uniform{32, ValueType::U64}).SetType(ValueType::U64));
+        if (pressure)
+            for (unsigned i = 0; i < 36; ++i)
+                live.push_back(block->LoadUniform(ValueType::U64, Uniform{32, ValueType::U64}));
         Value result;
         if (shape < 3) {
             const auto type = shape == 2 ? ValueType::U8 : ValueType::U32;
-            const auto input = block->LoadUniform(Uniform{0, type}).SetType(type);
-            const auto extract = block->BitExtract(input, Imm{0u}, Imm{8u}).SetType(ValueType::U8);
-            if (shape == 2) result = block->And(extract, Operand{Imm{15u}}).SetType(ValueType::U8);
+            const auto input = block->LoadUniform(type, Uniform{0, type});
+            const auto extract = block->BitExtract(ValueType::U8, input, Imm{0u}, Imm{8u});
+            if (shape == 2)
+                result = block->And(ValueType::U8, extract, Operand{Imm{15u}});
             else {
-                result = block->ZeroExtend32(extract).SetType(ValueType::U8);
-                if (shape == 1) result = block->LsrImm(result, Imm{1u}).SetType(ValueType::U32);
+                result = block->ZeroExtend32(ValueType::U8, extract);
+                if (shape == 1) result = block->LsrImm(ValueType::U32, result, Imm{1u});
             }
         } else if (shape == 3) {
-            const auto input = block->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-            const auto shifted = block->LsrImm(input, Imm{8u}).SetType(ValueType::U32);
-            result = block->And(shifted, Operand{Imm{1u}}).SetType(ValueType::U32);
+            const auto input = block->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+            const auto shifted = block->LsrImm(ValueType::U32, input, Imm{8u});
+            result = block->And(ValueType::U32, shifted, Operand{Imm{1u}});
         } else {
-            const auto low = block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-            const auto high = block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
-            const auto right = block->LsrImm(low, Imm{32u}).SetType(ValueType::U64);
-            const auto left = block->LslImm(high, Imm{32u}).SetType(ValueType::U64);
-            result = block->Or(right, Operand{left}).SetType(ValueType::U64);
+            const auto low = block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+            const auto high = block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
+            const auto right = block->LsrImm(ValueType::U64, low, Imm{32u});
+            const auto left = block->LslImm(ValueType::U64, high, Imm{32u});
+            result = block->Or(ValueType::U64, right, Operand{left});
             if (shape == 5) block->StoreUniform(Uniform{24, ValueType::U64}, right);
         }
         block->StoreUniform(Uniform{16, result.Type()}, result);
         for (const auto value : live) block->StoreUniform(Uniform{32, ValueType::U64}, value);
         block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                            space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        allocation.CompleteGPRAllocation(module); REQUIRE(allocation.GPRPlanFor(block.get()));
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+        REQUIRE(allocation.Actions().ForBlock(block.get()));
         if (pressure) REQUIRE(allocation.SpillCount() > 0);
-        arm64::JitContext context{module, allocation}; arm64::JitTranslator translator{context};
+        arm64::JitContext context{module, allocation, allocation.Actions()};
+        arm64::JitTranslator translator{context};
         translator.Translate(block.get()); context.Finish();
         const auto [index, buffer] = module->AllocCodeCache(context.CurrentBufferSize(), context.RequiresRegionTrampoline());
         REQUIRE(index != INVALID_CACHE_ID); context.Flush(buffer);
@@ -369,29 +409,40 @@ TEST_CASE("bit preparation preserves a foreign extract and selects a later local
     AddressSpace space{config}; auto module = space.GetDefaultModule(); FeatureSet features{};
     HIRBuilder builder{1, true, features};
     auto* function = builder.AppendFunction(Location{0x8db0}, Location{0x8db2});
-    const auto input = function->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-    const auto extract = function->BitExtract(input, Imm{0u}, Imm{8u}).SetType(ValueType::U8);
-    const auto masked = function->And(extract, Operand{Imm{15u}}).SetType(ValueType::U8);
+    const auto input = function->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+    const auto extract = function->BitExtract(ValueType::U8, input, Imm{0u}, Imm{8u});
+    const auto masked = function->And(ValueType::U8, extract, Operand{Imm{15u}});
     function->StoreUniform(Uniform{16, ValueType::U8}, masked);
-    auto* first = function->GetCurrentBlock();
-    auto* next = builder.LinkBlock(terminal::LinkBlock{Location{0x8db1}}); builder.SetCurBlock(next);
-    const auto local = function->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-    const auto shifted = function->LsrImm(local, Imm{8u}).SetType(ValueType::U32);
-    const auto result = function->And(shifted, Operand{Imm{1u}}).SetType(ValueType::U32);
+    auto* first = &function->EditBlock(function->GetCurrentBlock());
+    auto* next = builder.LinkBlock(terminal::LinkBlock{Location{0x8db1}});
+    builder.SetCurBlock(next);
+    const auto local = function->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+    const auto shifted = function->LsrImm(ValueType::U32, local, Imm{8u});
+    const auto result = function->And(ValueType::U32, shifted, Operand{Imm{1u}});
     function->StoreUniform(Uniform{16, ValueType::U32}, result);
     function->StoreUniform(Uniform{24, ValueType::U8}, extract);
     function->EndBlock(terminal::ReturnToHost{}); function->EndFunction();
     function->ComputeRPO(); function->IdByRPO();
-    RegAlloc allocation{function->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(function, &allocation, false, features);
-    allocation.CompleteGPRAllocation(module);
-    const auto first_plan = allocation.GPRPlanFor(first->GetBlock());
-    const auto next_plan = allocation.GPRPlanFor(next->GetBlock());
-    REQUIRE(first_plan); REQUIRE_FALSE(first_plan->narrow_bits);
-    REQUIRE(next_plan); REQUIRE(next_plan->narrow_bits);
-    REQUIRE(next_plan->narrow_bits->shift_masks.contains(result.Def()));
-    arm64::JitContext context{module, allocation}; arm64::JitTranslator translator{context};
+    AllocationFixture allocation{function->MaxInstrCount(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    function, allocation, features),
+            {.block_intervals = false});
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+    const auto first_plan = allocation.Actions().ForBlock(first->GetBlock());
+    const auto next_plan = allocation.Actions().ForBlock(next->GetBlock());
+    REQUIRE(first_plan);
+    REQUIRE_FALSE(allocation.Actions().Narrow(masked.Id()));
+    REQUIRE(next_plan);
+    REQUIRE(allocation.Actions().Narrow(result.Id()));
+    REQUIRE(allocation.Actions().Narrow(result.Id())->kind == arm64::NarrowAction::ShiftMask);
+    arm64::JitContext context{module, allocation, allocation.Actions()};
+    arm64::JitTranslator translator{context};
     translator.Translate(function); context.Finish();
 #if defined(__aarch64__)
     const auto [index, buffer] = module->AllocCodeCache(context.CurrentBufferSize(), context.RequiresRegionTrampoline());

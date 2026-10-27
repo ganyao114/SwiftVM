@@ -1,5 +1,13 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/compile/analysis/semantic_facts.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
+
+#include "runtime/compile/analysis/guest_state.h"
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
+#include "runtime/compile/analysis/facts.h"
+#include "runtime/compile/unit.h"
 
 TEST_CASE("Linux guest memory launch policy defaults to direct") {
     using swift::linux::SelectGuestMemoryLaunchPolicy;
@@ -94,7 +102,6 @@ TEST_CASE("hot coalesce check classifies static opportunities") {
     using namespace swift::runtime;
     using namespace swift::runtime::ir;
 
-    REQUIRE(PerfStats2::kGetenvNames.size() == 169);
     REQUIRE(PerfStats2::kGetenvNames.size() == kSvmConfigFieldCount);
     REQUIRE(std::string_view(PerfStats2::kGetenvNames.front()) ==
             "SVM_INV_DBG");
@@ -110,7 +117,7 @@ TEST_CASE("hot coalesce check classifies static opportunities") {
     REQUIRE_FALSE(HotCoalesceIsMoveBridge("lsl x1, x2, #1"));
 
     Block block{0, Location{0x7100}};
-    Assembler assembler{&block};
+    swift::runtime::compile::IrBuilder assembler{&block};
     for (swift::u32 offset : {0u, 8u, 16u, 24u}) {
         (void)assembler.LoadUniform<U64>(Uniform{offset, ValueType::U64});
     }
@@ -204,7 +211,7 @@ TEST_CASE("FeatureSet captures every B-class field and applies sparse overrides"
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
 
-    STATIC_REQUIRE(kFeatureCount == 69);
+    STATIC_REQUIRE(kFeatureCount == 68);
     REQUIRE(FeatureSet{}.ra_coalesce_live);
     REQUIRE(FeatureSet{}.operand_copy_kill);
     REQUIRE(FeatureSet{}.zero_store_zr);
@@ -246,7 +253,8 @@ TEST_CASE("loop invariant hoist keeps a narrow unit-local proof boundary") {
     FeatureSet features{};
     features.loop_gpr_hoist = true;
     features.loop_const_hoist = true;
-    UniformInfo info{};
+    swift::runtime::compile::GuestStateLayout info{};
+    info.uniform_size = 16 * sizeof(swift::u64);
     info.loop_gpr_uniform_ranges.push_back({0, 16 * sizeof(swift::u64)});
 
     HIRBuilder builder{1, true, features};
@@ -254,16 +262,15 @@ TEST_CASE("loop invariant hoist keeps a narrow unit-local proof boundary") {
     auto* function = builder.AppendFunction(loop_pc, Location{0x1760});
     const auto base0 = function->LoadUniform(Uniform{104, ValueType::U64});
     const auto base1 = function->LoadUniform(Uniform{112, ValueType::U64});
-    const auto index = function->LoadImm(Imm{16u}).SetType(ValueType::U64);
-    const auto address0 = function->Add(base0, Operand{index}).SetType(ValueType::U64);
-    const auto address1 = function->Add(base1, Operand{index}).SetType(ValueType::U64);
-    const auto loaded0 = function->LoadMemory(Operand{address0}).SetType(ValueType::U64);
-    const auto loaded1 = function->LoadMemory(Operand{address1}).SetType(ValueType::U64);
+    const auto index = function->LoadImm(ValueType::U64, Imm{16u});
+    const auto address0 = function->Add(ValueType::U64, base0, Operand{index});
+    const auto address1 = function->Add(ValueType::U64, base1, Operand{index});
+    const auto loaded0 = function->LoadMemory(ValueType::U64, Operand{address0});
+    const auto loaded1 = function->LoadMemory(ValueType::U64, Operand{address1});
     (void)loaded0;
     (void)loaded1;
-    const auto loop_end = function->LoadImm(Imm{swift::u64{0x1312d000}})
-                                  .SetType(ValueType::U64);
-    const auto compare = function->Sub(index, Operand{loop_end}).SetType(ValueType::U64);
+    const auto loop_end = function->LoadImm(ValueType::U64, Imm{swift::u64{0x1312d000}});
+    const auto compare = function->Sub(ValueType::U64, index, Operand{loop_end});
     function->SaveFlags(compare, Flags::NZCV);
     function->EndBlock(terminal::Condition{
             Cond::NE, terminal::LinkBlock{loop_pc}, terminal::ReturnToDispatch{}});
@@ -271,12 +278,26 @@ TEST_CASE("loop invariant hoist keeps a narrow unit-local proof boundary") {
     function->ComputeRPO();
     function->IdByRPO();
 
-    auto* block = function->GetHIRBlocksRPO().front().GetBlock();
-    std::vector<Inst*> original;
+    auto* block = function->EditBlock(&function->GetHIRBlocksRPO().front()).GetBlock();
+    std::vector<const Inst*> original;
     for (auto& inst : block->GetInstList()) original.push_back(&inst);
-    auto recipe = LoopInvariantHoistRecipe::Analyze(function, info, features);
-    REQUIRE_FALSE(recipe->Empty());
-    recipe->Apply();
+    swift::runtime::compile::CompileUnit unit{function};
+    const auto rejected_pressure = swift::runtime::compile::HoistLoopInvariants(
+            function, info, unit, swift::runtime::backend::arm64::LoopHoistPolicy(
+                    swift::runtime::backend::GPRSMask{~((1u << 19) | (1u << 20))}), features);
+    REQUIRE(rejected_pressure.gprs == 0);
+    REQUIRE(rejected_pressure.constants == 0);
+    REQUIRE(rejected_pressure.pressure_rejections > 0);
+    REQUIRE(block->GetLoopHoistMetadata().anchors.empty());
+    std::vector<const Inst*> unchanged;
+    for (auto& inst : block->GetInstList()) unchanged.push_back(&inst);
+    REQUIRE(unchanged == original);
+
+    const auto selected = swift::runtime::compile::HoistLoopInvariants(
+            function, info, unit, swift::runtime::backend::arm64::LoopHoistPolicy(
+                    swift::runtime::backend::GPRSMask{0x07f80000u}), features);
+    REQUIRE(selected.gprs == 1);
+    REQUIRE(selected.constants == 1);
     const auto& metadata = block->GetLoopHoistMetadata();
     REQUIRE(metadata.gpr_count == 1);
     REQUIRE(metadata.const_count == 1);
@@ -284,16 +305,58 @@ TEST_CASE("loop invariant hoist keeps a narrow unit-local proof boundary") {
     REQUIRE(metadata.anchors.front()->GetOp() == OpCode::LoadUniform);
     REQUIRE(metadata.anchors.back()->GetOp() == OpCode::LoadImm);
 
-    recipe->Revert();
+    {
+        swift::runtime::compile::CompileUnit moved{std::move(unit)};
+        function->IdByRPO();
+        const auto& owned = block->GetLoopHoistMetadata();
+        REQUIRE(owned.anchors.size() == 2);
+        REQUIRE(owned.anchors.front()->GetOp() == OpCode::LoadUniform);
+        REQUIRE(owned.anchors.back()->GetOp() == OpCode::LoadImm);
+        const auto last_id = block->GetInstList().back().Id();
+        swift::runtime::compile::SemanticFacts facts{function};
+        const auto& ends = facts.PrepareBlockUses(block);
+        for (auto* anchor : owned.anchors) {
+            REQUIRE(ends[anchor->Id()] == last_id);
+        }
+        for (bool fast : {false, true}) {
+            CAPTURE(fast);
+            swift::runtime::test::AllocationFixture allocation{
+                    function->MaxInstrCount(),
+                    swift::runtime::backend::GPRSMask{0x07f80000u},
+                    swift::runtime::backend::FPRSMask{0},
+                    features};
+            ::swift::runtime::compile::AllocateFunction(
+                    function,
+                    &allocation,
+                    ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                            function, allocation, features),
+                    {.block_intervals = fast});
+            for (auto* anchor : owned.anchors) {
+                REQUIRE(allocation.ValueLiveAfter(Value{anchor}, last_id - 1));
+            }
+        }
+        block->ReIdInstr();
+        swift::runtime::test::AllocationFixture block_allocation{
+                block->MaxInstrId(),
+                swift::runtime::backend::GPRSMask{0x07f80000u},
+                swift::runtime::backend::FPRSMask{0},
+                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block,
+                &block_allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block, block_allocation, features),
+                false);
+        for (auto* anchor : owned.anchors) {
+            REQUIRE(block_allocation.ValueLiveAfter(Value{anchor}, last_id - 1));
+        }
+    }
     REQUIRE(block->GetLoopHoistMetadata().anchors.empty());
-    std::vector<Inst*> restored;
-    for (auto& inst : block->GetInstList()) restored.push_back(&inst);
-    REQUIRE(restored == original);
 
     HIRBuilder written_builder{1, true, features};
     auto* written = written_builder.AppendFunction(loop_pc, Location{0x1760});
     const auto old_base = written->LoadUniform(Uniform{104, ValueType::U64});
-    const auto new_base = written->Add(old_base, Operand{Imm{8u}}).SetType(ValueType::U64);
+    const auto new_base = written->Add(ValueType::U64, old_base, Operand{Imm{8u}});
     written->StoreUniform(Uniform{104, ValueType::U64}, new_base);
     written->EndBlock(terminal::LinkBlock{loop_pc});
     written->EndFunction();
@@ -301,37 +364,161 @@ TEST_CASE("loop invariant hoist keeps a narrow unit-local proof boundary") {
     written->IdByRPO();
     FeatureSet gpr_only = features;
     gpr_only.loop_const_hoist = false;
-    auto rejected = LoopInvariantHoistRecipe::Analyze(written, info, gpr_only);
-    REQUIRE(rejected->Empty());
+    const auto rejected = swift::runtime::compile::HoistLoopInvariants(
+            written, info, unit, swift::runtime::backend::arm64::LoopHoistPolicy(
+                    swift::runtime::backend::GPRSMask{0x07f80000u}), gpr_only);
+    REQUIRE(rejected.gprs == 0);
+    REQUIRE(rejected.constants == 0);
 }
 
-TEST_CASE("FPR demand-lean prices proven peaks and reclaims only AFP cold ABI") {
+TEST_CASE("loop hoist respects helper mutation and reentry contracts") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::compile;
+    FeatureSet features{};
+    features.loop_gpr_hoist = true;
+    features.loop_const_hoist = false;
+    GuestStateLayout layout{.uniform_size = 128};
+    layout.loop_gpr_uniform_ranges.push_back({104, 112});
+    static constexpr UniformEffectRange overlap_ranges[]{{104, 8}};
+    static constexpr UniformEffectRange disjoint_ranges[]{{0, 8}};
+    static const UniformEffectSet overlap{overlap_ranges, 1}, disjoint{disjoint_ranges, 1};
+    const auto overlap_id = RegisterUniformEffectSet(&overlap);
+    const auto disjoint_id = RegisterUniformEffectSet(&disjoint);
+    struct Case { HelperCallTraits traits; bool hoisted; };
+    const Case cases[]{
+        {{}, false},
+        {{.uniform = UniformEffectId::None}, false},
+        {{.guest_state = HelperGuestStateEffect::ReadOnly,
+          .reentry = HelperReentryEffect::NoReentry}, true},
+        {{.uniform = overlap_id, .reentry = HelperReentryEffect::NoReentry}, false},
+        {{.uniform = disjoint_id, .reentry = HelperReentryEffect::NoReentry}, true},
+    };
+    for (const auto& item : cases) {
+        CAPTURE(item.hoisted, item.traits.uniform, item.traits.reentry);
+        HIRBuilder builder{1, true, features};
+        auto* function = builder.AppendFunction(Location{0x1800}, Location{0x1810});
+        const auto base = function->LoadUniform(Uniform{104, ValueType::U64});
+        function->CallLambda(ValueType::VOID, Lambda{DataClass{Imm{swift::u64{0x1000}}}, item.traits});
+        const auto result = function->Add<U64>(base, Operand{Imm{8u}});
+        function->StoreUniform(Uniform{0, ValueType::U64}, result);
+        function->EndBlock(terminal::LinkBlock{Location{0x1800}});
+        function->EndFunction();
+        function->ComputeRPO();
+        function->IdByRPO();
+        CompileUnit unit{function};
+        const auto selected = HoistLoopInvariants(function, layout, unit,
+                backend::arm64::LoopHoistPolicy(backend::GPRSMask{~(0x3ffu << 19)}), features);
+        REQUIRE(selected.gprs == (item.hoisted ? 1 : 0));
+        REQUIRE(function->GetHIRBlocksRPO().front().GetBlock()->GetLoopHoistMetadata().anchors.size() ==
+                selected.gprs);
+    }
+}
+
+TEST_CASE("loop hoist refuses a new lifetime across a full register window") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::compile;
+    FeatureSet features{};
+    features.loop_gpr_hoist = true;
+    features.loop_const_hoist = false;
+    HIRBuilder builder{1, true, features};
+    auto* function = builder.AppendFunction(Location{0x1820}, Location{0x1830});
+    std::array<Value, 4> live;
+    for (swift::u32 i = 0; i < live.size(); ++i) live[i] = function->LoadImm<U64>(Imm{swift::u64{i + 1}});
+    for (swift::u32 i = 0; i < live.size(); ++i) function->StoreUniform(Uniform{i * 8, ValueType::U64}, live[i]);
+    const auto base = function->LoadUniform(Uniform{104, ValueType::U64});
+    function->LoadMemory<U64>(Operand{base});
+    function->EndBlock(terminal::LinkBlock{Location{0x1820}});
+    function->EndFunction();
+    function->ComputeRPO();
+    function->IdByRPO();
+    GuestStateLayout layout{.uniform_size = 128};
+    layout.loop_gpr_uniform_ranges.push_back({104, 112});
+    const backend::GPRSMask pool{~(0x7fu << 19)};
+    auto* block = function->EditBlock(&function->GetHIRBlocksRPO().front()).GetBlock();
+    auto* first = &block->GetInstList().front();
+    CompileUnit unit{function};
+    const auto rejected = HoistLoopInvariants(function, layout, unit,
+            backend::arm64::LoopHoistPolicy(pool), features);
+    REQUIRE(rejected.pressure_rejections == 1);
+    REQUIRE(rejected.gprs == 0);
+    REQUIRE(block->GetLoopHoistMetadata().anchors.empty());
+    REQUIRE(&block->GetInstList().front() == first);
+    AllocationFixture allocation{function->MaxInstrCount(), pool, backend::FPRSMask{~0u}, features};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    function, allocation, features));
+    REQUIRE(allocation.SpillCount() == 0);
+}
+
+TEST_CASE("loop hoist accounts for values live through a multi-block function loop") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::runtime::compile;
+    FeatureSet features{};
+    features.loop_gpr_hoist = true;
+    features.loop_const_hoist = false;
+    HIRBuilder builder{1, true, features};
+    auto* function = builder.AppendFunction(Location{0x1840}, Location{0x1870});
+    std::array<Value, 4> incoming;
+    for (swift::u32 i = 0; i < incoming.size(); ++i)
+        incoming[i] = function->LoadImm<U64>(Imm{swift::u64{i + 1}});
+    auto* loop = builder.LinkBlock(terminal::LinkBlock{Location{0x1850}});
+    builder.SetCurBlock(loop);
+    function->MemoryBarrierTSO();
+    const auto base = function->LoadUniform(Uniform{104, ValueType::U64});
+    function->LoadMemory<U64>(Operand{base});
+    auto* exit = builder.LinkBlock(terminal::LinkBlock{Location{0x1860}});
+    loop->GetBlock()->SetTerminal(terminal::Condition{Cond::NE,
+            terminal::LinkBlock{Location{0x1850}}, terminal::LinkBlock{Location{0x1860}}});
+    function->AddEdge(loop, loop);
+    builder.SetCurBlock(exit);
+    for (swift::u32 i = 0; i < incoming.size(); ++i)
+        function->StoreUniform(Uniform{i * 8, ValueType::U64}, incoming[i]);
+    function->EndBlock(terminal::ReturnToDispatch{});
+    function->EndFunction();
+    function->ComputeRPO();
+    function->IdByRPO();
+    GuestStateLayout layout{.uniform_size = 128};
+    layout.loop_gpr_uniform_ranges.push_back({104, 112});
+    CompileUnit unit{function};
+    const auto rejected = HoistLoopInvariants(function, layout, unit,
+            backend::arm64::LoopHoistPolicy(backend::GPRSMask{~(0x7fu << 19)}), features);
+    REQUIRE(rejected.gprs == 0);
+    REQUIRE(rejected.pressure_rejections == 1);
+    REQUIRE(loop->GetBlock()->GetLoopHoistMetadata().anchors.empty());
+    const auto accepted = HoistLoopInvariants(function, layout, unit,
+            backend::arm64::LoopHoistPolicy(backend::GPRSMask{~(0x3ffu << 19)}), features);
+    REQUIRE(accepted.gprs == 1);
+    REQUIRE(loop->GetBlock()->GetLoopHoistMetadata().anchors.front() == base.Def());
+}
+
+TEST_CASE("native FP scratch budgets and extended pool are independent of AFP") {
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
     using namespace swift::runtime::backend::arm64;
     using namespace swift::runtime::ir;
 
     IntrusivePtr<Block> block{new Block(0, Location{0x7100})};
-    auto left = block->LoadUniform(
-            Uniform{0, ValueType::V128}).SetType(ValueType::V128);
-    auto right = block->LoadUniform(
-            Uniform{16, ValueType::V128}).SetType(ValueType::V128);
-    auto scalar32 = block->VecFAddScalar32(left, right).SetType(ValueType::V128);
-    auto scalar64 = block->VecFAddScalar64(left, right).SetType(ValueType::V128);
-    auto convert_fast = block->VecFCvtPacked(left, Imm{swift::u64{1}})
-                                .SetType(ValueType::V128);
-    auto convert_wide = block->VecFCvtPacked(left, Imm{swift::u64{2}})
-                                .SetType(ValueType::V128);
+    auto left = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
+    auto right = block->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+    auto scalar32 = block->VecFAddScalar32(ValueType::V128, left, right);
+    auto scalar64 = block->VecFAddScalar64(ValueType::V128, left, right);
+    auto convert_fast = block->VecFCvtPacked(ValueType::V128, left, Imm{swift::u64{1}});
+    auto convert_wide = block->VecFCvtPacked(ValueType::V128, left, Imm{swift::u64{2}});
 
     FeatureSet off{};
     off.fpr_scratch_precise = false;
     FeatureSet on{};
     on.fpr_scratch_precise = true;
-    REQUIRE(ScratchBudget(*scalar32.Def(), off, {}).fpr == 5);
-    REQUIRE(ScratchBudget(*scalar64.Def(), off, {}).fpr == 4);
+    REQUIRE(ScratchBudget(*scalar32.Def(), off, {}).fpr == 2);
+    REQUIRE(ScratchBudget(*scalar64.Def(), off, {}).fpr == 2);
     REQUIRE(ScratchBudget(*convert_fast.Def(), off, {}).fpr == 5);
     REQUIRE(ScratchBudget(*scalar32.Def(), on, {}).fpr == 1);
-    REQUIRE(ScratchBudget(*scalar64.Def(), on, {}).fpr == 0);
+    REQUIRE(ScratchBudget(*scalar64.Def(), on, {}).fpr == 1);
     REQUIRE(ScratchBudget(*convert_fast.Def(), on, {}).fpr == 1);
     REQUIRE(ScratchBudget(*convert_wide.Def(), on, {}).fpr == 5);
 
@@ -348,10 +535,9 @@ TEST_CASE("FPR demand-lean prices proven peaks and reclaims only AFP cold ABI") 
     FeatureSet reclaim{};
     reclaim.fpr_ipv_reclaim = true;
     TrampolinesArm64 trampolines{config, keep};
-    RegAlloc kept{1, trampolines.GetGPRRegs(), trampolines.GetFPRRegs(), keep,
-                  true};
-    RegAlloc reclaimed{1, trampolines.GetGPRRegs(), trampolines.GetFPRRegs(),
-                       reclaim, true};
+    AllocationFixture kept{1, trampolines.GetGPRRegs(), trampolines.GetFPRRegs(), keep};
+    AllocationFixture reclaimed{
+            1, trampolines.GetGPRRegs(), trampolines.GetFPRRegs(), reclaim};
     auto kept_fprs = kept.GetFprs();
     auto reclaimed_fprs = reclaimed.GetFprs();
     REQUIRE(kept_fprs.GetClearCount() == 28);
@@ -359,10 +545,9 @@ TEST_CASE("FPR demand-lean prices proven peaks and reclaims only AFP cold ABI") 
 
     config.sse_afp_nan = false;
     TrampolinesArm64 guarded{config, reclaim};
-    RegAlloc non_afp{1, guarded.GetGPRRegs(), guarded.GetFPRRegs(), reclaim,
-                     false};
+    AllocationFixture non_afp{1, guarded.GetGPRRegs(), guarded.GetFPRRegs(), reclaim};
     auto non_afp_fprs = non_afp.GetFprs();
-    REQUIRE(non_afp_fprs.GetClearCount() == 28);
+    REQUIRE(non_afp_fprs.GetClearCount() == 32);
 }
 
 TEST_CASE("module feature binding parser accepts main and ignores bad entries") {
@@ -450,7 +635,7 @@ TEST_CASE("SVM_FLAGS_REGS is A-class, default ON, and pins x12 out of XPOOL") {
     SetSvmConfigEnvForTest("SVM_FLAGS_REGS", "0", 1);
     REQUIRE_FALSE(FlagsRegsEnabled());
     {
-        RegAlloc off{1, empty_gprs, empty_fprs, FeatureSet{}};
+        AllocationFixture off{1, empty_gprs, empty_fprs, FeatureSet{}};
         REQUIRE_FALSE(off.GetGprs().Get(12));
     }
     UnsetSvmConfigEnvForTest("SVM_FLAGS_REGS");
@@ -465,7 +650,7 @@ TEST_CASE("SVM_FLAGS_REGS is A-class, default ON, and pins x12 out of XPOOL") {
     REQUIRE(disabled != enabled);
     REQUIRE(FlagsRegsEnabled());
     {
-        RegAlloc on{1, empty_gprs, empty_fprs, FeatureSet{}};
+        AllocationFixture on{1, empty_gprs, empty_fprs, FeatureSet{}};
         REQUIRE(on.GetGprs().Get(12));
     }
     // Token ABI publishes on unit exits; it does not imply latch. P1 loses.

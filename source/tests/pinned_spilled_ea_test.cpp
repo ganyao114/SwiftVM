@@ -1,5 +1,8 @@
-#include "support/register_alloc_test_support.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "support/register_alloc_test_support.h"
 
 #include <algorithm>
 #include <string>
@@ -9,10 +12,9 @@
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -26,18 +28,15 @@ SpilledEaBlock MakeSpilledEaBlock() {
     IntrusivePtr<Block> block{new Block(0, Location{0x8c20})};
     std::vector<Value> retained;
     for (swift::u64 value = 1; value <= 6; ++value) {
-        retained.push_back(block->LoadImm(Imm{value}).SetType(ValueType::U64));
+        retained.push_back(block->LoadImm(ValueType::U64, Imm{value}));
     }
-    const auto base = block->GetHostGPR(HostRegIndex(6), Imm{0u})
-                              .SetType(ValueType::U64);
-    const auto address = block->GetOperand(
-            Operand{base, Imm{24u}, OperandPlus}).SetType(ValueType::U64);
-    const auto stored = block->LoadImm(Imm{swift::u64{0x1122334455667788ull}})
-                                .SetType(ValueType::U64);
+    const auto base = block->GetHostGPR(ValueType::U64, HostRegIndex(6), Imm{0u});
+    const auto address = block->GetOperand(ValueType::U64, Operand{base, Imm{24u}, OperandPlus});
+    const auto stored = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1122334455667788ull}});
     block->StoreMemory(Operand{address}, stored);
     auto total = retained.front();
     for (std::size_t i = 1; i < retained.size(); ++i) {
-        total = block->Add(total, Operand{retained[i]}).SetType(ValueType::U64);
+        total = block->Add(ValueType::U64, total, Operand{retained[i]});
     }
     block->StoreUniform(Uniform{0, ValueType::U64}, total);
     block->SetTerminal(terminal::ReturnToDispatch{});
@@ -48,9 +47,9 @@ SpilledEaBlock MakeSpilledEaBlock() {
 std::vector<std::string> Emit(SpilledEaBlock input, bool biased) {
     const GPRSMask gprs{~((1u << 6) - 1u)};
     const FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    AllocationFixture alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, false);
-    REQUIRE(alloc.ValueType(input.address) == RegAlloc::MEM);
+    REQUIRE(alloc.ValueType(input.address) == AllocationFixture::MEM);
 
     Config config{
             .loc_start = 0,
@@ -61,8 +60,9 @@ std::vector<std::string> Emit(SpilledEaBlock input, bool biased) {
             .page_table = biased ? reinterpret_cast<void*>(0x1000) : nullptr,
     };
     AddressSpace address_space{config};
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(input.block.get());
     context.Finish();

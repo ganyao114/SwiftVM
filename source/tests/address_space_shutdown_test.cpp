@@ -1,3 +1,4 @@
+
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -5,8 +6,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
-#include <dlfcn.h>
 #include <fstream>
 #include <memory>
 #include <new>
@@ -14,8 +13,12 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <dirent.h>
+#include <dlfcn.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
+#include "base/scope_exit.h"
+#include "runtime/compile/analysis/guest_state.h"
 #ifdef __linux__
 #include <sys/uio.h>
 #endif
@@ -24,15 +27,17 @@
 #include <utility>
 #include <vector>
 
-#include "elfio/elfio.hpp"
 #include "aot/aot_artifact.h"
 #include "aot/aot_load.h"
+#include "elfio/elfio.hpp"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/jit_cache.h"
-#include "runtime/backend/runtime.h"
-#include "runtime/backend/arm64/trampolines.h"
 #include "runtime/backend/riscv64/trampolines.h"
+#include "runtime/backend/runtime.h"
+#include "runtime/common/backedge_control.h"
+#include "runtime/common/perf_stats.h"
 #include "runtime/ir/hir_builder.h"
 
 namespace {
@@ -96,6 +101,19 @@ bool watch_multi_allocations{};
 std::array<void*, 8> multi_allocations{};
 std::array<unsigned, 8> multi_allocation_frees{};
 unsigned multi_allocation_count{};
+struct BlockEmissionAllocationWatch {
+    swift::runtime::backend::Module* module{};
+    swift::runtime::ir::Block* block{};
+    bool reject_first{};
+    bool rejected{};
+    bool unpublished{true};
+    unsigned calls{};
+    std::array<bool, 2> required_region{};
+    std::array<swift::u32, 2> sizes{};
+    std::array<swift::u64, 2> ir_signature{};
+    std::array<std::array<unsigned long long, 4>, 2> phases{};
+};
+thread_local BlockEmissionAllocationWatch* block_emission_allocation_watch{};
 }
 
 void* operator new(std::size_t size) {
@@ -118,7 +136,7 @@ void* operator new(std::size_t size) {
         throw std::bad_alloc{};
     }
     const bool uniform_failure = fail_uniform_allocation && saw_trampoline_rx &&
-                                 size == sizeof(swift::runtime::ir::UniformInfo);
+                                 size == sizeof(swift::runtime::compile::GuestStateLayout);
     if (uniform_failure) uniform_failure_caller = __builtin_return_address(0);
     if (deny_allocations || (fail_build_allocation && saw_trampoline_rx) || uniform_failure) {
         if (fail_construction_cleanup) deny_allocations = true;
@@ -284,6 +302,34 @@ std::pair<swift::u16, swift::runtime::backend::CodeBuffer> WrappedAllocCodeCache
         asm("__wrap__ZN5swift7runtime7backend6Module14AllocCodeCacheEjb");
 std::pair<swift::u16, swift::runtime::backend::CodeBuffer> WrappedAllocCodeCache(
         swift::runtime::backend::Module* module, swift::u32 size, bool require_direct_link_region) {
+    if (auto* watch = block_emission_allocation_watch; watch && watch->module == module) {
+        const auto call = watch->calls++;
+        if (call >= watch->required_region.size()) std::abort();
+        watch->required_region[call] = require_direct_link_region;
+        watch->sizes[call] = size;
+        auto signature = swift::u64{1469598103934665603ull};
+        for (const auto& instruction : watch->block->GetInstList()) {
+            signature = (signature ^ reinterpret_cast<uintptr_t>(&instruction)) * 1099511628211ull;
+            signature = (signature ^ instruction.Id()) * 1099511628211ull;
+            signature = (signature ^ static_cast<swift::u64>(instruction.GetOp())) * 1099511628211ull;
+        }
+        watch->ir_signature[call] = signature;
+        const auto& stats = swift::runtime::GetPerfStats2();
+        watch->phases[call] = {
+                stats.pass_total.calls.load(std::memory_order_relaxed),
+                stats.allocate_block.calls.load(std::memory_order_relaxed),
+                stats.allocate_function.calls.load(std::memory_order_relaxed),
+                stats.codegen_complete.calls.load(std::memory_order_relaxed)};
+        watch->unpublished &= watch->block->GetJitCache().jit_state !=
+                              swift::runtime::backend::JitState::Cached;
+        watch->unpublished &= !module->GetAddressSpace().GetLinkManager().QueryTarget(
+                watch->block->GetStartLocation().Value());
+        if (watch->reject_first && call == 0) {
+            watch->rejected = true;
+            return {swift::runtime::backend::INVALID_CACHE_ID,
+                    swift::runtime::backend::CodeBuffer{nullptr, nullptr, 0, 0}};
+        }
+    }
     if (multi_disarm_after_failing_unit && captured_code_buffer_count > multi_fail_allocation_ordinal &&
         fail_aot_allocation >= 0 && !aot_failure_hit) {
         fail_aot_allocation = -1;
@@ -377,6 +423,21 @@ void Check(bool condition, const char* detail) {
     ++checks;
     if (!condition) throw std::runtime_error(detail);
 }
+
+void CheckCallHalt(HaltReason actual, HaltReason expected, VAddr location, const char* detail) {
+    std::array<char, 256> diagnostic{};
+    std::snprintf(diagnostic.data(),
+                  diagnostic.size(),
+                  "%s: actual=0x%x expected=0x%x location=0x%llx",
+                  detail,
+                  static_cast<unsigned>(actual),
+                  static_cast<unsigned>(expected),
+                  static_cast<unsigned long long>(location));
+    Check(actual == expected, diagnostic.data());
+}
+
+constexpr u32 kCallCallbackOffset = 32;
+constexpr u32 kReturningCallUniformSize = kCallCallbackOffset + sizeof(u64);
 
 Config TestConfig(void* guest = nullptr) {
     Config config{};
@@ -872,12 +933,14 @@ aot::AotImage Artifact(const Config& config, void* guest, bool complete_entries 
     HIRBuilder builder{1, true, ResolveFeatureSet(source.GetDefaultModule()->GetModuleConfig())};
     auto* function = builder.AppendFunction(Location{0x100}, Location{0x104});
     if (complete_entries) {
-        const auto value = function->Add(function->LoadUniform(Uniform{8, ValueType::U64}),
-                Operand{function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64)}).SetType(ValueType::U64);
+        const auto value = function->Add(ValueType::U64,
+                                         function->LoadUniform(Uniform{8, ValueType::U64}),
+                                         Operand{function->LoadImm(ValueType::U64, Imm{u64{37}})});
         function->SaveFlags(value, Flags::All);
         function->StoreUniform(Uniform{0, ValueType::U64}, value);
     } else {
-        function->StoreUniform(Uniform{0, ValueType::U64}, function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64));
+        function->StoreUniform(Uniform{0, ValueType::U64},
+                               function->LoadImm(ValueType::U64, Imm{u64{37}}));
     }
     function->EndBlock(terminal::ReturnToHost{}); function->EndFunction();
     auto* entry = static_cast<u8*>(TranslateIR(source.GetDefaultModule(), function));
@@ -898,7 +961,12 @@ aot::AotImage Artifact(const Config& config, void* guest, bool complete_entries 
         Check(cache && FreezeRegionBranches(*cache, allocation.host_start, image.code, unit.region_branches),
               "freeze actual shared region branches before scanning the linked entry fixture");
     }
-    const auto scan = ScanCodeUnit(image.code, GetHostImage(), config.loc_end, {}, config.backend_isa);
+    const auto scan = ScanCodeUnit(image.code,
+                                   GetHostImage(),
+                                   config.loc_end,
+                                   {},
+                                   config.backend_isa,
+                                   unit.region_branches);
     Check(scan.ok, "actual production artifact has valid relocations");
     unit.relocs = scan.relocs;
     unit.blocks.push_back({0x100, 0x104, static_cast<u32>(entry - allocation.host_start),
@@ -946,8 +1014,9 @@ aot::AotImage BlockingTargetArtifact(const Config& config, void* guest) {
             FptrCast(static_cast<u64 (*)()>(&DualExecutorCallback))));
     const auto called = function->CallLambda<TypedValue<ValueType::U64>>(Lambda{Imm{callback}});
     function->StoreUniform(Uniform{24, ValueType::U64}, called);
-    const auto value = function->Add(function->LoadUniform(Uniform{8, ValueType::U64}),
-            Operand{function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64)}).SetType(ValueType::U64);
+    const auto value = function->Add(ValueType::U64,
+                                     function->LoadUniform(Uniform{8, ValueType::U64}),
+                                     Operand{function->LoadImm(ValueType::U64, Imm{u64{37}})});
     function->SaveFlags(value, Flags::All);
     function->StoreUniform(Uniform{0, ValueType::U64}, value);
     function->EndBlock(terminal::ReturnToHost{}); function->EndFunction();
@@ -967,7 +1036,12 @@ aot::AotImage BlockingTargetArtifact(const Config& config, void* guest) {
     const auto cache = source.GetDefaultModule()->GetCodeCache(allocation.host_start);
     Check(cache && FreezeRegionBranches(*cache, allocation.host_start, image.code, unit.region_branches),
           "freeze actual shared region branches before scanning the blocking target fixture");
-    const auto scan = ScanCodeUnit(image.code, GetHostImage(), config.loc_end, {}, config.backend_isa);
+    const auto scan = ScanCodeUnit(image.code,
+                                   GetHostImage(),
+                                   config.loc_end,
+                                   {},
+                                   config.backend_isa,
+                                   unit.region_branches);
     Check(scan.ok, "actual blocking target artifact has valid relocations");
     unit.relocs = scan.relocs;
     unit.blocks.push_back({0x100, 0x104, static_cast<u32>(entry - allocation.host_start),
@@ -1006,8 +1080,9 @@ aot::AotImage ReturningTargetArtifact(const Config& config, void* guest) {
     source.SetSerializableCodeEmission();
     HIRBuilder builder{1, true, ResolveFeatureSet(source.GetDefaultModule()->GetModuleConfig())};
     auto* function = builder.AppendFunction(Location{0x100}, Location{0x104});
-    const auto value = function->Add(function->LoadUniform(Uniform{8, ValueType::U64}),
-            Operand{function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64)}).SetType(ValueType::U64);
+    const auto value = function->Add(ValueType::U64,
+                                     function->LoadUniform(Uniform{8, ValueType::U64}),
+                                     Operand{function->LoadImm(ValueType::U64, Imm{u64{37}})});
     function->SaveFlags(value, Flags::All);
     function->StoreUniform(Uniform{0, ValueType::U64}, value);
     function->AdvancePC(Imm{u64{1}});
@@ -1033,7 +1108,12 @@ aot::AotImage ReturningTargetArtifact(const Config& config, void* guest) {
     const auto cache = source.GetDefaultModule()->GetCodeCache(allocation.host_start);
     Check(cache && FreezeRegionBranches(*cache, allocation.host_start, image.code, unit.region_branches),
           "freeze actual shared region branches before scanning the returning target fixture");
-    const auto scan = ScanCodeUnit(image.code, GetHostImage(), config.loc_end, {}, config.backend_isa);
+    const auto scan = ScanCodeUnit(image.code,
+                                   GetHostImage(),
+                                   config.loc_end,
+                                   {},
+                                   config.backend_isa,
+                                   unit.region_branches);
     Check(scan.ok, "actual returning target artifact has valid relocations");
     unit.relocs = scan.relocs;
     unit.blocks.push_back({0x100, 0x104, static_cast<u32>(entry - allocation.host_start),
@@ -1063,6 +1143,8 @@ aot::AotImage ReturningTargetArtifact(const Config& config, void* guest) {
 }
 
 aot::AotImage BlockingReturningTargetArtifact(const Config& config, void* guest) {
+    Check(config.uniform_buffer_size >= kReturningCallUniformSize,
+          "blocking returning target has space for its callback result at offset 32");
     aot::AotImage image{};
     image.host_isa = config.backend_isa;
     image.guest.entry = 0x100;
@@ -1075,9 +1157,10 @@ aot::AotImage BlockingReturningTargetArtifact(const Config& config, void* guest)
     const auto callback = static_cast<u64>(reinterpret_cast<uintptr_t>(
             FptrCast(static_cast<u64 (*)()>(&LinkedExecutorCallback))));
     const auto called = function->CallLambda<TypedValue<ValueType::U64>>(Lambda{Imm{callback}});
-    function->StoreUniform(Uniform{32, ValueType::U64}, called);
-    const auto value = function->Add(function->LoadUniform(Uniform{8, ValueType::U64}),
-            Operand{function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64)}).SetType(ValueType::U64);
+    function->StoreUniform(Uniform{kCallCallbackOffset, ValueType::U64}, called);
+    const auto value = function->Add(ValueType::U64,
+                                     function->LoadUniform(Uniform{8, ValueType::U64}),
+                                     Operand{function->LoadImm(ValueType::U64, Imm{u64{37}})});
     function->SaveFlags(value, Flags::All);
     function->StoreUniform(Uniform{0, ValueType::U64}, value);
     function->AdvancePC(Imm{u64{1}});
@@ -1103,7 +1186,12 @@ aot::AotImage BlockingReturningTargetArtifact(const Config& config, void* guest)
     const auto cache = source.GetDefaultModule()->GetCodeCache(allocation.host_start);
     Check(cache && FreezeRegionBranches(*cache, allocation.host_start, image.code, unit.region_branches),
           "freeze actual shared region branches before scanning the blocking returning target fixture");
-    const auto scan = ScanCodeUnit(image.code, GetHostImage(), config.loc_end, {}, config.backend_isa);
+    const auto scan = ScanCodeUnit(image.code,
+                                   GetHostImage(),
+                                   config.loc_end,
+                                   {},
+                                   config.backend_isa,
+                                   unit.region_branches);
     Check(scan.ok, "actual blocking returning target artifact has valid relocations");
     unit.relocs = scan.relocs;
     unit.blocks.push_back({0x100, 0x104, static_cast<u32>(entry - allocation.host_start),
@@ -1143,8 +1231,10 @@ std::pair<aot::AotImage, SerialUnit> RestoredCallFixture(const Config& config, v
         {
             HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
             auto* function = builder.AppendFunction(Location{target_pc}, Location{target_pc + 4});
-            const auto value = function->Add(function->LoadUniform(Uniform{8, ValueType::U64}),
-                    Operand{function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64)}).SetType(ValueType::U64);
+            const auto value =
+                    function->Add(ValueType::U64,
+                                  function->LoadUniform(Uniform{8, ValueType::U64}),
+                                  Operand{function->LoadImm(ValueType::U64, Imm{u64{37}})});
             function->SaveFlags(value, Flags::All);
             function->StoreUniform(Uniform{0, ValueType::U64}, value);
             function->AdvancePC(Imm{u64{1}});
@@ -1159,19 +1249,19 @@ std::pair<aot::AotImage, SerialUnit> RestoredCallFixture(const Config& config, v
         HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
         auto* function = builder.AppendFunction(Location{source_pc}, Location{return_pc + 4});
         function->StoreUniform(Uniform{24, ValueType::U64},
-                function->LoadImm(Imm{u64{0}}).SetType(ValueType::U64));
-        const auto left = function->LoadImm(Imm{~u64{0}}).SetType(ValueType::U64);
-        const auto one = function->LoadImm(Imm{u64{1}}).SetType(ValueType::U64);
-        const auto sum = function->Add(left, Operand{one}).SetType(ValueType::U64);
+                               function->LoadImm(ValueType::U64, Imm{u64{0}}));
+        const auto left = function->LoadImm(ValueType::U64, Imm{~u64{0}});
+        const auto one = function->LoadImm(ValueType::U64, Imm{u64{1}});
+        const auto sum = function->Add(ValueType::U64, left, Operand{one});
         function->SaveFlags(sum, Flags::All);
-        const auto ret = function->LoadImm(Imm{return_pc}).SetType(ValueType::U64);
+        const auto ret = function->LoadImm(ValueType::U64, Imm{return_pc});
         function->CallReturn(ret, Imm{return_pc}, Lambda{Imm{target_pc}});
         function->SetLocation(Lambda{Imm{target_pc}});
         builder.RegisterCallReturn(Location{return_pc});
         function->EndBlock(terminal::ReturnToDispatch{});
         builder.SetCurBlock(Location{return_pc});
         function->StoreUniform(Uniform{24, ValueType::U64},
-                function->LoadImm(Imm{u64{0x51ab}}).SetType(ValueType::U64));
+                               function->LoadImm(ValueType::U64, Imm{u64{0x51ab}}));
         function->AdvancePC(Imm{u64{1}});
         function->EndBlock(terminal::ReturnToHost{});
         function->EndFunction();
@@ -3074,8 +3164,9 @@ void OrdinarySourceReaders(bool range) {
         const u64 pc = source ? source_pc : target_pc;
         auto* function = builder.AppendFunction(Location{pc}, Location{pc + 4});
         function->StoreUniform(Uniform{source ? 8u : 0u, ValueType::U64},
-                function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64));
-        if (source) function->EndBlock(terminal::LinkBlock{Location{target_pc}});
+                               function->LoadImm(ValueType::U64, Imm{u64{37}}));
+        if (source)
+            function->EndBlock(terminal::LinkBlock{Location{target_pc}});
         else function->EndBlock(terminal::ReturnToHost{});
         function->EndFunction();
         return static_cast<u8*>(TranslateIR(module, function));
@@ -3185,7 +3276,7 @@ std::pair<aot::AotImage, SerialUnit> RestoredSourceFixture(const Config& config,
         HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
         auto* function = builder.AppendFunction(Location{source_pc}, Location{source_pc + 4});
         function->StoreUniform(Uniform{16, ValueType::U64},
-                function->LoadImm(Imm{witness}).SetType(ValueType::U64));
+                               function->LoadImm(ValueType::U64, Imm{witness}));
         function->EndBlock(terminal::LinkBlock{Location{target_pc}});
         function->EndFunction();
         auto* entry = static_cast<u8*>(TranslateIR(module, function));
@@ -5838,11 +5929,11 @@ void LinkedExecutorRetire() {
             const auto result = function->CallLambda<TypedValue<ValueType::U64>>(Lambda{Imm{callback}});
             function->StoreUniform(Uniform{24, ValueType::U64}, result);
             function->StoreUniform(Uniform{16, ValueType::U64},
-                    function->LoadImm(Imm{u64{91}}).SetType(ValueType::U64));
+                                   function->LoadImm(ValueType::U64, Imm{u64{91}}));
             function->EndBlock(terminal::LinkBlock{Location{target_pc}});
         } else {
             function->StoreUniform(Uniform{0, ValueType::U64},
-                    function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64));
+                                   function->LoadImm(ValueType::U64, Imm{u64{37}}));
             function->EndBlock(terminal::ReturnToHost{});
         }
         function->EndFunction();
@@ -5974,7 +6065,7 @@ void LinkedRestoredExecutorRetire(bool aot_mode) {
         const auto result = function->CallLambda<TypedValue<ValueType::U64>>(Lambda{Imm{callback}});
         function->StoreUniform(Uniform{24, ValueType::U64}, result);
         function->StoreUniform(Uniform{16, ValueType::U64},
-                function->LoadImm(Imm{u64{91}}).SetType(ValueType::U64));
+                               function->LoadImm(ValueType::U64, Imm{u64{91}}));
         function->EndBlock(terminal::LinkBlock{Location{target_pc}});
         function->EndFunction();
         auto* entry = static_cast<u8*>(TranslateIR(module, function));
@@ -6164,6 +6255,7 @@ void LinkedCallExecutorRetire(bool aot_mode) {
     });
     GuestWindow guest;
     auto config = TestConfig(guest.memory);
+    config.uniform_buffer_size = kReturningCallUniformSize;
     config.global_opts = Optimizations::BlockLink | Optimizations::ReturnStackBuffer;
     config.region_edges = true;
     const auto page = static_cast<u64>(getpagesize());
@@ -6236,7 +6328,7 @@ void LinkedCallExecutorRetire(bool aot_mode) {
         u64 value{}, witness{}, callback_result{};
         std::memcpy(&value, runtime.GetUniformBuffer().data(), 8);
         std::memcpy(&witness, runtime.GetUniformBuffer().data() + 24, 8);
-        std::memcpy(&callback_result, runtime.GetUniformBuffer().data() + 32, 8);
+        std::memcpy(&callback_result, runtime.GetUniformBuffer().data() + kCallCallbackOffset, 8);
         Check(value == 37 && witness == 0x51ab && callback_result == 84,
               "restored linked Call warmup preserves target value, return witness and callback result");
         Check(runtime.GetState()->rsb_pointer == runtime.GetState()->rsb_empty,
@@ -6263,20 +6355,31 @@ void LinkedCallExecutorRetire(bool aot_mode) {
     purge_wait_observed = purge_completed = free_before_purge = false;
     linked_executor_inside = linked_executor_release = false;
     std::exception_ptr runner_error;
-    HaltReason run_reason{};
-    u64 run_value{}, run_witness{}, run_callback{}, run_location{};
-    bool run_rsb_empty{};
+    HaltReason run_reason{}, retry_reason{};
+    u64 run_value{}, run_witness{}, run_callback{}, run_location{}, run_flags{};
+    u64 retry_location{}, retry_witness{}, retry_flags{};
+    bool run_rsb_empty{}, retry_rsb_empty{};
+    State* run_state{};
     runner = std::thread([&] {
         try {
             Runtime runtime{&space};
+            run_state = runtime.GetState();
             prime(runtime);
             runtime.SetLocation(source_pc);
             run_reason = runtime.Run();
             run_location = runtime.GetLocation();
             std::memcpy(&run_value, runtime.GetUniformBuffer().data(), 8);
             std::memcpy(&run_witness, runtime.GetUniformBuffer().data() + 24, 8);
-            std::memcpy(&run_callback, runtime.GetUniformBuffer().data() + 32, 8);
+            std::memcpy(&run_callback, runtime.GetUniformBuffer().data() + kCallCallbackOffset, 8);
             run_rsb_empty = runtime.GetState()->rsb_pointer == runtime.GetState()->rsb_empty;
+            run_flags = runtime.GetState()->host_cpu_flags & 0xf0000000u;
+            // A new host entry must observe the revoked return alias, even
+            // though the first execution retained its source through grace.
+            retry_reason = runtime.Run();
+            retry_location = runtime.GetLocation();
+            std::memcpy(&retry_witness, runtime.GetUniformBuffer().data() + 24, 8);
+            retry_flags = runtime.GetState()->host_cpu_flags & 0xf0000000u;
+            retry_rsb_empty = runtime.GetState()->rsb_pointer == runtime.GetState()->rsb_empty;
         } catch (...) { runner_error = std::current_exception(); }
     });
     const auto wait_until = [](const std::atomic<bool>& flag) {
@@ -6291,6 +6394,17 @@ void LinkedCallExecutorRetire(bool aot_mode) {
           "retire a restored linked Call source while its executor is inside the callee");
     Check(links.QueryTarget(target_pc) && space.GetCodeCacheTable().Lookup(target_pc) == target_entry,
           "restored linked Call retirement preserves the independent callee");
+    Check(run_state != nullptr && space.ExitLatchEnabled(),
+          "the blocked callee has a live Runtime with region exit requests enabled");
+    const auto request =
+            std::atomic_ref<u64>(run_state->exit_request).load(std::memory_order_acquire);
+    Check((request & kBackedgeSmcRequestMask) != 0 &&
+                  (request & (kBackedgeSignalRequest | kRetirementExitRequest)) == 0,
+          "source retirement publishes an SMC generation before the callee is released");
+    Check(!space.GetCodeCacheTable().Lookup(return_pc) &&
+                  !space.GetCallCodeCacheTable().Lookup(return_pc) &&
+                  !space.GetPendingCallCodeCacheTable().Lookup(return_pc),
+          "source retirement revokes the canonical and both Call return aliases");
     linked_executor_release = true;
     Check(wait_until(purge_wait_observed) && !purge_completed && !free_before_purge &&
           watched_code_frees == 0 && Mapped(lifetime->base) && Mapped(watched_code_free.load()),
@@ -6299,12 +6413,26 @@ void LinkedCallExecutorRetire(bool aot_mode) {
     runner.join();
     if (runner_error) std::rethrow_exception(runner_error);
     FaultEntry absent;
-    const bool returned = FlagsRegsEnabled();
-    Check(run_reason == (returned ? HaltReason::CallHost : HaltReason::CodeMiss),
-          "restored linked Call executor completes or ejects at the retired return");
-    if (!returned) Check(run_location == return_pc, "restored linked Call ejection names the retired return location");
+    // The explicit region configuration publishes an SMC request in both
+    // flags modes. The callee's return poll consumes its frame and ejects at
+    // the guest return before invoking a retained native continuation.
+    CheckCallHalt(run_reason,
+                  HaltReason::CodeMiss,
+                  run_location,
+                  "restored linked Call executor completes or ejects at the retired return");
+    Check(run_location == return_pc,
+          "restored linked Call ejection names the retired return location");
     Check(run_value == 37 && run_callback == 84, "restored linked Call executor preserves callee witnesses");
-    Check(run_witness == (returned ? 0x51ab : 0), "restored linked Call executor reaches the return block only with a live continuation");
+    Check(run_witness == 0,
+          "the retired return body never executes through a retained continuation");
+    CheckCallHalt(retry_reason,
+                  HaltReason::CodeMiss,
+                  retry_location,
+                  "a second entry cannot reuse the retired return code");
+    Check(retry_location == return_pc && retry_witness == 0 && retry_rsb_empty,
+          "retry keeps the exact return PC, untouched return witness and empty frame stack");
+    Check(run_flags == 0 && retry_flags == run_flags,
+          "the SMC return and retry preserve the callee's committed NZCV");
     Check(run_rsb_empty, "restored linked Call executor balances the return stack buffer");
     Check(purge_completed && watched_code_frees == 1 &&
           links.QuerySourceSites(owner).empty() && !module->LookupCodeAllocation(lifetime->base, absent),
@@ -6314,8 +6442,11 @@ void LinkedCallExecutorRetire(bool aot_mode) {
     Check(links.QueryTarget(target_pc) && space.GetCodeCacheTable().Lookup(target_pc) == target_entry &&
           IsFunction(module->GetNode(Location{target_pc})),
           "independent callee remains installed after restored linked Call retirement");
-    std::printf("linked_call_executor backend=%s retired=1 returned=%u reader_wait=1 frees=1 entries=%zu sites=1\n",
-                aot_mode ? "aot" : "disk", unsigned(returned), entry_count);
+    std::printf(
+            "linked_call_executor backend=%s retired=1 returned=0 code_miss=1 retry_miss=1 "
+            "reader_wait=1 frees=1 entries=%zu sites=1\n",
+            aot_mode ? "aot" : "disk",
+            entry_count);
 }
 
 void LinkedCallTargetInvalidate(bool aot_mode) {
@@ -6337,6 +6468,7 @@ void LinkedCallTargetInvalidate(bool aot_mode) {
     });
     GuestWindow guest;
     auto config = TestConfig(guest.memory);
+    config.uniform_buffer_size = kReturningCallUniformSize;
     config.global_opts = Optimizations::BlockLink | Optimizations::ReturnStackBuffer;
     config.region_edges = true;
     const auto page = static_cast<u64>(getpagesize());
@@ -6410,7 +6542,7 @@ void LinkedCallTargetInvalidate(bool aot_mode) {
         u64 value{}, witness{}, callback_result{};
         std::memcpy(&value, runtime.GetUniformBuffer().data(), 8);
         std::memcpy(&witness, runtime.GetUniformBuffer().data() + 24, 8);
-        std::memcpy(&callback_result, runtime.GetUniformBuffer().data() + 32, 8);
+        std::memcpy(&callback_result, runtime.GetUniformBuffer().data() + kCallCallbackOffset, 8);
         Check(value == 37 && witness == 0x51ab && callback_result == 84,
               "restored linked Call warmup preserves target value, return witness and callback result");
     }
@@ -6436,20 +6568,31 @@ void LinkedCallTargetInvalidate(bool aot_mode) {
     purge_wait_observed = purge_completed = free_before_purge = false;
     linked_executor_inside = linked_executor_release = false;
     std::exception_ptr runner_error;
-    HaltReason run_reason{};
-    u64 run_value{}, run_witness{}, run_callback{}, run_location{};
-    bool run_rsb_empty{};
+    HaltReason run_reason{}, retry_reason{};
+    u64 run_value{}, run_witness{}, run_callback{}, run_location{}, run_flags{};
+    u64 retry_location{}, retry_witness{}, retry_flags{};
+    bool run_rsb_empty{}, retry_rsb_empty{};
+    State* run_state{};
     runner = std::thread([&] {
         try {
             Runtime runtime{&space};
+            run_state = runtime.GetState();
             prime(runtime);
             runtime.SetLocation(source_pc);
             run_reason = runtime.Run();
             run_location = runtime.GetLocation();
             std::memcpy(&run_value, runtime.GetUniformBuffer().data(), 8);
             std::memcpy(&run_witness, runtime.GetUniformBuffer().data() + 24, 8);
-            std::memcpy(&run_callback, runtime.GetUniformBuffer().data() + 32, 8);
+            std::memcpy(&run_callback, runtime.GetUniformBuffer().data() + kCallCallbackOffset, 8);
             run_rsb_empty = runtime.GetState()->rsb_pointer == runtime.GetState()->rsb_empty;
+            run_flags = runtime.GetState()->host_cpu_flags & 0xf0000000u;
+            // A new host entry must observe the revoked return alias, even
+            // though the first execution retained its source through grace.
+            retry_reason = runtime.Run();
+            retry_location = runtime.GetLocation();
+            std::memcpy(&retry_witness, runtime.GetUniformBuffer().data() + 24, 8);
+            retry_flags = runtime.GetState()->host_cpu_flags & 0xf0000000u;
+            retry_rsb_empty = runtime.GetState()->rsb_pointer == runtime.GetState()->rsb_empty;
         } catch (...) { runner_error = std::current_exception(); }
     });
     const auto wait_until = [](const std::atomic<bool>& flag) {
@@ -6476,6 +6619,17 @@ void LinkedCallTargetInvalidate(bool aot_mode) {
           "retire the invalidated restored Call source while its executor is inside the callee");
     Check(Mapped(target->host_pc) && IsFunction(module->GetNode(Location{target_pc})),
           "Call invalidation and retirement preserve the independent callee allocation");
+    Check(run_state != nullptr && space.ExitLatchEnabled(),
+          "the blocked callee has a live Runtime with region exit requests enabled");
+    const auto request =
+            std::atomic_ref<u64>(run_state->exit_request).load(std::memory_order_acquire);
+    Check((request & kBackedgeSmcRequestMask) != 0 &&
+                  (request & (kBackedgeSignalRequest | kRetirementExitRequest)) == 0,
+          "source retirement publishes an SMC generation before the callee is released");
+    Check(!space.GetCodeCacheTable().Lookup(return_pc) &&
+                  !space.GetCallCodeCacheTable().Lookup(return_pc) &&
+                  !space.GetPendingCallCodeCacheTable().Lookup(return_pc),
+          "source retirement revokes the canonical and both Call return aliases");
     linked_executor_release = true;
     Check(wait_until(purge_wait_observed) && !purge_completed && !free_before_purge &&
           watched_code_frees == 0 && Mapped(lifetime->base) && Mapped(watched_code_free.load()),
@@ -6484,20 +6638,36 @@ void LinkedCallTargetInvalidate(bool aot_mode) {
     runner.join();
     if (runner_error) std::rethrow_exception(runner_error);
     FaultEntry absent;
-    const bool returned = FlagsRegsEnabled();
-    Check(run_reason == (returned ? HaltReason::CallHost : HaltReason::CodeMiss),
-          "invalidated Call executor completes or ejects at the retired return");
-    if (!returned) Check(run_location == return_pc, "invalidated Call ejection names the retired return location");
+    // The explicit region configuration publishes an SMC request in both
+    // flags modes. The callee's return poll consumes its frame and ejects at
+    // the guest return before invoking a retained native continuation.
+    CheckCallHalt(run_reason,
+                  HaltReason::CodeMiss,
+                  run_location,
+                  "invalidated Call executor completes or ejects at the retired return");
+    Check(run_location == return_pc, "invalidated Call ejection names the retired return location");
     Check(run_value == 37 && run_callback == 84, "invalidated Call executor preserves callee witnesses");
-    Check(run_witness == (returned ? 0x51ab : 0), "invalidated Call executor reaches the return block only with a live continuation");
+    Check(run_witness == 0,
+          "the invalidated source return body never executes through a retained continuation");
+    CheckCallHalt(retry_reason,
+                  HaltReason::CodeMiss,
+                  retry_location,
+                  "a second entry cannot reuse the retired return code");
+    Check(retry_location == return_pc && retry_witness == 0 && retry_rsb_empty,
+          "retry keeps the exact return PC, untouched return witness and empty frame stack");
+    Check(run_flags == 0 && retry_flags == run_flags,
+          "the SMC return and retry preserve the callee's committed NZCV");
     Check(run_rsb_empty, "invalidated Call executor balances the return stack buffer");
     Check(purge_completed && watched_code_frees == 1 &&
           links.QuerySourceSites(owner).empty() && !module->LookupCodeAllocation(lifetime->base, absent),
           "invalidated Call source frees exactly once after grace");
     Check(!smc.RetireNode(space, &l1, module, GetFunction(node).get()),
           "repeated invalidated Call retirement cannot free twice");
-    std::printf("linked_call_invalidate backend=%s invalidated=1 retired=1 returned=%u reader_wait=1 frees=1 entries=%zu sites=1\n",
-                aot_mode ? "aot" : "disk", unsigned(returned), entry_count);
+    std::printf(
+            "linked_call_invalidate backend=%s invalidated=1 retired=1 returned=0 code_miss=1 "
+            "retry_miss=1 reader_wait=1 frees=1 entries=%zu sites=1\n",
+            aot_mode ? "aot" : "disk",
+            entry_count);
 }
 
 void LinkedConcurrentDoubleRetire(bool aot_mode) {
@@ -6747,7 +6917,7 @@ void LinkedRestoredDualExecutorRetire(bool aot_mode) {
         const auto result = function->CallLambda<TypedValue<ValueType::U64>>(Lambda{Imm{callback}});
         function->StoreUniform(Uniform{24, ValueType::U64}, result);
         function->StoreUniform(Uniform{16, ValueType::U64},
-                function->LoadImm(Imm{u64{91}}).SetType(ValueType::U64));
+                               function->LoadImm(ValueType::U64, Imm{u64{91}}));
         function->EndBlock(terminal::LinkBlock{Location{target_pc}});
         function->EndFunction();
         auto* entry = static_cast<u8*>(TranslateIR(module, function));
@@ -7895,7 +8065,7 @@ void LinkedConcurrentCompile(bool aot_mode) {
             HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
             auto* function = builder.AppendFunction(Location{fresh_pc}, Location{fresh_pc + 4});
             function->StoreUniform(Uniform{16, ValueType::U64},
-                    function->LoadImm(Imm{u64{93}}).SetType(ValueType::U64));
+                                   function->LoadImm(ValueType::U64, Imm{u64{93}}));
             function->EndBlock(terminal::LinkBlock{Location{target_pc}});
             function->EndFunction();
             fresh_entry = static_cast<u8*>(TranslateIR(module, function));
@@ -8097,7 +8267,7 @@ void LinkedConcurrentCompileRetire(bool aot_mode) {
             HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
             auto* function = builder.AppendFunction(Location{fresh_pc}, Location{fresh_pc + 4});
             function->StoreUniform(Uniform{16, ValueType::U64},
-                    function->LoadImm(Imm{u64{93}}).SetType(ValueType::U64));
+                                   function->LoadImm(ValueType::U64, Imm{u64{93}}));
             function->EndBlock(terminal::LinkBlock{Location{target_pc}});
             function->EndFunction();
             fresh_entry = static_cast<u8*>(TranslateIR(module, function));
@@ -8400,8 +8570,10 @@ void Persistence() {
         auto module = space.GetDefaultModule();
         HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
         auto* function = builder.AppendFunction(Location{0x100}, Location{0x104});
-        function->StoreUniform(Uniform{0, ValueType::U64}, function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64));
-        function->EndBlock(terminal::ReturnToHost{}); function->EndFunction();
+        function->StoreUniform(Uniform{0, ValueType::U64},
+                               function->LoadImm(ValueType::U64, Imm{u64{37}}));
+        function->EndBlock(terminal::ReturnToHost{});
+        function->EndFunction();
         auto* entry = TranslateIR(module, function);
         Check(entry && space.PushCodeCache(Location{0x100}, entry), "publish a real persistable production unit and slot");
         // RV CompileFunctions records its own unit. ARM's standalone test
@@ -8471,7 +8643,157 @@ void Persistence() {
     Check(count == 1 && rmdir(directory) == 0, "exactly one cache file was published in the unique directory");
 }
 
+void BlockEmissionFallback() {
+#if defined(__aarch64__)
+    std::optional<std::string> old_profile, old_cache;
+    if (const auto* value = GetRawSvmConfigEnvForTest("SVM_PROF2")) old_profile = value;
+    if (const auto* value = GetRawSvmConfigEnvForTest("SVM_JIT_CACHE")) old_cache = value;
+    const auto restore = ScopeExit([&] {
+        block_emission_allocation_watch = nullptr;
+        if (old_profile) SetSvmConfigEnvForTest("SVM_PROF2", old_profile->c_str(), 1);
+        else UnsetSvmConfigEnvForTest("SVM_PROF2");
+        if (old_cache) SetSvmConfigEnvForTest("SVM_JIT_CACHE", old_cache->c_str(), 1);
+        else UnsetSvmConfigEnvForTest("SVM_JIT_CACHE");
+    });
+    Check(SetSvmConfigEnvForTest("SVM_PROF2", "1", 1) == 0 &&
+          SetSvmConfigEnvForTest("SVM_JIT_CACHE", "", 1) == 0 && Perf2Enabled(),
+          "enable existing phase counters and isolate Block fallback cache");
+    for (const bool hir : {false, true}) for (const bool fallback : {false, true}) {
+        GuestWindow guest;
+        auto config = TestConfig(guest.memory);
+        config.global_opts = Optimizations::BlockLink;
+        AddressSpace space{config};
+        const auto module = space.GetDefaultModule();
+        const VAddr target_pc = 0x100;
+        const VAddr source_pc = 2 * static_cast<VAddr>(getpagesize()) + 0x100;
+        IntrusivePtr<Block> target{new Block(0, Location{target_pc})};
+        target->SetEndLocation(Location{target_pc + 1});
+        const auto result = target->LoadImm(ValueType::U64, Imm{u64{0x85}});
+        target->StoreUniform(Uniform{0, ValueType::U64}, result);
+        target->SetTerminal(terminal::ReturnToHost{});
+        target->ReIdInstr();
+        Check(module->Push(target.get()), "register the independent fallback target with its Module");
+        auto* target_code = static_cast<u8*>(TranslateIR(module, target));
+        Check(target_code != nullptr, "compile the real Block fallback target");
+        space.PushCodeCache(Location{target_pc}, target_code);
+
+        IntrusivePtr<Block> source;
+        std::optional<HIRBuilder> builder;
+        HIRBlock* source_hir{};
+        if (hir) {
+            builder.emplace(1, true, ResolveFeatureSet(module->GetModuleConfig()));
+            auto* function = builder->AppendFunction(Location{source_pc}, Location{source_pc + 1});
+            source_hir = function->CreateOrGetBlock(Location{source_pc});
+            const auto marker = function->LoadImm(ValueType::U64, Imm{u64{0x37}});
+            function->StoreUniform(Uniform{8, ValueType::U64}, marker);
+            function->EndBlock(terminal::LinkBlock{Location{target_pc}});
+            function->EndFunction();
+            function->ComputeRPO();
+            function->IdByRPO();
+            source.reset(source_hir->GetBlock());
+            source->SetEndLocation(Location{source_pc + 1});
+            u32 position{};
+            for (const auto& instruction : source->GetInstList())
+                Check(instruction.Id() == position++, "single real HIR block already has local dense IDs");
+            const auto* value_record = function->GetHIRValue(marker);
+            Check(value_record && value_record->GetUses().size() == 1,
+                  "retain the HIR marker's real StoreUniform use before final Block metadata");
+            const auto* use_record = &value_record->GetUses().front();
+            const auto* user = use_record->inst;
+            const auto argument = use_record->arg_idx;
+            const auto uses = marker.Def()->GetUses();
+            // Function RPO numbering does not fill Block::MaxInstrId. This
+            // single-block fixture keeps the same IDs while finalizing it.
+            source->ReIdInstr();
+            Check(function->GetHIRValue(marker) == value_record &&
+                  value_record->GetUses().size() == 1 &&
+                  &value_record->GetUses().front() == use_record &&
+                  use_record->inst == user && use_record->arg_idx == argument &&
+                  marker.Def()->GetUses() == uses,
+                  "final Block numbering preserves the HIR value and original use-chain nodes");
+            Check(IsEmpty(module->GetNode(Location{source_pc})),
+                  "HIR source is left for TranslateIR's standalone detach-and-publish path");
+        } else {
+            source.reset(new Block(0, Location{source_pc}));
+            source->SetEndLocation(Location{source_pc + 1});
+            const auto marker = source->LoadImm(ValueType::U64, Imm{u64{0x37}});
+            source->StoreUniform(Uniform{8, ValueType::U64}, marker);
+            source->SetTerminal(terminal::LinkBlock{Location{target_pc}});
+            source->ReIdInstr();
+            Check(module->Push(source.get()), "register the independent fallback source with its Module");
+        }
+        Check(source->GetInstList().size() == source->MaxInstrId(),
+              "both final Block fixtures have complete instruction-count metadata");
+        const auto& stats = GetPerfStats2();
+        const std::array before{
+                stats.pass_total.calls.load(std::memory_order_relaxed),
+                stats.allocate_block.calls.load(std::memory_order_relaxed),
+                stats.allocate_function.calls.load(std::memory_order_relaxed),
+                stats.codegen_complete.calls.load(std::memory_order_relaxed)};
+        BlockEmissionAllocationWatch watch{.module = module.get(), .block = source.get(),
+                                            .reject_first = fallback};
+        block_emission_allocation_watch = &watch;
+        const auto clear_watch = ScopeExit([&] { block_emission_allocation_watch = nullptr; });
+        auto* entry = static_cast<u8*>(hir ? TranslateIR(module, source_hir)
+                                           : TranslateIR(module, source));
+        block_emission_allocation_watch = nullptr;
+        Check(entry != nullptr, hir ? "HIRBlock TranslateIR accepts the final dense fixture"
+                                    : "independent Block TranslateIR accepts the registered fixture");
+        Check(watch.calls == (fallback ? 2u : 1u),
+              fallback ? "forced fallback reaches both allocation attempts"
+                       : "ordinary emission reaches exactly one allocation attempt");
+        Check(watch.required_region[0], "first emission explicitly requests a direct-link region");
+        Check(watch.rejected == fallback, "only the forced-fallback case injects the first rejection");
+        Check(watch.unpublished, "no allocation attempt sees an already published source cache or target");
+        const auto source_node = module->GetNode(Location{source_pc});
+        Check(IsBlock(source_node) && GetBlock(source_node).get() == source.get(),
+              "both APIs retain the exact source Block in the Module after publication");
+        Check(watch.phases[0][0] == before[0] + (hir ? 0u : 1u) &&
+              watch.phases[0][1] == before[1] + 1 && watch.phases[0][2] == before[2] &&
+              watch.phases[0][3] == before[3] + 1,
+              "both Block APIs prepare once through the Block allocation entry");
+        if (fallback) {
+            Check(!watch.required_region[1] && watch.sizes[0] && watch.sizes[1] &&
+                  watch.phases[0] == watch.phases[1] &&
+                  watch.ir_signature[0] == watch.ir_signature[1],
+                  "fallback re-emits unchanged prepared IR without optimization or allocation");
+        }
+        Check(source->GetJitCache().jit_state == JitState::Cached &&
+              module->GetJitCache(source->GetJitCache()) == entry,
+              "the final successful allocation is the sole Block cache entry");
+        FaultEntry fault;
+        Check(module->LookupFault(entry, fault) && fault.guest_loc == source_pc &&
+              fault.Contains(entry), "the selected emission publishes its source fault range");
+        const auto published = space.GetLinkManager().QueryTarget(source_pc);
+        Check(published && published->host_pc == entry,
+              "the selected emission publishes the final source link target");
+        Check(space.GetLinkManager().GetStats().sites == (fallback ? 0u : 1u),
+              "disabled-region re-emission drops the rejected buffer's direct-link sites");
+        space.PushCodeCache(Location{source_pc}, entry);
+        Runtime runtime{&space};
+        for (unsigned run = 0; run < 2; ++run) {
+            std::memset(runtime.GetUniformBuffer().data(), 0, 16);
+            runtime.SetLocation(source_pc);
+            Check(runtime.Run() == HaltReason::CallHost,
+                  "the selected Block emission executes through the actual target");
+            u64 observed{}, marker{};
+            std::memcpy(&observed, runtime.GetUniformBuffer().data(), 8);
+            std::memcpy(&marker, runtime.GetUniformBuffer().data() + 8, 8);
+            Check(observed == 0x85 && marker == 0x37,
+                  "normal and rebuilt emissions preserve both source and target effects");
+        }
+        const auto sites = space.GetLinkManager().QuerySourceSites({module.get(), entry});
+        Check(fallback ? sites.empty() : sites.size() == 1 && sites.front().state == LinkSiteState::Linked,
+              "only the ordinary region emission becomes a live direct source link");
+        Check(stats.allocate_block.calls.load(std::memory_order_relaxed) == before[1] + 1 &&
+              stats.allocate_function.calls.load(std::memory_order_relaxed) == before[2],
+              "warm execution reuses the final cache without another allocation");
+    }
+#endif
+}
+
 void Cycles() {
+    BlockEmissionFallback();
     for (unsigned i = 0; i < 16; ++i) {
         void* rx{}; void* rw{}; void* entry{};
         std::shared_ptr<Module> retained;

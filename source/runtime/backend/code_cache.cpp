@@ -106,6 +106,7 @@ MemMap::ReleaseResult CodeCache::ReleaseAfterQuiescence() {
         }
         region_link_context_.reset();
         region = {};
+        pair_call_trampoline_offset = CodeRegion::kInvalidTrampolineOffset;
         code_cursor = nullptr;
         code_mem_mapped = nullptr;
     }
@@ -149,6 +150,7 @@ bool CodeCache::InitializeRegionTrampoline(LinkManager& manager,
     region.pending_flags_trampoline_offset =
             buffer->offset + trampoline.pending_flags_offset;
     region.return_trampoline_offset = buffer->offset + trampoline.return_offset;
+    pair_call_trampoline_offset = buffer->offset + trampoline.pair_call_offset;
     for (u32 mask = 1; mask < 15; ++mask) {
         flags_mask_trampoline_offsets[mask] =
                 buffer->offset + trampoline.flags_mask_offsets[mask];
@@ -157,6 +159,12 @@ bool CodeCache::InitializeRegionTrampoline(LinkManager& manager,
     }
     region_link_context_ = std::move(context);
     return true;
+}
+
+void* CodeCache::GetPairCallRegionTrampoline() const {
+    return pair_call_trampoline_offset == CodeRegion::kInvalidTrampolineOffset
+                   ? nullptr
+                   : region.rx_base + pair_call_trampoline_offset;
 }
 
 void* CodeCache::GetRegionTrampoline() const {

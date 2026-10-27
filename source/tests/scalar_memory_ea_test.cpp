@@ -33,7 +33,7 @@ std::vector<Operand> DecodeMemoryOperands(
     const auto address = reinterpret_cast<swift::VAddr>(code.data());
     DirectMemory memory;
     Block block{0, Location{address}};
-    Assembler assembler{&block};
+    swift::runtime::compile::IrBuilder assembler{&block};
     swift::x86::X64Decoder decoder{address,
                                    &memory,
                                    &assembler,
@@ -92,8 +92,8 @@ TEST_CASE("x86 memory ordering belongs to each decoder and covers shared stack a
         DirectMemory memory;
         Block ordered{0, Location{address}};
         Block basic{0, Location{address}};
-        Assembler ordered_ir{&ordered};
-        Assembler basic_ir{&basic};
+        swift::runtime::compile::IrBuilder ordered_ir{&ordered};
+        swift::runtime::compile::IrBuilder basic_ir{&basic};
         swift::x86::X64Decoder first{
                 address, &memory, &ordered_ir, true, Arm64Features::None,
                 false, true, FeatureSet{}, 0, swift::x86::DecodeStopKind::Internal,

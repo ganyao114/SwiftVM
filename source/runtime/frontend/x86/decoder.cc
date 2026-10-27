@@ -14,7 +14,6 @@
 #include "runtime/frontend/x86/xsave.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 static std::array<ABIRegUniform, 1> general_return_x86{{offsetof(ThreadContext64, rax), 4}};
@@ -142,9 +141,9 @@ ir::Value X64Decoder::MemLoad(const ir::Operand& addr, ir::ValueType type, bool 
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::Memory};
     if (tso) {
-        return assembler->LoadMemoryTSO(addr).SetType(type);
+        return assembler->LoadMemoryTSO(type, addr);
     }
-    return assembler->LoadMemory(addr).SetType(type);
+    return assembler->LoadMemory(type, addr);
 }
 
 bool X64Decoder::ScalarVOperandsEnabled() const {
@@ -197,7 +196,7 @@ ir::Uniform ToVReg(const X86RegInfo& info) {
 
 X64Decoder::X64Decoder(VAddr start,
                        runtime::MemoryInterface* memory,
-                       ir::Assembler* visitor,
+                       compile::IrBuilder* visitor,
                        bool is_64bit,
                        runtime::Arm64Features arm64_features,
                        bool sse_afp_nan,
@@ -279,6 +278,8 @@ public:
             if (!FetchInstruction()) {
                 break;
             }
+
+            compile::IrBuilder::GuestInstructionScope instruction{*decoder.assembler};
 
             switch (PredispatchInstruction()) {
                 case StepResult::Handled:
@@ -832,7 +833,7 @@ ir::Value X64Decoder::R(_RegisterType reg) {
         auto offset = ToReg(info).GetOffset();
         auto parent = __ LoadUniform(ir::Uniform{offset, ir::ValueType::U16});
         auto shifted = __ LsrImm(parent, ir::Imm(8u));
-        return __ And(shifted, ir::Operand{ir::Imm(0xFFu)}).SetType(ir::ValueType::U8);
+        return __ And(ir::ValueType::U8, shifted, ir::Operand{ir::Imm(0xFFu)});
     }
     return __ LoadUniform(ToReg(info));
 }
@@ -930,13 +931,10 @@ ir::Value X64Decoder::NarrowTo(ir::Value value, ir::ValueType type) {
         return value;
     }
     if (want == 8) {
-        return __ ZeroExtend64(value);
+        return __ ZeroExtend64(ir::ValueType::U64, value);
     }
-    // W-adjust first (safe for any input width), then a cast-type
-    // adjustment for sub-32 destinations. (SetType would mutate the producing
-    // instruction's own width and still leave the wrapper's cast unchanged —
-    // the store width follows the wrapper.)
-    value = __ ZeroExtend32(value);
+    // W-adjust first, then give sub-32-bit stores a view of that new result.
+    value = __ ZeroExtend32(ir::ValueType::U32, value);
     if (want < 4) {
         value = value.SetCastType(type);
     }
@@ -1009,7 +1007,7 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
             swift::runtime::PerfLoweringPart2::Flags};
     if (auto local = TryLocalCondition(cond);
         local && local->fcmp.Def() && FlagsFcmpFuseEnabled()) {
-        return __ FCmpCondSet(local->fcmp, local->arm).SetType(ir::ValueType::U8);
+        return __ FCmpCondSet(ir::ValueType::U8, local->fcmp, local->arm);
     }
     switch (cond) {
         case Cond::AL:
@@ -1017,9 +1015,9 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
         case Cond::NV:
             return __ LoadImm(ir::Imm(false));
         case Cond::PA:
-            return __ TestFlags(ir::Flags::Parity).SetType(ir::ValueType::U8);
+            return __ TestFlags(ir::ValueType::U8, ir::Flags::Parity);
         case Cond::NP:
-            return __ TestNotFlags(ir::Flags::Parity).SetType(ir::ValueType::U8);
+            return __ TestNotFlags(ir::ValueType::U8, ir::Flags::Parity);
         default:
             break;
     }
@@ -1091,16 +1089,9 @@ ir::BOOL X64Decoder::CheckCond(Cond cond) {
     // numerous IR opcode in the corpus (15.15%), a large part of it these two
     // constants (docs/ir-expansion-attribution.md 2 and 3.4).
     //
-    // SetType is REQUIRED, not decoration.  Inst::SetArg infers a default
-    // return type from the first typed argument, and Cond is untyped -- an
-    // opcode whose only argument is a Cond therefore keeps ValueType::VOID.
-    // The JIT survives that (RegAlloc keys off the opcode's meta return type),
-    // but Interpreter::WriteScalar early-returns on VOID and silently writes
-    // nothing, so the condition would read as whatever was left in the slot.
-    // Caught by run_helper_fault_tests.sh's SVM_ENABLE_JIT=0 shapes; the two
-    // back ends now assert on it.  U8 is what the old LoadImm(u8) pair gave
-    // CondSelect, so the register width is unchanged.
-    return __ CondSet(arm).SetType(ir::ValueType::U8);
+    // Cond has no operand type to infer. The explicit U8 result also lets the
+    // interpreter size its output slot correctly.
+    return __ CondSet(ir::ValueType::U8, arm);
 }
 
 bool X64Decoder::FlagsNarrowAlignEnabled() const {
@@ -1159,6 +1150,16 @@ X64Decoder::SuccessorFlagsProof X64Decoder::ProveSuccessorFlagsDead(
                            FLAG_PRIVILEGED_INSTRUCTION)) != 0) {
             return {};
         }
+        // Only ordinary GPR data operations may precede the overwrite.
+        // LEA and multi-byte NOP have address operands without accessing memory.
+        const bool address_only = insn.opcode == I_LEA || insn.opcode == I_NOP;
+        for (const auto& operand : insn.ops) {
+            if ((operand.type == O_REG && operand.index > R_DIL) ||
+                (!address_only && (operand.type == O_MEM || operand.type == O_SMEM ||
+                                   operand.type == O_DISP))) {
+                return {};
+            }
+        }
         if ((insn.testedFlagsMask & incoming) != 0) {
             return {};
         }
@@ -1166,6 +1167,27 @@ X64Decoder::SuccessorFlagsProof X64Decoder::ProveSuccessorFlagsDead(
         if (insn.opcode == I_TEST || insn.opcode == I_AND ||
             insn.opcode == I_OR || insn.opcode == I_XOR) {
             written |= D_CF | D_OF;
+        }
+        if (written != 0) {
+            // Undefined/modified bits alone do not prove that an instruction
+            // reaches its flag write: DIV, POPF and other implicit faults do not.
+            switch (insn.opcode) {
+                case I_ADD:
+                case I_ADC:
+                case I_SUB:
+                case I_SBB:
+                case I_CMP:
+                case I_NEG:
+                case I_TEST:
+                case I_AND:
+                case I_OR:
+                case I_XOR:
+                case I_MUL:
+                case I_IMUL:
+                    break;
+                default:
+                    return {};
+            }
         }
         incoming &= ~written;
         if (incoming == 0) {
@@ -1178,23 +1200,10 @@ X64Decoder::SuccessorFlagsProof X64Decoder::ProveSuccessorFlagsDead(
             return {};
         }
         const auto flow = META_GET_FC(insn.meta);
+        // A direct CALL can fault while pushing its return address before
+        // the callee overwrites flags. It is not a fault-free prefix.
         if (flow == FC_CALL) {
-            if (direct_transfer_depth != 0 || insn.opcode != I_CALL ||
-                insn.ops[0].type != O_PC ||
-                !runtime::GetSvmConfig().jit_cache.empty()) {
-                return {};
-            }
-            const auto next = (cursor + insn.size) & addr_mask;
-            const auto target = (next + insn.imm.sqword) & addr_mask;
-            const auto callee = ProveSuccessorFlagsDead(
-                    target, direct_transfer_depth + 1);
-            if (!callee.dead) {
-                return {};
-            }
-            return {.dead = true,
-                    .has_dependency = true,
-                    .dependency_start = target,
-                    .covered_end = callee.covered_end};
+            return {};
         }
         if (flow == FC_UNC_BRANCH) {
             if (direct_transfer_depth != 0 || insn.opcode != I_JMP ||
@@ -1414,9 +1423,8 @@ std::optional<X64Decoder::LocalCondition> X64Decoder::TryLocalCondition(Cond con
 }
 
 ir::Value X64Decoder::CarryValue() {
-    swift::runtime::PerfLoweringPartScope2 perf{
-            swift::runtime::PerfLoweringPart2::Flags};
-    auto raw = __ TestFlags(ir::Flags::Carry).SetType(ir::ValueType::U8);
+    swift::runtime::PerfLoweringPartScope2 perf{swift::runtime::PerfLoweringPart2::Flags};
+    auto raw = __ TestFlags(ir::ValueType::U8, ir::Flags::Carry);
     switch (carry_) {
         case CarryPolarity::Inverted:
             return __ Xor(raw, ir::Operand{ir::Imm(u64(1))});
@@ -1450,7 +1458,7 @@ void X64Decoder::MergeConditionalCarryPolarity() {
 }
 
 ir::Value X64Decoder::DirectionValue() {
-    return __ LoadUniform(DirectionUniform()).SetType(ir::ValueType::U8);
+    return __ LoadUniform(ir::ValueType::U8, DirectionUniform());
 }
 
 void X64Decoder::StoreDirection(bool backward) {
@@ -1474,7 +1482,7 @@ void X64Decoder::CondGoto(ir::BOOL cond, ir::Lambda then_, ir::Location else_) {
 ir::Value X64Decoder::ToValue(const ir::DataClass& data) {
     swift::runtime::PerfLoweringPartScope2 perf{
             swift::runtime::PerfLoweringPart2::RegValue};
-    return data.IsImm() ? __ LoadImm(data.imm) : data.value;
+    return data.IsImm() ? __ LoadImm(data.imm.GetType(), data.imm) : data.value;
 }
 
 ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op, bool force_tso) {
@@ -1530,10 +1538,8 @@ ir::DataClass X64Decoder::Src(_DInst& insn, _Operand& op, bool force_tso) {
                 if (PreserveMemoryEA(address_operand, size)) {
                     result = MemLoad(address_operand.ToIROperand(), size, false);
                 } else {
-                    auto address =
-                            __ GetOperand(address_operand.ToIROperand())
-                                    .SetType(is_64bit ? ir::ValueType::U64
-                                                     : ir::ValueType::U32);
+                    auto address = __ GetOperand(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32,
+                                                 address_operand.ToIROperand());
                     result = MemLoad(ir::Operand{address}, size, false);
                 }
             }
@@ -1581,10 +1587,8 @@ void X64Decoder::Dst(_DInst& insn, _Operand& operand, const ir::DataClass& data,
                 if (PreserveMemoryEA(address, value.Type())) {
                     MemStore(address.ToIROperand(), value, false);
                 } else {
-                    auto folded =
-                            __ GetOperand(address.ToIROperand())
-                                    .SetType(is_64bit ? ir::ValueType::U64
-                                                     : ir::ValueType::U32);
+                    auto folded = __ GetOperand(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32,
+                                                address.ToIROperand());
                     MemStore(ir::Operand{folded}, value, false);
                 }
             }
@@ -1603,9 +1607,8 @@ X64Decoder::RmwOperand X64Decoder::ReadForWrite(_DInst& insn, _Operand& operand)
     if (tso || PreserveMemoryEA(structured, type)) {
         address = structured.ToIROperand();
     } else {
-        auto flat = __ GetOperand(structured.ToIROperand())
-                            .SetType(is_64bit ? ir::ValueType::U64
-                                             : ir::ValueType::U32);
+        auto flat = __ GetOperand(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32,
+                                  structured.ToIROperand());
         address = ir::Operand{flat};
     }
     return {MemLoad(address, type, tso), address, tso};
@@ -1636,7 +1639,7 @@ ir::DataClass X64Decoder::GetOperand(const X64Decoder::Operand& operand) {
     if (operand.OnlyLeft()) {
         return operand.Left();
     } else {
-        return __ GetOperand(operand.ToIROperand());
+        return __ GetOperand(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32, operand.ToIROperand());
     }
 }
 
@@ -1861,17 +1864,17 @@ X64Decoder::Operand X64Decoder::GetAddress(_DInst& insn, _Operand& op) {
 
 ir::Value X64Decoder::Extend(ir::Value value, ir::ValueType type, bool sign) {
     if (sign) {
-        return __ SignExtend(value).SetType(type);
+        return __ SignExtend(type, value);
     }
     switch (ir::GetValueSizeByte(type)) {
         case 1:
-            return __ And(value, ir::Operand{ir::Imm(0xFFu)}).SetType(ir::ValueType::U8);
+            return __ And(ir::ValueType::U8, value, ir::Operand{ir::Imm(0xFFu)});
         case 2:
-            return __ And(value, ir::Operand{ir::Imm(0xFFFFu)}).SetType(ir::ValueType::U16);
+            return __ And(ir::ValueType::U16, value, ir::Operand{ir::Imm(0xFFFFu)});
         case 4:
-            return __ ZeroExtend32(value);
+            return __ ZeroExtend32(ir::ValueType::U32, value);
         case 8:
-            return __ ZeroExtend64(value);
+            return __ ZeroExtend64(ir::ValueType::U64, value);
         default:
             PANIC();
     }
@@ -1890,11 +1893,11 @@ void X64Decoder::DecodeMovzx(_DInst& insn) {
     auto src = ToValue(Src(insn, op1));
     ir::Value result;
     if (op0.size == 64) {
-        result = __ ZeroExtend64(src);
+        result = __ ZeroExtend64(ir::ValueType::U64, src);
     } else {
         // 32 bit destinations also zero the upper half of the 64 bit register
         // (handled by the register write path); 16 bit ones store the low half.
-        result = __ ZeroExtend32(src);
+        result = __ ZeroExtend32(ir::ValueType::U32, src);
     }
     Dst(insn, op0, result);
 }
@@ -1903,7 +1906,7 @@ void X64Decoder::DecodeMovsx(_DInst& insn) {
     auto& op0 = insn.ops[0];
     auto& op1 = insn.ops[1];
     auto src = ToValue(Src(insn, op1));
-    auto result = __ SignExtend(src).SetType(GetSignedContainer(op0.size));
+    auto result = __ SignExtend(GetSignedContainer(op0.size), src);
     Dst(insn, op0, result);
 }
 
@@ -1912,12 +1915,10 @@ void X64Decoder::DecodeLea(_DInst& insn) {
     auto& op1 = insn.ops[1];
 
     auto address = GetAddress(insn, op1);
-    // SetType (mutation): EmitGetOperand sizes the result from the
-    // instruction's own return type, untyped would truncate to 32 bits.
     Dst(insn,
         op0,
-        __ GetOperand(address.ToIROperand())
-                .SetType(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32));
+        __ GetOperand(is_64bit ? ir::ValueType::U64 : ir::ValueType::U32,
+                      address.ToIROperand()));
 }
 
 // ---------------------------------------------------------------------------
@@ -2063,9 +2064,8 @@ ir::Value X64Decoder::YmmHighRead(u32 index) {
 }
 
 void X64Decoder::YmmHighWrite(u32 index, ir::Value value) {
-    swift::runtime::PerfLoweringPartScope2 perf{
-            swift::runtime::PerfLoweringPart2::RegValue};
-    __ StoreUniform(YmmHighUniform(index), value.SetType(ir::ValueType::V128));
+    swift::runtime::PerfLoweringPartScope2 perf{swift::runtime::PerfLoweringPart2::RegValue};
+    __ StoreUniform(YmmHighUniform(index), value.SetCastType(ir::ValueType::V128));
 }
 
 ir::Value X64Decoder::YmmHighLo(u32 index) {
@@ -2247,20 +2247,20 @@ void X64Decoder::DecodeVexBitwise(_DInst& insn, VecBitwiseOp op) {
     ir::Value result;
     switch (op) {
         case VecBitwiseOp::Xor:
-            result = __ VecXor(left, right);
+            result = __ VecXor(ir::ValueType::V128, left, right);
             break;
         case VecBitwiseOp::Or:
-            result = __ VecOr(left, right);
+            result = __ VecOr(ir::ValueType::V128, left, right);
             break;
         case VecBitwiseOp::And:
-            result = __ VecAnd(left, right);
+            result = __ VecAnd(ir::ValueType::V128, left, right);
             break;
         case VecBitwiseOp::AndNot:
             // VPANDN: dst = (NOT src1) AND src2; VecAndNot(x, y) = x AND NOT y.
-            result = __ VecAndNot(right, left);
+            result = __ VecAndNot(ir::ValueType::V128, right, left);
             break;
     }
-    XmmWrite(XmmOf(dst), result.SetType(ir::ValueType::V128));
+    XmmWrite(XmmOf(dst), result);
     ZeroYmmHigh(dst);
 }
 
@@ -2271,19 +2271,19 @@ void X64Decoder::DecodeVexInt(_DInst& insn, VecIntOp op, u32 lane_bits) {
     ir::Value result;
     switch (op) {
         case VecIntOp::Add:
-            result = __ VecAdd(left, right, ir::Imm(lane_bits));
+            result = __ VecAdd(ir::ValueType::V128, left, right, ir::Imm(lane_bits));
             break;
         case VecIntOp::Sub:
-            result = __ VecSub(left, right, ir::Imm(lane_bits));
+            result = __ VecSub(ir::ValueType::V128, left, right, ir::Imm(lane_bits));
             break;
         case VecIntOp::CmpEq:
-            result = __ VecCmpEq(left, right, ir::Imm(lane_bits));
+            result = __ VecCmpEq(ir::ValueType::V128, left, right, ir::Imm(lane_bits));
             break;
         case VecIntOp::CmpGt:
-            result = __ VecCmpGt(left, right, ir::Imm(lane_bits));
+            result = __ VecCmpGt(ir::ValueType::V128, left, right, ir::Imm(lane_bits));
             break;
     }
-    XmmWrite(XmmOf(dst), result.SetType(ir::ValueType::V128));
+    XmmWrite(XmmOf(dst), result);
     ZeroYmmHigh(dst);
 }
 

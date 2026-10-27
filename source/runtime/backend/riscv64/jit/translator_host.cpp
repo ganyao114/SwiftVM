@@ -1,14 +1,14 @@
+#include "runtime/backend/arm64/compile/register_contract.h"
 #include "translator.h"
 
 #include "runtime/backend/context.h"
-#include "runtime/backend/reg_alloc.h"
 
 namespace swift::runtime::backend::riscv64 {
 
 using namespace biscuit;
 using O = ir::OpCode;
 
-bool JitTranslator::EmitVectorHostRegisters(ir::Inst* inst) {
+bool JitTranslator::EmitVectorHostRegisters(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     bool load{}, host{}, fpr{};
     switch (op) {

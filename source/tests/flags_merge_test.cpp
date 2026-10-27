@@ -1,4 +1,8 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <map>
@@ -10,15 +14,13 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
-
 template <typename Build>
-std::map<std::string, swift::u32> EmitBlock(
-        Build&& build,
-        std::vector<std::string>* emitted = nullptr,
-        bool full_pin = false) {
+std::map<std::string, swift::u32> EmitBlock(Build&& build,
+                                            std::vector<std::string>* emitted = nullptr,
+                                            bool full_pin = false) {
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
@@ -53,13 +55,16 @@ std::map<std::string, swift::u32> EmitBlock(
             }
         }
     }
-    RegAlloc alloc{block->MaxInstrId(),
-                   gprs,
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{
+            block->MaxInstrId(), gprs, address_space.GetTrampolines().GetFPRRegs(), features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
 
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -98,9 +103,8 @@ std::map<std::string, swift::u32> EmitFlagsPublication(
     return EmitBlock([saved_flags](Block& block) {
         auto left = block.LoadUniform<TypedValue<ValueType::U64>>(
                 Uniform{0, ValueType::U64});
-        auto right = block.LoadUniform<TypedValue<ValueType::U64>>(
-                Uniform{8, ValueType::U64});
-        auto result = block.Sub(left, Operand{right}).SetType(ValueType::U64);
+        auto right = block.LoadUniform<TypedValue<ValueType::U64>>(Uniform{8, ValueType::U64});
+        auto result = block.Sub(ValueType::U64, left, Operand{right});
         block.SaveFlags(result, saved_flags);
     });
 }
@@ -110,9 +114,8 @@ std::map<std::string, swift::u32> EmitCarryConsumer() {
     return EmitBlock([](Block& block) {
         auto left = block.LoadUniform<TypedValue<ValueType::U64>>(
                 Uniform{0, ValueType::U64});
-        auto right = block.LoadUniform<TypedValue<ValueType::U64>>(
-                Uniform{8, ValueType::U64});
-        auto result = block.Adc(left, Operand{right}).SetType(ValueType::U64);
+        auto right = block.LoadUniform<TypedValue<ValueType::U64>>(Uniform{8, ValueType::U64});
+        auto result = block.Adc(ValueType::U64, left, Operand{right});
         block.StoreUniform(Uniform{16, ValueType::U64}, result);
     });
 }
@@ -138,7 +141,7 @@ bool Contains(const std::vector<std::string>& instructions,
     });
 }
 
-}
+}  // namespace
 
 TEST_CASE("flags-only arithmetic writes the result token directly") {
     using namespace swift::runtime::ir;
@@ -147,13 +150,12 @@ TEST_CASE("flags-only arithmetic writes the result token directly") {
     const auto mnemonics = EmitBlock([](Block& block) {
         auto left = block.LoadUniform<TypedValue<ValueType::U64>>(
                 Uniform{0, ValueType::U64});
-        auto right = block.LoadUniform<TypedValue<ValueType::U64>>(
-                Uniform{8, ValueType::U64});
-        auto add = block.Add(left, Operand{right}).SetType(ValueType::U64);
+        auto right = block.LoadUniform<TypedValue<ValueType::U64>>(Uniform{8, ValueType::U64});
+        auto add = block.Add(ValueType::U64, left, Operand{right});
         block.SaveFlags(add, Flags::All);
-        auto sub = block.Sub(left, Operand{right}).SetType(ValueType::U64);
+        auto sub = block.Sub(ValueType::U64, left, Operand{right});
         block.SaveFlags(sub, Flags::All);
-        auto logical = block.And(left, Operand{right}).SetType(ValueType::U64);
+        auto logical = block.And(ValueType::U64, left, Operand{right});
         block.SaveFlags(logical, Flags::Negate | Flags::Zero | Flags::Parity);
     }, &flags_only);
 
@@ -177,9 +179,8 @@ TEST_CASE("flags-only arithmetic writes the result token directly") {
     EmitBlock([](Block& block) {
         auto left = block.LoadUniform<TypedValue<ValueType::U64>>(
                 Uniform{0, ValueType::U64});
-        auto right = block.LoadUniform<TypedValue<ValueType::U64>>(
-                Uniform{8, ValueType::U64});
-        auto result = block.Sub(left, Operand{right}).SetType(ValueType::U64);
+        auto right = block.LoadUniform<TypedValue<ValueType::U64>>(Uniform{8, ValueType::U64});
+        auto result = block.Sub(ValueType::U64, left, Operand{right});
         block.SaveFlags(result, Flags::All);
         block.StoreUniform(Uniform{16, ValueType::U64}, result);
     }, &observed);
@@ -189,47 +190,50 @@ TEST_CASE("flags-only arithmetic writes the result token directly") {
     REQUIRE(Contains(observed, "bfxil x26"));
 
     std::vector<std::string> pinned;
-    EmitBlock([](Block& block) {
-        auto left = block.GetHostGPR(HostRegIndex(21), Imm{0u})
-                            .SetType(ValueType::U64);
-        auto right = block.GetHostGPR(HostRegIndex(20), Imm{0u})
-                             .SetType(ValueType::U64);
-        auto result = block.Sub(left, Operand{right}).SetType(ValueType::U64);
-        block.SaveFlags(result, Flags::All);
-        block.SetHostGPR(result, HostRegIndex(21), Imm{0u});
-    }, &pinned, true);
+    EmitBlock(
+            [](Block& block) {
+                auto left = block.GetHostGPR(ValueType::U64, HostRegIndex(21), Imm{0u});
+                auto right = block.GetHostGPR(ValueType::U64, HostRegIndex(20), Imm{0u});
+                auto result = block.Sub(ValueType::U64, left, Operand{right});
+                block.SaveFlags(result, Flags::All);
+                block.SetHostGPR(result, HostRegIndex(21), Imm{0u});
+            },
+            &pinned,
+            true);
 
     REQUIRE(Contains(pinned, "subs x21"));
     REQUIRE(Contains(pinned, "bfxil x26, x21"));
     REQUIRE_FALSE(Contains(pinned, "mov x12, x21"));
 
     std::vector<std::string> pinned_u32;
-    EmitBlock([](Block& block) {
-        auto left = block.GetHostGPR(HostRegIndex(21), Imm{0u})
-                            .SetType(ValueType::U32);
-        auto right = block.GetHostGPR(HostRegIndex(20), Imm{0u})
-                             .SetType(ValueType::U32);
-        auto result = block.Sub(left, Operand{right}).SetType(ValueType::U32);
-        block.SaveFlags(result, Flags::All);
-        auto published = block.ZeroExtend32To64(result).SetType(ValueType::U64);
-        block.SetHostGPR(published, HostRegIndex(21), Imm{0u});
-    }, &pinned_u32, true);
+    EmitBlock(
+            [](Block& block) {
+                auto left = block.GetHostGPR(ValueType::U32, HostRegIndex(21), Imm{0u});
+                auto right = block.GetHostGPR(ValueType::U32, HostRegIndex(20), Imm{0u});
+                auto result = block.Sub(ValueType::U32, left, Operand{right});
+                block.SaveFlags(result, Flags::All);
+                auto published = block.ZeroExtend32To64(ValueType::U64, result);
+                block.SetHostGPR(published, HostRegIndex(21), Imm{0u});
+            },
+            &pinned_u32,
+            true);
 
     REQUIRE(Contains(pinned_u32, "subs w21"));
     REQUIRE_FALSE(Contains(pinned_u32, "mov w12, w21"));
 
     std::vector<std::string> overwritten;
-    EmitBlock([](Block& block) {
-        auto left = block.GetHostGPR(HostRegIndex(21), Imm{0u})
-                            .SetType(ValueType::U64);
-        auto right = block.GetHostGPR(HostRegIndex(20), Imm{0u})
-                             .SetType(ValueType::U64);
-        auto result = block.Sub(left, Operand{right}).SetType(ValueType::U64);
-        block.SaveFlags(result, Flags::All);
-        block.SetHostGPR(result, HostRegIndex(21), Imm{0u});
-        auto replacement = block.Add(right, Operand{1}).SetType(ValueType::U64);
-        block.SetHostGPR(replacement, HostRegIndex(21), Imm{0u});
-    }, &overwritten, true);
+    EmitBlock(
+            [](Block& block) {
+                auto left = block.GetHostGPR(ValueType::U64, HostRegIndex(21), Imm{0u});
+                auto right = block.GetHostGPR(ValueType::U64, HostRegIndex(20), Imm{0u});
+                auto result = block.Sub(ValueType::U64, left, Operand{right});
+                block.SaveFlags(result, Flags::All);
+                block.SetHostGPR(result, HostRegIndex(21), Imm{0u});
+                auto replacement = block.Add(ValueType::U64, right, Operand{1});
+                block.SetHostGPR(replacement, HostRegIndex(21), Imm{0u});
+            },
+            &overwritten,
+            true);
 
     REQUIRE(Contains(overwritten, "mov x12, x21") == swift::runtime::GetSvmConfig().flags_regs);
     if (!swift::runtime::GetSvmConfig().flags_regs) {

@@ -1,6 +1,9 @@
 // ===========================================================================
 // Legacy SSE3 / SSSE3 / SSE4.1 / SSE4.2 against a ROSETTA oracle.
 // ===========================================================================
+// HADD/HSUB/ADDSUB and dot products use native quiet-NaN selection only in
+// their written result lanes. Every other operation, finite/Inf/zero bit,
+// preserved upper half, flag, GPR, source and bystander remains exact.
 //
 // Covers everything decoder_sse4.cc claims, plus the VEX twins of a
 // representative slice of it.  Each row is one instruction (for ROUND's MXCSR
@@ -98,6 +101,7 @@
 #include <string>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include "tests/support/native_nan_test_support.h"
 #include <fmt/format.h>
 #include <sys/mman.h>
 #include "runtime/common/svm_config.h"
@@ -136,6 +140,7 @@ constexpr const char* kEntries[] = {
 
 using Vec256 = std::array<u8, 32>;
 using Obs = std::array<u8, 128>;
+using swift::tests::MatchesNativeNaNResult;
 
 // Must match the generator's data-block layout exactly; the replayed
 // encodings carry these displacements literally, so nothing here is a choice.
@@ -226,6 +231,16 @@ bool Is256(const char* name) {
     return n > 2 && std::strcmp(name + n - 2, ".y") == 0;
 }
 
+u32 NativeArithmeticLaneBits(const char* name) {
+    for (const char* op : {"haddps", "hsubps", "addsubps", "vaddsubps",
+                           "vaddsubps.y", "dpps", "vdpps"})
+        if (std::strcmp(name, op) == 0) return 32;
+    for (const char* op : {"haddpd", "hsubpd", "addsubpd", "vhaddpd",
+                           "vaddsubpd", "vaddsubpd.y", "dppd"})
+        if (std::strcmp(name, op) == 0) return 64;
+    return 0;
+}
+
 // Rows whose instruction has NO vector destination: the flag-only tests and
 // the extracts.  For these ymm3 must come back exactly as it was preloaded,
 // which is the same expectation as "legacy preserves the poison" and is why
@@ -267,7 +282,7 @@ const Sse4Ref* FindRow(const char* name, int pair, int imm, int rc) {
 
 }  // namespace
 
-TEST_CASE("x86 legacy sse4 vs rosetta reference") {
+TEST_CASE("x86 legacy sse4 vs rosetta reference with native arithmetic NaN results") {
     if (!swift::runtime::GetSvmConfig().sse4) {
         SUCCEED("SVM_SSE4=0 disables the legacy SSE4 handlers; differential skipped");
         return;
@@ -653,6 +668,9 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
         REQUIRE(code.size() < 0x100);
         REQUIRE(code_addr + 0x100 < stack);
         const Obs want = ParseObs(ref.result);
+        const u32 arithmetic_bits = NativeArithmeticLaneBits(ref.name);
+        const u32 lane_bits = arithmetic_bits ? arithmetic_bits : 32;
+        const u32 written_bytes = arithmetic_bits ? (Is256(ref.name) ? 32 : 16) : 0;
         const std::string label = fmt::format("{}/{}/imm{:02x}/rc{}", ref.name,
                                               kSse4Inputs[ref.pair].name, ref.imm, ref.rc);
 
@@ -671,7 +689,8 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
             }
             continue;
         }
-        if (jit.obs != itp.obs || jit.exit != itp.exit || jit.mxcsr != itp.mxcsr) {
+        if (!MatchesNativeNaNResult(jit.obs, itp.obs, lane_bits, written_bytes) ||
+            jit.exit != itp.exit || jit.mxcsr != itp.mxcsr) {
             if (divergences++ < 15) {
                 problems.push_back(fmt::format(
                         "{}: JIT/interpreter divergence ({} vs {}, mxcsr {:#x} vs {:#x})", label,
@@ -681,13 +700,11 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
 
         for (const auto& [backend, got] : {std::pair<const char*, const Out*>{"jit", &jit},
                                            std::pair<const char*, const Out*>{"interp", &itp}}) {
-            bool differs = false;
+            auto comparable = got->obs;
             for (size_t i = 0; i < 128; ++i) {
-                if (got->obs[i] != want[i] && !ExcludedByte(ref.name, i)) {
-                    differs = true;
-                    break;
-                }
+                if (ExcludedByte(ref.name, i)) comparable[i] = want[i];
             }
+            const bool differs = !MatchesNativeNaNResult(comparable, want, lane_bits, written_bytes);
             if (differs && mismatches++ < 15) {
                 problems.push_back(fmt::format("{} [{}]: got {}, Rosetta says {} (enc {})", label,
                                                backend, Hex(got->obs), Hex(want), ref.enc));
@@ -704,6 +721,12 @@ TEST_CASE("x86 legacy sse4 vs rosetta reference") {
             if (got->mxcsr != 0x1F80u && leaked_mxcsr++ < 15) {
                 problems.push_back(fmt::format("{} [{}]: MXCSR left at {:#x}, expected 0x1f80",
                                                label, backend, got->mxcsr));
+            }
+            if (got->ymm[1] != ins_a[size_t(ref.pair)] && bystanders++ < 15) {
+                problems.push_back(fmt::format("{} [{}]: source ymm1 was modified", label, backend));
+            }
+            if (got->ymm[2] != ins_b[size_t(ref.pair)] && bystanders++ < 15) {
+                problems.push_back(fmt::format("{} [{}]: source ymm2 was modified", label, backend));
             }
             // No register beyond the four the prologue loads may change.
             for (u32 i = 4; i < 16; ++i) {

@@ -1,7 +1,9 @@
-#include "test_support.h"
-#include "runtime/frontend/ir_assembler.h"
 #include <initializer_list>
 #include <sys/resource.h>
+#include "runtime/compile/builder/ir_builder.h"
+#include "runtime/compile/passes/passes.h"
+#include "runtime/compile/workspace.h"
+#include "test_support.h"
 
 namespace swift::tests::riscv {
 namespace {
@@ -39,8 +41,8 @@ void ExpectHomes(ir::Block* block, std::initializer_list<ir::Value> homes,
 void OrdinaryAndForward() {
     for (bool forward : {false, true}) for (T type : {T::U8, T::U64, T::V128}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2000})};
-        ir::Assembler as{block.get()};
-        auto source = as.LoadUniform(ir::Uniform{0, type}).SetType(type);
+        compile::IrBuilder as{block.get()};
+        auto source = as.LoadUniform(type, ir::Uniform{0, type});
         as.StoreUniform(ir::Uniform{32, type}, source);
         auto* store = &block->GetInstList().back();
         // Move the consumer in front of its definition, preserving both nodes.
@@ -57,20 +59,25 @@ void OrdinaryAndForward() {
 }
 
 void ImplicitFlagsAndPairPseudo() {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2100})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto producer = as.Add(input, ir::Operand{ir::Imm{u64{1}}}).SetType(T::U64);
-        auto flags = as.GetFlags(producer, ir::Flags::Carry).SetType(T::U64);
-        block->RemoveInst(flags.Def()); block->InsertBefore(flags.Def(), input.Def());
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto producer = as.Add(T::U64, input, ir::Operand{ir::Imm{u64{1}}});
+        auto flags = as.GetFlags(T::U64, producer, ir::Flags::Carry);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.Change(
+                block.get(), flags.Def(), [&](ir::Inst& target) {
+                    block->RemoveInst(&target);
+                    block->InsertBefore(&target, input.Def());
+                });
         block->SetTerminal(ir::terminal::ReturnToHost{});
         ExpectHomes(block.get(), {input, producer});
     }
     for (bool cpuid : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2200})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
         auto producer = cpuid ? as.Cpuid(input, input, ir::Imm{u64{0}}, ir::Imm{u64{0}})
                               : as.Div128(input, input, input, ir::Imm{u64{0}});
         auto pseudo = cpuid ? as.CpuidUpper(producer) : as.Div128Remainder(producer);
@@ -83,15 +90,22 @@ void ImplicitFlagsAndPairPseudo() {
 }
 
 void NestedTerminalAndCFGContract() {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2300})};
-    ir::Assembler as{block.get()};
-    auto first = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    auto later = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-    auto result = as.Add(later, ir::Operand{first}).SetType(T::U64);
-    block->RemoveInst(result.Def()); block->InsertBefore(result.Def(), later.Def());
-    block->SetTerminal(ir::terminal::CheckHalt{ir::terminal::If{ir::BOOL{result},
-        ir::terminal::ReturnToHost{}, ir::terminal::Condition{ir::Cond::EQ,
-            ir::terminal::ReturnToHost{}, ir::terminal::ReturnToHost{}}}});
+    compile::IrBuilder as{block.get()};
+    auto first = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    auto later = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+    auto result = as.Add(T::U64, later, ir::Operand{first});
+    compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.Change(
+            block.get(), result.Def(), [&](ir::Inst& target) {
+                block->RemoveInst(&target);
+                block->InsertBefore(&target, later.Def());
+            });
+    block->SetTerminal(ir::terminal::CheckHalt{ir::terminal::If{
+            ir::BOOL{result},
+            ir::terminal::ReturnToHost{},
+            ir::terminal::Condition{
+                    ir::Cond::EQ, ir::terminal::ReturnToHost{}, ir::terminal::ReturnToHost{}}}});
     ExpectHomes(block.get(), {later});
     ExpectHomes(block.get(), {later}, false, false, true);
     ExpectHomes(block.get(), {}, true);
@@ -104,32 +118,35 @@ void NestedTerminalAndCFGContract() {
 }
 
 void SelfLambdaParamsAndForeign() {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2400})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto value = as.Add(input, ir::Operand{ir::Imm{u64{1}}}).SetType(T::U64);
-        value.Def()->SetArg(0, value);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto value = as.Add(T::U64, input, ir::Operand{ir::Imm{u64{1}}});
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), value.Def(), 0, value);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         ExpectHomes(block.get(), {value});
     }
     {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2500})};
-        ir::Assembler as{block.get()};
-        auto target = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto argument = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-        ir::Params params; params.Push(argument);
-        auto* call = block->AppendInst(ir::OpCode::CallDynamic, ir::Lambda{target}, params);
+        compile::IrBuilder as{block.get()};
+        auto target = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto argument = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+        ir::Params params;
+        params.Push(argument);
+        auto* call = block->AppendInst(ir::OpCode::CallDynamic, ir::ValueType::VOID, ir::Lambda{target}, std::move(params));
         block->RemoveInst(call); block->InsertBefore(call, target.Def());
         block->SetTerminal(ir::terminal::ReturnToHost{});
         ExpectHomes(block.get(), {target, argument});
     }
     {
         IntrusivePtr<ir::Block> foreign{new ir::Block(ir::Location{0x2600})};
-        ir::Assembler other{foreign.get()};
-        auto value = other.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        compile::IrBuilder other{foreign.get()};
+        auto value = other.LoadUniform(T::U64, ir::Uniform{0, T::U64});
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2700})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         as.StoreUniform(ir::Uniform{8, T::U64}, value);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         // Initialization keeps its historical foreign-SSA policy. Public
@@ -141,9 +158,10 @@ void SelfLambdaParamsAndForeign() {
 void EntryPhiAndLocalJoin() {
     for (T type : {T::U8, T::U16, T::U32, T::U64}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2800})};
-        ir::Assembler as{block.get()};
-        ir::Params incoming; incoming.Push(ir::Imm{u64{37}});
-        auto phi = as.AddPhi(incoming).SetType(type);
+        compile::IrBuilder as{block.get()};
+        ir::Params incoming;
+        incoming.Push(ir::Imm{u64{37}});
+        auto phi = as.AddPhi(type, std::move(incoming));
         as.StoreUniform(ir::Uniform{32, type}, phi);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get()};
@@ -154,13 +172,13 @@ void EntryPhiAndLocalJoin() {
     }
     for (bool invert : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2900})};
-        ir::Assembler as{block.get()};
-        auto condition = as.LoadUniform(ir::Uniform{0, T::U8}).SetType(T::U8);
-        auto anchor = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto condition = as.LoadUniform(T::U8, ir::Uniform{0, T::U8});
+        auto anchor = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
         auto jump = invert ? as.NotGoto(ir::BOOL{condition}) : as.Goto(ir::BOOL{condition});
-        auto skipped = as.Add(anchor, ir::Operand{ir::Imm{u64{11}}}).SetType(T::U64);
+        auto skipped = as.Add(T::U64, anchor, ir::Operand{ir::Imm{u64{11}}});
         as.BindLabel(jump);
-        auto sum = as.Add(anchor, ir::Operand{skipped}).SetType(T::U64);
+        auto sum = as.Add(T::U64, anchor, ir::Operand{skipped});
         as.StoreUniform(ir::Uniform{16, T::U64}, sum);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         ExpectHomes(block.get(), {skipped});
@@ -175,13 +193,14 @@ void EntryPhiAndLocalJoin() {
 }
 
 void SingletonSelfEdgePhi() {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     for (T type : {T::U8, T::U64}) for (u64 count : {u64{1}, u64{2}, u64{9}}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3000})};
-        ir::Assembler as{block.get()};
-        auto remaining = as.AddPhi(ir::Params{}).SetType(type);
-        auto sum = as.AddPhi(ir::Params{}).SetType(T::U64);
-        auto next = as.Sub(remaining, ir::Operand{ir::Imm{u64{1}}}).SetType(type);
-        auto updated = as.Add(sum, ir::Operand{remaining}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto remaining = as.AddPhi(type, ir::Params{});
+        auto sum = as.AddPhi(T::U64, ir::Params{});
+        auto next = as.Sub(type, remaining, ir::Operand{ir::Imm{u64{1}}});
+        auto updated = as.Add(T::U64, sum, ir::Operand{remaining});
         as.StoreUniform(ir::Uniform{16, T::U64}, updated);
         as.StoreUniform(ir::Uniform{24, type}, next);
         auto again = as.TestNotZero(next);
@@ -189,10 +208,16 @@ void SingletonSelfEdgePhi() {
         as.BindLabel(jump);
         auto* label = &block->GetInstList().back();
         block->RemoveInst(label); block->InsertBefore(label, remaining.Def());
-        ir::Params remaining_inputs; remaining_inputs.Push(ir::Imm{count}); remaining_inputs.Push(next);
-        remaining.Def()->SetArg(0, remaining_inputs);
-        ir::Params sum_inputs; sum_inputs.Push(ir::Imm{u64{0}}); sum_inputs.Push(updated);
-        sum.Def()->SetArg(0, sum_inputs);
+        ir::Params remaining_inputs;
+        remaining_inputs.Push(ir::Imm{count});
+        remaining_inputs.Push(next);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), remaining.Def(), 0, std::move(remaining_inputs));
+        ir::Params sum_inputs;
+        sum_inputs.Push(ir::Imm{u64{0}});
+        sum_inputs.Push(updated);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), sum.Def(), 0, std::move(sum_inputs));
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Check(block->GetInstList().front().GetOp() == ir::OpCode::BindLabel &&
               block->GetInstList().back().GetOp() == ir::OpCode::Goto,
@@ -211,20 +236,23 @@ void NoPhiTranslateFlowQualification() {
     // Exercise ConfigurePhis through Translate, not ConfigureInitialization alone.
     for (bool scalar_cache : {false, true}) for (u32 stop_mode = 0; stop_mode < 4; ++stop_mode) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2b00})};
-        ir::Assembler as{block.get()};
-        auto source = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto first = as.Add(source, ir::Operand{ir::Imm{u64{7}}}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto source = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto first = as.Add(T::U64, source, ir::Operand{ir::Imm{u64{7}}});
         as.StoreUniform(ir::Uniform{8, T::U64}, first);
-        auto middle = as.LoadUniform(ir::Uniform{16, T::U64}).SetType(T::U64);
-        auto tail = as.Add(source, ir::Operand{ir::Imm{u64{13}}}).SetType(T::U64);
+        auto middle = as.LoadUniform(T::U64, ir::Uniform{16, T::U64});
+        auto tail = as.Add(T::U64, source, ir::Operand{ir::Imm{u64{13}}});
         as.StoreUniform(ir::Uniform{24, T::U64}, tail);
-        auto last = as.LoadUniform(ir::Uniform{32, T::U64}).SetType(T::U64);
-        block->SetTerminal(ir::terminal::CheckHalt{ir::terminal::If{ir::BOOL{source},
-            ir::terminal::ReturnToHost{}, ir::terminal::Condition{ir::Cond::EQ,
-                ir::terminal::ReturnToHost{}, ir::terminal::ReturnToHost{}}}});
+        auto last = as.LoadUniform(T::U64, ir::Uniform{32, T::U64});
+        block->SetTerminal(ir::terminal::CheckHalt{
+                ir::terminal::If{ir::BOOL{source},
+                                 ir::terminal::ReturnToHost{},
+                                 ir::terminal::Condition{ir::Cond::EQ,
+                                                         ir::terminal::ReturnToHost{},
+                                                         ir::terminal::ReturnToHost{}}}});
         IntrusivePtr<ir::Block> other{new ir::Block(ir::Location{0x2b10})};
-        ir::Assembler foreign{other.get()};
-        auto unknown = foreign.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        compile::IrBuilder foreign{other.get()};
+        auto unknown = foreign.LoadUniform(T::U64, ir::Uniform{0, T::U64});
         rv::JitContext context{scalar_cache};
         rv::JitTranslator translator{context};
         if (stop_mode) {
@@ -254,6 +282,7 @@ void NoPhiTranslateFlowQualification() {
 }
 
 void PhiTranslateExceptionQualification() {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     const char* expected[] = {
         "RV64 phi CFG has an unbound edge",
         "RV64 phi must precede non-phi instructions at a CFG entry",
@@ -265,21 +294,31 @@ void PhiTranslateExceptionQualification() {
     for (u32 kind = 0; kind < std::size(expected); ++kind) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2c00})};
         IntrusivePtr<ir::Block> other{new ir::Block(ir::Location{0x2c10})};
-        ir::Assembler as{block.get()}, foreign{other.get()};
+        compile::IrBuilder as{block.get()}, foreign{other.get()};
         if (kind == 0) {
-            auto condition = as.LoadUniform(ir::Uniform{0, T::U8}).SetType(T::U8);
-            as.Goto(ir::BOOL{condition}); // Deliberately no BindLabel.
+            auto condition = as.LoadUniform(T::U8, ir::Uniform{0, T::U8});
+            as.Goto(ir::BOOL{condition});  // Deliberately no BindLabel.
         } else {
             ir::Params incoming;
             ir::Value local{};
             if (kind == 1 || kind == 2 || kind == 4)
-                local = as.LoadUniform(ir::Uniform{0, kind == 4 ? T::U8 : T::U64}).SetType(kind == 4 ? T::U8 : T::U64);
-            if (kind == 2 || kind == 4) incoming.Push(local);
-            else if (kind == 3) incoming.Push(foreign.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64));
-            else incoming.Push(ir::Imm{u64{17}});
+                local = as.LoadUniform(kind == 4 ? T::U8 : T::U64,
+                                       ir::Uniform{0, kind == 4 ? T::U8 : T::U64});
+            if (kind == 2 || kind == 4)
+                incoming.Push(local);
+            else if (kind == 3)
+                incoming.Push(foreign.LoadUniform(T::U64, ir::Uniform{0, T::U64}));
+            else
+                incoming.Push(ir::Imm{u64{17}});
             if (kind == 5) incoming.Push(ir::Imm{u64{23}});
-            auto phi = as.AddPhi(incoming).SetType(T::U64);
-            if (kind == 2 || kind == 4) { block->RemoveInst(phi.Def()); block->InsertBefore(phi.Def(), local.Def()); }
+            auto phi = as.AddPhi(T::U64, std::move(incoming));
+            if (kind == 2 || kind == 4) {
+                compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.Change(
+                        block.get(), phi.Def(), [&](ir::Inst& target) {
+                            block->RemoveInst(&target);
+                            block->InsertBefore(&target, local.Def());
+                        });
+            }
         }
         block->SetTerminal(ir::terminal::ReturnToHost{});
         bool rejected{};

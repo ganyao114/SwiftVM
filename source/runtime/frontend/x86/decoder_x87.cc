@@ -2,11 +2,9 @@
 #include "runtime/frontend/x86/x87.h"
 
 namespace swift::x86 {
-
 #define __ assembler->
 
 namespace {
-
 bool IsStackRegister(const _Operand& operand) {
     return operand.type == O_REG && operand.index >= R_ST0 && operand.index <= R_ST7;
 }
@@ -114,15 +112,14 @@ void X64Decoder::RaiseIfGuestFault(ir::Value helper_result, u64 faulting_pc) {
 }
 
 ir::Value X64Decoder::CallX87(u64 command, ir::Value guest_address) {
-    auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+    auto context = __ GetUniformAddress(ir::ValueType::U64, ir::Imm(0));
     ir::Value result;
     if (swift::runtime::GetSvmConfig().x87_jit) {
         // The mid-tier inlines some commands and zeroes the result on those
         // paths, so the fault bit can only ever come from its helper bailout.
-        result = __ X87Op(context, ir::Imm(command), guest_address)
-                         .SetType(ir::ValueType::U64);
+        result = __ X87Op(ir::ValueType::U64, context, ir::Imm(command), guest_address);
     } else {
-        auto encoded = __ LoadImm(ir::Imm(command)).SetType(ir::ValueType::U64);
+        auto encoded = __ LoadImm(ir::ValueType::U64, ir::Imm(command));
         // Keep AFP OFF byte-identical: the dedicated target address is itself
         // a codegen-visible immediate even though EmitHostCall would ignore
         // the effect tag when AFP is inactive.
@@ -130,17 +127,15 @@ ir::Value X64Decoder::CallX87(u64 command, ir::Value guest_address) {
                              X87CommandFPCRTransparent(command);
         const auto target = fp_free ? &X87DispatchFPFree : &X87Dispatch;
         result = __ CallLambda(
-                               ir::Lambda{
-                                       ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(target)}},
-                                       ir::HelperCallTraits{
-                                               .host_fp = fp_free
-                                                       ? ir::HostFpEffect::FPCRTransparent
-                                                       : ir::HostFpEffect::MayTouch,
-                                       }},
-                               context,
-                               encoded,
-                               guest_address)
-                         .SetType(ir::ValueType::U64);
+                ir::ValueType::U64,
+                ir::Lambda{ir::DataClass{ir::Imm{reinterpret_cast<VAddr>(target)}},
+                           ir::HelperCallTraits{
+                                   .host_fp = fp_free ? ir::HostFpEffect::FPCRTransparent
+                                                      : ir::HostFpEffect::MayTouch,
+                           }},
+                context,
+                encoded,
+                guest_address);
     }
     if (X87TouchesMemory(command)) {
         RaiseIfGuestFault(result, insn_pc);
@@ -156,11 +151,11 @@ void X64Decoder::ApplyX87CompareFlags(ir::Value flags) {
     auto zero = __ LoadImm(ir::Imm(u64(0)));
 
     auto pf = __ And(__ LsrImm(flags, ir::Imm(1u)), ir::Operand{ir::Imm(u64(1))});
-    auto parity_value = __ Select(__ TestNotZero(pf), zero, one);
+    auto parity_value = __ Select(ir::ValueType::U64, __ TestNotZero(pf), zero, one);
     __ SaveFlags(__ Or(parity_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Parity);
 
     auto zf = __ And(__ LsrImm(flags, ir::Imm(2u)), ir::Operand{ir::Imm(u64(1))});
-    auto zero_value = __ Select(__ TestNotZero(zf), zero, one);
+    auto zero_value = __ Select(ir::ValueType::U64, __ TestNotZero(zf), zero, one);
     __ SaveFlags(__ Or(zero_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
 
     auto cf = __ And(flags, ir::Operand{ir::Imm(u64(1))});
@@ -461,11 +456,10 @@ void X64Decoder::DecodeX87(_DInst& insn) {
         case I_FNSTSW:
         case I_FSTSW: {
             if (insn.ops[0].type == O_REG) {
-                auto status =
-                        CallX87(MakeX87Command(
-                                        X87Action::StoreStatus, X87Format::Register),
-                                zero())
-                                .SetType(ir::ValueType::U16);
+                auto status = NarrowTo(
+                        CallX87(MakeX87Command(X87Action::StoreStatus, X87Format::Register),
+                                zero()),
+                        ir::ValueType::U16);
                 Dst(insn, insn.ops[0], status);
             } else {
                 CallX87(MakeX87Command(X87Action::StoreStatus), address());

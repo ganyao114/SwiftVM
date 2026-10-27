@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include "runtime/compile/analysis/guest_state.h"
+
 #include <array>
 #include <atomic>
 #include <map>
@@ -19,7 +21,6 @@
 #include "runtime/common/range_map.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
-#include "runtime/ir/opts/uniform_elimination_pass.h"
 
 namespace swift::runtime::backend {
 
@@ -160,8 +161,8 @@ public:
         return serializable_code_emission.load(std::memory_order_relaxed);
     }
 
-    [[nodiscard]] const ir::UniformInfo &GetUniformInfo();
-    [[nodiscard]] const ir::UniformInfo &GetUniformInfo() const;
+    [[nodiscard]] const compile::GuestStateLayout &GetGuestStateLayout();
+    [[nodiscard]] const compile::GuestStateLayout &GetGuestStateLayout() const;
 
 private:
     void Init();
@@ -188,7 +189,7 @@ private:
     // signal-handler / const-access paths (same pattern as GetTrampolines).
     mutable SmcTracker smc_tracker;
     LinkManager link_manager{};
-    std::unique_ptr<ir::UniformInfo> uniform_info{};
+    std::unique_ptr<compile::GuestStateLayout> guest_layout{};
     std::unique_ptr<JitDiskCache> jit_disk_cache{};
 
     // Adaptive RCpc state. The fault table is written from signal

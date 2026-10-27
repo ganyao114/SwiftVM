@@ -7,93 +7,52 @@
 #include <memory>
 #include <span>
 #include <utility>
-#include "runtime/common/mem_arena.h"
-#include "runtime/common/object_pool.h"
 #include "runtime/common/svm_config.h"
 #include "runtime/ir/function.h"
 #include "runtime/ir/function_entry_provenance.h"
+#include "runtime/ir/hir_storage.h"
 #include "runtime/ir/host_reg.h"
 #include "runtime/ir/module.h"
 
-namespace swift::runtime::ir {
+namespace swift::runtime::compile { class RewriteContext; }
 
+namespace swift::runtime::ir {
 class HIRBlock;
 class HIRFunction;
 class HIRBuilder;
+class HIRTestSupport;
 struct HIRPools;
 struct HIRValue;
 
 using HIRBlockVector = std::span<HIRBlock*>;
-using HIRBlockSet = Set<HIRBlock*>;
-
-class DataContext {
-public:
-    virtual u16 MaxBlockCount() = 0;
-    virtual u16 MaxInstrCount() = 0;
-    virtual u16 MaxLocalCount() = 0;
-};
+using HIRBlockView = std::span<const HIRBlock* const>;
 
 struct Edge {
-    enum Flags : u8 {
-        CONDITIONAL = 1 << 0,
-        DOMINATES = 1 << 1,
-    };
+    explicit Edge(const HIRBlock* src, const HIRBlock* dest);
+    const HIRBlock* GetSourceBlock() const { return src_block; }
+    const HIRBlock* GetTargetBlock() const { return dest_block; }
 
-    explicit Edge(HIRBlock* src, HIRBlock* dest);
-
+private:
+    const HIRBlock* src_block;
+    const HIRBlock* dest_block;
     IntrusiveListNode outgoing_edges;
     IntrusiveListNode incoming_edges;
 
-    HIRBlock* src_block;
-    HIRBlock* dest_block;
-
-    u8 flags{};
+public:
+    using OutgoingList = IntrusiveList<&Edge::outgoing_edges>;
+    using IncomingList = IntrusiveList<&Edge::incoming_edges>;
 };
-
-struct Dominance {
-    IntrusiveListNode node;
-    HIRBlock* block;
-
-    explicit Dominance(HIRBlock* block) : block(block), node(){};
-};
-
-using DomFrontier = IntrusiveList<&Dominance::node>;
-
-struct BackEdge {
-    HIRBlock* target;
-    IntrusiveListNode list_node{};
-
-    explicit BackEdge(HIRBlock* block) : target(block) {}
-};
-
-using BackEdgeList = IntrusiveList<&BackEdge::list_node>;
-
-#pragma pack(push, 1)
-struct ValueAllocated {
-    enum Type : u8 { NONE, GPR, FPR, MEM };
-    Type type;
-    union {
-        HostGPR host_gpr;
-        HostFPR host_fpr;
-        SpillSlot spill_slot;
-    };
-
-    [[nodiscard]] bool Allocated() const { return type != NONE; }
-
-    explicit ValueAllocated() : type(NONE) {}
-};
-#pragma pack(pop)
 
 #pragma pack(push, 1)
 struct HIRUse {
     constexpr static auto USE_NIL = 255;
     constexpr static auto USE_FUNC_CALL = 253;
     constexpr static auto USE_PHI = 254;
-    Inst* inst;
+    const Inst* inst;
     u8 arg_idx;
     IntrusiveListNode list_node{};
 
-    explicit HIRUse(Inst* inst, u8 arg_idx);
+    explicit HIRUse(const Inst* inst, u8 arg_idx);
 
     [[nodiscard]] bool IsFuncCall() const { return arg_idx == USE_FUNC_CALL; }
 
@@ -105,19 +64,28 @@ using HIRUseList = IntrusiveList<&HIRUse::list_node>;
 
 #pragma pack(push, 4)
 struct HIRValue final {
-    Value value;
+    const Value value;
+
+private:
+    friend class HIRBlock;
+    friend class HIRFunction;
     HIRBlock* block;
-    ValueAllocated allocated{};
-    HIRUseList uses{};
+
+public:
+    HIRBlock* GetBlock() { return block; }
+    const HIRBlock* GetBlock() const { return block; }
+    [[nodiscard]] const HIRUseList& GetUses() const { return uses; }
 
     HIRValue() : value(), block(nullptr){};
     HIRValue(const Value& value) : value(value), block(nullptr){};
     explicit HIRValue(const Value& value, HIRBlock* block);
 
-    void Use(Inst* inst, u8 idx);
-    void UnUse(Inst* inst, u8 idx);
-
     [[nodiscard]] u16 GetOrderId() const;
+
+private:
+    HIRUseList uses{};
+    void Use(const Inst* inst, u8 idx);
+    void UnUse(const Inst* inst, u8 idx);
 };
 
 struct HIRLocal {
@@ -125,18 +93,6 @@ struct HIRLocal {
     HIRValue* current_value{};
 };
 
-// HIRLoop / HIRLoopList lived here. Removed, not repaired: the constructor
-// took a single `HIRBlock* header` and memcpy'd `length * sizeof(HIRBlock*)`
-// bytes OUT OF THAT ONE OBJECT, so every loop it built was the header block's
-// own fields reinterpreted as block pointers, reading past the object once
-// length exceeded sizeof(HIRBlock)/8. Its only producer (ComputeLoopInformation
-// in ir/opts/cfg_analysis_pass.cpp) was deleted in the previous round, and the
-// only accessor of the resulting list, HIRFunction::GetHIRLoop, never had a
-// caller anywhere in the tree -- so the type had no way left to be either
-// exercised or validated. A "fixed" constructor with no producer and no
-// consumer is an unverifiable claim; whoever next needs loop information should
-// add the type back together with the analysis that fills it and the code that
-// reads it.
 #pragma pack(pop)
 
 // Instruction id -> the HIRValue that instruction defines (null for the
@@ -152,93 +108,103 @@ struct HIRLocal {
 // linear-scan allocator relies on.
 using HIRValueMap = Vector<HIRValue*>;
 
-class HIRBlock final : public DataContext {
+class HIRBlock final {
     friend class HIRFunction;
     friend class HIRValue;
+    friend class HIRTestSupport;
+    friend class compile::CompileUnit;
 
 public:
     explicit HIRBlock(std::unique_ptr<Block> block, HIRValueMap& values, HIRPools& pools);
 
-    template <typename... Args> Inst* CreateInst(OpCode op, const Args&... args) {
-        auto inst = new Inst(op);
-        if (IRBuildFastEnabled()) {
-            inst->SetArgsFresh(std::forward<const Args&>(args)...);
-        } else {
-            inst->SetArgs(std::forward<const Args&>(args)...);
-        }
-        return inst;
+    template <typename RetType = void, typename... Args>
+        requires meta::ConstructionArguments<Args...>
+    HIRValue* AppendInst(OpCode op, Args&&... args) {
+        return AppendInst(op, meta::ResolveResultType<RetType>(op, args...), std::forward<Args>(args)...);
+    }
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    HIRValue* AppendInst(OpCode op, ValueType type, Args&&... args) {
+        block->CheckMutable();
+        return AppendInst(meta::CheckArgumentPack<Args...>(op), type, std::forward<Args>(args)...);
+    }
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    HIRValue* AppendInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        return AppendConstructedInst(operation, type,
+                meta::ForwardConstructionArgument(std::forward<Args>(args))...);
     }
 
-    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
-    HIRValue* AppendInst(OpCode op, const Args&... args) {
-        auto inst = new Inst(op);
+private:
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    HIRValue* AppendConstructedInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        block->CheckMutable();
+        const auto op = operation.Code();
+        auto pending = std::unique_ptr<Inst>{new Inst(op, type)};
+        auto* inst = pending.get();
         if (IRBuildFastEnabled()) {
-            inst->SetArgsFresh(std::forward<const Args&>(args)...);
+            inst->SetArgsFresh(std::forward<Args>(args)...);
         } else {
-            inst->SetArgs(std::forward<const Args&>(args)...);
+            inst->SetArgs(std::forward<Args>(args)...);
         }
-        if constexpr (RetType::TYPE != ValueType::VOID) {
-            inst->SetReturn(RetType::TYPE);
-        }
-        return AppendInst(inst);
+        return AppendInst(pending.release());
     }
 
-#define INST(name, ret, ...)                                                                       \
-    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
-    ret name(const Args&... args) {                                                                \
-        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                 \
-                                          sizeof...(Args)),                                        \
-                    #name ": argument count mismatch (see ir.inc)");                               \
-        auto hir_value = AppendInst<RetType>(OpCode::name, std::forward<const Args&>(args)...);    \
-        return ret{hir_value ? hir_value->value.Def() : nullptr};                                  \
+public:
+
+#define INST(name, ret, policy, ...)                                                                    \
+    template <typename RetType = void, typename... Args>                                                \
+        requires((!std::is_void_v<RetType> || meta::HasDefaultResultType<meta::kResultPolicy_##name>) && \
+                 meta::ConstructionArguments<Args...> &&                                                \
+                 meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                  \
+    ret name(Args&&... args) {                                                                          \
+        auto hir_value = AppendInst(meta::KnownOperation<OpCode::name, Args...>(),                      \
+                    meta::ResolveResultType<meta::kResultPolicy_##name,                                 \
+                    meta::kResult_##name, RetType>(args...), std::forward<Args>(args)...);              \
+        return ret{hir_value ? hir_value->value.Def() : nullptr};                                       \
+    }                                                                                                   \
+    template <typename... Args>                                                                         \
+        requires(!std::is_same_v<ret, Void> &&                                                          \
+                 meta::ConstructionArguments<Args...> &&                                                \
+                 meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                  \
+    ret name(ValueType type, Args&&... args) {                                                          \
+        auto* value = AppendInst(meta::KnownOperation<OpCode::name, Args...>(), type, std::forward<Args>(args)...); \
+        return ret{value ? value->value.Def() : nullptr};                                               \
     }
 #include "ir.inc"
 #undef INST
 
     HIRValue* AppendInst(Inst* inst);
     HIRValue* InsertFront(Inst* inst);
-    HIRValueMap& GetHIRValues();
+    std::span<const HIRValue* const> GetHIRValues() const;
     [[nodiscard]] u16 GetOrderId() const;
 
-    void AddOutgoingEdge(Edge* edge);
-    void AddIncomingEdge(Edge* edge);
-    void AddBackEdge(HIRBlock* back_edge);
-    bool HasIncomingEdges();
-    bool HasOutgoingEdges();
+    bool HasIncomingEdges() const;
+    bool HasOutgoingEdges() const;
 
-    auto& GetIncomingEdges() { return incoming_edges; }
-    auto& GetOutgoingEdges() { return outgoing_edges; }
+    const auto& GetIncomingEdges() const { return incoming_edges; }
+    const auto& GetOutgoingEdges() const { return outgoing_edges; }
 
-    auto& GetPredecessors() { return predecessors; }
-    auto& GetSuccessors() { return successors; }
+    HIRBlockView GetPredecessors() const { return predecessors; }
+    HIRBlockView GetSuccessors() const { return successors; }
 
-    [[nodiscard]] HIRBlock* GetCallReturnBlock() const {
-        return call_return_block;
-    }
+    [[nodiscard]] const HIRBlock* GetCallReturnBlock() const { return call_return_block; }
 
     [[nodiscard]] bool IsCallReturnBlock() const { return call_return_target; }
 
-    auto& GetBackEdges() { return back_edges; }
-
-    auto& GetDomFrontier() { return dom_frontier; }
-
-    void PushDominance(HIRBlock* block);
-    void SetDominator(HIRBlock* block_) { dominator = block_; };
-    auto GetDominator() { return dominator; };
-
     Block* GetBlock();
-    InstList& GetInstList();
+    const Block* GetBlock() const;
+    const InstList& GetInstList() const;
     bool BeginStandalonePublication();
     void AbortStandalonePublication();
     void CommitStandalonePublication();
 
-    u16 MaxBlockCount() override;
-    u16 MaxInstrCount() override;
-    u16 MaxLocalCount() override;
-
+private:
     IntrusiveListNode list_node{};
 
+public:
+    using List = IntrusiveList<&HIRBlock::list_node>;
+
 private:
+    HIRPoolLease RetainStorage() const;
     u16 order_id{};
     Block* block;
     // Synthetic and unfinished nodes stay here until canonical ownership transfers.
@@ -247,23 +213,20 @@ private:
     bool standalone_publication_pending{};
     HIRPools& pools;
     HIRValueMap& value_map;
-    IntrusiveList<&Edge::outgoing_edges> outgoing_edges{};
-    IntrusiveList<&Edge::incoming_edges> incoming_edges{};
-    HIRBlockVector predecessors;
-    HIRBlockVector successors;
-    BackEdgeList back_edges{};
-    HIRBlock* dominator{};
+    Edge::OutgoingList outgoing_edges{};
+    Edge::IncomingList incoming_edges{};
+    std::span<const HIRBlock*> predecessors;
+    std::span<const HIRBlock*> successors;
     HIRBlock* call_return_block{};
     bool call_return_target{};
-    DomFrontier dom_frontier{};
 };
 
-using HIRBlockList = IntrusiveList<&HIRBlock::list_node>;
+using HIRBlockList = HIRBlock::List;
 
-class HIRFunction final : public DataContext {
+class HIRFunction final {
 public:
     struct ExternalDirectLink {
-        HIRBlock* source{};
+        const HIRBlock* source{};
         Location target{};
     };
 
@@ -274,24 +237,42 @@ public:
                          bool ir_fast);
     ~HIRFunction();
 
-    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
-    Inst* AppendInst(OpCode op, const Args&... args) {
+    template <typename RetType = void, typename... Args>
+        requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(OpCode op, Args&&... args) {
+        return AppendInst(op, meta::ResolveResultType<RetType>(op, args...), std::forward<Args>(args)...);
+    }
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(OpCode op, ValueType type, Args&&... args) {
+        CheckMutable();
+        return AppendInst(meta::CheckArgumentPack<Args...>(op), type, std::forward<Args>(args)...);
+    }
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        return AppendConstructedInst(operation, type,
+                meta::ForwardConstructionArgument(std::forward<Args>(args))...);
+    }
+
+private:
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendConstructedInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        CheckMutable();
+        const auto op = operation.Code();
         PerfScope2 perf_ir_append{GetPerfStats2().ir_append};
         ASSERT(current_block);
+        current_block->block->CheckMutable();
         if (PerfIRDetailEnabled()) {
             auto begin = std::chrono::steady_clock::now();
-            auto inst = new Inst(op);
+            auto pending = std::unique_ptr<Inst>{new Inst(op, type)};
+            auto* inst = pending.get();
             auto end = std::chrono::steady_clock::now();
             PerfIRDetailRecord(GetPerfStats2().ir_alloc, begin, end);
 
             begin = std::chrono::steady_clock::now();
             if (ir_fast) {
-                inst->SetArgsFresh(std::forward<const Args&>(args)...);
+                inst->SetArgsFresh(std::forward<Args>(args)...);
             } else {
-                inst->SetArgs(std::forward<const Args&>(args)...);
-            }
-            if constexpr (RetType::TYPE != ValueType::VOID) {
-                inst->SetReturn(RetType::TYPE);
+                inst->SetArgs(std::forward<Args>(args)...);
             }
             inst->SetId(inst_order_id++);
             end = std::chrono::steady_clock::now();
@@ -306,93 +287,82 @@ public:
             end = std::chrono::steady_clock::now();
             PerfIRDetailRecord(GetPerfStats2().ir_link, begin, end);
 
-            if (ir_fast) {
-                AppendValueFast(current_block, inst, args...);
-            } else {
-                AppendValue(current_block, inst);
-            }
+            pending.release();
+            AppendValue(current_block, inst);
             return inst;
         }
-        auto inst = new Inst(op);
+        auto pending = std::unique_ptr<Inst>{new Inst(op, type)};
+        auto* inst = pending.get();
         if (ir_fast) {
-            inst->SetArgsFresh(std::forward<const Args&>(args)...);
+            inst->SetArgsFresh(std::forward<Args>(args)...);
         } else {
-            inst->SetArgs(std::forward<const Args&>(args)...);
+            inst->SetArgs(std::forward<Args>(args)...);
         }
         inst->SetId(inst_order_id++);
-        if constexpr (RetType::TYPE != ValueType::VOID) {
-            inst->SetReturn(RetType::TYPE);
-        }
         if (ir_fast) {
             current_block->block->AppendInstUnchecked(inst);
-            AppendValueFast(current_block, inst, args...);
         } else {
             current_block->block->AppendInst(inst);
-            AppendValue(current_block, inst);
         }
+        pending.release();
+        AppendValue(current_block, inst);
         return inst;
     }
 
-#define INST(name, ret, ...)                                                                       \
-    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
-    ret name(const Args&... args) {                                                                \
-        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                 \
-                                          sizeof...(Args)),                                        \
-                    #name ": argument count mismatch (see ir.inc)");                               \
-        auto inst = AppendInst<RetType>(OpCode::name, std::forward<const Args&>(args)...);         \
-        if constexpr (RetType::TYPE != ValueType::VOID) {                                          \
-            if (!ir_fast) {                                                                         \
-                inst->SetReturn(RetType::TYPE);                                                    \
-            }                                                                                       \
-        }                                                                                          \
-        return ret{inst};                                                                          \
+public:
+
+#define INST(name, ret, policy, ...)                                                                    \
+    template <typename RetType = void, typename... Args>                                                \
+        requires((!std::is_void_v<RetType> || meta::HasDefaultResultType<meta::kResultPolicy_##name>) && \
+                 meta::ConstructionArguments<Args...> &&                                                \
+                 meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                  \
+    ret name(Args&&... args) {                                                                          \
+        auto inst = AppendInst(meta::KnownOperation<OpCode::name, Args...>(),                           \
+                    meta::ResolveResultType<meta::kResultPolicy_##name,                                 \
+                    meta::kResult_##name, RetType>(args...), std::forward<Args>(args)...);              \
+        return ret{inst};                                                                               \
+    }                                                                                                   \
+    template <typename... Args>                                                                         \
+        requires(!std::is_same_v<ret, Void> &&                                                          \
+                 meta::ConstructionArguments<Args...> &&                                                \
+                 meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                  \
+    ret name(ValueType type, Args&&... args) {                                                          \
+        return ret{AppendInst(meta::KnownOperation<OpCode::name, Args...>(), type, std::forward<Args>(args)...)}; \
     }
 #include "ir.inc"
 #undef INST
 
     HIRBlock* AppendBlock(Location start, Location end = {});
     HIRBlock* CreateOrGetBlock(Location location);
-    void SetCurBlock(HIRBlock* block);
-    HIRValue* AppendValue(HIRBlock* block, Inst* inst);
-    void DestroyHIRValue(HIRValue* value);
-    // Removes `inst` from its block and frees it, keeping the function-level
-    // HIRValue bookkeeping consistent: every HIRUse this instruction holds on
-    // another value is unregistered first, and the instruction's own HIRValue
-    // (if it defines one) is erased from `values`. A basic `delete` would leave
-    // dangling HIRUse nodes behind, which the function-level register allocator
-    // dereferences when it computes live-interval ends.
-    void EraseInst(Block* block, Inst* inst);
-    HIRBlock* GetEntryBlock();
-    HIRBlock* GetCurrentBlock();
-    HIRBlockVector& GetHIRBlocks();
-    HIRBlockList& GetHIRBlockList();
-    HIRBlockList& GetHIRBlocksRPO();
+    void SetCurBlock(const HIRBlock* block);
+    const HIRBlock* GetEntryBlock() const;
+    const HIRBlock* GetCurrentBlock() const;
+    HIRBlockView GetHIRBlocks() const;
+    const HIRBlockList& GetHIRBlockList() const;
+    const HIRBlockList& GetHIRBlocksRPO() const;
+    HIRBlock& EditBlock(const HIRBlock* block);
     void RegisterExternalDirectLink(Location target);
     [[nodiscard]] const std::vector<ExternalDirectLink>& GetExternalDirectLinks() const {
         return external_direct_links;
     }
-    void RegisterExternalEntryRoot(HIRBlock* block);
-    [[nodiscard]] const std::vector<HIRBlock*>& GetExternalEntryRoots() const {
-        return external_entry_roots;
-    }
+    void RegisterExternalEntryRoot(const HIRBlock* block);
+    [[nodiscard]] HIRBlockView GetExternalEntryRoots() const { return external_entry_roots; }
     void SetFunctionEntryProvenance(std::vector<FunctionEntryProvenance> provenance) {
+        CheckMutable();
         function_entry_provenance = std::move(provenance);
     }
     [[nodiscard]] const std::vector<FunctionEntryProvenance>& GetFunctionEntryProvenance() const {
         return function_entry_provenance;
     }
-    HIRValueMap& GetHIRValues();
-    HIRValue* GetHIRValue(const Value& value);
-    HIRPools& GetMemPool();
+    std::span<const HIRValue* const> GetHIRValues() const;
+    const HIRValue* GetHIRValue(const Value& value) const;
     Function* GetFunction();
-    void ReleaseFunctionOwnership();
+    const Function* GetFunction() const;
+    void MarkFunctionPublished();
     [[nodiscard]] bool HasStandaloneBlocks() const { return standalone_blocks_published; }
-    void AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional = false);
+    void AddEdge(const HIRBlock* src, const HIRBlock* dest);
     void RegisterCallReturn(Location location);
-    void RemoveEdge(Edge* edge);
-    void MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right);
-    bool SplitBlock(HIRBlock* new_block, HIRBlock* old_block);
-    bool ResetDecodedBlock(HIRBlock* block);
+    bool ResetDecodedBlock(const HIRBlock* block);
     // Populates blocks_rpo with the reverse-post-order of the primary CFG and
     // each canonical external-entry root.
     void ComputeRPO();
@@ -401,91 +371,51 @@ public:
     void EndBlock(Terminal terminal);
     void EndFunction();
 
-    u16 MaxBlockCount() override;
-    u16 MaxInstrCount() override;
-    u16 MaxLocalCount() override;
+    u16 MaxBlockCount() const;
+    u16 MaxInstrCount() const;
+    u16 MaxLocalCount() const;
 
+private:
     IntrusiveListNode list_node;
+
+public:
+    using List = IntrusiveList<&HIRFunction::list_node>;
 
 private:
     friend class HIRBuilder;
     friend class HIRBlock;
+    friend class compile::RewriteContext;
+    friend class HIRTestSupport;
+    friend class compile::CompileUnit;
 
-    struct {
-        u32 current_slot{0};
-    } spill_stack{};
-
-    void UseInst(Inst* inst);
-    void UnUseInst(Inst* inst);
+    HIRValue* AppendValue(HIRBlock* block, Inst* inst);
+    void DestroyHIRValue(HIRValue* value);
+    // Removes `inst` from its block and frees it, keeping the function-level
+    // HIRValue bookkeeping consistent: every HIRUse this instruction holds on
+    // another value is unregistered first, and the instruction's own HIRValue
+    // (if it defines one) is erased from `values`. A basic `delete` would leave
+    // dangling HIRUse nodes behind, which the function-level register allocator
+    // dereferences when it computes live-interval ends.
+    void EraseInst(Block* block, const Inst* inst);
+    HIRPoolLease RetainStorage() const;
+    HIRValue* FindValueRecord(const Value& value) const;
+    void SetIRReadOnly(bool read_only);
+    void RemoveEdge(const Edge* edge);
+    void CheckMutable() const {
+        function->CheckMutable();
+        if (entry_block) entry_block->GetBlock()->CheckMutable();
+    }
+    void UseInst(const Inst* inst);
+    void UnUseInst(const Inst* inst);
+    static void ReleaseTerminalUses(const Terminal& terminal);
     HIRValue* AppendValueRecord(HIRBlock* block, Inst* inst);
     void TrackLocal(Inst* inst);
 
-    template <typename ArgTypeT>
-    void UseFreshArg(Inst* inst, u8 physical, const ArgTypeT& arg) {
-        using T = std::decay_t<ArgTypeT>;
-        if constexpr (std::is_base_of_v<Value, T>) {
-            if (auto* hir_value = GetHIRValue(static_cast<const Value&>(arg)); hir_value) {
-                hir_value->Use(inst, physical);
-            }
-        } else if constexpr (std::is_same_v<T, Lambda>) {
-            if (arg.IsValue()) {
-                if (auto* hir_value = GetHIRValue(arg.GetValue()); hir_value) {
-                    hir_value->Use(inst, physical);
-                }
-            }
-        } else if constexpr (std::is_same_v<T, Params>) {
-            for (auto param : arg) {
-                if (auto data = param.data; data.IsValue()) {
-                    if (auto* hir_value = GetHIRValue(data.value); hir_value) {
-                        hir_value->Use(inst, HIRUse::USE_FUNC_CALL);
-                    }
-                }
-            }
-        } else if constexpr (std::is_same_v<T, Operand>) {
-            const auto left = arg.GetLeft();
-            const auto right = arg.GetRight();
-            if (left.IsValue()) {
-                if (auto* hir_value = GetHIRValue(left.value); hir_value) {
-                    hir_value->Use(inst, physical + 1);
-                }
-            }
-            if (right.IsValue()) {
-                if (auto* hir_value = GetHIRValue(right.value); hir_value) {
-                    hir_value->Use(inst, physical + 2);
-                }
-            }
-        }
-    }
-
-    template <typename... Args>
-    HIRValue* AppendValueFast(HIRBlock* block, Inst* inst, const Args&... args) {
-        const bool detail = PerfIRDetailEnabled();
-        auto begin = detail ? std::chrono::steady_clock::now()
-                            : std::chrono::steady_clock::time_point{};
-        auto* hir_value = AppendValueRecord(block, inst);
-        if (detail) {
-            const auto end = std::chrono::steady_clock::now();
-            PerfIRDetailRecord(GetPerfStats2().ir_value, begin, end);
-            begin = end;
-        }
-        u8 physical{};
-        auto use_arg = [&](const auto& arg) {
-            UseFreshArg(inst, physical, arg);
-            using T = std::decay_t<decltype(arg)>;
-            physical += std::is_same_v<T, Operand> ? PhysicalSlots(ArgType::Operand) : 1;
-        };
-        (use_arg(args), ...);
-        if (detail) {
-            PerfIRDetailRecord(
-                    GetPerfStats2().ir_use, begin, std::chrono::steady_clock::now());
-        }
-        TrackLocal(inst);
-        return hir_value;
-    }
-
     u16 max_local_id{};
-    Function* function;
-    bool owns_function{true};
+    // Keeps the persistent owner alive even when its publishing module ends first.
+    // Function still directly owns its child Blocks; no Block refcounts are added.
+    IntrusivePtr<Function> function;
+    bool function_published{};
     bool standalone_blocks_published{};
     Location begin;
     Location end;
@@ -511,67 +441,7 @@ private:
     HIRBlock* entry_block{};
 };
 
-using HIRFunctionList = IntrusiveList<&HIRFunction::list_node>;
-
-struct HIRPools {
-    void ReleaseContents() {
-        functions.ReleaseContents();
-        blocks.ReleaseContents();
-        values.ReleaseContents();
-        edges.ReleaseContents();
-        uses.ReleaseContents();
-    }
-
-    // Returns the pools to their construction state, ready for another
-    // compilation unit, without freeing the backing chunks. Destructors run
-    // exactly as they would if the pools were destroyed: ObjectPool's
-    // destruct=true instantiations (functions and blocks) release their
-    // objects, so an HIRFunction that still owns its ir::Function still deletes
-    // it here.
-    void Reset() {
-        ReleaseContents();
-        mem_arena.Reset();
-    }
-
-    explicit HIRPools(u32 func_cap = 1);
-
-    HIRBlockVector CreateBlockVector(size_t size) {
-        return {mem_arena.CreateArray<HIRBlock*>(size), size};
-    }
-
-    MemArena mem_arena;
-    ObjectPool<HIRFunction, true> functions;
-    ObjectPool<HIRBlock, true> blocks;
-    ObjectPool<HIRValue> values;
-    ObjectPool<Edge> edges;
-    ObjectPool<HIRUse> uses;
-};
-
-// Borrows a per-thread HIRPools instead of building one per compiled unit.
-//
-// Constructing HIRPools means six allocator round trips and destroying it means
-// six more; under lazy function compilation that is once per decoded guest
-// block, which made it pure fixed overhead of the pipeline rather than work on
-// behalf of the unit. The lease hands back a pool set that has been Reset() to
-// the same state a freshly constructed one would be in.
-//
-// A second, nested lease on the same thread (a builder constructed while
-// another is alive) gets its own privately owned HIRPools, so nesting stays
-// correct rather than sharing one arena between two builders.
-class HIRPoolLease {
-public:
-    explicit HIRPoolLease(u32 func_cap);
-    ~HIRPoolLease();
-
-    HIRPoolLease(const HIRPoolLease&) = delete;
-    HIRPoolLease& operator=(const HIRPoolLease&) = delete;
-
-    HIRPools& Get() const { return *pools; }
-
-private:
-    HIRPools* pools{};
-    std::unique_ptr<HIRPools> owned{};
-};
+using HIRFunctionList = HIRFunction::List;
 
 class HIRBuilder {
 public:
@@ -595,6 +465,9 @@ public:
     HIRBuilder(u32 func_cap, bool defer_function_end,
                const FeatureSet& features)
             : HIRBuilder(func_cap, defer_function_end, IRBuildFastEnabled(), features) {}
+    ~HIRBuilder() { hir_functions.clear(); }
+    HIRBuilder(const HIRBuilder&) = delete;
+    HIRBuilder& operator=(const HIRBuilder&) = delete;
 
     HIRFunction* AppendFunction(Location start, Location end = {});
 
@@ -605,10 +478,25 @@ public:
     [[nodiscard]] bool HasCurrentFunction() const { return current_function != nullptr; }
     [[nodiscard]] bool HasCurrentFunctionBlock(Location location);
 
-    HIRFunctionList& GetHIRFunctions();
+    template <typename RetType = void, typename... Args>
+        requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(OpCode op, Args&&... args) {
+        return AppendInst(op, meta::ResolveResultType<RetType>(op, args...), std::forward<Args>(args)...);
+    }
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(OpCode op, ValueType type, Args&&... args) {
+        return AppendInst(meta::CheckArgumentPack<Args...>(op), type, std::forward<Args>(args)...);
+    }
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        return AppendConstructedInst(operation, type,
+                meta::ForwardConstructionArgument(std::forward<Args>(args))...);
+    }
 
-    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
-    Inst* AppendInst(OpCode op, const Args&... args) {
+private:
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendConstructedInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        const auto op = operation.Code();
         // A function-ending terminal (Return/ReturnToHost) clears
         // current_function mid-Decode, but the x86 decoder still emits a
         // trailing AdvancePC right after it (decoder.cc decode loop). In block
@@ -630,11 +518,8 @@ public:
                 return nullptr;
             }
         }
-        if (LeavesPendingFlags(op)) {
-            flags_since_advance = true;
-        }
-        auto* inst =
-                current_function->AppendInst<RetType>(op, std::forward<const Args&>(args)...);
+        auto* inst = current_function->AppendInst(operation, type, std::forward<Args>(args)...);
+        if (LeavesPendingFlags(op)) flags_since_advance = true;
         if (op == OpCode::AdvancePC) {
             last_advance = inst;
             last_advance_block = current_function->GetCurrentBlock();
@@ -643,37 +528,49 @@ public:
         return inst;
     }
 
-#define INST(name, ret, ...)                                                                       \
-    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
-    ret name(const Args&... args) {                                                                \
-        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                 \
-                                          sizeof...(Args)),                                        \
-                    #name ": argument count mismatch (see ir.inc)");                               \
-        return ret{AppendInst<RetType>(OpCode::name, std::forward<const Args&>(args)...)};         \
+public:
+
+    template <typename Edit> void RewriteInst(Inst* inst, Edit&& edit) {
+        ASSERT(current_function);
+        current_function->UnUseInst(inst);
+        edit();
+        current_function->UseInst(inst);
+    }
+
+#define INST(name, ret, policy, ...)                                                                    \
+    template <typename RetType = void, typename... Args>                                                \
+        requires((!std::is_void_v<RetType> || meta::HasDefaultResultType<meta::kResultPolicy_##name>) && \
+                 meta::ConstructionArguments<Args...> &&                                                \
+                 meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                  \
+    ret name(Args&&... args) {                                                                          \
+        return ret{AppendInst(meta::KnownOperation<OpCode::name, Args...>(),                            \
+                    meta::ResolveResultType<meta::kResultPolicy_##name,                                 \
+                    meta::kResult_##name, RetType>(args...), std::forward<Args>(args)...)};             \
+    }                                                                                                   \
+    template <typename... Args>                                                                         \
+        requires(!std::is_same_v<ret, Void> &&                                                          \
+                 meta::ConstructionArguments<Args...> &&                                                \
+                 meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                  \
+    ret name(ValueType type, Args&&... args) {                                                          \
+        return ret{AppendInst(meta::KnownOperation<OpCode::name, Args...>(), type, std::forward<Args>(args)...)}; \
     }
 #include "ir.inc"
 #undef INST
-
-    template <typename Lambda, typename... Args> Value CallHost(Lambda l, const Args&... args) {
-        constexpr static auto MAX_ARG = 3;
-        auto arg_count = sizeof...(args);
-        ASSERT(arg_count <= MAX_ARG);
-        return CallLambda(FptrCast(l), std::forward<const Args&>(args)...);
-    }
 
     void SetLocation(Location location);
 
     void AddGuestCodeDependency(Location start, Location end) {
         ASSERT(current_function && current_function->GetCurrentBlock());
-        current_function->GetCurrentBlock()->GetBlock()->AddGuestCodeDependency(
-                start, end);
+        current_function->EditBlock(current_function->GetCurrentBlock())
+                .GetBlock()
+                ->AddGuestCodeDependency(start, end);
     }
 
-    void SetCurBlock(HIRBlock* block);
+    void SetCurBlock(const HIRBlock* block);
 
     void SetCurBlock(Location location);
 
-    bool ResetDecodedBlock(HIRBlock* block);
+    bool ResetDecodedBlock(const HIRBlock* block);
 
     ElseThen If(const terminal::If& if_);
 
@@ -708,7 +605,7 @@ private:
     // Measured over the 25 e2e guests: 21 562 AdvancePC reach the backend and
     // only 4 016 (18.6%) find pending NZCV, 2 543 (11.8%) a pending ClearFlags
     // -- at least 69.6% emit nothing whatsoever while still costing a pool
-    // object, a HIRValue slot, and one visit in every pass, in RegAlloc and in
+    // object, a HIRValue slot, and one visit in every pass, in Allocation and in
     // codegen. That is 13.4% of all IR.
     //
     // So drop the ones that cannot do anything, and fold their immediate
@@ -745,10 +642,8 @@ private:
         }
     }
 
-    // Declared first so it outlives every member that allocates from it: the
-    // lease's destructor is what returns the pools to a clean state, and it
-    // must run after hir_functions has released its (intrusively linked)
-    // HIRFunction objects.
+    // The owning lease outlives the builder roster. Prepared units may retain
+    // their own lease, postponing pool reuse until their final consumer ends.
     HIRPoolLease pool_lease;
     HIRPools& pools;
     HIRFunctionList hir_functions{};
@@ -760,11 +655,9 @@ private:
     // no block-transition hook is needed: If/LinkBlock/Switch/SetCurBlock all
     // move current_block, and a mismatch simply means "no fold target here".
     Inst* last_advance{};
-    HIRBlock* last_advance_block{};
+    const HIRBlock* last_advance_block{};
     bool flags_since_advance{false};
     const bool advpc_coalesce;
 };
-
-void DfsHIRBlock(HIRBlock* start, HIRBlock* end, HIRBlockSet& visited);
 
 }  // namespace swift::runtime::ir

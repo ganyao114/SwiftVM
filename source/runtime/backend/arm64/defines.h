@@ -100,10 +100,6 @@
 #define ipd1        d12
 #define ipd2        d13
 #define ipd3        d14
-#define ipv0        v11
-#define ipv1        v12
-#define ipv2        v13
-#define ipv3        v14
 #define ipb0        b11
 #define iph0        h11
 #define iph1        h12

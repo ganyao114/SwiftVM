@@ -13,7 +13,7 @@ namespace swift::runtime::backend::arm64 {
 // runtime loop over the first operand while the other three are straight-line.
 // The packed result layout is shared with decoder_sse42str.cc:
 //   [15:0] IntRes2, [23:16] index, [24] SF, [25] ZF, [26] CF, [27] OF.
-void JitTranslator::EmitSse42Str(ir::Inst* inst) {
+void JitTranslator::EmitSse42Str(const ir::Inst* inst) {
     const auto a = context.V(inst->GetArg<ir::Value>(0));
     const auto b = context.V(inst->GetArg<ir::Value>(1));
     const u32 imm = u32(inst->GetArg<ir::Imm>(2).Get()) & 0xFFu;
@@ -33,9 +33,8 @@ void JitTranslator::EmitSse42Str(ir::Inst* inst) {
                 inst, a, b, result, target, u8(imm));
         return;
     }
-    const auto publish_flags = cur_block
-            ? gpr_plan->consumers->string_flags.at(inst)
-            : ir::Flags::All;
+    const auto publish_flags =
+            cur_block ? context.GetActions().Consumer(inst->Id())->StringDemand() : ir::Flags::All;
     if (imm == 0x3au && a.GetCode() == b.GetCode()) {
         const auto length = context.GetTmpX();
         const auto scalar = context.GetTmpX();
@@ -314,9 +313,8 @@ void JitTranslator::EmitSse42Str(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitPublishSse42StrFlags(ir::Inst* inst) {
-    MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite,
-              flags_audit_block_edge);
+void JitTranslator::EmitPublishSse42StrFlags(const ir::Inst* inst) {
+    MergeNZCV(FlagsRegsAuditMergeCause::ClearOrPartialWrite, flags_audit_block_edge);
     FlushFlags();
     InvalidateFlagsToken();
 

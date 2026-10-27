@@ -6,17 +6,22 @@
 #include <cstring>
 #include <utility>
 #include "hir_builder.h"
+#include "hir_pools.h"
 #include "runtime/common/variant_util.h"
 
 namespace swift::runtime::ir {
 
-Edge::Edge(HIRBlock* src, HIRBlock* dest) : src_block(src), dest_block(dest) {}
+Edge::Edge(const HIRBlock* src, const HIRBlock* dest) : src_block(src), dest_block(dest) {}
 
 HIRBlock::HIRBlock(std::unique_ptr<Block> block, HIRValueMap& values, HIRPools& pools)
         : block(block.get()), unpublished_block(std::move(block)), value_map(values), pools(pools) {}
 
 HIRValue* HIRBlock::AppendInst(Inst* inst) {
+    block->CheckMutable();
+    ASSERT(inst && !inst->GetBlock());
+    auto pending = std::unique_ptr<Inst>{inst};
     block->AppendInst(inst);
+    pending.release();
     if (function) {
         inst->SetId(function->inst_order_id++);
         return function->AppendValue(this, inst);
@@ -25,7 +30,8 @@ HIRValue* HIRBlock::AppendInst(Inst* inst) {
 }
 
 HIRValue* HIRBlock::InsertFront(Inst* inst) {
-    block->InsertBefore(inst, block->GetBeginInst().operator->());
+    block->InsertBefore(inst,
+                        block->GetInstList().empty() ? nullptr : &block->GetInstList().front());
     if (function) {
         inst->SetId(function->inst_order_id++);
         return function->AppendValue(this, inst);
@@ -33,34 +39,24 @@ HIRValue* HIRBlock::InsertFront(Inst* inst) {
     return nullptr;
 }
 
-HIRValueMap& HIRBlock::GetHIRValues() { return value_map; }
+std::span<const HIRValue* const> HIRBlock::GetHIRValues() const { return value_map; }
 
 u16 HIRBlock::GetOrderId() const { return order_id; }
 
-void HIRBlock::AddIncomingEdge(Edge* edge) { incoming_edges.push_back(*edge); }
+bool HIRBlock::HasIncomingEdges() const { return !incoming_edges.empty(); }
 
-void HIRBlock::AddOutgoingEdge(Edge* edge) { outgoing_edges.push_back(*edge); }
-
-void HIRBlock::AddBackEdge(HIRBlock* target) {
-    auto back_edge = pools.mem_arena.Create<BackEdge>(target);
-    back_edges.push_back(*back_edge);
-}
-
-void HIRBlock::PushDominance(HIRBlock* hir_block) {
-    auto dominance = pools.mem_arena.Create<Dominance>(hir_block);
-    dom_frontier.push_back(*dominance);
-}
-
-bool HIRBlock::HasIncomingEdges() { return !incoming_edges.empty(); }
-
-bool HIRBlock::HasOutgoingEdges() { return !outgoing_edges.empty(); }
+bool HIRBlock::HasOutgoingEdges() const { return !outgoing_edges.empty(); }
 
 Block* HIRBlock::GetBlock() { return block; }
+const Block* HIRBlock::GetBlock() const { return block; }
 
-InstList& HIRBlock::GetInstList() { return block->GetInstList(); }
+HIRPoolLease HIRBlock::RetainStorage() const { return HIRPoolLease::Retain(pools); }
+
+const InstList& HIRBlock::GetInstList() const { return std::as_const(*block).GetInstList(); }
 
 bool HIRBlock::BeginStandalonePublication() {
-    if (!function || !function->owns_function || !function->block_list.empty() ||
+    block->CheckMutable();
+    if (!function || function->function_published || !function->block_list.empty() ||
         standalone_publication_pending || !function->function->DetachBlock(block)) {
         return false;
     }
@@ -69,29 +65,29 @@ bool HIRBlock::BeginStandalonePublication() {
 }
 
 void HIRBlock::AbortStandalonePublication() {
+    block->CheckMutable();
     ASSERT(standalone_publication_pending);
     function->function->AddBlock(block);
     standalone_publication_pending = false;
 }
 
 void HIRBlock::CommitStandalonePublication() {
+    block->CheckMutable();
     ASSERT(standalone_publication_pending);
     function->standalone_blocks_published = true;
     standalone_publication_pending = false;
 }
 
-u16 HIRBlock::MaxInstrCount() { return 0; }
-u16 HIRBlock::MaxBlockCount() { return 0; }
-u16 HIRBlock::MaxLocalCount() { return 0; }
-
 HIRValue::HIRValue(const Value& value, HIRBlock* block) : value(value), block(block) {}
 
-void HIRValue::Use(Inst* inst, u8 idx) {
+void HIRValue::Use(const Inst* inst, u8 idx) {
+    ASSERT(block && !block->GetBlock()->IsIRReadOnly());
     auto use = block->pools.uses.Create(inst, idx);
     uses.push_back(*use);
 }
 
-void HIRValue::UnUse(Inst* inst, u8 idx) {
+void HIRValue::UnUse(const Inst* inst, u8 idx) {
+    ASSERT(block && !block->GetBlock()->IsIRReadOnly());
     auto itr = std::find_if(uses.begin(), uses.end(), [inst, idx](auto& itr) -> auto {
         return itr.inst == inst && itr.arg_idx == idx;
     });
@@ -102,14 +98,14 @@ void HIRValue::UnUse(Inst* inst, u8 idx) {
 
 u16 HIRValue::GetOrderId() const { return value.Def()->Id(); }
 
-HIRUse::HIRUse(Inst* inst, u8 arg_idx) : inst(inst), arg_idx(arg_idx) {}
+HIRUse::HIRUse(const Inst* inst, u8 arg_idx) : inst(inst), arg_idx(arg_idx) {}
 
 HIRFunction::HIRFunction(std::unique_ptr<Function> function,
                          const Location& begin,
                          const Location& end,
                          HIRPools& pools,
                          bool ir_fast)
-        : function(function.get()), begin(begin), end(end), ir_fast(ir_fast), pools(pools) {
+        : function(function.release()), begin(begin), end(end), ir_fast(ir_fast), pools(pools) {
     if (ir_fast) {
         // Most lazy-compiled units fit in 64 instructions. Avoid the geometric
         // 1/2/4/... growth of the append-time dense id table on that common
@@ -122,17 +118,16 @@ HIRFunction::HIRFunction(std::unique_ptr<Function> function,
     AddEdge(entry_block, first_block);
     entry_block->block->SetTerminal(terminal::LinkBlock{begin});
     current_block = first_block;
-    // Retain the parameter's owner until every construction allocation succeeds.
-    function.release();
 }
 
 HIRFunction::~HIRFunction() {
-    if (owns_function) {
-        delete function;
-    }
+    // Another region may still seal the actual persistent parent. Only this
+    // HIR wrapper's own consumers must have ended before its pool is reset.
+    if (entry_block) entry_block->GetBlock()->CheckMutable();
 }
 
 HIRBlock* HIRFunction::AppendBlock(Location start, Location end_) {
+    CheckMutable();
     if (auto hir_block = CreateOrGetBlock(start); hir_block) {
         if (end_ > start) {
             hir_block->block->SetEndLocation(end_);
@@ -143,7 +138,7 @@ HIRBlock* HIRFunction::AppendBlock(Location start, Location end_) {
     }
 }
 
-void HIRFunction::SetCurBlock(HIRBlock* block) { current_block = block; }
+void HIRFunction::SetCurBlock(const HIRBlock* block) { current_block = &EditBlock(block); }
 
 HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
     ASSERT(hir_block);
@@ -166,8 +161,9 @@ HIRValue* HIRFunction::AppendValue(HIRBlock* hir_block, Inst* inst) {
 }
 
 HIRValue* HIRFunction::AppendValueRecord(HIRBlock* hir_block, Inst* inst) {
+    CheckMutable();
     HIRValue* hir_value{};
-    if (inst->HasValue()) {
+    if (inst->HasValue() && inst->ReturnType() != ValueType::VOID) {
         hir_value = pools.values.Create(Value{inst}, hir_block);
         value_count++;
     }
@@ -205,6 +201,7 @@ void HIRFunction::TrackLocal(Inst* inst) {
 }
 
 void HIRFunction::DestroyHIRValue(HIRValue* value) {
+    CheckMutable();
     auto* def = value->value.Def();
     // Clear the id slot before DestroyInst frees the instruction the id lives
     // in. Guarded on direct so a stale HIRValue can never blank a slot that
@@ -218,19 +215,22 @@ void HIRFunction::DestroyHIRValue(HIRValue* value) {
     value_count--;
 }
 
-HIRBlock* HIRFunction::GetEntryBlock() { return entry_block; }
+const HIRBlock* HIRFunction::GetEntryBlock() const { return entry_block; }
 
-HIRBlock* HIRFunction::GetCurrentBlock() { return current_block; }
+const HIRBlock* HIRFunction::GetCurrentBlock() const { return current_block; }
 
-HIRBlockVector& HIRFunction::GetHIRBlocks() { return blocks; }
+HIRBlockView HIRFunction::GetHIRBlocks() const { return blocks; }
 
-HIRBlockList& HIRFunction::GetHIRBlockList() { return block_list; }
+const HIRBlockList& HIRFunction::GetHIRBlockList() const { return block_list; }
 
-HIRBlockList& HIRFunction::GetHIRBlocksRPO() { return blocks_rpo; }
+const HIRBlockList& HIRFunction::GetHIRBlocksRPO() const { return blocks_rpo; }
 
-HIRValueMap& HIRFunction::GetHIRValues() { return values; }
+std::span<const HIRValue* const> HIRFunction::GetHIRValues() const { return values; }
 
-HIRValue* HIRFunction::GetHIRValue(const Value& value) {
+const HIRValue* HIRFunction::GetHIRValue(const Value& value) const {
+    return FindValueRecord(value);
+}
+HIRValue* HIRFunction::FindValueRecord(const Value& value) const {
     auto* def = value.Def();
     if (!def) {
         return {};
@@ -242,55 +242,76 @@ HIRValue* HIRFunction::GetHIRValue(const Value& value) {
     if (id == Inst::invalid_id || id >= values.size()) {
         return {};
     }
-    return values[id];
+    auto* record = values[id];
+    return record && record->value.Def() == def ? record : nullptr;
 }
 
-HIRPools& HIRFunction::GetMemPool() { return pools; }
-
-Function* HIRFunction::GetFunction() {
-    return function;
+HIRBlock& HIRFunction::EditBlock(const HIRBlock* block) {
+    CheckMutable();
+    ASSERT(block && block->function == this);
+    block->GetBlock()->CheckMutable();
+    return *const_cast<HIRBlock*>(block);
 }
 
-void HIRFunction::ReleaseFunctionOwnership() {
-    owns_function = false;
-}
-
-void HIRFunction::AddEdge(HIRBlock* src, HIRBlock* dest, bool conditional) {
-    ASSERT(src && dest);
-    bool dest_was_dominated = dest->HasIncomingEdges();
-    auto edge = pools.edges.Create(src, dest);
-    if (conditional) {
-        edge->flags |= Edge::CONDITIONAL;
-    }
-    src->AddOutgoingEdge(edge);
-    dest->AddIncomingEdge(edge);
-    if (dest_was_dominated) {
-        for (auto& incoming : dest->GetIncomingEdges()) {
-            incoming.flags &= ~Edge::DOMINATES;
+void HIRFunction::SetIRReadOnly(bool read_only) {
+    ASSERT(blocks.size() > 1 && block_list.empty());
+    auto* owner = blocks[1]->block->owning_function;
+    ASSERT(owner);
+    if (read_only) {
+        CheckMutable();
+        for (auto* hir : blocks) {
+            if (!hir) continue;
+            hir->block->CheckMutable();
+            ASSERT(hir->unpublished_block || hir->block->owning_function == owner);
         }
+        if (owner != function.get()) owner->AcquireIRReadOnly();
+        function->AcquireIRReadOnly();
+    } else {
+        ASSERT(entry_block->block->IsIRReadOnly());
+        ASSERT(function->IsIRReadOnly() && owner->IsIRReadOnly());
     }
+    for (auto* hir : blocks)
+        if (hir) hir->block->instruction_owner.sealed = read_only;
+    if (!read_only) {
+        function->ReleaseIRReadOnly();
+        if (owner != function.get()) owner->ReleaseIRReadOnly();
+    }
+}
+
+HIRPoolLease HIRFunction::RetainStorage() const { return HIRPoolLease::Retain(pools); }
+
+Function* HIRFunction::GetFunction() { return function.get(); }
+const Function* HIRFunction::GetFunction() const { return function.get(); }
+
+void HIRFunction::MarkFunctionPublished() { function_published = true; }
+
+void HIRFunction::AddEdge(const HIRBlock* src, const HIRBlock* dest) {
+    auto& source = EditBlock(src);
+    auto& target = EditBlock(dest);
+    auto* edge = pools.edges.Create(src, dest);
+    source.outgoing_edges.push_back(*edge);
+    target.incoming_edges.push_back(*edge);
 }
 
 void HIRFunction::RegisterCallReturn(Location location) {
-    ASSERT(current_block);
+    CheckMutable();
+    auto& source = EditBlock(current_block);
     auto* target = AppendBlock(location);
-    ASSERT(target && !current_block->call_return_block);
-    current_block->call_return_block = target;
+    ASSERT(target && !source.call_return_block);
+    source.call_return_block = target;
     target->call_return_target = true;
 }
 
-void HIRFunction::RemoveEdge(Edge* edge) {
-    ASSERT(edge && edge->src_block && edge->dest_block);
-    edge->src_block->outgoing_edges.erase(*edge);
-    edge->dest_block->incoming_edges.erase(*edge);
+void HIRFunction::RemoveEdge(const Edge* edge) {
+    CheckMutable();
+    ASSERT(edge);
+    auto& source = EditBlock(edge->GetSourceBlock());
+    auto& target = EditBlock(edge->GetTargetBlock());
+    source.outgoing_edges.erase(*edge);
+    target.incoming_edges.erase(*edge);
 }
 
-void HIRFunction::MergeAdjacentBlocks(HIRBlock* left, HIRBlock* right) {}
-
-bool HIRFunction::SplitBlock(HIRBlock* new_block, HIRBlock* old_block) { return false; }
-
-namespace {
-void ReleaseTerminalUses(const Terminal& terminal) {
+void HIRFunction::ReleaseTerminalUses(const Terminal& terminal) {
     VisitVariant<void>(terminal, [](const auto& term) {
         using T = std::decay_t<decltype(term)>;
         if constexpr (std::is_same_v<T, terminal::If>) {
@@ -307,9 +328,9 @@ void ReleaseTerminalUses(const Terminal& terminal) {
         }
     });
 }
-}
 
-bool HIRFunction::ResetDecodedBlock(HIRBlock* hir_block) {
+bool HIRFunction::ResetDecodedBlock(const HIRBlock* identity) {
+    auto* hir_block = &EditBlock(identity);
     ASSERT(hir_block && hir_block->function == this);
     if (hir_block->call_return_block) {
         auto* return_block = hir_block->call_return_block;
@@ -335,7 +356,7 @@ bool HIRFunction::ResetDecodedBlock(HIRBlock* hir_block) {
         RemoveEdge(&hir_block->outgoing_edges.front());
     }
 
-    Vector<Inst*> instructions;
+    Vector<const Inst*> instructions;
     instructions.reserve(block->GetInstList().size());
     for (auto& inst : block->GetInstList()) {
         instructions.push_back(&inst);
@@ -349,12 +370,13 @@ bool HIRFunction::ResetDecodedBlock(HIRBlock* hir_block) {
 }
 
 void HIRFunction::RegisterExternalDirectLink(Location target) {
+    CheckMutable();
     ASSERT(current_block);
     external_direct_links.push_back({current_block, target});
 }
 
-void HIRFunction::RegisterExternalEntryRoot(HIRBlock* block) {
-    ASSERT(block && block->function == this);
+void HIRFunction::RegisterExternalEntryRoot(const HIRBlock* identity) {
+    auto* block = &EditBlock(identity);
     if (std::find(external_entry_roots.begin(), external_entry_roots.end(), block) ==
         external_entry_roots.end()) {
         external_entry_roots.push_back(block);
@@ -362,6 +384,7 @@ void HIRFunction::RegisterExternalEntryRoot(HIRBlock* block) {
 }
 
 void HIRFunction::ComputeRPO() {
+    CheckMutable();
     blocks_rpo.clear();
     if (!entry_block) {
         return;
@@ -371,7 +394,7 @@ void HIRFunction::ComputeRPO() {
     // forward layout for emission and linear-scan liveness.
     //
     // The visited set is a dense flag array over HIRBlock::order_id rather than
-    // the Set<HIRBlock*> this used to use: that was a red-black tree with a
+    // the Set<const HIRBlock*> this used to use: that was a red-black tree with a
     // node allocation per block, and under lazy function compilation a unit has
     // ~2-5 blocks, so the container cost dominated the traversal it was
     // serving. The three scratch containers are small_vectors for the same
@@ -379,11 +402,11 @@ void HIRFunction::ComputeRPO() {
     StackVector<u8, 32> visited{};
     visited.resize(MaxBlockCount(), 0);
     struct Frame {
-        HIRBlock* block;
+        const HIRBlock* block;
         u32 next_succ;
     };
     StackVector<Frame, 32> stack{};
-    auto mark_visited = [&visited](HIRBlock* block) -> bool {
+    auto mark_visited = [&visited](const HIRBlock* block) -> bool {
         const auto id = block->GetOrderId();
         if (id >= visited.size()) {
             visited.resize(id + 1, 0);
@@ -394,11 +417,11 @@ void HIRFunction::ComputeRPO() {
         visited[id] = 1;
         return true;
     };
-    const auto append_component = [&](HIRBlock* root) {
+    const auto append_component = [&](const HIRBlock* root) {
         if (!root || !mark_visited(root)) {
             return;
         }
-        StackVector<HIRBlock*, 32> post_order{};
+        StackVector<const HIRBlock*, 32> post_order{};
         stack.push_back({root, 0});
         while (!stack.empty()) {
             auto& frame = stack.back();
@@ -420,7 +443,7 @@ void HIRFunction::ComputeRPO() {
         }
         for (auto it = post_order.rbegin(); it != post_order.rend(); ++it) {
             if (*it != entry_block) {
-                blocks_rpo.push_back(**it);
+                blocks_rpo.push_back(EditBlock(*it));
             }
         }
     };
@@ -431,6 +454,7 @@ void HIRFunction::ComputeRPO() {
 }
 
 void HIRFunction::IdByRPO() {
+    CheckMutable();
     // Renumber every instruction 0..N-1 in RPO and rebuild the id-indexed value
     // table in the same walk: reading a value through its *old* id and pushing
     // it at its *new* one is exactly a permutation, so no lookup structure has
@@ -445,18 +469,18 @@ void HIRFunction::IdByRPO() {
     // a stale building id -- aliasing a renumbered instruction's alloc_result/
     // use_end slot or running past inst_order_id into an OOB write. Numbering
     // them past the reachable range keeps every instruction id unique and
-    // in-bounds; the value table itself stays RPO-only, so GetHIRValue() still
+    // in-bounds; the value table itself stays RPO-only, so FindValueRecord() still
     // reports unreachable defs as "not a value" (id >= values.size()).
     reid_scratch.clear();
     reid_scratch.reserve(values.size());
     StackVector<u8, 32> reachable{};
     reachable.resize(MaxBlockCount(), 0);
     u32 cur_inst_id{0};
-    for (auto& block : GetHIRBlocksRPO()) {
+    for (auto& block : blocks_rpo) {
         reachable[block.GetOrderId()] = 1;
         for (auto& inst : block.GetInstList()) {
-            reid_scratch.push_back(GetHIRValue(Value{&inst}));
-            inst.SetId(cur_inst_id++);
+            reid_scratch.push_back(FindValueRecord(Value{&inst}));
+            block.GetBlock()->EditInst(&inst).SetId(cur_inst_id++);
         }
     }
     // EndFunction has already emptied the temporary intrusive list. The
@@ -467,7 +491,7 @@ void HIRFunction::IdByRPO() {
             continue;
         }
         for (auto& inst : block->GetInstList()) {
-            inst.SetId(cur_inst_id++);
+            block->GetBlock()->EditInst(&inst).SetId(cur_inst_id++);
         }
     }
     inst_order_id = cur_inst_id;
@@ -475,11 +499,13 @@ void HIRFunction::IdByRPO() {
 }
 
 void HIRFunction::EndBlock(Terminal terminal) {
+    CheckMutable();
     current_block->block->SetTerminal(std::move(terminal));
     current_block = {};
 }
 
 void HIRFunction::EndFunction() {
+    CheckMutable();
     const bool detail = PerfIRDetailEnabled();
     auto begin = detail ? std::chrono::steady_clock::now()
                         : std::chrono::steady_clock::time_point{};
@@ -489,26 +515,28 @@ void HIRFunction::EndFunction() {
         blocks[block.order_id] = &block;
 
         // Block successes predecessors
-        auto& incoming_edges = block.GetIncomingEdges();
-        auto& outgoing_edges = block.GetOutgoingEdges();
-        block.predecessors = pools.CreateBlockVector(incoming_edges.size());
-        block.successors = pools.CreateBlockVector(outgoing_edges.size());
+        auto& incoming_edges = block.incoming_edges;
+        auto& outgoing_edges = block.outgoing_edges;
+        block.predecessors = pools.CreateBlockReferences(incoming_edges.size());
+        block.successors = pools.CreateBlockReferences(outgoing_edges.size());
 
         u16 incoming_index{0};
         for (auto& edge : incoming_edges) {
-            block.predecessors[incoming_index++] = edge.src_block;
+            block.predecessors[incoming_index++] = edge.GetSourceBlock();
         }
 
         u16 outgoing_index{0};
         for (auto& edge : outgoing_edges) {
-            block.successors[outgoing_index++] = edge.dest_block;
+            block.successors[outgoing_index++] = edge.GetTargetBlock();
         }
 
         // Transfer every real decoded block to the persistent ir::Function.
         // The HIR wrappers live in HIRBuilder's pools, but ir::Function owns
         // the Block objects after the builder goes away. The synthetic entry
         // has Location::INVALID and exists only to seed CFG/RPO discovery.
-        if (&block != entry_block && block.unpublished_block) {
+        const bool decoded = block.block->HasTerminal() || !block.block->GetInstList().empty();
+        if (&block != entry_block && block.unpublished_block &&
+            (decoded || block.block->GetStartLocation() == function->GetStartLocation())) {
             function->AddBlock(block.GetBlock());
             block.unpublished_block.release();
         }
@@ -520,16 +548,17 @@ void HIRFunction::EndFunction() {
     }
 }
 
-u16 HIRFunction::MaxBlockCount() { return block_order_id; }
-u16 HIRFunction::MaxInstrCount() { return inst_order_id; }
-u16 HIRFunction::MaxLocalCount() { return max_local_id + 1; }
+u16 HIRFunction::MaxBlockCount() const { return block_order_id; }
+u16 HIRFunction::MaxInstrCount() const { return inst_order_id; }
+u16 HIRFunction::MaxLocalCount() const { return max_local_id + 1; }
 
-void HIRFunction::EraseInst(Block* block, Inst* inst) {
+void HIRFunction::EraseInst(Block* block, const Inst* inst) {
+    CheckMutable();
     ASSERT(block && inst);
     // Order matters: drop the uses this instruction holds while its args are
     // still intact, then remove the value it defines, then free it.
     UnUseInst(inst);
-    if (auto* hir_value = GetHIRValue(Value{inst}); hir_value) {
+    if (auto* hir_value = FindValueRecord(Value{inst}); hir_value) {
         // DestroyHIRValue also unlinks the instruction from its block and
         // deletes it (Block::DestroyInst).
         DestroyHIRValue(hir_value);
@@ -538,182 +567,38 @@ void HIRFunction::EraseInst(Block* block, Inst* inst) {
     block->DestroyInst(inst);
 }
 
-// Exact mirror of UseInst: same logical/physical slot walk, unregistering
-// instead of registering. Keep the two in lockstep.
-void HIRFunction::UnUseInst(Inst* inst) {
-    const auto& info = GetIRMetaInfo(inst->GetOp());
-    u8 physical = 0;
-    for (const auto arg_type : info.arg_types) {
-        switch (arg_type) {
-            case ArgType::Value: {
-                auto& arg = inst->ArgAt(physical);
-                if (!arg.IsValue()) {
-                    break;
-                }
-                if (auto hir_value = GetHIRValue(arg.Get<Value>()); hir_value) {
-                    hir_value->UnUse(inst, physical);
-                }
-                break;
-            }
-            case ArgType::Lambda: {
-                auto& arg = inst->ArgAt(physical);
-                if (!arg.IsLambda()) {
-                    break;
-                }
-                auto lambda = arg.Get<Lambda>();
-                if (lambda.IsValue()) {
-                    if (auto hir_value = GetHIRValue(lambda.GetValue()); hir_value) {
-                        hir_value->UnUse(inst, physical);
-                    }
-                }
-                break;
-            }
-            case ArgType::Params: {
-                auto& arg = inst->ArgAt(physical);
-                if (!arg.IsParams()) {
-                    break;
-                }
-                for (auto param : arg.Get<Params>()) {
-                    if (auto data = param.data; data.IsValue()) {
-                        if (auto hir_value = GetHIRValue(data.value); hir_value) {
-                            hir_value->UnUse(inst, HIRUse::USE_FUNC_CALL);
-                        }
-                    }
-                }
-                break;
-            }
-            case ArgType::Operand: {
-                for (u8 nested = 1; nested <= 2; ++nested) {
-                    auto& data = inst->ArgAt(physical + nested);
-                    if (data.IsValue()) {
-                        if (auto hir_value = GetHIRValue(data.Get<Value>()); hir_value) {
-                            hir_value->UnUse(inst, physical + nested);
-                        }
-                    }
-                }
-                break;
-            }
-            default:
-                break;
-        }
-        physical += PhysicalSlots(arg_type);
-    }
+// Both directions visit the same physical/nested value occurrences as SSA
+// validation and ordinary IR consumers. Immediate call arguments have no use.
+void HIRFunction::UnUseInst(const Inst* inst) {
+    CheckMutable();
+    inst->ForEachValueUse([&](Value value, u8 slot) {
+        if (auto* record = FindValueRecord(value))
+            record->UnUse(inst, slot == Inst::params_arg_index ? HIRUse::USE_FUNC_CALL : slot);
+    });
 }
 
-void HIRFunction::UseInst(Inst* inst) {
-    // HIRUse::arg_idx is a physical Arg slot (the local-elimination passes feed
-    // it back to ArgAt/SetArg). Walk logical metadata while carrying the
-    // physical offset explicitly; Operand consumes op + left + right slots.
-    const auto& info = GetIRMetaInfo(inst->GetOp());
-    u8 physical = 0;
-    for (const auto arg_type : info.arg_types) {
-        switch (arg_type) {
-            case ArgType::Value: {
-                auto& arg = inst->ArgAt(physical);
-                if (inst->GetOp() == OpCode::CallLambda && arg.IsVoid()) {
-                    break;  // optional trailing host-call argument
-                }
-                ASSERT_MSG(arg.IsValue(),
-                           "{} physical arg {} is {}, expected Value",
-                           inst->GetOp(),
-                           physical,
-                           arg.GetType());
-                auto value = arg.Get<Value>();
-                if (auto hir_value = GetHIRValue(value); hir_value) {
-                    hir_value->Use(inst, physical);
-                }
-                break;
-            }
-            case ArgType::Lambda: {
-                auto lambda = inst->ArgAt(physical).Get<Lambda>();
-                if (lambda.IsValue()) {
-                    if (auto hir_value = GetHIRValue(lambda.GetValue()); hir_value) {
-                        hir_value->Use(inst, physical);
-                    }
-                }
-                break;
-            }
-            case ArgType::Params: {
-                auto params = inst->ArgAt(physical).Get<Params>();
-                for (auto param : params) {
-                    if (auto data = param.data; data.IsValue()) {
-                        if (auto hir_value = GetHIRValue(data.value); hir_value) {
-                            hir_value->Use(inst, HIRUse::USE_FUNC_CALL);
-                        }
-                    }
-                }
-                break;
-            }
-            case ArgType::Operand: {
-                for (u8 nested = 1; nested <= 2; ++nested) {
-                    auto& data = inst->ArgAt(physical + nested);
-                    if (data.IsValue()) {
-                        if (auto hir_value = GetHIRValue(data.Get<Value>()); hir_value) {
-                            hir_value->Use(inst, physical + nested);
-                        }
-                    }
-                }
-                break;
-            }
-            default:
-                break;
-        }
-        physical += PhysicalSlots(arg_type);
-    }
+void HIRFunction::UseInst(const Inst* inst) {
+    CheckMutable();
+    inst->ForEachValueUse([&](Value value, u8 slot) {
+        if (auto* record = FindValueRecord(value))
+            record->Use(inst, slot == Inst::params_arg_index ? HIRUse::USE_FUNC_CALL : slot);
+    });
 }
 
 HIRBlock* HIRFunction::CreateOrGetBlock(Location location) {
+    CheckMutable();
     auto itr = std::find_if(block_list.begin(), block_list.end(), [location](auto& block) -> auto {
         return block.GetBlock()->GetStartLocation() == location;
     });
     if (itr != block_list.end()) {
-        return itr.operator->();
+        return &EditBlock(itr.operator->());
     }
     auto hir_block = pools.blocks.Create(std::make_unique<Block>(location), values, pools);
     hir_block->order_id = block_order_id++;
+    hir_block->block->instruction_owner.hir_order = hir_block->order_id;
     hir_block->function = this;
     block_list.push_back(*hir_block);
     return hir_block;
-}
-
-HIRPools::HIRPools(u32 func_cap)
-        : functions(func_cap)
-        , blocks(func_cap * 8)
-        , edges(func_cap * 16)
-        , values(func_cap * 256)
-        , uses(func_cap * 256)
-        , mem_arena(func_cap * 512) {}
-
-namespace {
-// The per-thread pool set the lease hands out, plus the flag that makes a
-// nested lease fall back to a private one. A unique_ptr rather than a basic
-// object so the pools are released at thread exit; by then Reset() has already
-// destroyed every object in them.
-thread_local std::unique_ptr<HIRPools> tls_pools{};
-thread_local bool tls_pools_in_use{false};
-}  // namespace
-
-HIRPoolLease::HIRPoolLease(u32 func_cap) {
-    if (tls_pools_in_use) {
-        owned = std::make_unique<HIRPools>(func_cap);
-        pools = owned.get();
-        return;
-    }
-    if (!tls_pools) {
-        // func_cap only sizes the initial chunks; a cached set reached by a
-        // later builder with a larger cap simply grows on demand.
-        tls_pools = std::make_unique<HIRPools>(func_cap);
-    }
-    tls_pools_in_use = true;
-    pools = tls_pools.get();
-}
-
-HIRPoolLease::~HIRPoolLease() {
-    if (owned) {
-        return;
-    }
-    pools->Reset();
-    tls_pools_in_use = false;
 }
 
 HIRBuilder::HIRBuilder(u32 func_cap, bool defer_function_end, bool ir_fast,
@@ -729,8 +614,6 @@ HIRFunction* HIRBuilder::AppendFunction(Location start, Location end) {
     SetCurBlock(current_function->AppendBlock(start, end));
     return current_function;
 }
-
-HIRFunctionList& HIRBuilder::GetHIRFunctions() { return hir_functions; }
 
 bool HIRBuilder::HasCurrentFunctionBlock(Location location) {
     if (!current_function) {
@@ -762,7 +645,7 @@ bool HIRBuilder::FoldAdvancePC(const Imm& imm) {
 
 void HIRBuilder::SetLocation(Location location) { current_location = location; }
 
-void HIRBuilder::SetCurBlock(HIRBlock* block) {
+void HIRBuilder::SetCurBlock(const HIRBlock* block) {
     ASSERT(current_function);
     current_function->SetCurBlock(block);
 }
@@ -774,7 +657,7 @@ void HIRBuilder::SetCurBlock(Location location) {
     current_function->SetCurBlock(block);
 }
 
-bool HIRBuilder::ResetDecodedBlock(HIRBlock* block) {
+bool HIRBuilder::ResetDecodedBlock(const HIRBlock* block) {
     ASSERT(current_function);
     if (!current_function->ResetDecodedBlock(block)) {
         return false;
@@ -794,11 +677,11 @@ HIRBuilder::ElseThen HIRBuilder::If(const terminal::If& if_) {
     auto then_ = GetNextLocation(if_.then_);
     auto else_block = current_function->AppendBlock(else_);
     if (else_block) {
-        current_function->AddEdge(pre_block, else_block, true);
+        current_function->AddEdge(pre_block, else_block);
     }
     auto then_block = current_function->AppendBlock(then_);
     if (then_block) {
-        current_function->AddEdge(pre_block, then_block, true);
+        current_function->AddEdge(pre_block, then_block);
     }
     return {else_block, then_block};
 }
@@ -812,7 +695,7 @@ Vector<HIRBuilder::CaseBlock> HIRBuilder::Switch(const terminal::Switch& switch_
     for (int i = 0; i < case_size; i++) {
         auto next_location = GetNextLocation(switch_.cases[i].then);
         auto next_block = current_function->AppendBlock(next_location);
-        current_function->AddEdge(pre_block, next_block, true);
+        current_function->AddEdge(pre_block, next_block);
         result[i] = {switch_.cases[i].case_value, next_block};
     }
     return result;
@@ -823,7 +706,7 @@ HIRBlock* HIRBuilder::LinkBlock(const terminal::LinkBlock& link) {
     auto pre_block = current_function->current_block;
     current_function->EndBlock(link);
     auto next_block = current_function->AppendBlock(link.next);
-    current_function->AddEdge(pre_block, next_block, false);
+    current_function->AddEdge(pre_block, next_block);
     return next_block;
 }
 
@@ -904,16 +787,6 @@ Location HIRBuilder::GetNextLocation(const terminal::Terminal& term) {
             return {};
         }
     });
-}
-
-void DfsHIRBlock(HIRBlock* start, HIRBlock* end, HIRBlockSet& visited) {
-    if (start == end || visited.count(start)) {
-        return;
-    }
-    visited.insert(start);
-    for (auto pred : start->GetPredecessors()) {
-        DfsHIRBlock(pred, end, visited);
-    }
 }
 
 }  // namespace swift::runtime::ir

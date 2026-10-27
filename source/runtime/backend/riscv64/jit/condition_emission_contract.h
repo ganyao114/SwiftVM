@@ -9,7 +9,7 @@
 namespace swift::runtime::backend::riscv64 {
 
 inline void VerifyRVCondition(ir::Cond condition) {
-    if (static_cast<u8>(condition) > static_cast<u8>(ir::Cond::NV))
+    if (!ir::IsValidCondition(condition))
         throw std::runtime_error("RV64 condition is outside EQ..NV");
 }
 
@@ -22,21 +22,8 @@ inline void VerifyRVInstructionConditionForOpcode(const ir::Inst& inst, ir::OpCo
 }
 
 inline void VerifyRVTerminalConditions(const ir::Terminal& terminal) {
-    VisitVariant<void>(terminal, [&](const auto& term) {
-        using T = std::decay_t<decltype(term)>;
-        if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
-            VerifyRVCondition(term.cond);
-            VerifyRVTerminalConditions(term.then_);
-            VerifyRVTerminalConditions(term.else_);
-        } else if constexpr (std::is_same_v<T, ir::terminal::If>) {
-            VerifyRVTerminalConditions(term.then_);
-            VerifyRVTerminalConditions(term.else_);
-        } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
-            for (const auto& item : term.cases) VerifyRVTerminalConditions(item.then);
-        } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
-            VerifyRVTerminalConditions(term.else_);
-        }
-    });
+    if (!ir::CheckTerminal(terminal, [](ir::Value) {}))
+        throw std::runtime_error("RV64 terminal has invalid arguments");
 }
 
 } // namespace swift::runtime::backend::riscv64

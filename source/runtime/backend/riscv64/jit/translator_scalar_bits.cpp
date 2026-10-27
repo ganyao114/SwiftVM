@@ -1,7 +1,6 @@
 #include "translator.h"
 
 #include <array>
-#include <stdexcept>
 
 namespace swift::runtime::backend::riscv64 {
 
@@ -22,8 +21,7 @@ constexpr auto crc32c_table = [] {
 }();
 
 u64 FieldMask(u64 lsb, u64 width) {
-    if (lsb >= 64 || width > 64 - lsb)
-        throw std::runtime_error("invalid RV64 scalar bit field");
+    // Translate's common IR preflight has already bounded both immediates.
     return width == 64 ? UINT64_MAX : ((u64{1} << width) - 1) << lsb;
 }
 
@@ -56,7 +54,92 @@ u8 FloatConditionTable(ir::Cond cond) {
 
 }  // namespace
 
-bool JitTranslator::EmitScalarBits(ir::Inst* inst) {
+void JitTranslator::EmitIntegerPredicate(const ir::Inst* inst, ir::IntegerPredicateKind kind) {
+    auto& as = context.GetMasm();
+    const auto input = inst->GetArg<ir::Value>(0);
+    const auto result = context.ResultRegister(inst);
+    if (kind == ir::IntegerPredicateKind::Bit) {
+        const u64 bit = inst->GetArg<ir::Imm>(1).Get();
+        if (bit >= ir::GetScalarIntegerBits(input.Type())) as.MV(result, x0);
+        else {
+            context.Read(result, input);
+            as.SRLI(result, result, bit);
+            as.ANDI(result, result, 1);
+        }
+    } else {
+        context.ReadCondition(result, input);
+        if (kind == ir::IntegerPredicateKind::Nonzero) as.SNEZ(result, result);
+        else as.SEQZ(result, result);
+    }
+    context.Write(inst, result, true);
+}
+
+void JitTranslator::EmitIntegerShift(const ir::Inst* inst, ir::IntegerShiftKind kind) {
+    auto& as = context.GetMasm();
+    const auto value = inst->GetArg<ir::Value>(0);
+    const u32 bits = ir::GetScalarIntegerBits(inst->ReturnType());
+    const u32 input_bits = ir::IntegerShiftInputBits(ir::GetScalarIntegerBits(value.Type()), bits);
+    const bool left = kind == ir::IntegerShiftKind::Left;
+    const bool right = kind == ir::IntegerShiftKind::Right;
+    const bool arithmetic = kind == ir::IntegerShiftKind::ArithmeticRight;
+    const bool word = bits == 32 && (left || right || arithmetic);
+    const bool rotate_word = bits == 32 && context.Features().zbb;
+    const auto result = context.ResultRegister(inst);
+    auto source = context.SourceRegister(value, t0);
+    const bool stage = left ? input_bits < bits
+            : (word || rotate_word) ? input_bits < 32 : input_bits < 64;
+    if (stage) {
+        if (result != source) as.MV(result, source);
+        if (arithmetic) context.SignExtend(result, input_bits);
+        else context.Mask(result, input_bits);
+        source = result;
+    }
+    bool normalized = false;
+    if (inst->ArgAt(1).IsImm()) {
+        const u32 shift = ir::NormalizeIntegerShiftCount(inst->GetArg<ir::Imm>(1).Get(), bits);
+        if (word) {
+            if (left) as.SLLIW(result, source, shift);
+            else if (right) as.SRLIW(result, source, shift);
+            else as.SRAIW(result, source, shift);
+            // Word right shifts can sign-extend bit31 only when count is zero
+            // and that bit survived input normalization.
+            normalized = right && (shift != 0 || input_bits < 32);
+        } else if (left) as.SLLI(result, source, shift);
+        else if (right) { as.SRLI(result, source, shift); normalized = true; }
+        else if (arithmetic) as.SRAI(result, source, shift);
+        else if (!shift) { if (result != source) as.MV(result, source); }
+        else if (context.Features().zbb && bits == 64) as.RORI(result, source, shift);
+        else if (rotate_word) as.RORIW(result, source, shift);
+        else {
+            as.SRLI(t2, source, shift); as.SLLI(result, source, bits - shift);
+            as.OR(result, result, t2);
+        }
+    } else {
+        auto shift = context.SourceRegister(inst->GetArg<ir::Value>(1), t1);
+        if (bits < 64 && !word) {
+            if (shift != t1) as.MV(t1, shift);
+            as.ANDI(t1, t1, bits - 1);
+            shift = t1;
+        }
+        if (word) {
+            if (left) as.SLLW(result, source, shift);
+            else if (right) as.SRLW(result, source, shift);
+            else as.SRAW(result, source, shift);
+            normalized = right && input_bits < 32;
+        } else if (left) as.SLL(result, source, shift);
+        else if (right) { as.SRL(result, source, shift); normalized = true; }
+        else if (arithmetic) as.SRA(result, source, shift);
+        else if (context.Features().zbb && bits == 64) as.ROR(result, source, shift);
+        else if (rotate_word) as.RORW(result, source, shift);
+        else {
+            as.SUB(t2, x0, shift); as.ANDI(t2, t2, bits - 1);
+            as.SLL(t2, source, t2); as.SRL(result, source, shift); as.OR(result, result, t2);
+        }
+    }
+    context.Write(inst, result, normalized);
+}
+
+bool JitTranslator::EmitScalarBits(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::ByteSwap: case O::CountLeadingZeros64: case O::CountTrailingZeros64:
@@ -72,7 +155,6 @@ bool JitTranslator::EmitScalarBits(ir::Inst* inst) {
     bool normalized = false;
     if (op == O::BitExtract) {
         const auto lsb = inst->GetArg<ir::Imm>(1).Get(), width = inst->GetArg<ir::Imm>(2).Get();
-        (void)FieldMask(lsb, width);
         if (!width) as.MV(result, x0);
         else {
             const auto reg = context.SourceRegister(source, t0);
@@ -107,8 +189,6 @@ bool JitTranslator::EmitScalarBits(ir::Inst* inst) {
         normalized = true;
     } else if (op == O::Crc32c) {
         const auto width = inst->GetArg<ir::Imm>(2).Get();
-        if (width != 8 && width != 16 && width != 32 && width != 64)
-            throw std::runtime_error("invalid RV64 CRC32C width");
         context.Read(t0, source); context.Mask(t0, 32);
         context.Read(t1, inst->GetArg<ir::Value>(1));
         context.HostAddress(t2, reinterpret_cast<u64>(crc32c_table.data()));
@@ -135,8 +215,6 @@ bool JitTranslator::EmitScalarBits(ir::Inst* inst) {
         normalized = true;
     } else if (op == O::ByteSwap) {
         const auto width = inst->GetArg<ir::Imm>(1).Get();
-        if (width != 16 && width != 32 && width != 64)
-            throw std::runtime_error("invalid RV64 byte-swap width");
         normalized = width <= ir::GetValueSizeByte(inst->ReturnType()) * 8;
         if (context.Features().zbb) {
             as.REV8(result, context.SourceRegister(source, t0));

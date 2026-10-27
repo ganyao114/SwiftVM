@@ -14,7 +14,7 @@
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/host_isa.h"
 #include "runtime/frontend/arm64/arm64_frontend.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/include/sruntime.h"
 #include "translator.h"
 #include "translator/function_stats.h"
@@ -174,7 +174,7 @@ struct Arm64Instance::Impl final {
                         break;
                     }
                     builder.SetCurBlock(addr);
-                    ir::Assembler assembler{&builder};
+                    compile::IrBuilder assembler{&builder};
                     arm64::A64Decoder decoder{addr, &memory_impl, &assembler};
                     decoder.Decode();
                     ++decoded_count;
@@ -280,7 +280,7 @@ struct Arm64Instance::Impl final {
                     // for a cached one.
                     std::memset(&x->GetJitCache(), 0, sizeof(backend::JitCache));
                     auto jit_guard = module->ModuleLockRead();
-                    ir::Assembler assembler{x.get()};
+                    compile::IrBuilder assembler{x.get()};
                     arm64::A64Decoder decoder{pc, &memory_impl, &assembler};
                     decoder.Decode();
                 }

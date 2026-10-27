@@ -349,13 +349,15 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
             auto* block_entry =
                     static_cast<const u8*>(address_space->GetCodeCache(ir::Location{bs}));
             if (!block_entry) {
-                // A shared SSA frame has only a root ABI entry. Interior
-                // decoded bytes still participate in validation and SMC.
-                if (config.backend_isa == runtime::kRiscv64 && be > bs) {
+                // A decoded body can require its unit's SSA or width state.
+                // Keep its bytes in validation/SMC without exporting its ABI.
+                if (unit.is_function && be > bs) {
                     SerialBlock sb{bs, be, UINT32_MAX};
                     sb.entry_flags = SerialBlock::MetadataOnly;
                     if (!HashGuestRange(guest, bs, be, sb.guest_bytes_hash)) blocks_ok = false;
                     else unit.blocks.push_back(sb);
+                    if (config.backend_isa == runtime::kArm64 && guest.memory.RangeIsMapped(bs, 1))
+                        pending_successors.insert(bs);
                     return;
                 }
                 // A successor the function-mode decode named but did not
@@ -372,6 +374,14 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
                 return;
             }
             if (block_entry < code || block_entry >= code + code_size) {
+                if (unit.is_function && be > bs) {
+                    SerialBlock sb{bs, be, UINT32_MAX};
+                    sb.entry_flags = SerialBlock::MetadataOnly;
+                    if (!HashGuestRange(guest, bs, be, sb.guest_bytes_hash))
+                        blocks_ok = false;
+                    else
+                        unit.blocks.push_back(sb);
+                }
                 return;  // published by another unit (shared tail, alias)
             }
             SerialBlock sb{};
@@ -409,12 +419,13 @@ bool CompileArtifact(const CompileOptions& options, AotStats& stats, std::string
         };
 
         auto add_dependencies = [&](const ir::Block* block) {
-            if (config.backend_isa != runtime::kRiscv64) return;
             for (const auto& dependency : block->GetGuestCodeDependencies()) {
                 SerialBlock sb{dependency.start.Value(), dependency.end.Value(), UINT32_MAX};
                 sb.entry_flags = SerialBlock::DependencyOnly;
-                if (!HashGuestRange(guest, sb.guest_start, sb.guest_end, sb.guest_bytes_hash)) blocks_ok = false;
-                else unit.blocks.push_back(sb);
+                if (!HashGuestRange(guest, sb.guest_start, sb.guest_end, sb.guest_bytes_hash))
+                    blocks_ok = false;
+                else
+                    unit.blocks.push_back(sb);
             }
         };
         auto node = module->GetNode(ir::Location{c.addr});

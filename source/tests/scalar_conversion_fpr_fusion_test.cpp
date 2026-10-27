@@ -1,5 +1,8 @@
-#include "support/register_alloc_test_support.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "support/register_alloc_test_support.h"
 
 #include <algorithm>
 #include <array>
@@ -15,11 +18,10 @@
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "translator/x86/translator.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -28,18 +30,18 @@ constexpr swift::u32 kTarget = 17;
 
 IntrusivePtr<Block> MakeConversion(bool faulting_source) {
     IntrusivePtr<Block> block{new Block(0, Location{0x8b80})};
-    auto current = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u}).SetType(ValueType::V128);
-    auto view = block->BitCast(current).SetType(ValueType::V128);
-    auto zero = block->VecXor(current, view).SetType(ValueType::V128);
+    auto current = block->GetHostFPR(ValueType::V128, HostRegIndex(kTarget), Imm{0u});
+    auto view = block->BitCast(ValueType::V128, current);
+    auto zero = block->VecXor(ValueType::V128, current, view);
     block->SetHostFPR(zero, HostRegIndex(kTarget), Imm{0u});
     Value source;
     if (faulting_source) {
         auto address = block->LoadUniform(Uniform{0, ValueType::U64});
-        source = block->LoadMemory(Operand{address}).SetType(ValueType::U32);
+        source = block->LoadMemory(ValueType::U32, Operand{address});
     } else {
         source = block->LoadUniform(Uniform{8, ValueType::U32});
     }
-    auto converted = block->VecFCvtIntToFloat(source, Imm{32u}, Imm{64u}).SetType(ValueType::U64);
+    auto converted = block->VecFCvtIntToFloat(ValueType::U64, source, Imm{32u}, Imm{64u});
     block->SetHostFPR(converted, HostRegIndex(kTarget), Imm{0u});
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
@@ -48,7 +50,7 @@ IntrusivePtr<Block> MakeConversion(bool faulting_source) {
 
 IntrusivePtr<Block> MakeResidentStore(bool overwrite) {
     IntrusivePtr<Block> block{new Block(0, Location{0x8b80})};
-    auto value = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u}).SetType(ValueType::U64);
+    auto value = block->GetHostFPR(ValueType::U64, HostRegIndex(kTarget), Imm{0u});
     if (overwrite) {
         auto replacement = block->LoadUniform(Uniform{16, ValueType::U64});
         block->SetHostFPR(replacement, HostRegIndex(kTarget), Imm{0u});
@@ -62,7 +64,7 @@ IntrusivePtr<Block> MakeResidentStore(bool overwrite) {
 
 IntrusivePtr<Block> MakeNarrowResidentStore(bool overwrite) {
     IntrusivePtr<Block> block{new Block(0, Location{0x8b80})};
-    auto value = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u}).SetType(ValueType::U64);
+    auto value = block->GetHostFPR(ValueType::U64, HostRegIndex(kTarget), Imm{0u});
     auto narrow = block->ZeroExtend32(value);
     if (overwrite) {
         auto replacement = block->LoadUniform(Uniform{16, ValueType::U64});
@@ -78,7 +80,7 @@ IntrusivePtr<Block> MakeNarrowResidentStore(bool overwrite) {
 IntrusivePtr<Block> MakePublishedExtractStore(bool overwrite) {
     IntrusivePtr<Block> block{new Block(0, Location{0x8b80})};
     auto source = block->LoadUniform(Uniform{16, ValueType::V128});
-    auto extracted = block->VecExtract64(source, Imm{0u}).SetType(ValueType::U64);
+    auto extracted = block->VecExtract64(ValueType::U64, source, Imm{0u});
     block->SetHostFPR(source, HostRegIndex(kTarget), Imm{0u});
     if (overwrite) {
         auto replacement = block->LoadUniform(Uniform{32, ValueType::V128});
@@ -93,12 +95,12 @@ IntrusivePtr<Block> MakePublishedExtractStore(bool overwrite) {
 
 IntrusivePtr<Block> MakeConversionStore(bool overwrite) {
     IntrusivePtr<Block> block{new Block(0, Location{0x8b80})};
-    auto current = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u}).SetType(ValueType::V128);
-    auto view = block->BitCast(current).SetType(ValueType::V128);
-    auto zero = block->VecXor(current, view).SetType(ValueType::V128);
+    auto current = block->GetHostFPR(ValueType::V128, HostRegIndex(kTarget), Imm{0u});
+    auto view = block->BitCast(ValueType::V128, current);
+    auto zero = block->VecXor(ValueType::V128, current, view);
     block->SetHostFPR(zero, HostRegIndex(kTarget), Imm{0u});
     auto source = block->LoadUniform(Uniform{8, ValueType::U32});
-    auto converted = block->VecFCvtIntToFloat(source, Imm{32u}, Imm{64u}).SetType(ValueType::U64);
+    auto converted = block->VecFCvtIntToFloat(ValueType::U64, source, Imm{32u}, Imm{64u});
     block->SetHostFPR(converted, HostRegIndex(kTarget), Imm{0u});
     if (overwrite) {
         auto replacement = block->LoadUniform(Uniform{16, ValueType::U64});
@@ -115,7 +117,7 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
     GPRSMask gprs{~((1u << 8) - 1u)};
     FPRSMask fprs{0};
     fprs.Mark(kTarget);
-    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     RegisterAllocTestSupport::RunForXmmResidentTest(block.get(), &alloc, true);
 
     Config config{
@@ -128,9 +130,8 @@ std::vector<std::string> Emit(IntrusivePtr<Block> block) {
     AddressSpace address_space{config};
     auto module = address_space.MapModule(
             LocationDescriptor{0x8b80}, LocationDescriptor{0x8ba0}, ModuleConfig{});
-    alloc.SetAllocationUnit(block.get(), nullptr, {});
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -170,25 +171,26 @@ TEST_CASE("integer conversion writes a zero-high resident FPR directly") {
     REQUIRE(Count(faulting, "mov v17.d[0]") == 0);
 }
 
-TEST_CASE("RegAlloc freezes resident memory actions before encoder construction", "[scalar-preparation]") {
+TEST_CASE("AllocationFixture freezes resident memory actions before encoder construction",
+          "[scalar-preparation]") {
     for (const bool overwrite : {false, true}) {
         CAPTURE(overwrite);
         auto block = MakeResidentStore(overwrite);
         GPRSMask gprs{~((1u << 8) - 1u)}; FPRSMask fprs{0}; fprs.Mark(kTarget);
-        RegAlloc allocation{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture allocation{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForXmmResidentTest(block.get(), &allocation, true);
         Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
                       .has_local_operation = false, .backend_isa = kArm64};
         AddressSpace space{config};
-        allocation.SetAllocationUnit(block.get(), nullptr, {});
-        allocation.CompleteGPRAllocation(space.GetDefaultModule());
-        const auto plan = allocation.GPRPlanFor(block.get()); REQUIRE(plan);
-        if (overwrite) REQUIRE_FALSE(plan->scalar_preparation);
-        else {
-            REQUIRE(plan->scalar_preparation);
-            for (auto& inst : block->GetInstList())
-                if (inst.GetOp() == OpCode::StoreMemory)
-                    REQUIRE(plan->scalar_preparation->resident.FindMemoryStore(&inst) == kTarget);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(),
+                                                                  allocation);
+        const auto plan = allocation.Actions().ForBlock(block.get());
+        REQUIRE(plan);
+        for (auto& inst : block->GetInstList()) {
+            if (inst.GetOp() != OpCode::StoreMemory) continue;
+            const auto* action = allocation.Actions().ScalarFPRStore(inst.Id());
+            REQUIRE((action != nullptr) == !overwrite);
+            if (action) REQUIRE(action->target == kTarget);
         }
     }
 }

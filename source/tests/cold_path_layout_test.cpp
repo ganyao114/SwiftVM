@@ -1,17 +1,20 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <array>
 #include <cstring>
 #include <optional>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/function_code_object_emitter.h"
-#include "runtime/backend/arm64/alloc/target_allocation_planner.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/runtime.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "runtime/ir/hir_builder.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
 
 TEST_CASE("function cold paths follow every hot block",
           "[arm64][codegen][cold-path]") {
@@ -42,16 +45,9 @@ TEST_CASE("function cold paths follow every hot block",
     HIRBuilder builder{1, true, features};
     auto* function = builder.AppendFunction(
             Location{first_guest}, Location{second_guest + 1});
-    const auto left = function
-                              ->LoadUniform<TypedValue<ValueType::V128>>(
-                                      Uniform{0, ValueType::V128})
-                              .SetType(ValueType::V128);
-    const auto right = function
-                               ->LoadUniform<TypedValue<ValueType::V128>>(
-                                       Uniform{16, ValueType::V128})
-                               .SetType(ValueType::V128);
-    const auto result = function->VecFAddScalar32(left, right)
-                                .SetType(ValueType::V128);
+    const auto left = function->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
+    const auto right = function->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+    const auto result = function->VecFAddScalar32(ValueType::V128, left, right);
     function->StoreUniform(Uniform{32, ValueType::V128}, result);
     auto* second_block =
             builder.LinkBlock(terminal::LinkBlock{Location{second_guest}});
@@ -61,13 +57,16 @@ TEST_CASE("function cold paths follow every hot block",
     function->ComputeRPO();
     function->IdByRPO();
 
-    RegAlloc alloc{function->MaxInstrCount(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(),
-                   features};
-    RegisterAllocPass::Run(function, &alloc, features);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    AllocationFixture alloc{function->MaxInstrCount(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(function, alloc, features));
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(function);
     context.Finish();
@@ -141,32 +140,18 @@ TEST_CASE("function code objects emit independently allocated regions",
     auto* first = make_region(first_guest);
     auto* second = make_region(second_guest);
 
-    RegAlloc first_alloc{first->MaxInstrCount(),
-                         address_space.GetTrampolines().GetGPRRegs(),
-                         address_space.GetTrampolines().GetFPRRegs(),
-                         features};
-    RegAlloc second_alloc{second->MaxInstrCount(),
-                          address_space.GetTrampolines().GetGPRRegs(),
-                          address_space.GetTrampolines().GetFPRRegs(),
-                          features};
-    RegisterAllocPass::Run(first, &first_alloc, features);
-    RegisterAllocPass::Run(second, &second_alloc, features);
-    REQUIRE(arm64::CompleteARM64UnitForEmission(module, first_alloc, nullptr, first));
-    REQUIRE(arm64::CompleteARM64UnitForEmission(module, second_alloc, nullptr, second));
-
-    const std::array<arm64::FunctionRegionEmission, 2> regions{{
-            {.function = first, .reg_alloc = &first_alloc},
-            {.function = second, .reg_alloc = &second_alloc},
-    }};
-    arm64::FunctionCodeObjectEmitter emitter{module, regions};
-    emitter.Emit(false);
+    const std::array<HIRFunction*, 2> inputs{first, second};
+    auto prepared = arm64::PrepareFunctions(module, inputs);
+    REQUIRE(prepared.has_value());
+    arm64::FunctionCodeObjectEmitter emitter{module, *prepared};
+    REQUIRE(emitter.Emit(false));
 
     const auto first_offset = emitter.Context().GetCodeOffset(first_guest);
     const auto second_offset = emitter.Context().GetCodeOffset(second_guest);
     REQUIRE(first_offset >= 0);
     REQUIRE(second_offset > first_offset);
     REQUIRE(static_cast<u32>(second_offset) < emitter.CurrentBufferSize());
-    REQUIRE(first->GetFunction()->TakeBlocksFrom(*second->GetFunction()));
+    REQUIRE(first->GetFunction()->IsIRReadOnly());
     REQUIRE(first->GetFunction()->FindBlock(Location{second_guest}) != nullptr);
     REQUIRE(second->GetFunction()->GetBlocks().empty());
 #else
@@ -191,16 +176,15 @@ TEST_CASE("function code object ownership keeps external placeholders separate",
     auto* second = builder.AppendFunction(Location{second_guest},
                                           Location{second_guest + 1});
     second->EndBlock(terminal::ReturnToHost{});
-    second->CreateOrGetBlock(Location{first_guest});
+    auto* placeholder = second->CreateOrGetBlock(Location{first_guest});
     second->EndFunction();
 
     REQUIRE(first->GetFunction()->TakeBlocksFrom(*second->GetFunction()));
     REQUIRE(first->GetFunction()->FindBlock(Location{first_guest}) != nullptr);
     REQUIRE(first->GetFunction()->FindBlock(Location{second_guest}) != nullptr);
-    auto* placeholder = second->GetFunction()->FindBlock(Location{first_guest});
-    REQUIRE(placeholder != nullptr);
+    REQUIRE(second->GetFunction()->FindBlock(Location{first_guest}) == nullptr);
     REQUIRE(placeholder->GetInstList().empty());
-    REQUIRE_FALSE(placeholder->HasTerminal());
+    REQUIRE_FALSE(placeholder->GetBlock()->HasTerminal());
 }
 
 TEST_CASE("function code objects publish regions through one owner",

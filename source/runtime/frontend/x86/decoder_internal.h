@@ -5,7 +5,6 @@
 #include "runtime/common/svm_config.h"
 
 namespace swift::x86 {
-
 // Lowering-only gates default on and accept =0 as an exact rollback.  Keep the
 // getenv read uncached: the process-level JIT cache hash observes the same
 // names, and test subprocesses can exercise either path independently.
@@ -31,16 +30,15 @@ inline bool Sse42StringInlineEnabled(bool enabled) {
     return enabled;
 }
 
-inline ir::Value VecSharedZero(ir::Assembler* assembler) {
-    return assembler->VecSharedZero().SetType(ir::ValueType::V128);
+inline ir::Value VecSharedZero(compile::IrBuilder* assembler) {
+    return assembler->VecSharedZero(ir::ValueType::V128);
 }
 
 inline ir::Value VecShuffle32Lowered(
-        ir::Assembler* assembler, ir::Value source, u32 control,
+        compile::IrBuilder* assembler, ir::Value source, u32 control,
         bool const_cache_enabled) {
     if (!VecLoweringEnabled(const_cache_enabled)) {
-        return assembler->VecShuffle32(source, ir::Imm(control))
-                .SetType(ir::ValueType::V128);
+        return assembler->VecShuffle32(ir::ValueType::V128, source, ir::Imm(control));
     }
     u64 index_lo = 0;
     u64 index_hi = 0;
@@ -51,14 +49,13 @@ inline ir::Value VecShuffle32Lowered(
         auto& half = byte < 8 ? index_lo : index_hi;
         half |= u64(index) << ((byte & 7) * 8);
     }
-    auto indexes = assembler->VecLoadConst(ir::Imm(index_lo), ir::Imm(index_hi))
-                           .SetType(ir::ValueType::V128);
-    return assembler->VecShuffle32Indexed(source, indexes)
-            .SetType(ir::ValueType::V128);
+    auto indexes =
+            assembler->VecLoadConst(ir::ValueType::V128, ir::Imm(index_lo), ir::Imm(index_hi));
+    return assembler->VecShuffle32Indexed(ir::ValueType::V128, source, indexes);
 }
 
 inline ir::Value VecByteShiftLowered(
-        ir::Assembler* assembler, ir::Value source, u32 count, bool left) {
+        compile::IrBuilder* assembler, ir::Value source, u32 count, bool left) {
     if (count == 0) {
         return source;
     }
@@ -67,8 +64,7 @@ inline ir::Value VecByteShiftLowered(
         return zero;
     }
     return assembler->VecByteShift(
-                            source, zero, ir::Imm(count), ir::Imm(left ? 1u : 0u))
-            .SetType(ir::ValueType::V128);
+            ir::ValueType::V128, source, zero, ir::Imm(count), ir::Imm(left ? 1u : 0u));
 }
 
 u64 Paddb64(u64 a, u64 b);

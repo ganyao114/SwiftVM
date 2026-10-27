@@ -1,3 +1,5 @@
+#include "runtime/compile/passes/passes.h"
+#include "runtime/compile/workspace.h"
 #include "test_support.h"
 
 #include <array>
@@ -16,7 +18,7 @@
 #include "runtime/backend/riscv64/jit/translator.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/common/backedge_control.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "translator/x86/translator.h"
 #include "translator/arm64/translator.h"
 
@@ -27,7 +29,6 @@ using ir::OpCode;
 using ir::ValueType;
 
 namespace {
-
 using namespace swift::tests::riscv;
 
 #if defined(__riscv) && __riscv_xlen == 64
@@ -42,36 +43,61 @@ bool FaultRangeProbe(void* address, u64, u64) {
 
 IntrusivePtr<ir::Block> ScalarProgram(OpCode op, ValueType type, bool flags = false) {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x1000})};
-    ir::Assembler as{block.get()};
-    auto left = as.LoadUniform(ir::Uniform{0, type}).SetType(type);
-    auto right = as.LoadUniform(ir::Uniform{8, type}).SetType(type);
+    compile::IrBuilder as{block.get()};
+    auto left = as.LoadUniform(type, ir::Uniform{0, type});
+    auto right = as.LoadUniform(type, ir::Uniform{8, type});
     ir::Value result;
     switch (op) {
         case OpCode::Add: case OpCode::Sub: case OpCode::Adc: case OpCode::Sbb:
         case OpCode::Mul: case OpCode::Div: case OpCode::And: case OpCode::Or:
-        case OpCode::Xor: case OpCode::AndNot:
-            result = ir::Value{block->AppendInst(op, left, ir::Operand{right})}.SetType(type); break;
-        case OpCode::LslValue: case OpCode::LsrValue: case OpCode::AsrValue: case OpCode::RorValue:
-            result = ir::Value{block->AppendInst(op, left, right)}.SetType(type); break;
-        case OpCode::LslImm: case OpCode::LsrImm: case OpCode::AsrImm: case OpCode::RorImm:
-            result = ir::Value{block->AppendInst(op, left, ir::Imm{u64{65}})}.SetType(type); break;
+        case OpCode::Xor:
+        case OpCode::AndNot:
+            result = ir::Value{block->AppendInst(op, type, left, ir::Operand{right})};
+            break;
+        case OpCode::LslValue:
+        case OpCode::LsrValue:
+        case OpCode::AsrValue:
+        case OpCode::RorValue:
+            result = ir::Value{block->AppendInst(op, type, left, right)};
+            break;
+        case OpCode::LslImm:
+        case OpCode::LsrImm:
+        case OpCode::AsrImm:
+        case OpCode::RorImm:
+            result = ir::Value{block->AppendInst(op, type, left, ir::Imm{u64{65}})};
+            break;
         case OpCode::MulHigh:
-            result = as.MulHigh(left, right, ir::Imm{ir::IsSignValueType(type)}).SetType(ValueType::U64); break;
+            result = as.MulHigh(ValueType::U64, left, right, ir::Imm{ir::IsSignValueType(type)});
+            break;
         case OpCode::MulSub:
-            result = as.MulSub(left, right, left).SetType(type); break;
+            result = as.MulSub(type, left, right, left);
+            break;
         case OpCode::SignedDiv64:
-            result = as.SignedDiv64(left, right).SetType(ValueType::U64); break;
+            result = as.SignedDiv64(left, right);
+            break;
         case OpCode::TestBit:
-            result = as.TestBit(left, ir::Imm{u64{7}}).SetType(ValueType::U8); break;
-        case OpCode::ZeroExtend32To64: case OpCode::ZeroExtend64:
-            result = ir::Value{block->AppendInst(op, left)}.SetType(ValueType::U64); break;
+            result = as.TestBit(left, ir::Imm{u64{7}});
+            break;
+        case OpCode::ZeroExtend32To64:
+            result = as.ZeroExtend32To64(left);
+            break;
+        case OpCode::ZeroExtend64:
+            result = as.ZeroExtend64(left);
+            break;
         case OpCode::ZeroExtend32:
-            result = as.ZeroExtend32(left).SetType(ValueType::U32); break;
+            result = as.ZeroExtend32(left);
+            break;
         case OpCode::SignExtend:
-            result = as.SignExtend(left).SetType(ValueType::U64); break;
-        case OpCode::Neg: case OpCode::Not: case OpCode::TestZero: case OpCode::TestNotZero:
-            result = ir::Value{block->AppendInst(op, left)}.SetType(type); break;
-        default: throw std::runtime_error("unknown scalar fixture");
+            result = as.SignExtend(ValueType::U64, left);
+            break;
+        case OpCode::Neg:
+        case OpCode::Not:
+        case OpCode::TestZero:
+        case OpCode::TestNotZero:
+            result = ir::Value{block->AppendInst(op, type, left)};
+            break;
+        default:
+            throw std::runtime_error("unknown scalar fixture");
     }
     if (flags) as.SaveFlags(result, ir::Flags::Carry | ir::Flags::Overflow | ir::Flags::Negate |
                                    ir::Flags::Zero | ir::Flags::Parity | ir::Flags::AuxiliaryCarry);
@@ -133,8 +159,8 @@ void ScalarDifferential() {
 void Conditions() {
     for (unsigned condition = 0; condition < 16; ++condition) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2000})};
-        ir::Assembler as{block.get()};
-        auto result = as.CondSet(ir::Cond(condition)).SetType(ValueType::U8);
+        compile::IrBuilder as{block.get()};
+        auto result = as.CondSet(ValueType::U8, ir::Cond(condition));
         as.StoreUniform(ir::Uniform{0, ValueType::U8}, result);
         block->SetTerminal(ir::terminal::Condition{ir::Cond(condition),
             ir::terminal::LinkBlock{ir::Location{0x1111}}, ir::terminal::LinkBlock{ir::Location{0x2222}}});
@@ -153,7 +179,7 @@ void Conditions() {
 
 void FlagPredicates() {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x2500})};
-    ir::Assembler as{block.get()};
+    compile::IrBuilder as{block.get()};
     const std::array flags{ir::Flags::Negate, ir::Flags::Zero, ir::Flags::Carry, ir::Flags::Overflow};
     for (u32 i = 0; i < flags.size(); ++i) {
         // Match AArch64 CondPassed: no SetType and no typed template argument.
@@ -184,16 +210,16 @@ u64 Helper(u64 a, u64 b, u64 c) { return (a ^ std::rotl(b, 13)) + c; }
 
 void MixedHelpers() {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3000})};
-    ir::Assembler as{block.get()};
-    auto a = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto b = as.LoadUniform(ir::Uniform{8, ValueType::U64}).SetType(ValueType::U64);
-    auto sum = as.Add(a, ir::Operand{b}).SetType(ValueType::U64);
-    auto call = as.CallHost(&Helper, a, b, sum).SetType(ValueType::U64);
-    auto result = as.Xor(sum, ir::Operand{call}).SetType(ValueType::U64);
+    compile::IrBuilder as{block.get()};
+    auto a = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto b = as.LoadUniform(ValueType::U64, ir::Uniform{8, ValueType::U64});
+    auto sum = as.Add(ValueType::U64, a, ir::Operand{b});
+    auto call = as.CallHost(ValueType::U64, &Helper, a, b, sum);
+    auto result = as.Xor(ValueType::U64, sum, ir::Operand{call});
     as.StoreUniform(ir::Uniform{16, ValueType::U64}, result);
-    auto va = as.LoadUniform(ir::Uniform{32, ValueType::V128}).SetType(ValueType::V128);
-    auto vb = as.LoadUniform(ir::Uniform{48, ValueType::V128}).SetType(ValueType::V128);
-    auto vc = as.VecAdd(va, vb, ir::Imm{u64{32}}).SetType(ValueType::V128);
+    auto va = as.LoadUniform(ValueType::V128, ir::Uniform{32, ValueType::V128});
+    auto vb = as.LoadUniform(ValueType::V128, ir::Uniform{48, ValueType::V128});
+    auto vc = as.VecAdd(ValueType::V128, va, vb, ir::Imm{u64{32}});
     as.StoreUniform(ir::Uniform{64, ValueType::V128}, vc);
     block->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled compiled{block.get()};
@@ -217,35 +243,48 @@ void MixedHelpers() {
     std::cout << "PASS mixed scalar, host helper and V128 execution\n";
 }
 
-void VectorSelections() {
-    using VectorBits = unsigned __int128;
-    constexpr VectorBits left = (VectorBits{0x0123456789abcdefULL} << 64) | 0xfedcba9876543210ULL;
-    constexpr VectorBits right = (VectorBits{0x8899aabbccddeeffULL} << 64) | 0x0011223344556677ULL;
+void VectorSelections(bool vector = false) {
+    constexpr std::array<u64, 4> left{0xfedcba9876543210ULL, 0x0123456789abcdefULL,
+                                      0x31942875abcdef06ULL, 0x97865124dea073bfULL};
+    constexpr std::array<u64, 4> right{0x0011223344556677ULL, 0x8899aabbccddeeffULL,
+                                       0x745863abcdef0129ULL, 0x37169284eabfc075ULL};
+    rv::HostFeatures features{};
+    features.vector = vector;
+    for (auto type : {ValueType::V128, ValueType::V256})
     for (auto op : {OpCode::Select, OpCode::SelectZero, OpCode::CondSelect}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3400})};
-        ir::Assembler as{block.get()};
-        auto condition = as.LoadUniform(ir::Uniform{0, ValueType::U8}).SetType(ValueType::U8);
-        auto a = as.LoadUniform(ir::Uniform{16, ValueType::V128}).SetType(ValueType::V128);
-        auto b = as.LoadUniform(ir::Uniform{32, ValueType::V128}).SetType(ValueType::V128);
+        compile::IrBuilder as{block.get()};
+        const auto raw_condition = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+        auto condition = as.BitCast(ValueType::U8, raw_condition);
+        auto a = as.LoadUniform(type, ir::Uniform{16, type});
+        auto b = as.LoadUniform(type, ir::Uniform{48, type});
         ir::Value result;
-        if (op == OpCode::CondSelect) result = as.CondSelect(ir::Cond::EQ, a, b);
-        else result = ir::Value{block->AppendInst(op, ir::BOOL{condition}, a, b)};
-        as.StoreUniform(ir::Uniform{48, ValueType::V128}, result.SetType(ValueType::V128));
+        if (op == OpCode::CondSelect)
+            result = as.CondSelect(type, ir::Cond::EQ, a, b);
+        else
+            result = ir::Value{block->AppendInst(op, type, ir::BOOL{condition}, a, b)};
+        as.StoreUniform(ir::Uniform{80, type}, result);
+        as.StoreUniform(ir::Uniform{112, ValueType::U64}, raw_condition);
         block->SetTerminal(ir::terminal::ReturnToHost{});
-        Compiled compiled{block.get()};
-        for (u64 input : {u64{0}, u64{1}}) {
+        Compiled compiled{block.get(), true, features};
+        for (u64 input : {u64{0}, u64{1}, u64{0x100}, u64{0x100000001}}) {
             StateStorage state;
             state.Put(0, input);
-            std::memcpy(state.state->uniform_buffer_begin + 16, &left, 16);
-            std::memcpy(state.state->uniform_buffer_begin + 32, &right, 16);
+            const u32 bytes = ir::GetValueSizeByte(type);
+            std::memcpy(state.state->uniform_buffer_begin + 16, left.data(), bytes);
+            std::memcpy(state.state->uniform_buffer_begin + 48, right.data(), bytes);
             state.state->host_cpu_flags = input ? u64{1} << 30 : 0;
-            const auto wanted = (op == OpCode::SelectZero ? input == 0 : input != 0) ? left : right;
-            Check(compiled.fn(state.state) == HaltReason::CallHost, "V128 selection halt");
-            Check(state.Get(48) == u64(wanted), "V128 selection low half");
-            Check(state.Get(56) == u64(wanted >> 64), "V128 selection retains its high half");
+            const bool nonzero = (input & 255) != 0;
+            const auto& wanted = (op == OpCode::CondSelect ? input != 0
+                    : op == OpCode::SelectZero ? !nonzero : nonzero) ? left : right;
+            Check(compiled.fn(state.state) == HaltReason::CallHost, "vector selection halt");
+            for (u32 word = 0; word < bytes / sizeof(u64); ++word)
+                Check(state.Get(80 + word * sizeof(u64)) == wanted[word],
+                      "vector selection retains every selected word");
+            Check(state.Get(112) == input, "vector selection preserves the full raw condition");
         }
     }
-    std::cout << "PASS full-width vector selections through semantic helpers\n";
+    std::cout << "PASS native V128/V256 selections use logical condition views, RVV=" << vector << '\n';
 }
 
 u64 ThrowingHelper(u64 fail) {
@@ -255,9 +294,9 @@ u64 ThrowingHelper(u64 fail) {
 
 void SemanticExceptions() {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3500})};
-    ir::Assembler as{block.get()};
-    auto input = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto result = as.CallHost(&ThrowingHelper, input).SetType(ValueType::U64);
+    compile::IrBuilder as{block.get()};
+    auto input = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto result = as.CallHost(ValueType::U64, &ThrowingHelper, input);
     as.StoreUniform(ir::Uniform{8, ValueType::U64}, result);
     block->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled compiled{block.get()};
@@ -276,10 +315,9 @@ void ScalarCache() {
     for (auto type : {ValueType::U8, ValueType::U16, ValueType::U32, ValueType::U64,
                       ValueType::S8, ValueType::S16, ValueType::S32, ValueType::S64}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3600})};
-        ir::Assembler as{block.get()};
-        auto value = as.LoadUniform(ir::Uniform{0, type}).SetType(type);
-        for (u64 i = 0; i < 48; ++i)
-            value = as.Add(value, ir::Operand{ir::Imm{i * 17 + 3}}).SetType(type);
+        compile::IrBuilder as{block.get()};
+        auto value = as.LoadUniform(type, ir::Uniform{0, type});
+        for (u64 i = 0; i < 48; ++i) value = as.Add(type, value, ir::Operand{ir::Imm{i * 17 + 3}});
         as.StoreUniform(ir::Uniform{8, type}, value);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled cached{block.get()}, uncached{block.get(), false};
@@ -326,29 +364,28 @@ void ScalarCache() {
 
 void RegisterPressureAndHelpers() {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3700})};
-    ir::Assembler as{block.get()};
+    compile::IrBuilder as{block.get()};
     std::array<ir::Value, 20> inputs;
     ir::Value alias;
     for (u32 i = 0; i < inputs.size(); ++i) {
-        inputs[i] = as.LoadUniform(ir::Uniform{i * 8, ValueType::U64}).SetType(ValueType::U64);
-        if (i == 8)
-            alias = as.Add(inputs[8], ir::Operand{inputs[0]}).SetType(ValueType::U64);
+        inputs[i] = as.LoadUniform(ValueType::U64, ir::Uniform{i * 8, ValueType::U64});
+        if (i == 8) alias = as.Add(ValueType::U64, inputs[8], ir::Operand{inputs[0]});
     }
     as.StoreUniform(ir::Uniform{168, ValueType::U64}, alias);
     auto total = inputs[0];
     for (u32 i = 1; i < inputs.size(); ++i)
-        total = as.Add(total, ir::Operand{inputs[i]}).SetType(ValueType::U64);
+        total = as.Add(ValueType::U64, total, ir::Operand{inputs[i]});
     // SaveFlags also reads the producer's original operands through its home.
     as.SaveFlags(total, ir::Flags::Carry | ir::Flags::Zero | ir::Flags::Overflow);
-    auto call = as.CallHost(&Helper, inputs[0], inputs[19], total).SetType(ValueType::U64);
-    auto result = as.Xor(total, ir::Operand{call}).SetType(ValueType::U64);
+    auto call = as.CallHost(ValueType::U64, &Helper, inputs[0], inputs[19], total);
+    auto result = as.Xor(ValueType::U64, total, ir::Operand{call});
     as.StoreUniform(ir::Uniform{192, ValueType::U64}, result);
     auto quotient = as.Div128(inputs[0], inputs[1], inputs[2], ir::Imm{u64{0}});
     auto remainder = as.Div128Remainder(quotient);
     as.StoreUniform(ir::Uniform{200, ValueType::U64}, quotient);
     as.StoreUniform(ir::Uniform{208, ValueType::U64}, remainder);
     // A scalar -> V128 helper must observe the deferred scalar and a zero high half.
-    auto vector = as.BitCast(result).SetType(ValueType::V128);
+    auto vector = as.BitCast(ValueType::V128, result);
     as.StoreUniform(ir::Uniform{224, ValueType::V128}, vector);
     block->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled cached{block.get()}, uncached{block.get(), false};
@@ -382,15 +419,15 @@ void RegisterPressureAndHelpers() {
 void LocalCacheJoins() {
     for (bool invert : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3800})};
-        ir::Assembler as{block.get()};
-        auto condition = as.LoadUniform(ir::Uniform{0, ValueType::U8}).SetType(ValueType::U8);
-        auto anchor = as.LoadUniform(ir::Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+        compile::IrBuilder as{block.get()};
+        auto condition = as.LoadUniform(ValueType::U8, ir::Uniform{0, ValueType::U8});
+        auto anchor = as.LoadUniform(ValueType::U64, ir::Uniform{8, ValueType::U64});
         auto jump = invert ? as.NotGoto(ir::BOOL{condition}) : as.Goto(ir::BOOL{condition});
         ir::Value skipped;
         for (u64 i = 0; i < 20; ++i)
-            skipped = as.Add(anchor, ir::Operand{ir::Imm{i + 1}}).SetType(ValueType::U64);
+            skipped = as.Add(ValueType::U64, anchor, ir::Operand{ir::Imm{i + 1}});
         as.BindLabel(jump);
-        auto sum = as.Add(anchor, ir::Operand{skipped}).SetType(ValueType::U64);
+        auto sum = as.Add(ValueType::U64, anchor, ir::Operand{skipped});
         as.StoreUniform(ir::Uniform{16, ValueType::U64}, sum);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get()};
@@ -405,19 +442,18 @@ void LocalCacheJoins() {
         }
     }
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x3900})};
-    ir::Assembler as{block.get()};
-    auto counter = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto accumulated = as.LoadUniform(ir::Uniform{8, ValueType::U64}).SetType(ValueType::U64);
-    auto sum = as.Add(accumulated, ir::Operand{counter}).SetType(ValueType::U64);
+    compile::IrBuilder as{block.get()};
+    auto counter = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto accumulated = as.LoadUniform(ValueType::U64, ir::Uniform{8, ValueType::U64});
+    auto sum = as.Add(ValueType::U64, accumulated, ir::Operand{counter});
     as.StoreUniform(ir::Uniform{8, ValueType::U64}, sum);
-    auto next = as.Sub(counter, ir::Operand{ir::Imm{u64{1}}}).SetType(ValueType::U64);
+    auto next = as.Sub(ValueType::U64, counter, ir::Operand{ir::Imm{u64{1}}});
     as.StoreUniform(ir::Uniform{0, ValueType::U64}, next);
     auto running = as.TestNotZero(next);
     auto jump = as.Goto(running);
     as.BindLabel(jump);
     auto* label = &block->GetInstList().back();
-    block->RemoveInst(label);
-    block->InsertBefore(label, counter.Def());
+    block->MoveBefore(label, counter.Def());
     as.StoreUniform(ir::Uniform{16, ValueType::U64}, sum);
     block->SetTerminal(ir::terminal::ReturnToHost{});
     block->ReIdInstr();
@@ -467,15 +503,15 @@ void ScalarAddressing() {
 
 void LargeBranches() {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x4000})};
-    ir::Assembler as{block.get()};
-    auto condition = as.LoadUniform(ir::Uniform{0, ValueType::U8}).SetType(ValueType::U8);
+    compile::IrBuilder as{block.get()};
+    auto condition = as.LoadUniform(ValueType::U8, ir::Uniform{0, ValueType::U8});
     auto jump = as.Goto(ir::BOOL{condition});
     for (unsigned i = 0; i < 2000; ++i) {
-        auto value = as.LoadImm(ir::Imm{u64(i)}).SetType(ValueType::U64);
+        auto value = as.LoadImm(ValueType::U64, ir::Imm{u64(i)});
         as.StoreUniform(ir::Uniform{3072, ValueType::U64}, value);
     }
     as.BindLabel(jump);
-    auto high = as.LoadImm(ir::Imm{u64{0x8000000080000000ULL}}).SetType(ValueType::U64);
+    auto high = as.LoadImm(ValueType::U64, ir::Imm{u64{0x8000000080000000ULL}});
     as.StoreUniform(ir::Uniform{16, ValueType::U64}, high);
     block->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled compiled{block.get()};
@@ -494,13 +530,15 @@ void Memory() {
     for (auto type : {ValueType::U8, ValueType::U16, ValueType::U32, ValueType::U64})
     for (bool ordered : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x4500})};
-        ir::Assembler as{block.get()};
-        auto address = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-        auto value = as.LoadUniform(ir::Uniform{8, type}).SetType(type);
-        if (ordered) as.StoreMemoryTSO(ir::Operand{address}, value);
-        else as.StoreMemory(ir::Operand{address}, value);
-        auto loaded = ordered ? as.LoadMemoryTSO(ir::Operand{address}) : as.LoadMemory(ir::Operand{address});
-        loaded = loaded.SetType(type);
+        compile::IrBuilder as{block.get()};
+        auto address = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+        auto value = as.LoadUniform(type, ir::Uniform{8, type});
+        if (ordered)
+            as.StoreMemoryTSO(ir::Operand{address}, value);
+        else
+            as.StoreMemory(ir::Operand{address}, value);
+        auto loaded = ordered ? as.LoadMemoryTSO(type, ir::Operand{address})
+                              : as.LoadMemory(type, ir::Operand{address});
         as.StoreUniform(ir::Uniform{16, type}, loaded);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get()};
@@ -527,18 +565,20 @@ void AlignedMemoryAtomicity() {
     constexpr u64 pattern_b = 0x55555555aaaaaaaaULL;
     for (bool ordered : {false, true}) {
         IntrusivePtr<ir::Block> writer_ir{new ir::Block(ir::Location{0x4600})};
-        ir::Assembler writer_as{writer_ir.get()};
-        auto address = writer_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-        auto value = writer_as.LoadUniform(ir::Uniform{8, ValueType::U64}).SetType(ValueType::U64);
-        if (ordered) writer_as.StoreMemoryTSO(ir::Operand{address}, value);
+        compile::IrBuilder writer_as{writer_ir.get()};
+        auto address = writer_as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+        auto value = writer_as.LoadUniform(ValueType::U64, ir::Uniform{8, ValueType::U64});
+        if (ordered)
+            writer_as.StoreMemoryTSO(ir::Operand{address}, value);
         else writer_as.StoreMemory(ir::Operand{address}, value);
         writer_ir->SetTerminal(ir::terminal::ReturnToHost{});
         IntrusivePtr<ir::Block> reader_ir{new ir::Block(ir::Location{0x4700})};
-        ir::Assembler reader_as{reader_ir.get()};
-        auto read_address = reader_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-        auto read_value = ordered ? reader_as.LoadMemoryTSO(ir::Operand{read_address})
-                                  : reader_as.LoadMemory(ir::Operand{read_address});
-        reader_as.StoreUniform(ir::Uniform{8, ValueType::U64}, read_value.SetType(ValueType::U64));
+        compile::IrBuilder reader_as{reader_ir.get()};
+        auto read_address = reader_as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+        auto read_value =
+                ordered ? reader_as.LoadMemoryTSO(ValueType::U64, ir::Operand{read_address})
+                        : reader_as.LoadMemory(ValueType::U64, ir::Operand{read_address});
+        reader_as.StoreUniform(ir::Uniform{8, ValueType::U64}, read_value);
         reader_ir->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled writer{writer_ir.get()}, reader{reader_ir.get()};
         alignas(8) u64 memory = pattern_a;
@@ -575,13 +615,14 @@ void RuntimeFaults() {
     backend::AddressSpace space{config};
     auto module = space.GetDefaultModule();
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x4800})};
-    ir::Assembler as{block.get()};
-    auto pinned = as.LoadImm(ir::Imm{u64{0x71698345}}).SetType(ValueType::U64);
+    compile::IrBuilder as{block.get()};
+    auto pinned = as.LoadImm(ValueType::U64, ir::Imm{u64{0x71698345}});
     as.SetHostGPR(pinned, ir::Imm{u32{3}}, ir::Imm{u32{0}});
-    auto pinned_vector = as.VecLoadConst(ir::Imm{u64{0xabcdf731}}, ir::Imm{u64{0x8731496}}).SetType(ValueType::V128);
+    auto pinned_vector =
+            as.VecLoadConst(ValueType::V128, ir::Imm{u64{0xabcdf731}}, ir::Imm{u64{0x8731496}});
     as.SetHostFPR(pinned_vector, ir::Imm{u32{19}}, ir::Imm{u32{0}});
-    auto address = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto loaded = as.LoadMemory(ir::Operand{address}).SetType(ValueType::U64);
+    auto address = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto loaded = as.LoadMemory(ValueType::U64, ir::Operand{address});
     as.StoreUniform(ir::Uniform{8, ValueType::U64}, loaded);
     block->SetTerminal(ir::terminal::ReturnToHost{});
     Check(module->Push(block.get()), "publish fault block");
@@ -627,9 +668,9 @@ void RuntimeFaults() {
     // Also fault in the C++ semantic path, where the interrupted SP/s0/s1
     // no longer describe the generated block's own frame.
     IntrusivePtr<ir::Block> vector_block{new ir::Block(ir::Location{0x4900})};
-    ir::Assembler vector_as{vector_block.get()};
-    auto vector_address = vector_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto vector = vector_as.LoadMemoryTSO(ir::Operand{vector_address}).SetType(ValueType::V128);
+    compile::IrBuilder vector_as{vector_block.get()};
+    auto vector_address = vector_as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto vector = vector_as.LoadMemoryTSO(ValueType::V128, ir::Operand{vector_address});
     vector_as.StoreUniform(ir::Uniform{16, ValueType::V128}, vector);
     vector_block->SetTerminal(ir::terminal::ReturnToHost{});
     Check(module->Push(vector_block.get()), "publish semantic fault block");
@@ -645,10 +686,10 @@ void RuntimeFaults() {
     for (bool cached_flags : {false, true}) {
         const u64 location = cached_flags ? 0x4e00 : 0x4d00;
         IntrusivePtr<ir::Block> plain{new ir::Block(ir::Location{location})};
-        ir::Assembler plain_as{plain.get()};
-        if (cached_flags) plain_as.SetCarry(plain_as.Zero().SetType(ValueType::U8));
-        auto source = plain_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-        auto result = plain_as.LoadMemory(ir::Operand{source}).SetType(ValueType::U64);
+        compile::IrBuilder plain_as{plain.get()};
+        if (cached_flags) plain_as.SetCarry(plain_as.Zero(ValueType::U8));
+        auto source = plain_as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+        auto result = plain_as.LoadMemory(ValueType::U64, ir::Operand{source});
         plain_as.StoreUniform(ir::Uniform{8, ValueType::U64}, result);
         plain->SetTerminal(ir::terminal::ReturnToHost{});
         Check(module->Push(plain.get()) && backend::TranslateIR(module, plain), "compile unpinned fault ABI fixture");
@@ -673,10 +714,10 @@ void RuntimeFaults() {
 #endif
     munmap(inaccessible, 4096);
     IntrusivePtr<ir::Block> atomic_block{new ir::Block(ir::Location{0x4b00})};
-    ir::Assembler atomic_as{atomic_block.get()};
-    auto atomic_address = atomic_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto addend = atomic_as.LoadImm(ir::Imm{u64{3}}).SetType(ValueType::U64);
-    auto observed = atomic_as.AtomicFetchAdd(atomic_address, addend).SetType(ValueType::U64);
+    compile::IrBuilder atomic_as{atomic_block.get()};
+    auto atomic_address = atomic_as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto addend = atomic_as.LoadImm(ValueType::U64, ir::Imm{u64{3}});
+    auto observed = atomic_as.AtomicFetchAdd(ValueType::U64, atomic_address, addend);
     atomic_as.StoreUniform(ir::Uniform{8, ValueType::U64}, observed);
     atomic_block->SetTerminal(ir::terminal::ReturnToHost{});
     Check(module->Push(atomic_block.get()), "publish atomic fault block");
@@ -697,15 +738,16 @@ void RuntimeFaults() {
     munmap(inaccessible, 4096);
 #if defined(__riscv) && __riscv_xlen == 64
     IntrusivePtr<ir::Block> clobber_block{new ir::Block(ir::Location{0x4c00})};
-    ir::Assembler clobber_as{clobber_block.get()};
-    auto fault_pointer = clobber_as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto flags_value = clobber_as.Zero().SetType(ValueType::U8);
+    compile::IrBuilder clobber_as{clobber_block.get()};
+    auto fault_pointer = clobber_as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto flags_value = clobber_as.Zero(ValueType::U8);
     clobber_as.SaveFlags(flags_value, ir::Flags::All);
-    auto fault_pin = clobber_as.LoadImm(ir::Imm{u64{0x71698345}}).SetType(ValueType::U64);
+    auto fault_pin = clobber_as.LoadImm(ValueType::U64, ir::Imm{u64{0x71698345}});
     clobber_as.SetHostGPR(fault_pin, ir::Imm{u32{3}}, ir::Imm{u32{0}});
-    auto fault_vector = clobber_as.VecLoadConst(ir::Imm{u64{0xabcdf731}}, ir::Imm{u64{0x8731496}}).SetType(ValueType::V128);
+    auto fault_vector = clobber_as.VecLoadConst(
+            ValueType::V128, ir::Imm{u64{0xabcdf731}}, ir::Imm{u64{0x8731496}});
     clobber_as.SetHostFPR(fault_vector, ir::Imm{u32{19}}, ir::Imm{u32{0}});
-    auto fault_call = clobber_as.CallHost(&SwiftRiscvFaultHelper, fault_pointer).SetType(ValueType::U64);
+    auto fault_call = clobber_as.CallHost(ValueType::U64, &SwiftRiscvFaultHelper, fault_pointer);
     clobber_as.StoreUniform(ir::Uniform{8, ValueType::U64}, fault_call);
     clobber_block->SetTerminal(ir::terminal::ReturnToHost{});
     Check(module->Push(clobber_block.get()), "publish callee-saved fault fixture");
@@ -732,14 +774,15 @@ void RuntimeFaults() {
 void Atomics() {
     for (auto op : {OpCode::AtomicExchange, OpCode::AtomicFetchAdd, OpCode::CompareAndSwap}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x4a00})};
-        ir::Assembler as{block.get()};
-        auto address = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-        auto input = as.LoadUniform(ir::Uniform{8, ValueType::U64}).SetType(ValueType::U64);
-        auto expected = as.LoadUniform(ir::Uniform{16, ValueType::U64}).SetType(ValueType::U64);
+        compile::IrBuilder as{block.get()};
+        auto address = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+        auto input = as.LoadUniform(ValueType::U64, ir::Uniform{8, ValueType::U64});
+        auto expected = as.LoadUniform(ValueType::U64, ir::Uniform{16, ValueType::U64});
         ir::Value result;
-        if (op == OpCode::CompareAndSwap) result = as.CompareAndSwap(address, expected, input);
-        else result = ir::Value{block->AppendInst(op, address, input)};
-        result = result.SetType(ValueType::U64);
+        if (op == OpCode::CompareAndSwap)
+            result = as.CompareAndSwap(ValueType::U64, address, expected, input);
+        else
+            result = ir::Value{block->AppendInst(op, ValueType::U64, address, input)};
         as.StoreUniform(ir::Uniform{24, ValueType::U64}, result);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get()};
@@ -765,8 +808,8 @@ void RuntimeDispatch() {
     IntrusivePtr<ir::Block> first{new ir::Block(ir::Location{0x5000})};
     first->SetTerminal(ir::terminal::LinkBlock{ir::Location{0x6000}});
     IntrusivePtr<ir::Block> last{new ir::Block(ir::Location{0x6000})};
-    ir::Assembler as{last.get()};
-    auto result = as.LoadImm(ir::Imm{u64{42}}).SetType(ValueType::U64);
+    compile::IrBuilder as{last.get()};
+    auto result = as.LoadImm(ValueType::U64, ir::Imm{u64{42}});
     as.StoreUniform(ir::Uniform{0, ValueType::U64}, result);
     last->SetTerminal(ir::terminal::ReturnToHost{});
     Check(module->Push(first.get()) && module->Push(last.get()), "publish runtime blocks");
@@ -804,13 +847,12 @@ void RunningInterrupt() {
     backend::AddressSpace space{config};
     auto module = space.GetDefaultModule();
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x7200})};
-    ir::Assembler as{block.get()};
-    auto first = as.LoadImm(ir::Imm{u64{1}}).SetType(ValueType::U8);
+    compile::IrBuilder as{block.get()};
+    auto first = as.LoadImm(ValueType::U8, ir::Imm{u64{1}});
     auto jump = as.Goto(ir::BOOL{first});
     as.BindLabel(jump);
     auto* label = &block->GetInstList().back();
-    block->RemoveInst(label);
-    block->InsertBefore(label, first.Def());
+    block->MoveBefore(label, first.Def());
     block->SetTerminal(ir::terminal::ReturnToHost{});
     Check(module->Push(block.get()), "publish infinite local loop");
     Check(backend::TranslateIR(module, block) != nullptr, "compile backward local loop");
@@ -831,28 +873,32 @@ void RunningInterrupt() {
 
 void Selections() {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x7300})};
-    ir::Assembler as{block.get()};
-    auto input = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto yes = as.LoadImm(ir::Imm{u64{0xaaaa}}).SetType(ValueType::U64);
-    auto no = as.LoadImm(ir::Imm{u64{0xbbbb}}).SetType(ValueType::U64);
-    as.StoreUniform(ir::Uniform{8, ValueType::U64}, as.Select(ir::BOOL{input}, yes, no).SetType(ValueType::U64));
-    as.StoreUniform(ir::Uniform{16, ValueType::U64}, as.SelectZero(input, yes, no).SetType(ValueType::U64));
-    as.StoreUniform(ir::Uniform{24, ValueType::U64}, as.CondSelect(ir::Cond::NE, yes, no).SetType(ValueType::U64));
-    ir::terminal::Switch choices{input, {
-            {ir::Imm{u64{1}}, ir::terminal::LinkBlockFast{ir::Location{0x1111}}},
-            {ir::Imm{u64{2}}, ir::terminal::ExternalLinkBlock{ir::Location{0x2222}}}}};
+    compile::IrBuilder as{block.get()};
+    auto input = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto yes = as.LoadImm(ValueType::U64, ir::Imm{u64{0xaaaa}});
+    auto no = as.LoadImm(ValueType::U64, ir::Imm{u64{0xbbbb}});
+    as.StoreUniform(ir::Uniform{8, ValueType::U64},
+                    as.Select(ValueType::U64, ir::BOOL{input}, yes, no));
+    as.StoreUniform(ir::Uniform{16, ValueType::U64}, as.SelectZero(ValueType::U64, input, yes, no));
+    as.StoreUniform(ir::Uniform{24, ValueType::U64},
+                    as.CondSelect(ValueType::U64, ir::Cond::NE, yes, no));
+    ir::terminal::Switch choices{
+            input,
+            {{ir::Imm{u64{1}}, ir::terminal::LinkBlockFast{ir::Location{0x1111}}},
+             {ir::Imm{u64{2}}, ir::terminal::ExternalLinkBlock{ir::Location{0x2222}}}}};
     block->SetTerminal(ir::terminal::If{ir::BOOL{input}, choices,
             ir::terminal::CheckHalt{ir::terminal::LinkBlock{ir::Location{0x3333}}}});
     Compiled compiled{block.get()};
-    for (u64 input : {u64{0}, u64{1}, u64{2}, u64{3}}) {
+    for (u64 input : {u64{0}, u64{1}, u64{2}, u64{3}, u64{0x100}, u64{0x100000000},
+                      u64{0x100000001}, u64{0x8000000000000000}, UINT64_MAX}) {
         StateStorage state;
         state.Put(0, input);
         state.state->host_cpu_flags = input & 1 ? 0 : u64{1} << 30;
         Check(compiled.fn(state.state) == HaltReason::None, "selection terminal halt");
-        Check(state.Get(8) == (input ? 0xaaaa : 0xbbbb), "select truthiness");
+        Check(state.Get(8) == ((input & 255) ? 0xaaaa : 0xbbbb), "select truthiness");
         Check(state.Get(16) == (input ? 0xbbbb : 0xaaaa), "select zero");
         Check(state.Get(24) == (input & 1 ? 0xaaaa : 0xbbbb), "select condition");
-        Check(state.state->current_loc.Value() == (input == 0 ? 0x3333 : input == 1 ? 0x1111 : input == 2 ? 0x2222 : 0),
+        Check(state.state->current_loc.Value() == (!(input & 255) ? 0x3333 : input == 1 ? 0x1111 : input == 2 ? 0x2222 : 0),
               "nested If/Switch/CheckHalt and link variants");
     }
     std::cout << "PASS scalar selections and nested terminals\n";
@@ -904,9 +950,9 @@ void RetainedIR() {
     backend::AddressSpace space{config};
     auto module = space.GetDefaultModule();
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x7500})};
-    ir::Assembler as{block.get()};
-    auto value = as.LoadUniform(ir::Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto call = as.CallHost(&Helper, value, value, value).SetType(ValueType::U64);
+    compile::IrBuilder as{block.get()};
+    auto value = as.LoadUniform(ValueType::U64, ir::Uniform{0, ValueType::U64});
+    auto call = as.CallHost(ValueType::U64, &Helper, value, value, value);
     as.StoreUniform(ir::Uniform{8, ValueType::U64}, call);
     block->SetTerminal(ir::terminal::ReturnToHost{});
     Check(module->Push(block.get()), "publish retained IR fixture");
@@ -933,13 +979,13 @@ void FunctionEntries() {
     {
         ir::HIRBuilder builder{1, true};
         auto* function = builder.AppendFunction(ir::Location{0x8000});
-        (void)function->LoadImm(ir::Imm{u64{777}}).SetType(ValueType::U64); // Dead definition.
+        (void)function->LoadImm(ValueType::U64, ir::Imm{u64{777}});  // Dead definition.
         auto input = function->LoadUniform<ir::U64>(ir::Uniform{0, ValueType::U64});
         auto result = function->Add<ir::U64>(input, ir::Operand{ir::Imm{u64{5}}});
         function->StoreUniform(ir::Uniform{8, ValueType::U64}, result);
         builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0x8100}});
         builder.SetCurBlock(ir::Location{0x8100});
-        (void)function->LoadImm(ir::Imm{u64{888}}).SetType(ValueType::U64);
+        (void)function->LoadImm(ValueType::U64, ir::Imm{u64{888}});
         auto value = function->LoadUniform<ir::U64>(ir::Uniform{8, ValueType::U64});
         auto call = function->CallLambda<ir::U64>(
                 ir::Lambda{ir::Imm{reinterpret_cast<u64>(&Helper)}}, value, value, value);
@@ -969,6 +1015,7 @@ void FunctionEntries() {
 }
 
 void FunctionCFG() {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     auto config = TestConfig();
     backend::AddressSpace space{config};
     auto module = space.GetDefaultModule();
@@ -989,7 +1036,7 @@ void FunctionCFG() {
         builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0xa300}});
         builder.SetCurBlock(ir::Location{0xa300});
         ir::Params params; params.Push(left); params.Push(right);
-        auto phi = function->AddPhi<ir::U64>(params);
+        auto phi = function->AddPhi<ir::U64>(std::move(params));
         auto result = function->CallLambda<ir::U64>(ir::Lambda{ir::Imm{reinterpret_cast<u64>(&Helper)}}, phi, input, phi);
         function->StoreUniform(ir::Uniform{8, ValueType::U64}, result);
         function->EndBlock(ir::terminal::CheckHalt{ir::terminal::ReturnToHost{}});
@@ -1028,7 +1075,7 @@ void FunctionCFG() {
         builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0xe300}});
         builder.SetCurBlock(ir::Location{0xe300});
         ir::Params inputs; inputs.Push(sum); inputs.Push(difference);
-        auto result = function->AddPhi<Wide>(inputs);
+        auto result = function->AddPhi<Wide>(std::move(inputs));
         function->StoreUniform(ir::Uniform{96, ValueType::V256}, result);
         function->EndBlock(ir::terminal::ReturnToHost{}); function->EndFunction();
         auto fn = reinterpret_cast<BlockFn>(backend::TranslateIR(module, function));
@@ -1048,10 +1095,12 @@ void FunctionCFG() {
         builder.LinkBlock(ir::terminal::LinkBlock{ir::Location{0xb100}});
         builder.SetCurBlock(ir::Location{0xb100});
         ir::Params inputs; inputs.Push(initial); inputs.Push(initial);
-        auto count = function->AddPhi<ir::U64>(inputs);
+        auto count = function->AddPhi<ir::U64>(std::move(inputs));
+        const auto* loop_block = function->GetCurrentBlock();
         auto next = function->Sub<ir::U64>(count, ir::Operand{ir::Imm{u64{1}}});
-        ir::Params loop_inputs; loop_inputs.Push(initial); loop_inputs.Push(next);
-        count.Def()->SetArg(0, loop_inputs);
+        ir::Params loop_inputs;
+        loop_inputs.Push(initial);
+        loop_inputs.Push(next);
         auto complete = function->TestZero<ir::U8>(next);
         builder.If(ir::terminal::If{ir::BOOL{complete},
                 ir::terminal::LinkBlock{ir::Location{0xb200}},
@@ -1060,6 +1109,10 @@ void FunctionCFG() {
         function->StoreUniform(ir::Uniform{8, ValueType::U64}, count);
         function->EndBlock(ir::terminal::ReturnToHost{});
         function->EndFunction();
+        // Pass writers require the finished member roster. The loop input
+        // becomes available while building, then is patched before optimize.
+        compile::RewriteContext{function, compilation_workspace, false}.SetArg(
+                function->EditBlock(loop_block).GetBlock(), count.Def(), 0, std::move(loop_inputs));
         entry = backend::TranslateIR(module, function);
         Check(entry != nullptr, "compile cross-block loop-carried phi");
     }
@@ -1130,7 +1183,7 @@ void RejectCrossBlockTerminals() {
     backend::AddressSpace space{config};
     auto module = space.GetDefaultModule();
     IntrusivePtr<ir::Block> source{new ir::Block(ir::Location{0x8200})};
-    ir::Assembler source_as{source.get()};
+    compile::IrBuilder source_as{source.get()};
     auto foreign = source_as.LoadImm<ir::U8>(ir::Imm{u8{1}});
     const std::array<ir::Terminal, 3> terminals{
         ir::terminal::If{ir::BOOL{foreign}, ir::terminal::ReturnToHost{}, ir::terminal::ReturnToDispatch{}},
@@ -1159,9 +1212,9 @@ void CodeReuse() {
     u8* previous{};
     for (u64 generation = 0; generation < 8; ++generation) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x9000})};
-        ir::Assembler as{block.get()};
-        auto value = as.LoadImm(ir::Imm{generation + 19}).SetType(ValueType::U64);
-        auto call = as.CallHost(&Helper, value, value, value).SetType(ValueType::U64);
+        compile::IrBuilder as{block.get()};
+        auto value = as.LoadImm(ValueType::U64, ir::Imm{generation + 19});
+        auto call = as.CallHost(ValueType::U64, &Helper, value, value, value);
         as.StoreUniform(ir::Uniform{0, ValueType::U64}, call);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         rv::JitContext context;
@@ -1212,10 +1265,12 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string{argv[1]} == "--zbb") {
             NativeScalarBits(true);
             NativeScalarALU(true);
+            NativeScalarShifts(true);
             std::cout << "OK " << checks << " checks\n";
             return 0;
         }
         if (argc == 2 && std::string{argv[1]} == "--rvv") {
+            VectorSelections(true);
             NativeHostRegisters(true); NativePhi(true); NativeWide(true); FunctionCFG();
             NativeVectors(true); NativeVectorInteger(true); NativeVectorShuffle(true); NativeLocals(true); NativeVectorFloat(true); NativeCalls(true); NativeMemoryFrame(true); NativeMemoryCopy(true); NativeCrypto(true);
             std::cout << "OK " << checks << " checks\n";
@@ -1259,10 +1314,11 @@ int main(int argc, char** argv) {
             NativeMemoryFrame(std::string{argv[1]} == "--rvv-memory"); Memory(); RuntimeFaults();
             std::cout << "OK " << checks << " checks\n"; return 0;
         }
+        VectorSelections();
         NativeHostRegisters(); NativePhi(); NativeWide(); MemoryProtocol();
         NativeScalarBits(); NativeScalarALU(); NativeScalarShifts(); NativeFlags(); NativeVectors(); NativeVectorInteger(); NativeVectorShuffle(); NativeLocals(); NativeVectorFloat(); NativeCalls(); NativeMemoryCopy(); NativeCrypto();
         NativeAtomics();
-        ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); VectorSelections(); SemanticExceptions();
+        ScalarDifferential(); Conditions(); FlagPredicates(); MixedHelpers(); SemanticExceptions();
         ScalarCache(); RegisterPressureAndHelpers(); LocalCacheJoins(); ScalarAddressing();
         LargeBranches(); NativeMemoryFrame(); Memory(); AlignedMemoryAtomicity();
         RuntimeDispatch(); RunningInterrupt(); Selections(); RuntimeFaults(); Atomics();

@@ -10,8 +10,7 @@
 
 namespace swift::runtime::backend::arm64 {
 
-
-void JitTranslator::EmitX87Op(ir::Inst* inst) {
+void JitTranslator::EmitX87Op(const ir::Inst* inst) {
     const auto context_value = inst->GetArg<ir::Value>(0);
     const auto command = inst->GetArg<ir::Imm>(1);
     const auto address = inst->GetArg<ir::Value>(2);
@@ -1427,6 +1426,5 @@ void JitTranslator::EmitX87Op(ir::Inst* inst) {
     (void)operation;
     fallback();
 }
-
 
 }  // namespace swift::runtime::backend::arm64

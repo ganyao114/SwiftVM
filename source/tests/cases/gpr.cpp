@@ -1,12 +1,16 @@
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
-#include "runtime/backend/arm64/alloc/gpr_width_verifier.h"
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/backend/arm64/compile/width_contracts.h"
+#include "tests/support/allocation_fixture.h"
+
+using swift::runtime::test::AllocationFixture;
 
 TEST_CASE("Register allocation gives every spilled value a private slot") {
     using namespace swift::runtime::ir;
-    using swift::runtime::backend::RegAlloc;
-    using swift::runtime::backend::GPRSMask;
     using swift::runtime::backend::FPRSMask;
+    using swift::runtime::backend::GPRSMask;
 
     // Two live values sharing one State::spill_area slot is a silent
     // miscompile: both Str/Ldr target the same address, so each reload
@@ -43,14 +47,19 @@ TEST_CASE("Register allocation gives every spilled value a private slot") {
         // bit SET = unavailable; leave only the lowest `free_*` clear.
         GPRSMask gprs{~((1u << free_gprs) - 1u)};
         FPRSMask fprs{~((1u << free_fprs) - 1u)};
-        RegAlloc reg_alloc{0x200, gprs, fprs, FeatureSet{}};
-        RegisterAllocPass::Run(&block, &reg_alloc, false, FeatureSet{});
+        AllocationFixture reg_alloc{0x200, gprs, fprs, FeatureSet{}};
+        ::swift::runtime::compile::AllocateBlock(
+                &block,
+                &reg_alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        &block, reg_alloc, FeatureSet{}),
+                false);
 
         std::map<std::uint32_t, int> occupancy;
         int spilled = 0;
         auto record = [&](const std::vector<Value>& values, int slot_width) {
             for (auto& value : values) {
-                if (reg_alloc.ValueType(value) != RegAlloc::MEM) {
+                if (reg_alloc.ValueType(value) != AllocationFixture::MEM) {
                     continue;
                 }
                 spilled++;
@@ -97,17 +106,17 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
         raw->SetTerminal(terminal::ReturnToDispatch{});
         raw->ReIdInstr();
 
-        RegAlloc off{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture off{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForIntWidthTieTest(raw, &off, false);
-        REQUIRE(off.ValueType(source) == RegAlloc::GPR);
-        REQUIRE(off.ValueType(result) == RegAlloc::GPR);
+        REQUIRE(off.ValueType(source) == AllocationFixture::GPR);
+        REQUIRE(off.ValueType(result) == AllocationFixture::GPR);
         REQUIRE((off.ValueGPR(source).id == off.ValueGPR(result).id) ==
                 expect_off_tie);
 
-        RegAlloc on{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture on{raw->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForIntWidthTieTest(raw, &on, true);
-        REQUIRE(on.ValueType(source) == RegAlloc::GPR);
-        REQUIRE(on.ValueType(result) == RegAlloc::GPR);
+        REQUIRE(on.ValueType(source) == AllocationFixture::GPR);
+        REQUIRE(on.ValueType(result) == AllocationFixture::GPR);
         REQUIRE((on.ValueGPR(source).id == on.ValueGPR(result).id) ==
                 expect_on_tie);
     };
@@ -123,9 +132,9 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
 
     SECTION("U32 ALU producer") {
         auto* block = new Block(0, Location{0x8610});
-        auto left = block->LoadImm(Imm{0xffffffffu}).SetType(ValueType::U32);
-        auto right = block->LoadImm(Imm{0x12345678u}).SetType(ValueType::U32);
-        auto source = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto left = block->LoadImm(ValueType::U32, Imm{0xffffffffu});
+        auto right = block->LoadImm(ValueType::U32, Imm{0x12345678u});
+        auto source = block->Add(ValueType::U32, left, Operand{right});
         auto result = block->ZeroExtend32To64(source);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         check(block, source, result, false, true);
@@ -133,9 +142,8 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
 
     SECTION("U32 shift producer remains compatible with the existing tie") {
         auto* block = new Block(0, Location{0x8620});
-        auto input = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto source = block->LsrImm(input, Imm{3u}).SetType(ValueType::U32);
+        auto input = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto source = block->LsrImm(ValueType::U32, input, Imm{3u});
         auto result = block->ZeroExtend32To64(source);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         check(block, source, result, true, true);
@@ -143,23 +151,21 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
 
     SECTION("two consecutive direct ties keep the original W producer") {
         auto* block = new Block(0, Location{0x8630});
-        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto right = block->LoadImm(Imm{7u}).SetType(ValueType::U32);
-        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
-        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
-                               .SetType(ValueType::U32);
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(ValueType::U32, Imm{7u});
+        auto producer = block->Add(ValueType::U32, left, Operand{right});
+        auto extract = block->BitExtract(ValueType::U32, producer, Imm{0u}, Imm{32u});
         auto result = block->ZeroExtend32To64(extract);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
 
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
-        RegAlloc off{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture off{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForIntWidthTieTest(block, &off, false);
         REQUIRE(off.ValueGPR(producer).id != off.ValueGPR(extract).id);
         REQUIRE(off.ValueGPR(extract).id != off.ValueGPR(result).id);
 
-        RegAlloc on{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture on{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForIntWidthTieTest(block, &on, true);
         REQUIRE(on.ValueGPR(producer).id == on.ValueGPR(extract).id);
         REQUIRE(on.ValueGPR(extract).id == on.ValueGPR(result).id);
@@ -167,26 +173,24 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
 
     SECTION("narrow load feeds the tie chain through ZeroExtend32") {
         auto* block = new Block(0, Location{0x8638});
-        auto address = block->GetHostGPR(HostRegIndex(0), Imm{0u})
-                               .SetType(ValueType::U64);
-        auto byte = block->LoadMemory(Operand{address}).SetType(ValueType::U8);
-        auto wide = block->ZeroExtend32(byte).SetType(ValueType::U32);
+        auto address = block->GetHostGPR(ValueType::U64, HostRegIndex(0), Imm{0u});
+        auto byte = block->LoadMemory(ValueType::U8, Operand{address});
+        auto wide = block->ZeroExtend32(ValueType::U32, byte);
         auto result = block->ZeroExtend32To64(wide);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
 
-        RegAlloc on{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture on{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForIntWidthTieTest(block, &on, true);
-        REQUIRE(on.ValueType(byte) == RegAlloc::GPR);
+        REQUIRE(on.ValueType(byte) == AllocationFixture::GPR);
         REQUIRE(on.ValueGPR(byte).id == on.ValueGPR(wide).id);
         REQUIRE(on.ValueGPR(wide).id == on.ValueGPR(result).id);
     }
 
     SECTION("GetHostGPR is a W view, not a W write") {
         auto* block = new Block(0, Location{0x8640});
-        auto source = block->GetHostGPR(HostRegIndex(0), Imm{0u})
-                              .SetType(ValueType::U32);
+        auto source = block->GetHostGPR(ValueType::U32, HostRegIndex(0), Imm{0u});
         auto result = block->ZeroExtend32To64(source);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         check(block, source, result, false, false);
@@ -194,10 +198,8 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
 
     SECTION("direct BitExtract cannot launder a GetHostGPR high half") {
         auto* block = new Block(0, Location{0x8650});
-        auto host = block->GetHostGPR(HostRegIndex(0), Imm{0u})
-                            .SetType(ValueType::U32);
-        auto source = block->BitExtract(host, Imm{0u}, Imm{32u})
-                              .SetType(ValueType::U32);
+        auto host = block->GetHostGPR(ValueType::U32, HostRegIndex(0), Imm{0u});
+        auto source = block->BitExtract(ValueType::U32, host, Imm{0u}, Imm{32u});
         auto result = block->ZeroExtend32To64(source);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         check(block, source, result, false, false);
@@ -205,9 +207,8 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
 
     SECTION("pure BitCast is not a physical W write") {
         auto* block = new Block(0, Location{0x8660});
-        auto producer = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto source = block->BitCast(producer).SetType(ValueType::U32);
+        auto producer = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto source = block->BitCast(ValueType::U32, producer);
         auto result = block->ZeroExtend32To64(source);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         check(block, source, result, false, false);
@@ -215,12 +216,11 @@ TEST_CASE("integer width ties require exact last-use and a proven W write") {
 
     SECTION("a later source use defeats the authoritative last-use proof") {
         auto* block = new Block(0, Location{0x8670});
-        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto right = block->LoadImm(Imm{1u}).SetType(ValueType::U32);
-        auto source = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(ValueType::U32, Imm{1u});
+        auto source = block->Add(ValueType::U32, left, Operand{right});
         auto result = block->ZeroExtend32To64(source);
-        auto late = block->Add(source, Operand{right}).SetType(ValueType::U32);
+        auto late = block->Add(ValueType::U32, source, Operand{right});
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
         block->StoreUniform(Uniform{16, ValueType::U32}, late);
         check(block, source, result, false, false);
@@ -243,14 +243,14 @@ TEST_CASE("pinned W-view inputs hand off only to a published destructive result"
     const FPRSMask fprs{~((1u << 8) - 1u)};
     auto allocate = [&](bool keep_source_live) {
         IntrusivePtr<Block> block{new Block(0, Location{0x8678})};
-        auto seed = block->LoadImm(Imm{swift::u32{7}}).SetType(ValueType::U32);
-        auto source = block->ZeroExtend32To64(seed).SetType(ValueType::U64);
+        auto seed = block->LoadImm(ValueType::U32, Imm{swift::u32{7}});
+        auto source = block->ZeroExtend32To64(ValueType::U64, seed);
         block->SetHostGPR(source, HostRegIndex(22), Imm{0u});
         block->AdvancePC(Imm{1u});
-        auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-        auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
-        auto product = block->Mul(bridge, Operand{right}).SetType(ValueType::U32);
-        auto published = block->ZeroExtend32To64(product).SetType(ValueType::U64);
+        auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+        auto right = block->LoadImm(ValueType::U32, Imm{swift::u32{3}});
+        auto product = block->Mul(ValueType::U32, bridge, Operand{right});
+        auto published = block->ZeroExtend32To64(ValueType::U64, product);
         block->SetHostGPR(published, HostRegIndex(22), Imm{0u});
         if (keep_source_live) {
             block->StoreUniform(Uniform{8, ValueType::U64}, source);
@@ -260,8 +260,14 @@ TEST_CASE("pinned W-view inputs hand off only to a published destructive result"
 
         auto features = FeatureSet{};
         REQUIRE_FALSE(features.ra_width_chain);
-        auto alloc = std::make_unique<RegAlloc>(block->MaxInstrId(), make_gprs(), fprs, features);
-        RegisterAllocPass::Run(block.get(), alloc.get(), false, features);
+        auto alloc = std::make_unique<AllocationFixture>(
+                block->MaxInstrId(), make_gprs(), fprs, features);
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                alloc.get(),
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), *alloc, features),
+                false);
         return std::tuple{std::move(block), std::move(alloc), bridge, product};
     };
 
@@ -293,25 +299,24 @@ TEST_CASE("a third-party tied interval crossing the pinned W-view window rejects
     // A full-width read of the pinned home whose result stays live across
     // the bridge window below.  The conflict selector models the linear
     // scan proving such a read alias-safe and fixing its result to x22.
-    auto tied = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
-    auto seed = block->LoadImm(Imm{swift::u32{7}}).SetType(ValueType::U32);
-    auto source = block->ZeroExtend32To64(seed).SetType(ValueType::U64);
-    auto* publish_source = block->AppendInst(
-            OpCode::SetHostGPR, source, HostRegIndex(22), Imm{0u});
+    auto tied = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+    auto seed = block->LoadImm(ValueType::U32, Imm{swift::u32{7}});
+    auto source = block->ZeroExtend32To64(ValueType::U64, seed);
+    auto* publish_source = block->AppendInst(OpCode::SetHostGPR, source, HostRegIndex(22), Imm{0u});
     block->AdvancePC(Imm{1u});
-    auto bridge = block->BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
-    auto product = block->Mul(bridge, Operand{right}).SetType(ValueType::U32);
-    auto published = block->ZeroExtend32To64(product).SetType(ValueType::U64);
-    auto* publish_product = block->AppendInst(
-            OpCode::SetHostGPR, published, HostRegIndex(22), Imm{0u});
+    auto bridge = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+    auto right = block->LoadImm(ValueType::U32, Imm{swift::u32{3}});
+    auto product = block->Mul(ValueType::U32, bridge, Operand{right});
+    auto published = block->ZeroExtend32To64(ValueType::U64, product);
+    auto* publish_product =
+            block->AppendInst(OpCode::SetHostGPR, published, HostRegIndex(22), Imm{0u});
     block->StoreUniform(Uniform{8, ValueType::U64}, tied);
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
     auto features = FeatureSet{};
     REQUIRE_FALSE(features.ra_width_chain);
-    RegAlloc conflict{block->MaxInstrId(), make_gprs(), fprs, features};
+    AllocationFixture conflict{block->MaxInstrId(), make_gprs(), fprs, features};
     RegisterAllocTestSupport::RunForPinnedWConflictTest(
             block.get(), &conflict,
             {source.Def()->Id(), product.Def()->Id(), tied.Def()->Id()},
@@ -328,7 +333,9 @@ TEST_CASE("a third-party tied interval crossing the pinned W-view window rejects
     // real-guest version of this shape (static CoreMark, function
     // 0x474bf0) previously aborted here: the handoff was marked even
     // though a scan-fixed GetHostGPR read stayed live across the window.
-    REQUIRE_NOTHROW(arm64::VerifyGPRWidthElisions(block.get(), conflict, features, GPRSMask{}));
+    auto& analysis = conflict.PrepareFacts(block.get()).PrepareUses(block.get());
+    REQUIRE_NOTHROW(
+            arm64::PrepareWidthCertificates(block.get(), conflict, features, GPRSMask{}, analysis));
 }
 
 TEST_CASE("fixed publication of a zero-extended constant survives coalesce-live off") {
@@ -357,10 +364,10 @@ TEST_CASE("fixed publication of a zero-extended constant survives coalesce-live 
             LocationDescriptor{0x86a0}, LocationDescriptor{0x86c0}, module_config);
 
     IntrusivePtr<Block> block{new Block(0, Location{0x86a0})};
-    auto imm = block->LoadImm(Imm{swift::u64{0x2a}}).SetType(ValueType::U64);
-    auto extended = block->ZeroExtend32To64(imm).SetType(ValueType::U64);
+    auto imm = block->LoadImm(ValueType::U64, Imm{swift::u64{0x2a}});
+    auto extended = block->ZeroExtend32To64(ValueType::U64, imm);
     block->SetHostGPR(extended, HostRegIndex(22), Imm{0u});
-    auto read = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
+    auto read = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
     block->StoreUniform(Uniform{8, ValueType::U64}, read);
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
@@ -372,10 +379,14 @@ TEST_CASE("fixed publication of a zero-extended constant survives coalesce-live 
          {0u, 1u, 2u, 3u, 4u, 5u, 19u, 20u, 21u, 22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
         gprs.Mark(code);
     }
-    RegAlloc alloc{block->MaxInstrId(), gprs, FPRSMask{~((1u << 8) - 1u)}, features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    AllocationFixture alloc{block->MaxInstrId(), gprs, FPRSMask{~((1u << 8) - 1u)}, features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     REQUIRE_NOTHROW(translator.Translate(block.get()));
     context.Finish();
@@ -404,13 +415,11 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
     };
     auto make_chain = [](swift::u64 location) {
         IntrusivePtr<Block> block{new Block(0, Location{location})};
-        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto right = block->LoadImm(Imm{swift::u32{7}}).SetType(ValueType::U32);
-        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
-        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
-                               .SetType(ValueType::U32);
-        auto extend = block->ZeroExtend32To64(extract).SetType(ValueType::U64);
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(ValueType::U32, Imm{swift::u32{7}});
+        auto producer = block->Add(ValueType::U32, left, Operand{right});
+        auto extract = block->BitExtract(ValueType::U32, producer, Imm{0u}, Imm{32u});
+        auto extend = block->ZeroExtend32To64(ValueType::U64, extract);
         // Both predecessors remain live beyond the next bridge. The old
         // exact-last-use tie therefore cannot remove either instruction.
         block->StoreUniform(Uniform{8, ValueType::U64}, extend);
@@ -425,7 +434,7 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
         features.ra_width_chain = enabled;
         features.ra_width_chain_long = false;
         features.ra_coalesce = false;
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 chain.block->MaxInstrId(), make_gprs(), fprs, features);
         RegisterAllocTestSupport::RunForWidthChainTest(
                 chain.block.get(), alloc.get(), enabled);
@@ -442,35 +451,28 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
         IntrusivePtr<Block> block{new Block(0, Location{location})};
         Value conflict{};
         if (add_conflict) {
-            conflict = block->LoadImm(Imm{swift::u64{0xfeedfacecafebeef}})
-                               .SetType(ValueType::U64);
+            conflict = block->LoadImm(ValueType::U64, Imm{swift::u64{0xfeedfacecafebeef}});
         }
-        auto invariant = block->GetHostGPR(HostRegIndex(29), Imm{0u})
-                                 .SetType(ValueType::U32);
-        Value current = block->GetHostGPR(HostRegIndex(22), Imm{0u})
-                                .SetType(ValueType::U32);
+        auto invariant = block->GetHostGPR(ValueType::U32, HostRegIndex(29), Imm{0u});
+        Value current = block->GetHostGPR(ValueType::U32, HostRegIndex(22), Imm{0u});
         Vector<Value> bridges{};
         for (swift::u32 index = 0; index < steps; ++index) {
             Value left = current;
             Value right = invariant;
             if (index != 0) {
-                left = block->BitExtract(current, Imm{0u}, Imm{32u})
-                               .SetType(ValueType::U32);
-                right = block->BitExtract(invariant, Imm{0u}, Imm{32u})
-                                .SetType(ValueType::U32);
+                left = block->BitExtract(ValueType::U32, current, Imm{0u}, Imm{32u});
+                right = block->BitExtract(ValueType::U32, invariant, Imm{0u}, Imm{32u});
                 bridges.push_back(left);
                 bridges.push_back(right);
             }
-            auto producer = (index & 1u)
-                    ? block->Xor(left, Operand{right}).SetType(ValueType::U32)
-                    : block->Add(left, Operand{right}).SetType(ValueType::U32);
-            auto wrapper = block->ZeroExtend32To64(producer).SetType(ValueType::U64);
+            auto producer = (index & 1u) ? block->Xor(ValueType::U32, left, Operand{right})
+                                         : block->Add(ValueType::U32, left, Operand{right});
+            auto wrapper = block->ZeroExtend32To64(ValueType::U64, producer);
             block->SetHostGPR(wrapper, HostRegIndex(22), Imm{0u});
             current = wrapper;
             if (insert_fault_barrier && index + 1 == steps / 2) {
-                auto address = block->LoadImm(Imm{swift::u64{0x1000}})
-                                       .SetType(ValueType::U64);
-                (void)block->LoadMemory(Operand{address}).SetType(ValueType::U64);
+                auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
+                (void)block->LoadMemory(ValueType::U64, Operand{address});
             }
         }
         if (conflict.Defined()) {
@@ -487,9 +489,14 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
         // This fixture tests the long-component threshold independently of
         // the new initial target-home constraints.
         features.ra_coalesce = false;
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 chain.block->MaxInstrId(), make_gprs(), fprs, features);
-        RegisterAllocPass::Run(chain.block.get(), alloc.get(), false, features);
+        ::swift::runtime::compile::AllocateBlock(
+                chain.block.get(),
+                alloc.get(),
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        chain.block.get(), *alloc, features),
+                false);
         return alloc;
     };
 
@@ -527,10 +534,15 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
                     LocationDescriptor{0x8690}, LocationDescriptor{0x86b0}, module_config);
             auto chain = make_chain(0x8690);
             auto features = ResolveFeatureSet(module_config);
-            RegAlloc alloc{chain.block->MaxInstrId(), make_gprs(), fprs, features};
-            RegisterAllocPass::Run(chain.block.get(), &alloc, false, features);
-            alloc.CompleteGPRAllocation(module);
-            arm64::JitContext context{module, alloc};
+            AllocationFixture alloc{chain.block->MaxInstrId(), make_gprs(), fprs, features};
+            ::swift::runtime::compile::AllocateBlock(
+                    chain.block.get(),
+                    &alloc,
+                    ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                            chain.block.get(), alloc, features),
+                    false);
+            ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+            arm64::JitContext context{module, alloc, alloc.Actions()};
             arm64::JitTranslator translator{context};
             translator.Translate(chain.block.get());
             context.Finish();
@@ -541,18 +553,16 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
 
     SECTION("GetHostGPR cannot launder an unknown high half") {
         IntrusivePtr<Block> block{new Block(0, Location{0x86c0})};
-        auto host = block->GetHostGPR(HostRegIndex(22), Imm{0u})
-                            .SetType(ValueType::U32);
-        auto extract = block->BitExtract(host, Imm{0u}, Imm{32u})
-                              .SetType(ValueType::U32);
-        auto extend = block->ZeroExtend32To64(extract).SetType(ValueType::U64);
+        auto host = block->GetHostGPR(ValueType::U32, HostRegIndex(22), Imm{0u});
+        auto extract = block->BitExtract(ValueType::U32, host, Imm{0u}, Imm{32u});
+        auto extend = block->ZeroExtend32To64(ValueType::U64, extract);
         block->StoreUniform(Uniform{8, ValueType::U64}, extend);
         block->StoreUniform(Uniform{16, ValueType::U32}, extract);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
         auto features = FeatureSet{};
         features.ra_width_chain = true;
-        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        AllocationFixture alloc{block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForWidthChainTest(block.get(), &alloc, true);
         REQUIRE_FALSE(alloc.IsWidthChainCoalesced(extract.Id()));
         REQUIRE_FALSE(alloc.IsWidthChainCoalesced(extend.Id()));
@@ -560,30 +570,25 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
 
     SECTION("8 and 16 bit partial definitions never enter a 32-bit component") {
         IntrusivePtr<Block> block{new Block(0, Location{0x86d0})};
-        auto narrow = block->LoadUniform<TypedValue<ValueType::U16>>(
-                Uniform{0, ValueType::U16});
-        auto fake = block->BitExtract(narrow, Imm{0u}, Imm{32u})
-                           .SetType(ValueType::U32);
+        auto narrow = block->LoadUniform<TypedValue<ValueType::U16>>(Uniform{0, ValueType::U16});
+        auto fake = block->BitExtract(ValueType::U32, narrow, Imm{0u}, Imm{32u});
         block->StoreUniform(Uniform{8, ValueType::U32}, fake);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
         auto features = FeatureSet{};
         features.ra_width_chain = true;
-        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        AllocationFixture alloc{block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForWidthChainTest(block.get(), &alloc, true);
         REQUIRE_FALSE(alloc.IsWidthChainCoalesced(fake.Id()));
     }
 
     SECTION("a third-party tied interval crossing the window rejects the bridge") {
         IntrusivePtr<Block> block{new Block(0, Location{0x86e0})};
-        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto right = block->LoadImm(Imm{swift::u32{7}}).SetType(ValueType::U32);
-        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
-        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
-                               .SetType(ValueType::U32);
-        auto tied = block->LoadImm(Imm{swift::u64{0xfeedfacecafebeef}})
-                            .SetType(ValueType::U64);
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(ValueType::U32, Imm{swift::u32{7}});
+        auto producer = block->Add(ValueType::U32, left, Operand{right});
+        auto extract = block->BitExtract(ValueType::U32, producer, Imm{0u}, Imm{32u});
+        auto tied = block->LoadImm(ValueType::U64, Imm{swift::u64{0xfeedfacecafebeef}});
         block->StoreUniform(Uniform{8, ValueType::U32}, extract);
         block->StoreUniform(Uniform{16, ValueType::U32}, producer);
         block->StoreUniform(Uniform{24, ValueType::U64}, tied);
@@ -591,11 +596,11 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
         block->ReIdInstr();
         auto features = FeatureSet{};
         features.ra_width_chain = false;
-        RegAlloc control{block->MaxInstrId(), make_gprs(), fprs, features};
+        AllocationFixture control{block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForWidthChainTest(block.get(), &control, false);
         const auto target = control.ValueGPR(producer).id;
 
-        RegAlloc conflict{block->MaxInstrId(), make_gprs(), fprs, features};
+        AllocationFixture conflict{block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForWidthChainConflictTest(
                 block.get(), &conflict, tied.Id(), target);
         REQUIRE_FALSE(conflict.IsWidthChainCoalesced(extract.Id()));
@@ -603,20 +608,18 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
 
     SECTION("a fixed-home write inside the alias window rejects the bridge") {
         IntrusivePtr<Block> block{new Block(0, Location{0x86f0})};
-        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
-        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
-        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
-                               .SetType(ValueType::U32);
-        auto replacement = block->LoadImm(Imm{swift::u64{99}}).SetType(ValueType::U64);
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(ValueType::U32, Imm{swift::u32{3}});
+        auto producer = block->Add(ValueType::U32, left, Operand{right});
+        auto extract = block->BitExtract(ValueType::U32, producer, Imm{0u}, Imm{32u});
+        auto replacement = block->LoadImm(ValueType::U64, Imm{swift::u64{99}});
         block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         block->StoreUniform(Uniform{8, ValueType::U32}, extract);
         block->StoreUniform(Uniform{16, ValueType::U32}, producer);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
         auto features = FeatureSet{};
-        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        AllocationFixture alloc{block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForWidthChainConflictTest(
                 block.get(), &alloc, producer.Id(), 22);
         REQUIRE_FALSE(alloc.IsWidthChainCoalesced(extract.Id()));
@@ -624,21 +627,18 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
 
     SECTION("an emitter fixed clobber inside the alias window rejects the bridge") {
         IntrusivePtr<Block> block{new Block(0, Location{0x8700})};
-        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
-        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
-        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
-                               .SetType(ValueType::U32);
-        auto arg = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
-        (void)block->CallLambda(Lambda{Imm{swift::u64{0}}}, arg, arg, arg)
-                .SetType(ValueType::U64);
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(ValueType::U32, Imm{swift::u32{3}});
+        auto producer = block->Add(ValueType::U32, left, Operand{right});
+        auto extract = block->BitExtract(ValueType::U32, producer, Imm{0u}, Imm{32u});
+        auto arg = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+        (void)block->CallLambda(ValueType::U64, Lambda{Imm{swift::u64{0}}}, arg, arg, arg);
         block->StoreUniform(Uniform{8, ValueType::U32}, extract);
         block->StoreUniform(Uniform{16, ValueType::U32}, producer);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
         auto features = FeatureSet{};
-        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        AllocationFixture alloc{block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForWidthChainConflictTest(
                 block.get(), &alloc, producer.Id(), 11);
         REQUIRE_FALSE(alloc.IsWidthChainCoalesced(extract.Id()));
@@ -646,21 +646,19 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
 
     SECTION("a faulting observer does not publish or mutate the read-only component") {
         IntrusivePtr<Block> block{new Block(0, Location{0x8710})};
-        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(
-                Uniform{0, ValueType::U32});
-        auto right = block->LoadImm(Imm{swift::u32{3}}).SetType(ValueType::U32);
-        auto producer = block->Add(left, Operand{right}).SetType(ValueType::U32);
-        auto extract = block->BitExtract(producer, Imm{0u}, Imm{32u})
-                               .SetType(ValueType::U32);
-        auto address = block->LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
-        (void)block->LoadMemory(Operand{address}).SetType(ValueType::U64);
+        auto left = block->LoadUniform<TypedValue<ValueType::U32>>(Uniform{0, ValueType::U32});
+        auto right = block->LoadImm(ValueType::U32, Imm{swift::u32{3}});
+        auto producer = block->Add(ValueType::U32, left, Operand{right});
+        auto extract = block->BitExtract(ValueType::U32, producer, Imm{0u}, Imm{32u});
+        auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
+        (void)block->LoadMemory(ValueType::U64, Operand{address});
         block->StoreUniform(Uniform{8, ValueType::U32}, extract);
         block->StoreUniform(Uniform{16, ValueType::U32}, producer);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
         auto features = FeatureSet{};
         features.ra_width_chain = true;
-        RegAlloc alloc{block->MaxInstrId(), make_gprs(), fprs, features};
+        AllocationFixture alloc{block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForWidthChainTest(block.get(), &alloc, true);
         REQUIRE(alloc.IsWidthChainCoalesced(extract.Id()));
     }
@@ -703,13 +701,18 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
         auto features = FeatureSet{};
         features.ra_width_chain = false;
         features.ra_width_chain_long = false;
-        RegAlloc control{chain.block->MaxInstrId(), make_gprs(), fprs, features};
-        RegisterAllocPass::Run(chain.block.get(), &control, false, features);
+        AllocationFixture control{chain.block->MaxInstrId(), make_gprs(), fprs, features};
+        ::swift::runtime::compile::AllocateBlock(
+                chain.block.get(),
+                &control,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        chain.block.get(), control, features),
+                false);
         auto invariant_bridge = chain.bridges.at(1);
         auto invariant_source = invariant_bridge.Def()->GetArg<Value>(0);
         const swift::u16 target = control.ValueGPR(invariant_source).id;
 
-        RegAlloc conflict{chain.block->MaxInstrId(), make_gprs(), fprs, features};
+        AllocationFixture conflict{chain.block->MaxInstrId(), make_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForWidthChainLongConflictTest(
                 chain.block.get(), &conflict, chain.conflict.Id(), target);
         REQUIRE_FALSE(conflict.IsWidthChainCoalesced(invariant_bridge.Id()));
@@ -732,10 +735,15 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
                     LocationDescriptor{0x8750}, LocationDescriptor{0x8760}, module_config);
             auto chain = make_long_chain(0x8750, 32, false);
             auto features = ResolveFeatureSet(module_config);
-            RegAlloc alloc{chain.block->MaxInstrId(), make_gprs(), fprs, features};
-            RegisterAllocPass::Run(chain.block.get(), &alloc, false, features);
-            alloc.CompleteGPRAllocation(module);
-            arm64::JitContext context{module, alloc};
+            AllocationFixture alloc{chain.block->MaxInstrId(), make_gprs(), fprs, features};
+            ::swift::runtime::compile::AllocateBlock(
+                    chain.block.get(),
+                    &alloc,
+                    ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                            chain.block.get(), alloc, features),
+                    false);
+            ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+            arm64::JitContext context{module, alloc, alloc.Actions()};
             arm64::JitTranslator translator{context};
             translator.Translate(chain.block.get());
             context.Finish();
@@ -753,7 +761,8 @@ TEST_CASE("unit-local width chains share only proven W-clean direct components")
     }
 }
 
-TEST_CASE("fixed GPR class is level3-only and keeps fixed clobbers disjoint") {
+TEST_CASE("fixed GPR class is level3-only and keeps fixed clobbers disjoint",
+          "[fixed-register-inputs]") {
     using namespace swift::runtime;
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
@@ -774,10 +783,8 @@ TEST_CASE("fixed GPR class is level3-only and keeps fixed clobbers disjoint") {
             (GetSvmConfig().x86_pin_ext >= 3));
 
     IntrusivePtr<Block> block{new Block(0, Location{0x86b8})};
-    auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
-                         .SetType(ValueType::U64);
-    auto* publish = block->AppendInst(
-            OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+    auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{0x123456789abcdef0}});
+    auto* publish = block->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
@@ -787,8 +794,10 @@ TEST_CASE("fixed GPR class is level3-only and keeps fixed clobbers disjoint") {
     REQUIRE(contract.hot_instruction_scratch ==
             ScratchBudget(*value.Def(), features, {}).gpr);
 
-    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, features};
+    auto input = arm64::PrepareAllocationInputs(block.get(), alloc, features);
+    REQUIRE(input.pools[0].fixed_class == FixedGPRClassEnabled(gprs, features));
+    ::swift::runtime::compile::AllocateBlock(block.get(), &alloc, std::move(input), false);
     if (GetSvmConfig().x86_pin_ext >= 3) {
         REQUIRE(alloc.ValueGPR(value).id == 22);
         REQUIRE(alloc.IsFixedGPR(value.Id()));
@@ -829,7 +838,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         block->ReIdInstr();
         auto features = FeatureSet{};
         features.ra_coalesce = enabled;
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 block->MaxInstrId(), pinned_gprs(), fprs, features);
         RegisterAllocTestSupport::RunForCoalesceTest(block, alloc.get(), enabled);
         return alloc;
@@ -840,7 +849,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
     auto allocate_live = [&](Block* block) {
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 block->MaxInstrId(), pinned_gprs(), fprs, FeatureSet{});
         RegisterAllocTestSupport::RunForCoalesceLiveTest(block, alloc.get(), true);
         return alloc;
@@ -878,117 +887,98 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
             ExpandedProducer{OpCode::MulHigh, "MulHigh"},
     };
 
-    auto append_expanded_producer = [](Block* block, OpCode op,
-                                       ValueType type) -> Value {
-        auto load_scalar = [&](swift::u64 value) {
-            return block->LoadImm(Imm{value}).SetType(type);
-        };
+    auto append_expanded_producer = [](Block* block, OpCode op, ValueType type) -> Value {
+        auto load_scalar = [&](swift::u64 value) { return block->LoadImm(type, Imm{value}); };
         auto binary = [&](auto emit) {
             auto left = load_scalar(0x123456789abcdef0ull);
             auto right = load_scalar(0x0102030405060708ull);
-            return emit(left, right).SetType(type);
+            return emit(left, right);
         };
         switch (op) {
             case OpCode::LoadMemory:
-                return block->LoadMemory(Operand{load_scalar(0x1000)})
-                        .SetType(type);
+                return block->LoadMemory(type, Operand{load_scalar(0x1000)});
             case OpCode::GetHostFPR:
-                return block->GetHostFPR(HostRegIndex(24), Imm{0u})
-                        .SetType(type);
+                return block->GetHostFPR(type, HostRegIndex(24), Imm{0u});
             case OpCode::Adc:
                 return binary([&](Value left, Value right) {
-                    return block->Adc(left, Operand{right});
+                    return block->Adc(type, left, Operand{right});
                 });
             case OpCode::Sbb:
                 return binary([&](Value left, Value right) {
-                    return block->Sbb(left, Operand{right});
+                    return block->Sbb(type, left, Operand{right});
                 });
             case OpCode::Mul:
                 return binary([&](Value left, Value right) {
-                    return block->Mul(left, Operand{right});
+                    return block->Mul(type, left, Operand{right});
                 });
             case OpCode::Div:
                 return binary([&](Value left, Value right) {
-                    return block->Div(left, Operand{right});
+                    return block->Div(type, left, Operand{right});
                 });
             case OpCode::AndNot:
                 return binary([&](Value left, Value right) {
-                    return block->AndNot(left, Operand{right});
+                    return block->AndNot(type, left, Operand{right});
                 });
             case OpCode::Not:
                 return binary([&](Value left, Value right) {
-                    return block->Not(left, Operand{right});
+                    return block->Not(type, left, Operand{right});
                 });
             case OpCode::Neg:
-                return block->Neg(load_scalar(0x123456789abcdef0ull)).SetType(type);
+                return block->Neg(type, load_scalar(0x123456789abcdef0ull));
             case OpCode::GetOperand:
-                return block->GetOperand(Operand{load_scalar(0x1000)}).SetType(type);
+                return block->GetOperand(type, Operand{load_scalar(0x1000)});
             case OpCode::SignExtend: {
-                const auto input_type = type == ValueType::U64
-                        ? ValueType::U32
-                        : ValueType::U16;
-                auto input = block->LoadImm(Imm{swift::u32{0x8001}})
-                                     .SetType(input_type);
-                return block->SignExtend(input).SetType(type);
+                const auto input_type = type == ValueType::U64 ? ValueType::U32 : ValueType::U16;
+                auto input = block->LoadImm(input_type, Imm{swift::u32{0x8001}});
+                return block->SignExtend(type, input);
             }
             case OpCode::LslImm:
-                return block->LslImm(load_scalar(0x123456789abcdef0ull), Imm{5u})
-                        .SetType(type);
+                return block->LslImm(type, load_scalar(0x123456789abcdef0ull), Imm{5u});
             case OpCode::LsrImm:
-                return block->LsrImm(load_scalar(0x123456789abcdef0ull), Imm{5u})
-                        .SetType(type);
+                return block->LsrImm(type, load_scalar(0x123456789abcdef0ull), Imm{5u});
             case OpCode::AsrImm:
-                return block->AsrImm(load_scalar(0x923456789abcdef0ull), Imm{5u})
-                        .SetType(type);
+                return block->AsrImm(type, load_scalar(0x923456789abcdef0ull), Imm{5u});
             case OpCode::RorImm:
-                return block->RorImm(load_scalar(0x123456789abcdef0ull), Imm{5u})
-                        .SetType(type);
+                return block->RorImm(type, load_scalar(0x123456789abcdef0ull), Imm{5u});
             case OpCode::LslValue:
-                return block->LslValue(load_scalar(0x123456789abcdef0ull),
-                                       load_scalar(5)).SetType(type);
+                return block->LslValue(type, load_scalar(0x123456789abcdef0ull), load_scalar(5));
             case OpCode::LsrValue:
-                return block->LsrValue(load_scalar(0x123456789abcdef0ull),
-                                       load_scalar(5)).SetType(type);
+                return block->LsrValue(type, load_scalar(0x123456789abcdef0ull), load_scalar(5));
             case OpCode::AsrValue:
-                return block->AsrValue(load_scalar(0x923456789abcdef0ull),
-                                       load_scalar(5)).SetType(type);
+                return block->AsrValue(type, load_scalar(0x923456789abcdef0ull), load_scalar(5));
             case OpCode::RorValue:
-                return block->RorValue(load_scalar(0x123456789abcdef0ull),
-                                       load_scalar(5)).SetType(type);
+                return block->RorValue(type, load_scalar(0x123456789abcdef0ull), load_scalar(5));
             case OpCode::ByteSwap:
-                return block->ByteSwap(load_scalar(0x123456789abcdef0ull),
-                                       Imm{type == ValueType::U64 ? 64u : 32u})
-                        .SetType(type);
+                return block->ByteSwap(type,
+                                       load_scalar(0x123456789abcdef0ull),
+                                       Imm{type == ValueType::U64 ? 64u : 32u});
             case OpCode::BitExtract:
-                return block->BitExtract(load_scalar(0x123456789abcdef0ull),
+                return block->BitExtract(type,
+                                         load_scalar(0x123456789abcdef0ull),
                                          Imm{4u},
-                                         Imm{type == ValueType::U64 ? 60u : 28u})
-                        .SetType(type);
+                                         Imm{type == ValueType::U64 ? 60u : 28u});
             case OpCode::BitClear:
-                return block->BitClear(load_scalar(0x123456789abcdef0ull),
-                                       Imm{8u}, Imm{8u})
-                        .SetType(type);
+                return block->BitClear(type, load_scalar(0x123456789abcdef0ull), Imm{8u}, Imm{8u});
             case OpCode::Select: {
-                auto cond = block->LoadImm(Imm{swift::u32{1}}).SetType(ValueType::U32);
+                auto cond = block->LoadImm(ValueType::U32, Imm{swift::u32{1}});
                 auto on_true = load_scalar(0x123456789abcdef0ull);
                 auto on_false = load_scalar(0x0102030405060708ull);
-                return block->Select(cond, on_true, on_false).SetType(type);
+                return block->Select(type, cond, on_true, on_false);
             }
             case OpCode::SelectZero: {
                 auto test = load_scalar(1);
                 auto zero_value = load_scalar(0x123456789abcdef0ull);
                 auto nonzero_value = load_scalar(0x0102030405060708ull);
-                return block->SelectZero(test, zero_value, nonzero_value).SetType(type);
+                return block->SelectZero(type, test, zero_value, nonzero_value);
             }
             case OpCode::CondSelect: {
                 auto on_true = load_scalar(0x123456789abcdef0ull);
                 auto on_false = load_scalar(0x0102030405060708ull);
-                return block->CondSelect(Cond::EQ, on_true, on_false)
-                        .SetType(type);
+                return block->CondSelect(type, Cond::EQ, on_true, on_false);
             }
             case OpCode::MulHigh:
                 return binary([&](Value left, Value right) {
-                    return block->MulHigh(left, right, Imm{0u});
+                    return block->MulHigh(type, left, right, Imm{0u});
                 });
             default:
                 return {};
@@ -999,15 +989,13 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         IntrusivePtr<Block> block;
         Value produced;
         Value conflict;
-        Inst* publish;
+        const Inst* publish;
     };
     auto make_expanded_case = [&](OpCode op, ValueType type, swift::u64 location) {
         IntrusivePtr<Block> block{new Block(0, Location{location})};
         auto produced = append_expanded_producer(block.get(), op, type);
-        auto conflict = block->LoadImm(Imm{swift::u64{0xfeedfacecafebeef}})
-                                .SetType(ValueType::U64);
-        auto* publish = block->AppendInst(
-                OpCode::SetHostGPR, produced, HostRegIndex(22), Imm{0u});
+        auto conflict = block->LoadImm(ValueType::U64, Imm{swift::u64{0xfeedfacecafebeef}});
+        auto* publish = block->AppendInst(OpCode::SetHostGPR, produced, HostRegIndex(22), Imm{0u});
         block->StoreUniform(Uniform{24, ValueType::U64}, conflict);
         return ExpandedCase{std::move(block), produced, conflict, publish};
     };
@@ -1015,10 +1003,9 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
     SECTION("callee-saved RSP/RBX/RBP homes enter the same publication proof") {
         for (swift::u16 home : {19u, 20u, 21u}) {
             IntrusivePtr<Block> block{new Block(0, Location{0x86c8})};
-            auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
-                                 .SetType(ValueType::U64);
-            auto* publish = block->AppendInst(
-                    OpCode::SetHostGPR, value, HostRegIndex(home), Imm{0u});
+            auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{0x123456789abcdef0}});
+            auto* publish =
+                    block->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(home), Imm{0u});
             auto on = allocate_live(block.get());
             REQUIRE(on->ValueGPR(value).id == home);
             REQUIRE(on->IsHostWriteCoalesced(publish->Id()));
@@ -1027,10 +1014,8 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
 
     SECTION("last-use full-width publication enters the fixed home") {
         IntrusivePtr<Block> block{new Block(0, Location{0x86c0})};
-        auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
-                             .SetType(ValueType::U64);
-        auto* publish = block->AppendInst(
-                OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+        auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{0x123456789abcdef0}});
+        auto* publish = block->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
         auto off = allocate(block.get(), false);
         REQUIRE(off->ValueGPR(value).id != 22);
         REQUIRE_FALSE(off->IsHostWriteCoalesced(publish->Id()));
@@ -1041,10 +1026,9 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
 
     SECTION("a later fixed-home write while the value is live rejects publication") {
         IntrusivePtr<Block> block{new Block(0, Location{0x86d0})};
-        auto value = block->LoadImm(Imm{swift::u64{11}}).SetType(ValueType::U64);
-        auto* publish = block->AppendInst(
-                OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
-        auto next = block->LoadImm(Imm{swift::u64{22}}).SetType(ValueType::U64);
+        auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{11}});
+        auto* publish = block->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+        auto next = block->LoadImm(ValueType::U64, Imm{swift::u64{22}});
         block->SetHostGPR(next, HostRegIndex(22), Imm{0u});
         block->StoreUniform(Uniform{32, ValueType::U64}, value);
         auto on = allocate(block.get(), true);
@@ -1055,9 +1039,8 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
     SECTION("live SSA after publish enters the home only with coalesce live") {
         auto make = [&] {
             IntrusivePtr<Block> block{new Block(0, Location{0x86d4})};
-            auto value = block->LoadImm(Imm{swift::u64{11}}).SetType(ValueType::U64);
-            auto* publish = block->AppendInst(
-                    OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+            auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{11}});
+            auto* publish = block->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
             block->StoreUniform(Uniform{32, ValueType::U64}, value);
             return std::pair{std::move(block), publish};
         };
@@ -1069,7 +1052,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         auto [on_block, on_publish] = make();
         on_block->SetTerminal(terminal::ReturnToDispatch{});
         on_block->ReIdInstr();
-        auto on_alloc = std::make_unique<RegAlloc>(
+        auto on_alloc = std::make_unique<AllocationFixture>(
                 on_block->MaxInstrId(), pinned_gprs(), fprs, FeatureSet{});
         RegisterAllocTestSupport::RunForCoalesceLiveTest(on_block.get(), on_alloc.get(), true);
         auto value_on = Value{&on_block->GetInstList().front()};
@@ -1077,15 +1060,14 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         REQUIRE(on_alloc->IsHostWriteCoalesced(on_publish->Id()));
 
         IntrusivePtr<Block> rewrite{new Block(0, Location{0x86d5})};
-        auto live = rewrite->LoadImm(Imm{swift::u64{11}}).SetType(ValueType::U64);
-        auto* first = rewrite->AppendInst(
-                OpCode::SetHostGPR, live, HostRegIndex(22), Imm{0u});
-        auto next = rewrite->LoadImm(Imm{swift::u64{22}}).SetType(ValueType::U64);
+        auto live = rewrite->LoadImm(ValueType::U64, Imm{swift::u64{11}});
+        auto* first = rewrite->AppendInst(OpCode::SetHostGPR, live, HostRegIndex(22), Imm{0u});
+        auto next = rewrite->LoadImm(ValueType::U64, Imm{swift::u64{22}});
         rewrite->SetHostGPR(next, HostRegIndex(22), Imm{0u});
         rewrite->StoreUniform(Uniform{32, ValueType::U64}, live);
         rewrite->SetTerminal(terminal::ReturnToDispatch{});
         rewrite->ReIdInstr();
-        auto rewrite_alloc = std::make_unique<RegAlloc>(
+        auto rewrite_alloc = std::make_unique<AllocationFixture>(
                 rewrite->MaxInstrId(), pinned_gprs(), fprs, FeatureSet{});
         RegisterAllocTestSupport::RunForCoalesceLiveTest(
                 rewrite.get(), rewrite_alloc.get(), true);
@@ -1093,14 +1075,14 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         REQUIRE_FALSE(rewrite_alloc->IsHostWriteCoalesced(first->Id()));
 
         IntrusivePtr<Block> flagged{new Block(0, Location{0x86d6})};
-        auto added = flagged->LoadImm(Imm{swift::u64{11}}).SetType(ValueType::U64);
+        auto added = flagged->LoadImm(ValueType::U64, Imm{swift::u64{11}});
         flagged->SaveFlags(added, Flags::All);
         auto* flagged_pub = flagged->AppendInst(
                 OpCode::SetHostGPR, added, HostRegIndex(22), Imm{0u});
         flagged->StoreUniform(Uniform{32, ValueType::U64}, added);
         flagged->SetTerminal(terminal::ReturnToDispatch{});
         flagged->ReIdInstr();
-        auto flagged_alloc = std::make_unique<RegAlloc>(
+        auto flagged_alloc = std::make_unique<AllocationFixture>(
                 flagged->MaxInstrId(), pinned_gprs(), fprs, FeatureSet{});
         RegisterAllocTestSupport::RunForCoalesceLiveTest(
                 flagged.get(), flagged_alloc.get(), true);
@@ -1110,24 +1092,23 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
 
     SECTION("a pre-tied value born inside the publication window rejects coalescing") {
         IntrusivePtr<Block> block{new Block(0, Location{0x86d8})};
-        auto candidate = block->LoadImm(Imm{swift::u64{11}}).SetType(ValueType::U64);
+        auto candidate = block->LoadImm(ValueType::U64, Imm{swift::u64{11}});
         // This definition is between candidate and its logical publication.
         // The conflict selector models an earlier tie assigning it to x22;
         // its use after publish makes that fixed-home interval cross the store.
-        auto tied = block->LoadImm(Imm{swift::u64{22}}).SetType(ValueType::U64);
-        auto* publish = block->AppendInst(
-                OpCode::SetHostGPR, candidate, HostRegIndex(22), Imm{0u});
+        auto tied = block->LoadImm(ValueType::U64, Imm{swift::u64{22}});
+        auto* publish = block->AppendInst(OpCode::SetHostGPR, candidate, HostRegIndex(22), Imm{0u});
         block->StoreUniform(Uniform{24, ValueType::U64}, tied);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
 
         auto features = FeatureSet{};
         features.ra_coalesce = true;
-        RegAlloc control{block->MaxInstrId(), pinned_gprs(), fprs, features};
+        AllocationFixture control{block->MaxInstrId(), pinned_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForCoalesceLiveTest(block.get(), &control, true);
         REQUIRE(control.IsHostWriteCoalesced(publish->Id()));
 
-        RegAlloc conflict{block->MaxInstrId(), pinned_gprs(), fprs, features};
+        AllocationFixture conflict{block->MaxInstrId(), pinned_gprs(), fprs, features};
         RegisterAllocTestSupport::RunForCoalesceConflictTest(
                 block.get(), &conflict, tied.Id(), 22);
         REQUIRE(conflict.ValueGPR(tied).id == 22);
@@ -1136,7 +1117,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
 
     SECTION("flags and fault observers reject early publication") {
         IntrusivePtr<Block> flag_block{new Block(0, Location{0x86e0})};
-        auto flagged = flag_block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+        auto flagged = flag_block->LoadImm(ValueType::U64, Imm{swift::u64{7}});
         flag_block->SaveFlags(flagged, Flags::All);
         auto* flags_publish = flag_block->AppendInst(
                 OpCode::SetHostGPR, flagged, HostRegIndex(22), Imm{0u});
@@ -1144,29 +1125,27 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
         REQUIRE(flags_on->IsHostWriteCoalesced(flags_publish->Id()));
 
         IntrusivePtr<Block> fault{new Block(0, Location{0x86f0})};
-        auto value = fault->LoadImm(Imm{swift::u64{9}}).SetType(ValueType::U64);
-        auto address = fault->LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
-        (void)fault->LoadMemory(Operand{address}).SetType(ValueType::U64);
-        auto* fault_publish = fault->AppendInst(
-                OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
+        auto value = fault->LoadImm(ValueType::U64, Imm{swift::u64{9}});
+        auto address = fault->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
+        (void)fault->LoadMemory(ValueType::U64, Operand{address});
+        auto* fault_publish =
+                fault->AppendInst(OpCode::SetHostGPR, value, HostRegIndex(22), Imm{0u});
         auto fault_on = allocate(fault.get(), true);
         REQUIRE_FALSE(fault_on->IsHostWriteCoalesced(fault_publish->Id()));
     }
 
     SECTION("W-clean publication removes the bridge and feeds a zero-cost U32 read") {
         IntrusivePtr<Block> block{new Block(0, Location{0x8700})};
-        auto left = block->LoadImm(Imm{swift::u32{0x1234}}).SetType(ValueType::U32);
-        auto right = block->LoadImm(Imm{swift::u32{0x20}}).SetType(ValueType::U32);
-        auto value = block->Add(left, Operand{right}).SetType(ValueType::U32);
+        auto left = block->LoadImm(ValueType::U32, Imm{swift::u32{0x1234}});
+        auto right = block->LoadImm(ValueType::U32, Imm{swift::u32{0x20}});
+        auto value = block->Add(ValueType::U32, left, Operand{right});
         auto zext = block->ZeroExtend32To64(value);
-        auto* publish = block->AppendInst(
-                OpCode::SetHostGPR, zext, HostRegIndex(22), Imm{0u});
-        auto read = block->GetHostGPR(HostRegIndex(22), Imm{0u})
-                            .SetType(ValueType::U32);
+        auto* publish = block->AppendInst(OpCode::SetHostGPR, zext, HostRegIndex(22), Imm{0u});
+        auto read = block->GetHostGPR(ValueType::U32, HostRegIndex(22), Imm{0u});
         block->StoreUniform(Uniform{40, ValueType::U32}, read);
         // An unrelated full-width write makes the old block-wide pin-chain
         // fuse decline this block, so this section exercises only the new gate.
-        auto unrelated = block->LoadImm(Imm{swift::u64{3}}).SetType(ValueType::U64);
+        auto unrelated = block->LoadImm(ValueType::U64, Imm{swift::u64{3}});
         block->SetHostGPR(unrelated, HostRegIndex(23), Imm{0u});
 
         auto off = allocate(block.get(), false);
@@ -1182,24 +1161,20 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
 
     SECTION("unknown high half and a crossing write keep the read bridge") {
         IntrusivePtr<Block> unknown{new Block(0, Location{0x8710})};
-        auto full = unknown->LoadImm(Imm{swift::u64{0x100000001}})
-                            .SetType(ValueType::U64);
+        auto full = unknown->LoadImm(ValueType::U64, Imm{swift::u64{0x100000001}});
         unknown->SetHostGPR(full, HostRegIndex(22), Imm{0u});
-        auto read = unknown->GetHostGPR(HostRegIndex(22), Imm{0u})
-                           .SetType(ValueType::U32);
+        auto read = unknown->GetHostGPR(ValueType::U32, HostRegIndex(22), Imm{0u});
         unknown->StoreUniform(Uniform{48, ValueType::U32}, read);
         auto unknown_on = allocate(unknown.get(), true);
         REQUIRE(unknown_on->ValueGPR(read).id != 22);
         REQUIRE_FALSE(unknown_on->IsHostReadCoalesced(read.Id()));
 
         IntrusivePtr<Block> crossing{new Block(0, Location{0x8720})};
-        auto w = crossing->LoadImm(Imm{swift::u32{1}}).SetType(ValueType::U32);
+        auto w = crossing->LoadImm(ValueType::U32, Imm{swift::u32{1}});
         auto zext = crossing->ZeroExtend32To64(w);
         crossing->SetHostGPR(zext, HostRegIndex(22), Imm{0u});
-        auto capture = crossing->GetHostGPR(HostRegIndex(22), Imm{0u})
-                                .SetType(ValueType::U32);
-        auto replacement = crossing->LoadImm(Imm{swift::u64{2}})
-                                   .SetType(ValueType::U64);
+        auto capture = crossing->GetHostGPR(ValueType::U32, HostRegIndex(22), Imm{0u});
+        auto replacement = crossing->LoadImm(ValueType::U64, Imm{swift::u64{2}});
         crossing->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         crossing->StoreUniform(Uniform{56, ValueType::U32}, capture);
         auto crossing_on = allocate(crossing.get(), true);
@@ -1209,8 +1184,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
 
     SECTION("a U32 GetHostGPR is not accepted as a W-clean publication proof") {
         IntrusivePtr<Block> block{new Block(0, Location{0x8730})};
-        auto source = block->GetHostGPR(HostRegIndex(23), Imm{0u})
-                              .SetType(ValueType::U32);
+        auto source = block->GetHostGPR(ValueType::U32, HostRegIndex(23), Imm{0u});
         auto zext = block->ZeroExtend32To64(source);
         auto* publish = block->AppendInst(
                 OpCode::SetHostGPR, zext, HostRegIndex(22), Imm{0u});
@@ -1237,18 +1211,17 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
                     LocationDescriptor{0x8740}, LocationDescriptor{0x8750}, module_config);
 
             IntrusivePtr<Block> block{new Block(0, Location{0x8740})};
-            auto value = block->LoadImm(Imm{swift::u64{0x123456789abcdef0}})
-                                 .SetType(ValueType::U64);
+            auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{0x123456789abcdef0}});
             block->SetHostGPR(value, HostRegIndex(22), Imm{0u});
             block->SetTerminal(terminal::ReturnToDispatch{});
             block->ReIdInstr();
 
             auto features = FeatureSet{};
             features.ra_coalesce = enabled;
-            RegAlloc alloc{block->MaxInstrId(), pinned_gprs(), fprs, features};
+            AllocationFixture alloc{block->MaxInstrId(), pinned_gprs(), fprs, features};
             RegisterAllocTestSupport::RunForCoalesceTest(block.get(), &alloc, enabled);
-            alloc.CompleteGPRAllocation(module);
-            arm64::JitContext context{module, alloc};
+            ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+            arm64::JitContext context{module, alloc, alloc.Actions()};
             arm64::JitTranslator translator{context};
             translator.Translate(block.get());
             context.Finish();
@@ -1278,8 +1251,8 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
                     module_config);
             auto item = make_expanded_case(op, type, location);
             auto alloc = allocate(item.block.get(), enabled);
-            (*alloc).CompleteGPRAllocation(module);
-            arm64::JitContext context{module, *alloc};
+            ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, *alloc);
+            arm64::JitContext context{module, *alloc, (*alloc).Actions()};
             arm64::JitTranslator translator{context};
             translator.Translate(item.block.get());
             context.Finish();
@@ -1308,7 +1281,7 @@ TEST_CASE("guest GPR coalescing keeps publication and capture proofs local") {
 
                 auto features = FeatureSet{};
                 features.ra_coalesce = true;
-                RegAlloc conflict{item.block->MaxInstrId(), pinned_gprs(), fprs, features};
+                AllocationFixture conflict{item.block->MaxInstrId(), pinned_gprs(), fprs, features};
                 RegisterAllocTestSupport::RunForCoalesceConflictTest(
                         item.block.get(), &conflict, item.conflict.Id(), 22);
                 REQUIRE(conflict.ValueGPR(item.conflict).id == 22);

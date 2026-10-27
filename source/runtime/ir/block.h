@@ -17,11 +17,23 @@
 #include "runtime/ir/instr.h"
 #include "runtime/ir/terminal.h"
 
-namespace swift::runtime::ir {
+namespace swift::runtime::compile {
+class CompileUnit;
+class RewriteContext;
+}  // namespace swift::runtime::compile
 
+namespace swift::runtime::backend {
+class Module;
+}
+
+namespace swift::runtime::ir {
+class Function;
 struct AddressNode {
     enum NodeType : u32 { None = 0u, Block = 1u << 0, Function = 1u << 1 };
 
+private:
+    friend class backend::Module;
+    friend class HIRTestSupport;
     union {
         NonTriviallyDummy dummy_node{};
         IntrusiveMapNode map_node;
@@ -29,15 +41,27 @@ struct AddressNode {
     };
     Location location{0};
     u32 node_size{0};
-    NodeType node_type{None};
+    const NodeType node_type{None};
+
+    void CheckRangeMutable() const;
+
+public:
+    using List = IntrusiveList<&AddressNode::list_node>;
+    using Map = IntrusiveMap<&AddressNode::map_node>;
     // Assigned before installation publishes the node; immutable thereafter.
     std::shared_ptr<backend::CodeLifetime> code_lifetime;
 
     explicit AddressNode() {};
 
-    explicit AddressNode(const Location& location, NodeType type = None)
+    explicit AddressNode(const Location& location) : location(location) {}
+    AddressNode(const AddressNode&) = delete;
+    AddressNode& operator=(const AddressNode&) = delete;
+
+protected:
+    explicit AddressNode(const Location& location, NodeType type)
             : location(location), node_type(type) {}
 
+public:
     bool operator<(const AddressNode& rhs) const { return location < rhs.location; }
 
     bool operator>(const AddressNode& rhs) const { return location > rhs.location; }
@@ -55,7 +79,12 @@ struct AddressNode {
         }
     }
 
-    void SetEndLocation(Location end) { node_size = end.Value() - location.Value(); }
+    void SetEndLocation(Location end) {
+        CheckRangeMutable();
+        node_size = end.Value() - location.Value();
+    }
+
+    [[nodiscard]] NodeType GetNodeType() const { return node_type; }
 
     [[nodiscard]] Location GetStartLocation() const { return location; }
 
@@ -69,28 +98,16 @@ struct AddressNode {
     }
 };
 
-// Transient hand-off from uniform DSE to the XMM fault sink. Value is a
-// non-owning SSA reference: it deliberately does not keep the producer live
-// until the sink installs it at the already existing publication point.
-struct UniformCaptureRecipe {
-    Inst* segment_begin{};
-    Inst* boundary{};
-    Inst* latest_store{};
-    Value value{};
-    u32 offset{};
-    u32 size{};
-};
-
 struct GuestCodeDependency {
     Location start{};
     Location end{};
 };
 
 // 单元内单块自环的瞬态发码计划。普通入口执行到 prefix_end，自回边落到
-// 其后；引用由编译期 recipe 持有，不序列化也不跨单元共享。
+// 其后；anchors 存储由 CompileUnit 持有，不序列化也不跨单元共享。
 struct LoopHoistMetadata {
-    Inst* prefix_end{};
-    std::span<Inst*> anchors{};
+    const Inst* prefix_end{};
+    std::span<const Inst* const> anchors{};
     u16 gpr_count{};
     u16 const_count{};
 };
@@ -102,34 +119,53 @@ public:
     using ReadLock = std::shared_lock<RwSpinLock>;
     using WriteLock = std::unique_lock<RwSpinLock>;
 
-    explicit Block() = default;
+    explicit Block() : AddressNode(Location{0}, AddressNode::Block) {}
 
     explicit Block(const Location& location) : AddressNode(location, AddressNode::Block) {}
 
     explicit Block(u32 id, Location location) : id(id), AddressNode(location, AddressNode::Block) {}
 
-    [[nodiscard]] Terminal GetTerminal() const;
+    // Borrowed until SetTerminal or Block destruction. A traversal must finish
+    // before replacing the terminal; callers needing a snapshot copy it.
+    [[nodiscard]] const Terminal& GetTerminal() const;
     void SetTerminal(Terminal term);
     [[nodiscard]] bool HasTerminal() const;
 
-    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>
-    Inst* AppendInst(OpCode op, const Args&... args) {
+    template <typename RetType = void, typename... Args>
+        requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(OpCode op, Args&&... args) {
+        return AppendInst(op, meta::ResolveResultType<RetType>(op, args...), std::forward<Args>(args)...);
+    }
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(OpCode op, ValueType type, Args&&... args) {
+        CheckMutable();
+        return AppendInst(meta::CheckArgumentPack<Args...>(op), type, std::forward<Args>(args)...);
+    }
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        return AppendConstructedInst(operation, type,
+                meta::ForwardConstructionArgument(std::forward<Args>(args))...);
+    }
+
+private:
+    template <typename... Args> requires meta::ConstructionArguments<Args...>
+    Inst* AppendConstructedInst(meta::OperationFor<Args...> operation, ValueType type, Args&&... args) {
+        CheckMutable();
+        const auto op = operation.Code();
         PerfScope2 perf_ir_append{GetPerfStats2().ir_append};
         if (PerfIRDetailEnabled()) {
             const bool ir_fast = IRBuildFastEnabled();
             auto begin = std::chrono::steady_clock::now();
-            auto inst = new Inst(op);
+            auto pending = std::unique_ptr<Inst>{new Inst(op, type)};
+            auto* inst = pending.get();
             auto end = std::chrono::steady_clock::now();
             PerfIRDetailRecord(GetPerfStats2().ir_alloc, begin, end);
 
             begin = std::chrono::steady_clock::now();
             if (ir_fast) {
-                inst->SetArgsFresh(std::forward<const Args&>(args)...);
+                inst->SetArgsFresh(std::forward<Args>(args)...);
             } else {
-                inst->SetArgs(std::forward<const Args&>(args)...);
-            }
-            if constexpr (RetType::TYPE != ValueType::VOID) {
-                inst->SetReturn(RetType::TYPE);
+                inst->SetArgs(std::forward<Args>(args)...);
             }
             end = std::chrono::steady_clock::now();
             PerfIRDetailRecord(GetPerfStats2().ir_args, begin, end);
@@ -142,32 +178,35 @@ public:
             }
             end = std::chrono::steady_clock::now();
             PerfIRDetailRecord(GetPerfStats2().ir_link, begin, end);
+            pending.release();
             return inst;
         }
         const bool ir_fast = IRBuildFastEnabled();
-        auto inst = new Inst(op);
+        auto pending = std::unique_ptr<Inst>{new Inst(op, type)};
+        auto* inst = pending.get();
         if (ir_fast) {
-            inst->SetArgsFresh(std::forward<const Args&>(args)...);
+            inst->SetArgsFresh(std::forward<Args>(args)...);
         } else {
-            inst->SetArgs(std::forward<const Args&>(args)...);
-        }
-        if constexpr (RetType::TYPE != ValueType::VOID) {
-            inst->SetReturn(RetType::TYPE);
+            inst->SetArgs(std::forward<Args>(args)...);
         }
         if (ir_fast) {
             AppendInstUnchecked(inst);
         } else {
             AppendInst(inst);
         }
+        pending.release();
         return inst;
     }
 
-    void AppendInst(Inst* inst);
-    void AppendInstUnchecked(Inst* inst);
-    void InsertBefore(Inst* inst, Inst* before);
-    void InsertAfter(Inst* inst, Inst* after);
-    void RemoveInst(Inst* inst);
-    void DestroyInst(Inst* inst);
+public:
+
+    void AppendInst(const Inst* inst);
+    void AppendInstUnchecked(const Inst* inst);
+    void InsertBefore(const Inst* inst, const Inst* before);
+    void InsertAfter(const Inst* inst, const Inst* after);
+    void MoveBefore(const Inst* inst, const Inst* before);
+    void RemoveInst(const Inst* inst);
+    void DestroyInst(const Inst* inst);
     // Frees every instruction in the block. Bulk teardown: it runs
     // Inst::ReleaseArgs, not Inst::DestroyArgs, so no instruction is
     // dereferenced through another instruction's operand. See ReleaseArgs for
@@ -177,19 +216,20 @@ public:
     void DestroyInstrs();
     void ReIdInstr();
 
-    [[nodiscard]] InstList& GetInstList();
-    [[nodiscard]] InstList& GetInstList() const;
-    [[nodiscard]] InstList::iterator GetBeginInst();
-    [[nodiscard]] bool IsEmptyBlock();
-    [[nodiscard]] bool IsJitCached();
+    [[nodiscard]] const InstList& GetInstList() const;
+    [[nodiscard]] bool IsIRReadOnly() const { return instruction_owner.sealed; }
+    [[nodiscard]] bool IsEmptyBlock() const;
+    [[nodiscard]] bool IsJitCached() const;
 
-    [[nodiscard]] ReadLock LockRead() { return std::shared_lock{block_lock}; }
+    [[nodiscard]] ReadLock LockRead() const { return std::shared_lock{block_lock}; }
 
-    [[nodiscard]] WriteLock LockWrite() { return std::unique_lock{block_lock}; }
+    [[nodiscard]] WriteLock LockWrite() const { return std::unique_lock{block_lock}; }
 
     [[nodiscard]] u32 GetVStackSize() const { return v_stack * 8; }
 
     [[nodiscard]] backend::JitCache& GetJitCache() { return jit_cache; }
+    // Retirement changes publication state independently of the semantic IR.
+    void ClearJitCache() const { jit_cache = {}; }
 
     [[nodiscard]] u32 GetId() const { return id; }
 
@@ -197,11 +237,8 @@ public:
 
     [[nodiscard]] u32 MaxInstrId() const { return max_instr_id; }
 
-    [[nodiscard]] std::vector<UniformCaptureRecipe>& GetUniformCaptureRecipes() {
-        return uniform_capture_recipes;
-    }
-
     void AddGuestCodeDependency(Location start, Location end) {
+        CheckMutable();
         if (end.Value() <= start.Value()) {
             return;
         }
@@ -216,67 +253,88 @@ public:
     GetGuestCodeDependencies() const {
         return guest_code_dependencies;
     }
-    void ClearGuestCodeDependencies() { guest_code_dependencies.clear(); }
+    void ClearGuestCodeDependencies() {
+        CheckMutable();
+        guest_code_dependencies.clear();
+    }
 
     [[nodiscard]] const LoopHoistMetadata& GetLoopHoistMetadata() const {
         return loop_hoist_metadata;
     }
     void SetLoopHoistMetadata(LoopHoistMetadata metadata) {
+        CheckMutable();
         loop_hoist_metadata = metadata;
     }
 
     void SetDeadEdgeIntegerBranchProof(bool proven) {
+        CheckMutable();
         dead_edge_integer_branch_proven = proven;
     }
     [[nodiscard]] bool HasDeadEdgeIntegerBranchProof() const {
         return dead_edge_integer_branch_proven;
     }
 
-#define INST(name, ret, ...)                                                                       \
-    template <typename RetType = TypedValue<ValueType::VOID>, typename... Args>                    \
-    ret name(const Args&... args) {                                                                \
-        static_assert(meta::ValidArgCount(OpCode::name, meta::kArgs_##name.size(),                 \
-                                          sizeof...(Args)),                                        \
-                    #name ": argument count mismatch (see ir.inc)");                               \
-        auto inst = AppendInst(OpCode::name, std::forward<const Args&>(args)...);                  \
-        if constexpr (RetType::TYPE != ValueType::VOID) {                                          \
-            inst->SetReturn(RetType::TYPE);                                                        \
-        }                                                                                          \
-        return ret{inst};                                                                          \
+#define INST(name, ret, policy, ...)                                                                    \
+    template <typename RetType = void, typename... Args>                                                \
+        requires((!std::is_void_v<RetType> || meta::HasDefaultResultType<meta::kResultPolicy_##name>) && \
+                 meta::ConstructionArguments<Args...> &&                                                \
+                 meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                  \
+    ret name(Args&&... args) {                                                                          \
+        auto inst = AppendInst(meta::KnownOperation<OpCode::name, Args...>(),                           \
+                    meta::ResolveResultType<meta::kResultPolicy_##name,                                 \
+                    meta::kResult_##name, RetType>(args...), std::forward<Args>(args)...);              \
+        return ret{inst};                                                                               \
+    }                                                                                                   \
+    template <typename... Args>                                                                         \
+        requires(!std::is_same_v<ret, Void> &&                                                          \
+                 meta::ConstructionArguments<Args...> &&                                                \
+                 meta::ValidArgumentPack<Args...>(meta::kArgs_##name))                                  \
+    ret name(ValueType type, Args&&... args) {                                                          \
+        return ret{AppendInst(meta::KnownOperation<OpCode::name, Args...>(), type, std::forward<Args>(args)...)}; \
     }
 #include "ir.inc"
 #undef INST
-
-    template <typename Lambda, typename... Args> Value CallHost(Lambda l, const Args&... args) {
-        constexpr static auto MAX_ARG = 3;
-        auto arg_count = sizeof...(args);
-        ASSERT(arg_count <= MAX_ARG);
-        return CallLambda(FptrCast(l), std::forward<const Args&>(args)...);
-    }
 
     [[nodiscard]] std::string ToString() const;
 
     ~Block();
 
 private:
+    friend struct AddressNode;
+    friend class Function;
+    friend class HIRBlock;
+    friend class HIRFunction;
+    friend class compile::CompileUnit;
+    friend class compile::RewriteContext;
+
+    void CheckMutable() const { ASSERT(!instruction_owner.sealed); }
+    Inst& EditInst(const Inst* inst) {
+        CheckMutable();
+        ASSERT(inst && inst->GetBlock() == this);
+        return *const_cast<Inst*>(inst);
+    }
+
     union {
         u32 id{};
         u32 dispatch_index;
     };
-    mutable InstList inst_list{};
+    bool dead_edge_integer_branch_proven{};
+    InstList inst_list{};
+    Inst::Owner instruction_owner{this};
     Terminal block_term{};
-    RwSpinLock block_lock{};
+    mutable RwSpinLock block_lock{};
     u16 max_instr_id{};
     u16 v_stack{};
-    backend::JitCache jit_cache{};
-    std::vector<UniformCaptureRecipe> uniform_capture_recipes{};
+    mutable backend::JitCache jit_cache{};
     std::vector<GuestCodeDependency> guest_code_dependencies{};
     LoopHoistMetadata loop_hoist_metadata{};
-    bool dead_edge_integer_branch_proven{};
+    // Function membership maintains this deletion owner. Prepared units retain
+    // the parent instead of introducing an independent child Block reference.
+    ir::Function* owning_function{};
 };
 
-using BlockList = IntrusiveList<&Block::list_node>;
-using BlockMap = IntrusiveMap<&Block::map_node>;
+using BlockList = AddressNode::List;
+using BlockMap = AddressNode::Map;
 
 // Chain-free pseudo lookup (un-chaining step 3.6): a pseudo is an ordinary
 // instruction in its owner's block whose arg 0 is the owner's value. These

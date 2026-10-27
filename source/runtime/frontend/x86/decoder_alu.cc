@@ -2,7 +2,6 @@
 #include "runtime/ir/atomic_rmw.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
@@ -30,20 +29,15 @@ struct DivResult {
     ir::Value remainder;
 };
 
-static DivResult Divide64(ir::Assembler* assembler,
+static DivResult Divide64(compile::IrBuilder* assembler,
                           ir::Value numerator,
                           ir::Value denominator,
                           bool sign) {
-    auto quotient = sign
-            ? assembler->SignedDiv64(numerator, denominator)
-            : assembler->Div(numerator, ir::Operand{denominator});
-    auto remainder = assembler->MulSub(quotient, denominator, numerator)
-                             .SetType(ir::ValueType::U64);
-    remainder = assembler
-                        ->SelectZero(denominator,
-                                     assembler->LoadImm(ir::Imm(u64(0))),
-                                     remainder)
-                        .SetType(ir::ValueType::U64);
+    auto quotient = sign ? assembler->SignedDiv64(numerator, denominator)
+                         : assembler->Div(numerator, ir::Operand{denominator});
+    auto remainder = assembler->MulSub(ir::ValueType::U64, quotient, denominator, numerator);
+    remainder = assembler->SelectZero(
+            ir::ValueType::U64, denominator, assembler->LoadImm(ir::Imm(u64(0))), remainder);
     return {quotient, remainder};
 }
 
@@ -54,19 +48,19 @@ static DivResult Divide64(ir::Assembler* assembler,
 // alone (the fuzz harness masks them). The CF/OF boolean is stored through a
 // single flag-defining op because the backend merges NZCV wholesale per flag
 // window: t = bad << 63; t + t carries and overflows exactly when bad.
-static ir::Value MulWithFlags(ir::Assembler* assembler, ir::Value a, ir::Value b, u32 width,
+static ir::Value MulWithFlags(compile::IrBuilder* assembler, ir::Value a, ir::Value b, u32 width,
                               bool sign, ir::Value* out_hi = nullptr) {
     ir::Value lo;
     ir::Value bad;  // nonzero iff the product does not fit in `width` bits
     if (width == 64) {
-        lo = assembler->Mul(a, ir::Operand{b});
-        // SetType: MulHigh lowers to SMULH/UMULH, which read full X registers.
+        lo = assembler->Mul(ir::ValueType::U64, a, ir::Operand{b});
+        // MulHigh lowers to SMULH/UMULH, which read full X registers.
         // A narrower type here would have the allocator hand out a W register
         // and the top half would be whatever was left in it.
-        auto hi = assembler->MulHigh(a.SetType(ir::ValueType::U64),
-                                     b.SetType(ir::ValueType::U64),
-                                     ir::Imm(u32(sign)))
-                          .SetType(ir::ValueType::U64);
+        auto hi = assembler->MulHigh(ir::ValueType::U64,
+                                     a.SetCastType(ir::ValueType::U64),
+                                     b.SetCastType(ir::ValueType::U64),
+                                     ir::Imm(u32(sign)));
         if (out_hi) {
             *out_hi = hi;
         }
@@ -79,36 +73,34 @@ static ir::Value MulWithFlags(ir::Assembler* assembler, ir::Value a, ir::Value b
     } else {
         // Full double width product in a 64 bit container for the high half /
         // fit check (no flag side effects).
-        auto aw = sign ? assembler->SignExtend(a).SetType(ir::ValueType::U64)
-                       : assembler->ZeroExtend64(a);
-        auto bw = sign ? assembler->SignExtend(b).SetType(ir::ValueType::U64)
-                       : assembler->ZeroExtend64(b);
+        auto aw = sign ? assembler->SignExtend(ir::ValueType::U64, a) : assembler->ZeroExtend64(a);
+        auto bw = sign ? assembler->SignExtend(ir::ValueType::U64, b) : assembler->ZeroExtend64(b);
         auto wide = assembler->Mul(aw, ir::Operand{bw});
         if (out_hi) {
-            // SetType: an untyped shift instruction would get a W register in
+            // An untyped shift instruction would get a W register in
             // the backend, making a 32+ bit shift amount unallocated.
-            *out_hi = sign ? assembler->AsrImm(wide, ir::Imm(width)).SetType(ir::ValueType::U64)
-                           : assembler->LsrImm(wide, ir::Imm(width)).SetType(ir::ValueType::U64);
+            *out_hi = sign ? assembler->AsrImm(ir::ValueType::U64, wide, ir::Imm(width))
+                           : assembler->LsrImm(ir::ValueType::U64, wide, ir::Imm(width));
         }
         if (sign) {
             // Sign-extend the low `width` bits with shift pairs: a narrow-typed
             // consumer of `wide` would make the register allocator hand out a
             // W register for it and silently break the 64 bit uses.
-            auto shl = assembler->LslImm(wide, ir::Imm(64 - width)).SetType(ir::ValueType::U64);
-            auto sext_lo = assembler->AsrImm(shl, ir::Imm(64 - width)).SetType(ir::ValueType::U64);
+            auto shl = assembler->LslImm(ir::ValueType::U64, wide, ir::Imm(64 - width));
+            auto sext_lo = assembler->AsrImm(ir::ValueType::U64, shl, ir::Imm(64 - width));
             bad = assembler->Sub(wide, ir::Operand{sext_lo});
         } else {
             bad = assembler->LsrImm(wide, ir::Imm(width));
         }
         // The store path keeps the historical shape (W-register-safe types).
         if (sign && width < 32) {
-            auto an = assembler->SignExtend(a).SetType(ir::ValueType::S32);
-            auto bn = assembler->SignExtend(b).SetType(ir::ValueType::S32);
+            auto an = assembler->SignExtend(ir::ValueType::S32, a);
+            auto bn = assembler->SignExtend(ir::ValueType::S32, b);
             lo = assembler->Mul(an, ir::Operand{bn});
             lo = lo.SetCastType(GetSize(width));
         } else {
             auto type = sign ? GetSignedContainer(width) : GetSize(width);
-            lo = assembler->Mul(a.SetType(type), ir::Operand{b.SetType(type)});
+            lo = assembler->Mul(type, a.SetCastType(type), ir::Operand{b.SetCastType(type)});
         }
     }
     // PF from the low result (byte path, does not touch NZCV); AF cleared for
@@ -118,7 +110,7 @@ static ir::Value MulWithFlags(ir::Assembler* assembler, ir::Value a, ir::Value b
     assembler->SaveFlags(flagged, ir::Flags::Parity);
     // Exact CF/OF via the t + t producer (see header comment).
     auto bad01 = assembler->ZeroExtend64(
-            ir::Value{assembler->TestNotZero(bad.SetType(ir::ValueType::U64))});
+            ir::Value{assembler->TestNotZero(bad.SetCastType(ir::ValueType::U64))});
     auto t = assembler->LslImm(bad01, ir::Imm(63u));
     auto cv = assembler->Add(t, ir::Operand{t});
     assembler->SaveFlags(cv, ir::Flags::Carry | ir::Flags::Overflow);
@@ -167,29 +159,32 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
             //   Sbb wants host C == NOT x86 CF:  0 - cin borrows iff cin.
             auto cin = CarryValue();
             if (op == ArithOp::Adc) {
-                auto norm = __ Add(__ LoadImm(ir::Imm(~u64(0))), ir::Operand{cin});
+                auto norm = __ Add(ir::ValueType::U64, compile::FlagsIntent::Declared(ir::Flags::Carry),
+                                   __ LoadImm(ir::ValueType::U64, ir::Imm(~u64(0))), ir::Operand{cin});
                 __ SaveFlags(norm, ir::Flags::Carry);
             } else {
-                auto norm = __ Sub(__ LoadImm(ir::Imm(u64(0))), ir::Operand{cin});
+                auto norm = __ Sub(ir::ValueType::U64, compile::FlagsIntent::Declared(ir::Flags::Carry),
+                                   __ LoadImm(ir::ValueType::U64, ir::Imm(u64(0))), ir::Operand{cin});
                 __ SaveFlags(norm, ir::Flags::Carry);
             }
         }
         ir::Value result;
+        const auto type = GetSize(width);
+        const auto outputs = compile::FlagsIntent::Declared(flag_mask);
         switch (op) {
             case ArithOp::Add:
-                result = __ Add(left, ir::Operand{right});
+                result = __ Add(type, outputs, left, ir::Operand{right});
                 break;
             case ArithOp::Adc:
-                result = __ Adc(left, ir::Operand{right});
+                result = __ Adc(type, outputs, left, ir::Operand{right});
                 break;
             case ArithOp::Sub:
-                result = __ Sub(left, ir::Operand{right});
+                result = __ Sub(type, outputs, left, ir::Operand{right});
                 break;
             case ArithOp::Sbb:
-                result = __ Sbb(left, ir::Operand{right});
+                result = __ Sbb(type, outputs, left, ir::Operand{right});
                 break;
         }
-        result = result.SetType(GetSize(width));
         __ SaveFlags(result, flag_mask);
         // INC / DEC call this with Carry excluded from flag_mask: the
         // stored carry (and its polarity) must stay untouched then.
@@ -211,9 +206,8 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
         auto cin = __ ZeroExtend32(CarryValue());
         auto first = sub ? __ Sub(a, ir::Operand{b}) : __ Add(a, ir::Operand{b});
         auto total = sub ? __ Sub(first, ir::Operand{cin}) : __ Add(first, ir::Operand{cin});
-        auto value = __ BitExtract(total, ir::Imm{0u}, ir::Imm{width}).SetType(GetSize(width));
-        if (True(flag_mask & ir::Flags::Parity))
-            __ SaveFlags(total, ir::Flags::Parity);
+        auto value = __ BitExtract(GetSize(width), total, ir::Imm{0u}, ir::Imm{width});
+        if (True(flag_mask & ir::Flags::Parity)) __ SaveFlags(total, ir::Flags::Parity);
         auto operands_xor = __ Xor(a, ir::Operand{b});
         if (True(flag_mask & ir::Flags::AuxiliaryCarry)) {
             // AF = bit 4 of a ^ b ^ result, for both ADC and SBB.
@@ -252,11 +246,12 @@ ir::Value X64Decoder::ArithWithFlags(ir::Value left, ir::Value right, ArithOp op
         // sees the original operands.  The interpreter already computes
         // SaveFlags from the producer's architectural return width.
         const auto type = GetSize(width);
+        const auto outputs = compile::FlagsIntent::Declared(flag_mask);
         ir::Value result;
         if (sub) {
-            result = __ Sub(left.SetCastType(type), ir::Operand{right.SetCastType(type)}).SetType(type);
+            result = __ Sub(type, outputs, left.SetCastType(type), ir::Operand{right.SetCastType(type)});
         } else {
-            result = __ Add(left.SetCastType(type), ir::Operand{right.SetCastType(type)}).SetType(type);
+            result = __ Add(type, outputs, left.SetCastType(type), ir::Operand{right.SetCastType(type)});
         }
         __ SaveFlags(result, flag_mask);
         if (True(flag_mask & ir::Flags::Carry)) {
@@ -337,9 +332,9 @@ void X64Decoder::DecodeAddSub(_DInst& insn, bool sub, bool save_res, bool exchan
         auto address = FlatAddress(insn, op0);
         auto addend = NarrowTo(right, type);
         if (sub) {
-            addend = __ Sub(__ LoadImm(ir::Imm(u64(0))), ir::Operand{addend}).SetType(type);
+            addend = __ Sub(type, __ LoadImm(ir::Imm(u64(0))), ir::Operand{addend});
         }
-        left = __ AtomicFetchAdd(address, addend).SetType(type);
+        left = __ AtomicFetchAdd(type, address, addend);
     } else if (save_res && CanReuseRmwAddress(insn, op0)) {
         writeback = ReadForWrite(insn, op0);
         left = ToValue(writeback->value);
@@ -379,13 +374,12 @@ void X64Decoder::DecodeAddSubWithCarry(_DInst& insn, bool sub) {
         carry = CarryValue();
         const auto type = GetSize(op0.size);
         auto operand = NarrowTo(right, type);
-        left = __ AtomicRMW(
-                         ir::Imm(static_cast<u8>(sub ? ir::AtomicRMWOp::SubBorrow
-                                                    : ir::AtomicRMWOp::AddCarry)),
-                         FlatAddress(insn, op0),
-                         operand,
-                         carry)
-                       .SetType(type);
+        left = __ AtomicRMW(type,
+                            ir::Imm(static_cast<u8>(sub ? ir::AtomicRMWOp::SubBorrow
+                                                        : ir::AtomicRMWOp::AddCarry)),
+                            FlatAddress(insn, op0),
+                            operand,
+                            carry);
     } else {
         left = ToValue(Src(insn, op0));
     }
@@ -407,19 +401,24 @@ void X64Decoder::DecodeAddSubWithCarry(_DInst& insn, bool sub) {
 
 void X64Decoder::DecodeIncAndDec(_DInst& insn, bool dec) {
     auto& op0 = insn.ops[0];
-    auto carry = CarryValue();
+    const bool preserve_carry_in_place = op0.type == O_REG &&
+            (op0.size == 32 || op0.size == 64) && FlagsCfinvEnabled() &&
+            carry_ == CarryPolarity::Direct;
+    ir::Value carry;
+    if (!preserve_carry_in_place) {
+        carry = CarryValue();
+    }
     auto one = __ LoadImm(ir::Imm(u64(1), GetSize(op0.size)));
     const bool locked_rmw = op0.type != O_REG && (insn.flags & FLAG_LOCK) != 0;
     ir::Value src;
     if (locked_rmw) {
         const auto type = GetSize(op0.size);
         src = __ AtomicRMW(
-                        ir::Imm(static_cast<u8>(dec ? ir::AtomicRMWOp::Sub
-                                                   : ir::AtomicRMWOp::Add)),
-                        FlatAddress(insn, op0),
-                        one,
-                        __ LoadImm(ir::Imm(u8(0))))
-                      .SetType(type);
+                type,
+                ir::Imm(static_cast<u8>(dec ? ir::AtomicRMWOp::Sub : ir::AtomicRMWOp::Add)),
+                FlatAddress(insn, op0),
+                one,
+                __ LoadImm(ir::Imm(u8(0))));
     } else {
         src = ToValue(Src(insn, op0));
     }
@@ -427,11 +426,14 @@ void X64Decoder::DecodeIncAndDec(_DInst& insn, bool dec) {
     // INC / DEC update OF, SF, ZF, AF and PF, but preserve CF.
     auto result = ArithWithFlags(src, one, dec ? ArithOp::Sub : ArithOp::Add, op0.size,
                                  ir::Flags::Overflow | ir::Flags::Negate | ir::Flags::Parity |
-                                         ir::Flags::Zero | ir::Flags::AuxiliaryCarry);
+                                         ir::Flags::Zero | ir::Flags::AuxiliaryCarry,
+                                 op0.type == O_REG && (op0.size == 32 || op0.size == 64));
 
-    __ SetCarry(carry);
-    carry_ = CarryPolarity::Direct;
-    StorePolarity(false);
+    if (!preserve_carry_in_place) {
+        __ SetCarry(carry);
+        carry_ = CarryPolarity::Direct;
+        StorePolarity(false);
+    }
     if (!locked_rmw) {
         Dst(insn, op0, result);
     }
@@ -444,11 +446,11 @@ void X64Decoder::DecodeNeg(_DInst& insn) {
     auto zero = __ LoadImm(ir::Imm(u64(0), type));
     ir::Value src;
     if (locked_rmw) {
-        src = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Neg)),
-                          FlatAddress(insn, op0),
-                          zero,
-                          __ LoadImm(ir::Imm(u8(0))))
-                      .SetType(type);
+        src = __ AtomicRMW(type,
+                           ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Neg)),
+                           FlatAddress(insn, op0),
+                           zero,
+                           __ LoadImm(ir::Imm(u8(0))));
     } else {
         src = ToValue(Src(insn, op0));
     }
@@ -469,11 +471,11 @@ void X64Decoder::DecodeNot(_DInst& insn) {
     auto all_ones = __ LoadImm(ir::Imm(UINT64_MAX, type));
     ir::Value src;
     if (locked_rmw) {
-        src = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Xor)),
-                          FlatAddress(insn, op0),
-                          all_ones,
-                          __ LoadImm(ir::Imm(u8(0))))
-                      .SetType(type);
+        src = __ AtomicRMW(type,
+                           ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Xor)),
+                           FlatAddress(insn, op0),
+                           all_ones,
+                           __ LoadImm(ir::Imm(u8(0))));
     } else {
         src = ToValue(Src(insn, op0));
     }
@@ -515,7 +517,7 @@ void X64Decoder::DecodeXchg(_DInst& insn) {
     const auto type = GetSize(mem.size);
     auto address = FlatAddress(insn, mem);
     auto desired = NarrowTo(ToValue(Src(insn, reg)), type);
-    auto old = __ AtomicExchange(address, desired).SetType(type);
+    auto old = __ AtomicExchange(type, address, desired);
     Dst(insn, reg, old);
 }
 
@@ -610,8 +612,9 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
     switch (op0.size) {
         case 8: {
             auto ax = R(_RegisterType::R_AX);
-            auto num = sign ? __ SignExtend(ax).SetType(ir::ValueType::U64)
-                            : __ ZeroExtend64(__ ZeroExtend32(ax));
+            auto num = sign ? __ SignExtend(ir::ValueType::U64, ax)
+                            : __
+                               ZeroExtend64(__ ZeroExtend32(ax));
             auto den = Extend(src, ir::ValueType::U64, sign);
             auto result = Divide64(assembler, num, den, sign);
             R(_RegisterType::R_AL, result.quotient);
@@ -622,8 +625,7 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
             auto lo = __ ZeroExtend32(R(_RegisterType::R_AX));
             auto hi16 = __ ZeroExtend32(R(_RegisterType::R_DX));
             auto num32 = __ Or(__ LslImm(hi16, ir::Imm(16u)), ir::Operand{lo});
-            auto num = sign ? __ SignExtend(num32).SetType(ir::ValueType::U64)
-                            : __ ZeroExtend64(num32);
+            auto num = sign ? __ SignExtend(ir::ValueType::U64, num32) : __ ZeroExtend64(num32);
             auto den = Extend(src, ir::ValueType::U64, sign);
             auto result = Divide64(assembler, num, den, sign);
             R(_RegisterType::R_AX, result.quotient);
@@ -644,8 +646,8 @@ void X64Decoder::DecodeDiv(_DInst& insn, bool sign) {
             auto lo = R(_RegisterType::R_RAX);
             auto hi = R(_RegisterType::R_RDX);
             auto den = Extend(src, ir::ValueType::U64, sign);
-            auto quot = __ Div128(hi, lo, den, ir::Imm(sign)).SetType(ir::ValueType::U64);
-            auto rem = __ Div128Remainder(quot).SetType(ir::ValueType::U64);
+            auto quot = __ Div128(ir::ValueType::U64, hi, lo, den, ir::Imm(sign));
+            auto rem = __ Div128Remainder(ir::ValueType::U64, quot);
             R(_RegisterType::R_RAX, quot);
             R(_RegisterType::R_RDX, rem);
             break;
@@ -700,11 +702,11 @@ void X64Decoder::DecodeAnd(_DInst& insn, bool save_result) {
     ir::Value left;
     if (locked_rmw) {
         const auto type = GetSize(op0.size);
-        left = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::And)),
-                           FlatAddress(insn, op0),
-                           NarrowTo(right, type),
-                           __ LoadImm(ir::Imm(u8(0))))
-                       .SetType(type);
+        left = __ AtomicRMW(type,
+                            ir::Imm(static_cast<u8>(ir::AtomicRMWOp::And)),
+                            FlatAddress(insn, op0),
+                            NarrowTo(right, type),
+                            __ LoadImm(ir::Imm(u8(0))));
     } else {
         left = ToValue(Src(insn, op0));
     }
@@ -727,11 +729,11 @@ void X64Decoder::DecodeOr(_DInst& insn) {
     ir::Value left;
     if (locked_rmw) {
         const auto type = GetSize(op0.size);
-        left = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Or)),
-                           FlatAddress(insn, op0),
-                           NarrowTo(right, type),
-                           __ LoadImm(ir::Imm(u8(0))))
-                       .SetType(type);
+        left = __ AtomicRMW(type,
+                            ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Or)),
+                            FlatAddress(insn, op0),
+                            NarrowTo(right, type),
+                            __ LoadImm(ir::Imm(u8(0))));
     } else {
         left = ToValue(Src(insn, op0));
     }
@@ -753,11 +755,11 @@ void X64Decoder::DecodeXor(_DInst& insn) {
     ir::Value left;
     if (locked_rmw) {
         const auto type = GetSize(op0.size);
-        left = __ AtomicRMW(ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Xor)),
-                           FlatAddress(insn, op0),
-                           NarrowTo(right, type),
-                           __ LoadImm(ir::Imm(u8(0))))
-                       .SetType(type);
+        left = __ AtomicRMW(type,
+                            ir::Imm(static_cast<u8>(ir::AtomicRMWOp::Xor)),
+                            FlatAddress(insn, op0),
+                            NarrowTo(right, type),
+                            __ LoadImm(ir::Imm(u8(0))));
     } else {
         left = ToValue(Src(insn, op0));
     }
@@ -808,16 +810,14 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
         auto count_raw = ToValue(count_data);
         count = __ And(count_raw, ir::Operand{count_mask});
     }
-    ir::Value shifted = width < 32
-            ? __ ZeroExtend32(left).SetType(ir::ValueType::U32)
-            : left;
+    ir::Value shifted = width < 32 ? __ ZeroExtend32(ir::ValueType::U32, left) : left;
 
     ir::Value sar_ext;  // sign-extended operand for SAR (reused for its CF)
     if (kind == 2) {
         // Narrow SAR must sign extend to 32 bits first: the backend shift is a
         // 32/64 bit op, an unsigned narrow value would shift in zeros.
-        sar_ext = width < 32 ? __ SignExtend(left).SetType(ir::ValueType::S32)
-                             : left.SetType(GetSignedContainer(width));
+        sar_ext = width < 32 ? __ SignExtend(ir::ValueType::S32, left)
+                             : left.SetCastType(GetSignedContainer(width));
     }
     // Compute CF before the destructive result can reuse the operand's pinned
     // home. Deriving CF afterwards can observe the overwritten value
@@ -867,9 +867,9 @@ void X64Decoder::DecodeShift(_DInst& insn, int kind) {
     // For narrow shifts the flag-defining op must be typed at the guest
     // width: the backends derive SF/ZF from the operation width, which the
     // 32 bit container would get wrong.
-    ir::Value flag_value = width < 32
-            ? __ And(result, ir::Operand{ir::Imm((u64(1) << width) - 1)}).SetType(GetSize(width))
-            : result;
+    ir::Value flag_value =
+            width < 32 ? __ And(GetSize(width), result, ir::Operand{ir::Imm((u64(1) << width) - 1)})
+                       : result;
 
     // A runtime-dependent zero count leaves flags untouched. The immediate
     // fast path is statically known nonzero and needs neither test nor branch.
@@ -924,8 +924,8 @@ void X64Decoder::DecodeDoubleShift(_DInst& insn, bool right) {
     const auto container = width == 64 ? ir::ValueType::U64 : ir::ValueType::U32;
     const u64 value_mask = width == 64 ? UINT64_MAX : ((u64(1) << width) - 1);
 
-    auto dst = ToValue(Src(insn, op0)).SetType(container);
-    auto src = ToValue(Src(insn, op1)).SetType(container);
+    auto dst = ToValue(Src(insn, op0));
+    auto src = ToValue(Src(insn, op1));
     if (width < 32) {
         dst = __ ZeroExtend32(dst);
         src = __ ZeroExtend32(src);
@@ -949,25 +949,25 @@ void X64Decoder::DecodeDoubleShift(_DInst& insn, bool right) {
                                  : __ LslImm(dst, ir::Imm(constant_count));
         auto shifted_src = right ? __ LslImm(src, ir::Imm(width - constant_count))
                                  : __ LsrImm(src, ir::Imm(width - constant_count));
-        calculated = __ Or(shifted_dst, ir::Operand{shifted_src});
+        calculated = __ Or(container, shifted_dst, ir::Operand{shifted_src});
     } else {
         count = __ And(ToValue(count_data), ir::Operand{ir::Imm(count_mask)});
         complement = __ Sub(__ LoadImm(ir::Imm(u64(width))), ir::Operand{count});
         auto shifted_dst = right ? __ LsrValue(dst, count) : __ LslValue(dst, count);
         auto shifted_src = right ? __ LslValue(src, complement) : __ LsrValue(src, complement);
-        calculated = __ Or(shifted_dst, ir::Operand{shifted_src});
+        calculated = __ Or(container, shifted_dst, ir::Operand{shifted_src});
     }
     if (width < 64) {
-        calculated = __ And(calculated, ir::Operand{ir::Imm(value_mask)});
+        calculated = __ And(GetSize(width), calculated, ir::Operand{ir::Imm(value_mask)});
     }
     // Count zero is a strict no-op. For the 16-bit form, masked counts above
     // 16 have architecturally undefined results and flags; this deterministic
     // calculation is intentionally not advertised as stronger behavior.
     ir::Value nonzero;
-    auto result = calculated.SetType(GetSize(width));
+    auto result = calculated;
     if (!immediate_fast) {
         nonzero = __ TestNotZero(count);
-        result = __ Select(nonzero, calculated, dst).SetType(GetSize(width));
+        result = __ Select(GetSize(width), nonzero, calculated, dst);
     }
 
     ir::Value skip_flags;
@@ -1011,7 +1011,7 @@ void X64Decoder::DecodeRotateCarry(_DInst& insn, bool left) {
     const auto container = width == 64 ? ir::ValueType::U64 : ir::ValueType::U32;
     const u64 value_mask = width == 64 ? UINT64_MAX : ((u64(1) << width) - 1);
 
-    auto src = ToValue(Src(insn, op0)).SetType(container);
+    auto src = ToValue(Src(insn, op0));
     if (width < 32) {
         src = __ ZeroExtend32(src);
     }
@@ -1024,9 +1024,8 @@ void X64Decoder::DecodeRotateCarry(_DInst& insn, bool left) {
         auto quotient = __ Div(count, ir::Operand{divisor});
         count = __ Sub(count, ir::Operand{__ Mul(quotient, ir::Operand{divisor})});
     }
-    auto old_cf = __ ZeroExtend64(CarryValue()).SetType(container);
-    auto complement =
-            __ Sub(__ LoadImm(ir::Imm(u64(width + 1))), ir::Operand{count});
+    auto old_cf = __ ZeroExtend64(ir::ValueType::U64, CarryValue()).SetCastType(container);
+    auto complement = __ Sub(__ LoadImm(ir::Imm(u64(width + 1))), ir::Operand{count});
     ir::Value calculated;
     ir::Value cf;
     if (left) {
@@ -1035,7 +1034,7 @@ void X64Decoder::DecodeRotateCarry(_DInst& insn, bool left) {
         // AArch64 masks a variable shift by the container width, while the
         // x86 width+CF rotate needs a shift by exactly `width` to contribute
         // zero (not the unshifted source).
-        wrap = __ Select(
+        wrap = __ Select(container,
                 __ TestZero(__ Sub(complement, ir::Operand{ir::Imm(u64(width))})),
                 __ LoadImm(ir::Imm(u64(0))),
                 wrap);
@@ -1048,7 +1047,7 @@ void X64Decoder::DecodeRotateCarry(_DInst& insn, bool left) {
     } else {
         auto cf_pos = __ Sub(__ LoadImm(ir::Imm(u64(width))), ir::Operand{count});
         auto wrap = __ LslValue(src, complement);
-        wrap = __ Select(
+        wrap = __ Select(container,
                 __ TestZero(__ Sub(complement, ir::Operand{ir::Imm(u64(width))})),
                 __ LoadImm(ir::Imm(u64(0))),
                 wrap);
@@ -1063,7 +1062,7 @@ void X64Decoder::DecodeRotateCarry(_DInst& insn, bool left) {
         calculated = __ And(calculated, ir::Operand{ir::Imm(value_mask)});
     }
     auto nonzero = __ TestNotZero(count);
-    auto result = __ Select(nonzero, calculated, src).SetType(GetSize(width));
+    auto result = __ Select(GetSize(width), nonzero, calculated, src);
 
     auto skip_flags = __ NotGoto(nonzero);
     __ SetCarry(cf);
@@ -1135,17 +1134,17 @@ void X64Decoder::DecodeLzcnt(_DInst& insn) {
         return;
     }
     auto src64 = __ ZeroExtend64(src);
-    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Lzcnt64)}},
-                                src64, __ LoadImm(ir::Imm(u64(width))))
-                          .SetType(ir::ValueType::U64);
+    auto result = __ CallLambda(ir::ValueType::U64,
+                                ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&Lzcnt64)}},
+                                src64,
+                                __ LoadImm(ir::Imm(u64(width))));
     // ZF = (result == 0). CF = (src == 0) and the other flags are
     // architecturally undefined; the fuzz masks everything but ZF out.
     __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
     if (width == 16) {
         auto& info = x86_regs_table[op0.index];
         auto off = ToReg(info).GetOffset();
-        auto result16 = __ And(result, ir::Operand{ir::Imm(u64(0xFFFF))})
-                                .SetType(ir::ValueType::U16);
+        auto result16 = __ And(ir::ValueType::U16, result, ir::Operand{ir::Imm(u64(0xFFFF))});
         __ StoreUniform(ir::Uniform{off, ir::ValueType::U16}, result16);
         return;
     }
@@ -1171,7 +1170,7 @@ void X64Decoder::DecodePopcnt(_DInst& insn) {
     // POPCNT's 16/32-bit forms count only the selected source width.
     if (width < 64) {
         const u64 mask = (u64{1} << width) - 1;
-        src = __ And(src, ir::Operand{ir::Imm(mask)}).SetType(GetSize(width));
+        src = __ And(GetSize(width), src, ir::Operand{ir::Imm(mask)});
     }
     auto result = __ PopCount(__ ZeroExtend64(src));
     Dst(insn, op0, result);
@@ -1194,7 +1193,7 @@ void X64Decoder::DecodeCmpxchg8b(_DInst& insn) {
     auto ecx = __ ZeroExtend64(__ And(R(_RegisterType::R_ECX), ir::Operand{kLo32}));
     auto desired = __ Or(__ LslImm(ecx, ir::Imm(32u)), ir::Operand{ebx});
     const bool locked = (insn.flags & FLAG_LOCK) != 0;
-    auto old = locked ? __ CompareAndSwap(addr, expected, desired).SetType(ir::ValueType::U64)
+    auto old = locked ? __ CompareAndSwap(ir::ValueType::U64, addr, expected, desired)
                       : MemLoad(ir::Operand{addr}, ir::ValueType::U64, TsoOrdered(insn));
     auto diff = __ Xor(old, ir::Operand{expected});
     auto equal = __ TestZero(diff);
@@ -1230,14 +1229,10 @@ void X64Decoder::DecodeCmpxchg16b(_DInst& insn) {
     // stronger than required but architecturally legal; its unaligned slow
     // path preserves Rosetta's legal no-LOCK behavior with a serialized
     // memcpy-equivalent pair transaction.
-    auto old_pair = __ CompareAndSwap128(addr,
-                                        expected_lo,
-                                        expected_hi,
-                                        desired_lo,
-                                        desired_hi)
-                            .SetType(ir::ValueType::V128);
-    auto old_lo = __ VecExtract64(old_pair, ir::Imm(0)).SetType(ir::ValueType::U64);
-    auto old_hi = __ VecExtract64(old_pair, ir::Imm(1)).SetType(ir::ValueType::U64);
+    auto old_pair = __ CompareAndSwap128(
+            ir::ValueType::V128, addr, expected_lo, expected_hi, desired_lo, desired_hi);
+    auto old_lo = __ VecExtract64(ir::ValueType::U64, old_pair, ir::Imm(0));
+    auto old_hi = __ VecExtract64(ir::ValueType::U64, old_pair, ir::Imm(1));
     auto diff_lo = __ Xor(old_lo, ir::Operand{expected_lo});
     auto diff_hi = __ Xor(old_hi, ir::Operand{expected_hi});
     auto diff = __ Or(diff_lo, ir::Operand{diff_hi});
@@ -1255,10 +1250,9 @@ ir::Value X64Decoder::PrepareBitCountSource(_DInst& insn,
                                               u32 width) {
     auto source = ToValue(Src(insn, operand));
     if (width != 16) {
-        return source.SetType(GetSize(width));
+        return source;
     }
-    return __ And(source, ir::Operand{ir::Imm(u64(0xffff))})
-            .SetType(ir::ValueType::U16);
+    return __ And(ir::ValueType::U16, source, ir::Operand{ir::Imm(u64(0xffff))});
 }
 
 void X64Decoder::DecodeBitScan(_DInst& insn, bool reverse) {
@@ -1289,7 +1283,7 @@ void X64Decoder::DecodeBitScan(_DInst& insn, bool reverse) {
                          ir::Operand{ir::Imm(u32(31))})
                 : __ CountTrailingZeros32(src);
         auto dst_old = ToValue(Src(insn, op0));
-        auto result = __ SelectZero(src, dst_old, scan).SetType(ir::ValueType::U32);
+        auto result = __ SelectZero(ir::ValueType::U32, src, dst_old, scan);
         Dst(insn, op0, result);
         return;
     }
@@ -1305,15 +1299,13 @@ void X64Decoder::DecodeBitScan(_DInst& insn, bool reverse) {
     // with both operands uniformly typed: a mixed-width select mis-sizes the
     // result in the JIT (only the low byte survived).
     auto dst_old = __ ZeroExtend64(ToValue(Src(insn, op0)));
-    // SetType(U64): the Select's return type would otherwise be inferred as
-    // U8 from the BOOL condition, truncating the result to its low byte.
-    auto result64 = __ SelectZero(src64, dst_old, scan).SetType(ir::ValueType::U64);
+    // Declare the result width independently of the selector input.
+    auto result64 = __ SelectZero(ir::ValueType::U64, src64, dst_old, scan);
     if (width == 16) {
         // Write only the low 16 bits of the destination register.
         auto& info = x86_regs_table[op0.index];
         auto off = ToReg(info).GetOffset();
-        auto result16 = __ And(result64, ir::Operand{ir::Imm(u64(0xFFFF))})
-                                .SetType(ir::ValueType::U16);
+        auto result16 = __ And(ir::ValueType::U16, result64, ir::Operand{ir::Imm(u64(0xFFFF))});
         __ StoreUniform(ir::Uniform{off, ir::ValueType::U16}, result16);
         return;
     }
@@ -1342,20 +1334,24 @@ void X64Decoder::DecodeCmpxchg(_DInst& insn) {
     const u64 wmask = width == 64 ? UINT64_MAX : ((u64(1) << width) - 1);
     auto acc_reg = [width] {
         switch (width) {
-            case 8: return _RegisterType::R_AL;
-            case 16: return _RegisterType::R_AX;
-            case 32: return _RegisterType::R_EAX;
-            default: return _RegisterType::R_RAX;
+            case 8:
+                return _RegisterType::R_AL;
+            case 16:
+                return _RegisterType::R_AX;
+            case 32:
+                return _RegisterType::R_EAX;
+            default:
+                return _RegisterType::R_RAX;
         }
     }();
-    auto acc = __ And(R(acc_reg), ir::Operand{ir::Imm(wmask)}).SetType(type);
-    auto desired = __ And(ToValue(Src(insn, op1)), ir::Operand{ir::Imm(wmask)}).SetType(type);
+    auto acc = __ And(type, R(acc_reg), ir::Operand{ir::Imm(wmask)});
+    auto desired = __ And(type, ToValue(Src(insn, op1)), ir::Operand{ir::Imm(wmask)});
     ir::Value old;
     if (op0.type == O_REG) {
-        old = __ And(ToValue(Src(insn, op0)), ir::Operand{ir::Imm(wmask)}).SetType(type);
+        old = __ And(type, ToValue(Src(insn, op0)), ir::Operand{ir::Imm(wmask)});
     } else {
         auto addr = FlatAddress(insn, op0);
-        old = __ CompareAndSwap(addr, acc, desired).SetType(type);
+        old = __ CompareAndSwap(type, addr, acc, desired);
     }
     const bool memory_destination = op0.type != O_REG;
     ArithWithFlags(acc, old, ArithOp::Sub, width, ir::Flags::All,
@@ -1364,10 +1360,9 @@ void X64Decoder::DecodeCmpxchg(_DInst& insn) {
     if (op0.type == O_REG) {
         // Equality on the masked operands: the narrow subtract container can
         // hold a non-zero value that would poison a zero test.
-        auto equal = __ TestZero(
-                __ Xor(acc, ir::Operand{old}).SetType(type));
+        auto equal = __ TestZero(__ Xor(type, acc, ir::Operand{old}));
         // Register destination: pure select, no store.
-        auto new_dst = __ Select(equal, desired, old).SetType(type);
+        auto new_dst = __ Select(type, equal, desired, old);
         if (width == 16) {
             // distorm reports the 66-prefixed dest as a 32-bit register; write
             // only its low 16 bits, preserving the upper half.
@@ -1379,7 +1374,7 @@ void X64Decoder::DecodeCmpxchg(_DInst& insn) {
         }
         // dest == accumulator register: the dest write already updated it.
         if (op0.index != acc_reg) {
-            R(acc_reg, __ Select(equal, acc, old).SetType(type));
+            R(acc_reg, __ Select(type, equal, acc, old));
         }
     } else {
         R(acc_reg, old);
@@ -1404,7 +1399,7 @@ void X64Decoder::DecodeRotate(_DInst& insn, bool left) {
     ir::Value count_masked;
     ir::Value result;
     if (compact) {
-        result = __ ByteSwap(src, ir::Imm(u64(16))).SetType(ir::ValueType::U16);
+        result = __ ByteSwap(ir::ValueType::U16, src, ir::Imm(u64(16)));
     } else {
         count_masked = __ And(ToValue(count_data), ir::Operand{ir::Imm(mask)});
         auto count = count_masked;
@@ -1417,16 +1412,10 @@ void X64Decoder::DecodeRotate(_DInst& insn, bool left) {
             if (constant_count != UINT32_MAX) {
                 const u32 ror = (left ? width - constant_count
                                       : constant_count) & mask;
-                result = ror == 0
-                        ? src
-                        : __ RorImm(src, ir::Imm(u64(ror)))
-                                  .SetType(GetSize(width));
+                result = ror == 0 ? src : __ RorImm(GetSize(width), src, ir::Imm(u64(ror)));
             } else {
-                auto ror = left
-                        ? __ Sub(__ LoadImm(ir::Imm(u64(0))),
-                                 ir::Operand{count})
-                        : count;
-                result = __ RorValue(src, ror).SetType(GetSize(width));
+                auto ror = left ? __ Sub(__ LoadImm(ir::Imm(u64(0))), ir::Operand{count}) : count;
+                result = __ RorValue(GetSize(width), src, ror);
             }
         } else {
             auto back = __ And(
@@ -1496,8 +1485,7 @@ void X64Decoder::DecodeBt(_DInst& insn, int kind) {
     } else {
         // Memory form: the operand is a bit string; the (signed) index first
         // selects an element, then a bit within it.
-        auto idx64 = op1.type == O_IMM ? idx_raw
-                                       : __ SignExtend(idx_raw).SetType(ir::ValueType::U64);
+        auto idx64 = op1.type == O_IMM ? idx_raw : __ SignExtend(ir::ValueType::U64, idx_raw);
         auto elems = __ AsrValue(idx64, __ LoadImm(ir::Imm(u64(log2w))));
         auto byte_off = __ LslValue(elems, __ LoadImm(ir::Imm(u64(log2w - 3))));
         mem_addr = __ Add(FlatAddress(insn, op0), ir::Operand{byte_off});
@@ -1516,11 +1504,11 @@ void X64Decoder::DecodeBt(_DInst& insn, int kind) {
                 op = ir::AtomicRMWOp::Xor;
                 operand = mask;
             }
-            base = __ AtomicRMW(ir::Imm(static_cast<u8>(op)),
-                               mem_addr,
-                               NarrowTo(operand, type),
-                               __ LoadImm(ir::Imm(u8(0))))
-                           .SetType(type);
+            base = __ AtomicRMW(type,
+                                ir::Imm(static_cast<u8>(op)),
+                                mem_addr,
+                                NarrowTo(operand, type),
+                                __ LoadImm(ir::Imm(u8(0))));
         } else {
             base = MemLoad(ir::Operand{mem_addr}, type, TsoOrdered(insn));
         }
@@ -1553,7 +1541,5 @@ void X64Decoder::DecodeBt(_DInst& insn, int kind) {
     carry_ = CarryPolarity::Direct;
     StorePolarity(false);
 }
-
-
 
 }  // namespace swift::x86

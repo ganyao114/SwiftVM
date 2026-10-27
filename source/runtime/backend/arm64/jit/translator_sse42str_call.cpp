@@ -7,7 +7,7 @@ namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
-void JitTranslator::EmitSse42StrVectorCall(ir::Inst* inst,
+void JitTranslator::EmitSse42StrVectorCall(const ir::Inst* inst,
                                            const VRegister& left,
                                            const VRegister& right,
                                            const WRegister& result,

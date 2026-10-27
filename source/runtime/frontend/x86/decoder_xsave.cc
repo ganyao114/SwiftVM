@@ -41,13 +41,11 @@
 #include "runtime/frontend/x86/xsave.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 // Guest -> host pointer for the XSAVE/XRSTOR helpers. Same contract as
 // x87.cpp's GuestPointer: the window mask makes host memory unreachable, the
 // embedder's mapping oracle turns an unmapped in-window address into nullptr
@@ -67,7 +65,7 @@ void InitX87State(u64 context, ThreadContext64& ctx) {
     }
 }
 
-void EmitUndefined(ir::Assembler* assembler, VAddr next_pc) {
+void EmitUndefined(compile::IrBuilder* assembler, VAddr next_pc) {
     // Same shape as X64Decoder::Interrupt, which is a private member.
     ir::Uniform uni_interrupt{offsetof(ThreadContext64, interrupt), ir::ValueType::U32};
     __ SetLocation(ir::Lambda{ir::Imm{next_pc}});
@@ -78,12 +76,12 @@ void EmitUndefined(ir::Assembler* assembler, VAddr next_pc) {
 
 // RFBM arrives in EDX:EAX.  Read the two dwords out of the guest context and
 // splice them into one 64-bit value for the helper.
-ir::Value EmitRequestedFeatureMask(ir::Assembler* assembler) {
+ir::Value EmitRequestedFeatureMask(compile::IrBuilder* assembler) {
     ir::Uniform uni_eax{offsetof(ThreadContext64, rax), ir::ValueType::U32};
     ir::Uniform uni_edx{offsetof(ThreadContext64, rdx), ir::ValueType::U32};
-    auto low = __ ZeroExtend64(__ LoadUniform(uni_eax).SetType(ir::ValueType::U32));
-    auto high = __ ZeroExtend64(__ LoadUniform(uni_edx).SetType(ir::ValueType::U32));
-    return __ Or(__ LslImm(high, ir::Imm(32u)), ir::Operand{low}).SetType(ir::ValueType::U64);
+    auto low = __ ZeroExtend64(__ LoadUniform(ir::ValueType::U32, uni_eax));
+    auto high = __ ZeroExtend64(__ LoadUniform(ir::ValueType::U32, uni_edx));
+    return __ Or(ir::ValueType::U64, __ LslImm(high, ir::Imm(32u)), ir::Operand{low});
 }
 
 }  // namespace
@@ -228,7 +226,7 @@ u64 XrstorHelper(u64 context, u64 guest_address, u64 requested) {
     return 0;
 }
 
-void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc) {
+void EmitXgetbv(compile::IrBuilder* assembler, VAddr next_pc) {
     // CR4.OSXSAVE is not modelled; the OSXSAVE CPUID bit stands in for it.
     // With the facility hidden, XGETBV is architecturally unavailable.
     if (!XsaveEnabled()) {
@@ -244,23 +242,20 @@ void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc) {
             ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64});
     auto old_rdx = __ LoadUniform(
             ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64});
-    auto ecx = __ LoadUniform(
-            ir::Uniform{offsetof(ThreadContext64, rcx), ir::ValueType::U32});
-    auto packed = __ CallHostUniformPure(&XgetbvHelper, ecx)
-                          .SetType(ir::ValueType::U64);
-    auto fault_value = __ BitExtract(packed, ir::Imm(63u), ir::Imm(1u))
-                          .SetCastType(ir::ValueType::U32);
+    auto ecx = __ LoadUniform(ir::Uniform{offsetof(ThreadContext64, rcx), ir::ValueType::U32});
+    auto packed = __ CallHostUniformPure(ir::ValueType::U64, &XgetbvHelper, ecx);
+    auto fault_value =
+            __ BitExtract(packed, ir::Imm(63u), ir::Imm(1u)).SetCastType(ir::ValueType::U32);
     auto succeeded = __ TestZero(fault_value);
-    auto xcr0_low = __ BitExtract(packed, ir::Imm(0u), ir::Imm(32u))
-                            .SetType(ir::ValueType::U32);
-    auto xcr0_high = __ BitExtract(packed, ir::Imm(32u), ir::Imm(32u))
-                             .SetCastType(ir::ValueType::U32);
-    __ StoreUniform(ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64},
-                    __ Select(succeeded, __ ZeroExtend32To64(xcr0_low), old_rax)
-                            .SetType(ir::ValueType::U64));
-    __ StoreUniform(ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64},
-                    __ Select(succeeded, __ ZeroExtend32To64(xcr0_high), old_rdx)
-                            .SetType(ir::ValueType::U64));
+    auto xcr0_low = __ BitExtract(ir::ValueType::U32, packed, ir::Imm(0u), ir::Imm(32u));
+    auto xcr0_high =
+            __ BitExtract(packed, ir::Imm(32u), ir::Imm(32u)).SetCastType(ir::ValueType::U32);
+    __ StoreUniform(
+            ir::Uniform{offsetof(ThreadContext64, rax), ir::ValueType::U64},
+            __ Select(ir::ValueType::U64, succeeded, __ ZeroExtend32To64(xcr0_low), old_rax));
+    __ StoreUniform(
+            ir::Uniform{offsetof(ThreadContext64, rdx), ir::ValueType::U64},
+            __ Select(ir::ValueType::U64, succeeded, __ ZeroExtend32To64(xcr0_high), old_rdx));
     // Keep the StoreUniform value immediate and execute it only on the
     // fault path; a successful XGETBV must not leave a stale ILL_CODE.
     auto no_fault = __ NotGoto(__ TestNotZero(fault_value));
@@ -276,7 +271,7 @@ void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc) {
                            ir::terminal::LinkBlock{next_pc}});
 }
 
-void EmitXsave(ir::Assembler* assembler,
+void EmitXsave(compile::IrBuilder* assembler,
                ir::Value address,
                VAddr next_pc,
                VAddr insn_pc,
@@ -286,18 +281,16 @@ void EmitXsave(ir::Assembler* assembler,
         EmitUndefined(assembler, next_pc);
         return;
     }
-    auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+    auto context = __ GetUniformAddress(ir::ValueType::U64, ir::Imm(0));
     auto rfbm = EmitRequestedFeatureMask(assembler);
     // XSAVE64/XRSTOR64 differ from the 32-bit forms only in how FIP/FDP are
     // laid out in the legacy region; X87Fxsave already writes the 64-bit form
     // for both FXSAVE and FXSAVE64, so the two share one handler here too.
     ir::Value status;
     if (restore) {
-        status = __ CallHost(&XrstorHelper, context, address, rfbm)
-                         .SetType(ir::ValueType::U64);
+        status = __ CallHost(ir::ValueType::U64, &XrstorHelper, context, address, rfbm);
     } else {
-        status = __ CallHostUniformPure(&XsaveHelper, context, address, rfbm)
-                         .SetType(ir::ValueType::U64);
+        status = __ CallHostUniformPure(ir::ValueType::U64, &XsaveHelper, context, address, rfbm);
     }
     // An unmapped XSAVE area is a guest #PF, not a no-op. CheckMemoryAlignment
     // is the runtime's generic "exit the block with PageFatal if (v & mask)"
@@ -310,7 +303,7 @@ void EmitXsave(ir::Assembler* assembler,
     }
 }
 
-void EmitXsaveopt(ir::Assembler* assembler,
+void EmitXsaveopt(compile::IrBuilder* assembler,
                   ir::Value address,
                   VAddr next_pc,
                   VAddr insn_pc) {
@@ -319,7 +312,7 @@ void EmitXsaveopt(ir::Assembler* assembler,
     EmitXsave(assembler, address, next_pc, insn_pc, false);
 }
 
-void EmitXsavec(ir::Assembler* assembler,
+void EmitXsavec(compile::IrBuilder* assembler,
                 ir::Value address,
                 VAddr next_pc,
                 VAddr insn_pc) {
@@ -330,10 +323,9 @@ void EmitXsavec(ir::Assembler* assembler,
         EmitUndefined(assembler, next_pc);
         return;
     }
-    auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
+    auto context = __ GetUniformAddress(ir::ValueType::U64, ir::Imm(0));
     auto rfbm = EmitRequestedFeatureMask(assembler);
-    auto status = __ CallHostUniformPure(&XsavecHelper, context, address, rfbm)
-                          .SetType(ir::ValueType::U64);
+    auto status = __ CallHostUniformPure(ir::ValueType::U64, &XsavecHelper, context, address, rfbm);
     __ SetLocation(ir::Lambda{ir::Imm{insn_pc}});
     __ CheckMemoryAlignment(status, ir::Imm(kX87GuestFault));
 }

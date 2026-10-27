@@ -11,14 +11,15 @@ namespace swift::runtime::backend::arm64 {
 bool JitTranslator::RegionSuccessorAcceptsEdgeFlags(
         ir::Location target,
         const EdgeFlagsState& incoming) const {
-    const auto found = RegionBlockMap().find(target.Value());
-    return found != RegionBlockMap().end() &&
-           (found->second.accepted_masks & (u16{1} << (incoming.valid_nzcv_mask >> 28))) != 0;
+    if (RequiresCanonicalBackedgeEntry(target)) return false;
+    const auto* found = Edges().InternalBlock(target.Value());
+    return found != nullptr &&
+           (found->accepted_masks & (u16{1} << (incoming.valid_nzcv_mask >> 28))) != 0;
 }
 
 bool JitTranslator::RegionSuccessorOverwritesFlagsToken(ir::Location target) const {
-    const auto found = RegionBlockMap().find(target.Value());
-    return found != RegionBlockMap().end() && found->second.token_overwritten;
+    const auto* found = Edges().InternalBlock(target.Value());
+    return found != nullptr && found->token_overwritten;
 }
 
 JitTranslator::RegionFlagsJoinRecipe JitTranslator::RecipeRegionFlagsJoin(

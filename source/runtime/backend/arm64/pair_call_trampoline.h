@@ -6,6 +6,7 @@
 namespace swift::runtime::backend::arm64 {
 
 struct PairCallFrame {
+    static constexpr u32 TargetRegister = 11;
     static constexpr u32 Size = 64;
     static constexpr u32 Link = 0;
     static constexpr u32 SavedX11 = 8;

@@ -393,7 +393,7 @@ void SmcTracker::ClearDispatchSlots(AddressSpace& space,
         // publishes. Its other blocks may only describe dependencies, whose
         // dispatch slots belong to a different live allocation.
         clear_location(node->GetStartLocation().Value());
-        if (node->node_type == ir::AddressNode::Function) {
+        if (node->GetNodeType() == ir::AddressNode::Function) {
             auto* function = static_cast<ir::Function*>(node);
             for (auto& block : function->GetBlocks()) {
                 clear_location(block.GetStartLocation().Value());
@@ -457,7 +457,7 @@ void SmcTracker::DelinkTargets(AddressSpace& space,
             targets.insert(lifetime->entries.begin(), lifetime->entries.end());
         } else {
             targets.insert(node->GetStartLocation().Value());
-            if (node->node_type == ir::AddressNode::Function) {
+            if (node->GetNodeType() == ir::AddressNode::Function) {
                 for (auto& block : static_cast<ir::Function*>(node)->GetBlocks()) {
                     targets.insert(block.GetStartLocation().Value());
                 }
@@ -605,7 +605,7 @@ bool SmcTracker::HandleWriteFault(AddressSpace& space,
             for (const auto entry : lifetime->entries) signal_invalidate(entry);
         } else {
             signal_invalidate(node->GetStartLocation().Value());
-            if (node->node_type == ir::AddressNode::Function) {
+            if (node->GetNodeType() == ir::AddressNode::Function) {
                 for (auto& block : static_cast<ir::Function*>(node)->GetBlocks()) {
                     signal_invalidate(block.GetStartLocation().Value());
                 }
@@ -907,11 +907,11 @@ bool SmcTracker::RetireNodeLocked(AddressSpace& space,
     }
 
     u8* published{};
-    if (node->node_type == ir::AddressNode::Function) {
+    if (node->GetNodeType() == ir::AddressNode::Function) {
         auto* function = static_cast<ir::Function*>(node);
         auto guard = function->LockRead();
         published = static_cast<u8*>(module->GetJitCache(function->GetJitCache()));
-    } else if (node->node_type == ir::AddressNode::Block) {
+    } else if (node->GetNodeType() == ir::AddressNode::Block) {
         auto* block = static_cast<ir::Block*>(node);
         auto guard = block->LockRead();
         published = static_cast<u8*>(module->GetJitCache(block->GetJitCache()));

@@ -7,7 +7,7 @@ namespace swift::runtime::backend::riscv64 {
 using namespace biscuit;
 using O = ir::OpCode;
 
-bool JitTranslator::EmitVectorFloat(ir::Inst* inst) {
+bool JitTranslator::EmitVectorFloat(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::VecFAddScalar32: case O::VecFSubScalar32: case O::VecFMulScalar32: case O::VecFDivScalar32:

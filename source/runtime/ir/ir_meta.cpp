@@ -2,18 +2,35 @@
 // Created by 甘尧 on 2023/9/8.
 //
 
-#include <cmath>
 #include "runtime/common/logging.h"
 #include "runtime/ir/ir_meta.h"
 #include "runtime/ir/ir_types.h"
 
 namespace swift::runtime::ir {
 
+// Valid metadata queries must not build formatting/unwind storage. Preserve
+// the checked accessor's exception and message on this cold path.
+[[noreturn, gnu::cold, gnu::noinline]] void detail::InvalidIROpcode() {
+    log::AssertFailed("Check failed: \"op_code < OpCode::COUNT\"");
+}
+
+[[noreturn, gnu::cold, gnu::noinline]] void detail::MissingIRResultType() {
+    log::AssertFailed("IR construction requires an explicit result type");
+}
+
+[[noreturn, gnu::cold, gnu::noinline]] void detail::InvalidIRArguments() {
+    log::AssertFailed("IR construction has invalid arguments");
+}
+
 // Signature tokens now live in meta::tokens (ir_meta.h); the runtime table below
 // is a pure projection of the constexpr per-instruction facts generated there.
 using namespace meta::tokens;
 
 namespace {
+[[noreturn, gnu::cold, gnu::noinline]] void InvalidValueSizeType() {
+    PANIC();
+}
+
 // Every opcode must be assigned deliberately. Adding an opcode without an
 // effect contract fails compilation, rather than silently treating it as pure.
 constexpr auto BuildEffects() {
@@ -23,42 +40,124 @@ constexpr auto BuildEffects() {
     const auto assign = [&](E effect, std::initializer_list<OpCode> ops) {
         for (auto op : ops) effects[static_cast<size_t>(op)] = effect;
     };
-    assign(E::None, {
-        OpCode::Void, OpCode::Nop, OpCode::Zero, OpCode::GetUniformAddress,
-        OpCode::Select, OpCode::SelectZero, OpCode::Sse42Str, OpCode::AddPhi,
-        OpCode::BitCast, OpCode::GetOperand, OpCode::GetResult, OpCode::LoadImm,
-        OpCode::Add, OpCode::Sub, OpCode::Mul, OpCode::MulSub, OpCode::Div,
-        OpCode::SignedDiv64, OpCode::Div128, OpCode::Div128Remainder,
-        OpCode::Cpuid, OpCode::CpuidUpper,
-        OpCode::ZeroExtend32, OpCode::ZeroExtend32To64, OpCode::ZeroExtend64,
-        OpCode::SignExtend, OpCode::And, OpCode::Or, OpCode::Xor, OpCode::Not,
-        OpCode::AndNot, OpCode::GetFlags,
-        OpCode::LslImm, OpCode::LslValue, OpCode::LsrImm, OpCode::LsrValue,
-        OpCode::AsrImm, OpCode::AsrValue, OpCode::RorImm, OpCode::RorValue,
-        OpCode::ByteSwap, OpCode::CountLeadingZeros64, OpCode::CountTrailingZeros64,
-        OpCode::CountLeadingZeros32, OpCode::CountTrailingZeros32,
-        OpCode::BitExtract, OpCode::BitInsert, OpCode::BitClear,
-        OpCode::TestBit, OpCode::TestZero, OpCode::TestNotZero,
-        OpCode::Vec4Add, OpCode::Vec4Sub, OpCode::Vec4Mul, OpCode::Vec4And,
-        OpCode::Vec4Or, OpCode::VecXor, OpCode::VecAnd, OpCode::VecOr, OpCode::VecAndNot,
-        OpCode::VecAdd, OpCode::VecSub, OpCode::VecCmpEq, OpCode::VecCmpGt,
-        OpCode::VecAvg, OpCode::VecMin, OpCode::VecMax, OpCode::VecMul,
-        OpCode::VecMulHigh16, OpCode::VecMulWiden, OpCode::VecSatAdd, OpCode::VecSatSub,
-        OpCode::VecPack, OpCode::VecAbsDiffSum8, OpCode::VecMadd16,
-        OpCode::VecShiftLeft, OpCode::VecShiftRight, OpCode::VecShiftRightArithmetic,
-        OpCode::VecShiftLeftImm, OpCode::VecShiftRightImm, OpCode::VecShiftRightArithmeticImm,
-        OpCode::VecByteShift, OpCode::VecShuffle32, OpCode::VecShuffle32TwoSrc,
-        OpCode::VecLoadConst, OpCode::VecShuffle32Indexed, OpCode::VecSharedZero,
-        OpCode::VecShuffle16, OpCode::VecExtractBytes, OpCode::VecZip, OpCode::VecDupPairs32,
-        OpCode::VecDup64, OpCode::VecExtract64, OpCode::VecExtract16, OpCode::VecInsert16,
-        OpCode::VecMovMask, OpCode::VecTableLookup8,
-        OpCode::VecAesEnc, OpCode::VecAesEncLast, OpCode::VecAesDec, OpCode::VecAesDecLast,
-        OpCode::VecAesEncFast, OpCode::VecAesEncLastFast, OpCode::VecAesDecFast,
-        OpCode::VecAesDecLastFast, OpCode::VecAesKeygenAssist, OpCode::VecPclMul,
-        OpCode::VecSha256Msg1, OpCode::VecSha256Msg2, OpCode::VecSha256Rnds2,
-        OpCode::VecUnzip, OpCode::MulHigh, OpCode::LocalParitySet,
-        OpCode::Neg, OpCode::PopCount, OpCode::Crc32c,
-    });
+    assign(E::None,
+           {
+                   OpCode::Void,
+                   OpCode::Nop,
+                   OpCode::Zero,
+                   OpCode::GetUniformAddress,
+                   OpCode::Select,
+                   OpCode::SelectZero,
+                   OpCode::Sse42Str,
+                   OpCode::AddPhi,
+                   OpCode::BitCast,
+                   OpCode::GetOperand,
+                   OpCode::GetResult,
+                   OpCode::LoadImm,
+                   OpCode::Add,
+                   OpCode::Sub,
+                   OpCode::Mul,
+                   OpCode::MulSub,
+                   OpCode::Div,
+                   OpCode::SignedDiv64,
+                   OpCode::Div128,
+                   OpCode::Div128Remainder,
+                   OpCode::Cpuid,
+                   OpCode::CpuidUpper,
+                   OpCode::ZeroExtend32,
+                   OpCode::ZeroExtend32To64,
+                   OpCode::ZeroExtend64,
+                   OpCode::SignExtend,
+                   OpCode::And,
+                   OpCode::Or,
+                   OpCode::Xor,
+                   OpCode::Not,
+                   OpCode::AndNot,
+                   OpCode::LslImm,
+                   OpCode::LslValue,
+                   OpCode::LsrImm,
+                   OpCode::LsrValue,
+                   OpCode::AsrImm,
+                   OpCode::AsrValue,
+                   OpCode::RorImm,
+                   OpCode::RorValue,
+                   OpCode::ByteSwap,
+                   OpCode::CountLeadingZeros64,
+                   OpCode::CountTrailingZeros64,
+                   OpCode::CountLeadingZeros32,
+                   OpCode::CountTrailingZeros32,
+                   OpCode::BitExtract,
+                   OpCode::BitInsert,
+                   OpCode::BitClear,
+                   OpCode::TestBit,
+                   OpCode::TestZero,
+                   OpCode::TestNotZero,
+                   OpCode::Vec4Add,
+                   OpCode::Vec4Sub,
+                   OpCode::Vec4Mul,
+                   OpCode::Vec4And,
+                   OpCode::Vec4Or,
+                   OpCode::VecXor,
+                   OpCode::VecAnd,
+                   OpCode::VecOr,
+                   OpCode::VecAndNot,
+                   OpCode::VecAdd,
+                   OpCode::VecSub,
+                   OpCode::VecCmpEq,
+                   OpCode::VecCmpGt,
+                   OpCode::VecAvg,
+                   OpCode::VecMin,
+                   OpCode::VecMax,
+                   OpCode::VecMul,
+                   OpCode::VecMulHigh16,
+                   OpCode::VecMulWiden,
+                   OpCode::VecSatAdd,
+                   OpCode::VecSatSub,
+                   OpCode::VecPack,
+                   OpCode::VecAbsDiffSum8,
+                   OpCode::VecMadd16,
+                   OpCode::VecShiftLeft,
+                   OpCode::VecShiftRight,
+                   OpCode::VecShiftRightArithmetic,
+                   OpCode::VecShiftLeftImm,
+                   OpCode::VecShiftRightImm,
+                   OpCode::VecShiftRightArithmeticImm,
+                   OpCode::VecByteShift,
+                   OpCode::VecShuffle32,
+                   OpCode::VecShuffle32TwoSrc,
+                   OpCode::VecLoadConst,
+                   OpCode::VecShuffle32Indexed,
+                   OpCode::VecSharedZero,
+                   OpCode::VecShuffle16,
+                   OpCode::VecExtractBytes,
+                   OpCode::VecZip,
+                   OpCode::VecDupPairs32,
+                   OpCode::VecDup64,
+                   OpCode::VecExtract64,
+                   OpCode::VecExtract16,
+                   OpCode::VecInsert16,
+                   OpCode::VecMovMask,
+                   OpCode::VecTableLookup8,
+                   OpCode::VecAesEnc,
+                   OpCode::VecAesEncLast,
+                   OpCode::VecAesDec,
+                   OpCode::VecAesDecLast,
+                   OpCode::VecAesEncFast,
+                   OpCode::VecAesEncLastFast,
+                   OpCode::VecAesDecFast,
+                   OpCode::VecAesDecLastFast,
+                   OpCode::VecAesKeygenAssist,
+                   OpCode::VecPclMul,
+                   OpCode::VecSha256Msg1,
+                   OpCode::VecSha256Msg2,
+                   OpCode::VecSha256Rnds2,
+                   OpCode::VecUnzip,
+                   OpCode::MulHigh,
+                   OpCode::LocalParitySet,
+                   OpCode::Neg,
+                   OpCode::PopCount,
+                   OpCode::Crc32c,
+           });
     assign(E::ReadFPEnvironment, {
         OpCode::VecFAddScalar32, OpCode::VecFSubScalar32, OpCode::VecFMulScalar32,
         OpCode::VecFDivScalar32, OpCode::VecFAddScalar64, OpCode::VecFSubScalar64,
@@ -86,8 +185,15 @@ constexpr auto BuildEffects() {
     assign(E::ReadMemory | E::WriteMemory | E::ReadGuestState | E::WriteGuestState |
            E::MayFault | E::Call, {OpCode::CallLambda, OpCode::CallLocation, OpCode::CallDynamic,
                                  OpCode::X87Op});
-    assign(E::ReadFlags, {OpCode::Adc, OpCode::Sbb, OpCode::CondSelect, OpCode::CondSet,
-                         OpCode::LocalCondSet, OpCode::TestFlags, OpCode::TestNotFlags});
+    assign(E::ReadFlags,
+           {OpCode::GetFlags,
+            OpCode::Adc,
+            OpCode::Sbb,
+            OpCode::CondSelect,
+            OpCode::CondSet,
+            OpCode::LocalCondSet,
+            OpCode::TestFlags,
+            OpCode::TestNotFlags});
     assign(E::WriteFlags, {OpCode::SaveFlags, OpCode::BranchOnlyFlags, OpCode::ClearFlags,
                           OpCode::SetCarry, OpCode::SetOverflow, OpCode::PublishFCmpFlags,
                           OpCode::PublishSse42StrFlags});
@@ -102,15 +208,15 @@ static_assert([] {
 }(), "every IR opcode requires an effect description");
 }  // namespace
 
-const std::array<IRMeta, static_cast<size_t>(OpCode::COUNT) + 1> ir_meta_infos{
-        IRMeta{OpCode::Void, "Void", ArgType::Void, {}, IREffect::None},
-#define INST(name, ret, ...) \
-    IRMeta{OpCode::name, #name, meta::kRet_##name, \
-           {meta::kArgs_##name.begin(), meta::kArgs_##name.end()}, kEffects[static_cast<size_t>(OpCode::name)]},
+constinit const std::array<IRMeta, static_cast<size_t>(OpCode::COUNT) + 1> ir_meta_infos{
+        IRMeta{OpCode::Void, "Void", ArgType::Void, ValueType::VOID, ResultTypePolicy::Void, {}, IREffect::None},
+#define INST(name, ret, policy, ...) \
+    IRMeta{OpCode::name, #name, meta::kRet_##name, meta::kResult_##name, meta::kResultPolicy_##name, \
+           meta::kArgs_##name, kEffects[static_cast<size_t>(OpCode::name)]},
 #include "ir.inc"
 #undef INST
-IRMeta{OpCode::BASE_COUNT, "BASE_COUNT", ArgType::Void, {}, IREffect::Unknown},
-IRMeta{OpCode::COUNT, "COUNT", ArgType::Void, {}, IREffect::Unknown}};
+IRMeta{OpCode::BASE_COUNT, "BASE_COUNT", ArgType::Void, ValueType::VOID, ResultTypePolicy::Void, {}, IREffect::Unknown},
+IRMeta{OpCode::COUNT, "COUNT", ArgType::Void, ValueType::VOID, ResultTypePolicy::Void, {}, IREffect::Unknown}};
 static_assert(ir_meta_infos.size() == static_cast<size_t>(OpCode::COUNT) + 1,
               "ir_meta_infos must cover every opcode plus the COUNT sentinel");
 
@@ -122,7 +228,7 @@ u8 GetValueSizePow(ValueType type) {
     } else if (type >= ValueType::V8 && type <= ValueType::V256) {
         return (u32)type - (u32)ValueType::V8;
     } else {
-        PANIC();
+        InvalidValueSizeType();
     }
 }
 
@@ -175,7 +281,7 @@ ValueType GetSignedIRValueType(u32 size_byte) {
     }
 }
 
-u8 GetValueSizeByte(ValueType type) { return std::pow(2u, GetValueSizePow(type)); }
+u8 GetValueSizeByte(ValueType type) { return static_cast<u8>(1u << GetValueSizePow(type)); }
 
 bool IsFloatValueType(ValueType type) { return type >= ValueType::V8 && type <= ValueType::V256; }
 

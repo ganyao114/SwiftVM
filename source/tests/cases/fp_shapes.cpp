@@ -1,7 +1,10 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include "../support/case_support.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 
 namespace {
-
 enum class AFPShapeOp {
     Add,
     Sub,
@@ -79,59 +82,58 @@ AFPShapeCode CompileAFPShape(AFPShapeOp op,
                                           0x2d01,
                                           module_config);
     IntrusivePtr<Block> block{new Block(0, Location{0x2d00})};
-    auto left = block->LoadUniform(Uniform{0, ValueType::V128})
-                        .SetType(ValueType::V128);
-    auto right = block->LoadUniform(Uniform{16, ValueType::V128})
-                         .SetType(ValueType::V128);
-    auto third = block->LoadUniform(Uniform{32, ValueType::V128})
-                         .SetType(ValueType::V128);
+    auto left = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
+    auto right = block->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+    auto third = block->LoadUniform(ValueType::V128, Uniform{32, ValueType::V128});
     Value result;
     switch (op) {
         case AFPShapeOp::Add:
             if (!scalar) {
-                result = block->VecFAdd(left, right, Imm{swift::u32{lane_bits}});
+                result = block->VecFAdd(ValueType::V128, left, right, Imm{swift::u32{lane_bits}});
             } else if (lane_bits == 32) {
-                result = block->VecFAddScalar32(left, right);
+                result = block->VecFAddScalar32(ValueType::V128, left, right);
             } else {
-                result = block->VecFAddScalar64(left, right);
+                result = block->VecFAddScalar64(ValueType::V128, left, right);
             }
             break;
         case AFPShapeOp::Sub:
             if (!scalar) {
-                result = block->VecFSub(left, right, Imm{swift::u32{lane_bits}});
+                result = block->VecFSub(ValueType::V128, left, right, Imm{swift::u32{lane_bits}});
             } else if (lane_bits == 32) {
-                result = block->VecFSubScalar32(left, right);
+                result = block->VecFSubScalar32(ValueType::V128, left, right);
             } else {
-                result = block->VecFSubScalar64(left, right);
+                result = block->VecFSubScalar64(ValueType::V128, left, right);
             }
             break;
         case AFPShapeOp::Mul:
             if (!scalar) {
-                result = block->VecFMul(left, right, Imm{swift::u32{lane_bits}});
+                result = block->VecFMul(ValueType::V128, left, right, Imm{swift::u32{lane_bits}});
             } else if (lane_bits == 32) {
-                result = block->VecFMulScalar32(left, right);
+                result = block->VecFMulScalar32(ValueType::V128, left, right);
             } else {
-                result = block->VecFMulScalar64(left, right);
+                result = block->VecFMulScalar64(ValueType::V128, left, right);
             }
             break;
         case AFPShapeOp::Div:
             if (!scalar) {
-                result = block->VecFDiv(left, right, Imm{swift::u32{lane_bits}});
+                result = block->VecFDiv(ValueType::V128, left, right, Imm{swift::u32{lane_bits}});
             } else if (lane_bits == 32) {
-                result = block->VecFDivScalar32(left, right);
+                result = block->VecFDivScalar32(ValueType::V128, left, right);
             } else {
-                result = block->VecFDivScalar64(left, right);
+                result = block->VecFDivScalar64(ValueType::V128, left, right);
             }
             break;
         case AFPShapeOp::Sqrt:
-            result = block->VecFUnary(left,
+            result = block->VecFUnary(ValueType::V128,
+                                      left,
                                       left,
                                       Imm{swift::u32{lane_bits}},
                                       Imm{swift::u32{0}},
                                       Imm{swift::u32{scalar ? 1u : 0u}});
             break;
         case AFPShapeOp::Fma:
-            result = block->VecFMulAdd(left,
+            result = block->VecFMulAdd(ValueType::V128,
+                                       left,
                                        right,
                                        third,
                                        Imm{swift::u32{lane_bits}},
@@ -139,46 +141,48 @@ AFPShapeCode CompileAFPShape(AFPShapeOp op,
             break;
         case AFPShapeOp::Min:
         case AFPShapeOp::Max:
-            result = block->VecFMinMax(left,
+            result = block->VecFMinMax(ValueType::V128,
+                                       left,
                                        right,
                                        Imm{swift::u32{lane_bits}},
                                        Imm{swift::u32{op == AFPShapeOp::Max ? 1u : 0u}},
                                        Imm{swift::u32{scalar ? 1u : 0u}});
             break;
         case AFPShapeOp::Comis: {
-            auto flags = block->VecFCmp(left,
-                                        right,
-                                        Imm{swift::u32{lane_bits}},
-                                        Imm{swift::u32{0}})
-                                 .SetType(ValueType::U64);
+            auto flags = block->VecFCmp(
+                    ValueType::U64, left, right, Imm{swift::u32{lane_bits}}, Imm{swift::u32{0}});
             block->StoreUniform(Uniform{48, ValueType::U64}, flags);
             break;
         }
         case AFPShapeOp::Rcp:
         case AFPShapeOp::Rsqrt:
-            result = block->VecFUnary(
-                    left,
-                    left,
-                    Imm{swift::u32{lane_bits}},
-                    Imm{swift::u32{op == AFPShapeOp::Rcp ? 1u : 2u}},
-                    Imm{swift::u32{scalar ? 1u : 0u}});
+            result = block->VecFUnary(ValueType::V128,
+                                      left,
+                                      left,
+                                      Imm{swift::u32{lane_bits}},
+                                      Imm{swift::u32{op == AFPShapeOp::Rcp ? 1u : 2u}},
+                                      Imm{swift::u32{scalar ? 1u : 0u}});
             break;
     }
     if (op != AFPShapeOp::Comis) {
-        block->StoreUniform(Uniform{48, ValueType::V128},
-                            result.SetType(ValueType::V128));
+        block->StoreUniform(Uniform{48, ValueType::V128}, result);
     }
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
     const auto features = ResolveFeatureSet(module_config);
-    RegAlloc reg_alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(),
-                       features};
-    RegisterAllocPass::Run(block.get(), &reg_alloc, scalar_insert, features);
-    reg_alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, reg_alloc};
+    AllocationFixture reg_alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &reg_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), reg_alloc, features),
+            scalar_insert);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, reg_alloc);
+    arm64::JitContext context{module, reg_alloc, reg_alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -260,7 +264,7 @@ const char* AFPShapeName(AFPShapeOp op) {
 
 }  // namespace
 
-TEST_CASE("AFP P1 removes guards only for the arithmetic allowlist") {
+TEST_CASE("native arithmetic has no NaN guard with or without AFP") {
     constexpr std::array included{
             AFPShapeOp::Add,
             AFPShapeOp::Sub,
@@ -281,16 +285,12 @@ TEST_CASE("AFP P1 removes guards only for the arithmetic allowlist") {
                     const auto on = CompileAFPShape(
                             op, lane_bits, scalar, scalar_insert, true);
                     INFO("OFF:\n" << off.text << "ON:\n" << on.text);
-                    REQUIRE(on.instructions < off.instructions);
-                    if (scalar) {
-                        REQUIRE(off.text.find("b.vs") != std::string::npos);
-                        REQUIRE(on.text.find("b.vs") == std::string::npos);
-                    } else if (lane_bits == 32) {
-                        REQUIRE(off.text.find("uminv") != std::string::npos);
-                        REQUIRE(on.text.find("uminv") == std::string::npos);
-                    } else {
-                        REQUIRE(off.text.find("cbz") != std::string::npos);
-                        REQUIRE(on.text.find("cbz") == std::string::npos);
+                    REQUIRE(on.instructions == off.instructions);
+                    REQUIRE(MaskDisasmAddresses(on.text) ==
+                            MaskDisasmAddresses(off.text));
+                    for (const auto* guard : {"fcmeq", "uminv", "cbz", "b.vs"}) {
+                        REQUIRE(off.text.find(guard) == std::string::npos);
+                        REQUIRE(on.text.find(guard) == std::string::npos);
                     }
                 }
             }

@@ -24,6 +24,8 @@ add_library(swift_runtime STATIC
         common/logging.h
         common/svm_config.cpp
         common/svm_config.h
+        common/perf_storage.h
+        common/perf_storage.cpp
         common/virtual_vector.cpp
         common/virtual_vector.h
         common/bit_fields.h
@@ -47,8 +49,6 @@ add_library(swift_runtime STATIC
         common/cityhash.h
         common/swap.h
         common/address_hash_map.h
-        frontend/ir_assembler.cpp
-        frontend/ir_assembler.h
         frontend/function_abi.h
         ir/args.cpp
         ir/args.h
@@ -68,45 +68,12 @@ add_library(swift_runtime STATIC
         ir/module.cpp
         ir/module.h
         ir/hir_builder.cpp
+        ir/hir_storage.cpp
         ir/hir_builder.h
         ir/ir_meta.cpp
         ir/ir_meta.h
         ir/host_reg.h
         ir/allocator.h
-        ir/opts/dataflow_analysis_pass.cpp
-        ir/opts/dataflow_analysis_pass.h
-        ir/opts/cfg_analysis_pass.cpp
-        ir/opts/cfg_analysis_pass.h
-        ir/opts/const_folding_pass.cpp
-        ir/opts/const_folding_pass.h
-        ir/opts/register_alloc_coalesce_gpr.cpp
-        ir/opts/register_alloc_coalesce_copy.cpp
-        ir/opts/register_alloc_coalesce_fpr.cpp
-        ir/opts/register_alloc_pass.cpp
-        ir/opts/register_alloc_pass.h
-        ir/opts/register_alloc_internal.h
-        ir/opts/register_alloc_cfg_liveness.cpp
-        ir/opts/register_alloc_spill_reload.cpp
-        ir/opts/register_alloc_spill_reload.h
-        ir/opts/register_alloc_verified.inc
-        ir/opts/reid_instr_pass.cpp
-        ir/opts/reid_instr_pass.h
-        ir/opts/uniform_elimination_pass.cpp
-        ir/opts/uniform_elimination_pass.h
-        ir/opts/uniform_store_sink_pass.cpp
-        ir/opts/uniform_store_sink_pass.h
-        ir/opts/flags_elimination_pass.cpp
-        ir/opts/flags_elimination_pass.h
-        ir/opts/flags_carry_regions.cpp
-        ir/opts/flags_carry_regions.h
-        ir/opts/integer_width_elimination_pass.cpp
-        ir/opts/integer_width_elimination_pass.h
-        ir/opts/loop_invariant_hoist_pass.cpp
-        ir/opts/loop_invariant_hoist_pass.h
-        ir/opts/deadcode_elimination_pass.cpp
-        ir/opts/deadcode_elimination_pass.h
-        ir/opts/pass_pipeline.cpp
-        ir/opts/pass_pipeline.h
         backend/translate_table.h
         backend/asm_interp.cpp
         backend/asm_interp.h
@@ -145,31 +112,8 @@ add_library(swift_runtime STATIC
         backend/host_isa.h
         backend/mem_map.cpp
         backend/mem_map.h
-        backend/reg_alloc_gpr_locations.cpp
-        backend/arm64/alloc/gpr_allocation_plan.cpp
-        backend/arm64/alloc/target_allocation_planner.cpp
-        backend/arm64/alloc/target_analysis_traits.cpp
-        backend/arm64/alloc/integer_branch_plan.cpp
-        backend/arm64/alloc/region_preparation_plan.cpp
-        backend/arm64/alloc/gpr_plan_verifier.cpp
-        backend/arm64/alloc/gpr_width_verifier.cpp
-        backend/arm64/alloc/scalar_fpr_publication_plan.cpp
-        backend/arm64/alloc/fpr_allocation_plan.cpp
-        backend/arm64/alloc/memory_lowering_plan.cpp
-        backend/arm64/alloc/boolean_select_plan.cpp
-        backend/arm64/alloc/narrow_bit_plan.cpp
-        backend/arm64/alloc/consumer_plan.cpp
-        backend/arm64/alloc/flags_token_plan.cpp
-        backend/arm64/alloc/region_pfaf_plan.cpp
-        backend/arm64/alloc/narrow_integer_flags_plan.cpp
-        backend/arm64/alloc/pstate_facts.cpp
-        backend/arm64/alloc/backedge_flags_plan.cpp
-        backend/arm64/alloc/zero_store_verifier.cpp
-        backend/arm64/alloc/edge_flags_analysis.cpp
-        backend/arm64/alloc/pseudo_flags_plan.cpp
         backend/gpr_value_facts.h
-        backend/reg_alloc.cpp
-        backend/reg_alloc.h
+        backend/register_mask.h
         backend/jit_code.h
         backend/translator.cpp
         backend/translator.h
@@ -181,21 +125,6 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/jit_context.h
         backend/arm64/jit/function_code_object_emitter.cpp
         backend/arm64/jit/function_code_object_emitter.h
-        backend/arm64/jit/div128_narrowing_analysis.cpp
-        backend/arm64/jit/div128_narrowing_analysis.h
-        backend/arm64/alloc/pinned_gpr_narrow_read.cpp
-        backend/arm64/alloc/fixed_gpr_constraints.cpp
-        backend/arm64/alloc/fixed_gpr_constraints.h
-        backend/arm64/alloc/pinned_gpr_allocation.cpp
-        backend/arm64/alloc/pinned_gpr_allocation.h
-        backend/arm64/alloc/pinned_gpr_spilled_publication.cpp
-        backend/arm64/jit/guest_state_map.cpp
-        backend/arm64/jit/guest_state_map_cfg.cpp
-        backend/arm64/jit/guest_state_map_fault.cpp
-        backend/arm64/jit/guest_state_map_values.cpp
-        backend/arm64/jit/guest_state_map.h
-        backend/arm64/jit/raw_carry_branch_analysis.cpp
-        backend/arm64/jit/raw_carry_branch_analysis.h
         backend/arm64/jit/translator.cpp
         backend/arm64/jit/translator_statistics.cpp
         backend/arm64/jit/terminal_location_publication.cpp
@@ -221,24 +150,11 @@ add_library(swift_runtime STATIC
         backend/arm64/jit/translator_compound_flags.cpp
         backend/arm64/jit/translator_dead_edge_branch.cpp
         backend/arm64/jit/translator_narrow_flags_input.cpp
-        backend/arm64/jit/translator_narrow_integer_flags.cpp
-        backend/arm64/alloc/pinned_gpr_dead_write.cpp
-        backend/arm64/alloc/pinned_gpr_copy.cpp
-        backend/arm64/alloc/pinned_gpr_transfer.cpp
-        backend/arm64/alloc/pinned_gpr_publication.cpp
         backend/arm64/jit/translator_spilled_gpr_publication.cpp
         backend/arm64/jit/translator_spilled_memory.cpp
-        backend/arm64/alloc/pinned_gpr_select.cpp
         backend/arm64/jit/translator_pinned_load_update.cpp
         backend/arm64/jit/translator_pinned_memory.cpp
         backend/arm64/jit/translator_narrow_extract.cpp
-        backend/arm64/jit/scalar_fpr_liveness.cpp
-        backend/arm64/jit/scalar_fpr_liveness.h
-        backend/arm64/jit/resident_scalar_fpr_analysis.cpp
-        backend/arm64/jit/resident_scalar_fpr_analysis.h
-        backend/arm64/jit/scalar_copy_analysis.cpp
-        backend/arm64/jit/scalar_copy_analysis.h
-        backend/arm64/jit/translator_fpr_publication.cpp
         backend/arm64/jit/translator_mem.cpp
         backend/arm64/jit/translator_mem_atomic_fallback.cpp
         backend/arm64/jit/translator_mem_atomic_lse.cpp
@@ -317,4 +233,9 @@ endif ()
 
 find_package(Boost 1.57)
 target_link_libraries(swift_runtime PUBLIC swift::base fmt Boost::boost vixl biscuit::biscuit dlmalloc)
+# The interpreter and ARM64 call preparation use x86 guest helper bodies.
+# Export only that static link dependency, without frontend compile settings.
+target_link_libraries(swift_runtime INTERFACE "$<LINK_ONLY:fronted_x86>")
 add_library(swift::runtime ALIAS swift_runtime)
+add_subdirectory(compile)
+add_subdirectory(backend/arm64/compile)

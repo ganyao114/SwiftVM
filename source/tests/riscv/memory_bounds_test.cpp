@@ -10,7 +10,7 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/backend/signal_handler.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
 namespace {
@@ -53,12 +53,12 @@ bool Range(void* opaque, u64 guest, u64 size) {
     if (probe.mode == 2) throw std::runtime_error("injected bounds oracle throw");
     return probe.mode == 0;
 }
-void Flags(ir::Assembler& as) {
-    auto one = as.LoadImm(ir::Imm{u64{1}}).SetType(T::U8);
+void Flags(compile::IrBuilder& as) {
+    auto one = as.LoadImm(T::U8, ir::Imm{u64{1}});
     as.SetCarry(one);
 }
-void Mark(ir::Assembler& as) {
-    auto value = as.LoadImm(ir::Imm{marker}).SetType(T::U64);
+void Mark(compile::IrBuilder& as) {
+    auto value = as.LoadImm(T::U64, ir::Imm{marker});
     as.StoreUniform(ir::Uniform{144, T::U64}, value);
 }
 void Setup(StateStorage& state, bool anonymous, Probe& probe) {
@@ -240,13 +240,14 @@ void Accesses(Pages& pages) {
     for (bool store : {false, true}) for (bool cached : {false, true}) {
         const u64 size = ir::GetValueSizeByte(type);
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x7100})};
-        ir::Assembler as{block.get()}; Flags(as);
-        auto address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        Flags(as);
+        auto address = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
         if (store) {
-            auto value = as.LoadUniform(ir::Uniform{8, type}).SetType(type);
+            auto value = as.LoadUniform(type, ir::Uniform{8, type});
             as.StoreMemoryTSO(ir::Operand{address}, value);
         } else {
-            auto value = as.LoadMemoryTSO(ir::Operand{address}).SetType(type);
+            auto value = as.LoadMemoryTSO(type, ir::Operand{address});
             as.StoreUniform(ir::Uniform{80, type}, value);
         }
         Mark(as); block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -303,10 +304,12 @@ void Copies(Pages& pages) {
     for (u64 size : {u64{0}, u64{1}, u64{8}, u64{16}, u64{32}, u64{2048}, u64{2049}, u64{4096}})
     for (bool cached : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x7100})};
-        ir::Assembler as{block.get()}; Flags(as);
-        auto destination = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto source = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-        as.MemoryCopyTSO(ir::Lambda{destination}, ir::Lambda{source}, ir::Imm{size}); Mark(as);
+        compile::IrBuilder as{block.get()};
+        Flags(as);
+        auto destination = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto source = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+        as.MemoryCopyTSO(ir::Lambda{destination}, ir::Lambda{source}, ir::Imm{size});
+        Mark(as);
         block->SetTerminal(ir::terminal::ReturnToHost{}); Compiled code{block.get(), cached, features};
         Encoding(code, size, size ? 2 : 0);
         for (u32 failure : {0u, 1u, 2u}) for (u32 mode : {0u, 1u, 2u}) for (bool anonymous : {false, true}) {
@@ -355,10 +358,14 @@ bool RecordFault(void* opaque, ucontext_t* context, int, siginfo_t* info) {
 void NativeFaultPC(Pages& pages) {
     static_assert(std::atomic<u64>::is_always_lock_free);
     auto config = TestConfig(); backend::AddressSpace space{config}; auto module = space.GetDefaultModule();
-    IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x7300})}; ir::Assembler as{block.get()}; Flags(as);
-    auto address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    auto value = as.LoadMemoryTSO(ir::Operand{address}).SetType(T::U64);
-    as.StoreUniform(ir::Uniform{80, T::U64}, value); Mark(as); block->SetTerminal(ir::terminal::ReturnToHost{});
+    IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0x7300})};
+    compile::IrBuilder as{block.get()};
+    Flags(as);
+    auto address = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    auto value = as.LoadMemoryTSO(T::U64, ir::Operand{address});
+    as.StoreUniform(ir::Uniform{80, T::U64}, value);
+    Mark(as);
+    block->SetTerminal(ir::terminal::ReturnToHost{});
     Check(module->Push(block.get()), "publish guardpage block");
     auto* entry = backend::TranslateIR(module, block); Check(entry != nullptr, "compile guardpage block");
     Runtime runtime{&space}; FaultProbe probe{}; probe.state = runtime.GetState();

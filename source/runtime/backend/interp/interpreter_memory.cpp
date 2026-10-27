@@ -10,9 +10,9 @@ using ir::ValueType;
 
 #include "interpreter_internal.h"
 
-void Interpreter::RunDefineLocal(ir::Inst* inst, InterpStack& stack) {}
+void Interpreter::RunDefineLocal(const ir::Inst* inst, InterpStack& stack) {}
 
-void Interpreter::RunLoadLocal(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunLoadLocal(const ir::Inst* inst, InterpStack& stack) {
     // Local ids address eight-byte slots in the caller-supplied buffer.
     // Vector accesses span adjacent slots and need a full 128-bit temporary.
     const auto local = inst->GetArg<ir::Local>(0);
@@ -25,7 +25,7 @@ void Interpreter::RunLoadLocal(ir::Inst* inst, InterpStack& stack) {
     else WriteScalar(stack, inst, static_cast<u64>(value));
 }
 
-void Interpreter::RunStoreLocal(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunStoreLocal(const ir::Inst* inst, InterpStack& stack) {
     const auto local = inst->GetArg<ir::Local>(0);
     auto* base = static_cast<u8*>(state.local_buffer);
     if (!base) {
@@ -35,7 +35,7 @@ void Interpreter::RunStoreLocal(ir::Inst* inst, InterpStack& stack) {
     std::memcpy(base + size_t(local.id) * 8, &value, ir::GetValueSizeByte(local.type));
 }
 
-void Interpreter::RunLoadUniform(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunLoadUniform(const ir::Inst* inst, InterpStack& stack) {
     const auto uni = inst->GetArg<ir::Uniform>(0);
     const auto type = inst->ReturnType() == ValueType::VOID ? uni.GetType() : inst->ReturnType();
     const auto* base = &state.uniform_buffer_begin[uni.GetOffset()];
@@ -51,7 +51,7 @@ void Interpreter::RunLoadUniform(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunStoreUniform(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunStoreUniform(const ir::Inst* inst, InterpStack& stack) {
     const auto uni = inst->GetArg<ir::Uniform>(0);
     const auto value = inst->GetArg<ir::Value>(1);
     // Frontends always type their values; fall back to the uniform's declared
@@ -67,14 +67,14 @@ void Interpreter::RunStoreUniform(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunGetUniformAddress(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunGetUniformAddress(const ir::Inst* inst, InterpStack& stack) {
     const auto offset = inst->GetArg<ir::Imm>(0).Get();
     WriteScalar(stack,
                 inst,
                 reinterpret_cast<u64>(&state.uniform_buffer_begin[offset]));
 }
 
-void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunLoadMemory(const ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto type = inst->ReturnType();
     u64 guest_addr = EvalOperand(stack, operand);
@@ -113,7 +113,7 @@ void Interpreter::RunLoadMemory(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunStoreMemory(const ir::Inst* inst, InterpStack& stack) {
     const auto operand = inst->GetArg<ir::Operand>(0);
     const auto value = inst->GetArg<ir::Value>(1);
     const auto type = value.Type();
@@ -143,7 +143,7 @@ void Interpreter::RunStoreMemory(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunLoadMemoryTSO(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunLoadMemoryTSO(const ir::Inst* inst, InterpStack& stack) {
     // TSO ordering is only observable with multiple concurrent guest threads;
     // the interpreter executes one guest thread on one host thread, so a TSO
     // load is semantically identical to a basic load here (the JIT provides
@@ -152,13 +152,13 @@ void Interpreter::RunLoadMemoryTSO(ir::Inst* inst, InterpStack& stack) {
     RunLoadMemory(inst, stack);
 }
 
-void Interpreter::RunStoreMemoryTSO(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunStoreMemoryTSO(const ir::Inst* inst, InterpStack& stack) {
     // See RunLoadMemoryTSO: single-threaded execution makes the release
     // ordering unobservable, so TSO stores degrade to basic stores.
     RunStoreMemory(inst, stack);
 }
 
-void Interpreter::RunMemoryCopy(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunMemoryCopy(const ir::Inst* inst, InterpStack& stack) {
     auto dst = inst->GetArg<ir::Lambda>(0);
     auto src = inst->GetArg<ir::Lambda>(1);
     const u64 size = inst->GetArg<ir::Imm>(2).Get();
@@ -172,11 +172,11 @@ void Interpreter::RunMemoryCopy(ir::Inst* inst, InterpStack& stack) {
                  size);
 }
 
-void Interpreter::RunMemoryCopyTSO(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunMemoryCopyTSO(const ir::Inst* inst, InterpStack& stack) {
     RunMemoryCopy(inst, stack);
 }
 
-void Interpreter::RunMemoryBarrierTSO(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunMemoryBarrierTSO(const ir::Inst* inst, InterpStack& stack) {
     std::atomic_thread_fence(std::memory_order_seq_cst);
 }
 
@@ -257,7 +257,7 @@ T AtomicTransformValue(void* ptr, Transform&& transform) {
 
 }  // namespace
 
-void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCompareAndSwap(const ir::Inst* inst, InterpStack& stack) {
     // Args: (address, expected, desired); returns the old value.
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto expected = inst->GetArg<ir::Value>(1);
@@ -290,7 +290,7 @@ void Interpreter::RunCompareAndSwap(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, old);
 }
 
-void Interpreter::RunCompareAndSwap128(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCompareAndSwap128(const ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 expected_lo = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     const u64 expected_hi = ReadScalar(stack, inst->GetArg<ir::Value>(2));
@@ -312,7 +312,7 @@ void Interpreter::RunCompareAndSwap128(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, old);
 }
 
-void Interpreter::RunCheckMemoryAlignment(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunCheckMemoryAlignment(const ir::Inst* inst, InterpStack& stack) {
     const u64 address = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const u64 mask = inst->GetArg<ir::Imm>(1).Get();
     if ((address & mask) != 0) {
@@ -320,7 +320,7 @@ void Interpreter::RunCheckMemoryAlignment(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunAtomicExchange(const ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto desired = inst->GetArg<ir::Value>(1);
     auto* raw = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
@@ -345,7 +345,7 @@ void Interpreter::RunAtomicExchange(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, old);
 }
 
-void Interpreter::RunAtomicFetchAdd(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunAtomicFetchAdd(const ir::Inst* inst, InterpStack& stack) {
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(0));
     const auto addend = inst->GetArg<ir::Value>(1);
     auto* raw = reinterpret_cast<void*>((addr & state.guest_addr_mask) + reinterpret_cast<uintptr_t>(state.pt));
@@ -370,9 +370,8 @@ void Interpreter::RunAtomicFetchAdd(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, old);
 }
 
-void Interpreter::RunAtomicRMW(ir::Inst* inst, InterpStack& stack) {
-    const auto op =
-            static_cast<ir::AtomicRMWOp>(inst->GetArg<ir::Imm>(0).Get());
+void Interpreter::RunAtomicRMW(const ir::Inst* inst, InterpStack& stack) {
+    const auto op = static_cast<ir::AtomicRMWOp>(inst->GetArg<ir::Imm>(0).Get());
     const u64 addr = ReadScalar(stack, inst->GetArg<ir::Value>(1));
     const auto operand_arg = inst->GetArg<ir::Value>(2);
     const auto carry_arg = inst->GetArg<ir::Value>(3);
@@ -424,11 +423,11 @@ void Interpreter::RunAtomicRMW(ir::Inst* inst, InterpStack& stack) {
     WriteScalar(stack, inst, old);
 }
 
-void Interpreter::RunUniformBarrier(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunUniformBarrier(const ir::Inst* inst, InterpStack& stack) {
     // Compiler barrier only (same as the JIT); no runtime effect.
 }
 
-void Interpreter::RunXchgBarrier(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunXchgBarrier(const ir::Inst* inst, InterpStack& stack) {
     // Metadata-only marker; the interpreter stores the two values in order.
 }
 

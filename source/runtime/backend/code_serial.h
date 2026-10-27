@@ -92,7 +92,7 @@ enum class RelocKind : u16 {
 
 enum class RelocUse : u16 {
     Unknown = 0,
-    BranchTarget = 1,  // br / blr on the computed register
+    BranchTarget = 1,  // br / blr, including the helper passed to the pair-call trampoline
     MemoryBase = 2,    // base register of a load/store
 };
 
@@ -120,11 +120,13 @@ struct ScanResult {
 // guest address window (Config::guest_addr_mask + 1, or 0 when unbounded); it
 // is used only for the disjointness precondition described in the header
 // comment.
+struct SerialRegionBranch;
 ScanResult ScanCodeUnit(std::span<const u8> code,
                         const HostImageInfo& image,
                         u64 guest_window_size,
                         std::span<const u32> external_bl_offsets = {},
-                        ISA isa = kArm64);
+                        ISA isa = kArm64,
+                        std::span<const SerialRegionBranch> region_branches = {});
 
 inline constexpr u32 kRiscvHostPoolMagic = 0x52565000; // Not a valid instruction.
 ScanResult ScanRiscvCodeUnit(std::span<const u8> code, const HostImageInfo& image,
@@ -138,7 +140,8 @@ bool ApplyRelocations(u8* rw_code,
                       std::span<const Relocation> relocs,
                       const HostImageInfo& image,
                       std::string* error,
-                      ISA isa = kArm64);
+                      ISA isa = kArm64,
+                      std::span<const SerialRegionBranch> region_branches = {});
 
 // --------------------------------------------------------------------------
 // Serialized unit
@@ -254,18 +257,36 @@ struct SerialFaultSite {
     u8 recovery_kind{};
 };
 
+[[nodiscard]] bool ValidSerialFaultSite(const SerialFaultSite& site,
+                                        std::size_t code_size,
+                                        bool precise_guest_faults = false);
+
 class CodeCache;
 enum class SerialRegionBranchKind : u8 {
-    MergeNZCV, MergeNZCVToken, MergeMask, MergeMaskToken,
-    Cycle, CycleNZCV, CycleNZCVToken, Return, ReturnNZCV, ReturnNZCVToken, Count,
+    MergeNZCV,
+    MergeNZCVToken,
+    MergeMask,
+    MergeMaskToken,
+    Cycle,
+    CycleNZCV,
+    CycleNZCVToken,
+    Return,
+    ReturnNZCV,
+    ReturnNZCVToken,
+    PairCall,
+    Count,
 };
 struct SerialRegionBranch {
     u32 code_offset{};
     SerialRegionBranchKind kind{};
     u8 mask{};
+
+    [[nodiscard]] u32 UnlinkedInstruction() const {
+        return kind == SerialRegionBranchKind::PairCall ? 0x9400'0000u : 0x1400'0000u;
+    }
 };
 // These are exact branches to this CodeCache's known shared ABI entries.
-// They are stored as B . and rebound to the destination cache before publish.
+// They are stored as B . (BL . for PairCall) and rebound before publication.
 bool ValidRegionBranches(std::span<const SerialRegionBranch> branches, std::size_t code_size);
 bool FreezeRegionBranches(CodeCache& cache, const u8* original_rx, std::span<u8> code,
                           std::vector<SerialRegionBranch>& branches);
@@ -366,7 +387,23 @@ struct ValidityKey {
 // 28: Per-site Call frame publication on static latch fault recovery.
 // 29: Complete canonical/pending and published-frame entry contracts.
 // 30: Preserve callee NZCV across physical Call continuation returns.
-constexpr u64 kCacheFormatVersion = 31;
+// 32: Per-edge fault-poll resume targets and full-width non-latch request polls.
+// 33: Pending flag clears observed inside a guest instruction and at host exit.
+// 36: Logical integer predicate/condition reads and narrow shift semantics.
+// 37: Pending narrow guest-state loads materialize zero-extension before wide uses.
+// 38: Capture publication at a fault cannot be replaced by an ordinary SSA use.
+// 39: State accesses crossing a sink range observe overlapping pending writes.
+// 40: Full-width publications may use logical guest-state byte/version proofs.
+// 41: AL/NV terminal semantics and canonical flags transfer at selected edges.
+// 42: Complete PF/AF publication at conditional terminal handoffs.
+// 43: Reuse exact FPR values during decode-time guest-state forwarding.
+// 44: Packed floating-point compare masks write the allocated result directly.
+// 45: Native FP NaN propagation, no software repair ABI or per-result guards.
+// 48: Fault-aware flags liveness and branch-only admission.
+// 49: Fault-aware NZCV edge acceptance and checked TSO address scratch reuse.
+// 50: Local lazy-flags self entries with canonical foreign and storage entries.
+// 51: Publish pending flags at standard internal edges before an observer.
+constexpr u64 kCacheFormatVersion = 51;
 
 u64 HashBytes(const void* data, std::size_t size, u64 seed);
 u64 HashU64(u64 value, u64 seed);

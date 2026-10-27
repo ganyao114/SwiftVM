@@ -46,7 +46,7 @@ DoubleShiftShape DecodeDoubleShift(bool right, bool immediate, swift::u8 count) 
     code[5] = immediate ? 0xf4 : 0x90;
     const auto address = reinterpret_cast<VAddr>(code.data());
     Block block{0, Location{address}};
-    Assembler assembler{&block};
+    swift::runtime::compile::IrBuilder assembler{&block};
     ArrayMemory memory;
     FeatureSet features{};
     features.shift_imm_fast = true;

@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "runtime/common/perf_storage.h"
 #include "runtime/common/svm_config.h"
 
 namespace swift::runtime {
@@ -33,14 +34,16 @@ struct PerfStats {
     // pipeline's fixed per-unit overhead is visible.
     std::atomic<unsigned long long> decode_ns{0};     // frontend decode + HIR build
     std::atomic<unsigned long long> rpo_ns{0};        // ComputeRPO + IdByRPO (both)
-    std::atomic<unsigned long long> opt_ns{0};        // PassPipeline
-    std::atomic<unsigned long long> regalloc_ns{0};   // RegisterAllocPass
-    std::atomic<unsigned long long> codegen_ns{0};    // JitTranslator + Flush
+    std::atomic<unsigned long long> opt_ns{0};        // IR optimization
+    std::atomic<unsigned long long> regalloc_ns{0};   // physical allocation + input preparation
+    std::atomic<unsigned long long> codegen_ns{0};    // target completion + emission
     std::atomic<unsigned long long> publish_ns{0};    // module push, L2 slots, SMC
     std::atomic<unsigned long long> ir_free_ns{0};    // releasing the unit's IR
     std::atomic<unsigned long long> translate_ns{0};  // whole Translate() call
     std::atomic<unsigned long long> translate_wait_ns{0}; // config/range lock waits
 
+    // Decoded frontend units, including interpreted and retried requests.
+    // A Function frontend may use block allocation; these are not RA entries.
     std::atomic<unsigned long long> func_units{0};
     std::atomic<unsigned long long> block_units{0};
     std::atomic<unsigned long long> decoded_blocks{0};
@@ -59,6 +62,14 @@ struct PerfStats {
 struct PerfCounter2 {
     std::atomic<unsigned long long> ns{0};
     std::atomic<unsigned long long> calls{0};
+};
+
+struct PerfWorkspaceStorage {
+    std::atomic<unsigned long long> allocation_calls{0}, deallocation_calls{0};
+    std::atomic<unsigned long long> allocated_bytes{0}, released_bytes{0};
+    std::atomic<unsigned long long> live_bytes{0}, peak_bytes{0};
+    std::atomic<unsigned long long> retention_events{0}, retained_bytes{0}, peak_retained_bytes{0};
+    std::atomic<unsigned long long> zero_init_bytes{0}, pattern_init_bytes{0};
 };
 
 enum class PerfLoweringPart2 : unsigned char {
@@ -112,16 +123,21 @@ struct PerfStats2 {
     PerfCounter2 pass_flags;
     PerfCounter2 pass_const;
     PerfCounter2 pass_dce;
+    PerfCounter2 pass_loop_hoist;
     PerfCounter2 reid_block;
 
     PerfCounter2 compute_rpo;
     PerfCounter2 id_rpo_pre;
     PerfCounter2 id_rpo_post;
     PerfCounter2 regalloc_total;
+    // Actual public allocation entries, excluding argument preparation and
+    // internal retry attempts. Independent of frontend mode or block count.
+    PerfCounter2 allocate_block;
+    PerfCounter2 allocate_function;
     PerfCounter2 collect_live;
     PerfCounter2 evict_select;
     PerfCounter2 evict_collect;
-    PerfCounter2 target_replay;
+    PerfCounter2 fpr_contract_retry;
     PerfCounter2 regalloc_live_scan;
     PerfCounter2 regalloc_live_values;
     PerfCounter2 regalloc_sort;
@@ -131,10 +147,12 @@ struct PerfStats2 {
     PerfCounter2 codegen_total;
     PerfCounter2 codegen_complete;
     PerfCounter2 plan_declare;
-    PerfCounter2 plan_bind;
     PerfCounter2 plan_targets;
     PerfCounter2 plan_perblock;
     PerfCounter2 plan_verify;
+    PerfCounter2 plan_edges;    // edge/state/terminal actions, including deferred locations
+    PerfCounter2 plan_seal;     // freeze/sort prepared payloads and physical locations
+    PerfCounter2 plan_release;  // release the completed allocation request's inputs
     PerfCounter2 plan_guestmap;
     PerfCounter2 plan_builder;
     PerfCounter2 verify_fixed;
@@ -240,6 +258,17 @@ struct PerfStats2 {
     std::atomic<unsigned long long> uniform_dse_blocks{0};
     std::atomic<unsigned long long> uniform_dse_victims{0};
 
+    // Scratch preparation/finalization payloads. Capacities are summed at
+    // these boundaries; they are neither allocator requests nor live peaks.
+    std::atomic<unsigned long long> scratch_blocks{0}, scratch_instructions{0};
+    std::atomic<unsigned long long> scratch_ranges{0}, scratch_inputs{0};
+    std::atomic<unsigned long long> scratch_temporary_capacity_bytes{0};
+    std::atomic<unsigned long long> scratch_units{0}, scratch_frozen_ranges{0};
+    std::atomic<unsigned long long> scratch_frozen_inputs{0}, scratch_frozen_capacity_bytes{0};
+
+    PerfWorkspaceStorage workspace_total;
+    std::array<PerfWorkspaceStorage, kWorkspaceBufferNames.size()> workspace_buffers;
+
     static constexpr auto kGetenvNames = kSvmConfigEnvNames;
     std::array<std::atomic<unsigned long long>, kGetenvNames.size()> getenv_ns{};
     std::array<std::atomic<unsigned long long>, kGetenvNames.size()> getenv_calls{};
@@ -336,15 +365,18 @@ inline void PerfDumpAtExit() {
     PERF2_DUMP(pass_flags);
     PERF2_DUMP(pass_const);
     PERF2_DUMP(pass_dce);
+    PERF2_DUMP(pass_loop_hoist);
     PERF2_DUMP(reid_block);
     PERF2_DUMP(compute_rpo);
     PERF2_DUMP(id_rpo_pre);
     PERF2_DUMP(id_rpo_post);
     PERF2_DUMP(regalloc_total);
+    PERF2_DUMP(allocate_block);
+    PERF2_DUMP(allocate_function);
     PERF2_DUMP(collect_live);
     PERF2_DUMP(evict_select);
     PERF2_DUMP(evict_collect);
-    PERF2_DUMP(target_replay);
+    PERF2_DUMP(fpr_contract_retry);
     PERF2_DUMP(regalloc_live_scan);
     PERF2_DUMP(regalloc_live_values);
     PERF2_DUMP(regalloc_sort);
@@ -353,10 +385,12 @@ inline void PerfDumpAtExit() {
     PERF2_DUMP(codegen_total);
     PERF2_DUMP(codegen_complete);
     PERF2_DUMP(plan_declare);
-    PERF2_DUMP(plan_bind);
     PERF2_DUMP(plan_targets);
     PERF2_DUMP(plan_perblock);
     PERF2_DUMP(plan_verify);
+    PERF2_DUMP(plan_edges);
+    PERF2_DUMP(plan_seal);
+    PERF2_DUMP(plan_release);
     PERF2_DUMP(plan_guestmap);
     PERF2_DUMP(plan_builder);
     PERF2_DUMP(verify_fixed);
@@ -475,6 +509,44 @@ inline void PerfDumpAtExit() {
                  g(d.uniform_check_hits),
                  g(d.uniform_dse_blocks),
                  g(d.uniform_dse_victims));
+    std::fprintf(stderr,
+                 "[svm-scratch-storage] prepared_blocks=%llu instructions=%llu ranges=%llu "
+                 "inputs=%llu temporary_capacity_bytes=%llu frozen_units=%llu "
+                 "frozen_ranges=%llu frozen_inputs=%llu frozen_capacity_bytes=%llu\n",
+                 g(d.scratch_blocks),
+                 g(d.scratch_instructions),
+                 g(d.scratch_ranges),
+                 g(d.scratch_inputs),
+                 g(d.scratch_temporary_capacity_bytes),
+                 g(d.scratch_units),
+                 g(d.scratch_frozen_ranges),
+                 g(d.scratch_frozen_inputs),
+                 g(d.scratch_frozen_capacity_bytes));
+    const auto storage = SnapshotWorkspaceStorage();
+    if (storage.enabled) {
+        const auto dump_storage = [](const char* name, const WorkspaceStorageStats& counters) {
+            std::fprintf(stderr,
+                         "[svm-workspace-storage] buffer=%s allocations=%llu deallocations=%llu "
+                         "allocated_bytes=%llu released_bytes=%llu live_bytes=%llu peak_bytes=%llu "
+                         "retention_events=%llu retained_bytes=%llu peak_retained_bytes=%llu "
+                         "zero_init_bytes=%llu pattern_init_bytes=%llu\n",
+                         name,
+                         static_cast<unsigned long long>(counters.allocation_calls),
+                         static_cast<unsigned long long>(counters.deallocation_calls),
+                         static_cast<unsigned long long>(counters.allocated_bytes),
+                         static_cast<unsigned long long>(counters.released_bytes),
+                         static_cast<unsigned long long>(counters.live_bytes),
+                         static_cast<unsigned long long>(counters.peak_bytes),
+                         static_cast<unsigned long long>(counters.retention_events),
+                         static_cast<unsigned long long>(counters.retained_bytes),
+                         static_cast<unsigned long long>(counters.peak_retained_bytes),
+                         static_cast<unsigned long long>(counters.zero_init_bytes),
+                         static_cast<unsigned long long>(counters.pattern_init_bytes));
+        };
+        dump_storage("total", storage.total);
+        for (size_t i = 0; i < storage.buffers.size(); ++i)
+            dump_storage(kWorkspaceBufferNames[i], storage.buffers[i]);
+    }
     for (size_t i = 0; i < d.kGetenvNames.size(); ++i) {
         const auto calls = g(d.getenv_calls[i]);
         if (calls) {
@@ -894,6 +966,7 @@ public:
     }
 
     void Classify(unsigned blocks) {
+        // Decode shape only; allocate_block/function report the actual RA entry.
         if (Perf2Enabled()) {
             perf2_unit_blocks = blocks;
             auto& s = GetPerfStats2();

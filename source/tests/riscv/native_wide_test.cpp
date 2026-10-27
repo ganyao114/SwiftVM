@@ -1,9 +1,11 @@
-#include "test_support.h"
-#include "runtime/frontend/ir_assembler.h"
-#include "runtime/backend/interp/interpreter.h"
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include "runtime/backend/interp/interpreter.h"
+#include "runtime/compile/builder/ir_builder.h"
+#include "runtime/compile/passes/passes.h"
+#include "runtime/compile/workspace.h"
+#include "test_support.h"
 
 namespace swift::tests::riscv {
 using T = ir::ValueType;
@@ -21,11 +23,12 @@ bool WideRangeCheck(void* opaque, u64, u64 size) {
 }
 struct Fixture {
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf000})};
-    ir::Assembler as{block.get()};
-    ir::Value left = as.LoadUniform(ir::Uniform{0, T::V256}).SetType(T::V256);
-    ir::Value right = as.LoadUniform(ir::Uniform{32, T::V256}).SetType(T::V256);
+    compile::IrBuilder as{block.get()};
+    ir::Value left = as.LoadUniform(T::V256, ir::Uniform{0, T::V256});
+    ir::Value right = as.LoadUniform(T::V256, ir::Uniform{32, T::V256});
     void Run(ir::Value result, const Bytes& a, const Bytes& b, const Bytes& expected, bool vector) {
-        as.StoreUniform(ir::Uniform{96, T::V256}, result.SetType(T::V256));
+        Check(result.Type() == T::V256, "wide producers declare their result width");
+        as.StoreUniform(ir::Uniform{96, T::V256}, result);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         rv::HostFeatures features{}; features.vector = vector;
         for (bool cache : {true, false}) {
@@ -46,10 +49,13 @@ struct Fixture {
 } // namespace
 
 void NativeWide(bool vector) {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
 #if defined(__riscv) && __riscv_xlen == 64
     {
-        Fixture f; f.as.StoreUniform(ir::Uniform{96, T::V256}, f.left);
-        f.block->SetTerminal(ir::terminal::ReturnToHost{}); StateStorage state;
+        Fixture f;
+        f.as.StoreUniform(ir::Uniform{96, T::V256}, f.left);
+        f.block->SetTerminal(ir::terminal::ReturnToHost{});
+        StateStorage state;
         std::array<u8, 32> before{}; before.fill(0xcc);
         std::memcpy(state.state->uniform_buffer_begin + 96, before.data(), 32);
         Check(backend::interp::Interpreter{*state.state, f.block.get()}.Run() == HaltReason::IllegalCode &&
@@ -62,9 +68,12 @@ void NativeWide(bool vector) {
         for (u32 bits : {8u, 16u, 32u, 64u}) {
             Fixture f; ir::Value result;
             if (op == O::VecAnd || op == O::VecOr || op == O::VecXor || op == O::VecAndNot)
-                result = ir::Value{f.block->AppendInst(op, f.left, f.right)};
-            else result = ir::Value{f.block->AppendInst(op, f.left, f.right, ir::Imm{u64(bits)})};
-            Bytes expected{}; const u32 width = bits / 8;
+                result = ir::Value{f.block->AppendInst(op, T::V256, f.left, f.right)};
+            else
+                result = ir::Value{
+                        f.block->AppendInst(op, T::V256, f.left, f.right, ir::Imm{u64(bits)})};
+            Bytes expected{};
+            const u32 width = bits / 8;
             for (u32 lane = 0; lane < 32 / width; ++lane) {
                 const auto x = Lane(a, lane, width), y = Lane(b, lane, width);
                 u64 value{};
@@ -83,8 +92,10 @@ void NativeWide(bool vector) {
     }
     for (u32 count : {0u, 1u, 7u, 15u, 16u, 17u, 24u, 31u, 32u}) {
         for (bool left : {false, true}) {
-            Fixture f; Bytes expected{};
-            auto result = f.as.VecByteShift(f.left, f.right, ir::Imm{u64(count)}, ir::Imm{u64(left)});
+            Fixture f;
+            Bytes expected{};
+            auto result = f.as.VecByteShift(
+                    T::V256, f.left, f.right, ir::Imm{u64(count)}, ir::Imm{u64(left)});
             for (u32 i = 0; i < 32; ++i) {
                 if (left && i >= count) expected[i] = a[i - count];
                 if (!left && i + count < 32) expected[i] = a[i + count];
@@ -92,9 +103,11 @@ void NativeWide(bool vector) {
             f.Run(result, a, b, expected, vector);
         }
         if (count == 32) continue;
-        Fixture f; Bytes expected{};
-        auto result = f.as.VecExtractBytes(f.left, f.right, ir::Imm{u64(count)});
-        for (u32 i = 0; i < 32; ++i) expected[i] = i + count < 32 ? a[i + count] : b[i + count - 32];
+        Fixture f;
+        Bytes expected{};
+        auto result = f.as.VecExtractBytes(T::V256, f.left, f.right, ir::Imm{u64(count)});
+        for (u32 i = 0; i < 32; ++i)
+            expected[i] = i + count < 32 ? a[i + count] : b[i + count - 32];
         f.Run(result, a, b, expected, vector);
     }
     for (auto op : {O::VecSatAdd, O::VecSatSub}) for (u32 bits : {8u, 16u, 32u, 64u}) for (bool sign : {false, true}) {
@@ -110,7 +123,8 @@ void NativeWide(bool vector) {
             const s128 maximum = sign ? (s128{1} << (bits - 1)) - 1 : s128(mask);
             Lane(expected, lane, width, u64(std::clamp(op == O::VecSatAdd ? sx + sy : sx - sy, minimum, maximum)));
         }
-        auto result = ir::Value{f.block->AppendInst(op, f.left, f.right, ir::Imm{u64(bits)}, ir::Imm{u64(sign)})};
+        auto result = ir::Value{f.block->AppendInst(
+                op, T::V256, f.left, f.right, ir::Imm{u64(bits)}, ir::Imm{u64(sign)})};
         f.Run(result, a, b, expected, vector);
     }
     for (u32 bits : {16u, 32u, 64u}) for (bool unsigned_destination : {false, true}) {
@@ -121,31 +135,41 @@ void NativeWide(bool vector) {
             const u64 raw = Lane(source ? b : a, lane, source_width);
             const s128 value = (raw & (u64{1} << (bits - 1))) ? s128(raw) - (s128{1} << bits) : s128(raw);
             Lane(expected, source * (32 / source_width) + lane, destination_width, u64(std::clamp(value, minimum, maximum)));
-        }
-        auto result = f.as.VecPack(f.left, f.right, ir::Imm{u64(bits)}, ir::Imm{u64(unsigned_destination)});
+            }
+        auto result = f.as.VecPack(
+                T::V256, f.left, f.right, ir::Imm{u64(bits)}, ir::Imm{u64(unsigned_destination)});
         f.Run(result, a, b, expected, vector);
     }
     for (auto op : {O::VecZip, O::VecUnzip}) for (u32 bits : {8u, 16u, 32u, 64u}) for (u32 upper : {0u, 1u}) {
-        Fixture f; Bytes expected{}; const u32 width = bits / 8, lanes = 32 / width;
-        auto result = ir::Value{f.block->AppendInst(op, f.left, f.right, ir::Imm{u64(bits)}, ir::Imm{u64(upper)})};
-        for (u32 lane = 0; lane < lanes; ++lane) {
-            const bool right = op == O::VecZip ? (lane & 1) : lane >= lanes / 2;
-            const u32 index = op == O::VecZip ? lane / 2 + upper * lanes / 2 : (lane % (lanes / 2)) * 2 + upper;
-            Lane(expected, lane, width, Lane(right ? b : a, index, width));
-        }
+                Fixture f;
+                Bytes expected{};
+                const u32 width = bits / 8, lanes = 32 / width;
+                auto result = ir::Value{f.block->AppendInst(
+                        op, T::V256, f.left, f.right, ir::Imm{u64(bits)}, ir::Imm{u64(upper)})};
+                for (u32 lane = 0; lane < lanes; ++lane) {
+                    const bool right = op == O::VecZip ? (lane & 1) : lane >= lanes / 2;
+                    const u32 index = op == O::VecZip ? lane / 2 + upper * lanes / 2
+                                                      : (lane % (lanes / 2)) * 2 + upper;
+                    Lane(expected, lane, width, Lane(right ? b : a, index, width));
+                }
         f.Run(result, a, b, expected, vector);
     }
     for (u32 lane = 0; lane < 16; ++lane) {
-        Fixture f; Bytes expected = a;
-        auto scalar = f.as.LoadImm(ir::Imm{u64{0xabcd}}).SetType(T::U64);
-        auto result = f.as.VecInsert16(f.left, scalar, ir::Imm{u64(lane)});
-        Lane(expected, lane, 2, 0xabcd); f.Run(result, a, b, expected, vector);
+        Fixture f;
+        Bytes expected = a;
+        auto scalar = f.as.LoadImm(T::U64, ir::Imm{u64{0xabcd}});
+        auto result = f.as.VecInsert16(T::V256, f.left, scalar, ir::Imm{u64(lane)});
+        Lane(expected, lane, 2, 0xabcd);
+        f.Run(result, a, b, expected, vector);
     }
     for (u32 bits : {8u, 16u, 32u, 64u}) {
-        Fixture f; const u32 width = bits / 8; u64 expected{};
-        auto mask = f.as.VecMovMask(f.left, ir::Imm{u64(bits)}).SetType(T::U64);
+        Fixture f;
+        const u32 width = bits / 8;
+        u64 expected{};
+        auto mask = f.as.VecMovMask(T::U64, f.left, ir::Imm{u64(bits)});
         f.as.StoreUniform(ir::Uniform{96, T::U64}, mask);
-        for (u32 lane = 0; lane < 32 / width; ++lane) expected |= ((Lane(a, lane, width) >> (bits - 1)) & 1) << lane;
+        for (u32 lane = 0; lane < 32 / width; ++lane)
+            expected |= ((Lane(a, lane, width) >> (bits - 1)) & 1) << lane;
         f.block->SetTerminal(ir::terminal::ReturnToHost{});
         rv::HostFeatures features{}; features.vector = vector;
         Compiled compiled{f.block.get(), true, features}; StateStorage state;
@@ -157,7 +181,7 @@ void NativeWide(bool vector) {
         for (u32 lane = 0; lane < 32; ++lane) {
             indices[lane] = u8((lane * 7) % 48); expected[lane] = indices[lane] < 32 ? a[indices[lane]] : 0;
         }
-        auto result = f.as.VecShuffle32Indexed(f.left, f.right);
+        auto result = f.as.VecShuffle32Indexed(T::V256, f.left, f.right);
         f.Run(result, a, indices, expected, vector);
     }
     {
@@ -167,7 +191,7 @@ void NativeWide(bool vector) {
             std::memcpy(a.data() + lane * 4, &x, 4); std::memcpy(b.data() + lane * 4, &y, 4);
             std::memcpy(expected.data() + lane * 4, &z, 4);
         }
-        auto result = f.as.VecFAdd(f.left, f.right, ir::Imm{u64{32}});
+        auto result = f.as.VecFAdd(T::V256, f.left, f.right, ir::Imm{u64{32}});
         f.Run(result, a, b, expected, vector);
     }
     for (u32 kind = 0; kind < 8; ++kind) {
@@ -190,13 +214,13 @@ void NativeWide(bool vector) {
                 Lane(expected, lane, 4, u32(s32(kind == 3 || kind == 5 ? std::trunc(value) : std::nearbyint(value))));
             }
         }
-        f.Run(f.as.VecFCvtPacked(f.left, ir::Imm{u64(kind)}), source, b, expected, vector);
+        f.Run(f.as.VecFCvtPacked(T::V256, f.left, ir::Imm{u64(kind)}), source, b, expected, vector);
     }
     {
         Fixture f; Bytes expected = a;
         const float x = std::bit_cast<float>(u32(Lane(a, 0, 4))), y = std::bit_cast<float>(u32(Lane(b, 0, 4)));
         Lane(expected, 0, 4, std::bit_cast<u32>(x + y));
-        f.Run(f.as.VecFAddScalar32(f.left, f.right), a, b, expected, vector);
+        f.Run(f.as.VecFAddScalar32(T::V256, f.left, f.right), a, b, expected, vector);
     }
     {
         Fixture f; Bytes expected{};
@@ -204,20 +228,31 @@ void NativeWide(bool vector) {
             const float x = std::bit_cast<float>(u32(Lane(a, lane, 4))), y = std::bit_cast<float>(u32(Lane(b, lane, 4)));
             Lane(expected, lane, 4, std::bit_cast<u32>(std::fma(x, y, x)));
         }
-        f.Run(f.as.VecFMulAdd(f.left, f.right, f.left, ir::Imm{u64{32}}, ir::Imm{u64{0}}), a, b, expected, vector);
+        f.Run(f.as.VecFMulAdd(T::V256, f.left, f.right, f.left, ir::Imm{u64{32}}, ir::Imm{u64{0}}),
+              a,
+              b,
+              expected,
+              vector);
     }
     {
         Fixture f;
-        auto bad = f.as.Add(f.left, ir::Operand{f.right}).SetType(T::V256);
-        f.as.StoreUniform(ir::Uniform{96, T::V256}, bad); f.block->SetTerminal(ir::terminal::ReturnToHost{});
+        auto bad = f.as.Add(T::V256, f.left, ir::Operand{f.right});
+        f.as.StoreUniform(ir::Uniform{96, T::V256}, bad);
+        f.block->SetTerminal(ir::terminal::ReturnToHost{});
+        rv::JitContext context;
+        rv::JitTranslator translator{context};
         bool rejected{};
-        try { Compiled compiled{f.block.get()}; }
-        catch (const std::runtime_error& error) { rejected = std::string{error.what()}.find("V256 result is invalid") != std::string::npos; }
-        Check(rejected, "V256 rejects invalid scalar arithmetic shapes before native emission");
+        try { translator.Translate(f.block.get()); }
+        catch (const std::runtime_error& error) {
+            rejected = std::string{error.what()} == "RV64 IR has an invalid result or arguments";
+        }
+        Check(rejected && context.CurrentBufferSize() == 0,
+              "V256 rejects invalid scalar arithmetic shapes before native emission");
     }
     {
-        Fixture f; auto chain = f.left;
-        for (u32 i = 0; i < 40; ++i) chain = f.as.VecAdd(chain, f.right, ir::Imm{u64{32}}).SetType(T::V256);
+        Fixture f;
+        auto chain = f.left;
+        for (u32 i = 0; i < 40; ++i) chain = f.as.VecAdd(T::V256, chain, f.right, ir::Imm{u64{32}});
         f.as.StoreUniform(ir::Uniform{96, T::V256}, chain);
         f.block->SetTerminal(ir::terminal::ReturnToHost{});
         rv::HostFeatures features{}; features.vector = vector;
@@ -229,25 +264,37 @@ void NativeWide(bool vector) {
     }
     for (bool ordered : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf200})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::V256}).SetType(T::V256);
-        auto address = as.LoadUniform(ir::Uniform{64, T::U64}).SetType(T::U64);
-        if (ordered) as.StoreMemoryTSO(ir::Operand{address}, input);
-        else as.StoreMemory(ir::Operand{address}, input);
-        auto value = (ordered ? as.LoadMemoryTSO(ir::Operand{address}) : as.LoadMemory(ir::Operand{address})).SetType(T::V256);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::V256, ir::Uniform{0, T::V256});
+        auto address = as.LoadUniform(T::U64, ir::Uniform{64, T::U64});
+        if (ordered)
+            as.StoreMemoryTSO(ir::Operand{address}, input);
+        else
+            as.StoreMemory(ir::Operand{address}, input);
+        auto value = (ordered ? as.LoadMemoryTSO(T::V256, ir::Operand{address})
+                              : as.LoadMemory(T::V256, ir::Operand{address}));
         as.StoreUniform(ir::Uniform{96, T::V256}, value);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         rv::HostFeatures features{}; features.vector = vector;
+        compile::RewriteContext rewrite{block.get(), compilation_workspace, nullptr, false};
         for (bool cache : {false, true}) {
             Compiled compiled{block.get(), cache, features};
             if (ordered) {
-                const auto change = [](ir::Inst& inst, O load, O store) {
+                const auto change = [&](const ir::Inst& inst, O load, O store) {
                     const auto op = inst.GetOp();
-                    if (op != O::LoadMemory && op != O::LoadMemoryTSO && op != O::StoreMemory && op != O::StoreMemoryTSO) return;
+                    if (op != O::LoadMemory && op != O::LoadMemoryTSO && op != O::StoreMemory && op != O::StoreMemoryTSO)
+                        return;
                     const auto address = inst.GetArg<ir::Operand>(0);
-                    if (op == O::LoadMemory || op == O::LoadMemoryTSO) inst.SetInst(load, address);
-                    else { const auto value = inst.GetArg<ir::Value>(1); inst.SetInst(store, address, value); }
-                    if (op == O::LoadMemory || op == O::LoadMemoryTSO) inst.SetReturn(T::V256);
+                    const bool is_load = op == O::LoadMemory || op == O::LoadMemoryTSO;
+                    const auto value = is_load ? ir::Value{} : inst.GetArg<ir::Value>(1);
+                    rewrite.Change(block.get(), &inst, [&](ir::Inst& target) {
+                        if (is_load) {
+                            target.SetInst(load, address);
+                            target.SetReturn(T::V256);
+                        } else {
+                            target.SetInst(store, address, value);
+                        }
+                    });
                 };
                 for (auto& inst : block->GetInstList()) {
                     change(inst, O::LoadMemory, O::StoreMemory);
@@ -284,16 +331,20 @@ void NativeWide(bool vector) {
         }
     }
     {
-        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf400})}; ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::V256}).SetType(T::V256);
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf400})};
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::V256, ir::Uniform{0, T::V256});
         as.SetHostFPR(input, ir::Imm{u16{19}}, ir::Imm{u8{0}});
-        auto captured = as.GetHostFPR(ir::Imm{u16{19}}, ir::Imm{u8{0}}).SetType(T::V256);
-        auto replacement = as.LoadImm(ir::Imm{u32{0x76543210}}).SetType(T::U32);
+        auto captured = as.GetHostFPR(T::V256, ir::Imm{u16{19}}, ir::Imm{u8{0}});
+        auto replacement = as.LoadImm(T::U32, ir::Imm{u32{0x76543210}});
         as.SetHostFPR(replacement, ir::Imm{u16{19}}, ir::Imm{u8{20}});
-        auto updated = as.GetHostFPR(ir::Imm{u16{19}}, ir::Imm{u8{0}}).SetType(T::V256);
-        as.StoreUniform(ir::Uniform{96, T::V256}, captured); as.StoreUniform(ir::Uniform{128, T::V256}, updated);
-        const ir::Local local{4, T::V256}; as.StoreLocal(local, captured);
-        auto local_value = as.LoadLocal(local).SetType(T::V256); as.StoreUniform(ir::Uniform{160, T::V256}, local_value);
+        auto updated = as.GetHostFPR(T::V256, ir::Imm{u16{19}}, ir::Imm{u8{0}});
+        as.StoreUniform(ir::Uniform{96, T::V256}, captured);
+        as.StoreUniform(ir::Uniform{128, T::V256}, updated);
+        const ir::Local local{4, T::V256};
+        as.StoreLocal(local, captured);
+        auto local_value = as.LoadLocal(T::V256, local);
+        as.StoreUniform(ir::Uniform{160, T::V256}, local_value);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         rv::HostFeatures features{}; features.vector = vector;
         const std::array bindings{UniformMapDesc{256, 32, 19, true}};
@@ -308,21 +359,33 @@ void NativeWide(bool vector) {
               "V256 logical FPR captures, upper-half partial writes and local buffers");
     }
     {
-        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf600})}; ir::Assembler as{block.get()};
-        auto first = as.LoadUniform(ir::Uniform{0, T::V256}).SetType(T::V256);
-        auto second = as.LoadUniform(ir::Uniform{32, T::V256}).SetType(T::V256);
-        auto* branch = new ir::Inst(O::Goto);
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xf600})};
+        compile::IrBuilder as{block.get()};
+        auto first = as.LoadUniform(T::V256, ir::Uniform{0, T::V256});
+        auto second = as.LoadUniform(T::V256, ir::Uniform{32, T::V256});
+        auto* branch = new ir::Inst(O::Goto, T::U8);
         as.BindLabel(ir::Value{branch});
-        ir::Params a_inputs; a_inputs.Push(first); a_inputs.Push(first);
-        auto phi_a = as.AddPhi(a_inputs).SetType(T::V256);
-        ir::Params b_inputs; b_inputs.Push(second); b_inputs.Push(phi_a);
-        auto phi_b = as.AddPhi(b_inputs).SetType(T::V256);
-        ir::Params final_inputs; final_inputs.Push(first); final_inputs.Push(phi_b); phi_a.Def()->SetArg(0, final_inputs);
-        auto count = as.LoadUniform(ir::Uniform{80, T::U64}).SetType(T::U64);
-        auto next = as.Sub(count, ir::Operand{ir::Imm{u64{1}}}).SetType(T::U64);
+        ir::Params a_inputs;
+        a_inputs.Push(first);
+        a_inputs.Push(first);
+        auto phi_a = as.AddPhi(T::V256, std::move(a_inputs));
+        ir::Params b_inputs;
+        b_inputs.Push(second);
+        b_inputs.Push(phi_a);
+        auto phi_b = as.AddPhi(T::V256, std::move(b_inputs));
+        ir::Params final_inputs;
+        final_inputs.Push(first);
+        final_inputs.Push(phi_b);
+        compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.SetArg(
+                block.get(), phi_a.Def(), 0, std::move(final_inputs));
+        auto count = as.LoadUniform(T::U64, ir::Uniform{80, T::U64});
+        auto next = as.Sub(T::U64, count, ir::Operand{ir::Imm{u64{1}}});
         as.StoreUniform(ir::Uniform{80, T::U64}, next);
-        auto condition = as.TestNotZero(next).SetType(T::U8); branch->SetArgs(condition); block->AppendInst(branch);
-        as.StoreUniform(ir::Uniform{96, T::V256}, phi_a); as.StoreUniform(ir::Uniform{128, T::V256}, phi_b);
+        auto condition = as.TestNotZero(T::U8, next);
+        branch->SetArgs(condition);
+        block->AppendInst(branch);
+        as.StoreUniform(ir::Uniform{96, T::V256}, phi_a);
+        as.StoreUniform(ir::Uniform{128, T::V256}, phi_b);
         block->SetTerminal(ir::terminal::ReturnToHost{}); block->ReIdInstr();
         rv::HostFeatures features{}; features.vector = vector;
         Compiled compiled{block.get(), true, features}; StateStorage state;
@@ -335,17 +398,29 @@ void NativeWide(bool vector) {
     }
     for (auto op : {O::VecAesEnc, O::VecAesEncLast, O::VecAesDec, O::VecAesDecLast,
                    O::VecSha256Msg1, O::VecSha256Msg2, O::VecSha256Rnds2, O::VecPclMul}) {
-        Fixture f; ir::Value result; Bytes expected{};
-        if (op == O::VecSha256Rnds2) result = ir::Value{f.block->AppendInst(op, f.left, f.right, f.left)};
-        else if (op == O::VecPclMul) result = ir::Value{f.block->AppendInst(op, f.left, f.right, ir::Imm{u8{17}})};
-        else result = ir::Value{f.block->AppendInst(op, f.left, f.right)};
-        IntrusivePtr<ir::Block> reference{new ir::Block(ir::Location{0xf700})}; ir::Assembler as{reference.get()};
-        auto left = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-        auto right = as.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128); ir::Value value;
-        if (op == O::VecSha256Rnds2) value = ir::Value{reference->AppendInst(op, left, right, left)};
-        else if (op == O::VecPclMul) value = ir::Value{reference->AppendInst(op, left, right, ir::Imm{u8{17}})};
-        else value = ir::Value{reference->AppendInst(op, left, right)};
-        as.StoreUniform(ir::Uniform{32, T::V128}, value.SetType(T::V128)); reference->SetTerminal(ir::terminal::ReturnToHost{}); reference->ReIdInstr();
+        Fixture f;
+        ir::Value result;
+        Bytes expected{};
+        if (op == O::VecSha256Rnds2)
+            result = ir::Value{f.block->AppendInst(op, T::V256, f.left, f.right, f.left)};
+        else if (op == O::VecPclMul)
+            result = ir::Value{f.block->AppendInst(op, T::V256, f.left, f.right, ir::Imm{u8{17}})};
+        else
+            result = ir::Value{f.block->AppendInst(op, T::V256, f.left, f.right)};
+        IntrusivePtr<ir::Block> reference{new ir::Block(ir::Location{0xf700})};
+        compile::IrBuilder as{reference.get()};
+        auto left = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+        auto right = as.LoadUniform(T::V128, ir::Uniform{16, T::V128});
+        ir::Value value;
+        if (op == O::VecSha256Rnds2)
+            value = ir::Value{reference->AppendInst(op, T::V128, left, right, left)};
+        else if (op == O::VecPclMul)
+            value = ir::Value{reference->AppendInst(op, T::V128, left, right, ir::Imm{u8{17}})};
+        else
+            value = ir::Value{reference->AppendInst(op, T::V128, left, right)};
+        as.StoreUniform(ir::Uniform{32, T::V128}, value);
+        reference->SetTerminal(ir::terminal::ReturnToHost{});
+        reference->ReIdInstr();
         for (u32 part = 0; part < 2; ++part) {
             StateStorage state; std::memcpy(state.state->uniform_buffer_begin, a.data() + part * 16, 16);
             std::memcpy(state.state->uniform_buffer_begin + 16, b.data() + part * 16, 16);

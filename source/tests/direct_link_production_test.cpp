@@ -15,24 +15,23 @@
 #if defined(__APPLE__)
 #include <mach-o/dyld.h>
 #endif
-#include <catch2/generators/catch_generators.hpp>
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include "aarch64/disasm-aarch64.h"
-#include "runtime/common/svm_config.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/edge_flags.h"
 #include "runtime/backend/arm64/region_link_trampoline.h"
-#include "runtime/backend/arm64/alloc/edge_flags_analysis.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/link_manager.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/common/cast_utils.h"
+#include "runtime/common/svm_config.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/block.h"
 #include "runtime/ir/hir_builder.h"
 #include "translator/x86/cpu.h"
 
 namespace {
-
 using namespace swift;
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
@@ -63,7 +62,7 @@ private:
 IntrusivePtr<Block> BuildTarget(VAddr guest, u64 fingerprint) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    const auto value = block->LoadImm(Imm{fingerprint}).SetType(ValueType::U64);
+    const auto value = block->LoadImm(ValueType::U64, Imm{fingerprint});
     block->StoreUniform(Uniform{0, ValueType::U64}, value);
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
@@ -92,10 +91,7 @@ void* TranslateContinuationReturnSource(
         VAddr guest) {
     HIRBuilder builder{1, true};
     auto* function = builder.AppendFunction(Location{guest}, Location{guest + 1});
-    const auto target = function
-                                ->LoadUniform<TypedValue<ValueType::U64>>(
-                                        Uniform{0, ValueType::U64})
-                                .SetType(ValueType::U64);
+    const auto target = function->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
     function->SetLocation(Lambda{target});
     function->EndBlock(terminal::PopRSBHint{});
     function->EndFunction();
@@ -108,16 +104,9 @@ void* TranslateIndirectCallSource(const std::shared_ptr<Module>& module,
     HIRBuilder builder{1, true};
     auto* function = builder.AppendFunction(Location{guest},
                                             Location{return_guest + 1});
-    const auto target = function
-                                ->LoadUniform<TypedValue<ValueType::U64>>(
-                                        Uniform{8, ValueType::U64})
-                                .SetType(ValueType::U64);
-    const auto return_value = function
-                                      ->LoadImm(Imm{return_guest})
-                                      .SetType(ValueType::U64);
-    function->CallReturn(return_value,
-                         Imm{return_guest},
-                         Lambda{target});
+    const auto target = function->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
+    const auto return_value = function->LoadImm(ValueType::U64, Imm{return_guest});
+    function->CallReturn(return_value, Imm{return_guest}, Lambda{target});
     function->SetLocation(Lambda{target});
     builder.RegisterCallReturn(Location{return_guest});
     function->EndBlock(terminal::ReturnToDispatch{});
@@ -134,7 +123,7 @@ void* TranslateStaticCallSource(const std::shared_ptr<Module>& module,
                                 VAddr return_guest) {
     HIRBuilder builder{1, true};
     auto* function = builder.AppendFunction(Location{guest}, Location{return_guest + 1});
-    const auto return_value = function->LoadImm(Imm{return_guest}).SetType(ValueType::U64);
+    const auto return_value = function->LoadImm(ValueType::U64, Imm{return_guest});
     function->CallReturn(return_value, Imm{return_guest}, Lambda{Imm{target_guest}});
     function->SetLocation(Lambda{Imm{target_guest}});
     builder.RegisterCallReturn(Location{return_guest});
@@ -150,9 +139,7 @@ void* TranslateCallTarget(const std::shared_ptr<Module>& module,
                           u64 fingerprint) {
     HIRBuilder builder{1, true};
     auto* function = builder.AppendFunction(Location{guest}, Location{guest + 1});
-    const auto value = function
-                               ->LoadImm(Imm{fingerprint})
-                               .SetType(ValueType::U64);
+    const auto value = function->LoadImm(ValueType::U64, Imm{fingerprint});
     function->StoreUniform(Uniform{0, ValueType::U64}, value);
     function->EndBlock(terminal::ReturnToHost{});
     function->EndFunction();
@@ -164,11 +151,9 @@ void* TranslateReturningCallTarget(const std::shared_ptr<Module>& module,
                                    u64 fingerprint) {
     HIRBuilder builder{1, true};
     auto* function = builder.AppendFunction(Location{guest}, Location{guest + 1});
-    const auto value = function->LoadImm(Imm{fingerprint}).SetType(ValueType::U64);
+    const auto value = function->LoadImm(ValueType::U64, Imm{fingerprint});
     function->StoreUniform(Uniform{0, ValueType::U64}, value);
-    const auto return_target =
-            function->LoadUniform<TypedValue<ValueType::U64>>(Uniform{16, ValueType::U64})
-                    .SetType(ValueType::U64);
+    const auto return_target = function->LoadUniform(ValueType::U64, Uniform{16, ValueType::U64});
     function->SetLocation(Lambda{return_target});
     function->EndBlock(terminal::PopRSBHint{});
     function->EndFunction();
@@ -180,8 +165,7 @@ IntrusivePtr<Block> BuildConditionalSource(VAddr guest,
                                            VAddr else_target) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    const auto selector =
-            block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    const auto selector = block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
     const auto condition = block->TestNotZero(selector);
     block->SetTerminal(terminal::If{
             condition,
@@ -197,12 +181,12 @@ void* TranslateFlagsKillingTarget(const std::shared_ptr<Module>& module,
                                   Flags saved_flags = Flags::NZCV) {
     HIRBuilder builder{1, true};
     auto* function = builder.AppendFunction(Location{guest}, Location{guest + 3});
-    const auto left = function->LoadImm(Imm{u8{7}}).SetType(ValueType::U8);
-    const auto right = function->LoadImm(Imm{u8{3}}).SetType(ValueType::U8);
-    const auto result = function->Sub(left, Operand{right}).SetType(ValueType::U8);
+    const auto left = function->LoadImm(ValueType::U8, Imm{u8{7}});
+    const auto right = function->LoadImm(ValueType::U8, Imm{u8{3}});
+    const auto result = function->Sub(ValueType::U8, left, Operand{right});
     function->SaveFlags(result, saved_flags);
     function->AdvancePC(Imm{u64{1}});
-    const auto condition = function->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+    const auto condition = function->LocalCondSet(ValueType::U8, Cond::EQ);
     auto [then_block, else_block] = builder.If(terminal::If{
             condition,
             terminal::LinkBlock{Location{guest + 1}},
@@ -225,13 +209,12 @@ void* TranslatePendingFlagsSource(const std::shared_ptr<Module>& module,
     auto* body = builder.LinkBlock(
             terminal::LinkBlock{Location{guest + 1}});
     builder.SetCurBlock(body);
-    const auto selector = function->LoadUniform(
-            Uniform{8, ValueType::U8}).SetType(ValueType::U8);
-    const auto one = function->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
-    const auto result = function->Sub(selector, Operand{one}).SetType(ValueType::U8);
+    const auto selector = function->LoadUniform(ValueType::U8, Uniform{8, ValueType::U8});
+    const auto one = function->LoadImm(ValueType::U8, Imm{u8{1}});
+    const auto result = function->Sub(ValueType::U8, selector, Operand{one});
     function->SaveFlags(result, Flags::NZCV);
     function->AdvancePC(Imm{u64{1}});
-    const auto condition = function->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+    const auto condition = function->LocalCondSet(ValueType::U8, Cond::EQ);
     function->EndBlock(terminal::If{
             condition,
             terminal::LinkBlock{Location{then_target}},
@@ -251,21 +234,17 @@ void* TranslatePendingFlagsStaticSource(const std::shared_ptr<Module>& module,
     auto* function = builder.AppendFunction(Location{guest}, Location{guest + 2});
     auto* body = builder.LinkBlock(terminal::LinkBlock{Location{guest + 1}});
     builder.SetCurBlock(body);
-    const auto value = function->LoadUniform(
-            Uniform{8, ValueType::U8}).SetType(ValueType::U8);
-    const auto one = function->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
-    const auto result = function->Sub(value, Operand{one}).SetType(ValueType::U8);
+    const auto value = function->LoadUniform(ValueType::U8, Uniform{8, ValueType::U8});
+    const auto one = function->LoadImm(ValueType::U8, Imm{u8{1}});
+    const auto result = function->Sub(ValueType::U8, value, Operand{one});
     function->SaveFlags(result, saved_flags);
     if (True(saved_flags & Flags::Carry)) {
         if (carry_polarity == EdgeCarryPolarity::Direct) {
             function->InvertCarry();
         } else if (carry_polarity == EdgeCarryPolarity::Inverted) {
-            const auto inverted = function->LoadImm(Imm{u8{1}})
-                                          .SetType(ValueType::U8);
+            const auto inverted = function->LoadImm(ValueType::U8, Imm{u8{1}});
             function->StoreUniform(
-                    Uniform{offsetof(swift::x86::ThreadContext64,
-                                     carry_inverted),
-                            ValueType::U8},
+                    Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted), ValueType::U8},
                     inverted);
         }
     }
@@ -335,13 +314,11 @@ u64 RingTargetCheck() {
 IntrusivePtr<Block> BuildIndirectRingBlock(VAddr guest) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    const auto entries =
-            block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    const auto one = block->LoadImm(Imm{u64{1}}).SetType(ValueType::U64);
-    const auto next = block->Add(entries, Operand{one}).SetType(ValueType::U64);
+    const auto entries = block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+    const auto one = block->LoadImm(ValueType::U64, Imm{u64{1}});
+    const auto next = block->Add(ValueType::U64, entries, Operand{one});
     block->StoreUniform(Uniform{0, ValueType::U64}, next);
-    const auto target =
-            block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    const auto target = block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
     block->SetLocation(Lambda{target});
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
@@ -356,10 +333,9 @@ IntrusivePtr<Block> BuildRingBlock(VAddr guest, VAddr target, bool check_target)
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
     if (check_target) {
-        (void)block
-                ->CallLambda(Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
-                        FptrCast(&RingTargetCheck)))}})
-                .SetType(ValueType::U64);
+        (void)block->CallLambda(ValueType::U64,
+                                Lambda{Imm{static_cast<u64>(
+                                        reinterpret_cast<uintptr_t>(FptrCast(&RingTargetCheck)))}});
     }
     block->SetTerminal(terminal::LinkBlock{Location{target}});
     block->ReIdInstr();
@@ -371,11 +347,9 @@ IntrusivePtr<Block> BuildConditionalRingHead(VAddr guest,
                                              VAddr else_target) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    const auto selector = block
-                                  ->CallLambda(Lambda{Imm{static_cast<u64>(
-                                          reinterpret_cast<uintptr_t>(
-                                                  FptrCast(&ConditionalRingSelect)))}})
-                                  .SetType(ValueType::U64);
+    const auto selector = block->CallLambda(ValueType::U64,
+                                            Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
+                                                    FptrCast(&ConditionalRingSelect)))}});
     const auto condition = block->TestNotZero(selector);
     block->SetTerminal(terminal::If{
             condition,
@@ -389,12 +363,10 @@ IntrusivePtr<Block> BuildConditionalRingHead(VAddr guest,
 IntrusivePtr<Block> BuildSelfEdgeConditional(VAddr guest, VAddr cold_target) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    (void)block
-            ->CallLambda(Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
-                    FptrCast(&RingTargetCheck)))}})
-            .SetType(ValueType::U64);
-    const auto selector =
-            block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    (void)block->CallLambda(
+            ValueType::U64,
+            Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(FptrCast(&RingTargetCheck)))}});
+    const auto selector = block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
     const auto condition = block->TestNotZero(selector);
     block->SetTerminal(terminal::If{
             condition,
@@ -409,18 +381,16 @@ IntrusivePtr<Block> BuildEligibleBackedgeFlagsConditional(VAddr guest,
                                                           VAddr cold_target) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    const auto selector =
-            block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
-    const auto one = block->LoadImm(Imm{u64{1}}).SetType(ValueType::U64);
-    const auto result = block->Sub(selector, Operand{one}).SetType(ValueType::U64);
+    const auto selector = block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
+    const auto one = block->LoadImm(ValueType::U64, Imm{u64{1}});
+    const auto result = block->Sub(ValueType::U64, selector, Operand{one});
     block->SaveFlags(result, Flags::All);
-    const auto polarity = block->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
+    const auto polarity = block->LoadImm(ValueType::U8, Imm{u8{1}});
     block->StoreUniform(
-            Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted),
-                    ValueType::U8},
+            Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted), ValueType::U8},
             polarity);
     block->AdvancePC(Imm{u64{1}});
-    const auto condition = block->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+    const auto condition = block->LocalCondSet(ValueType::U8, Cond::EQ);
     block->SetTerminal(terminal::If{
             condition,
             terminal::LinkBlock{Location{guest}},
@@ -473,30 +443,27 @@ RegionBranchRun RunRegionBranchFunction(bool enabled,
     auto* function = builder.AppendFunction(Location{source_guest},
                                             Location{cold_guest + 1});
     if (observe_before_overwrite) {
-        const auto token = function->LoadImm(Imm{u64{0}}).SetType(ValueType::U64);
-        const auto incoming = function->GetFlags(token, Flags::All)
-                                      .SetType(ValueType::U64);
+        const auto token = function->LoadImm(ValueType::U64, Imm{u64{0}});
+        const auto incoming = function->GetFlags(ValueType::U64, token, Flags::All);
         function->StoreUniform(Uniform{result_offset, ValueType::U64}, incoming);
         function->AdvancePC(Imm{u64{1}});
     }
-    const auto selector = function->LoadUniform(
-            Uniform{selector_offset, ValueType::U8}).SetType(ValueType::U8);
-    const auto one = function->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
-    const auto result = function->Sub(selector, Operand{one}).SetType(ValueType::U8);
+    const auto selector =
+            function->LoadUniform(ValueType::U8, Uniform{selector_offset, ValueType::U8});
+    const auto one = function->LoadImm(ValueType::U8, Imm{u8{1}});
+    const auto result = function->Sub(ValueType::U8, selector, Operand{one});
     function->SaveFlags(result, source_flags);
-    const auto polarity = function->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
+    const auto polarity = function->LoadImm(ValueType::U8, Imm{u8{1}});
     function->StoreUniform(
-            Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted),
-                    ValueType::U8},
+            Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted), ValueType::U8},
             polarity);
     if (helper_after_producer) {
-        (void)function
-                ->CallLambda(Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
-                        FptrCast(&RingTargetCheck)))}})
-                .SetType(ValueType::U64);
+        (void)function->CallLambda(ValueType::U64,
+                                   Lambda{Imm{static_cast<u64>(reinterpret_cast<uintptr_t>(
+                                           FptrCast(&RingTargetCheck)))}});
     }
     function->AdvancePC(Imm{u64{1}});
-    const auto condition = function->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+    const auto condition = function->LocalCondSet(ValueType::U8, Cond::EQ);
     const auto branch_terminal = compatible_fallthrough
             ? terminal::If{
                       condition,
@@ -516,17 +483,15 @@ RegionBranchRun RunRegionBranchFunction(bool enabled,
 
     builder.SetCurBlock(hot);
     auto observe_target_flags = [&] {
-        const auto hot_token = function->LoadImm(Imm{u64{0}}).SetType(ValueType::U64);
-        const auto incoming = function->GetFlags(hot_token, Flags::All)
-                                      .SetType(ValueType::U64);
+        const auto hot_token = function->LoadImm(ValueType::U64, Imm{u64{0}});
+        const auto incoming = function->GetFlags(ValueType::U64, hot_token, Flags::All);
         function->StoreUniform(Uniform{result_offset, ValueType::U64}, incoming);
         function->AdvancePC(Imm{u64{1}});
     };
     if (sse42_target) {
         const auto left = function->LoadUniform(Uniform{16, ValueType::V128});
         const auto right = function->LoadUniform(Uniform{32, ValueType::V128});
-        const auto packed = function->Sse42Str(left, right, Imm{u64{0x02}})
-                                    .SetType(ValueType::U64);
+        const auto packed = function->Sse42Str(ValueType::U64, left, right, Imm{u64{0x02}});
         if (observe_before_overwrite) {
             observe_target_flags();
         }
@@ -535,30 +500,26 @@ RegionBranchRun RunRegionBranchFunction(bool enabled,
         if (observe_before_overwrite) {
             observe_target_flags();
         }
-        const auto hot_left = function->LoadImm(Imm{u8{7}}).SetType(ValueType::U8);
-        const auto hot_right = function->LoadImm(Imm{u8{3}}).SetType(ValueType::U8);
-        const auto hot_result = function->Sub(hot_left, Operand{hot_right})
-                                        .SetType(ValueType::U8);
+        const auto hot_left = function->LoadImm(ValueType::U8, Imm{u8{7}});
+        const auto hot_right = function->LoadImm(ValueType::U8, Imm{u8{3}});
+        const auto hot_result = function->Sub(ValueType::U8, hot_left, Operand{hot_right});
         function->SaveFlags(hot_result, Flags::All);
     }
-    const auto hot_polarity = function->LoadImm(Imm{u8{1}}).SetType(ValueType::U8);
+    const auto hot_polarity = function->LoadImm(ValueType::U8, Imm{u8{1}});
     function->StoreUniform(
-            Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted),
-                    ValueType::U8},
+            Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted), ValueType::U8},
             hot_polarity);
     function->AdvancePC(Imm{u64{1}});
     if (sse42_target && !observe_before_overwrite) {
-        const auto token = function->LoadImm(Imm{u64{0}}).SetType(ValueType::U64);
-        const auto final_flags = function->GetFlags(token, Flags::All)
-                                         .SetType(ValueType::U64);
+        const auto token = function->LoadImm(ValueType::U64, Imm{u64{0}});
+        const auto final_flags = function->GetFlags(ValueType::U64, token, Flags::All);
         function->StoreUniform(Uniform{result_offset, ValueType::U64}, final_flags);
     }
     function->EndBlock(terminal::ReturnToHost{});
 
     builder.SetCurBlock(cold);
-    const auto token = function->LoadImm(Imm{u64{0}}).SetType(ValueType::U64);
-    const auto final_flags = function->GetFlags(token, Flags::All)
-                                      .SetType(ValueType::U64);
+    const auto token = function->LoadImm(ValueType::U64, Imm{u64{0}});
+    const auto final_flags = function->GetFlags(ValueType::U64, token, Flags::All);
     function->StoreUniform(Uniform{result_offset, ValueType::U64}, final_flags);
     function->EndBlock(terminal::ReturnToHost{});
     function->EndFunction();
@@ -644,8 +605,7 @@ void RequireStaticRequestPoll(const u8* begin, const u8* link) {
     Decoder decoder;
     Disassembler disassembler;
     decoder.AppendVisitor(&disassembler);
-    constexpr std::array<std::string_view, 5> mnemonics{
-            "ldarb ", "cbz ", "mov ", "str ", "b "};
+    constexpr std::array<std::string_view, 5> mnemonics{"ldar x", "cbz x", "mov ", "str ", "b "};
     for (size_t i = 0; i < mnemonics.size(); ++i) {
         const auto* instruction = reinterpret_cast<const Instruction*>(begin + i * sizeof(u32));
         decoder.Decode(instruction);
@@ -1371,22 +1331,25 @@ TEST_CASE("switch arms preserve guest flags and raw predicates",
             auto* body = builder.LinkBlock(terminal::LinkBlock{Location{0x1001}});
             builder.SetCurBlock(body);
         }
-        const auto selector = function->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+        const auto selector = function->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
         Value condition = selector;
         if (floating_predicate) {
-            const auto left = function->LoadUniform(Uniform{16, ValueType::V128}).SetType(ValueType::V128);
-            const auto right = function->LoadUniform(Uniform{32, ValueType::V128}).SetType(ValueType::V128);
-            const auto compared = function->VecFCmp(left, right, Imm{u32{64}}, Imm{u32{1}}).SetType(ValueType::U64);
-            condition = function->FCmpCondSet(compared, Cond::GT).SetType(ValueType::U8);
+            const auto left = function->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+            const auto right = function->LoadUniform(ValueType::V128, Uniform{32, ValueType::V128});
+            const auto compared =
+                    function->VecFCmp(ValueType::U64, left, right, Imm{u32{64}}, Imm{u32{1}});
+            condition = function->FCmpCondSet(ValueType::U8, compared, Cond::GT);
         } else if (predicate_kind == 7 || predicate_kind == 8) {
-            const auto value = function->LoadImm(Imm{u32{predicate_kind == 7 ? 1u : 0u}}).SetType(ValueType::U32);
-            condition = (predicate_kind == 7 ? function->TestNotZero(value) : function->TestZero(value)).SetType(ValueType::U8);
+            const auto value =
+                    function->LoadImm(ValueType::U32, Imm{u32{predicate_kind == 7 ? 1u : 0u}});
+            condition = (predicate_kind == 7 ? function->TestNotZero(ValueType::U8, value)
+                                             : function->TestZero(ValueType::U8, value));
         } else if (raw_predicate) {
-            const auto left = function->LoadUniform(Uniform{16, ValueType::U8}).SetType(ValueType::U8);
-            const auto right = function->LoadImm(Imm{u8{3}}).SetType(ValueType::U8);
-            const auto result = function->Sub(left, Operand{right}).SetType(ValueType::U8);
+            const auto left = function->LoadUniform(ValueType::U8, Uniform{16, ValueType::U8});
+            const auto right = function->LoadImm(ValueType::U8, Imm{u8{3}});
+            const auto result = function->Sub(ValueType::U8, left, Operand{right});
             function->SaveFlags(result, Flags::Zero);
-            condition = function->LocalCondSet(Cond::PL).SetType(ValueType::U8);
+            condition = function->LocalCondSet(ValueType::U8, Cond::PL);
         }
         const auto arm = terminal::If{BOOL{condition}, terminal::LinkBlock{Location{0x2000}},
                                      terminal::LinkBlock{Location{0x3000}}};
@@ -1398,7 +1361,7 @@ TEST_CASE("switch arms preserve guest flags and raw predicates",
                 : predicate_kind == 2 || predicate_kind == 4
                 ? Terminal{terminal::Condition{Cond::NE, arm, terminal::ReturnToHost{}}}
                 : Terminal{arm};
-        auto* source_hir = function->GetCurrentBlock();
+        auto* source_hir = &function->EditBlock(function->GetCurrentBlock());
         const auto* source_block = source_hir->GetBlock();
         function->EndBlock(predicate_kind >= 5 ? selected : Terminal{terminal::Switch{
                 selector, {{Imm{u64{0}}, selected}, {Imm{u64{1}}, selected}}}});
@@ -1407,9 +1370,9 @@ TEST_CASE("switch arms preserve guest flags and raw predicates",
         if (internal) for (const auto [guest, fingerprint] :
              {std::pair{u64{0x2000}, u64{0x1111}}, std::pair{u64{0x3000}, u64{0x2222}}}) {
             auto* target = function->AppendBlock(Location{guest}, Location{guest + 1});
-            function->AddEdge(source_hir, target, true);
+            function->AddEdge(source_hir, target);
             builder.SetCurBlock(target);
-            const auto value = function->LoadImm(Imm{fingerprint}).SetType(ValueType::U64);
+            const auto value = function->LoadImm(ValueType::U64, Imm{fingerprint});
             function->StoreUniform(Uniform{0, ValueType::U64}, value);
             function->EndBlock(terminal::ReturnToHost{});
         }
@@ -1460,9 +1423,10 @@ TEST_CASE("region conditions preserve inherited pending guest flags",
             space.PushCodeCache(Location{guest}, code);
         }
         HIRBuilder builder{1, true};
-        auto* function = builder.AppendFunction(Location{0x1000}, Location{internal ? 0x3001u : 0x1002u});
-        const auto left = function->LoadUniform(Uniform{8, ValueType::U8}).SetType(ValueType::U8);
-        const auto result = function->Sub(left, Operand{Imm{u8{7}}}).SetType(ValueType::U8);
+        auto* function =
+                builder.AppendFunction(Location{0x1000}, Location{internal ? 0x3001u : 0x1002u});
+        const auto left = function->LoadUniform(ValueType::U8, Uniform{8, ValueType::U8});
+        const auto result = function->Sub(ValueType::U8, left, Operand{Imm{u8{7}}});
         function->SaveFlags(result, Flags::NZCV);
         auto* body = builder.LinkBlock(terminal::LinkBlock{Location{0x1001}});
         builder.SetCurBlock(body);
@@ -1472,9 +1436,9 @@ TEST_CASE("region conditions preserve inherited pending guest flags",
         if (internal) for (const auto [guest, fingerprint] :
              {std::pair{u64{0x2000}, u64{0x1111}}, std::pair{u64{0x3000}, u64{0x2222}}}) {
             auto* target = function->AppendBlock(Location{guest}, Location{guest + 1});
-            function->AddEdge(body, target, true);
+            function->AddEdge(body, target);
             builder.SetCurBlock(target);
-            const auto value = function->LoadImm(Imm{fingerprint}).SetType(ValueType::U64);
+            const auto value = function->LoadImm(ValueType::U64, Imm{fingerprint});
             function->StoreUniform(Uniform{0, ValueType::U64}, value);
             function->EndBlock(terminal::ReturnToHost{});
         }
@@ -1673,9 +1637,7 @@ TEST_CASE("canonical external roots stay inside one code object",
         auto* target = function->CreateOrGetBlock(Location{target_guest});
         function->RegisterExternalEntryRoot(target);
         builder.SetCurBlock(target);
-        const auto value = function
-                                   ->LoadImm(Imm{kFingerprint})
-                                   .SetType(ValueType::U64);
+        const auto value = function->LoadImm(ValueType::U64, Imm{kFingerprint});
         function->StoreUniform(Uniform{0, ValueType::U64}, value);
         builder.AdvancePC(Imm{u64{1}});
         function->EndBlock(terminal::ReturnToHost{});
@@ -1750,9 +1712,7 @@ TEST_CASE("terminal-only call returns enter through canonical links",
         HIRBuilder builder{4, true};
         auto* function = builder.AppendFunction(
                 Location{source_guest}, Location{target_guest + 1});
-        const auto source_value = function
-                                          ->LoadImm(Imm{u64{1}})
-                                          .SetType(ValueType::U64);
+        const auto source_value = function->LoadImm(ValueType::U64, Imm{u64{1}});
         function->StoreUniform(Uniform{8, ValueType::U64}, source_value);
         builder.RegisterCallReturn(Location{return_guest});
         auto* connector = function->CreateOrGetBlock(Location{return_guest});
@@ -1766,9 +1726,7 @@ TEST_CASE("terminal-only call returns enter through canonical links",
         auto* target = builder.LinkBlock(
                 terminal::LinkBlock{Location{target_guest}});
         builder.SetCurBlock(target);
-        const auto value = function
-                                   ->LoadImm(Imm{kFingerprint})
-                                   .SetType(ValueType::U64);
+        const auto value = function->LoadImm(ValueType::U64, Imm{kFingerprint});
         function->StoreUniform(Uniform{0, ValueType::U64}, value);
         builder.AdvancePC(Imm{u64{1}});
         function->EndBlock(terminal::ReturnToHost{});

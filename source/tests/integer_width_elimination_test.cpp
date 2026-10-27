@@ -1,44 +1,43 @@
+#include "tests/support/rewrite_fixture.h"
+using swift::runtime::test::RewriteFixture;
 #include <catch2/catch_test_macros.hpp>
 
-#include "runtime/ir/opts/deadcode_elimination_pass.h"
-#include "runtime/ir/opts/integer_width_elimination_pass.h"
+#include "runtime/compile/passes/passes.h"
 
 namespace swift::runtime::ir {
-
 TEST_CASE("integer direct extracts cancel local width round trips") {
     Block block{0, Location{0x1000}};
     const auto source = block.LoadUniform(Uniform{0, ValueType::U32});
     const auto extended = block.ZeroExtend32To64(source);
     block.LoadImm(Imm{7u});
-    const auto extracted = block.BitExtract(extended, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
+    const auto extracted = block.BitExtract(ValueType::U32, extended, Imm{0u}, Imm{32u});
     const auto left = block.LoadUniform(Uniform{8, ValueType::U32});
-    const auto result = block.Add(left, Operand{extracted}).SetType(ValueType::U32);
+    const auto result = block.Add(ValueType::U32, left, Operand{extracted});
     block.StoreUniform(Uniform{16, ValueType::U32}, result);
     const auto direct_source = block.LoadUniform(Uniform{24, ValueType::U32});
-    const auto direct = block.BitExtract(direct_source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    const auto direct_result = block.Xor(left, Operand{direct}).SetType(ValueType::U32);
+    const auto direct = block.BitExtract(ValueType::U32, direct_source, Imm{0u}, Imm{32u});
+    const auto direct_result = block.Xor(ValueType::U32, left, Operand{direct});
     block.StoreUniform(Uniform{32, ValueType::U32}, direct_result);
     const auto signed_source = block.LoadUniform(Uniform{40, ValueType::S32});
-    const auto signed_extract =
-            block.BitExtract(signed_source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
+    const auto signed_extract = block.BitExtract(ValueType::U32, signed_source, Imm{0u}, Imm{32u});
     block.StoreUniform(Uniform{48, ValueType::U32}, signed_extract);
     const auto conversion_source = block.LoadUniform(Uniform{56, ValueType::U32});
     const auto conversion_extract =
-            block.BitExtract(conversion_source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
+            block.BitExtract(ValueType::U32, conversion_source, Imm{0u}, Imm{32u});
     const auto converted =
-            block.VecFCvtIntToFloat(conversion_extract, Imm{32u}, Imm{64u}).SetType(ValueType::U64);
+            block.VecFCvtIntToFloat(ValueType::U64, conversion_extract, Imm{32u}, Imm{64u});
     block.StoreUniform(Uniform{64, ValueType::U64}, converted);
     const auto sign_source = block.LoadUniform(Uniform{72, ValueType::U32});
-    const auto sign_extended = block.SignExtend(sign_source).SetType(ValueType::U64);
+    const auto sign_extended = block.SignExtend(ValueType::U64, sign_source);
     const auto sign_extract_left =
-            block.BitExtract(sign_extended, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
+            block.BitExtract(ValueType::U32, sign_extended, Imm{0u}, Imm{32u});
     const auto sign_extract_right =
-            block.BitExtract(sign_extended, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
+            block.BitExtract(ValueType::U32, sign_extended, Imm{0u}, Imm{32u});
     const auto sign_result =
-            block.And(sign_extract_left, Operand{sign_extract_right}).SetType(ValueType::U32);
+            block.And(ValueType::U32, sign_extract_left, Operand{sign_extract_right});
     block.StoreUniform(Uniform{80, ValueType::U32}, sign_result);
 
-    IntegerWidthEliminationPass::Run(&block);
+    swift::runtime::compile::NormalizeWidths(RewriteFixture{&block, false}.Get());
 
     REQUIRE(result.Def()->GetArg<Operand>(1).GetLeft().value.Def() == source.Def());
     REQUIRE(extracted.Def()->GetUses(false) == 0);
@@ -53,7 +52,7 @@ TEST_CASE("integer direct extracts cancel local width round trips") {
     REQUIRE(sign_extract_left.Def()->GetUses(false) == 0);
     REQUIRE(sign_extract_right.Def()->GetUses(false) == 0);
 
-    DeadCodeEliminationPass::Run(&block);
+    RewriteFixture{&block}.Get().CollectDead();
     u32 extracts = 0;
     u32 extensions = 0;
     u32 sign_extensions = 0;
@@ -71,19 +70,19 @@ TEST_CASE("integer width elimination rejects non-direct extracts") {
     Block block{0, Location{0x2000}};
     const auto source = block.LoadUniform(Uniform{0, ValueType::U32});
     const auto extended = block.ZeroExtend32To64(source);
-    const auto narrow = block.BitExtract(extended, Imm{0u}, Imm{16u}).SetType(ValueType::U16);
+    const auto narrow = block.BitExtract(ValueType::U16, extended, Imm{0u}, Imm{16u});
     block.StoreUniform(Uniform{8, ValueType::U16}, narrow);
-    const auto direct = block.BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
+    const auto direct = block.BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
     block.SaveFlags(direct, Flags::All);
-    const auto flagged = block.BitExtract(extended, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
+    const auto flagged = block.BitExtract(ValueType::U32, extended, Imm{0u}, Imm{32u});
     block.SaveFlags(flagged, Flags::All);
-    const auto opaque = block.BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    const auto padding = block.LoadImm(Imm{u64{0}}).SetType(ValueType::U64);
+    const auto opaque = block.BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+    const auto padding = block.LoadImm(ValueType::U64, Imm{u64{0}});
     const auto call =
-            block.CallLambda(Lambda{Imm{u64{0}}}, opaque, padding, padding).SetType(ValueType::U64);
+            block.CallLambda(ValueType::U64, Lambda{Imm{u64{0}}}, opaque, padding, padding);
     (void)call;
 
-    IntegerWidthEliminationPass::Run(&block);
+    swift::runtime::compile::NormalizeWidths(RewriteFixture{&block, false}.Get());
 
     REQUIRE(narrow.Def()->GetUses(false) == 1);
     REQUIRE(direct.Def()->GetUses(false) == 1);

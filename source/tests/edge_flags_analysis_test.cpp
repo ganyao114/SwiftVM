@@ -1,9 +1,9 @@
-#include <catch2/catch_test_macros.hpp>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <unordered_set>
-#include "runtime/backend/arm64/alloc/edge_flags_analysis.h"
+#include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/edge_flags.h"
 
 using namespace swift::runtime;
 using namespace swift::runtime::ir;
@@ -12,9 +12,9 @@ using namespace swift::runtime::backend::arm64;
 TEST_CASE("edge target facts preserve observation overwrite and commit order", "[edge-flags-plan]") {
     for (unsigned scenario = 0; scenario < 6; ++scenario) {
         IntrusivePtr<Block> block{new Block(0, Location{0xc300})};
-        const auto value = block->LoadImm(Imm{7u}).SetType(ValueType::U32);
+        const auto value = block->LoadImm(ValueType::U32, Imm{7u});
         if (scenario == 1) (void)block->TestFlags(Flags::Carry);
-        if (scenario == 2) (void)block->LoadMemory(Operand{Imm{swift::u64{0}}});
+        if (scenario == 2) (void)block->LoadMemory(ValueType::U64, Operand{Imm{swift::u64{0}}});
         if (scenario == 3) {
             block->ClearFlags(Flags::CV);
         } else if (scenario == 4) {
@@ -35,10 +35,10 @@ TEST_CASE("token overwrite and transparency facts retain helper and boundary rul
     for (unsigned scenario = 0; scenario < 5; ++scenario) {
         IntrusivePtr<Block> block{new Block(0, Location{0xc308})};
         if (scenario == 1) {
-            const auto value = block->LoadImm(Imm{7u}).SetType(ValueType::U32);
-            (void)block->GetFlags(value, Flags::All);
+            const auto value = block->LoadImm(ValueType::U32, Imm{7u});
+            (void)block->GetFlags(value.Type(), value, Flags::All);
         }
-        if (scenario == 2) (void)block->CallLambda(Lambda{Imm{swift::u64{1}}});
+        if (scenario == 2) (void)block->CallLambda(ValueType::VOID, Lambda{Imm{swift::u64{1}}});
         if (scenario == 3) block->AdvancePC(Imm{swift::u64{1}});
         if (scenario != 4) block->ClearFlags(Flags::Parity | Flags::AuxiliaryCarry);
         block->ReIdInstr();
@@ -50,24 +50,80 @@ TEST_CASE("token overwrite and transparency facts retain helper and boundary rul
 }
 
 TEST_CASE("edge acceptance tables preserve early observation and partial overwrites", "[edge-flags-plan]") {
-    for (unsigned scenario = 0; scenario < 8; ++scenario) {
+    for (unsigned scenario = 0; scenario < 12; ++scenario) {
         CAPTURE(scenario);
         IntrusivePtr<Block> block{new Block(0, Location{0xc310})};
+        // IR-only faults: the address is never executed. A later full write
+        // cannot hide an incoming value observed before the load succeeds.
+        if (scenario == 9) block->ClearFlags(Flags::NZCV);
+        if (scenario == 10) block->ClearFlags(Flags::CV);
+        if (scenario == 11) (void)block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+        if (scenario >= 8) {
+            (void)block->LoadMemoryTSO(ValueType::U64, Operand{Imm{swift::u64{0}}});
+            block->ClearFlags(Flags::NZCV);
+        }
         if (scenario == 1 || scenario == 3) (void)block->TestFlags(Flags::NZCV);
         if (scenario == 4) block->AdvancePC(Imm{swift::u64{1}});
         if (scenario == 2 || scenario == 3 || scenario == 7) block->ClearFlags(Flags::CV);
         if (scenario == 2 || scenario == 4) (void)block->TestFlags(Flags::NZCV);
         if (scenario == 5 || scenario == 6) {
-            const auto value = block->LoadImm(Imm{7u}).SetType(ValueType::U32);
+            const auto value = block->LoadImm(ValueType::U32, Imm{7u});
             if (scenario == 5) {
                 block->SaveFlags(value, Flags::NZ);
                 block->ClearFlags(Flags::CV);
                 (void)block->TestFlags(Flags::NZCV);
-            } else block->BranchOnlyFlags(value, Flags::NZCV);
+            } else
+                block->BranchOnlyFlags(value, Flags::NZCV);
         }
         if (scenario == 7) block->InvertCarry();
-        constexpr swift::u16 expected[] = {0, 0, 0x000f, 0, 1, 0xffff, 0xffff, 0x000f};
+        // Preserve the existing observer-first and mask-zero ordering. In
+        // particular, the harmless prefix in11 has already accepted mask0.
+        constexpr swift::u16 expected[] = {
+                0, 0, 0x000f, 0, 1, 0xffff, 0xffff, 0x000f, 0, 0xffff, 0x000f, 1};
         REQUIRE(AnalyzeBlockEdgeAcceptance(*block) == expected[scenario]);
+        if (scenario >= 8) {
+            bool writes_flags = false;
+            REQUIRE_FALSE(AnalyzeBlockFlagsTransparent(*block, &writes_flags));
+            // An early fault must not hide the later writer from this query.
+            REQUIRE(writes_flags);
+        }
+    }
+}
+
+TEST_CASE("faulting edge targets cannot inherit a successor overwrite", "[edge-flags-plan]") {
+    for (const bool fault : {false, true}) {
+        CAPTURE(fault);
+        std::vector<IntrusivePtr<Block>> blocks;
+        for (unsigned i = 0; i < 3; ++i)
+            blocks.emplace_back(new Block(i, Location{0xc330 + i * 8}));
+        blocks[0]->AdvancePC(Imm{swift::u64{1}});
+        if (fault)
+            (void)blocks[1]->LoadMemoryTSO(ValueType::U64, Operand{Imm{swift::u64{0}}});
+        else
+            blocks[1]->AdvancePC(Imm{swift::u64{1}});
+        blocks[2]->ClearFlags(Flags::NZCV);
+        blocks[0]->SetTerminal(terminal::LinkBlock{blocks[1]->GetStartLocation()});
+        blocks[1]->SetTerminal(terminal::LinkBlock{blocks[2]->GetStartLocation()});
+        blocks[2]->SetTerminal(terminal::ReturnToHost{});
+
+        std::vector<EdgeAcceptanceNode> topology(blocks.size());
+        for (unsigned i = 0; i < blocks.size(); ++i) {
+            blocks[i]->ReIdInstr();
+            bool writes_flags = false;
+            const bool transparent = AnalyzeBlockFlagsTransparent(*blocks[i], &writes_flags);
+            REQUIRE(transparent == AnalyzeBlockFlagsTransparent(*blocks[i]));
+            REQUIRE(transparent == (i == 0 || (i == 1 && !fault)));
+            REQUIRE(writes_flags == (i == 2));
+            topology[i].accepted = AnalyzeBlockEdgeAcceptance(*blocks[i]);
+            // Match the existing preparation seam: only transparent direct
+            // links may propagate a later block's acceptance masks.
+            if (transparent && i + 1 < blocks.size()) topology[i].successor = i + 1;
+        }
+        REQUIRE(topology[1].accepted == (fault ? 0 : 1));
+        const std::vector<swift::u16> expected = fault
+                ? std::vector<swift::u16>{1, 0, 0xffff}
+                : std::vector<swift::u16>{0xffff, 0xffff, 0xffff};
+        REQUIRE(ResolveEdgeAcceptance(topology) == expected);
     }
 }
 
@@ -120,13 +176,15 @@ TEST_CASE("edge acceptance admission retains flag writes and nested conditional 
         if (scenario == 2) block->ClearFlags(Flags::Carry);
         if (scenario == 3) block->InvertCarry();
         if (scenario == 7) (void)block->TestFlags(Flags::Carry);
-        if (scenario >= 4 && scenario != 9) block->SetCarry(block->LoadImm(Imm{swift::u8{1}}).SetType(ValueType::U8));
+        if (scenario >= 4 && scenario != 9)
+            block->SetCarry(block->LoadImm(ValueType::U8, Imm{swift::u8{1}}));
         Terminal terminal{terminal::Condition{Cond::EQ,
-            terminal::LinkBlock{Location{0xc320}}, terminal::LinkBlock{Location{0xc328}}}};
+                                              terminal::LinkBlock{Location{0xc320}},
+                                              terminal::LinkBlock{Location{0xc328}}}};
         if (scenario == 0 || scenario == 6) terminal = terminal::LinkBlock{Location{0xc320}};
         if (scenario == 5) terminal = terminal::CheckHalt{terminal};
         if (scenario >= 8) {
-            const auto selector = block->LoadImm(Imm{swift::u32{0}}).SetType(ValueType::U32);
+            const auto selector = block->LoadImm(ValueType::U32, Imm{swift::u32{0}});
             terminal = terminal::Switch{selector, {{Imm{swift::u32{0}}, terminal}}};
         }
         block->SetTerminal(terminal);

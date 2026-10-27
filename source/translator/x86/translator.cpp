@@ -53,6 +53,7 @@
 #include "runtime/common/perf_stats.h"
 #include "runtime/frontend/x86/decoder.h"
 #include "runtime/include/sruntime.h"
+#include "runtime/backend/arm64/compile/target.h"
 #include "translator.h"
 #include "translator/function_stats.h"
 
@@ -63,9 +64,12 @@ using namespace swift::x86;
 
 // Bound-backend decode: the frontend may use backend facts at
 // append time only when the unit is compiled for the arm64 JIT.
-static bool BoundBackendDecode(const Config& config) {
-    return runtime::GetSvmConfig().bound_decode &&
-           config.backend_isa == kArm64 && config.enable_jit;
+static compile::BuilderCapabilities DecodeBuilderTarget(const Config& config) {
+    if (runtime::GetSvmConfig().bound_decode &&
+        config.backend_isa == kArm64 && config.enable_jit) {
+        return backend::arm64::BuilderTarget();
+    }
+    return {};
 }
 
 // Conservative static guest->host map. RBX/RSP/RBP are hot general, stack and
@@ -311,117 +315,9 @@ static bool SSEAFPNanEnabled(Arm64Features features) {
     }
     static std::once_flag warning_once;
     std::call_once(warning_once, [] {
-        LOG_WARNING("SVM_SSE_AFP_NAN defaults on but FEAT_AFP is unavailable; using guarded SSE path");
+        LOG_WARNING("SVM_SSE_AFP_NAN defaults on but FEAT_AFP is unavailable; using native ARM floating-point NaN policy");
     });
     return false;
-}
-
-// WORKAROUND (runtime contract gap): the arm64 backend allows at most one
-// pending SaveFlags / ClearFlags per flush window (flush points are
-// AdvancePC and block end; see backend/arm64/jit/translator.cpp
-// EmitSaveFlags: "ASSERT(flags_set == ir::Flags::None)"). The x86 frontend
-// legitimately emits TWO SaveFlags in a row for narrow (8/16-bit) add/sub:
-// one for PF/AF on the real result and one for NZCV on a bit-31-shifted
-// result (frontend/x86/decoder.cc, the "Exact NZCV from the shifted op"
-// sequence). Insert a zero-length AdvancePC (a pure flags-flush marker)
-// right after the first SaveFlags/ClearFlags so the invariant holds.
-//
-// NB: Block::InsertAfter(x, anchor) is itself buggy and inserts *before*
-// anchor (runtime/ir/block.cpp), so to land right AFTER the first
-// SaveFlags we insert "after" its successor.
-[[maybe_unused]] static void FixupConsecutiveFlagOps(ir::Block* block) {
-    auto& list = block->GetInstList();
-    bool inserted = false;
-    ir::Inst* pending_save = nullptr;
-    ir::Inst* pending_clear = nullptr;
-    auto insert_flush_after = [&](ir::Inst* anchor) {
-        auto next = std::next(list.iterator_to(*anchor));
-        ASSERT(next != list.end());
-        auto* flush = new ir::Inst(ir::OpCode::AdvancePC);
-        flush->SetArgs(ir::Imm(u64(0)));
-        block->InsertAfter(flush, &*next);  // buggy InsertAfter == insert before next
-        inserted = true;
-    };
-    for (auto& inst : list) {
-        switch (inst.GetOp()) {
-            case ir::OpCode::AdvancePC:
-                pending_save = nullptr;
-                pending_clear = nullptr;
-                break;
-            case ir::OpCode::SaveFlags:
-                if (pending_save) {
-                    insert_flush_after(pending_save);
-                }
-                pending_save = &inst;
-                break;
-            case ir::OpCode::ClearFlags:
-                if (pending_clear) {
-                    insert_flush_after(pending_clear);
-                }
-                pending_clear = &inst;
-                break;
-            default:
-                break;
-        }
-    }
-    if (inserted) {
-        block->ReIdInstr();
-    }
-}
-
-// WORKAROUND (runtime bug, backend/arm64/jit/translator.cpp MergeNZCV +
-// EmitAdvancePC): at every AdvancePC the backend OR-merges the host NZCV
-// into its sticky flags register instead of *replacing* those bits, so a
-// Z/N/C/V bit set by an older instruction sticks forever and poisons any
-// later flags consumer that reloads from the sticky register (observed:
-// `xor eax,eax` sets Z=1; a later `cmp`+`jne` reads the poisoned Z and
-// takes the wrong branch). The only time the consumer sees correct flags
-// is when no AdvancePC flushed between the producer and the consumer
-// (host NZCV still dirty). The x86 frontend emits AdvancePC after every
-// guest instruction, so delete an AdvancePC when it both closes a window
-// with a pending SaveFlags and is immediately followed by a flags consumer
-// (TestFlags/TestNotFlags/GetFlags/CondSelect) — this keeps the producer's host NZCV
-// alive until the consumer. Cross-block flags (consumer before any
-// producer in the next block) still read the poisoned sticky register —
-// that needs the runtime fix (make MergeNZCV replace, not accumulate).
-[[maybe_unused]] static void FixupFlagFlushBeforeConsumer(ir::Block* block) {
-    auto& list = block->GetInstList();
-    Vector<ir::Inst*> to_delete{};
-    bool pending_save = false;
-    for (auto it = list.begin(); it != list.end(); ++it) {
-        const auto op = it->GetOp();
-        if (op == ir::OpCode::SaveFlags) {
-            pending_save = true;
-            continue;
-        }
-        if (op != ir::OpCode::AdvancePC) {
-            continue;
-        }
-        const bool had_save = pending_save;
-        pending_save = false;
-        if (!had_save) {
-            continue;
-        }
-        // Look ahead: is the next flag-relevant op a consumer?
-        for (auto look = std::next(it); look != list.end(); ++look) {
-            const auto lop = look->GetOp();
-            if (lop == ir::OpCode::TestFlags || lop == ir::OpCode::TestNotFlags ||
-                lop == ir::OpCode::GetFlags || lop == ir::OpCode::CondSelect) {
-                to_delete.push_back(&*it);
-                break;
-            }
-            if (lop == ir::OpCode::SaveFlags || lop == ir::OpCode::ClearFlags ||
-                lop == ir::OpCode::AdvancePC) {
-                break;  // another producer / flush first: keep this AdvancePC
-            }
-        }
-    }
-    for (auto* inst : to_delete) {
-        block->DestroyInst(inst);
-    }
-    if (!to_delete.empty()) {
-        block->ReIdInstr();
-    }
 }
 
 // Scratch uniform slot (see MaterializeTerminalCondUse below). It lives
@@ -441,7 +337,7 @@ static constexpr u32 kScratchUniformSize = 16;
 // value has a real in-block use. The store is side-effect free wrt the
 // guest (scratch memory only).
 [[maybe_unused]] static void MaterializeTerminalCondUse(ir::Block* block) {
-    auto terminal = block->GetTerminal();
+    const auto& terminal = block->GetTerminal();
     auto* if_term = boost::get<ir::terminal::If>(&terminal);
     if (!if_term) {
         // TODO: terminal::Switch has the same problem (its dispatch value
@@ -621,7 +517,8 @@ struct X86Instance::Impl final {
                 .backend_isa = backend::kNativeJitBackend,
                 .uniform_buffer_size = sizeof(ThreadContext64) + kScratchUniformSize,
                 .buffers_static_alloc = backend::kNativeJitBackend == kArm64
-                        ? static_regs : std::span<UniformMapDesc>{},
+                                                ? static_regs
+                                                : std::span<UniformMapDesc>{},
                 .xmm_uniform_ranges = x86_xmm_uniform_ranges,
                 .loop_gpr_uniform_ranges = x86_loop_gpr_uniform_ranges,
                 .static_program = false,
@@ -639,8 +536,8 @@ struct X86Instance::Impl final {
                 .sse_scalar_insert = sse_scalar_insert,
                 .sse_afp_nan = sse_afp_nan,
                 .mem_hostbase_fold = mem_hostbase_fold,
-                .region_edges = region_edges,
                 .rcpc_fault_emulate = rcpc_fault_emulate,
+                .region_edges = region_edges,
                 .tso_mode = TsoModeFromEnvironment(),
                 .stack_alignment = 16,
                 .page_table = nullptr,
@@ -679,8 +576,8 @@ struct X86Instance::Impl final {
                         .native_memory = !address_space->GetConfig().memory_base &&
                                          !address_space->GetConfig().page_table,
                         .features = features,
-                        .uniform_info = &address_space->GetUniformInfo(),
-                        .bound_backend = BoundBackendDecode(address_space->GetConfig()),
+                        .guest_layout = &address_space->GetGuestStateLayout(),
+                        .builder_target = DecodeBuilderTarget(address_space->GetConfig()),
                         .tso_mode = address_space->GetConfig().tso_mode,
                         .decode_limit = lazy ? DecodeLimit(root) : 0,
                         .local_target =
@@ -881,9 +778,11 @@ struct X86Instance::Impl final {
                                     lir_block->GetStartLocation().Value());
                         }
                     }
-                    PerfAdd(GetPerfStats().func_units, 1);
-                    PerfAdd(GetPerfStats().decoded_blocks,
-                            decode_results.back().decoded_count);
+                    if (PerfEnabled()) {
+                        PerfAdd(GetPerfStats().func_units, 1);
+                        PerfAdd(GetPerfStats().decoded_blocks,
+                                decode_results.back().decoded_count);
+                    }
                     if (runtime::GetSvmConfig().dump_ir) {
                         SVM_DIAG_FORMAT(Runtime,
                                    "--- function {:#x} (decoded {} blocks) ---\n",
@@ -1046,10 +945,10 @@ struct X86Instance::Impl final {
                     // for a cached one.
                     std::memset(&x->GetJitCache(), 0, sizeof(backend::JitCache));
                     PerfScope2 perf_ir_setup{GetPerfStats2().ir_setup};
-                    ir::Assembler assembler{x.get()};
-                    assembler.EnableUniformBuilder(
-                            &module->GetAddressSpace().GetUniformInfo(), features,
-                            BoundBackendDecode(module->GetAddressSpace().GetConfig()));
+                    compile::IrBuilder assembler{x.get()};
+                    assembler.ConfigureGuestState(
+                            &module->GetAddressSpace().GetGuestStateLayout(), features,
+                            DecodeBuilderTarget(module->GetAddressSpace().GetConfig()));
                     x86::X64Decoder decoder{
                             pc,
                             &memory_impl,
@@ -1065,12 +964,18 @@ struct X86Instance::Impl final {
                             module->GetAddressSpace().GetConfig().tso_mode,
                             bounded ? DecodeLimit(pc) : 0};
                     perf_ir_setup.Stop();
+                    PerfScope perf_decode{GetPerfStats().decode_ns};
                     PerfScope2 perf_decode_detail{GetPerfStats2().decode_total};
                     decoder.Decode();
                     perf_decode_detail.Stop();
+                    perf_decode.Stop();
                     PerfScope2 perf_ir_finalize{GetPerfStats2().ir_finalize};
                     PinUnusedCallLambdas(x.get());
                     perf_ir_finalize.Stop();
+                    if (PerfEnabled()) {
+                        PerfAdd(GetPerfStats().block_units, 1);
+                        PerfAdd(GetPerfStats().decoded_blocks, 1);
+                    }
                     if (runtime::GetSvmConfig().dump_ir) {
                         SVM_DIAG_FORMAT(Runtime, "--- block {:#x} ---\n{}\n", pc, x->ToString());
                     }

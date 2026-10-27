@@ -1,20 +1,20 @@
+#include "runtime/backend/arm64/compile/effects.h"
 #include "translator.h"
-#include "runtime/backend/arm64/alloc/target_analysis_traits.h"
+
 #include "runtime/backend/arm64/defines.h"
 
 namespace swift::runtime::backend::arm64 {
 
 #define __ masm.
 
-std::optional<MemOperand> JitTranslator::TryEmitSpilledMemoryOperand(
-        ir::Inst* address,
-        ir::ValueType type,
-        bool pair,
-        bool atomic,
-        ir::Inst* memory_inst) {
+std::optional<MemOperand> JitTranslator::TryEmitSpilledMemoryOperand(const ir::Inst* address,
+                                                                     ir::ValueType type,
+                                                                     bool pair,
+                                                                     bool atomic,
+                                                                     const ir::Inst* memory_inst) {
     const auto recipe = memory_state.spilled_memory_operands.find(address);
     if (recipe == memory_state.spilled_memory_operands.end() ||
-        recipe->second.consumer != memory_inst) {
+        (!memory_inst || recipe->second.consumer != memory_inst->Id())) {
         return std::nullopt;
     }
     if (memory_state.use_memory_base) {
@@ -42,25 +42,16 @@ std::optional<MemOperand> JitTranslator::TryEmitSpilledMemoryOperand(
 }
 
 bool JitTranslator::CanUseZeroStoreRegister(ir::Value value) {
-    return TargetCanUseZeroStoreRegister(value, context.GetAllocation(),
-                                        context.GetFeatures(), gpr_plan->consumers.get());
+    return TargetCanUseZeroStoreRegister(
+            value, cur_instr, context.GetActions(), context.GetFeatures());
 }
 
-
-
-std::optional<JitTranslator::MemoryUpdate>
-JitTranslator::MatchPreIndexMemoryUpdate(ir::Inst* update) const {
-    const auto found = gpr_plan->preindex_updates.find(update);
-    return found == gpr_plan->preindex_updates.end() ? std::nullopt : std::optional{found->second};
+const MemoryTransferAction* JitTranslator::PreparedMemoryUpdate(
+        const ir::Inst* update, MemoryTransferAction::Kind kind) const {
+    if (!update || update->GetBlock() != cur_block) return nullptr;
+    const auto* row = context.GetActions().MemoryTransfer(update->Id());
+    return row && row->kind == kind ? row : nullptr;
 }
-
-std::optional<JitTranslator::MemoryUpdate>
-JitTranslator::MatchBiasedMemoryUpdate(ir::Inst* update) const {
-    const auto found = gpr_plan->biased_updates.find(update);
-    return found == gpr_plan->biased_updates.end() ? std::nullopt : std::optional{found->second};
-}
-
-
 
 MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                                          ir::ValueType type,
@@ -68,7 +59,7 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
                                          bool atomic,
                                          bool allow_writeback,
                                          bool structured_guest_ea,
-                                         ir::Inst* memory_inst) {
+                                         const ir::Inst* memory_inst) {
     auto access_size = ir::GetValueSizeByte(type);
     if (ir_op.GetRight().Null()) {
         if (ir_op.GetLeft().IsImm()) {
@@ -97,18 +88,14 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
         } else {
             // Match Case: load store post/index & push/pop
             auto addr_value = ir_op.GetLeft().value;
-            if (memory_inst && gpr_plan->memory) {
-                const auto found = gpr_plan->memory->offsets.find(memory_inst);
-                if (found != gpr_plan->memory->offsets.end()) {
-                    const auto& action = found->second;
-                    auto pinned = context.PlannedGPR<XRegister>(action.base, cur_instr);
-                    const Register base = pinned ? Register{*pinned}
-                                                 : context.R(action.base);
-                    if (memory_state.use_memory_base) {
-                        return BiasMem(base, action.offset, atomic);
-                    }
-                    return MemOperand{base, action.offset};
-                }
+            const auto* action =
+                    memory_inst ? context.GetActions().Memory(memory_inst->Id()) : nullptr;
+            if (action && action->Has(MemoryAction::Offset)) {
+                const auto base_value = action->OffsetBase(*memory_inst);
+                auto pinned = context.PlannedGPR<XRegister>(base_value, cur_instr);
+                const Register base = pinned ? Register{*pinned} : context.R(base_value);
+                if (memory_state.use_memory_base) return BiasMem(base, action->offset, atomic);
+                return MemOperand{base, action->offset};
             }
             if (addr_value.Def()) {
                 if (auto recomputed = TryEmitSpilledMemoryOperand(
@@ -118,24 +105,22 @@ MemOperand JitTranslator::EmitMemOperand(ir::Operand& ir_op,
             }
             if (allow_writeback && !atomic) {
                 if (memory_state.use_memory_base) {
-                    auto update = MatchBiasedMemoryUpdate(addr_value.Def());
-                    if (update && update->memory == memory_inst) {
-                        return BiasMem(update->base, update->offset, false);
+                    auto update =
+                            PreparedMemoryUpdate(addr_value.Def(), MemoryTransferAction::Biased);
+                    if (update && memory_inst && update->MatchesMemory(*memory_inst)) {
+                        return BiasMem(XRegister(update->home), update->offset, false);
                     }
                 } else {
-                    auto update = MatchPreIndexMemoryUpdate(addr_value.Def());
-                    if (update && update->memory == memory_inst) {
-                        return MemOperand{update->base, update->offset, PreIndex};
+                    auto update =
+                            PreparedMemoryUpdate(addr_value.Def(), MemoryTransferAction::PreIndex);
+                    if (update && memory_inst && update->MatchesMemory(*memory_inst)) {
+                        return MemOperand{XRegister(update->home), update->offset, PreIndex};
                     }
                 }
             }
-            if (allow_writeback && !atomic && gpr_plan->memory) {
-                const auto found = gpr_plan->memory->writebacks.find(memory_inst);
-                if (found != gpr_plan->memory->writebacks.end()) {
-                    const auto& action = found->second;
-                    ASSERT(!pair && action.access_bytes == access_size);
-                    return MemOperand{XRegister(action.base), action.offset, PostIndex};
-                }
+            if (allow_writeback && !atomic && action && action->Has(MemoryAction::PostIndex)) {
+                ASSERT(!pair && action->access_bytes == access_size);
+                return MemOperand{XRegister(action->base), action->offset, PostIndex};
             }
             if (memory_state.use_memory_base) {
                 auto pinned = context.PlannedGPR<XRegister>(addr_value, cur_instr);

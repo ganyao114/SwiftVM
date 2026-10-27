@@ -36,7 +36,7 @@ bool JitTranslator::EmitPshufdDirect(const VRegister& result,
     }
 }
 
-void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
+void JitTranslator::EmitVecShuffle32(const ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     const u32 control = inst->GetArg<ir::Imm>(1).Get();
@@ -61,9 +61,7 @@ void JitTranslator::EmitVecShuffle32(ir::Inst* inst) {
     __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
 }
 
-
-
-void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
+void JitTranslator::EmitVecShuffle32TwoSrc(const ir::Inst* inst) {
     const auto left_value = inst->GetArg<ir::Value>(0);
     const auto right_value = inst->GetArg<ir::Value>(1);
     auto left = context.V(left_value);
@@ -99,8 +97,9 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
     if (same_source) {
         if (control == 0xE4) {
             if (sse_shufps_imm && result.GetCode() == left.GetCode()) {
-                ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::ShuffleTie),
-                           "SHUFPS imm tie proof diverged at IR {}", inst->Id());
+                ASSERT_MSG(context.GetActions().FPRVerified(inst->Id(), FPRAction::ShuffleTie),
+                           "SHUFPS imm tie proof diverged at IR {}",
+                           inst->Id());
             }
             const bool emitted = EmitPshufdDirect(result, left, control);
             ASSERT(emitted);
@@ -111,8 +110,9 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
         }
         if (control == 0xE0 || control == 0xE5) {
             if (sse_shufps_imm && result.GetCode() == left.GetCode()) {
-                ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::ShuffleTie),
-                           "SHUFPS imm tie proof diverged at IR {}", inst->Id());
+                ASSERT_MSG(context.GetActions().FPRVerified(inst->Id(), FPRAction::ShuffleTie),
+                           "SHUFPS imm tie proof diverged at IR {}",
+                           inst->Id());
             }
             if (result.GetCode() != left.GetCode()) {
                 __ Orr(result.V16B(), left.V16B(), left.V16B());
@@ -143,8 +143,9 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
 
     if (sse_shufps_imm && control == 0xe4 &&
         result.GetCode() == left.GetCode()) {
-        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::ShuffleTie),
-                   "SHUFPS imm tie proof diverged at IR {}", inst->Id());
+        ASSERT_MSG(context.GetActions().FPRVerified(inst->Id(), FPRAction::ShuffleTie),
+                   "SHUFPS imm tie proof diverged at IR {}",
+                   inst->Id());
         __ Ins(result.V2D(), 1, right.V2D(), 1);
         return;
     }
@@ -191,14 +192,11 @@ void JitTranslator::EmitVecShuffle32TwoSrc(ir::Inst* inst) {
     __ Tbx(result.V16B(), right.V16B(), indexes.V16B());
 }
 
-
-
-
-
-void JitTranslator::EmitVecLoadConst(ir::Inst* inst) {
+void JitTranslator::EmitVecLoadConst(const ir::Inst* inst) {
     if (context.IsPshufdDirect(inst->Id())) {
-        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::Pshufd),
-                   "PSHUFD direct constant proof diverged at IR {}", inst->Id());
+        ASSERT_MSG(context.GetActions().FPRVerified(inst->Id(), FPRAction::Pshufd),
+                   "PSHUFD direct constant proof diverged at IR {}",
+                   inst->Id());
         return;
     }
     auto result = context.V(ir::Value{inst});
@@ -217,11 +215,11 @@ void JitTranslator::EmitVecLoadConst(ir::Inst* inst) {
     __ Ins(result.V2D(), 1, tmp);
 }
 
-void JitTranslator::EmitVecShuffle32Indexed(ir::Inst* inst) {
+void JitTranslator::EmitVecShuffle32Indexed(const ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     if (context.IsPshufdDirect(inst->Id())) {
-        auto control = gpr_plan->fpr ? gpr_plan->fpr->Control(inst) : std::nullopt;
+        auto control = context.GetActions().PshufdControl(inst->Id());
         ASSERT_MSG(control.has_value(),
                    "PSHUFD direct shuffle proof diverged at IR {}", inst->Id());
         const bool emitted = EmitPshufdDirect(result, src, *control);
@@ -232,12 +230,12 @@ void JitTranslator::EmitVecShuffle32Indexed(ir::Inst* inst) {
     __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
 }
 
-void JitTranslator::EmitVecSharedZero(ir::Inst* inst) {
+void JitTranslator::EmitVecSharedZero(const ir::Inst* inst) {
     auto result = context.V(ir::Value{inst});
     __ Eor(result.V16B(), result.V16B(), result.V16B());
 }
 
-void JitTranslator::EmitVecShuffle16(ir::Inst* inst) {
+void JitTranslator::EmitVecShuffle16(const ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     auto indexes = context.GetTmpV();
@@ -263,7 +261,7 @@ void JitTranslator::EmitVecShuffle16(ir::Inst* inst) {
     __ Tbl(result.V16B(), src.V16B(), indexes.V16B());
 }
 
-void JitTranslator::EmitVecZip(ir::Inst* inst) {
+void JitTranslator::EmitVecZip(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -298,7 +296,7 @@ void JitTranslator::EmitVecZip(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecExtractBytes(ir::Inst* inst) {
+void JitTranslator::EmitVecExtractBytes(const ir::Inst* inst) {
     auto low = context.V(inst->GetArg<ir::Value>(0));
     auto high = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -307,7 +305,7 @@ void JitTranslator::EmitVecExtractBytes(ir::Inst* inst) {
     __ Ext(result.V16B(), low.V16B(), high.V16B(), offset);
 }
 
-void JitTranslator::EmitVecDupPairs32(ir::Inst* inst) {
+void JitTranslator::EmitVecDupPairs32(const ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     if (inst->GetArg<ir::Imm>(1).Get()) {
@@ -317,27 +315,27 @@ void JitTranslator::EmitVecDupPairs32(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitVecDup64(ir::Inst* inst) {
+void JitTranslator::EmitVecDup64(const ir::Inst* inst) {
     auto src = context.X(inst->GetArg<ir::Value>(0));
     auto result = context.V(ir::Value{inst});
     __ Dup(result.V2D(), src);
 }
 
-void JitTranslator::EmitVecExtract64(ir::Inst* inst) {
+void JitTranslator::EmitVecExtract64(const ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.X(ir::Value{inst});
     const u32 lane = inst->GetArg<ir::Imm>(1).Get() & 1;
     __ Umov(result, src.V2D(), lane);
 }
 
-void JitTranslator::EmitVecExtract16(ir::Inst* inst) {
+void JitTranslator::EmitVecExtract16(const ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.W(ir::Value{inst});
     const u32 lane = inst->GetArg<ir::Imm>(1).Get() & 7;
     __ Umov(result, src.V8H(), lane);
 }
 
-void JitTranslator::EmitVecInsert16(ir::Inst* inst) {
+void JitTranslator::EmitVecInsert16(const ir::Inst* inst) {
     auto dest = context.V(inst->GetArg<ir::Value>(0));
     auto value = context.W(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -359,7 +357,7 @@ void JitTranslator::EmitByteMovMask(const VRegister& source,
     __ Umov(result, packed.V8H(), 0);
 }
 
-void JitTranslator::EmitVecMovMask(ir::Inst* inst) {
+void JitTranslator::EmitVecMovMask(const ir::Inst* inst) {
     auto src = context.V(inst->GetArg<ir::Value>(0));
     auto result = context.W(ir::Value{inst});
     const u32 lane_bits = inst->GetArg<ir::Imm>(1).Get();
@@ -392,7 +390,7 @@ void JitTranslator::EmitVecMovMask(ir::Inst* inst) {
     PANIC("invalid vector movmask lane width");
 }
 
-void JitTranslator::EmitVecTableLookup8(ir::Inst* inst) {
+void JitTranslator::EmitVecTableLookup8(const ir::Inst* inst) {
     auto table = context.V(inst->GetArg<ir::Value>(0));
     auto control = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -405,7 +403,7 @@ void JitTranslator::EmitVecTableLookup8(ir::Inst* inst) {
 // De-interleave {left, right}, keeping the even (UZP1) or odd (UZP2) lanes.
 // At 64-bit lanes UZP1/UZP2 coincide with ZIP1/ZIP2; the opcode still accepts
 // that width so a caller does not have to special-case it.
-void JitTranslator::EmitVecUnzip(ir::Inst* inst) {
+void JitTranslator::EmitVecUnzip(const ir::Inst* inst) {
     auto left = context.V(inst->GetArg<ir::Value>(0));
     auto right = context.V(inst->GetArg<ir::Value>(1));
     auto result = context.V(ir::Value{inst});
@@ -439,7 +437,6 @@ void JitTranslator::EmitVecUnzip(ir::Inst* inst) {
             PANIC("invalid vector lane width");
     }
 }
-
 
 #undef __
 

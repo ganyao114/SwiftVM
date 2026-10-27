@@ -2,7 +2,7 @@
 
 namespace swift::runtime::backend::arm64 {
 
-std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
+std::optional<u32> JitTranslator::ForwardedMemorySpillInput(const ir::Inst* inst) {
     const auto pending = context.PendingScalarSpillValue();
     if (!inst || !pending) {
         return std::nullopt;
@@ -22,15 +22,17 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
                 const auto recomputed = memory_state.spilled_memory_operands.find(
                         address.Def());
                 if (recomputed != memory_state.spilled_memory_operands.end() &&
-                    recomputed->second.consumer == inst) {
+                    recomputed->second.consumer == inst->Id()) {
                     return false;
                 }
             }
             if (allow_writeback && address.Def()) {
-                const auto update = memory_state.use_memory_base
-                        ? MatchBiasedMemoryUpdate(address.Def())
-                        : MatchPreIndexMemoryUpdate(address.Def());
-                if (update && update->memory == inst) {
+                const auto update =
+                        memory_state.use_memory_base
+                                ? PreparedMemoryUpdate(address.Def(), MemoryTransferAction::Biased)
+                                : PreparedMemoryUpdate(address.Def(),
+                                                       MemoryTransferAction::PreIndex);
+                if (update && update->MatchesMemory(*inst)) {
                     return false;
                 }
             }
@@ -48,10 +50,11 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
     switch (inst->GetOp()) {
         case ir::OpCode::LoadMemory: {
             const auto result = ir::Value{inst};
-            if ((context.IsSpilled(result) &&
-                 !context.PlannedGPR<XRegister>(result, inst) &&
+            if ((context.IsSpilled(result) && !context.PlannedGPR<XRegister>(result, inst) &&
                  context.HasSpillReloadAtDefinition(inst)) ||
-                gpr_plan->load_updates.contains(inst)) {
+                (context.GetActions().MemoryTransfer(inst->Id()) &&
+                 context.GetActions().MemoryTransfer(inst->Id())->kind ==
+                         MemoryTransferAction::Load)) {
                 return std::nullopt;
             }
             const auto operand = inst->GetArg<ir::Operand>(0);
@@ -67,20 +70,20 @@ std::optional<u32> JitTranslator::ForwardedMemorySpillInput(ir::Inst* inst) {
                               value.Type() != ir::ValueType::V128)) {
                 return pending;
             }
-            if (value.Id() != *pending ||
-                ir::IsFloatValueType(value.Type()) ||
-                ScalarPreparation().resident.FindMemoryStore(inst)) {
+            if (value.Id() != *pending || ir::IsFloatValueType(value.Type()) ||
+                context.GetActions().ScalarFPRStore(inst->Id())) {
                 return std::nullopt;
             }
             const u32 width = ir::GetValueSizeByte(value.Type());
             if (width <= sizeof(u32)) {
                 const auto residence = FixedGPRHomeForUse(
                         value, inst);
-                if (CanUseZeroStoreRegister(value) ||
-                    (residence && residence->width == width) ||
-                    (value.Def() &&
-                     (gpr_plan->memory_values.contains(value.Def()) ||
-                      HasGPRLowView(value.Def())))) {
+                if (CanUseZeroStoreRegister(value) || (residence && residence->width == width) ||
+                    (value.Def() && ((context.GetActions().MemoryTransfer(value.Id()) &&
+                                      context.GetActions()
+                                              .MemoryTransfer(value.Id())
+                                              ->MatchesValue(*inst, value)) ||
+                                     HasGPRLowView(value.Def())))) {
                     return std::nullopt;
                 }
             }

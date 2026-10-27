@@ -5,7 +5,6 @@
 #pragma once
 
 #include <memory>
-#include <optional>
 #include <span>
 #include "types.h"
 #include "virtual_vector.h"
@@ -14,12 +13,10 @@ namespace swift::runtime {
 
 template <auto Member, typename T = GetParentType<Member>> class AddressHashMap {
 public:
-    using Nodes = StackVector<T*, 32>;
-
     explicit AddressHashMap(LocationDescriptor start,
                             LocationDescriptor end,
                             LocationDescriptor hash_item_size = 1_MB)
-            : addr_start(start), addr_end(end), hash_item_size(hash_item_size) {
+            : addr_start(start), hash_item_size(hash_item_size) {
         auto size = end - start;
         if (size <= hash_item_size * 512) {
             std_vector = std::make_unique<std::vector<IntrusiveMap<Member>*>>(
@@ -37,7 +34,7 @@ public:
     }
 
     // Whether addr hashes into this map at all. hash_map is a raw span, so an
-    // address outside [addr_start, addr_end) indexes out of bounds -- and the
+    // address outside its allocated buckets indexes out of bounds -- and the
     // addresses reaching these lookups are GUEST-CONTROLLED (a block location
     // is wherever the guest's last branch pointed). `jmp rax` with rax = -1
     // hashes to ~2^44 and read hash_map[2^44], faulting the host. Callers
@@ -59,32 +56,6 @@ public:
             }
         }
         return {};
-    }
-
-    Nodes GetRange(LocationDescriptor start, LocationDescriptor end) {
-        constexpr auto max_node_size = 64_KB; // Maybe no safe?
-        Nodes nodes{};
-        if (end < addr_start || start > addr_end) {
-            return nodes;
-        }
-        auto start_hash = Hash(std::max(start - max_node_size, addr_start));
-        auto end_hash = std::min<LocationDescriptor>(Hash(end), hash_map.size() - 1);
-
-        for (auto i = start_hash; i <= end_hash; i++) {
-            if (auto map_ptr = hash_map[i]; map_ptr) {
-                auto start_itr = map_ptr->lower_bound(T{start});
-                if (start_itr != map_ptr->begin()) {
-                    start_itr--;
-                }
-                auto end_itr = map_ptr->upper_bound(T{end});
-                for (auto itr = start_itr; itr != end_itr; itr++) {
-                    if (itr->Overlap(start, end)) {
-                        nodes.push_back(itr.operator->());
-                    }
-                }
-            }
-        }
-        return nodes;
     }
 
     template <bool check_exist = false>
@@ -176,7 +147,7 @@ public:
         if (intrusive_maps.empty()) return nullptr;
         auto& first = intrusive_maps.front();
         auto* node = first.begin().operator->();
-        const auto address = node->location.Value();
+        const auto address = node->GetStartLocation().Value();
         first.erase(first.begin());
         if (first.empty()) {
             hash_map[Hash(address)] = nullptr;
@@ -189,7 +160,6 @@ private:
     IntrusiveMap<Member>* CreateIntrusiveMap() { return &intrusive_maps.emplace_back(); }
 
     const LocationDescriptor addr_start;
-    const LocationDescriptor addr_end;
     const LocationDescriptor hash_item_size;
     std::list<IntrusiveMap<Member>> intrusive_maps{};
     std::unique_ptr<std::vector<IntrusiveMap<Member>*>> std_vector;

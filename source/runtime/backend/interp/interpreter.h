@@ -19,9 +19,9 @@ public:
 
     HaltReason Run();
 
-    HaltReason Run(ir::Inst* inst, InterpStack &stack);
+    HaltReason Run(const ir::Inst* inst, InterpStack& stack);
 
-#define INST(name, ...) void Run##name(ir::Inst* inst, InterpStack &stack);
+#define INST(name, ...) void Run##name(const ir::Inst* inst, InterpStack& stack);
 #include "runtime/ir/ir.inc"
 #undef INST
 
@@ -30,10 +30,8 @@ private:
     // two u64 (16 bytes) so vectors up to V128 fit. Inst ids are dense because
     // Block::ReIdInstr() runs when the frontend sets the block terminal.
     //
-    // NOTE: this deliberately does NOT use Inst::VirRegID() /
-    // Block::GetVStackSize(): those are only assigned by the register
-    // allocation pass, which never runs on the interpreter path (blocks
-    // executed here come straight from the frontend decoder).
+    // Interpreter slots are independent of physical allocation. Blocks
+    // executed here come straight from the frontend decoder.
     static constexpr u32 kSlotStride = 2;
 
     using u128 = unsigned __int128;
@@ -46,17 +44,21 @@ private:
     };
 
     template <typename T>
-    void SetReg(InterpStack& stack, ir::Value value, T t) {
-        std::memcpy(&stack[size_t(value.Def()->Id()) * kSlotStride], &t, sizeof(T));
+    void SetReg(InterpStack& stack, const ir::Inst* inst, T t) {
+        std::memcpy(&stack[size_t(inst->Id()) * kSlotStride], &t, sizeof(T));
     };
 
     u64 ReadScalar(InterpStack& stack, ir::Value value);
+    bool ReadBoolean(InterpStack& stack, ir::Value value);
     u64 ReadScalarBits(InterpStack& stack, ir::Value value);
     u128 ReadVec(InterpStack& stack, ir::Value value);
-    void WriteScalar(InterpStack& stack, ir::Inst* inst, u64 value);
-    void WriteVec(InterpStack& stack, ir::Inst* inst, u128 value);
+    void WriteScalar(InterpStack& stack, const ir::Inst* inst, u64 value);
+    void RunIntegerConversion(const ir::Inst* inst, InterpStack& stack);
+    void RunIntegerShift(const ir::Inst* inst, InterpStack& stack);
+    void RunIntegerPredicate(const ir::Inst* inst, InterpStack& stack);
+    void WriteVec(InterpStack& stack, const ir::Inst* inst, u128 value);
     void WritePairResult(InterpStack& stack,
-                         ir::Inst* inst,
+                         const ir::Inst* inst,
                          const HostPairResult& result,
                          ir::OpCode secondary);
 
@@ -69,7 +71,7 @@ private:
 
     // Guest flags (state.host_cpu_flags) helpers; the layout mirrors the JIT
     // flags register (x26), see interpreter.cpp.
-    void SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags flags);
+    void SaveGuestFlags(InterpStack& stack, const ir::Inst* def, ir::Flags flags);
     bool TestGuestFlags(ir::Flags flags);
     void ClearGuestFlags(ir::Flags flags);
     bool EvalCondition(ir::Cond cond);

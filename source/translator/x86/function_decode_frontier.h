@@ -18,7 +18,7 @@ public:
     };
 
     struct Split {
-        runtime::ir::HIRBlock* owner{};
+        const runtime::ir::HIRBlock* owner{};
         runtime::LocationDescriptor target{};
         const Provenance* provenance{};
     };
@@ -50,7 +50,7 @@ private:
 
     struct Record {
         Provenance provenance{};
-        runtime::ir::HIRBlock* owner{};
+        const runtime::ir::HIRBlock* owner{};
     };
 
     runtime::ir::HIRFunction* function{};

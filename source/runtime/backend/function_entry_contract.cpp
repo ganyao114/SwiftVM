@@ -55,9 +55,8 @@ std::optional<ir::Location> CanonicalTerminalTarget(
 
 }  // namespace
 
-std::unordered_set<u64>
-FunctionEntryContract::AnalyzeCanonicalTerminalEntries(
-        ir::HIRFunction& function) {
+std::unordered_set<u64> FunctionEntryContract::AnalyzeCanonicalTerminalEntries(
+        const ir::HIRFunction& function) {
     std::unordered_set<u64> entries;
     std::unordered_set<u64> block_locations;
     for (auto& block : function.GetHIRBlocksRPO()) {
@@ -71,14 +70,14 @@ FunctionEntryContract::AnalyzeCanonicalTerminalEntries(
         }
     }
 
-    std::unordered_map<ir::HIRBlock*, u32> call_return_owners;
+    std::unordered_map<const ir::HIRBlock*, u32> call_return_owners;
     for (auto& block : function.GetHIRBlocksRPO()) {
         if (auto* target = block.GetCallReturnBlock()) {
             ++call_return_owners[target];
         }
     }
 
-    auto has_shape = [&](ir::HIRBlock& hir_block) {
+    auto has_shape = [&](const ir::HIRBlock& hir_block) {
         auto* block = hir_block.GetBlock();
         const auto target = block && block->HasTerminal()
                 ? CanonicalTerminalTarget(block->GetTerminal())
@@ -113,7 +112,7 @@ FunctionEntryContract::AnalyzeCanonicalTerminalEntries(
             const bool canonical = std::all_of(
                     hir_block.GetPredecessors().begin(),
                     hir_block.GetPredecessors().end(),
-                    [&](ir::HIRBlock* predecessor) {
+                    [&](const ir::HIRBlock* predecessor) {
                         return predecessor && entries.contains(
                                 predecessor->GetBlock()
                                         ->GetStartLocation()
@@ -171,12 +170,11 @@ FunctionEntryContract FunctionEntryContract::Restore(
     return contract;
 }
 
-FunctionEntryContract FunctionEntryContract::Build(
-        ir::HIRFunction& function,
-        ir::Block& block,
-        FunctionEntryCodeOffsets offsets,
-        EdgeFlagsTargetContract pending_contract,
-        bool canonical_terminal) {
+FunctionEntryContract FunctionEntryContract::Build(const ir::HIRFunction& function,
+                                                   const ir::Block& block,
+                                                   FunctionEntryCodeOffsets offsets,
+                                                   EdgeFlagsTargetContract pending_contract,
+                                                   bool canonical_terminal) {
     ASSERT(!canonical_terminal ||
            (block.GetInstList().empty() && block.HasTerminal() &&
             CanonicalTerminalTarget(block.GetTerminal()).has_value()));

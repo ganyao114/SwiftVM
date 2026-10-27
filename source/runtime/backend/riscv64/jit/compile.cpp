@@ -1,26 +1,26 @@
 #include "compile.h"
+#include "function.h"
 #include "native_call_arity.h"
 #include "pair_pseudo_producer.h"
-#include "function.h"
 #include "runtime/backend/riscv64/link.h"
+#include "runtime/compile/workspace.h"
 
-#include <unordered_set>
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
+#include <unordered_set>
 #include <vector>
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/riscv64/jit/translator.h"
 #include "runtime/common/variant_util.h"
-#include "runtime/ir/opts/const_folding_pass.h"
-#include "runtime/ir/opts/deadcode_elimination_pass.h"
-#include "runtime/ir/opts/flags_elimination_pass.h"
+#include "runtime/compile/passes/passes.h"
+#include "runtime/compile/passes/value_worklist.h"
 
 namespace swift::runtime::backend::riscv64 {
 
 namespace {
-using Definitions = std::unordered_set<ir::Inst*>;
+using Definitions = std::unordered_set<const ir::Inst*>;
 
 bool ScalarFlagValue(ir::Value value) {
     return value.Type() != ir::ValueType::VOID && !ir::IsFloatValueType(value.Type()) &&
@@ -151,29 +151,17 @@ void AppendDependencies(std::vector<SerialBlock>& blocks, const ir::Block* block
 }
 
 void VerifyTerminal(const ir::Terminal& terminal, const Definitions& definitions) {
-    const auto check = [&](ir::Value value) {
+    const bool valid = ir::CheckTerminal(terminal, [&](ir::Value value) {
         if (!definitions.contains(value.Def()))
             throw std::runtime_error("RV64 terminal has a cross-block SSA input");
-    };
-    VisitVariant<void>(terminal, [&](const auto& term) {
-        using T = std::decay_t<decltype(term)>;
-        if constexpr (std::is_same_v<T, ir::terminal::If>) {
-            check(term.cond);
-            VerifyTerminal(term.then_, definitions);
-            VerifyTerminal(term.else_, definitions);
-        } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
-            VerifyTerminal(term.then_, definitions);
-            VerifyTerminal(term.else_, definitions);
-        } else if constexpr (std::is_same_v<T, ir::terminal::Switch>) {
-            check(term.value);
-            for (const auto& item : term.cases) VerifyTerminal(item.then, definitions);
-        } else if constexpr (std::is_same_v<T, ir::terminal::CheckHalt>) {
-            VerifyTerminal(term.else_, definitions);
-        }
     });
+    if (!valid) throw std::runtime_error("RV64 terminal has invalid arguments");
 }
 
-void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = nullptr,
+void Prepare(const Module& module,
+             compile::CompileWorkspace& workspace,
+             ir::Block* block,
+             ir::HIRFunction* hir = nullptr,
              const Definitions* function_definitions = nullptr) {
     const auto& config = module.GetModuleConfig();
     const bool flags_enabled = config.HasOpt(Optimizations::FlagElimination);
@@ -182,7 +170,8 @@ void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = null
     if (!function_definitions) for (auto& inst : block->GetInstList()) local.insert(&inst);
     const auto& definitions = function_definitions ? *function_definitions : local;
     for (auto& inst : block->GetInstList()) {
-        VerifyNativeCallContracts(inst);
+        if (!inst.HasValidResultType())
+            throw std::runtime_error("RV64 IR has an invalid result type");
         // ConstFolding rewrites arithmetic/argument references, never this
         // zero-argument observer. DCE runs after the flags admission gate.
         if (flags_enabled && inst.GetOp() == ir::OpCode::MemoryBarrierTSO) has_barrier = true;
@@ -190,35 +179,48 @@ void Prepare(const Module& module, ir::Block* block, ir::HIRFunction* hir = null
             if (!definitions.contains(value.Def()))
                 throw std::runtime_error("RV64 function block has a cross-block SSA input");
         };
-        for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
-            auto& arg = inst.ArgAt(slot);
-            if (arg.IsValue()) check(arg.Get<ir::Value>());
-            else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue()) check(arg.Get<ir::Lambda>().GetValue());
-            else if (arg.IsParams())
-                for (auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) check(param.data.value);
-        }
+        if (!inst.CheckArguments(check))
+            throw std::runtime_error("RV64 IR has invalid arguments");
+        VerifyNativeCallContracts(inst);
     }
     VerifyTerminal(block->GetTerminal(), definitions);
+    for (const auto* anchor : block->GetLoopHoistMetadata().anchors)
+        if (!ir::Value{anchor}.HasValidDataView() || !definitions.contains(anchor))
+            throw std::runtime_error("RV64 hoist root has an invalid or unavailable data view");
     const auto features = ResolveFeatureSet(config);
     // Keep architectural uniforms and flag producers canonical. The ARM64
     // uniform/allocator pipeline installs host-register reads that helpers
     // cannot execute and uses a different pinned-register ABI.
-    if (config.HasOpt(Optimizations::ConstantFolding))
-        ir::ConstFoldingPass::Run(block, features);
-    if (flags_enabled && !has_barrier && PureScalarFlags(module, block)) {
-        auto scalar_features = features;
-        scalar_features.flags_branch_only = false;
-        ir::FlagsEliminationPass::Run(block, hir, scalar_features, ir::Flags::All);
+    compile::RewriteContext rewrite{
+            block, workspace, hir, config.HasOpt(Optimizations::DeadCodeRemove)};
+    const compile::BuilderCapabilities target{};
+    std::optional<compile::ValueWorklist> values;
+    if (config.HasOpt(Optimizations::ConstantFolding)) {
+        compile::BeginValueCleanup(
+                values, rewrite, features, target, compile::ValueCleanup::Values);
     }
-    if (config.HasOpt(Optimizations::DeadCodeRemove))
-        ir::DeadCodeEliminationPass::Run(block, hir);
+    // Admit scalar flags before DCE, preserving the original observer/barrier
+    // gate. Later feedback cannot turn a rejected unit into an admitted one.
+    const bool scalar_flags = flags_enabled && !has_barrier && PureScalarFlags(module, block);
+    bool first_flags = true;
+    for (;;) {
+        if (scalar_flags && (first_flags || rewrite.HasFlagChanges())) {
+            auto scalar_features = features;
+            scalar_features.flags_branch_only = false;
+            compile::EliminateFlags(rewrite, scalar_features, ir::Flags::All);
+        }
+        first_flags = false;
+        if (config.HasOpt(Optimizations::DeadCodeRemove)) rewrite.CollectDead();
+        if (!values || !values->Pending()) break;
+        values->Drain();
+    }
     // HIR's use table is indexed by function-wide IDs. Keep those IDs intact
     // until every block's DCE has finished; local renumbering would make a
     // later block resolve an input to another block's HIRValue.
     if (!hir) block->ReIdInstr();
 }
 
-bool HasCrossBlockValues(std::span<ir::HIRBlock* const> blocks) {
+bool HasCrossBlockValues(std::span<const ir::HIRBlock* const> blocks) {
     for (auto* block : blocks) {
         Definitions local;
         for (auto& inst : block->GetInstList()) local.insert(&inst);
@@ -267,7 +269,8 @@ void* CompileBlock(const std::shared_ptr<Module>& module, ir::Block* block) {
     if (block->GetJitCache().jit_state == JitState::Cached)
         return module->GetJitCache(block->GetJitCache());
     const bool emission_profile = EmissionProfileEnabled();
-    Prepare(*module, block);
+    compile::CompileWorkspaceScope workspace;
+    Prepare(*module, workspace.Get(), block);
     // Freeze the decoded extent before WidePlan clones the IR and instruction
     // resume captures its completion PC and identity. Publication must not
     // mutate that identity, including for read-only modules that skip SMC.
@@ -321,6 +324,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
         return first;
     }
     struct Entry { ir::Block* block; ir::Function* owner; u32 offset; u32 size; u32 recovery; };
+    compile::CompileWorkspaceScope workspace;
     const bool emission_profile = EmissionProfileEnabled();
     JitContext context{true, HostFeatures::Detect(), module->GetAddressSpace().GetConfig().buffers_static_alloc};
     context.ConfigureModule(module.get());
@@ -329,7 +333,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
     for (auto* function : functions) {
         // Verify/emit before publishing ownership so failed whole-function
         // compilation can fall back to a freshly decoded flat block.
-        std::vector<ir::HIRBlock*> ordered;
+        std::vector<const ir::HIRBlock*> ordered;
         const auto start = function->GetFunction()->GetStartLocation();
         for (auto* hir : function->GetHIRBlocks())
             if (hir && hir->GetBlock()->GetStartLocation() == start) ordered.push_back(hir);
@@ -339,20 +343,20 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
         if (ordered.empty() || ordered.front()->GetBlock()->GetStartLocation() != start ||
             (!ordered.front()->GetBlock()->HasTerminal() && ordered.front()->GetBlock()->GetInstList().empty()))
             throw std::runtime_error("RV64 function has no decoded root block");
-        std::erase_if(ordered, [](ir::HIRBlock* hir) {
+        std::erase_if(ordered, [](const ir::HIRBlock* hir) {
             return !hir->GetBlock()->HasTerminal() && hir->GetInstList().empty();
         });
         Definitions definitions;
         for (auto* hir : ordered) for (auto& inst : hir->GetInstList()) definitions.insert(&inst);
         for (auto* hir : ordered) {
-            auto* block = hir->GetBlock();
+            auto* block = function->EditBlock(hir).GetBlock();
             if (!block->HasTerminal() && block->GetInstList().empty()) continue;
             u64 decoded_size{};
             for (const auto& inst : block->GetInstList())
                 if (inst.GetOp() == ir::OpCode::AdvancePC)
                     decoded_size += inst.GetArg<ir::Imm>(0).Get();
             block->SetEndLocation(block->GetStartLocation() + std::max<u64>(decoded_size, 1));
-            Prepare(*module, block, function, &definitions);
+            Prepare(*module, workspace.Get(), block, function, &definitions);
         }
         u64 end = start.Value();
         for (auto* hir : ordered) end = std::max(end, hir->GetBlock()->GetEndLocation().Value());
@@ -376,10 +380,10 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
                 module->ReclaimCode(buffer.exec_data);
                 throw std::runtime_error("failed to publish RV64 function CFG");
             }
-            function->ReleaseFunctionOwnership();
+            function->MarkFunctionPublished();
             module->RetainCodeIR(buffer.exec_data, function->GetFunction());
             module->RetainCodeIR(buffer.exec_data, translator.EmittedIR());
-            auto* root = ordered.front()->GetBlock();
+            auto* root = function->EditBlock(ordered.front()).GetBlock();
             Publish(module, root, buffer, id, 0, buffer.size, translator.RecoveryOffset(), function->GetFunction());
             function->GetFunction()->GetJitCache() = root->GetJitCache();
             std::vector<SerialBlock> serial_blocks;
@@ -404,7 +408,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
         }
         for (auto* hir : ordered) {
             if (!hir) continue;
-            auto* block = hir->GetBlock();
+            auto* block = function->EditBlock(hir).GetBlock();
             if (!block->HasTerminal() && block->GetInstList().empty()) continue;
             block->ReIdInstr();
             const auto offset = context.CurrentBufferSize();
@@ -434,7 +438,7 @@ void* CompileFunctions(const std::shared_ptr<Module>& module,
             module->ReclaimCode(buffer.exec_data);
             throw std::runtime_error("failed to publish RV64 function");
         }
-        function->ReleaseFunctionOwnership();
+        function->MarkFunctionPublished();
         module->RetainCodeIR(buffer.exec_data, function->GetFunction());
     }
     for (const auto& entry : entries)

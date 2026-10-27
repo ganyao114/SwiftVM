@@ -1,5 +1,15 @@
+#include "tests/support/rewrite_fixture.h"
+using swift::runtime::test::RewriteFixture;
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/compile/workspace.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
+
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "runtime/compile/analysis/guest_state.h"
+#include "runtime/compile/passes/passes.h"
 
 TEST_CASE("resident XMM ABI maps the configured register bank") {
     using namespace swift::runtime;
@@ -48,7 +58,7 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
         IntrusivePtr<Block> block;
         Value produced;
         Value conflict;
-        Inst* publish;
+        const Inst* publish;
     };
     auto make_case = [&](OpCode op, swift::u64 location, swift::u32 target = 16,
                          bool with_conflict = false) {
@@ -62,34 +72,60 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
                 break;
             case OpCode::LoadMemory: {
                 auto address = block->LoadUniform(Uniform{64, ValueType::U64});
-                produced = block->LoadMemory(Operand{address}).SetType(ValueType::V128);
+                produced = block->LoadMemory(ValueType::V128, Operand{address});
                 break;
             }
-            case OpCode::VecAnd: produced = block->VecAnd(left, right); break;
-            case OpCode::VecOr: produced = block->VecOr(left, right); break;
-            case OpCode::VecXor: produced = block->VecXor(left, right); break;
-            case OpCode::VecAdd: produced = block->VecAdd(left, right, Imm{32u}); break;
-            case OpCode::VecSub: produced = block->VecSub(left, right, Imm{32u}); break;
-            case OpCode::VecCmpEq: produced = block->VecCmpEq(left, right, Imm{8u}); break;
-            case OpCode::VecCmpGt: produced = block->VecCmpGt(left, right, Imm{8u}); break;
-            case OpCode::VecMul: produced = block->VecMul(left, right, Imm{32u}); break;
+            case OpCode::VecAnd:
+                produced = block->VecAnd(ValueType::V128, left, right);
+                break;
+            case OpCode::VecOr:
+                produced = block->VecOr(ValueType::V128, left, right);
+                break;
+            case OpCode::VecXor:
+                produced = block->VecXor(ValueType::V128, left, right);
+                break;
+            case OpCode::VecAdd:
+                produced = block->VecAdd(ValueType::V128, left, right, Imm{32u});
+                break;
+            case OpCode::VecSub:
+                produced = block->VecSub(ValueType::V128, left, right, Imm{32u});
+                break;
+            case OpCode::VecCmpEq:
+                produced = block->VecCmpEq(ValueType::V128, left, right, Imm{8u});
+                break;
+            case OpCode::VecCmpGt:
+                produced = block->VecCmpGt(ValueType::V128, left, right, Imm{8u});
+                break;
+            case OpCode::VecMul:
+                produced = block->VecMul(ValueType::V128, left, right, Imm{32u});
+                break;
             case OpCode::VecShuffle32Indexed:
-                produced = block->VecShuffle32Indexed(left, right);
+                produced = block->VecShuffle32Indexed(ValueType::V128, left, right);
                 break;
             case OpCode::VecExtractBytes:
-                produced = block->VecExtractBytes(left, right, Imm{7u});
+                produced = block->VecExtractBytes(ValueType::V128, left, right, Imm{7u});
                 break;
-            case OpCode::VecZip: produced = block->VecZip(left, right, Imm{64u}, Imm{0u}); break;
-            case OpCode::VecFAdd: produced = block->VecFAdd(left, right, Imm{32u}); break;
-            case OpCode::VecFSub: produced = block->VecFSub(left, right, Imm{32u}); break;
-            case OpCode::VecFMul: produced = block->VecFMul(left, right, Imm{32u}); break;
-            case OpCode::VecFDiv: produced = block->VecFDiv(left, right, Imm{32u}); break;
-            default: FAIL("missing resident XMM producer test case");
+            case OpCode::VecZip:
+                produced = block->VecZip(ValueType::V128, left, right, Imm{64u}, Imm{0u});
+                break;
+            case OpCode::VecFAdd:
+                produced = block->VecFAdd(ValueType::V128, left, right, Imm{32u});
+                break;
+            case OpCode::VecFSub:
+                produced = block->VecFSub(ValueType::V128, left, right, Imm{32u});
+                break;
+            case OpCode::VecFMul:
+                produced = block->VecFMul(ValueType::V128, left, right, Imm{32u});
+                break;
+            case OpCode::VecFDiv:
+                produced = block->VecFDiv(ValueType::V128, left, right, Imm{32u});
+                break;
+            default:
+                FAIL("missing resident XMM producer test case");
         }
-        produced = produced.SetType(ValueType::V128);
         Value conflict{};
         if (with_conflict) {
-            conflict = block->VecOr(left, right).SetType(ValueType::V128);
+            conflict = block->VecOr(ValueType::V128, left, right);
         }
         auto* publish = block->AppendInst(
                 OpCode::SetHostFPR, produced, HostRegIndex(target), Imm{0u});
@@ -102,12 +138,12 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
     };
 
     auto allocate = [&](Block* block, bool enabled, swift::u32 target = 16) {
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 block->MaxInstrId(), gprs, resident_fprs(target), FeatureSet{});
         RegisterAllocTestSupport::RunForXmmResidentTest(block, alloc.get(), enabled);
         return alloc;
     };
-    auto emit_size = [&](Block* block, RegAlloc& alloc, swift::u64 location) {
+    auto emit_size = [&](Block* block, AllocationFixture& alloc, swift::u64 location) {
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ull << 48,
@@ -119,9 +155,8 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 ModuleConfig{});
-        alloc.SetAllocationUnit(block, nullptr, {});
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
         context.Finish();
@@ -154,8 +189,8 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
 
             auto negative = make_case(
                     op, 0xd000 + index * 0x20, target, true);
-            RegAlloc conflict_alloc{negative.block->MaxInstrId(), gprs,
-                                    resident_fprs(target), FeatureSet{}};
+            AllocationFixture conflict_alloc{
+                    negative.block->MaxInstrId(), gprs, resident_fprs(target), FeatureSet{}};
             RegisterAllocTestSupport::RunForXmmResidentConflictTest(
                     negative.block.get(), &conflict_alloc,
                     negative.conflict.Id(), target);
@@ -169,8 +204,7 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
         for (swift::u32 target : {16u, 24u}) {
             CAPTURE(target);
             IntrusivePtr<Block> block{new Block(0, Location{0xa400 + target})};
-            auto capture = block->GetHostFPR(HostRegIndex(target), Imm{0u})
-                                    .SetType(ValueType::V128);
+            auto capture = block->GetHostFPR(ValueType::V128, HostRegIndex(target), Imm{0u});
             auto replacement = block->LoadUniform(Uniform{16, ValueType::V128});
             block->SetHostFPR(replacement, HostRegIndex(target), Imm{0u});
             block->StoreUniform(Uniform{32, ValueType::V128}, capture);
@@ -188,15 +222,14 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
             IntrusivePtr<Block> block{new Block(0, Location{0xa420 + target})};
             auto left = block->LoadUniform(Uniform{0, ValueType::V128});
             auto right = block->LoadUniform(Uniform{16, ValueType::V128});
-            auto candidate = block->VecXor(left, right).SetType(ValueType::V128);
-            auto tied = block->VecOr(left, right).SetType(ValueType::V128);
-            auto* publish = block->AppendInst(
-                    OpCode::SetHostFPR, candidate, HostRegIndex(target), Imm{0u});
+            auto candidate = block->VecXor(ValueType::V128, left, right);
+            auto tied = block->VecOr(ValueType::V128, left, right);
+            auto* publish =
+                    block->AppendInst(OpCode::SetHostFPR, candidate, HostRegIndex(target), Imm{0u});
             block->StoreUniform(Uniform{32, ValueType::V128}, tied);
             block->SetTerminal(terminal::ReturnToDispatch{});
             block->ReIdInstr();
-            RegAlloc alloc{block->MaxInstrId(), gprs,
-                           resident_fprs(target), FeatureSet{}};
+            AllocationFixture alloc{block->MaxInstrId(), gprs, resident_fprs(target), FeatureSet{}};
             RegisterAllocTestSupport::RunForXmmResidentConflictTest(
                     block.get(), &alloc, tied.Id(), target);
             REQUIRE(alloc.ValueFPR(tied).id == target);
@@ -207,10 +240,8 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
     SECTION("partial lane and GPR views retain their explicit bridges") {
         IntrusivePtr<Block> block{new Block(0, Location{0xa440})};
         auto lane = block->LoadUniform(Uniform{0, ValueType::V64});
-        auto* partial = block->AppendInst(
-                OpCode::SetHostFPR, lane, HostRegIndex(24), Imm{8u});
-        auto scalar = block->GetHostFPR(HostRegIndex(24), Imm{8u})
-                               .SetType(ValueType::U64);
+        auto* partial = block->AppendInst(OpCode::SetHostFPR, lane, HostRegIndex(24), Imm{8u});
+        auto scalar = block->GetHostFPR(ValueType::U64, HostRegIndex(24), Imm{8u});
         block->StoreUniform(Uniform{32, ValueType::U64}, scalar);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
@@ -223,10 +254,10 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
         if (!GetSvmConfig().xmm_resident) {
             SUCCEED("integration shape is enabled by SVM_XMM_RESIDENT=1");
         } else {
-            UniformInfo info{};
+            swift::runtime::compile::GuestStateLayout info{};
             info.uniform_size = 64;
             info.xmm_uniform_ranges.push_back({0, 16});
-            UniformRegister mapped{.uniform = Uniform{0, ValueType::V128}};
+            swift::runtime::compile::GuestRegisterBinding mapped{.uniform = Uniform{0, ValueType::V128}};
             mapped.host_reg.is_fpr = true;
             mapped.host_reg.fpr = HostFPR{24};
             info.uni_fprs.Mark(24);
@@ -240,9 +271,9 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
             block->SetTerminal(terminal::ReturnToDispatch{});
             block->ReIdInstr();
 
-            UniformEliminationPass::Run(block.get(), info, FeatureSet{});
-            UniformStoreSinkPass::Run(block.get(), info, FeatureSet{});
-            UniformEliminationPass::FinalizeStaticFPRMappings(block.get(), info);
+            swift::runtime::compile::CleanupState(RewriteFixture{block.get(), false}.Get(), info, FeatureSet{});
+            swift::runtime::compile::SinkStateStores(RewriteFixture{block.get(), false}.Get(), info);
+            swift::runtime::compile::FinalizeStateMappings(RewriteFixture{block.get(), false}.Get(), info);
             std::size_t uniform_stores = 0;
             std::size_t fixed_stores = 0;
             for (auto& inst : block->GetInstList()) {
@@ -274,18 +305,25 @@ TEST_CASE("resident XMM coalescing preserves captures and fixed-home windows") {
         auto capture_counts = [&](HostRegisterEffect effect) {
             AddressSpace address_space{config};
             IntrusivePtr<Block> block{new Block(0, Location{0xa480})};
-            (void)block->CallLambda(Lambda{
+            (void)block->CallLambda(ValueType::VOID, Lambda{
                     DataClass{Imm{swift::u64{reinterpret_cast<swift::VAddr>(
                             FptrCast(&ReadFPCRFromHostHelper))}}},
                     HelperCallTraits{.host_registers = effect}});
             block->SetTerminal(terminal::ReturnToDispatch{});
             block->ReIdInstr();
-            RegAlloc alloc{block->MaxInstrId(),
-                           address_space.GetTrampolines().GetGPRRegs(),
-                           address_space.GetTrampolines().GetFPRRegs(), FeatureSet{}};
-            RegisterAllocPass::Run(block.get(), &alloc, false, FeatureSet{});
-            alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-            arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+            AllocationFixture alloc{block->MaxInstrId(),
+                                    address_space.GetTrampolines().GetGPRRegs(),
+                                    address_space.GetTrampolines().GetFPRRegs(),
+                                    FeatureSet{}};
+            ::swift::runtime::compile::AllocateBlock(
+                    block.get(),
+                    &alloc,
+                    ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                            block.get(), alloc, FeatureSet{}),
+                    false);
+            ::swift::runtime::backend::arm64::CompleteARM64Allocation(
+                    address_space.GetDefaultModule(), alloc);
+            arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
             arm64::JitTranslator translator{context};
             translator.Translate(block.get());
             context.Finish();
@@ -343,19 +381,19 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
         Value first;
         Value last;
         Value conflict;
-        Inst* publish;
+        const Inst* publish;
     };
-    auto make_chain = [&](swift::u64 location, bool last_round,
-                          bool with_store_observer, bool with_extra_use,
+    auto make_chain = [&](swift::u64 location,
+                          bool last_round,
+                          bool with_store_observer,
+                          bool with_extra_use,
                           bool with_conflict) {
         IntrusivePtr<Block> block{new Block(0, Location{location})};
-        auto home = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u})
-                            .SetType(ValueType::V128);
+        auto home = block->GetHostFPR(ValueType::V128, HostRegIndex(kTarget), Imm{0u});
         auto key0 = block->LoadUniform(Uniform{0, ValueType::V128});
         auto key1 = block->LoadUniform(Uniform{16, ValueType::V128});
         auto zero = block->LoadUniform(Uniform{32, ValueType::V128});
-        auto first = block->VecAesEncFast(home, key0, zero)
-                             .SetType(ValueType::V128);
+        auto first = block->VecAesEncFast(ValueType::V128, home, key0, zero);
         if (with_store_observer) {
             auto address = block->LoadUniform(Uniform{64, ValueType::U64});
             auto payload = block->LoadUniform(Uniform{72, ValueType::U64});
@@ -364,14 +402,12 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
         if (with_extra_use) {
             block->StoreUniform(Uniform{96, ValueType::V128}, first);
         }
-        Value last = last_round
-                ? block->VecAesEncLastFast(first, key1, zero)
-                          .SetType(ValueType::V128)
-                : block->VecAesEncFast(first, key1, zero)
-                          .SetType(ValueType::V128);
+        Value last = last_round ? block->VecAesEncLastFast(ValueType::V128, first, key1, zero)
+
+                                : block->VecAesEncFast(ValueType::V128, first, key1, zero);
         Value conflict{};
         if (with_conflict) {
-            conflict = block->VecOr(key0, key1).SetType(ValueType::V128);
+            conflict = block->VecOr(ValueType::V128, key0, key1);
         }
         auto* publish = block->AppendInst(
                 OpCode::SetHostFPR, last, HostRegIndex(kTarget), Imm{0u});
@@ -384,12 +420,14 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
     };
 
     auto allocate = [&](Block* block, bool enabled) {
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 block->MaxInstrId(), gprs, resident_fprs, FeatureSet{});
         RegisterAllocTestSupport::RunForAesChainTieTest(block, alloc.get(), enabled);
         return alloc;
     };
-    auto emit_size = [&](Block* block, RegAlloc& alloc, swift::u64 location,
+    auto emit_size = [&](Block* block,
+                         AllocationFixture& alloc,
+                         swift::u64 location,
                          bool enabled) {
         Config config{
                 .loc_start = 0,
@@ -405,9 +443,8 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 module_config);
-        alloc.SetAllocationUnit(block, nullptr, {});
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
         context.Finish();
@@ -450,28 +487,22 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
         two_homes.Mark(kTarget);
         two_homes.Mark(kOtherTarget);
         IntrusivePtr<Block> block{new Block(0, Location{0xadc0})};
-        auto home0 = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u})
-                             .SetType(ValueType::V128);
-        auto home1 = block->GetHostFPR(HostRegIndex(kOtherTarget), Imm{0u})
-                             .SetType(ValueType::V128);
+        auto home0 = block->GetHostFPR(ValueType::V128, HostRegIndex(kTarget), Imm{0u});
+        auto home1 = block->GetHostFPR(ValueType::V128, HostRegIndex(kOtherTarget), Imm{0u});
         auto key0 = block->LoadUniform(Uniform{0, ValueType::V128});
         auto key1 = block->LoadUniform(Uniform{16, ValueType::V128});
         auto zero = block->LoadUniform(Uniform{32, ValueType::V128});
-        auto first0 = block->VecAesEncFast(home0, key0, zero)
-                              .SetType(ValueType::V128);
-        auto first1 = block->VecAesEncFast(home1, key0, zero)
-                              .SetType(ValueType::V128);
-        auto last0 = block->VecAesEncLastFast(first0, key1, zero)
-                             .SetType(ValueType::V128);
-        auto last1 = block->VecAesEncLastFast(first1, key1, zero)
-                             .SetType(ValueType::V128);
-        auto* publish0 = block->AppendInst(
-                OpCode::SetHostFPR, last0, HostRegIndex(kTarget), Imm{0u});
+        auto first0 = block->VecAesEncFast(ValueType::V128, home0, key0, zero);
+        auto first1 = block->VecAesEncFast(ValueType::V128, home1, key0, zero);
+        auto last0 = block->VecAesEncLastFast(ValueType::V128, first0, key1, zero);
+        auto last1 = block->VecAesEncLastFast(ValueType::V128, first1, key1, zero);
+        auto* publish0 =
+                block->AppendInst(OpCode::SetHostFPR, last0, HostRegIndex(kTarget), Imm{0u});
         auto* publish1 = block->AppendInst(
                 OpCode::SetHostFPR, last1, HostRegIndex(kOtherTarget), Imm{0u});
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
-        RegAlloc alloc{block->MaxInstrId(), gprs, two_homes, FeatureSet{}};
+        AllocationFixture alloc{block->MaxInstrId(), gprs, two_homes, FeatureSet{}};
         RegisterAllocTestSupport::RunForAesChainTieTest(block.get(), &alloc, true);
         REQUIRE(alloc.ValueFPR(first0).id == kTarget);
         REQUIRE(alloc.ValueFPR(last0).id == kTarget);
@@ -483,7 +514,7 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
 
     SECTION("a third-party interval mapped to the resident home rejects the chain") {
         auto item = make_chain(0xae00, false, false, false, true);
-        RegAlloc alloc{item.block->MaxInstrId(), gprs, resident_fprs, FeatureSet{}};
+        AllocationFixture alloc{item.block->MaxInstrId(), gprs, resident_fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForAesChainTieConflictTest(
                 item.block.get(), &alloc, item.conflict.Id(), kTarget);
         REQUIRE(alloc.ValueFPR(item.conflict).id == kTarget);
@@ -494,13 +525,11 @@ TEST_CASE("AES resident ownership ties only complete verified chains") {
 
     SECTION("a single producer remains on the existing copy fallback") {
         IntrusivePtr<Block> block{new Block(0, Location{0xaf00})};
-        auto home = block->GetHostFPR(HostRegIndex(kTarget), Imm{0u})
-                            .SetType(ValueType::V128);
+        auto home = block->GetHostFPR(ValueType::V128, HostRegIndex(kTarget), Imm{0u});
         auto key = block->LoadUniform(Uniform{0, ValueType::V128});
         auto zero = block->LoadUniform(Uniform{16, ValueType::V128});
-        auto only = block->VecAesEncFast(home, key, zero).SetType(ValueType::V128);
-        auto* publish = block->AppendInst(
-                OpCode::SetHostFPR, only, HostRegIndex(kTarget), Imm{0u});
+        auto only = block->VecAesEncFast(ValueType::V128, home, key, zero);
+        auto* publish = block->AppendInst(OpCode::SetHostFPR, only, HostRegIndex(kTarget), Imm{0u});
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
         auto alloc = allocate(block.get(), true);
@@ -603,12 +632,12 @@ TEST_CASE("AES KEYGEN frontend preserves every rcon across register and memory s
             };
             const auto address = reinterpret_cast<VAddr>(code.data());
             Block block{0, Location{address}};
-            Assembler assembler{&block};
+            swift::runtime::compile::IrBuilder assembler{&block};
             X64Decoder decoder{address, &memory, &assembler, true,
                                Arm64Features::None, false, false, FeatureSet{}};
             decoder.Decode();
 
-            Inst* keygen{};
+            const Inst* keygen{};
             for (auto& inst : block.GetInstList()) {
                 if (inst.GetOp() != OpCode::VecAesKeygenAssist) continue;
                 REQUIRE(keygen == nullptr);
@@ -714,13 +743,11 @@ TEST_CASE("AES KEYGEN compact uses the immutable runtime prefix and exact loweri
     };
     auto make_block = [&](swift::u64 location, bool all_rcon) {
         IntrusivePtr<Block> block{new Block(0, Location{location})};
-        auto source = block->LoadUniform(Uniform{kInputOffset, ValueType::V128})
-                              .SetType(ValueType::V128);
+        auto source = block->LoadUniform(ValueType::V128, Uniform{kInputOffset, ValueType::V128});
         const unsigned count = all_rcon ? 256 : 1;
         Value first{};
         for (unsigned rcon = 0; rcon < count; ++rcon) {
-            auto result = block->VecAesKeygenAssist(source, Imm{rcon})
-                                  .SetType(ValueType::V128);
+            auto result = block->VecAesKeygenAssist(ValueType::V128, source, Imm{rcon});
             if (!first.Defined()) first = result;
             block->StoreUniform(
                     Uniform{kOutputOffset + rcon * 16, ValueType::V128}, result);
@@ -776,8 +803,13 @@ TEST_CASE("AES KEYGEN compact uses the immutable runtime prefix and exact loweri
         AddressSpace address_space{config};
         auto gprs = address_space.GetTrampolines().GetGPRRegs();
         auto fprs = address_space.GetTrampolines().GetFPRRegs();
-        RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
+        AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
         if (alias) {
             const auto source = first.Def()->GetArg<Value>(0);
             alloc.MapRegister(first.Id(), alloc.ValueFPR(source));
@@ -790,8 +822,8 @@ TEST_CASE("AES KEYGEN compact uses the immutable runtime prefix and exact loweri
                 LocationDescriptor{block->GetStartLocation().Value()},
                 LocationDescriptor{block->GetStartLocation().Value() + 0x10},
                 module_config);
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -942,26 +974,24 @@ TEST_CASE("PSHUFD direct lowering requires an exclusively shared canonical mask"
         Value indexes;
         Value first;
     };
-    auto make_case = [&](swift::u64 location, swift::u8 control, bool mixed,
-                         bool corrupt_mask, bool two_shuffles) {
+    auto make_case = [&](swift::u64 location,
+                         swift::u8 control,
+                         bool mixed,
+                         bool corrupt_mask,
+                         bool two_shuffles) {
         IntrusivePtr<Block> block{new Block(0, Location{location})};
-        auto source = block->LoadUniform(Uniform{0, ValueType::V128})
-                              .SetType(ValueType::V128);
+        auto source = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
         auto [low, high] = arm64::PshufdIndexMask(control);
         low ^= corrupt_mask;
-        auto indexes = block->VecLoadConst(Imm{low}, Imm{high})
-                               .SetType(ValueType::V128);
-        auto first = block->VecShuffle32Indexed(source, indexes)
-                             .SetType(ValueType::V128);
+        auto indexes = block->VecLoadConst(ValueType::V128, Imm{low}, Imm{high});
+        auto first = block->VecShuffle32Indexed(ValueType::V128, source, indexes);
         block->StoreUniform(Uniform{16, ValueType::V128}, first);
         if (two_shuffles) {
-            auto second = block->VecShuffle32Indexed(source, indexes)
-                                  .SetType(ValueType::V128);
+            auto second = block->VecShuffle32Indexed(ValueType::V128, source, indexes);
             block->StoreUniform(Uniform{32, ValueType::V128}, second);
         }
         if (mixed) {
-            auto other = block->VecTableLookup8(source, indexes)
-                                 .SetType(ValueType::V128);
+            auto other = block->VecTableLookup8(ValueType::V128, source, indexes);
             block->StoreUniform(Uniform{48, ValueType::V128}, other);
         }
         block->SetTerminal(terminal::ReturnToDispatch{});
@@ -971,12 +1001,16 @@ TEST_CASE("PSHUFD direct lowering requires an exclusively shared canonical mask"
 
     auto allocate = [&](Block* block) {
         auto features = FeatureSet{};
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 block->MaxInstrId(), gprs, FPRSMask{0}, features);
-        RegisterAllocPass::Run(block, alloc.get(), false, features);
+        ::swift::runtime::compile::AllocateBlock(
+                block,
+                alloc.get(),
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(block, *alloc, features),
+                false);
         return alloc;
     };
-    auto emit = [&](Block* block, RegAlloc& alloc, swift::u64 location) {
+    auto emit = [&](Block* block, AllocationFixture& alloc, swift::u64 location) {
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ull << 48,
@@ -988,9 +1022,8 @@ TEST_CASE("PSHUFD direct lowering requires an exclusively shared canonical mask"
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 ModuleConfig{});
-        alloc.SetAllocationUnit(block, nullptr, {});
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
         context.Finish();
@@ -1048,8 +1081,10 @@ TEST_CASE("PSHUFD direct lowering requires an exclusively shared canonical mask"
     }
 
     SECTION("the canonical mask cannot also be the shuffled source") {
+        ::swift::runtime::compile::CompileWorkspace compilation_workspace;
         auto item = make_case(0xb0b00, 0x4E, false, false, false);
-        item.first.Def()->SetArg(0, item.indexes);
+        compile::RewriteContext{item.block.get(), compilation_workspace, nullptr, false}.SetArg(
+                item.block.get(), item.first.Def(), 0, item.indexes);
         item.block->ReIdInstr();
         auto alloc = allocate(item.block.get());
         auto code = emit(item.block.get(), *alloc, 0xb0c00);
@@ -1075,35 +1110,50 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
         Value left;
         Value produced;
         Value conflict;
-        Inst* publish;
+        const Inst* publish;
     };
-    auto make_case = [&](OpCode op, swift::u64 location,
+    auto make_case = [&](OpCode op,
+                         swift::u64 location,
                          bool keep_left_live = false,
                          bool with_conflict = false) {
         IntrusivePtr<Block> block{new Block(0, Location{location})};
-        auto left = block->GetHostFPR(HostRegIndex(target), Imm{0u})
-                            .SetType(ValueType::V128);
-        auto right = block->LoadUniform(Uniform{16, ValueType::V128})
-                             .SetType(ValueType::V128);
+        auto left = block->GetHostFPR(ValueType::V128, HostRegIndex(target), Imm{0u});
+        auto right = block->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
         Value produced{};
         switch (op) {
-            case OpCode::VecFAddScalar32: produced = block->VecFAddScalar32(left, right); break;
-            case OpCode::VecFSubScalar32: produced = block->VecFSubScalar32(left, right); break;
-            case OpCode::VecFMulScalar32: produced = block->VecFMulScalar32(left, right); break;
-            case OpCode::VecFDivScalar32: produced = block->VecFDivScalar32(left, right); break;
-            case OpCode::VecFAddScalar64: produced = block->VecFAddScalar64(left, right); break;
-            case OpCode::VecFSubScalar64: produced = block->VecFSubScalar64(left, right); break;
-            case OpCode::VecFMulScalar64: produced = block->VecFMulScalar64(left, right); break;
-            case OpCode::VecFDivScalar64: produced = block->VecFDivScalar64(left, right); break;
-            default: FAIL("missing scalar FPR tie producer test case");
+            case OpCode::VecFAddScalar32:
+                produced = block->VecFAddScalar32(ValueType::V128, left, right);
+                break;
+            case OpCode::VecFSubScalar32:
+                produced = block->VecFSubScalar32(ValueType::V128, left, right);
+                break;
+            case OpCode::VecFMulScalar32:
+                produced = block->VecFMulScalar32(ValueType::V128, left, right);
+                break;
+            case OpCode::VecFDivScalar32:
+                produced = block->VecFDivScalar32(ValueType::V128, left, right);
+                break;
+            case OpCode::VecFAddScalar64:
+                produced = block->VecFAddScalar64(ValueType::V128, left, right);
+                break;
+            case OpCode::VecFSubScalar64:
+                produced = block->VecFSubScalar64(ValueType::V128, left, right);
+                break;
+            case OpCode::VecFMulScalar64:
+                produced = block->VecFMulScalar64(ValueType::V128, left, right);
+                break;
+            case OpCode::VecFDivScalar64:
+                produced = block->VecFDivScalar64(ValueType::V128, left, right);
+                break;
+            default:
+                FAIL("missing scalar FPR tie producer test case");
         }
-        produced = produced.SetType(ValueType::V128);
         if (keep_left_live) {
             block->StoreUniform(Uniform{32, ValueType::V128}, left);
         }
         Value conflict{};
         if (with_conflict) {
-            conflict = block->VecOr(right, right).SetType(ValueType::V128);
+            conflict = block->VecOr(ValueType::V128, right, right);
         }
         auto* publish = block->AppendInst(
                 OpCode::SetHostFPR, produced, HostRegIndex(target), Imm{0u});
@@ -1117,7 +1167,7 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
     auto allocate = [&](Block* block, bool enabled) {
         auto features = FeatureSet{};
         features.sse_scalar_tie = enabled;
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 block->MaxInstrId(), gprs, resident_fprs(), features);
         RegisterAllocTestSupport::RunForScalarFPRTieTest(block, alloc.get(), enabled);
         return alloc;
@@ -1126,7 +1176,7 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
         std::size_t bytes{};
         std::string text;
     };
-    auto emit = [&](Block* block, RegAlloc& alloc, swift::u64 location, bool enabled) {
+    auto emit = [&](Block* block, AllocationFixture& alloc, swift::u64 location, bool enabled) {
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ull << 48,
@@ -1143,9 +1193,8 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 module_config);
-        alloc.SetAllocationUnit(block, nullptr, {});
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
         context.Finish();
@@ -1207,19 +1256,15 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
         for (bool read_before : {false, true}) {
             CAPTURE(read_before);
             IntrusivePtr<Block> block{new Block(0, Location{0x10300})};
-            auto left = block->GetHostFPR(HostRegIndex(target), Imm{0u})
-                                .SetType(ValueType::V128);
+            auto left = block->GetHostFPR(ValueType::V128, HostRegIndex(target), Imm{0u});
             Value retained;
             if (read_before) {
-                retained = block->GetHostFPR(HostRegIndex(target), Imm{0u})
-                                   .SetType(ValueType::V128);
+                retained = block->GetHostFPR(ValueType::V128, HostRegIndex(target), Imm{0u});
             }
-            auto right = block->LoadUniform(Uniform{16, ValueType::V128})
-                                 .SetType(ValueType::V128);
-            auto result = block->VecFAddScalar32(left, right).SetType(ValueType::V128);
+            auto right = block->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+            auto result = block->VecFAddScalar32(ValueType::V128, left, right);
             if (!read_before) {
-                retained = block->GetHostFPR(HostRegIndex(target), Imm{0u})
-                                   .SetType(ValueType::V128);
+                retained = block->GetHostFPR(ValueType::V128, HostRegIndex(target), Imm{0u});
             }
             block->StoreUniform(Uniform{32, ValueType::V128}, retained);
             auto* publish = block->AppendInst(
@@ -1236,14 +1281,14 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
 
     SECTION("a scalar chain keeps the resident destination until publication") {
         IntrusivePtr<Block> block{new Block(0, Location{0x10400})};
-        auto left = block->GetHostFPR(HostRegIndex(target), Imm{0u}).SetType(ValueType::V128);
-        auto right = block->LoadUniform(Uniform{16, ValueType::V128}).SetType(ValueType::V128);
-        auto first = block->VecFMulScalar64(left, right).SetType(ValueType::V128);
-        auto* first_publish = block->AppendInst(
-                OpCode::SetHostFPR, first, HostRegIndex(target), Imm{0u});
-        auto second = block->VecFAddScalar64(first, right).SetType(ValueType::V128);
-        auto* second_publish = block->AppendInst(
-                OpCode::SetHostFPR, second, HostRegIndex(target), Imm{0u});
+        auto left = block->GetHostFPR(ValueType::V128, HostRegIndex(target), Imm{0u});
+        auto right = block->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+        auto first = block->VecFMulScalar64(ValueType::V128, left, right);
+        auto* first_publish =
+                block->AppendInst(OpCode::SetHostFPR, first, HostRegIndex(target), Imm{0u});
+        auto second = block->VecFAddScalar64(ValueType::V128, first, right);
+        auto* second_publish =
+                block->AppendInst(OpCode::SetHostFPR, second, HostRegIndex(target), Imm{0u});
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
 
@@ -1261,16 +1306,13 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
 
     SECTION("a scalar chain crosses an in-place unary producer") {
         IntrusivePtr<Block> block{new Block(0, Location{0x10480})};
-        auto left = block->GetHostFPR(HostRegIndex(target), Imm{0u})
-                            .SetType(ValueType::V128);
-        auto right = block->LoadUniform(Uniform{16, ValueType::V128})
-                             .SetType(ValueType::V128);
-        auto first = block->VecFMulScalar32(left, right).SetType(ValueType::V128);
-        auto unary = block->VecFUnary(first, first, Imm{32u}, Imm{0u}, Imm{1u})
-                             .SetType(ValueType::V128);
-        auto second = block->VecFMulScalar32(unary, right).SetType(ValueType::V128);
-        auto* publish = block->AppendInst(
-                OpCode::SetHostFPR, second, HostRegIndex(target), Imm{0u});
+        auto left = block->GetHostFPR(ValueType::V128, HostRegIndex(target), Imm{0u});
+        auto right = block->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+        auto first = block->VecFMulScalar32(ValueType::V128, left, right);
+        auto unary = block->VecFUnary(ValueType::V128, first, first, Imm{32u}, Imm{0u}, Imm{1u});
+        auto second = block->VecFMulScalar32(ValueType::V128, unary, right);
+        auto* publish =
+                block->AppendInst(OpCode::SetHostFPR, second, HostRegIndex(target), Imm{0u});
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
 
@@ -1286,7 +1328,7 @@ TEST_CASE("scalar FPR fixed-home tie requires an exact safe publication window")
         auto item = make_case(OpCode::VecFAddScalar64, 0x10500, false, true);
         auto features = FeatureSet{};
         features.sse_scalar_tie = true;
-        RegAlloc alloc{item.block->MaxInstrId(), gprs, resident_fprs(), features};
+        AllocationFixture alloc{item.block->MaxInstrId(), gprs, resident_fprs(), features};
         RegisterAllocTestSupport::RunForScalarFPRTieConflictTest(
                 item.block.get(), &alloc, item.conflict.Id(), target);
         REQUIRE(alloc.ValueFPR(item.conflict).id == target);
@@ -1305,16 +1347,13 @@ TEST_CASE("SHUFPS hot immediates tie only an exact last-use destination") {
         Value left;
         Value result;
     };
-    auto make_case = [](swift::u32 control, swift::u64 location,
-                        bool alias, bool keep_left_live) {
+    auto make_case = [](swift::u32 control, swift::u64 location, bool alias, bool keep_left_live) {
         IntrusivePtr<Block> block{new Block(0, Location{location})};
-        auto left = block->LoadUniform(Uniform{0, ValueType::V128})
-                            .SetType(ValueType::V128);
-        auto right = alias ? left : block->LoadUniform(Uniform{16, ValueType::V128})
-                                          .SetType(ValueType::V128);
-        auto result = block->VecShuffle32TwoSrc(
-                                   left, right, Imm{swift::u64{control}})
-                              .SetType(ValueType::V128);
+        auto left = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
+        auto right =
+                alias ? left : block->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+        auto result =
+                block->VecShuffle32TwoSrc(ValueType::V128, left, right, Imm{swift::u64{control}});
         block->StoreUniform(Uniform{32, ValueType::V128}, result);
         if (keep_left_live) {
             block->StoreUniform(Uniform{48, ValueType::V128}, left);
@@ -1326,7 +1365,7 @@ TEST_CASE("SHUFPS hot immediates tie only an exact last-use destination") {
     auto allocate = [&](Block* block, bool enabled) {
         auto features = FeatureSet{};
         features.sse_shufps_imm = enabled;
-        auto alloc = std::make_unique<RegAlloc>(
+        auto alloc = std::make_unique<AllocationFixture>(
                 block->MaxInstrId(), gprs, FPRSMask{0}, features);
         RegisterAllocTestSupport::RunForShufpsImmTieTest(block, alloc.get(), enabled);
         return alloc;
@@ -1335,8 +1374,7 @@ TEST_CASE("SHUFPS hot immediates tie only an exact last-use destination") {
         std::size_t bytes{};
         std::string text;
     };
-    auto emit = [&](Block* block, RegAlloc& alloc,
-                    swift::u64 location, bool enabled) {
+    auto emit = [&](Block* block, AllocationFixture& alloc, swift::u64 location, bool enabled) {
         Config config{
                 .loc_start = 0,
                 .loc_end = 1ull << 48,
@@ -1350,9 +1388,8 @@ TEST_CASE("SHUFPS hot immediates tie only an exact last-use destination") {
         auto module = address_space.MapModule(
                 LocationDescriptor{location}, LocationDescriptor{location + 0x10},
                 module_config);
-        alloc.SetAllocationUnit(block, nullptr, {});
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block);
         context.Finish();
@@ -1427,11 +1464,8 @@ TEST_CASE("SHUFPS hot immediates tie only an exact last-use destination") {
     SECTION("a resident source keeps its fixed home intact") {
         constexpr swift::u16 target = 19;
         IntrusivePtr<Block> block{new Block(0, Location{0x18500})};
-        auto left = block->GetHostFPR(HostRegIndex(target), Imm{0u})
-                            .SetType(ValueType::V128);
-        auto result = block->VecShuffle32TwoSrc(
-                                   left, left, Imm{swift::u64{0xe5}})
-                              .SetType(ValueType::V128);
+        auto left = block->GetHostFPR(ValueType::V128, HostRegIndex(target), Imm{0u});
+        auto result = block->VecShuffle32TwoSrc(ValueType::V128, left, left, Imm{swift::u64{0xe5}});
         block->StoreUniform(Uniform{32, ValueType::V128}, result);
         block->SetTerminal(terminal::ReturnToDispatch{});
         block->ReIdInstr();
@@ -1441,7 +1475,7 @@ TEST_CASE("SHUFPS hot immediates tie only an exact last-use destination") {
             features.sse_shufps_imm = enabled;
             FPRSMask resident{0};
             resident.Mark(target);
-            auto alloc = std::make_unique<RegAlloc>(
+            auto alloc = std::make_unique<AllocationFixture>(
                     block->MaxInstrId(), gprs, resident, features);
             RegisterAllocTestSupport::RunForShufpsImmTieTest(
                     block.get(), alloc.get(), enabled);

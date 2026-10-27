@@ -2,8 +2,8 @@
 
 namespace swift::runtime::backend::arm64 {
 
-bool JitTranslator::CanAdoptPendingSpillWrite(
-        ir::Inst* inst, bool reads_forwarded_memory_input) {
+bool JitTranslator::CanAdoptPendingSpillWrite(const ir::Inst* inst,
+                                              bool reads_forwarded_memory_input) {
     if (!inst) {
         return false;
     }
@@ -19,9 +19,9 @@ bool JitTranslator::CanAdoptPendingSpillWrite(
     if (inst->GetOp() != ir::OpCode::SetHostGPR) {
         return true;
     }
-    const auto found = gpr_plan->publications.find(inst);
-    ASSERT(found != gpr_plan->publications.end());
-    return found->second.adopts_spill;
+    const auto* action = context.GetActions().Publication(inst->Id());
+    ASSERT(action);
+    return action->Has(PublicationAction::AdoptsSpill);
 }
 
 }  // namespace swift::runtime::backend::arm64

@@ -1,10 +1,13 @@
-#include <catch2/catch_test_macros.hpp>
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
+#include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "support/register_alloc_test_support.h"
 
@@ -25,31 +28,33 @@ Metrics Compile(unsigned shape, unsigned length) {
     IntrusivePtr<Block> block{new Block(0, Location{0xb100})};
     const auto right = block->LoadUniform(Uniform{0, ValueType::V128});
     const auto zero = block->LoadUniform(Uniform{16, ValueType::V128});
-    auto value = block->GetHostFPR(HostRegIndex(17), Imm{0u}).SetType(ValueType::V128);
+    auto value = block->GetHostFPR(ValueType::V128, HostRegIndex(17), Imm{0u});
     for (unsigned i = 0; i < length; ++i) {
-        if (shape == 0) value = block->VecXor(value, right).SetType(ValueType::V128);
-        else if (shape == 1) value = block->VecFAddScalar64(value, right).SetType(ValueType::V128);
-        else value = (i + 1 == length ? block->VecAesEncLastFast(value, right, zero)
-                                     : block->VecAesEncFast(value, right, zero)).SetType(ValueType::V128);
+        if (shape == 0)
+            value = block->VecXor(ValueType::V128, value, right);
+        else if (shape == 1)
+            value = block->VecFAddScalar64(ValueType::V128, value, right);
+        else
+            value = (i + 1 == length ? block->VecAesEncLastFast(ValueType::V128, value, right, zero)
+                                     : block->VecAesEncFast(ValueType::V128, value, right, zero));
         if (shape != 2 || i + 1 == length) block->SetHostFPR(value, HostRegIndex(17), Imm{0u});
     }
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
     FPRSMask fprs{}; fprs.Mark(17);
     FeatureSet features{}; features.sse_scalar_tie = true; features.ra_aes_chain_tie = true;
-    RegAlloc allocation{block->MaxInstrId(), GPRSMask{~((1u << 8) - 1u)}, fprs, features};
+    AllocationFixture allocation{block->MaxInstrId(), GPRSMask{~((1u << 8) - 1u)}, fprs, features};
     const auto begin = std::chrono::steady_clock::now();
     if (shape == 0) RegisterAllocTestSupport::RunForXmmResidentTest(block.get(), &allocation, true);
     else if (shape == 1) RegisterAllocTestSupport::RunForScalarFPRTieTest(block.get(), &allocation, true);
     else RegisterAllocTestSupport::RunForAesChainTieTest(block.get(), &allocation, true);
-    allocation.SetAllocationUnit(block.get(), nullptr, {});
-    allocation.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, allocation};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+    arm64::JitContext context{module, allocation, allocation.Actions()};
     arm64::JitTranslator translator{context}; translator.Translate(block.get()); context.Finish();
     Metrics result;
     result.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
     result.bytes = context.CurrentBufferSize(); result.spills = allocation.SpillCount();
-    result.reloads = allocation.RAShape().spill_loads; result.stores = allocation.RAShape().spill_stores;
+    result.reloads = context.GetRAShapeCounters().spill_loads; result.stores = context.GetRAShapeCounters().spill_stores;
     result.hash = 1469598103934665603ull;
     const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < result.bytes; ++i) result.hash = (result.hash ^ bytes[i]) * 1099511628211ull;

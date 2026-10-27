@@ -1,17 +1,16 @@
 #include "test_support.h"
 
+#include <algorithm>
 #include <bit>
 #include <chrono>
 #include <iomanip>
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
-
 using O = ir::OpCode;
 using T = ir::ValueType;
 
 namespace {
-
 void WarmKernel(BlockFn function, backend::State* state) {
     // Keep the selected core busy long enough for the board's existing
     // ondemand policy to settle, without changing any frequency settings.
@@ -50,10 +49,292 @@ u64 ReferenceField(O op, u64 a, u64 b, u32 lsb, u32 width) {
     return result;
 }
 
+u64 ReferenceIntegerShift(O op, u64 raw, u32 source_bits, u32 result_bits, u64 count) {
+    const u32 copied = std::min(source_bits, result_bits);
+    const u32 amount = count & (result_bits - 1);
+    const bool arithmetic = op == O::AsrImm || op == O::AsrValue;
+    u64 result{};
+    for (u32 bit = 0; bit < result_bits; ++bit) {
+        u32 source{};
+        if (op == O::LslImm || op == O::LslValue)
+            source = bit >= amount ? bit - amount : result_bits;
+        else if (op == O::RorImm || op == O::RorValue)
+            source = (bit + amount) % result_bits;
+        else source = arithmetic ? std::min(bit + amount, copied - 1) : bit + amount;
+        if (source < copied && ((raw >> source) & 1)) result |= u64{1} << bit;
+    }
+    return result;
+}
+
+void NativeIntegerConversions(bool zbb) {
+    const std::array<u64, 8> inputs{0, 1, 0xdeadbeef00000080ULL, 0xabcdef0080008000ULL,
+            0x100000000ULL, 0x8000000080000000ULL, 0xdeadbeef12345678ULL, UINT64_MAX};
+    for (const auto source_type : {T::U8, T::S8, T::U16, T::S16, T::U32, T::S32, T::U64, T::S64})
+    for (const auto op : {O::ZeroExtend32, O::ZeroExtend32To64, O::ZeroExtend64, O::SignExtend})
+    for (const auto result_type : {T::U8, T::S8, T::U16, T::S16, T::U32, T::S32, T::U64, T::S64})
+    for (const u32 transport : {0u, 1u, 2u})
+    for (const bool keep_input : {false, true}) {
+        IntrusivePtr<ir::Block> block{new ir::Block{ir::Location{0xa040}}};
+        compile::IrBuilder as{block.get()};
+        const auto raw = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto input = transport ? as.BitCast(source_type, raw)
+                               : ir::Value{raw}.SetCastType(source_type);
+        if (transport == 2) input = as.GetResult(source_type, input, input);
+        const auto output = ir::Value{as.AppendInst(op, result_type, input)};
+        as.StoreUniform(ir::Uniform{16, T::U64}, as.ZeroExtend64(T::U64, output));
+        if (keep_input)
+            as.StoreUniform(ir::Uniform{24, T::U32}, ir::Value{input}.SetCastType(T::U32));
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        const u32 source_bits = ir::GetValueSizeByte(source_type) * 8;
+        const u32 copied = op == O::ZeroExtend32 || op == O::ZeroExtend32To64
+                ? std::min(source_bits, 32u) : source_bits;
+        const auto label = std::string{ir::GetIRMetaInfo(op).name} + "/source=" +
+                std::to_string(static_cast<u32>(source_type)) + "/result=" +
+                std::to_string(static_cast<u32>(result_type)) + "/transport=" +
+                std::to_string(transport) + "/keep=" + std::to_string(keep_input);
+        for (const bool cached : {false, true}) {
+            Compiled native{block.get(), cached, rv::HostFeatures{.zbb = zbb}};
+            Check(native.translator.Stats().helpers == 0, "integer conversions remain native");
+            for (const auto value : inputs) {
+                u64 expected{};
+                for (u32 bit = 0; bit < ir::GetValueSizeByte(result_type) * 8; ++bit) {
+                    const bool on = bit < copied ? (value >> bit) & 1
+                            : op == O::SignExtend && ((value >> (copied - 1)) & 1);
+                    if (on) expected |= u64{1} << bit;
+                }
+                StateStorage state;
+                state.Put(0, value); state.Put(16, UINT64_MAX); state.Put(24, UINT64_MAX);
+                Check(native.fn(state.state) == HaltReason::CallHost, "integer conversion halt");
+                Check(state.Get(16) == expected, label + "/cached=" + std::to_string(cached));
+                if (keep_input)
+                    Check(static_cast<u32>(state.Get(24)) == static_cast<u32>(value),
+                          "conversion preserves its borrowed raw source");
+            }
+        }
+    }
+    std::cout << "PASS integer conversion views, raw sources and result widths, Zbb=" << zbb << '\n';
+}
+
+void NativeIntegerPredicates(bool zbb) {
+    const rv::HostFeatures features{.zbb = zbb};
+    for (O op : {O::TestZero, O::TestNotZero, O::Not, O::TestBit})
+    for (u32 role = 0; role < (op == O::TestBit ? 6u : 2u); ++role) {
+        IntrusivePtr<ir::Block> block{new ir::Block{ir::Location{0xa090}}};
+        const auto input = block->LoadImm(ir::Imm{u64{0}});
+        auto* invalid = op == O::TestBit ? block->AppendInst(op, T::U64, input, ir::Imm{u64{0}})
+                                        : block->AppendInst(op, T::U64, input);
+        if (role == 0) invalid->SetArg(0, ir::Value{input}.SetCastType(T::V64));
+        else if (role == 1) invalid->SetReturn(T::V64);
+        else invalid->SetArg(1, role == 2 ? ir::Imm{u64{0}, T::V32}
+                : ir::Imm{role == 3 ? u64{64} : role == 4 ? u64{0x100000001} : UINT64_MAX});
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        block->ReIdInstr();
+        rv::JitContext context{true, features};
+        rv::JitTranslator translator{context};
+        bool rejected = false;
+        try { translator.Translate(block.get()); }
+        catch (const std::runtime_error&) { rejected = true; }
+        Check(rejected && context.CurrentBufferSize() == 0, "predicate preflight");
+    }
+    const auto config = TestConfig();
+    backend::CodeCache arena{config, 1u << 20, FeatureSet{}};
+    QuiescentRawCache release{arena};
+    u32 kernels{};
+    u64 predicate_values{}, selection_values{}, branch_values{};
+    const auto execute = [&](ir::Block* block, bool cached, auto&& samples) {
+        rv::JitContext context{cached, features};
+        rv::JitTranslator translator{context};
+        translator.Translate(block);
+        ++kernels;
+        auto code = arena.AllocCode(context.CurrentBufferSize());
+        Check(code.has_value(), "predicate code");
+        context.Flush(*code);
+        Check(translator.Stats().helpers == 0, "native predicate");
+        samples(reinterpret_cast<BlockFn>(code->exec_data));
+        Check(arena.FreeCode(code->exec_data), "free predicate");
+    };
+    const std::array<u64, 9> values{0x100, 0, 1, 0x8000, 0x10000, 0x100000000ULL,
+                                   0x8000000000000000ULL, UINT64_MAX, 0xfedcba9876543200ULL};
+    const std::array<u64, 5> positions{0, 7, 15, 31, 63};
+    constexpr u64 left_pattern = 0xfedcba9876543210ULL, right_pattern = 0x1234567890abcdefULL;
+    struct PredicateCase { O op; u32 offset; u64 bit; bool raw; bool keep; };
+    struct SelectionCase { O op; u32 offset; u32 arms; bool raw; bool keep; };
+    for (T source_type : {T::U8, T::S8, T::U16, T::S16, T::U32, T::S32, T::U64, T::S64})
+    for (T result_type : {T::U8, T::S8, T::U16, T::S16, T::U32, T::S32, T::U64, T::S64}) {
+        const u32 source_bits = ir::GetValueSizeByte(source_type) * 8;
+        const u32 result_bits = ir::GetValueSizeByte(result_type) * 8;
+        const u64 source_mask = source_bits == 64 ? UINT64_MAX : (u64{1} << source_bits) - 1;
+        const u64 result_mask = result_bits == 64 ? UINT64_MAX : (u64{1} << result_bits) - 1;
+        IntrusivePtr<ir::Block> predicates{new ir::Block{ir::Location{0xa098}}};
+        compile::IrBuilder p{predicates.get()};
+        std::array<PredicateCase, 32> pcases;
+        u32 pcount{};
+        for (O op : {O::TestZero, O::TestNotZero, O::Not, O::TestBit})
+        for (bool raw : {false, true})
+        for (bool keep : {false, true})
+        for (u32 variant = 0; variant < (op == O::TestBit ? positions.size() : 1); ++variant) {
+            const u32 offset = pcount * 24;
+            pcases[pcount++] = {op, offset, positions[variant], raw, keep};
+            const auto original = p.LoadUniform(ir::Uniform{offset, raw ? T::U64 : source_type});
+            const auto input = raw ? p.BitCast(source_type, original) : original;
+            const auto result = op == O::TestBit
+                    ? ir::Value{predicates->AppendInst(op, result_type, input, ir::Imm{positions[variant]})}
+                    : ir::Value{predicates->AppendInst(op, result_type, input)};
+            p.StoreUniform(ir::Uniform{offset + 8, T::U64}, ir::Value{result}.SetCastType(T::U64));
+            if (keep) p.StoreUniform(ir::Uniform{offset + 16, T::U64}, ir::Value{original}.SetCastType(T::U64));
+        }
+        predicates->SetTerminal(ir::terminal::ReturnToHost{});
+        for (bool cached : {false, true}) execute(predicates.get(), cached, [&](BlockFn entry) {
+            StateStorage state;
+            for (u64 raw : values) {
+                for (const auto& test : pcases) {
+                    state.Put(test.offset, raw);
+                    state.Put(test.offset + 8, UINT64_MAX);
+                    state.Put(test.offset + 16, UINT64_MAX);
+                }
+                Check(entry(state.state) == HaltReason::CallHost, "predicate halt");
+                for (const auto& test : pcases) {
+                    const u64 logical = raw & source_mask;
+                    const u64 wanted = test.op == O::TestBit ? (logical >> test.bit) & 1
+                            : test.op == O::TestNotZero ? logical != 0 : logical == 0;
+                    const u64 actual = state.Get(test.offset + 8);
+                    if (actual != wanted)
+                        Check(false, std::string{ir::GetIRMetaInfo(test.op).name} + "/source=" +
+                              std::to_string(static_cast<u32>(source_type)) + "/result=" +
+                              std::to_string(static_cast<u32>(result_type)) + "/bit=" +
+                              std::to_string(test.bit) + "/raw=" + std::to_string(raw) +
+                              "/cached=" + std::to_string(cached));
+                    Check(actual == wanted, "predicate value");
+                    ++predicate_values;
+                    if (test.keep)
+                        Check(state.Get(test.offset + 16) == (test.raw ? raw : logical), "predicate raw");
+                }
+            }
+        });
+        IntrusivePtr<ir::Block> selections{new ir::Block{ir::Location{0xa09c}}};
+        compile::IrBuilder s{selections.get()};
+        std::array<SelectionCase, 32> scases;
+        u32 scount{};
+        for (O op : {O::Select, O::SelectZero})
+        for (bool raw : {false, true})
+        for (bool keep : {false, true})
+        for (u32 arms : {0u, 1u, 2u, 3u}) {
+            const u32 offset = scount * 64;
+            scases[scount++] = {op, offset, arms, raw, keep};
+            const auto original = s.LoadUniform(ir::Uniform{offset, raw ? T::U64 : source_type});
+            auto condition = raw ? s.BitCast(source_type, original) : original;
+            const auto left = arms == 3 ? s.LoadImm(ir::Imm{u64{1}})
+                    : arms == 1 ? original : s.LoadUniform(ir::Uniform{offset + 8, T::U64});
+            const auto right = arms == 3 ? s.LoadImm(ir::Imm{u64{0}})
+                    : arms == 2 ? original : s.LoadUniform(ir::Uniform{offset + 16, T::U64});
+            if (arms == 3) condition = s.TestNotZero(condition);
+            const auto result = ir::Value{selections->AppendInst(op, result_type, condition,
+                    ir::Value{left}.SetCastType(result_type), ir::Value{right}.SetCastType(result_type))};
+            s.StoreUniform(ir::Uniform{offset + 24, result_type}, result);
+            if (keep) {
+                s.StoreUniform(ir::Uniform{offset + 32, T::U64}, ir::Value{original}.SetCastType(T::U64));
+                s.StoreUniform(ir::Uniform{offset + 40, T::U64}, ir::Value{left}.SetCastType(T::U64));
+                s.StoreUniform(ir::Uniform{offset + 48, T::U64}, ir::Value{right}.SetCastType(T::U64));
+            }
+        }
+        selections->SetTerminal(ir::terminal::ReturnToHost{});
+        for (bool cached : {false, true}) execute(selections.get(), cached, [&](BlockFn entry) {
+            StateStorage state;
+            for (u64 raw : values) {
+                for (const auto& test : scases) {
+                    state.Put(test.offset, raw);
+                    state.Put(test.offset + 8, left_pattern);
+                    state.Put(test.offset + 16, right_pattern);
+                    for (u32 field : {24u, 32u, 40u, 48u}) state.Put(test.offset + field, UINT64_MAX);
+                }
+                Check(entry(state.state) == HaltReason::CallHost, "selection halt");
+                for (const auto& test : scases) {
+                    const u64 materialized = test.raw ? raw : raw & source_mask;
+                    const u64 left = test.arms == 3 ? 1 : test.arms == 1 ? materialized : left_pattern;
+                    const u64 right = test.arms == 3 ? 0 : test.arms == 2 ? materialized : right_pattern;
+                    const bool nonzero = (raw & source_mask) != 0;
+                    const u64 wanted = ((test.op == O::SelectZero ? !nonzero : nonzero) ? left : right) & result_mask;
+                    const u64 actual = state.Get(test.offset + 24) & result_mask;
+                    if (actual != wanted)
+                        Check(false, "selection/source=" + std::to_string(static_cast<u32>(source_type)) +
+                              "/result=" + std::to_string(static_cast<u32>(result_type)) +
+                              "/arms=" + std::to_string(test.arms) + "/raw=" + std::to_string(raw) +
+                              "/cached=" + std::to_string(cached));
+                    Check(actual == wanted, "selection value");
+                    ++selection_values;
+                    if (test.keep) {
+                        Check(state.Get(test.offset + 32) == materialized, "condition raw");
+                        Check(state.Get(test.offset + 40) == left, "left raw");
+                        Check(state.Get(test.offset + 48) == right, "right raw");
+                    }
+                }
+            }
+        });
+    }
+    for (T type : {T::U8, T::S8, T::U16, T::S16, T::U32, T::S32, T::U64, T::S64})
+    for (O op : {O::Goto, O::NotGoto}) {
+        IntrusivePtr<ir::Block> block{new ir::Block{ir::Location{0xa09e}}};
+        const auto original = block->LoadUniform(ir::Uniform{0, T::U64});
+        const auto input = block->BitCast(type, original);
+        const auto zero = block->LoadImm(ir::Imm{u64{0}}), one = block->LoadImm(ir::Imm{u64{1}});
+        block->StoreUniform(ir::Uniform{8, T::U64}, zero);
+        const auto jump = ir::Value{block->AppendInst(op, T::U8, input)};
+        block->StoreUniform(ir::Uniform{8, T::U64}, one);
+        block->BindLabel(jump);
+        block->StoreUniform(ir::Uniform{16, T::U64}, original);
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        const u32 bits = ir::GetValueSizeByte(type) * 8;
+        const u64 mask = bits == 64 ? UINT64_MAX : (u64{1} << bits) - 1;
+        for (bool cached : {false, true}) execute(block.get(), cached, [&](BlockFn entry) {
+            StateStorage state;
+            for (u64 raw : values) {
+                state.Put(0, raw); state.Put(8, UINT64_MAX); state.Put(16, UINT64_MAX);
+                Check(entry(state.state) == HaltReason::CallHost, "condition halt");
+                const bool taken = op == O::Goto ? (raw & mask) != 0 : (raw & mask) == 0;
+                Check(state.Get(8) == (taken ? 0 : 1), "condition value");
+                Check(state.Get(16) == raw, "branch raw");
+                ++branch_values;
+            }
+        });
+    }
+    Check(kernels == 288 && predicate_values == 36864 && selection_values == 36864 && branch_values == 288,
+          "predicate matrix");
+    std::cout << "PASS integer predicate views and conditional aliases, Zbb=" << zbb
+              << " kernels=" << kernels << " predicate_values=" << predicate_values
+              << " selection_values=" << selection_values << " branch_values=" << branch_values << '\n';
+}
+
 }  // namespace
 
 void NativeScalarBits(bool zbb) {
+    NativeIntegerConversions(zbb);
+    NativeIntegerPredicates(zbb);
     rv::HostFeatures features{.zbb = zbb};
+    // Imported invalid domains must fail before BeginBlock or frame bytes.
+    for (O op : {O::BitExtract, O::BitInsert, O::BitClear, O::ByteSwap, O::Crc32c,
+                 O::CountLeadingZeros32, O::CountTrailingZeros64}) {
+        IntrusivePtr<ir::Block> block{new ir::Block{ir::Location{0xa080}}};
+        const auto source = block->LoadUniform(ir::Uniform{0, T::U64});
+        if (op == O::BitExtract || op == O::BitClear)
+            block->AppendInst(op, T::U64, source, ir::Imm{u64{64}}, ir::Imm{u64{1}});
+        else if (op == O::BitInsert)
+            block->BitInsert(T::U64, source, source, ir::Imm{u64{1}}, ir::Imm{UINT64_MAX});
+        else if (op == O::ByteSwap)
+            block->ByteSwap(T::U64, source, ir::Imm{(u64{1} << 32) | 32});
+        else if (op == O::Crc32c)
+            block->Crc32c(source, source, ir::Imm{u64{0}});
+        else block->AppendInst(op, T::U64, ir::Value{source}.SetCastType(
+                                                 op == O::CountLeadingZeros32 ? T::U64 : T::U32));
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        block->ReIdInstr();
+        rv::JitContext context{true, features};
+        rv::JitTranslator translator{context};
+        bool rejected = false;
+        try { translator.Translate(block.get()); }
+        catch (const std::runtime_error&) { rejected = true; }
+        Check(rejected && context.CurrentBufferSize() == 0,
+              "common scalar contract rejects before RV64 code emission");
+    }
     const std::array<u64, 12> edges{0, 1, 2, 3, 127, 128, 255, 256,
             0x8000000000000000ULL, 0xffffffff, 0x0123456789abcdefULL, UINT64_MAX};
     u64 seed = 0x609323548734e5bdULL;
@@ -64,25 +345,34 @@ void NativeScalarBits(bool zbb) {
         const u32 variants = op == O::ByteSwap ? 3 : op == O::Crc32c ? 4 :
                             op == O::LocalParitySet ? 2 :
                             (op == O::BitExtract || op == O::BitInsert || op == O::BitClear) ? 8 : 1;
+        const bool count64 = op == O::CountLeadingZeros64 || op == O::CountTrailingZeros64;
+        for (bool signed_view : {false, true})
         for (u32 variant = 0; variant < variants; ++variant) {
+            if (signed_view && !count32 && !count64) continue;
             const u32 width = op == O::ByteSwap ? 16u << variant : op == O::Crc32c ? 8u << variant :
                               std::array{0u, 1u, 8u, 16u, 31u, 32u, 63u, 64u}[variant];
             const u32 lsb = (op == O::BitExtract || op == O::BitInsert || op == O::BitClear) ? 64 - width : 0;
             // A zero-width field still has a valid shift position.
             const u32 position = width ? lsb : 37;
             IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa100})};
-            ir::Assembler as{block.get()};
-            auto left = as.LoadUniform(ir::Uniform{0, count32 ? T::U32 : T::U64}).SetType(count32 ? T::U32 : T::U64);
-            auto right = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
+            compile::IrBuilder as{block.get()};
+            auto left = as.LoadUniform(count32 ? T::U32 : T::U64,
+                                       ir::Uniform{0, count32 ? T::U32 : T::U64});
+            if (signed_view) left = left.SetCastType(count32 ? T::S32 : T::S64);
+            auto right = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
             ir::Value output;
             if (op == O::ByteSwap) output = as.ByteSwap(left, ir::Imm{u64(width)});
             else if (op == O::Crc32c) output = as.Crc32c(left, right, ir::Imm{u64(width)});
             else if (op == O::BitExtract || op == O::BitClear)
-                output = ir::Value{block->AppendInst(op, left, ir::Imm{u64(position)}, ir::Imm{u64(width)})}.SetType(T::U64);
+                output = ir::Value{block->AppendInst(
+                        op, T::U64, left, ir::Imm{u64(position)}, ir::Imm{u64(width)})};
             else if (op == O::BitInsert)
-                output = as.BitInsert(left, right, ir::Imm{u64(position)}, ir::Imm{u64(width)}).SetType(T::U64);
-            else if (op == O::LocalParitySet) output = as.LocalParitySet(left, ir::Imm{u64(variant)});
-            else output = ir::Value{block->AppendInst(op, left)}.SetType(count32 ? T::U32 : T::U64);
+                output = as.BitInsert(
+                        T::U64, left, right, ir::Imm{u64(position)}, ir::Imm{u64(width)});
+            else if (op == O::LocalParitySet)
+                output = as.LocalParitySet(left, ir::Imm{u64(variant)});
+            else
+                output = ir::Value{block->AppendInst(op, count32 ? T::U32 : T::U64, left)};
             as.StoreUniform(ir::Uniform{16, output.Type()}, output);
             block->SetTerminal(ir::terminal::ReturnToHost{});
             Compiled native{block.get(), true, features}, control{block.get(), false, features};
@@ -119,8 +409,8 @@ void NativeScalarBits(bool zbb) {
     }
     for (u32 cond = 0; cond < 16; ++cond) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa200})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
         auto output = as.FCmpCondSet(input, ir::Cond(cond));
         as.StoreUniform(ir::Uniform{8, T::U8}, output);
         block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -146,9 +436,10 @@ void NativeScalarALU(bool zbb) {
     for (O op : {O::Add, O::Sub, O::And, O::Or, O::Xor, O::Adc, O::Sbb, O::AndNot})
     for (s64 immediate : {-2049, -2048, -1, 0, 1, 2047, 2048}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa500})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, type}).SetType(type);
-        auto output = ir::Value{block->AppendInst(op, input, ir::Operand{ir::Imm{u64(immediate)}})}.SetType(type);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(type, ir::Uniform{0, type});
+        auto output =
+                ir::Value{block->AppendInst(op, type, input, ir::Operand{ir::Imm{u64(immediate)}})};
         as.SaveFlags(output, ir::Flags::All);
         as.StoreUniform(ir::Uniform{8, type}, output);
         block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -185,56 +476,148 @@ void NativeScalarALU(bool zbb) {
     std::cout << "PASS native ALU immediate boundaries and single-instruction budgets, Zbb=" << zbb << '\n';
 }
 
-void NativeScalarShifts() {
-    u64 seed = 0x93c284b42c7d1631ULL;
-    for (T type : {T::U8, T::U16, T::U32, T::U64})
+void NativeScalarShifts(bool zbb) {
     for (O op : {O::LslImm, O::LsrImm, O::AsrImm, O::RorImm,
-                 O::LslValue, O::LsrValue, O::AsrValue, O::RorValue})
-    for (bool raw : {false, true}) {
-        const u32 bits = ir::GetValueSizeByte(type) * 8;
-        const u64 mask = bits == 64 ? UINT64_MAX : (u64{1} << bits) - 1;
+                 O::LslValue, O::LsrValue, O::AsrValue, O::RorValue}) {
         const bool immediate = op == O::LslImm || op == O::LsrImm || op == O::AsrImm || op == O::RorImm;
-        const std::array counts{0u, 1u, bits - 1, bits, bits + 1, 63u, 64u, 255u};
-        for (u32 variant = 0; variant < (immediate ? counts.size() : 1); ++variant) {
-            const auto count = counts[variant];
-            IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa600})};
-            ir::Assembler as{block.get()};
-            auto input = as.LoadUniform(ir::Uniform{0, raw ? T::U64 : type}).SetType(raw ? T::U64 : type);
-            if (raw) input = as.BitCast(input).SetType(type);
-            auto shift = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-            auto output = immediate ? ir::Value{block->AppendInst(op, input, ir::Imm{u64(count)})}.SetType(type) :
-                                      ir::Value{block->AppendInst(op, input, shift)}.SetType(type);
-            // U64 consumers expose stray high bits that a narrow store would hide.
-            auto exposed = as.ZeroExtend64(output).SetType(T::U64);
-            as.StoreUniform(ir::Uniform{16, T::U64}, exposed);
-            block->SetTerminal(ir::terminal::ReturnToHost{});
+        IntrusivePtr<ir::Block> block{new ir::Block{ir::Location{0xa580}}};
+        const auto input = block->LoadImm(ir::Imm{u64{1}});
+        if (immediate) block->AppendInst(op, T::U32, input, ir::Imm{u64{1}, T::V32});
+        else block->AppendInst(op, T::U32, input, ir::Value{input}.SetCastType(T::V32));
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        block->ReIdInstr();
+        rv::JitContext context{true, rv::HostFeatures{.zbb = zbb}};
+        rv::JitTranslator translator{context};
+        bool rejected = false;
+        try { translator.Translate(block.get()); }
+        catch (const std::runtime_error&) { rejected = true; }
+        Check(rejected && context.CurrentBufferSize() == 0, "shift count rejected before RV64 emission");
+    }
+    // Every invocation and source/count check finishes before this buffer is
+    // freed. Reuse one quiescent arena rather than mapping a new 1MiB cache
+    // for every source/result/count combination under QEMU.
+    const auto config = TestConfig();
+    backend::CodeCache arena{config, 1u << 20, FeatureSet{}};
+    QuiescentRawCache release_arena{arena};
+    struct ShiftCase {
+        bool raw;
+        bool keep_inputs;
+        bool shared_count;
+        u32 offset;
+        u32 variant;
+        u32 samples;
+        std::array<u64, 2> sample_seeds;
+    };
+    u64 seed = 0x93c284b42c7d1631ULL;
+    u32 kernels{};
+    u64 numerical_checks{};
+    for (T source_type : {T::U8, T::S8, T::U16, T::S16, T::U32, T::S32, T::U64, T::S64})
+    for (T result_type : {T::U8, T::S8, T::U16, T::S16, T::U32, T::S32, T::U64, T::S64})
+    for (O op : {O::LslImm, O::LsrImm, O::AsrImm, O::RorImm,
+                 O::LslValue, O::LsrValue, O::AsrValue, O::RorValue}) {
+        const u32 source_bits = ir::GetValueSizeByte(source_type) * 8;
+        const u32 bits = ir::GetValueSizeByte(result_type) * 8;
+        const u64 source_mask = source_bits == 64 ? UINT64_MAX : (u64{1} << source_bits) - 1;
+        const bool immediate = op == O::LslImm || op == O::LsrImm || op == O::AsrImm || op == O::RorImm;
+        const std::array<u64, 8> counts{0, 1, bits - 1, bits, bits + 1, 63, 0x100000001ULL, UINT64_MAX};
+        IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa600})};
+        compile::IrBuilder as{block.get()};
+        std::array<ShiftCase, 32> cases;
+        u32 case_count{};
+        // Each case has independent loads and stores, so batching retains the
+        // original source/count death points and the keep-input variants.
+        // Save both PRNG streams in the original case/cache/sample order.
+        for (bool raw : {false, true})
+        for (bool keep_inputs : {false, true})
+        for (u32 variant = 0; variant < (immediate ? counts.size() : 2); ++variant) {
+            const bool shared_count = !immediate && variant == 1;
+            const u32 offset = case_count * 40;
+            auto& test = cases[case_count++];
+            test = {raw, keep_inputs, shared_count, offset, variant,
+                    immediate || shared_count ? 8u : 8u * static_cast<u32>(counts.size()), {}};
             for (bool cached : {false, true}) {
-                Compiled native{block.get(), cached, rv::HostFeatures{}};
-                Check(native.translator.Stats().helpers == 0, "all scalar shifts remain native RV64G");
-                for (u32 sample = 0; sample < (immediate ? 32 : 32 * counts.size()); ++sample) {
+                test.sample_seeds[cached] = seed;
+                for (u32 sample = 0; sample < test.samples; ++sample) {
                     seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
-                    const auto edge = sample % 32;
-                    const u64 value = edge == 0 ? UINT64_MAX : edge == 1 ? u64{1} << (bits - 1) :
-                                      edge == 2 ? 0 : edge == 3 ? 1 : seed;
-                    const auto actual_count = immediate ? count : counts[sample / 32];
-                    const u32 n = actual_count & (bits - 1);
-                    u64 wanted{};
-                    if (op == O::LslImm || op == O::LslValue) wanted = value << n;
-                    else if (op == O::LsrImm || op == O::LsrValue) wanted = (value & mask) >> n;
-                    else if (op == O::AsrImm || op == O::AsrValue) {
-                        wanted = (value & mask) >> n;
-                        if ((value & (u64{1} << (bits - 1))) && n) wanted |= mask ^ (mask >> n);
-                    } else wanted = n ? ((value & mask) >> n) | (value << (bits - n)) : value;
-                    StateStorage state; state.Put(0, value); state.Put(8, actual_count);
-                    Check(native.fn(state.state) == HaltReason::CallHost, "scalar shift halt");
-                    Check(state.Get(16) == (wanted & mask), std::string{ir::GetIRMetaInfo(op).name} +
-                          "/bits=" + std::to_string(bits) + "/raw=" + std::to_string(raw) +
-                          "/count=" + std::to_string(actual_count) + "/sample=" + std::to_string(sample));
                 }
             }
+            const auto original = as.LoadUniform(raw ? T::U64 : source_type,
+                                                 ir::Uniform{offset, raw ? T::U64 : source_type});
+            const auto input = raw ? as.BitCast(source_type, original) : original;
+            ir::Value raw_count, count;
+            if (!immediate) {
+                raw_count = shared_count ? original : as.LoadUniform(T::U64, ir::Uniform{offset + 8, T::U64});
+                count = shared_count ? input : ir::Value{raw_count}.SetCastType(source_type);
+            }
+            const auto output = immediate
+                    ? ir::Value{block->AppendInst(op, result_type, input, ir::Imm{counts[variant]})}
+                    : ir::Value{block->AppendInst(op, result_type, input, count)};
+            as.StoreUniform(ir::Uniform{offset + 16, T::U64}, as.ZeroExtend64(T::U64, output));
+            if (keep_inputs) {
+                as.StoreUniform(ir::Uniform{offset + 24, T::U64}, ir::Value{original}.SetCastType(T::U64));
+                if (!immediate) as.StoreUniform(ir::Uniform{offset + 32, T::U64}, ir::Value{raw_count}.SetCastType(T::U64));
+            }
+        }
+        block->SetTerminal(ir::terminal::ReturnToHost{});
+        for (bool cached : {false, true}) {
+            rv::JitContext context{cached, rv::HostFeatures{.zbb = zbb}};
+            rv::JitTranslator translator{context};
+            translator.Translate(block.get());
+            ++kernels;
+            auto code = arena.AllocCode(context.CurrentBufferSize());
+            Check(code.has_value(), "allocate scalar shift code");
+            context.Flush(*code);
+            const auto entry = reinterpret_cast<BlockFn>(code->exec_data);
+            Check(translator.Stats().helpers == 0, "native shifts");
+            std::array<u64, 32> sample_seeds, materialized, amounts;
+            for (u32 i = 0; i < case_count; ++i) sample_seeds[i] = cases[i].sample_seeds[cached];
+            StateStorage state;
+            for (u32 sample = 0; sample < (immediate ? 8u : 8u * counts.size()); ++sample) {
+                for (u32 i = 0; i < case_count; ++i) {
+                    const auto& test = cases[i];
+                    if (sample >= test.samples) continue;
+                    auto& value_seed = sample_seeds[i];
+                    value_seed ^= value_seed << 13; value_seed ^= value_seed >> 7; value_seed ^= value_seed << 17;
+                    const auto edge = sample % 8;
+                    const u64 value = edge == 0 ? UINT64_MAX : edge == 1 ? u64{1} << (source_bits - 1) :
+                                      edge == 2 ? 0 : edge == 3 ? 0x180 : value_seed;
+                    materialized[i] = test.raw ? value : value & source_mask;
+                    amounts[i] = immediate ? counts[test.variant]
+                            : test.shared_count ? materialized[i] : counts[sample / 8];
+                    state.Put(test.offset, value); state.Put(test.offset + 8, amounts[i]);
+                    state.Put(test.offset + 16, UINT64_MAX);
+                    if (test.keep_inputs) {
+                        state.Put(test.offset + 24, UINT64_MAX);
+                        if (!immediate) state.Put(test.offset + 32, UINT64_MAX);
+                    }
+                }
+                Check(entry(state.state) == HaltReason::CallHost, "shift halt");
+                for (u32 i = 0; i < case_count; ++i) {
+                    const auto& test = cases[i];
+                    if (sample >= test.samples) continue;
+                    const auto expected = ReferenceIntegerShift(op, materialized[i], source_bits, bits, amounts[i]);
+                    const auto actual = state.Get(test.offset + 16);
+                    if (actual != expected)
+                        Check(false, std::string{ir::GetIRMetaInfo(op).name} + "/source=" +
+                              std::to_string(static_cast<u32>(source_type)) + "/result=" +
+                              std::to_string(static_cast<u32>(result_type)) + "/raw=" + std::to_string(test.raw) +
+                              "/keep=" + std::to_string(test.keep_inputs) + "/cached=" + std::to_string(cached) +
+                              "/count=" + std::to_string(amounts[i]) + "/sample=" + std::to_string(sample) +
+                              ": expected " + std::to_string(expected) + ", actual " + std::to_string(actual));
+                    Check(actual == expected, "shift value");
+                    ++numerical_checks;
+                    if (test.keep_inputs) {
+                        Check(state.Get(test.offset + 24) == materialized[i], "raw source");
+                        if (!immediate) Check(state.Get(test.offset + 32) == amounts[i], "raw count");
+                    }
+                }
+            }
+            Check(arena.FreeCode(code->exec_data), "free shift code");
         }
     }
-    std::cout << "PASS scalar shift widths, masked counts and raw BitCast upper bits\n";
+    Check(kernels == 1024 && numerical_checks == 278528, "shift coverage");
+    std::cout << "PASS scalar shift views, mixed widths, masked counts and preserved sources, Zbb=" << zbb
+              << " kernels=" << kernels << " values=" << numerical_checks << '\n';
 }
 
 void ScalarShiftBenchmark() {
@@ -242,14 +625,14 @@ void ScalarShiftBenchmark() {
     constexpr u32 length = 128, iterations = 100000, compiles = 100;
     for (O op : {O::LsrImm, O::LsrValue, O::AsrImm, O::AsrValue}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa700})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::U32}).SetType(T::U32);
-        auto count = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::U32, ir::Uniform{0, T::U32});
+        auto count = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
         const bool immediate = op == O::LsrImm || op == O::AsrImm;
         for (u32 i = 0; i < length; ++i) {
-            input = immediate ? ir::Value{block->AppendInst(op, input, ir::Imm{u64{1}})}.SetType(T::U32) :
-                                ir::Value{block->AppendInst(op, input, count)}.SetType(T::U32);
-            input = as.Xor(input, ir::Operand{ir::Imm{u64{0x932567a1}}}).SetType(T::U32);
+            input = immediate ? ir::Value{block->AppendInst(op, T::U32, input, ir::Imm{u64{1}})}
+                              : ir::Value{block->AppendInst(op, T::U32, input, count)};
+            input = as.Xor(T::U32, input, ir::Operand{ir::Imm{u64{0x932567a1}}});
         }
         as.StoreUniform(ir::Uniform{16, T::U32}, input);
         block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -290,11 +673,11 @@ void ScalarFeatureBenchmark() {
     const auto features = rv::HostFeatures::Detect();
     for (O op : {O::PopCount, O::CountLeadingZeros64, O::CountTrailingZeros64}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa800})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
         for (u32 i = 0; i < length; ++i) {
-            input = ir::Value{block->AppendInst(op, input)}.SetType(T::U64);
-            input = as.Xor(input, ir::Operand{ir::Imm{u64{0x932567a1}}}).SetType(T::U64);
+            input = ir::Value{block->AppendInst(op, T::U64, input)};
+            input = as.Xor(T::U64, input, ir::Operand{ir::Imm{u64{0x932567a1}}});
         }
         as.StoreUniform(ir::Uniform{16, T::U64}, input);
         block->SetTerminal(ir::terminal::ReturnToHost{});

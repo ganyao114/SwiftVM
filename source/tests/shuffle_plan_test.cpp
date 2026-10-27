@@ -1,9 +1,11 @@
-#include <catch2/catch_test_macros.hpp>
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <array>
 #include <optional>
-#include "runtime/backend/arm64/alloc/fpr_allocation_plan.h"
-#include "runtime/backend/arm64/jit/block_analysis_index.h"
+#include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/fpr_preparation.h"
 #include "runtime/backend/arm64/pshufd_direct.h"
+#include "runtime/compile/analysis/block_index.h"
 
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
@@ -14,26 +16,28 @@ TEST_CASE("shared-index direct shuffle selection keeps component and retry contr
         CAPTURE(scenario);
         IntrusivePtr<Block> block{new Block(0, Location{0xddc0})};
         IntrusivePtr<Block> external{new Block(0, Location{0xddd0})};
-        const auto source = block->LoadUniform(Uniform{0, ValueType::V128}).SetType(ValueType::V128);
+        const auto source = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
         auto [low, high] = arm64::PshufdIndexMask(0x4e);
         if (scenario == 2) low ^= 1;
-        const auto mask = block->VecLoadConst(Imm{low}, Imm{high}).SetType(ValueType::V128);
+        const auto mask = block->VecLoadConst(ValueType::V128, Imm{low}, Imm{high});
         std::array<Value, 2> shuffles;
-        if (scenario != 4) for (unsigned i = 0; i < shuffles.size(); ++i) {
-            shuffles[i] = block->VecShuffle32Indexed(scenario == 3 ? mask : source, mask).SetType(ValueType::V128);
-            block->StoreUniform(Uniform{16 + i * 16, ValueType::V128}, shuffles[i]);
-        }
-        if (scenario == 1) block->VecTableLookup8(source, mask).SetType(ValueType::V128);
+        if (scenario != 4)
+            for (unsigned i = 0; i < shuffles.size(); ++i) {
+                shuffles[i] = block->VecShuffle32Indexed(
+                        ValueType::V128, scenario == 3 ? mask : source, mask);
+                block->StoreUniform(Uniform{16 + i * 16, ValueType::V128}, shuffles[i]);
+            }
+        if (scenario == 1) block->VecTableLookup8(ValueType::V128, source, mask);
         if (scenario == 5) external->StoreUniform(Uniform{0, ValueType::V128}, mask);
         block->SetTerminal(terminal::ReturnToHost{});
         external->SetTerminal(terminal::ReturnToHost{});
         block->ReIdInstr();
-        RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+        AllocationFixture allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
         if (scenario == 6) {
             allocation.BeginTargetPlanning();
             allocation.DisableFPRCoalescing();
         }
-        arm64::BlockAnalysisIndex index;
+        compile::BlockAnalysisIndex index;
         index.Build(block.get());
         REQUIRE(index.HasVectorConstants());
         arm64::SelectPshufdDirect(index, allocation);
@@ -56,45 +60,71 @@ TEST_CASE("direct shuffle plans validate every canonical control and exact consu
         for (unsigned scenario = 0; scenario < 6; ++scenario) {
             CAPTURE(control, scenario);
             IntrusivePtr<Block> block{new Block(0, Location{0xdd80})};
-            const auto source = block->LoadUniform(Uniform{0, ValueType::V128}).SetType(ValueType::V128);
+            const auto source = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
             auto [low, high] = arm64::PshufdIndexMask(control);
             if (scenario == 1) low ^= 1;
-            const auto mask = block->VecLoadConst(Imm{low}, Imm{high}).SetType(ValueType::V128);
+            const auto mask = block->VecLoadConst(ValueType::V128, Imm{low}, Imm{high});
             Value result;
             if (scenario != 5) {
-                result = block->VecShuffle32Indexed(scenario == 4 ? mask : source, mask).SetType(ValueType::V128);
+                result = block->VecShuffle32Indexed(
+                        ValueType::V128, scenario == 4 ? mask : source, mask);
                 block->StoreUniform(Uniform{16, ValueType::V128}, result);
             }
-            if (scenario == 3) block->VecTableLookup8(source, mask).SetType(ValueType::V128);
+            if (scenario == 3) block->VecTableLookup8(ValueType::V128, source, mask);
             block->SetTerminal(terminal::ReturnToHost{});
             block->ReIdInstr();
-            RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+            AllocationFixture allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
             allocation.MarkPshufdDirect(mask.Id());
             if (result.Defined() && scenario != 2) allocation.MarkPshufdDirect(result.Id());
-            arm64::BlockAnalysisIndex index;
+            compile::BlockAnalysisIndex index;
             index.Build(block.get());
-            const auto shared = arm64::BuildFPRAllocationPlan(block.get(), allocation, FeatureSet{}, false, false, &index);
-            const auto own = arm64::BuildFPRAllocationPlan(block.get(), allocation, FeatureSet{}, false, false);
+            const auto shared = arm64::PrepareFPRContract(block.get(),
+                                                          allocation,
+                                                          FeatureSet{},
+                                                          false,
+                                                          false,
+                                                          index,
+                                                          allocation.Workspace());
+            compile::BlockAnalysisIndex independent;
+            independent.Build(block.get());
+            const auto own = arm64::PrepareFPRContract(block.get(),
+                                                       allocation,
+                                                       FeatureSet{},
+                                                       false,
+                                                       false,
+                                                       independent,
+                                                       allocation.Workspace());
             REQUIRE(shared.valid == (scenario == 0));
             REQUIRE(shared.valid == own.valid);
             REQUIRE(shared.rejected == own.rejected);
-            REQUIRE(shared.controls == own.controls);
+            REQUIRE(shared.instructions == own.instructions);
             if (shared.valid) {
-                REQUIRE(shared.Control(mask.Def()) == control);
-                REQUIRE(shared.Control(result.Def()) == control);
+                REQUIRE(shared.Control(mask.Id()) == control);
+                REQUIRE(shared.Control(result.Id()) == control);
+                allocation.BeginTargetPlanning();
+                allocation.CertifyFPR(shared);
+                REQUIRE(allocation.Actions().PshufdControl(result.Id()) == control);
+                allocation.EndTargetPlanning();
+                REQUIRE(allocation.Actions().Ready());
+                REQUIRE(allocation.Actions().FPRVerified(mask.Id(), arm64::FPRAction::Pshufd));
+                REQUIRE(allocation.Actions().PshufdControl(result.Id()) == control);
+                allocation.ResetAllocations();
+                REQUIRE_FALSE(
+                        allocation.Actions().FPRVerified(mask.Id(), arm64::FPRAction::Pshufd));
+                REQUIRE_FALSE(allocation.Actions().PshufdControl(result.Id()));
             } else REQUIRE(shared.rejected == mask.Def());
         }
 }
 
 TEST_CASE("shuffle selection resets and physical ties resolve aliases without accepting spills", "[shuffle-plan]") {
     IntrusivePtr<Block> block{new Block(0, Location{0xdda0})};
-    const auto left = block->LoadUniform(Uniform{0, ValueType::V128}).SetType(ValueType::V128);
-    const auto same = block->LoadUniform(Uniform{16, ValueType::V128}).SetType(ValueType::V128);
-    const auto other = block->LoadUniform(Uniform{32, ValueType::V128}).SetType(ValueType::V128);
-    const auto alias = block->LoadUniform(Uniform{48, ValueType::V128}).SetType(ValueType::V128);
+    const auto left = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
+    const auto same = block->LoadUniform(ValueType::V128, Uniform{16, ValueType::V128});
+    const auto other = block->LoadUniform(ValueType::V128, Uniform{32, ValueType::V128});
+    const auto alias = block->LoadUniform(ValueType::V128, Uniform{48, ValueType::V128});
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+    AllocationFixture allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
     for (const auto value : {left, same, other, alias}) REQUIRE_FALSE(allocation.IsPshufdDirect(value.Id()));
     REQUIRE_FALSE(allocation.IsPshufdDirect(block->MaxInstrId() + 1));
     allocation.MarkPshufdDirect(same.Id());
@@ -128,29 +158,30 @@ TEST_CASE("shuffle ties reject live old values and resident guest reads", "[shuf
     for (unsigned scenario = 0; scenario < 5; ++scenario) {
         CAPTURE(scenario);
         IntrusivePtr<Block> block{new Block(0, Location{0xdd90})};
-        const auto left = scenario == 2
-                ? block->GetHostFPR(HostRegIndex(17), Imm{0u}).SetType(ValueType::V128)
-                : block->LoadUniform(Uniform{0, ValueType::V128}).SetType(ValueType::V128);
-        const auto result = block->VecShuffle32TwoSrc(left, left, Imm{scenario == 3 ? 0x4eu : 0xe0u}).SetType(ValueType::V128);
+        const auto left =
+                scenario == 2 ? block->GetHostFPR(ValueType::V128, HostRegIndex(17), Imm{0u})
+                              : block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
+        const auto result = block->VecShuffle32TwoSrc(
+                ValueType::V128, left, left, Imm{scenario == 3 ? 0x4eu : 0xe0u});
         block->StoreUniform(Uniform{16, ValueType::V128}, result);
         if (scenario == 1) block->StoreUniform(Uniform{32, ValueType::V128}, left);
         block->SetTerminal(terminal::ReturnToHost{});
         block->ReIdInstr();
         FeatureSet features{};
         features.sse_shufps_imm = true;
-        RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, features};
+        AllocationFixture allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, features};
         allocation.MapRegister(left.Id(), HostFPR{17});
         allocation.MapRegister(result.Id(), HostFPR{static_cast<swift::u16>(scenario == 4 ? 18 : 17)});
         if (scenario == 2) allocation.MarkHostReadCoalesced(left.Id());
-        arm64::BlockAnalysisIndex index;
+        compile::BlockAnalysisIndex index;
         index.Build(block.get());
-        const auto plan = arm64::BuildFPRAllocationPlan(block.get(), allocation, features, false, false, &index);
+        const auto plan = arm64::PrepareFPRContract(
+                block.get(), allocation, features, false, false, index, allocation.Workspace());
         REQUIRE(plan.valid == (scenario != 1 && scenario != 2));
-        REQUIRE(plan.Has(result.Def(), arm64::FPRAllocationPlan::ShuffleTie) == (scenario == 0));
+        REQUIRE(plan.Has(result.Id(), arm64::FPRAction::ShuffleTie) == (scenario == 0));
         if (!plan.valid) REQUIRE(plan.rejected == result.Def());
         if (scenario == 4) {
-            REQUIRE(plan.actions.empty());
-            REQUIRE(plan.controls.empty());
+            REQUIRE(plan.instructions.empty());
         }
     }
 }
@@ -164,38 +195,52 @@ TEST_CASE("shuffle plan decisions are order-independent with prefix certificatio
     };
     const auto build = [](bool second_first, bool corrupt_second) {
         IntrusivePtr<Block> block{new Block(0, Location{0xddb0})};
-        const auto source = block->LoadUniform(Uniform{0, ValueType::V128}).SetType(ValueType::V128);
+        const auto source = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
         const std::array<unsigned, 2> controls{0x4e, 0x39};
         std::array<Value, 2> masks, results;
         const auto make = [&](unsigned i) {
             auto [low, high] = arm64::PshufdIndexMask(static_cast<swift::u8>(controls[i]));
             if (i == 1 && corrupt_second) low ^= 1;
-            masks[i] = block->VecLoadConst(Imm{low}, Imm{high}).SetType(ValueType::V128);
-            results[i] = block->VecShuffle32Indexed(source, masks[i]).SetType(ValueType::V128);
+            masks[i] = block->VecLoadConst(ValueType::V128, Imm{low}, Imm{high});
+            results[i] = block->VecShuffle32Indexed(ValueType::V128, source, masks[i]);
             block->StoreUniform(Uniform{16 + i * 16, ValueType::V128}, results[i]);
         };
-        if (second_first) { make(1); make(0); } else { make(0); make(1); }
+        if (second_first) {
+            make(1);
+            make(0);
+        } else {
+            make(0);
+            make(1);
+        }
         block->SetTerminal(terminal::ReturnToHost{});
         block->ReIdInstr();
-        RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+        AllocationFixture allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
         for (unsigned i = 0; i < 2; ++i) {
             allocation.MarkPshufdDirect(masks[i].Id());
             allocation.MarkPshufdDirect(results[i].Id());
         }
-        arm64::BlockAnalysisIndex index;
+        compile::BlockAnalysisIndex index;
         index.Build(block.get());
-        const auto shared = arm64::BuildFPRAllocationPlan(block.get(), allocation, FeatureSet{}, false, false, &index);
-        const auto own = arm64::BuildFPRAllocationPlan(block.get(), allocation, FeatureSet{}, false, false);
+        const auto shared = arm64::PrepareFPRContract(
+                block.get(), allocation, FeatureSet{}, false, false, index, allocation.Workspace());
+        compile::BlockAnalysisIndex independent;
+        independent.Build(block.get());
+        const auto own = arm64::PrepareFPRContract(block.get(),
+                                                   allocation,
+                                                   FeatureSet{},
+                                                   false,
+                                                   false,
+                                                   independent,
+                                                   allocation.Workspace());
         REQUIRE(shared.valid == own.valid);
         REQUIRE(shared.rejected == own.rejected);
-        REQUIRE(shared.actions == own.actions);
-        REQUIRE(shared.controls == own.controls);
+        REQUIRE(shared.instructions == own.instructions);
         Outcome outcome;
         outcome.valid = shared.valid;
         outcome.rejected = shared.rejected;
         for (unsigned i = 0; i < 2; ++i) {
             outcome.masks[i] = masks[i].Def();
-            outcome.control[i] = shared.Control(results[i].Def());
+            outcome.control[i] = shared.Control(results[i].Id());
         }
         return outcome;
     };
@@ -221,46 +266,46 @@ TEST_CASE("shuffle plan decisions are order-independent with prefix certificatio
     REQUIRE_FALSE(corrupt_early.control[1].has_value());
 }
 
-TEST_CASE("shuffle plans stay empty for stale indexes and cleared selections", "[shuffle-plan]") {
+TEST_CASE("shuffle plans reject stale indexes and clear old selections", "[shuffle-plan]") {
     IntrusivePtr<Block> block{new Block(0, Location{0xddc8})};
-    const auto source = block->LoadUniform(Uniform{0, ValueType::V128}).SetType(ValueType::V128);
+    const auto source = block->LoadUniform(ValueType::V128, Uniform{0, ValueType::V128});
     const auto [low, high] = arm64::PshufdIndexMask(0x4e);
-    const auto mask = block->VecLoadConst(Imm{low}, Imm{high}).SetType(ValueType::V128);
-    const auto result = block->VecShuffle32Indexed(source, mask).SetType(ValueType::V128);
+    const auto mask = block->VecLoadConst(ValueType::V128, Imm{low}, Imm{high});
+    const auto result = block->VecShuffle32Indexed(ValueType::V128, source, mask);
     block->StoreUniform(Uniform{16, ValueType::V128}, result);
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+    AllocationFixture allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
     allocation.MarkPshufdDirect(mask.Id());
     allocation.MarkPshufdDirect(result.Id());
     IntrusivePtr<Block> other{new Block(0, Location{0xddd8})};
     other->LoadUniform(Uniform{0, ValueType::U64});
     other->SetTerminal(terminal::ReturnToHost{});
     other->ReIdInstr();
-    arm64::BlockAnalysisIndex stale;
+    compile::BlockAnalysisIndex stale;
     stale.Build(other.get());
-    const auto foreign = arm64::BuildFPRAllocationPlan(block.get(), allocation, FeatureSet{}, false, false, &stale);
-    REQUIRE(foreign.valid);
-    REQUIRE(foreign.actions.empty());
-    REQUIRE(foreign.controls.empty());
-    REQUIRE_FALSE(foreign.Control(mask.Def()).has_value());
-    REQUIRE_FALSE(foreign.Has(result.Def(), arm64::FPRAllocationPlan::Pshufd));
+    const auto foreign = arm64::PrepareFPRContract(
+            block.get(), allocation, FeatureSet{}, false, false, stale, allocation.Workspace());
+    REQUIRE_FALSE(foreign.valid);
+    REQUIRE(foreign.rejected == &block->GetInstList().front());
+    REQUIRE(foreign.instructions.empty());
+    REQUIRE_FALSE(foreign.Control(mask.Id()).has_value());
+    REQUIRE_FALSE(foreign.Has(result.Id(), arm64::FPRAction::Pshufd));
     stale.Build(block.get());
-    const auto fresh = arm64::BuildFPRAllocationPlan(block.get(), allocation, FeatureSet{}, false, false, &stale);
+    const auto fresh = arm64::PrepareFPRContract(
+            block.get(), allocation, FeatureSet{}, false, false, stale, allocation.Workspace());
     REQUIRE(fresh.valid);
-    REQUIRE(fresh.Control(result.Def()) == std::optional<swift::u8>{0x4e});
+    REQUIRE(fresh.Control(result.Id()) == std::optional<swift::u8>{0x4e});
     allocation.ResetAllocations();
-    const auto cleared = arm64::BuildFPRAllocationPlan(block.get(), allocation, FeatureSet{}, false, false, &stale);
+    const auto cleared = arm64::PrepareFPRContract(
+            block.get(), allocation, FeatureSet{}, false, false, stale, allocation.Workspace());
     REQUIRE(cleared.valid);
-    REQUIRE(cleared.actions.empty());
-    REQUIRE(cleared.controls.empty());
-    REQUIRE_FALSE(cleared.Control(result.Def()).has_value());
+    REQUIRE(cleared.instructions.empty());
+    REQUIRE_FALSE(cleared.Control(result.Id()).has_value());
     allocation.MarkPshufdDirect(mask.Id());
     allocation.MarkPshufdDirect(result.Id());
-    const auto restored = arm64::BuildFPRAllocationPlan(block.get(), allocation, FeatureSet{}, false, false, &stale);
+    const auto restored = arm64::PrepareFPRContract(
+            block.get(), allocation, FeatureSet{}, false, false, stale, allocation.Workspace());
     REQUIRE(restored.valid);
-    REQUIRE(restored.actions == fresh.actions);
-    REQUIRE(restored.controls == fresh.controls);
-    REQUIRE(restored.selected == fresh.selected);
+    REQUIRE(restored.instructions == fresh.instructions);
 }
-

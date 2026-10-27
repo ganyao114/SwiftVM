@@ -1,4 +1,5 @@
 #include "base/logging.h"
+#include "runtime/backend/arm64/compile/register_contract.h"
 //
 // Created by 甘尧 on 2024/4/10.
 //
@@ -132,12 +133,12 @@ void TrampolinesArm64::Build() {
     gpr_regs.Mark(flags.GetCode());
     if (GetSvmConfig().flags_regs) {
         // last_result home. Process-wide so the AddressSpace mask and the
-        // per-unit RegAlloc constructor agree; XPOOL still exposes x11/x13/
+        // per-unit AllocationPreparation constructor agree; XPOOL still exposes x11/x13/
         // x16/x17 as the bindable union.
         gpr_regs.Mark(atomic_scratch.GetCode());
     }
     // x11-x13/x16-x17 是否进入 value pool 是单 unit FeatureSet 决策。
-    // 这里保留可用并集，RegAlloc 构造时再按该 unit 的快照收紧；否则默认
+    // 这里保留可用并集，AllocationPreparation 构造时再按该 unit 的快照收紧；否则默认
     // module 的值会永久限制同一 AddressSpace 里的其他 module。
     // vixl's MacroAssembler synthesizes un-encodable immediates and
     // out-of-range memory offsets through UseScratchRegisterScope, whose
@@ -150,15 +151,8 @@ void TrampolinesArm64::Build() {
 
     // FPR registers can use
     fpr_regs.Reset(0);
-    // AFP covers every opcode that can enter QueueVecNaNColdPath. With the
-    // opt-in reclamation gate the shared v11-v14 cold ABI is unreachable and
-    // all four slots can return to the value pool. Non-AFP hosts keep it.
-    if (!config.sse_afp_nan) {
-        fpr_regs.Mark(ipv0.GetCode());
-        fpr_regs.Mark(ipv1.GetCode());
-        fpr_regs.Mark(ipv2.GetCode());
-        fpr_regs.Mark(ipv3.GetCode());
-    }
+    // No fixed NaN repair ABI remains. Expose the full FPR union; the
+    // per-unit feature snapshot can still reserve the historical four slots.
 
     GPRSMask static_gprs{0};
     FPRSMask static_fprs{0};
@@ -321,7 +315,14 @@ void TrampolinesArm64::BuildRuntimeEntry(MacroAssembler& assembler) {
         __ Ldr(pt, MemOperand(state, state_offset_pt));
     }
     __ Ldr(flags, MemOperand(state, state_offset_host_flags));
-    EmitFlagsUnpark(assembler);
+    if (FlagsRegsEnabled()) {
+        // A public JitRun enters through the published ABI. Host code or the
+        // interpreter can update State flags between runs, so a previous
+        // return's parked PSTATE cannot override this canonical word. The
+        // in-run CallHost re-entry retains its separate park/unpark below.
+        __ Str(xzr, MemOperand(state, state_offset_flags_nzcv_park));
+        __ Msr(NZCV, flags);
+    }
     // load local
     if (config.has_local_operation) {
         __ Ldr(local, MemOperand(state, state_offset_local_buffer));

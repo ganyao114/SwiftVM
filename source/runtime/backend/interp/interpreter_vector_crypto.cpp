@@ -121,7 +121,7 @@ u32 Sum1(u32 x) { return std::rotr(x, 6) ^ std::rotr(x, 11) ^ std::rotr(x, 25); 
 
 }  // namespace
 
-void Interpreter::RunVecAesEnc(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesEnc(const ir::Inst* inst, InterpStack& stack) {
     auto data = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(0)));
     const auto key = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(1)));
     for (auto& byte : data) byte = AesSbox(byte);
@@ -131,7 +131,7 @@ void Interpreter::RunVecAesEnc(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, FromAesBlock(data));
 }
 
-void Interpreter::RunVecAesEncLast(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesEncLast(const ir::Inst* inst, InterpStack& stack) {
     auto data = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(0)));
     const auto key = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(1)));
     for (auto& byte : data) byte = AesSbox(byte);
@@ -140,7 +140,7 @@ void Interpreter::RunVecAesEncLast(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, FromAesBlock(data));
 }
 
-void Interpreter::RunVecAesDec(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesDec(const ir::Inst* inst, InterpStack& stack) {
     auto data = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(0)));
     const auto key = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(1)));
     for (auto& byte : data) byte = AesInvSbox(byte);
@@ -150,7 +150,7 @@ void Interpreter::RunVecAesDec(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, FromAesBlock(data));
 }
 
-void Interpreter::RunVecAesDecLast(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesDecLast(const ir::Inst* inst, InterpStack& stack) {
     auto data = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(0)));
     const auto key = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(1)));
     for (auto& byte : data) byte = AesInvSbox(byte);
@@ -159,23 +159,23 @@ void Interpreter::RunVecAesDecLast(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, FromAesBlock(data));
 }
 
-void Interpreter::RunVecAesEncFast(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesEncFast(const ir::Inst* inst, InterpStack& stack) {
     RunVecAesEnc(inst, stack);
 }
 
-void Interpreter::RunVecAesEncLastFast(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesEncLastFast(const ir::Inst* inst, InterpStack& stack) {
     RunVecAesEncLast(inst, stack);
 }
 
-void Interpreter::RunVecAesDecFast(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesDecFast(const ir::Inst* inst, InterpStack& stack) {
     RunVecAesDec(inst, stack);
 }
 
-void Interpreter::RunVecAesDecLastFast(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesDecLastFast(const ir::Inst* inst, InterpStack& stack) {
     RunVecAesDecLast(inst, stack);
 }
 
-void Interpreter::RunVecAesKeygenAssist(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecAesKeygenAssist(const ir::Inst* inst, InterpStack& stack) {
     const auto source = ToAesBlock(ReadVec(stack, inst->GetArg<ir::Value>(0)));
     AesBlock result{};
     const u8 rcon = static_cast<u8>(inst->GetArg<ir::Imm>(1).Get());
@@ -192,7 +192,7 @@ void Interpreter::RunVecAesKeygenAssist(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, FromAesBlock(result));
 }
 
-void Interpreter::RunVecPclMul(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecPclMul(const ir::Inst* inst, InterpStack& stack) {
     const auto left = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto right = ReadVec(stack, inst->GetArg<ir::Value>(1));
     const u32 control = inst->GetArg<ir::Imm>(2).Get();
@@ -205,7 +205,7 @@ void Interpreter::RunVecPclMul(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, result);
 }
 
-void Interpreter::RunVecSha256Msg1(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecSha256Msg1(const ir::Inst* inst, InterpStack& stack) {
 #if defined(__aarch64__)
     const auto destination = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto source = ReadVec(stack, inst->GetArg<ir::Value>(1));
@@ -225,7 +225,7 @@ void Interpreter::RunVecSha256Msg1(ir::Inst* inst, InterpStack& stack) {
 #endif
 }
 
-void Interpreter::RunVecSha256Msg2(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecSha256Msg2(const ir::Inst* inst, InterpStack& stack) {
 #if defined(__aarch64__)
     const auto destination = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto source = ReadVec(stack, inst->GetArg<ir::Value>(1));
@@ -249,7 +249,7 @@ void Interpreter::RunVecSha256Msg2(ir::Inst* inst, InterpStack& stack) {
 #endif
 }
 
-void Interpreter::RunVecSha256Rnds2(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecSha256Rnds2(const ir::Inst* inst, InterpStack& stack) {
 #if defined(__aarch64__)
     const auto destination = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto source = ReadVec(stack, inst->GetArg<ir::Value>(1));

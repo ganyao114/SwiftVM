@@ -7,7 +7,7 @@ namespace swift::runtime::backend::riscv64 {
 using namespace biscuit;
 using O = ir::OpCode;
 
-bool JitTranslator::EmitVectorInteger(ir::Inst* inst) {
+bool JitTranslator::EmitVectorInteger(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::Vec4Mul: case O::VecMul: case O::VecMulHigh16: case O::VecMulWiden:

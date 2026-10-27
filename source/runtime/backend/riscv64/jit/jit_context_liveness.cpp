@@ -10,22 +10,29 @@ namespace swift::runtime::backend::riscv64 {
 
 void JitContext::ConfigureLiveness(ir::Block* block) {
     using O = ir::OpCode;
-    using Set = std::unordered_set<ir::Inst*>;
-    last_uses.clear(); live_entries.clear(); branch_live_entries.clear();
+    using Set = std::unordered_set<const ir::Inst*>;
+    last_uses.clear();
+    live_entries.clear();
+    branch_live_entries.clear();
     bool cfg{};
     for (const auto& inst : block->GetInstList())
-        cfg |= inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto || inst.GetOp() == O::BindLabel || !FallsThrough(const_cast<ir::Inst*>(&inst));
+        cfg |= inst.GetOp() == O::Goto || inst.GetOp() == O::NotGoto ||
+               inst.GetOp() == O::BindLabel || !FallsThrough(&inst);
     if (!cfg) {
         // Most decoded blocks are straight-line. Avoid CFG sets and their
         // allocations on this hot compilation path.
         u32 position{};
         const auto mark = [&](ir::Value value, u32 at) { last_uses[value.Def()] = at; };
-        const auto operands = [&](ir::Inst* inst, u32 at) {
+        const auto operands = [&](const ir::Inst* inst, u32 at) {
             for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
                 auto& arg = inst->ArgAt(slot);
-                if (arg.IsValue()) mark(arg.Get<ir::Value>(), at);
-                else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue()) mark(arg.Get<ir::Lambda>().GetValue(), at);
-                else if (arg.IsParams()) for (const auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) mark(param.data.value, at);
+                if (arg.IsValue())
+                    mark(arg.Get<ir::Value>(), at);
+                else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue())
+                    mark(arg.Get<ir::Lambda>().GetValue(), at);
+                else if (arg.IsParams())
+                    for (const auto& param : arg.Get<ir::Params>())
+                        if (param.data.IsValue()) mark(param.data.value, at);
             }
         };
         for (auto& inst : block->GetInstList()) {
@@ -47,8 +54,8 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
         terminal(terminal, block->GetTerminal());
         return;
     }
-    std::vector<ir::Inst*> insts;
-    std::unordered_map<ir::Inst*, u32> targets;
+    std::vector<const ir::Inst*> insts;
+    std::unordered_map<const ir::Inst*, u32> targets;
     for (auto& inst : block->GetInstList()) {
         last_uses[&inst] = insts.size(); insts.push_back(&inst);
         if (inst.GetOp() == O::BindLabel) targets[inst.GetArg<ir::Value>(0).Def()] = insts.size() - 1;
@@ -77,16 +84,22 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
     const auto mark = [&](ir::Value value, u32 at, bool edge = false) {
         const u32 b = node[edge && at ? at - 1 : std::min(at, count - 1)];
         auto* definition = value.Def();
-        if (edge) edge_uses[b].insert(definition);
-        else if (!defs[b].contains(definition)) uses[b].insert(definition);
+        if (edge)
+            edge_uses[b].insert(definition);
+        else if (!defs[b].contains(definition))
+            uses[b].insert(definition);
         last_uses[definition] = std::max(last_uses[definition], at);
     };
-    const auto operands = [&](ir::Inst* inst, u32 at) {
+    const auto operands = [&](const ir::Inst* inst, u32 at) {
         for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
             auto& arg = inst->ArgAt(slot);
-            if (arg.IsValue()) mark(arg.Get<ir::Value>(), at);
-            else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue()) mark(arg.Get<ir::Lambda>().GetValue(), at);
-            else if (arg.IsParams()) for (const auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) mark(param.data.value, at);
+            if (arg.IsValue())
+                mark(arg.Get<ir::Value>(), at);
+            else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue())
+                mark(arg.Get<ir::Lambda>().GetValue(), at);
+            else if (arg.IsParams())
+                for (const auto& param : arg.Get<ir::Params>())
+                    if (param.data.IsValue()) mark(param.data.value, at);
         }
     };
     for (u32 i = 0; i < count; ++i) {
@@ -126,8 +139,10 @@ void JitContext::ConfigureLiveness(ir::Block* block) {
         if (targets.contains(branch)) branch_live_entries[branch] = live_entries.at(insts[targets.at(branch)]);
 }
 
-void JitContext::FlushValuesTo(const std::vector<ir::Inst*>& live) {
-    const auto wanted = [&](ir::Inst* inst) { return std::find(live.begin(), live.end(), inst) != live.end(); };
+void JitContext::FlushValuesTo(const std::vector<const ir::Inst*>& live) {
+    const auto wanted = [&](const ir::Inst* inst) {
+        return std::find(live.begin(), live.end(), inst) != live.end();
+    };
     for (size_t i = 0; i < cached_values.size(); ++i) if (auto* inst = cached_values[i]; inst && wanted(inst)) {
         Store(scalar_registers[i], values, s64(inst->Id()) * kValueStride + cached_parts[i] * 8); ++value_stats.stores;
     }

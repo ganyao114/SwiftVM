@@ -1,4 +1,9 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/compile/workspace.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <cstring>
@@ -8,30 +13,30 @@
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
-#include "runtime/backend/context.h"
-#include "runtime/backend/arm64/alloc/consumer_plan.h"
-#include "runtime/backend/runtime.h"
-#include "runtime/backend/arm64/jit/scalar_copy_analysis.h"
-#include "runtime/backend/arm64/jit/block_analysis_index.h"
+#include "runtime/backend/arm64/compile/lower_consumers.h"
+#include "runtime/backend/arm64/compile/lower_flags.h"
+#include "runtime/backend/arm64/compile/lower_scalar.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/backend/context.h"
+#include "runtime/backend/runtime.h"
 #include "runtime/common/svm_config.h"
+#include "runtime/compile/allocate/allocation.h"
+#include "runtime/compile/analysis/block_index.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
 
 std::vector<std::string> EmitSelfXor() {
     IntrusivePtr<Block> block{new Block(0, Location{0x8af0})};
-    auto source = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
-    auto left = block->BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto right = block->BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto result = block->Xor(left, Operand{right}).SetType(ValueType::U32);
+    auto source = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+    auto left = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+    auto right = block->BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+    auto result = block->Xor(ValueType::U32, left, Operand{right});
     block->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
     block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
-    auto wide = block->ZeroExtend32To64(result).SetType(ValueType::U64);
+    auto wide = block->ZeroExtend32To64(ValueType::U64, result);
     block->SetHostGPR(wide, HostRegIndex(22), Imm{0u});
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
@@ -48,20 +53,23 @@ std::vector<std::string> EmitSelfXor() {
     AddressSpace address_space{config};
     auto module = address_space.GetDefaultModule();
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(),
-                   features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(module);
-    const auto plan = alloc.GPRPlanFor(block.get());
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    const auto plan = alloc.Actions().ForBlock(block.get());
     REQUIRE(plan);
-    REQUIRE(plan->scalar_preparation);
-    REQUIRE(plan->scalar_preparation->copies.IsSelfXor(result.Def()));
-    REQUIRE(plan->scalar_preparation->copies.InputDiscarded(left.Def()));
-    REQUIRE(plan->scalar_preparation->copies.InputDiscarded(right.Def()));
-    REQUIRE(plan->pinned->MatchesFrozenIR());
-    arm64::JitContext context{module, alloc};
+    REQUIRE(alloc.Actions().HasScalar(result.Id(), arm64::ScalarFlag::SelfXor));
+    REQUIRE(alloc.Actions().HasScalar(left.Id(), arm64::ScalarFlag::CopyInputDiscarded));
+    REQUIRE(alloc.Actions().HasScalar(right.Id(), arm64::ScalarFlag::CopyInputDiscarded));
+    REQUIRE(alloc.Actions().MatchesAllocation(alloc));
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -91,29 +99,50 @@ bool Contains(const std::vector<std::string>& instructions, std::string_view val
 
 TEST_CASE("self XOR discards only equivalent exclusive views") {
     Block block{0, Location{0x8b20}};
-    auto source = block.GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
-    auto left = block.BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto right = block.BitExtract(source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto result = block.Xor(left, Operand{right}).SetType(ValueType::U32);
+    auto source = block.GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+    auto left = block.BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+    auto right = block.BitExtract(ValueType::U32, source, Imm{0u}, Imm{32u});
+    auto result = block.Xor(ValueType::U32, left, Operand{right});
     block.StoreUniform(Uniform{0, ValueType::U32}, left);
 
-    arm64::ScalarCopyAnalysis analysis;
-    analysis.Analyze(&block);
+    block.ReIdInstr();
+    compile::BlockAnalysisIndex index;
+    index.Build(&block);
+    auto analysis = arm64::LowerScalarCopies(index);
 
-    REQUIRE(analysis.IsSelfXor(result.Def()));
-    REQUIRE_FALSE(analysis.InputDiscarded(left.Def()));
-    REQUIRE(analysis.InputDiscarded(right.Def()));
+    REQUIRE(analysis.Has(result.Id(), arm64::ScalarFlag::SelfXor));
+    REQUIRE_FALSE(analysis.Has(left.Id(), arm64::ScalarFlag::CopyInputDiscarded));
+    REQUIRE(analysis.Has(right.Id(), arm64::ScalarFlag::CopyInputDiscarded));
 
     Block unsafe{0, Location{0x8b40}};
-    auto unsafe_source = unsafe.GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
-    auto low = unsafe.BitExtract(unsafe_source, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-    auto shifted = unsafe.BitExtract(unsafe_source, Imm{1u}, Imm{32u}).SetType(ValueType::U32);
-    auto unsafe_result = unsafe.Xor(low, Operand{shifted}).SetType(ValueType::U32);
-    analysis.Analyze(&unsafe);
+    auto unsafe_source = unsafe.GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+    auto low = unsafe.BitExtract(ValueType::U32, unsafe_source, Imm{0u}, Imm{32u});
+    auto shifted = unsafe.BitExtract(ValueType::U32, unsafe_source, Imm{1u}, Imm{32u});
+    auto unsafe_result = unsafe.Xor(ValueType::U32, low, Operand{shifted});
+    unsafe.ReIdInstr();
+    index.Build(&unsafe);
+    analysis = arm64::LowerScalarCopies(index);
 
-    REQUIRE_FALSE(analysis.IsSelfXor(unsafe_result.Def()));
-    REQUIRE_FALSE(analysis.InputDiscarded(low.Def()));
-    REQUIRE_FALSE(analysis.InputDiscarded(shifted.Def()));
+    REQUIRE_FALSE(analysis.Has(unsafe_result.Id(), arm64::ScalarFlag::SelfXor));
+    REQUIRE_FALSE(analysis.Has(low.Id(), arm64::ScalarFlag::CopyInputDiscarded));
+    REQUIRE_FALSE(analysis.Has(shifted.Id(), arm64::ScalarFlag::CopyInputDiscarded));
+
+    Block predecessor{0, Location{0x8b48}};
+    const auto incoming_source = predecessor.GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+    const auto incoming =
+            predecessor.BitExtract(ValueType::U32, incoming_source, Imm{0u}, Imm{32u});
+    predecessor.ReIdInstr();
+    Block local{0, Location{0x8b50}};
+    local.LoadImm(ValueType::U32, Imm{0u});
+    const auto shadow = local.LoadImm(ValueType::U32, Imm{1u});
+    const auto local_result = local.Xor(ValueType::U32, incoming, Operand{incoming});
+    local.StoreUniform(Uniform{0, ValueType::U32}, shadow);
+    local.ReIdInstr();
+    REQUIRE(shadow.Id() == incoming.Id());
+    index.Build(&local);
+    analysis = arm64::LowerScalarCopies(index);
+    REQUIRE(analysis.Has(local_result.Id(), arm64::ScalarFlag::SelfXor));
+    REQUIRE_FALSE(analysis.Has(shadow.Id(), arm64::ScalarFlag::CopyInputDiscarded));
 }
 
 TEST_CASE("self XOR emits zero and logical flags together") {
@@ -141,31 +170,32 @@ TEST_CASE("scalar copy pseudo uses invalidate frozen preparation", "[scalar-prep
     REQUIRE_FALSE(EmitSelfXor().empty());
 }
 
-TEST_CASE("RegAlloc freezes raw carry branch conditions before encoder construction", "[scalar-preparation]") {
+TEST_CASE("AllocationFixture freezes raw carry branch conditions before encoder construction",
+          "[scalar-preparation]") {
     for (const bool shared : {false, true}) for (const bool canonical : {false, true}) for (const unsigned clobber : {0u, 1u, 2u}) {
         CAPTURE(shared, canonical, clobber);
         IntrusivePtr<Block> block{new Block(0, Location{0x8b60})};
-        const auto source = block->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-        const auto comparison = block->Sub(source, Operand{Imm{7u}}).SetType(ValueType::U32);
+        const auto source = block->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+        const auto comparison = block->Sub(ValueType::U32, source, Operand{Imm{7u}});
         block->SaveFlags(comparison, Flags::Carry | Flags::Zero);
         block->InvertCarry();
         auto* invert = &block->GetInstList().back();
         block->AdvancePC(Imm{1u});
-        const auto carry = block->TestFlags(Flags::Carry).SetType(ValueType::U8);
+        const auto carry = block->TestFlags(ValueType::U8, Flags::Carry);
         if (clobber == 2) {
-            const auto changed = block->Add(source, Operand{Imm{1u}}).SetType(ValueType::U32);
+            const auto changed = block->Add(ValueType::U32, source, Operand{Imm{1u}});
             block->SaveFlags(changed, Flags::Carry | Flags::Zero);
         }
-        const auto no_carry = block->TestZero(carry).SetType(ValueType::U8);
-        const auto nonzero = block->CondSet(Cond::NE).SetType(ValueType::U8);
-        const auto condition = block->And(no_carry, Operand{nonzero}).SetType(ValueType::U8);
+        const auto no_carry = block->TestZero(ValueType::U8, carry);
+        const auto nonzero = block->CondSet(ValueType::U8, Cond::NE);
+        const auto condition = block->And(ValueType::U8, no_carry, Operand{nonzero});
         if (shared) block->StoreUniform(Uniform{8, ValueType::U8}, carry);
         if (clobber == 1) {
-            const auto changed = block->Add(source, Operand{Imm{1u}}).SetType(ValueType::U32);
+            const auto changed = block->Add(ValueType::U32, source, Operand{Imm{1u}});
             block->SaveFlags(changed, Flags::Carry | Flags::Zero);
         }
-        const auto alternative = block->LoadUniform(Uniform{24, ValueType::U32}).SetType(ValueType::U32);
-        const auto selected = block->Select(BOOL{condition}, source, alternative).SetType(ValueType::U32);
+        const auto alternative = block->LoadUniform(ValueType::U32, Uniform{24, ValueType::U32});
+        const auto selected = block->Select(ValueType::U32, BOOL{condition}, source, alternative);
         block->StoreUniform(Uniform{16, ValueType::U32}, selected);
         block->SetTerminal(terminal::ReturnToHost{});
         block->ReIdInstr();
@@ -175,19 +205,32 @@ TEST_CASE("RegAlloc freezes raw carry branch conditions before encoder construct
         config.stack_alignment = 16;
         if (canonical) config.arm64_features = Arm64Features::FlagM;
         AddressSpace space{config}; auto module = space.GetDefaultModule(); FeatureSet features{};
-        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                            space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        allocation.CompleteGPRAllocation(module);
-        const auto plan = allocation.GPRPlanFor(block.get()); REQUIRE(plan);
-        if (shared || clobber || !canonical || !GetSvmConfig().flags_cfinv || !FlagsRegsEnabled()) REQUIRE_FALSE(plan->scalar_preparation);
-        else {
-            REQUIRE(plan->scalar_preparation);
-            REQUIRE(plan->scalar_preparation->raw_carry.ConditionForTest(carry.Def()) == Cond::HI);
-            REQUIRE(plan->scalar_preparation->raw_carry.SuppressesInvert(invert));
-            REQUIRE(plan->scalar_preparation->raw_carry.InvertForTest(carry.Def()) == invert);
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+        const auto plan = allocation.Actions().ForBlock(block.get());
+        REQUIRE(plan);
+        const auto& actions = allocation.Actions();
+        const auto* raw = actions.CarryForTest(carry.Id());
+        if (shared || clobber || !canonical || !GetSvmConfig().flags_cfinv || !FlagsRegsEnabled()) {
+            REQUIRE_FALSE(raw);
+            REQUIRE_FALSE(actions.SuppressesCarryInvert(invert->Id()));
+        } else {
+            REQUIRE(raw);
+            REQUIRE(raw->RawCondition() == Cond::HI);
+            REQUIRE(actions.SuppressesCarryInvert(invert->Id()));
+            REQUIRE(raw->invert == invert->Id());
         }
-        arm64::JitContext context{module, allocation}; arm64::JitTranslator translator{context};
+        arm64::JitContext context{module, allocation, allocation.Actions()};
+        arm64::JitTranslator translator{context};
         REQUIRE_NOTHROW(translator.Translate(block.get())); context.Finish();
 #if defined(__aarch64__)
         const auto [index, buffer] = module->AllocCodeCache(context.CurrentBufferSize(), context.RequiresRegionTrampoline());
@@ -207,27 +250,37 @@ TEST_CASE("RegAlloc freezes raw carry branch conditions before encoder construct
 
 TEST_CASE("raw carry branch falls back after an observing helper between producer and publication", "[scalar-preparation][regression]") {
     IntrusivePtr<Block> block{new Block(0, Location{0x8b70})};
-    const auto source = block->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-    const auto comparison = block->Sub(source, Operand{Imm{7u}}).SetType(ValueType::U32);
-    block->CallLambda(Lambda{DataClass{Imm{swift::u64{1}}}, HelperCallTraits{}});
+    const auto source = block->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+    const auto comparison = block->Sub(ValueType::U32, source, Operand{Imm{7u}});
+    block->CallLambda(ValueType::VOID, Lambda{DataClass{Imm{swift::u64{1}}}, HelperCallTraits{}});
     block->SaveFlags(comparison, Flags::Carry | Flags::Zero);
-    block->InvertCarry(); block->AdvancePC(Imm{1u});
-    const auto carry = block->TestFlags(Flags::Carry).SetType(ValueType::U8);
-    const auto no_carry = block->TestZero(carry).SetType(ValueType::U8);
-    const auto nonzero = block->CondSet(Cond::NE).SetType(ValueType::U8);
-    const auto condition = block->And(no_carry, Operand{nonzero}).SetType(ValueType::U8);
-    block->SetTerminal(terminal::If{BOOL{condition}, terminal::ReturnToHost{}, terminal::ReturnToHost{}});
+    block->InvertCarry();
+    block->AdvancePC(Imm{1u});
+    const auto carry = block->TestFlags(ValueType::U8, Flags::Carry);
+    const auto no_carry = block->TestZero(ValueType::U8, carry);
+    const auto nonzero = block->CondSet(ValueType::U8, Cond::NE);
+    const auto condition = block->And(ValueType::U8, no_carry, Operand{nonzero});
+    block->SetTerminal(
+            terminal::If{BOOL{condition}, terminal::ReturnToHost{}, terminal::ReturnToHost{}});
     block->ReIdInstr();
     Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
                   .has_local_operation = false, .backend_isa = kArm64,
                   .arm64_features = Arm64Features::FlagM};
     config.uniform_buffer_size = 64;
     AddressSpace space{config}; auto module = space.GetDefaultModule(); FeatureSet features{};
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    allocation.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, allocation}; arm64::JitTranslator translator{context};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+    arm64::JitContext context{module, allocation, allocation.Actions()};
+    arm64::JitTranslator translator{context};
     REQUIRE_NOTHROW(translator.Translate(block.get()));
 }
 
@@ -235,47 +288,60 @@ TEST_CASE("raw carry fold proves the TestFlags carrier through its final consume
     for (const bool terminal : {false, true}) for (const unsigned obstruction : {0u, 1u, 2u, 3u, 4u}) {
         CAPTURE(terminal, obstruction);
         IntrusivePtr<Block> block{new Block(0, Location{0x8b80})};
-        const auto source = block->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-        const auto comparison = block->Sub(source, Operand{Imm{7u}}).SetType(ValueType::U32);
+        const auto source = block->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+        const auto comparison = block->Sub(ValueType::U32, source, Operand{Imm{7u}});
         block->SaveFlags(comparison, Flags::Carry | Flags::Zero);
-        block->InvertCarry(); block->AdvancePC(Imm{1u});
-        const auto carry = block->TestFlags(Flags::Carry).SetType(ValueType::U8);
-        const auto no_carry = block->TestZero(carry).SetType(ValueType::U8);
-        const auto nonzero = block->CondSet(Cond::NE).SetType(ValueType::U8);
+        block->InvertCarry();
+        block->AdvancePC(Imm{1u});
+        const auto carry = block->TestFlags(ValueType::U8, Flags::Carry);
+        const auto no_carry = block->TestZero(ValueType::U8, carry);
+        const auto nonzero = block->CondSet(ValueType::U8, Cond::NE);
         const auto overwrite = [&] {
-            const auto changed = block->Add(source, Operand{Imm{1u}}).SetType(ValueType::U32);
+            const auto changed = block->Add(ValueType::U32, source, Operand{Imm{1u}});
             block->SaveFlags(changed, Flags::Carry | Flags::Zero);
         };
         if (obstruction == 1) overwrite();
-        const auto condition = block->And(no_carry, Operand{nonzero}).SetType(ValueType::U8);
+        const auto condition = block->And(ValueType::U8, no_carry, Operand{nonzero});
         if (obstruction == 2) overwrite();
-        if (obstruction == 3) block->CallLambda(Lambda{DataClass{Imm{swift::u64{1}}}, HelperCallTraits{}});
+        if (obstruction == 3) block->CallLambda(ValueType::VOID, Lambda{DataClass{Imm{swift::u64{1}}}, HelperCallTraits{}});
         if (obstruction == 4) block->StoreUniform(Uniform{8, ValueType::U8}, nonzero);
         if (terminal) {
             block->SetTerminal(terminal::If{BOOL{condition}, terminal::ReturnToHost{}, terminal::ReturnToHost{}});
         } else {
-            const auto selected = block->Select(BOOL{condition}, source, source).SetType(ValueType::U32);
+            const auto selected = block->Select(ValueType::U32, BOOL{condition}, source, source);
             block->StoreUniform(Uniform{16, ValueType::U32}, selected);
             block->SetTerminal(terminal::ReturnToHost{});
         }
         block->ReIdInstr();
-        arm64::BlockAnalysisIndex analysis; analysis.Build(block.get());
-        arm64::RawCarryBranchAnalysis prepared; FeatureSet features{};
+        compile::BlockAnalysisIndex analysis;
+        analysis.Build(block.get());
+        FeatureSet features{};
         auto terminal_node = block->GetTerminal();
-        const auto consumers = arm64::BuildConsumerPlan(analysis,
-                [](const Inst&) { return true; }, [](const Inst&) { return false; }, &terminal_node);
-        prepared.Analyze(block.get(), features, consumers, &analysis);
-        REQUIRE((prepared.FoldForTest(carry.Def()) != nullptr) == (obstruction == 0));
-        REQUIRE(prepared.ConditionForTest(carry.Def()).has_value() == (obstruction == 0));
+        compile::CompileWorkspace workspace;
+        const auto consumers = arm64::LowerConsumers(
+                analysis,
+                workspace,
+                [](const Inst&) { return true; },
+                [](const Inst&) { return false; },
+                &terminal_node);
+        auto prepared = arm64::LowerCarryConditions(block.get(), analysis, features, consumers);
+        REQUIRE((prepared.Find(carry.Id()) != nullptr) == (obstruction == 0));
+        REQUIRE((prepared.Find(carry.Id()) &&
+                 prepared.Find(carry.Id())->RawCondition().has_value()) == (obstruction == 0));
         if (terminal && obstruction == 0) {
-            block->SetTerminal(terminal::Condition{Cond::NE, terminal_node, terminal::ReturnToHost{}});
+            block->SetTerminal(
+                    terminal::Condition{Cond::NE, terminal_node, terminal::ReturnToHost{}});
             analysis.Build(block.get());
             terminal_node = block->GetTerminal();
-            const auto rejected = arm64::BuildConsumerPlan(analysis,
-                    [](const Inst&) { return true; }, [](const Inst&) { return false; }, &terminal_node);
-            REQUIRE_FALSE(rejected.local_conditions.contains(condition.Def()));
-            prepared.Analyze(block.get(), features, rejected, &analysis);
-            REQUIRE(prepared.Empty());
+            const auto rejected = arm64::LowerConsumers(
+                    analysis,
+                    workspace,
+                    [](const Inst&) { return true; },
+                    [](const Inst&) { return false; },
+                    &terminal_node);
+            REQUIRE_FALSE(rejected.Has(condition.Id(), arm64::ConsumerFlag::LocalCondition));
+            prepared = arm64::LowerCarryConditions(block.get(), analysis, features, rejected);
+            REQUIRE(prepared.actions.empty());
         }
     }
 }
@@ -291,11 +357,18 @@ TEST_CASE("raw carry folds follow finalized terminal admission", "[scalar-prepar
         FeatureSet features{};
         const auto publish = [&](Block* block) {
             block->ReIdInstr();
-            RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                                space.GetTrampolines().GetFPRRegs(), features};
-            RegisterAllocPass::Run(block, &allocation, false, features);
-            allocation.CompleteGPRAllocation(module);
-            arm64::JitContext context{module, allocation};
+            AllocationFixture allocation{block->MaxInstrId(),
+                                         space.GetTrampolines().GetGPRRegs(),
+                                         space.GetTrampolines().GetFPRRegs(),
+                                         features};
+            ::swift::runtime::compile::AllocateBlock(
+                    block,
+                    &allocation,
+                    ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                            block, allocation, features),
+                    false);
+            ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+            arm64::JitContext context{module, allocation, allocation.Actions()};
             arm64::JitTranslator translator{context};
             REQUIRE_NOTHROW(translator.Translate(block));
             context.Finish();
@@ -310,26 +383,28 @@ TEST_CASE("raw carry folds follow finalized terminal admission", "[scalar-prepar
         for (const auto [location, marker] :
              {std::pair{0x8d00u, 1u}, std::pair{0x8e00u, 2u}, std::pair{0x8f00u, 3u}}) {
             IntrusivePtr<Block> target{new Block(0, Location{location})};
-            const auto value = target->LoadImm(Imm{marker}).SetType(ValueType::U32);
+            const auto value = target->LoadImm(ValueType::U32, Imm{marker});
             target->StoreUniform(Uniform{16, ValueType::U32}, value);
             target->SetTerminal(terminal::ReturnToHost{});
             publish(target.get());
         }
         IntrusivePtr<Block> block{new Block(0, Location{0x8c00})};
-        const auto selector = block->LoadUniform(Uniform{24, ValueType::U64}).SetType(ValueType::U64);
-        const auto source = block->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-        const auto comparison = block->Sub(source, Operand{Imm{7u}}).SetType(ValueType::U32);
+        const auto selector = block->LoadUniform(ValueType::U64, Uniform{24, ValueType::U64});
+        const auto source = block->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+        const auto comparison = block->Sub(ValueType::U32, source, Operand{Imm{7u}});
         block->SaveFlags(comparison, Flags::Carry | Flags::Zero | Flags::Negate | Flags::Overflow);
         block->InvertCarry();
         auto* invert = &block->GetInstList().back();
         block->AdvancePC(Imm{1u});
-        const auto carry = block->TestFlags(Flags::Carry).SetType(ValueType::U8);
-        const auto predicate = (below_equal ? block->TestNotZero(carry) : block->TestZero(carry)).SetType(ValueType::U8);
-        const auto other = block->CondSet(below_equal ? Cond::EQ : Cond::NE).SetType(ValueType::U8);
-        const auto condition = (below_equal ? block->Or(predicate, Operand{other})
-                                            : block->And(predicate, Operand{other})).SetType(ValueType::U8);
-        const Terminal branch = terminal::If{BOOL{condition}, terminal::LinkBlock{Location{0x8d00}},
-                                            terminal::LinkBlock{Location{0x8e00}}};
+        const auto carry = block->TestFlags(ValueType::U8, Flags::Carry);
+        const auto predicate = (below_equal ? block->TestNotZero(ValueType::U8, carry)
+                                            : block->TestZero(ValueType::U8, carry));
+        const auto other = block->CondSet(ValueType::U8, below_equal ? Cond::EQ : Cond::NE);
+        const auto condition = (below_equal ? block->Or(ValueType::U8, predicate, Operand{other})
+                                            : block->And(ValueType::U8, predicate, Operand{other}));
+        const Terminal branch = terminal::If{BOOL{condition},
+                                             terminal::LinkBlock{Location{0x8d00}},
+                                             terminal::LinkBlock{Location{0x8e00}}};
         Terminal selected = branch;
         if (shape >= 2) selected = terminal::Condition{Cond::NE, selected,
                                                      terminal::LinkBlock{Location{0x8f00}}};
@@ -338,20 +413,29 @@ TEST_CASE("raw carry folds follow finalized terminal admission", "[scalar-prepar
                                                              {Imm{swift::u64{1}}, selected}}};
         block->SetTerminal(selected);
         block->ReIdInstr();
-        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                            space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
-        allocation.CompleteGPRAllocation(module);
-        const auto plan = allocation.GPRPlanFor(block.get());
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+        const auto plan = allocation.Actions().ForBlock(block.get());
         REQUIRE(plan);
-        REQUIRE(plan->consumers);
-        REQUIRE(plan->consumers->local_conditions.contains(condition.Def()) == (shape < 2));
+        REQUIRE(allocation.Actions().Ready());
+        const auto* condition_action = allocation.Actions().Consumer(condition.Id());
+        REQUIRE((condition_action && condition_action->Has(arm64::ConsumerFlag::LocalCondition)) ==
+                (shape < 2));
         const bool expected_raw = shape < 2 && FlagsRegsEnabled() && GetSvmConfig().flags_cfinv;
-        const auto* raw = plan->scalar_preparation ? &plan->scalar_preparation->raw_carry : nullptr;
-        REQUIRE((raw && raw->FoldForTest(carry.Def())) == expected_raw);
-        REQUIRE((raw && raw->SuppressesInvert(invert)) == expected_raw);
-        REQUIRE((raw && raw->ConditionForTest(carry.Def()).has_value()) == expected_raw);
-        arm64::JitContext context{module, allocation};
+        const auto* raw = allocation.Actions().CarryForTest(carry.Id());
+        REQUIRE((raw != nullptr) == expected_raw);
+        REQUIRE(allocation.Actions().SuppressesCarryInvert(invert->Id()) == expected_raw);
+        REQUIRE((raw && raw->RawCondition().has_value()) == expected_raw);
+        arm64::JitContext context{module, allocation, allocation.Actions()};
         arm64::JitTranslator translator{context};
         REQUIRE_NOTHROW(translator.Translate(block.get()));
         context.Finish();

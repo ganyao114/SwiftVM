@@ -4,14 +4,13 @@
 #include <fstream>
 
 #include "runtime/backend/interp/interpreter.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 #if defined(__riscv) && __riscv_xlen == 64
 extern "C" bool SwiftRiscvVectorRange(void*, swift::u64, swift::u64);
 #endif
 
 namespace swift::tests::riscv {
-
 using T = ir::ValueType;
 using O = ir::OpCode;
 using U128 = unsigned __int128;
@@ -30,21 +29,40 @@ void NativeVectors(bool vector) {
             if (op == O::VecAvg && bits > 16) continue;
             for (u64 count : {u64{0}, u64{1}, u64{7}, u64{15}, u64{31}, u64{63}, u64{64}, UINT64_MAX}) {
                 IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc000})};
-                ir::Assembler as{block.get()};
-                auto left = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-                auto right = as.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128);
-                auto shift = as.LoadUniform(ir::Uniform{32, T::U64}).SetType(T::U64);
+                compile::IrBuilder as{block.get()};
+                auto left = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+                auto right = as.LoadUniform(T::V128, ir::Uniform{16, T::V128});
+                auto shift = as.LoadUniform(T::U64, ir::Uniform{32, T::U64});
                 ir::Value result;
                 switch (op) {
-                    case O::Vec4And: case O::Vec4Or: case O::VecAnd: case O::VecOr: case O::VecXor: case O::VecAndNot:
-                    case O::Vec4Add: case O::Vec4Sub: result = ir::Value{block->AppendInst(op, left, right)}; break;
-                    case O::VecAdd: case O::VecSub: case O::VecAvg:
-                        result = ir::Value{block->AppendInst(op, left, right, ir::Imm{u64(bits)})}; break;
-                    case O::VecShiftLeft: case O::VecShiftRight: case O::VecShiftRightArithmetic:
-                        result = ir::Value{block->AppendInst(op, left, shift, ir::Imm{u64(bits)})}; break;
-                    default: result = ir::Value{block->AppendInst(op, left, ir::Imm{count}, ir::Imm{u64(bits)})}; break;
+                    case O::Vec4And:
+                    case O::Vec4Or:
+                    case O::VecAnd:
+                    case O::VecOr:
+                    case O::VecXor:
+                    case O::VecAndNot:
+                    case O::Vec4Add:
+                    case O::Vec4Sub:
+                        result = ir::Value{block->AppendInst(op, T::V128, left, right)};
+                        break;
+                    case O::VecAdd:
+                    case O::VecSub:
+                    case O::VecAvg:
+                        result = ir::Value{
+                                block->AppendInst(op, T::V128, left, right, ir::Imm{u64(bits)})};
+                        break;
+                    case O::VecShiftLeft:
+                    case O::VecShiftRight:
+                    case O::VecShiftRightArithmetic:
+                        result = ir::Value{
+                                block->AppendInst(op, T::V128, left, shift, ir::Imm{u64(bits)})};
+                        break;
+                    default:
+                        result = ir::Value{block->AppendInst(
+                                op, T::V128, left, ir::Imm{count}, ir::Imm{u64(bits)})};
+                        break;
                 }
-                as.StoreUniform(ir::Uniform{48, T::V128}, result.SetType(T::V128));
+                as.StoreUniform(ir::Uniform{48, T::V128}, result);
                 block->SetTerminal(ir::terminal::ReturnToHost{});
                 Compiled cached{block.get(), true, features}, uncached{block.get(), false, features};
                 Check(cached.translator.Stats().helpers == 0 && uncached.translator.Stats().helpers == 0,
@@ -84,10 +102,10 @@ void NativeVectors(bool vector) {
     }
     for (u32 lane = 0; lane < 8; ++lane) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc080})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-        auto scalar = as.LoadUniform(ir::Uniform{16, T::U64}).SetType(T::U64);
-        auto inserted = as.VecInsert16(input, scalar, ir::Imm{u64(lane)}).SetType(T::V128);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+        auto scalar = as.LoadUniform(T::U64, ir::Uniform{16, T::U64});
+        auto inserted = as.VecInsert16(T::V128, input, scalar, ir::Imm{u64(lane)});
         as.StoreUniform(ir::Uniform{32, T::V128}, inserted);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};
@@ -105,9 +123,9 @@ void NativeVectors(bool vector) {
     // Narrow vector homes must retain zero high halves, independently of VLEN.
     for (auto type : {T::V8, T::V16, T::V32, T::V64, T::V128}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc100})};
-        ir::Assembler as{block.get()};
-        auto input = as.LoadUniform(ir::Uniform{0, type}).SetType(type);
-        auto raw = as.BitCast(input).SetType(T::V128);
+        compile::IrBuilder as{block.get()};
+        auto input = as.LoadUniform(type, ir::Uniform{0, type});
+        auto raw = as.BitCast(T::V128, input);
         as.StoreUniform(ir::Uniform{32, T::V128}, raw);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};
@@ -120,32 +138,40 @@ void NativeVectors(bool vector) {
               std::memcmp(expected.data(), state.state->uniform_buffer_begin + 32, 16) == 0,
               "narrow vector load zeroes every unused bit of its 128-bit home");
     }
-    for (bool from_vector : {false, true}) {
+    for (bool from_vector : {false, true})
+    for (u64 bits : {u64{0x100}, u64{0x101}}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc180})};
-        ir::Assembler as{block.get()};
-        auto input = from_vector ? as.VecLoadConst(ir::Imm{u64{0x100}}, ir::Imm{u64{0x837251694283fbea}}).SetType(T::V128)
-                                 : as.LoadImm(ir::Imm{u64{0x100}}).SetType(T::U64);
-        auto narrow = as.BitCast(input).SetType(T::U8);
+        compile::IrBuilder as{block.get()};
+        auto input = from_vector ? as.VecLoadConst(T::V128,
+                                                   ir::Imm{bits},
+                                                   ir::Imm{u64{0x837251694283fbea}})
+                                 : as.LoadImm(T::U64, ir::Imm{bits});
+        auto narrow = as.BitCast(T::U8, input);
         auto test = as.TestNotZero(narrow);
-        auto wide = as.BitCast(narrow).SetType(T::V128);
+        auto wide = as.BitCast(T::V128, narrow);
         as.StoreUniform(ir::Uniform{0, T::V128}, wide);
         as.StoreUniform(ir::Uniform{16, T::U8}, test);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};
         StateStorage state;
-        Check(compiled.fn(state.state) == HaltReason::CallHost && state.Get(0) == 0x100 &&
-              state.Get(8) == (from_vector ? u64{0x837251694283fbea} : 0) && state.Get(16) == 1,
-              "raw BitCast keeps the entire slot through narrow scalar types");
+        Check(compiled.fn(state.state) == HaltReason::CallHost,
+              "raw BitCast and predicate execution returns to host");
+        Check(state.Get(0) == bits, "raw BitCast preserves the entire low slot through a narrow view");
+        Check(state.Get(8) == (from_vector ? u64{0x837251694283fbea} : 0),
+              "raw BitCast preserves the vector high slot through a narrow scalar view");
+        Check(state.Get(16) == ((bits & 0xff) != 0),
+              "integer predicate reads the low byte without normalizing raw BitCast storage");
     }
     // Guest vector accesses support every byte alignment, and an oracle call
     // must preserve both live RVV values and vtype across its C ABI clobbers.
     for (bool callback : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc190})};
-        ir::Assembler as{block.get()};
-        auto live = as.VecLoadConst(ir::Imm{u64{0x31468925147abcee}}, ir::Imm{u64{0x986751fa47b234cd}}).SetType(T::V128);
-        auto address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto loaded = as.LoadMemoryTSO(ir::Operand{address}).SetType(T::V128);
-        auto value = as.VecXor(live, loaded).SetType(T::V128);
+        compile::IrBuilder as{block.get()};
+        auto live = as.VecLoadConst(
+                T::V128, ir::Imm{u64{0x31468925147abcee}}, ir::Imm{u64{0x986751fa47b234cd}});
+        auto address = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto loaded = as.LoadMemoryTSO(T::V128, ir::Operand{address});
+        auto value = as.VecXor(T::V128, live, loaded);
         as.StoreMemoryTSO(ir::Operand{address}, value);
         as.StoreUniform(ir::Uniform{32, T::V128}, value);
         block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -168,16 +194,17 @@ void NativeVectors(bool vector) {
         }
     }
     IntrusivePtr<ir::Block> pressure{new ir::Block(ir::Location{0xc195})};
-    ir::Assembler pressure_as{pressure.get()};
+    compile::IrBuilder pressure_as{pressure.get()};
     std::array<ir::Value, 24> inputs;
     u64 expected_low{}, expected_high{};
     for (u32 i = 0; i < inputs.size(); ++i) {
         const u64 low = 0x8325e195e786392aULL * (i + 1), high = low ^ (0x9856ac71435ULL << i);
-        inputs[i] = pressure_as.VecLoadConst(ir::Imm{low}, ir::Imm{high}).SetType(T::V128);
-        expected_low ^= low; expected_high ^= high;
+        inputs[i] = pressure_as.VecLoadConst(T::V128, ir::Imm{low}, ir::Imm{high});
+        expected_low ^= low;
+        expected_high ^= high;
     }
     auto sum = inputs[0];
-    for (u32 i = 1; i < inputs.size(); ++i) sum = pressure_as.VecXor(sum, inputs[i]).SetType(T::V128);
+    for (u32 i = 1; i < inputs.size(); ++i) sum = pressure_as.VecXor(T::V128, sum, inputs[i]);
     pressure_as.StoreUniform(ir::Uniform{0, T::V128}, sum);
     pressure->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled pressure_compiled{pressure.get(), true, features};
@@ -186,10 +213,11 @@ void NativeVectors(bool vector) {
           pressure_state.Get(0) == expected_low && pressure_state.Get(8) == expected_high,
           "vector pressure spills exactly 16-byte homes at every host VLEN");
     IntrusivePtr<ir::Block> chain{new ir::Block(ir::Location{0xc200})};
-    ir::Assembler as{chain.get()};
-    auto value = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-    auto addend = as.VecLoadConst(ir::Imm{u64{0x0000000100000001}}, ir::Imm{u64{0x0000000100000001}}).SetType(T::V128);
-    for (u32 i = 0; i < 48; ++i) value = as.VecAdd(value, addend, ir::Imm{u64{32}}).SetType(T::V128);
+    compile::IrBuilder as{chain.get()};
+    auto value = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+    auto addend = as.VecLoadConst(
+            T::V128, ir::Imm{u64{0x0000000100000001}}, ir::Imm{u64{0x0000000100000001}});
+    for (u32 i = 0; i < 48; ++i) value = as.VecAdd(T::V128, value, addend, ir::Imm{u64{32}});
     as.StoreUniform(ir::Uniform{32, T::V128}, value);
     chain->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled compiled{chain.get(), true, features};
@@ -226,16 +254,21 @@ void NativeVectorInteger(bool vector) {
             if ((op == O::VecSatAdd || op == O::VecSatSub) && bits == 64) continue;
             for (u32 mode = 0; mode < 2; ++mode) {
                 IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc300})};
-                ir::Assembler as{block.get()};
-                auto left = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-                auto right = as.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128);
+                compile::IrBuilder as{block.get()};
+                auto left = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+                auto right = as.LoadUniform(T::V128, ir::Uniform{16, T::V128});
                 ir::Value result;
-                if (op == O::Vec4Mul) result = as.Vec4Mul(left, right);
-                else if (op == O::VecMulHigh16) result = as.VecMulHigh16(left, right, ir::Imm{u64(mode)});
+                if (op == O::Vec4Mul)
+                    result = as.Vec4Mul(T::V128, left, right);
+                else if (op == O::VecMulHigh16)
+                    result = as.VecMulHigh16(T::V128, left, right, ir::Imm{u64(mode)});
                 else if (op == O::VecMul || op == O::VecCmpEq || op == O::VecCmpGt)
-                    result = ir::Value{block->AppendInst(op, left, right, ir::Imm{u64(bits)})};
-                else result = ir::Value{block->AppendInst(op, left, right, ir::Imm{u64(bits)}, ir::Imm{u64(mode)})};
-                as.StoreUniform(ir::Uniform{32, T::V128}, result.SetType(T::V128));
+                    result = ir::Value{
+                            block->AppendInst(op, T::V128, left, right, ir::Imm{u64(bits)})};
+                else
+                    result = ir::Value{block->AppendInst(
+                            op, T::V128, left, right, ir::Imm{u64(bits)}, ir::Imm{u64(mode)})};
+                as.StoreUniform(ir::Uniform{32, T::V128}, result);
                 block->SetTerminal(ir::terminal::ReturnToHost{});
                 Compiled cached{block.get(), true, features}, uncached{block.get(), false, features};
                 Check(cached.translator.Stats().helpers == 0 && uncached.translator.Stats().helpers == 0,
@@ -265,10 +298,11 @@ void NativeVectorInteger(bool vector) {
     for (auto op : {O::VecSatAdd, O::VecSatSub}) {
         for (bool signed_lanes : {false, true}) {
             IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc400})};
-            ir::Assembler as{block.get()};
-            auto left = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-            auto right = as.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128);
-            auto result = ir::Value{block->AppendInst(op, left, right, ir::Imm{u64{64}}, ir::Imm{u64(signed_lanes)})}.SetType(T::V128);
+            compile::IrBuilder as{block.get()};
+            auto left = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+            auto right = as.LoadUniform(T::V128, ir::Uniform{16, T::V128});
+            auto result = ir::Value{block->AppendInst(
+                    op, T::V128, left, right, ir::Imm{u64{64}}, ir::Imm{u64(signed_lanes)})};
             as.StoreUniform(ir::Uniform{32, T::V128}, result);
             block->SetTerminal(ir::terminal::ReturnToHost{});
             Compiled compiled{block.get(), true, features};

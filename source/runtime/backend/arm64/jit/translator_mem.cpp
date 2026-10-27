@@ -1,8 +1,8 @@
 #include "base/logging.h"
-#include "translator.h"
-#include "runtime/backend/gpr_coalescing_contract.h"
-#include "runtime/backend/arm64/alloc/fixed_gpr_constraints.h"
+#include "runtime/backend/arm64/compile/constraints.h"
 #include "runtime/backend/arm64/helper_call_contract.h"
+#include "runtime/backend/gpr_coalescing_contract.h"
+#include "translator.h"
 
 #include <algorithm>
 #include <atomic>
@@ -272,17 +272,19 @@ MemOperand JitTranslator::BiasMem(const Register& base, s64 imm, bool atomic) {
     return MemOperand{mem_scratch, pt};
 }
 
-void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
+void JitTranslator::EmitGetHostGPR(const ir::Inst* inst) {
     if (context.GetAllocation().IsFixedGPRDefinitionElided(inst->Id())) return;
     if (context.IsHostReadCoalesced(inst->Id())) {
-        ASSERT_MSG(context.GetAllocation().HostReadVerified(inst->Id()),
-                   "GetHostGPR coalescing proof diverged at IR {}", inst->Id());
+        ASSERT_MSG(context.GetActions().HostReadVerified(inst->Id()),
+                   "GetHostGPR coalescing proof diverged at IR {}",
+                   inst->Id());
         return;
     }
     if (HasGPRLowView(inst)) {
         return;
     }
-    if (gpr_plan->pinned->ValueFullyResident(inst)) {
+    if (const auto* action = ActiveGPRResidence(inst);
+        action && action->Has(GPRResidenceAction::Resident)) {
         return;
     }
     auto offset = inst->GetArg<ir::Imm>(1).Get();
@@ -307,10 +309,11 @@ void JitTranslator::EmitGetHostGPR(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
+void JitTranslator::EmitGetHostFPR(const ir::Inst* inst) {
     if (context.IsHostReadCoalesced(inst->Id())) {
-        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::Read),
-                   "GetHostFPR coalescing proof diverged at IR {}", inst->Id());
+        ASSERT_MSG(context.GetActions().FPRVerified(inst->Id(), FPRAction::Read),
+                   "GetHostFPR coalescing proof diverged at IR {}",
+                   inst->Id());
         return;
     }
     const u32 reg_index = inst->GetArg<ir::Imm>(0).Get();
@@ -352,50 +355,53 @@ void JitTranslator::EmitGetHostFPR(ir::Inst* inst) {
     }
 }
 
-
-
-void JitTranslator::EmitSetHostGPR(ir::Inst* inst) {
-    const auto found = gpr_plan->publications.find(inst);
-    ASSERT_MSG(found != gpr_plan->publications.end(), "unplanned GPR publication");
-    const auto& action = found->second;
+void JitTranslator::EmitSetHostGPR(const ir::Inst* inst) {
+    const auto* prepared = context.GetActions().Publication(inst->Id());
+    ASSERT_MSG(prepared, "unplanned GPR publication");
+    const auto& action = *prepared;
     const auto target = XRegister(action.target);
     switch (action.kind) {
-        case GPRPublicationKind::Skip: return;
-        case GPRPublicationKind::Transfer:
-            __ Mov(target, XRegister(*action.source_home));
+        case PublicationAction::Skip:
             return;
-        case GPRPublicationKind::Copy: {
-            const auto source = WRegister(*action.source_home);
-            if (action.width == 8) __ Uxtb(target.W(), source);
-            else if (action.width == 16) __ Uxth(target.W(), source);
+        case PublicationAction::Transfer:
+            __ Mov(target, XRegister(*action.SourceHome()));
+            return;
+        case PublicationAction::Copy: {
+            const auto source = WRegister(*action.SourceHome());
+            if (action.Width() == 8)
+                __ Uxtb(target.W(), source);
+            else if (action.Width() == 16)
+                __ Uxth(target.W(), source);
             else __ Mov(target.W(), source);
             return;
         }
-        case GPRPublicationKind::BiasedUpdate:
-            __ Sub(target, target, action.decrement);
+        case PublicationAction::BiasedUpdate:
+            __ Sub(target, target, static_cast<u64>(action.parameter));
             return;
-        case GPRPublicationKind::Value: break;
+        case PublicationAction::Value:
+            break;
     }
-    const auto source = action.source_home ? XRegister(*action.source_home)
-                                          : context.X(action.source);
-    if (action.bit_offset == 0 && action.width == 32 && action.clear_high) {
-        if (source != target || action.adjust_resident_home) __ Mov(target.W(), source.W());
-    } else if (action.bit_offset == 0 && action.width == 64) {
-        if (source != target || action.clear_high) {
-            if (action.clear_high) __ Mov(target.W(), source.W());
+    const auto source =
+            action.SourceHome() ? XRegister(*action.SourceHome()) : context.X(action.Source(*inst));
+    if (action.BitOffset() == 0 && action.Width() == 32 &&
+        action.Has(PublicationAction::ClearHigh)) {
+        if (source != target || action.Has(PublicationAction::AdjustResident))
+            __ Mov(target.W(), source.W());
+    } else if (action.BitOffset() == 0 && action.Width() == 64) {
+        if (source != target || action.Has(PublicationAction::ClearHigh)) {
+            if (action.Has(PublicationAction::ClearHigh))
+                __ Mov(target.W(), source.W());
             else __ Mov(target, source);
         }
     } else {
-        __ Bfi(target, source, action.bit_offset, action.width);
+        __ Bfi(target, source, action.BitOffset(), action.Width());
     }
 }
 
-
-void JitTranslator::EmitSetHostFPR(ir::Inst* inst) {
-    if (auto fusion = ScalarPublicationPlan().values.find(inst);
-        fusion != ScalarPublicationPlan().values.end()) {
+void JitTranslator::EmitSetHostFPR(const ir::Inst* inst) {
+    if (const auto* fusion = context.GetActions().ScalarFPRValue(inst->Id())) {
         const auto value = inst->GetArg<ir::Value>(0);
-        auto target = VRegister::GetQRegFromCode(fusion->second.target);
+        auto target = VRegister::GetQRegFromCode(fusion->target);
         if (CanUseZeroStoreRegister(value)) {
             __ Eor(target.V16B(), target.V16B(), target.V16B());
         } else {
@@ -404,8 +410,9 @@ void JitTranslator::EmitSetHostFPR(ir::Inst* inst) {
         return;
     }
     if (context.IsHostWriteCoalesced(inst->Id())) {
-        ASSERT_MSG(gpr_plan->fpr && gpr_plan->fpr->Has(inst, FPRAllocationPlan::Write),
-                   "SetHostFPR coalescing proof diverged at IR {}", inst->Id());
+        ASSERT_MSG(context.GetActions().FPRVerified(inst->Id(), FPRAction::Write),
+                   "SetHostFPR coalescing proof diverged at IR {}",
+                   inst->Id());
         return;
     }
     auto value = inst->GetArg<ir::Value>(0);
@@ -450,7 +457,7 @@ void JitTranslator::EmitSetHostFPR(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitLoadUniform(ir::Inst* inst) {
+void JitTranslator::EmitLoadUniform(const ir::Inst* inst) {
     auto uni = inst->GetArg<ir::Uniform>(0);
     s32 offset = offsetof(State, uniform_buffer_begin) + uni.GetOffset();
     auto reg = context.Get(inst);
@@ -496,13 +503,13 @@ void JitTranslator::EmitLoadUniform(ir::Inst* inst) {
     });
 }
 
-void JitTranslator::EmitGetUniformAddress(ir::Inst* inst) {
+void JitTranslator::EmitGetUniformAddress(const ir::Inst* inst) {
     const auto offset = inst->GetArg<ir::Imm>(0).Get();
     auto result = context.X(ir::Value{inst});
     __ Add(result, state, offsetof(State, uniform_buffer_begin) + offset);
 }
 
-void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
+void JitTranslator::EmitStoreUniform(const ir::Inst* inst) {
     auto uni = inst->GetArg<ir::Uniform>(0);
     s32 offset = offsetof(State, uniform_buffer_begin) + uni.GetOffset();
     const auto value = inst->GetArg<ir::Value>(1);
@@ -571,11 +578,11 @@ void JitTranslator::EmitStoreUniform(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitLoadLocal(ir::Inst* inst) { PANIC("TODO"); }
+void JitTranslator::EmitLoadLocal(const ir::Inst* inst) { PANIC("TODO"); }
 
-void JitTranslator::EmitStoreLocal(ir::Inst* inst) { PANIC("TODO"); }
+void JitTranslator::EmitStoreLocal(const ir::Inst* inst) { PANIC("TODO"); }
 
-void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
+void JitTranslator::EmitLoadMemory(const ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
@@ -586,13 +593,11 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     auto value_x = [&] {
         return pinned_value ? *pinned_value : context.X(value);
     };
-    const NarrowLoadAction* narrow = nullptr;
-    if (gpr_plan->memory) {
-        const auto found = gpr_plan->memory->narrow_loads.find(inst);
-        if (found != gpr_plan->memory->narrow_loads.end()) narrow = &found->second;
-    }
-    auto* narrow_consumer = narrow ? narrow->extension : nullptr;
-    const bool direct_narrow_consumer = narrow && narrow->direct;
+    const auto* prepared_memory = context.GetActions().Memory(inst->Id());
+    const auto* narrow = prepared_memory && prepared_memory->Has(MemoryAction::Narrow)
+                                 ? prepared_memory
+                                 : nullptr;
+    const bool direct_narrow_consumer = narrow && narrow->Has(MemoryAction::Direct);
     // Keep the established computed-address path for generic Q loads and
     // do not consume the synthetic post-index produced by the generic address
     // peephole. A1 opens only the exact bounded W39 Plus form, for which the
@@ -611,32 +616,28 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
                                  structured_guest_ea,
                                  operand.GetOp() == ir::OperandOp::Plus,
                                  false);
-    auto load_update = gpr_plan->load_updates.find(inst);
-    auto vixl_operand = load_update != gpr_plan->load_updates.end()
-            ? MemOperand{XRegister(load_update->second.target),
-                         load_update->second.offset,
-                         PreIndex}
-            : EmitMemOperand(operand,
-                             type,
-                             false,
-                             q_access && !fold_host_base,
-                             !q_access,
-                             structured_guest_ea,
-                             inst);
+    const auto* load_update = context.GetActions().MemoryTransfer(inst->Id());
+    auto vixl_operand =
+            load_update && load_update->kind == MemoryTransferAction::Load
+                    ? MemOperand{XRegister(load_update->home), load_update->offset, PreIndex}
+                    : EmitMemOperand(operand,
+                                     type,
+                                     false,
+                                     q_access && !fold_host_base,
+                                     !q_access,
+                                     structured_guest_ea,
+                                     inst);
     ASSERT(!direct_narrow_consumer || vixl_operand.GetAddrMode() == Offset ||
-           vixl_operand.GetBaseRegister().GetCode() != context.R(ir::Value{narrow_consumer}).GetCode());
+           vixl_operand.GetBaseRegister().GetCode() != narrow->target);
     auto narrow_value_w = [&] {
-        return direct_narrow_consumer ? context.W(ir::Value{narrow_consumer})
-                                      : value_w();
+        return direct_narrow_consumer ? WRegister{narrow->target} : value_w();
     };
     auto narrow_value_x = [&] {
-        return direct_narrow_consumer ? context.X(ir::Value{narrow_consumer})
-                                      : value_x();
+        return direct_narrow_consumer ? XRegister{narrow->target} : value_x();
     };
-    auto scalar_fpr = ScalarPublicationPlan().loads.find(inst);
-    if (scalar_fpr != ScalarPublicationPlan().loads.end()) {
-        const auto target = VRegister::GetQRegFromCode(scalar_fpr->second.target);
-        if (scalar_fpr->second.load_extension) {
+    if (const auto* scalar_fpr = context.GetActions().ScalarFPRLoad(inst->Id())) {
+        const auto target = VRegister::GetQRegFromCode(scalar_fpr->target);
+        if (scalar_fpr->kind == ScalarFPRAction::Load32) {
             __ Ldr(target.S(), vixl_operand);
         } else {
             __ Ldr(target.D(), vixl_operand);
@@ -646,8 +647,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     switch (type) {
         case ir::ValueType::S8:
         case ir::ValueType::U8:
-            if (narrow && narrow->sign) {
-                if (narrow->result_bytes == 8) {
+            if (narrow && narrow->Has(MemoryAction::Sign)) {
+                if (narrow->ResultBytes() == 8) {
                     __ Ldrsb(narrow_value_x(), vixl_operand);
                 } else {
                     __ Ldrsb(narrow_value_w(), vixl_operand);
@@ -659,8 +660,8 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
             break;
         case ir::ValueType::S16:
         case ir::ValueType::U16:
-            if (narrow && narrow->sign) {
-                if (narrow->result_bytes == 8) {
+            if (narrow && narrow->Has(MemoryAction::Sign)) {
+                if (narrow->ResultBytes() == 8) {
                     __ Ldrsh(narrow_value_x(), vixl_operand);
                 } else {
                     __ Ldrsh(narrow_value_w(), vixl_operand);
@@ -699,7 +700,7 @@ void JitTranslator::EmitLoadMemory(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
+void JitTranslator::EmitStoreMemory(const ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = inst->GetArg<ir::Value>(1);
     auto type = value.Type();
@@ -725,8 +726,8 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
                            !q_access,
                            structured_guest_ea,
                            inst);
-    if (const auto target = ScalarPreparation().resident.FindMemoryStore(inst)) {
-        auto source = VRegister::GetQRegFromCode(*target);
+    if (const auto* action = context.GetActions().ScalarFPRStore(inst->Id())) {
+        auto source = VRegister::GetQRegFromCode(action->target);
         if (ir::GetValueSizeByte(type) == sizeof(u32)) {
             __ Str(source.S(), vixl_operand);
         } else {
@@ -744,9 +745,9 @@ void JitTranslator::EmitStoreMemory(ir::Inst* inst) {
             return WRegister(residence->home);
         }
         if (value.Def()) {
-            if (auto it = gpr_plan->memory_values.find(value.Def());
-                it != gpr_plan->memory_values.end()) {
-                return WRegister(it->second);
+            if (const auto* prepared = context.GetActions().MemoryTransfer(value.Id());
+                prepared && prepared->MatchesValue(*inst, value)) {
+                return WRegister(prepared->home);
             }
             if (const auto home = GPRLowViewHome(value.Def())) {
                 return WRegister(*home);
@@ -872,7 +873,7 @@ std::optional<u32> JitTranslator::AlignmentResidueMod8(ir::Value value) const {
     return std::nullopt;
 }
 
-void JitTranslator::TrackHomeAlignment(ir::Inst* inst) {
+void JitTranslator::TrackHomeAlignment(const ir::Inst* inst) {
     auto& homes = memory_state.home_alignment_mod8;
     if (homes.empty() && inst->GetOp() != ir::OpCode::SetHostGPR) {
         return;
@@ -907,7 +908,7 @@ void JitTranslator::TrackHomeAlignment(ir::Inst* inst) {
     // just like a publication does.
     if (!inst->HasValue()) return;
     const auto value = ir::Value{inst};
-    if (context.GetAllocation().ValueType(value) != backend::RegAlloc::GPR) {
+    if (context.GetAllocation().ValueType(value) != compile::Allocation::GPR) {
         return;
     }
     const u32 home = context.GetAllocation().ValueGPR(value).id;
@@ -919,7 +920,7 @@ void JitTranslator::TrackHomeAlignment(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
+void JitTranslator::EmitLoadMemoryTSO(const ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = ir::Value{inst};
     auto type = inst->ReturnType();
@@ -1028,7 +1029,7 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
         if (!vixl_operand.IsImmediateOffset() || vixl_operand.GetOffset() != 0) {
             // x10 is reserved only for biased memory. In direct mode it can
             // hold a live SSA value, so address folding must use checked scratch.
-            address = memory_state.use_memory_base ? mem_scratch : context.GetTmpX();
+            address = memory_state.use_memory_base ? mem_scratch : context.GetSharedTmpX();
             __ ComputeAddress(address, vixl_operand);
         }
 
@@ -1180,7 +1181,7 @@ void JitTranslator::EmitLoadMemoryTSO(ir::Inst* inst) {
     __ Dmb(InnerShareable, BarrierReads);
 }
 
-void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
+void JitTranslator::EmitStoreMemoryTSO(const ir::Inst* inst) {
     auto operand = inst->GetArg<ir::Operand>(0);
     auto value = inst->GetArg<ir::Value>(1);
     auto type = value.Type();
@@ -1280,7 +1281,7 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
     if (scalar_fast_path) {
         Register address = vixl_operand.GetBaseRegister();
         if (!vixl_operand.IsImmediateOffset() || vixl_operand.GetOffset() != 0) {
-            address = memory_state.use_memory_base ? mem_scratch : context.GetTmpX();
+            address = memory_state.use_memory_base ? mem_scratch : context.GetSharedTmpX();
             __ ComputeAddress(address, vixl_operand);
         }
 
@@ -1448,7 +1449,7 @@ void JitTranslator::EmitStoreMemoryTSO(ir::Inst* inst) {
     }
 }
 
-void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
+void JitTranslator::EmitMemoryCopy(const ir::Inst* inst) {
     auto dst = inst->GetArg<ir::Lambda>(0);
     auto src = inst->GetArg<ir::Lambda>(1);
     const auto size = inst->GetArg<ir::Imm>(2).Get();
@@ -1554,7 +1555,7 @@ void JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
     __ Add(sp, sp, kSaveBytes);
 }
 
-void JitTranslator::EmitMemoryCopyTSO(ir::Inst* inst) {
+void JitTranslator::EmitMemoryCopyTSO(const ir::Inst* inst) {
     tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
     EmitMemoryCopy(inst);
@@ -1562,12 +1563,12 @@ void JitTranslator::EmitMemoryCopyTSO(ir::Inst* inst) {
     __ Dmb(InnerShareable, BarrierAll);
 }
 
-void JitTranslator::EmitMemoryBarrierTSO(ir::Inst* inst) {
+void JitTranslator::EmitMemoryBarrierTSO(const ir::Inst* inst) {
     tso_emission_stats.Increment(tso_emission_stats.dmb_instructions);
     __ Dmb(InnerShareable, BarrierAll);
 }
 
-void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
+void JitTranslator::EmitCompareAndSwap(const ir::Inst* inst) {
     // Args: (address, expected, desired); returns the old value.
     auto address = context.X(inst->GetArg<ir::Value>(0));
     auto expected = inst->GetArg<ir::Value>(1);
@@ -1685,7 +1686,7 @@ void JitTranslator::EmitCompareAndSwap(ir::Inst* inst) {
     __ Dmb(InnerShareable, BarrierAll);
 }
 
-void JitTranslator::EmitCompareAndSwap128(ir::Inst* inst) {
+void JitTranslator::EmitCompareAndSwap128(const ir::Inst* inst) {
     // Args: (address, expected_lo, expected_hi, desired_lo, desired_hi);
     // returns the observed pair as V128, low half in lane 0.
     auto address = context.X(inst->GetArg<ir::Value>(0));
@@ -1756,7 +1757,7 @@ void JitTranslator::EmitCompareAndSwap128(ir::Inst* inst) {
     __ Dmb(InnerShareable, BarrierAll);
 }
 
-void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
+void JitTranslator::EmitAtomicExchange(const ir::Inst* inst) {
     // Args: (address, desired); returns the previous value. Memory XCHG is
     // implicitly locked on x86, so use an unconditional exclusive loop and
     // full barriers regardless of the configured ordinary-memory TSO mode.
@@ -1847,7 +1848,7 @@ void JitTranslator::EmitAtomicExchange(ir::Inst* inst) {
     __ Dmb(InnerShareable, BarrierAll);
 }
 
-void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
+void JitTranslator::EmitAtomicFetchAdd(const ir::Inst* inst) {
     // Args: (address, addend); returns the previous value. Used by LOCK XADD.
     auto address = context.X(inst->GetArg<ir::Value>(0));
     const auto addend = inst->GetArg<ir::Value>(1);
@@ -1942,7 +1943,7 @@ void JitTranslator::EmitAtomicFetchAdd(ir::Inst* inst) {
     __ Dmb(InnerShareable, BarrierAll);
 }
 
-void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
+void JitTranslator::EmitAtomicRMW(const ir::Inst* inst) {
     // Args: (operation, address, operand, carry); returns the previous value.
     const auto op =
             static_cast<ir::AtomicRMWOp>(inst->GetArg<ir::Imm>(0).Get());
@@ -2013,11 +2014,11 @@ void JitTranslator::EmitAtomicRMW(ir::Inst* inst) {
     __ Dmb(InnerShareable, BarrierAll);
 }
 
-void JitTranslator::EmitUniformBarrier(ir::Inst* inst) {
+void JitTranslator::EmitUniformBarrier(const ir::Inst* inst) {
     // Compiler barrier only: uniform caching is not invalidated across this point.
 }
 
-void JitTranslator::EmitXchgBarrier(ir::Inst* inst) {
+void JitTranslator::EmitXchgBarrier(const ir::Inst* inst) {
     // Metadata-only marker for fixed-home lifetime analysis.
 }
 

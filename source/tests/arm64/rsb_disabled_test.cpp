@@ -55,7 +55,7 @@ int main(int argc, char** argv) {
             HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
             auto* function = builder.AppendFunction(Location{0x100}, Location{0x104});
             function->StoreUniform(Uniform{0, ValueType::U64},
-                    function->LoadImm(Imm{u64{37}}).SetType(ValueType::U64));
+                                   function->LoadImm(ValueType::U64, Imm{u64{37}}));
             function->EndBlock(terminal::ReturnToHost{});
             function->EndFunction();
             void* entry = TranslateIR(module, function);

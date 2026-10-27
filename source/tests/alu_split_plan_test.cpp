@@ -1,3 +1,9 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/compile/analysis/block_index.h"
+#include "runtime/compile/workspace.h"
+using swift::runtime::compile::BlockAnalysisIndex;
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <array>
 #include <cstring>
 #include <optional>
@@ -5,13 +11,13 @@
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
-#include "runtime/backend/context.h"
-#include "runtime/backend/arm64/alloc/consumer_plan.h"
-#include "runtime/backend/arm64/alloc/target_allocation_planner.h"
-#include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "runtime/backend/arm64/compile/lower_consumers.h"
 #include "runtime/backend/arm64/jit/function_code_object_emitter.h"
+#include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/backend/context.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "runtime/ir/hir_builder.h"
 
 using namespace swift;
@@ -21,11 +27,17 @@ using namespace swift::runtime::backend;
 using namespace swift::runtime::backend::arm64;
 
 namespace {
-ConsumerPlan AuditPlan(Block& block, bool enabled = true) {
+ConsumerActions AuditPlan(Block& block, bool enabled = true) {
     block.ReIdInstr();
     BlockAnalysisIndex index; index.Build(&block);
-    return BuildConsumerPlan(index, [](const Inst&) { return true; },
-                             [](const Inst&) { return false; }, nullptr, enabled);
+    compile::CompileWorkspace workspace;
+    return LowerConsumers(
+            index,
+            workspace,
+            [](const Inst&) { return true; },
+            [](const Inst&) { return false; },
+            nullptr,
+            enabled);
 }
 
 class AuditEnvironment {
@@ -55,43 +67,47 @@ private:
 
 TEST_CASE("ALU audit facts are sparse and absent when diagnostics are disabled", "[alu-split-plan]") {
     IntrusivePtr<Block> block{new Block(0, Location{0xbaa0})};
-    auto input = block->LoadImm(Imm{u64{45}}).SetType(ValueType::U64);
-    const std::array<Value, 4> roots{{
-        block->Sub(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64),
-        block->And(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64),
-        block->Or(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64),
-        block->Xor(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64)}};
-    for (u16 i = 0; i < roots.size(); ++i) block->StoreUniform(Uniform{u16(i * 8), ValueType::U64}, roots[i]);
-    auto disabled = AuditPlan(*block, false); REQUIRE(disabled.alu_split.empty());
-    auto plan = AuditPlan(*block); REQUIRE(plan.valid); REQUIRE(plan.alu_split.size() == roots.size());
-    REQUIRE_FALSE(plan.alu_split.contains(input.Def()));
+    auto input = block->LoadImm(ValueType::U64, Imm{u64{45}});
+    const std::array<Value, 4> roots{{block->Sub(ValueType::U64, input, ir::Operand{Imm{u64{7}}}),
+                                      block->And(ValueType::U64, input, ir::Operand{Imm{u64{7}}}),
+                                      block->Or(ValueType::U64, input, ir::Operand{Imm{u64{7}}}),
+                                      block->Xor(ValueType::U64, input, ir::Operand{Imm{u64{7}}})}};
+    for (u16 i = 0; i < roots.size(); ++i)
+        block->StoreUniform(Uniform{u16(i * 8), ValueType::U64}, roots[i]);
+    auto disabled = AuditPlan(*block, false);
+    REQUIRE(disabled.audit.empty());
+    auto plan = AuditPlan(*block);
+    REQUIRE(plan.valid);
+    REQUIRE(plan.audit.size() == roots.size());
+    REQUIRE_FALSE((plan.Audit(input.Id()) != nullptr));
     for (auto root : roots) {
-        const auto& facts = plan.alu_split.at(root.Def());
+        const auto& facts = (*plan.Audit(root.Id()));
         REQUIRE(facts.value_uses == 1); REQUIRE(facts.external_users == 1);
         REQUIRE(facts.family_count == 1); REQUIRE_FALSE(facts.family_capped);
         REQUIRE(facts.saw_value); REQUIRE_FALSE(facts.saw_address);
     }
 }
 
-TEST_CASE("ALU audit retains width bridge families and the thirty two member cap", "[alu-split-plan]") {
+TEST_CASE("ALU audit retains width bridge families and the thirty two member cap",
+          "[alu-split-plan]") {
     IntrusivePtr<Block> block{new Block(0, Location{0xbab0})};
-    auto input = block->LoadImm(Imm{u64{64}}).SetType(ValueType::U64);
-    auto root = block->And(input, ir::Operand{Imm{u64{255}}}).SetType(ValueType::U64);
+    auto input = block->LoadImm(ValueType::U64, Imm{u64{64}});
+    auto root = block->And(ValueType::U64, input, ir::Operand{Imm{u64{255}}});
     auto alias = root;
-    for (unsigned i = 0; i < 35; ++i) alias = block->BitCast(alias).SetType(ValueType::U64);
+    for (unsigned i = 0; i < 35; ++i) alias = block->BitCast(ValueType::U64, alias);
     block->StoreUniform(Uniform{0, ValueType::U64}, alias);
-    const auto capped = AuditPlan(*block).alu_split.at(root.Def());
+    const auto capped = (*AuditPlan(*block).Audit(root.Id()));
     REQUIRE(capped.family_count == 32); REQUIRE(capped.family_capped);
     REQUIRE(capped.value_uses == 1); REQUIRE(capped.external_users == 1);
     REQUIRE(capped.saw_value); REQUIRE_FALSE(capped.saw_address);
 
     IntrusivePtr<Block> address{new Block(0, Location{0xbab8})};
-    auto base = address->LoadImm(Imm{u64{64}}).SetType(ValueType::U64);
-    auto producer = address->Xor(base, ir::Operand{Imm{u64{0}}}).SetType(ValueType::U64);
-    auto narrow = address->BitExtract(producer, Imm{u8{0}}, Imm{u8{8}}).SetType(ValueType::U8);
-    auto wide = address->ZeroExtend64(narrow).SetType(ValueType::U64);
-    address->LoadMemory(ir::Operand{wide}).SetType(ValueType::U64);
-    const auto facts = AuditPlan(*address).alu_split.at(producer.Def());
+    auto base = address->LoadImm(ValueType::U64, Imm{u64{64}});
+    auto producer = address->Xor(ValueType::U64, base, ir::Operand{Imm{u64{0}}});
+    auto narrow = address->BitExtract(ValueType::U8, producer, Imm{u8{0}}, Imm{u8{8}});
+    auto wide = address->ZeroExtend64(ValueType::U64, narrow);
+    address->LoadMemory(ValueType::U64, ir::Operand{wide});
+    const auto facts = (*AuditPlan(*address).Audit(producer.Id()));
     REQUIRE(facts.family_count == 3); REQUIRE_FALSE(facts.family_capped);
     REQUIRE(facts.value_uses == 1); REQUIRE(facts.external_users == 1);
     REQUIRE(facts.saw_address); REQUIRE_FALSE(facts.saw_value);
@@ -100,11 +116,11 @@ TEST_CASE("ALU audit retains width bridge families and the thirty two member cap
 TEST_CASE("ALU audit uses the first matching family member for store roles", "[alu-split-plan]") {
     for (bool root_is_data : {false, true}) {
         IntrusivePtr<Block> block{new Block(0, Location{0xbac0})};
-        auto input = block->LoadImm(Imm{u64{64}}).SetType(ValueType::U64);
-        auto root = block->Or(input, ir::Operand{Imm{u64{0}}}).SetType(ValueType::U64);
-        auto alias = block->BitCast(root).SetType(ValueType::U64);
+        auto input = block->LoadImm(ValueType::U64, Imm{u64{64}});
+        auto root = block->Or(ValueType::U64, input, ir::Operand{Imm{u64{0}}});
+        auto alias = block->BitCast(ValueType::U64, root);
         block->StoreMemory(ir::Operand{root_is_data ? alias : root}, root_is_data ? root : alias);
-        const auto facts = AuditPlan(*block).alu_split.at(root.Def());
+        const auto facts = (*AuditPlan(*block).Audit(root.Id()));
         REQUIRE(facts.family_count == 2); REQUIRE(facts.external_users == 1);
         REQUIRE(facts.value_uses == 2);
         REQUIRE(facts.saw_value == root_is_data); REQUIRE(facts.saw_address == !root_is_data);
@@ -113,17 +129,17 @@ TEST_CASE("ALU audit uses the first matching family member for store roles", "[a
 
 TEST_CASE("ALU audit separates operand multiplicity from flags and distinct users", "[alu-split-plan]") {
     IntrusivePtr<Block> block{new Block(0, Location{0xbad0})};
-    auto input = block->LoadImm(Imm{u64{45}}).SetType(ValueType::U64);
-    auto root = block->Sub(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
-    block->Add(root, ir::Operand{root}).SetType(ValueType::U64);
-    auto flags = block->And(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
+    auto input = block->LoadImm(ValueType::U64, Imm{u64{45}});
+    auto root = block->Sub(ValueType::U64, input, ir::Operand{Imm{u64{7}}});
+    block->Add(ValueType::U64, root, ir::Operand{root});
+    auto flags = block->And(ValueType::U64, input, ir::Operand{Imm{u64{7}}});
     block->SaveFlags(flags, Flags::NZ);
     auto plan = AuditPlan(*block);
-    REQUIRE(plan.alu_split.at(root.Def()).value_uses == 2);
-    REQUIRE(plan.alu_split.at(root.Def()).external_users == 1);
-    REQUIRE(plan.alu_split.at(flags.Def()).value_uses == 0);
-    REQUIRE(plan.alu_split.at(flags.Def()).external_users == 1);
-    REQUIRE(plan.alu_split.at(flags.Def()).saw_value);
+    REQUIRE((*plan.Audit(root.Id())).value_uses == 2);
+    REQUIRE((*plan.Audit(root.Id())).external_users == 1);
+    REQUIRE((*plan.Audit(flags.Id())).value_uses == 0);
+    REQUIRE((*plan.Audit(flags.Id())).external_users == 1);
+    REQUIRE((*plan.Audit(flags.Id())).saw_value);
 }
 
 TEST_CASE("ALU audit admission rejects config and IR changes before bytes", "[alu-split-plan][alu-split-admission]") {
@@ -134,33 +150,45 @@ TEST_CASE("ALU audit admission rejects config and IR changes before bytes", "[al
     AddressSpace space{config}; auto module = space.GetDefaultModule();
     auto features = ResolveFeatureSet(module->GetModuleConfig());
     IntrusivePtr<Block> block{new Block(0, Location{0xbae0})};
-    auto input = block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto result = block->Sub(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
+    auto input = block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+    auto result = block->Sub(ValueType::U64, input, ir::Operand{Imm{u64{7}}});
     block->StoreUniform(Uniform{8, ValueType::U64}, result);
     auto* store = &block->GetInstList().back();
     block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
     REQUIRE(CompleteARM64UnitForEmission(module, allocation, block.get(), nullptr));
-    const auto* actions = allocation.GPRPlanViewFor(block.get());
-    REQUIRE_FALSE((actions->consumers && !actions->consumers->alu_split.empty()));
-    JitContext old_context{module, allocation}; JitTranslator old{old_context};
-    REQUIRE(old_context.RequireGPRPlan(block.get()));
+    const auto* actions = allocation.Actions().ForBlock(block.get());
+    REQUIRE_FALSE(allocation.Actions().AluSplit(result.Id()));
+    JitContext old_context{module, allocation, allocation.Actions()};
+    JitTranslator old{old_context};
+    REQUIRE(old_context.RequireBlockForEmission(block.get()));
     environment.Set(true, false);
-    JitContext split_context{module, allocation}; JitTranslator split{split_context};
-    REQUIRE(split_context.RequireGPRPlan(block.get()));
+    JitContext split_context{module, allocation, allocation.Actions()};
+    JitTranslator split{split_context};
+    REQUIRE(split_context.RequireBlockForEmission(block.get()));
     environment.Set(false, true);
-    REQUIRE_FALSE(split_context.RequireGPRPlan(block.get()));
+    REQUIRE_FALSE(split_context.RequireBlockForEmission(block.get()));
     REQUIRE_FALSE(split.Translate(block.get())); REQUIRE(split_context.CurrentBufferSize() == 0);
     environment.Set(true);
-    REQUIRE_FALSE(ARM64UnitReadyForEmission(module, allocation, block.get(), nullptr));
-    REQUIRE_FALSE(old_context.RequireGPRPlan(block.get()));
+    REQUIRE_FALSE(ARM64UnitReadyForEmission(
+            module, allocation, allocation.Actions(), block.get(), nullptr));
+    REQUIRE_FALSE(old_context.RequireBlockForEmission(block.get()));
     REQUIRE_FALSE(old.Translate(block.get())); REQUIRE(old_context.CurrentBufferSize() == 0);
-    JitContext new_context{module, allocation}; JitTranslator fresh{new_context};
+    JitContext new_context{module, allocation, allocation.Actions()};
+    JitTranslator fresh{new_context};
     REQUIRE_FALSE(fresh.Translate(block.get())); REQUIRE(new_context.CurrentBufferSize() == 0);
     environment.Set(false);
-    REQUIRE(ARM64UnitReadyForEmission(module, allocation, block.get(), nullptr));
+    REQUIRE(ARM64UnitReadyForEmission(
+            module, allocation, allocation.Actions(), block.get(), nullptr));
     REQUIRE(old.Translate(block.get())); REQUIRE(old_context.CurrentBufferSize() > 0);
 #else
     SUCCEED("native ARM admission requires AArch64");
@@ -180,23 +208,35 @@ TEST_CASE("ALU diagnostics preserve generated bytes and native results", "[alu-s
         for (bool audit : {false, true}) {
             environment.Set(audit);
             IntrusivePtr<Block> block{new Block(0, Location{0xbaf0})};
-            auto input = block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
+            auto input = block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
             Value result;
-            if (op == 0) result = block->Sub(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
-            else if (op == 1) result = block->And(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
-            else if (op == 2) result = block->Or(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
-            else result = block->Xor(input, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
+            if (op == 0)
+                result = block->Sub(ValueType::U64, input, ir::Operand{Imm{u64{7}}});
+            else if (op == 1)
+                result = block->And(ValueType::U64, input, ir::Operand{Imm{u64{7}}});
+            else if (op == 2)
+                result = block->Or(ValueType::U64, input, ir::Operand{Imm{u64{7}}});
+            else
+                result = block->Xor(ValueType::U64, input, ir::Operand{Imm{u64{7}}});
             if (flags) block->SaveFlags(result, Flags::NZ);
             block->StoreUniform(Uniform{16, ValueType::U64}, result);
             block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-            RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                                space.GetTrampolines().GetFPRRegs(), features};
-            RegisterAllocPass::Run(block.get(), &allocation, false, features);
+            AllocationFixture allocation{block->MaxInstrId(),
+                                         space.GetTrampolines().GetGPRRegs(),
+                                         space.GetTrampolines().GetFPRRegs(),
+                                         features};
+            ::swift::runtime::compile::AllocateBlock(
+                    block.get(),
+                    &allocation,
+                    ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                            block.get(), allocation, features),
+                    false);
             REQUIRE(CompleteARM64UnitForEmission(module, allocation, block.get(), nullptr));
-            const auto* actions = allocation.GPRPlanViewFor(block.get());
-            REQUIRE(actions->region->options.alu_split_audit == audit);
-            if (audit) REQUIRE(actions->consumers->alu_split.contains(result.Def()));
-            JitContext context{module, allocation}; JitTranslator translator{context};
+            const auto* actions = allocation.Actions().ForBlock(block.get());
+            REQUIRE(allocation.Actions().Certificate()->options.alu_split_audit == audit);
+            if (audit) REQUIRE(allocation.Actions().AluSplit(result.Id()));
+            JitContext context{module, allocation, allocation.Actions()};
+            JitTranslator translator{context};
             REQUIRE(translator.Translate(block.get())); context.Finish();
             const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const u8*>();
             const std::vector<u8> code(bytes, bytes + context.CurrentBufferSize());
@@ -220,49 +260,49 @@ TEST_CASE("ALU diagnostics preserve generated bytes and native results", "[alu-s
 
 TEST_CASE("ALU audit facts remain block local across region preflight and retry", "[alu-split-plan][alu-split-admission]") {
 #if defined(__aarch64__)
-    AuditEnvironment environment; environment.Set(true);
+    AuditEnvironment environment;
+    environment.Set(true);
     Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
                   .has_local_operation = false, .backend_isa = kArm64};
     AddressSpace space{config}; auto module = space.GetDefaultModule();
     const auto features = ResolveFeatureSet(module->GetModuleConfig());
     HIRBuilder builder{2, true, features};
     auto* first = builder.AppendFunction(Location{0xbb00}, Location{0xbb10});
-    auto* first_hir = first->GetCurrentBlock();
-    auto a = first->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto first_root = first->Sub(a, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
+    auto a = first->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+    auto first_root = first->Sub(ValueType::U64, a, ir::Operand{Imm{u64{7}}});
     first->StoreUniform(Uniform{8, ValueType::U64}, first_root);
     first->EndBlock(terminal::ReturnToHost{}); first->EndFunction(); first->ComputeRPO(); first->IdByRPO();
     auto* second = builder.AppendFunction(Location{0xbb20}, Location{0xbb40});
     second->AdvancePC(Imm{u64{1}});
-    auto* later = builder.LinkBlock(terminal::LinkBlock{Location{0xbb30}}); builder.SetCurBlock(later);
-    auto b = second->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-    auto late_root = second->Or(b, ir::Operand{Imm{u64{7}}}).SetType(ValueType::U64);
+    auto* later = builder.LinkBlock(terminal::LinkBlock{Location{0xbb30}});
+    builder.SetCurBlock(later);
+    auto b = second->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+    auto late_root = second->Or(ValueType::U64, b, ir::Operand{Imm{u64{7}}});
     second->StoreUniform(Uniform{8, ValueType::U64}, late_root);
     second->EndBlock(terminal::ReturnToHost{}); second->EndFunction(); second->ComputeRPO(); second->IdByRPO();
-    RegAlloc first_allocation{first->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(),
-                              space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(first, &first_allocation, features);
-    REQUIRE(CompleteARM64UnitForEmission(module, first_allocation, nullptr, first));
+    auto first_prepared = PrepareFunction(module, first);
+    REQUIRE(first_prepared.has_value());
     environment.Set(false);
-    RegAlloc second_allocation{second->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(),
-                               space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(second, &second_allocation, features);
-    REQUIRE(CompleteARM64UnitForEmission(module, second_allocation, nullptr, second));
+    auto second_prepared = PrepareFunction(module, second);
+    REQUIRE(second_prepared.has_value());
     environment.Set(true);
-    const std::array<FunctionRegionEmission, 2> mixed{{{first, &first_allocation}, {second, &second_allocation}}};
-    FunctionCodeObjectEmitter unprepared{module, mixed};
-    REQUIRE_FALSE(unprepared.Emit()); REQUIRE(unprepared.CurrentBufferSize() == 0);
-    RegAlloc retry{second->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(),
-                   space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(second, &retry, features);
-    REQUIRE(CompleteARM64UnitForEmission(module, retry, nullptr, second));
-    const auto* first_plan = first_allocation.GPRPlanViewFor(first_hir->GetBlock());
-    const auto* later_plan = retry.GPRPlanViewFor(later->GetBlock());
-    REQUIRE(first_plan->consumers->alu_split.contains(first_root.Def()));
-    REQUIRE_FALSE(first_plan->consumers->alu_split.contains(late_root.Def()));
-    REQUIRE(later_plan->consumers->alu_split.contains(late_root.Def()));
-    REQUIRE_FALSE(later_plan->consumers->alu_split.contains(first_root.Def()));
-    const std::array<FunctionRegionEmission, 2> prepared{{{first, &first_allocation}, {second, &retry}}};
+    std::vector<Arm64PreparedUnit> prepared;
+    prepared.push_back(std::move(*first_prepared));
+    prepared.push_back(std::move(*second_prepared));
+    {
+        FunctionCodeObjectEmitter rejected{module, prepared};
+        REQUIRE_FALSE(rejected.Emit());
+        REQUIRE(rejected.CurrentBufferSize() == 0);
+    }
+    prepared.pop_back();
+    auto retry = PrepareFunction(module, second);
+    REQUIRE(retry.has_value());
+    prepared.push_back(std::move(*retry));
+    REQUIRE(first_root.Id() != late_root.Id());
+    REQUIRE(prepared[0].Actions().AluSplit(first_root.Id()));
+    REQUIRE_FALSE(prepared[0].Actions().AluSplit(late_root.Id()));
+    REQUIRE(prepared[1].Actions().AluSplit(late_root.Id()));
+    REQUIRE_FALSE(prepared[1].Actions().AluSplit(first_root.Id()));
     FunctionCodeObjectEmitter emitter{module, prepared};
     REQUIRE(emitter.Emit()); REQUIRE(emitter.CurrentBufferSize() > 0);
 #else

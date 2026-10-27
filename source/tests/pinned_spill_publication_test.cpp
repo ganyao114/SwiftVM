@@ -1,5 +1,11 @@
-#include "support/register_alloc_test_support.h"
+#include "tests/support/allocation_fixture.h"
+#include "runtime/backend/arm64/compile/inputs.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "runtime/backend/arm64/compile/fixed_validation.h"
+#include "runtime/compile/analysis/semantic_facts.h"
+#include "support/register_alloc_test_support.h"
 
 #include <algorithm>
 #include <string>
@@ -9,10 +15,9 @@
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -24,23 +29,17 @@ struct SpillPublicationBlock {
 
 SpillPublicationBlock MakeSpillPublicationBlock() {
     IntrusivePtr<Block> block{new Block(0, Location{0x8b40})};
-    const auto long0 = block->LoadImm(Imm{1u}).SetType(ValueType::U32);
-    const auto long1 = block->LoadImm(Imm{2u}).SetType(ValueType::U32);
-    const auto long2 = block->LoadImm(Imm{3u}).SetType(ValueType::U32);
-    const auto source = block->LoadImm(Imm{4u}).SetType(ValueType::U32);
-    const auto result = block->Add(source, Operand{Imm{1u}})
-                                .SetType(ValueType::U32);
-    const auto extended = block->ZeroExtend32To64(result)
-                                  .SetType(ValueType::U64);
+    const auto long0 = block->LoadImm(ValueType::U32, Imm{1u});
+    const auto long1 = block->LoadImm(ValueType::U32, Imm{2u});
+    const auto long2 = block->LoadImm(ValueType::U32, Imm{3u});
+    const auto source = block->LoadImm(ValueType::U32, Imm{4u});
+    const auto result = block->Add(ValueType::U32, source, Operand{Imm{1u}});
+    const auto extended = block->ZeroExtend32To64(ValueType::U64, result);
     block->SetHostGPR(extended, HostRegIndex(22), Imm{0u});
-    const auto alias = block->BitExtract(result, Imm{0u}, Imm{32u})
-                               .SetType(ValueType::U32);
-    const auto compared = block->Sub(alias, Operand{long0})
-                                  .SetType(ValueType::U32);
-    const auto total = block->Add(compared, Operand{long1})
-                               .SetType(ValueType::U32);
-    const auto retained = block->Add(total, Operand{long2})
-                                  .SetType(ValueType::U32);
+    const auto alias = block->BitExtract(ValueType::U32, result, Imm{0u}, Imm{32u});
+    const auto compared = block->Sub(ValueType::U32, alias, Operand{long0});
+    const auto total = block->Add(ValueType::U32, compared, Operand{long1});
+    const auto retained = block->Add(ValueType::U32, total, Operand{long2});
     block->StoreUniform(Uniform{0, ValueType::U32}, retained);
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
@@ -58,28 +57,27 @@ SpillPublicationBlock MakeAdjacentSpillPublicationBlock(
     IntrusivePtr<Block> block{new Block(0, Location{0x8b60})};
     std::vector<Value> retained;
     for (swift::u64 value = 1; value <= 6; ++value) {
-        retained.push_back(block->LoadImm(Imm{value}).SetType(ValueType::U64));
+        retained.push_back(block->LoadImm(ValueType::U64, Imm{value}));
     }
     const auto result = [&] {
         switch (producer) {
             case AdjacentProducer::Memory: {
-                const auto address = block->GetHostGPR(HostRegIndex(6), Imm{0u})
-                                             .SetType(ValueType::U64);
-                return block->LoadMemory(Operand{address}).SetType(ValueType::U64);
+                const auto address = block->GetHostGPR(ValueType::U64, HostRegIndex(6), Imm{0u});
+                return block->LoadMemory(ValueType::U64, Operand{address});
             }
             case AdjacentProducer::Add: {
-                const auto source = block->LoadImm(Imm{7u}).SetType(ValueType::U32);
-                return block->Add(source, Operand{Imm{1u}}).SetType(ValueType::U32);
+                const auto source = block->LoadImm(ValueType::U32, Imm{7u});
+                return block->Add(ValueType::U32, source, Operand{Imm{1u}});
             }
             case AdjacentProducer::Immediate:
-                return block->LoadImm(Imm{9u}).SetType(ValueType::U32);
+                return block->LoadImm(ValueType::U32, Imm{9u});
         }
         PANIC();
     }();
     block->SetHostGPR(result, HostRegIndex(22), Imm{0u});
     auto total = retained.front();
     for (std::size_t i = 1; i < retained.size(); ++i) {
-        total = block->Add(total, Operand{retained[i]}).SetType(ValueType::U64);
+        total = block->Add(ValueType::U64, total, Operand{retained[i]});
     }
     block->StoreUniform(Uniform{0, ValueType::U64}, total);
     block->SetTerminal(terminal::ReturnToDispatch{});
@@ -90,12 +88,16 @@ SpillPublicationBlock MakeAdjacentSpillPublicationBlock(
 std::vector<std::string> Emit(SpillPublicationBlock input) {
     GPRSMask gprs{~((1u << 6) - 1u)};
     FPRSMask fprs{~((1u << 8) - 1u)};
-    RegAlloc alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    AllocationFixture alloc{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
     // Exercise the spill fallback independently of successful preallocation.
     // The fixed-GPR tests cover the new capture/spill-free publication path.
-    alloc.FinishFixedGPRConstraints();
-    RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, false);
-    REQUIRE(alloc.ValueType(input.result) == RegAlloc::MEM);
+    auto features = FeatureSet{};
+    features.ra_spill_evict = false;
+    auto prepared = ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+            input.block.get(), alloc, features);
+    prepared.fixed.clear();
+    RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &alloc, std::move(prepared));
+    REQUIRE(alloc.ValueType(input.result) == AllocationFixture::MEM);
 
     Config config{
             .loc_start = 0,
@@ -105,8 +107,12 @@ std::vector<std::string> Emit(SpillPublicationBlock input) {
             .backend_isa = kArm64,
     };
     AddressSpace address_space{config};
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    REQUIRE(alloc.FPRContractRetryCount() == 0);
+    REQUIRE(alloc.ValueType(input.result) == AllocationFixture::GPR);
+    REQUIRE(alloc.ValueGPR(input.result).id == 22);
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(input.block.get());
     context.Finish();
@@ -161,16 +167,26 @@ TEST_CASE("Single-home constraints are honored by the first allocation under pre
         auto input = MakeAdjacentSpillPublicationBlock(producer);
         const GPRSMask gprs{~((1u << 6) - 1u)};
         const FPRSMask fprs{~((1u << 8) - 1u)};
-        RegAlloc baseline{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-        baseline.FinishFixedGPRConstraints();
-        RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &baseline, false);
-        RegAlloc optimized{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        AllocationFixture baseline{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+        auto features = FeatureSet{};
+        features.ra_spill_evict = false;
+        auto prepared = ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                input.block.get(), baseline, features);
+        prepared.fixed.clear();
+        RegisterAllocTestSupport::RunForSpillEvictTest(
+                input.block.get(), &baseline, std::move(prepared));
+        AllocationFixture optimized{input.block->MaxInstrId(), gprs, fprs, FeatureSet{}};
         RegisterAllocTestSupport::RunForSpillEvictTest(input.block.get(), &optimized, false);
         REQUIRE(optimized.HasFixedGPRDefinition(input.result.Id()));
-        REQUIRE(optimized.ValueType(input.result) == RegAlloc::GPR);
+        REQUIRE(optimized.ValueType(input.result) == AllocationFixture::GPR);
         REQUIRE(optimized.ValueGPR(input.result).id == 22);
         REQUIRE(optimized.SpillCount() <= baseline.SpillCount());
-        REQUIRE(optimized.TargetReplayCount() == 0);
-        REQUIRE_NOTHROW(arm64::VerifyFixedGPRConstraints(input.block.get(), optimized, FeatureSet{}));
+        REQUIRE(optimized.FPRContractRetryCount() == 0);
+        auto& check_index =
+                optimized.PrepareFacts(input.block.get()).PrepareUses(input.block.get());
+        arm64::FixedValidationDescription described{
+                input.block.get(), optimized, FeatureSet{}, check_index};
+        REQUIRE_NOTHROW(
+                compile::VerifyFixedConstraints(input.block.get(), optimized, described.Inputs()));
     }
 }

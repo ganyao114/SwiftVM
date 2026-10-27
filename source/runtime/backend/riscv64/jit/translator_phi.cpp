@@ -9,10 +9,17 @@ using namespace biscuit;
 using O = ir::OpCode;
 
 void JitTranslator::ConfigurePhis() {
-    struct Edge { ir::Inst* source; bool taken; u32 at; };
-    std::vector<ir::Inst*> insts, phis;
-    std::unordered_map<ir::Inst*, u32> positions, targets;
-    for (auto& inst : block->GetInstList()) { positions[&inst] = insts.size(); insts.push_back(&inst); }
+    struct Edge {
+        const ir::Inst* source;
+        bool taken;
+        u32 at;
+    };
+    std::vector<const ir::Inst*> insts, phis;
+    std::unordered_map<const ir::Inst*, u32> positions, targets;
+    for (auto& inst : block->GetInstList()) {
+        positions[&inst] = insts.size();
+        insts.push_back(&inst);
+    }
     if (insts.empty()) return;
     std::vector<bool> leaders(insts.size() + 1);
     leaders[0] = leaders.back() = true;
@@ -78,7 +85,7 @@ void JitTranslator::ConfigurePhis() {
     context.ConfigurePhiRegisters(phis);
 }
 
-bool JitTranslator::EmitPhi(ir::Inst* inst) {
+bool JitTranslator::EmitPhi(const ir::Inst* inst) {
     switch (inst->GetOp()) {
         case O::AddPhi:
             // Every incoming edge assigned its result in parallel. The marker
@@ -92,7 +99,7 @@ void JitTranslator::EmitPhiMoves(const std::vector<PhiMove>& moves) {
     auto pending = moves;
     std::erase_if(pending, [](const auto& move) { return move.source.IsValue() && move.source.value.Def() == move.destination; });
     auto& as = context.GetMasm();
-    ir::Inst* saved{};
+    const ir::Inst* saved{};
     const auto before = context.CurrentBufferSize();
     while (!pending.empty()) {
         auto ready = std::find_if(pending.begin(), pending.end(), [&](const auto& candidate) {

@@ -2,10 +2,9 @@
 
 #include <bit>
 #include "runtime/backend/interp/interpreter.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
-
 using T = ir::ValueType;
 
 void NativeFlags() {
@@ -13,7 +12,7 @@ void NativeFlags() {
     for (u32 subset = 0; subset < 64; ++subset) {
         const auto mask = static_cast<ir::Flags>((subset & 31) | ((subset & 32) << 1));
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xa300})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         auto yes = as.TestFlags(mask), no = as.TestNotFlags(mask);
         as.StoreUniform(ir::Uniform{0, T::U8}, yes);
         as.StoreUniform(ir::Uniform{8, T::U8}, no);
@@ -51,22 +50,22 @@ void NativeFlags() {
         }
         for (bool compact : {false, true}) {
             IntrusivePtr<ir::Block> updates{new ir::Block(ir::Location{0xa400})};
-            ir::Assembler update{updates.get()};
-            auto left = update.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-            auto right = update.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-            auto sum = update.Adc(left, ir::Operand{right}).SetType(T::U64);
+            compile::IrBuilder update{updates.get()};
+            auto left = update.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+            auto right = update.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+            auto sum = update.Adc(T::U64, left, ir::Operand{right});
             update.SaveFlags(sum, mask);
-            auto saved = update.GetFlags(sum, mask).SetType(T::U64);
+            auto saved = update.GetFlags(T::U64, sum, mask);
             update.StoreUniform(ir::Uniform{16, T::U64}, saved);
             update.SetCarry(left); update.SetOverflow(right); update.InvertCarry();
             update.ClearFlags(mask);
-            auto cleared = update.GetFlags(sum, ir::Flags::All).SetType(T::U64);
+            auto cleared = update.GetFlags(T::U64, sum, ir::Flags::All);
             update.StoreUniform(ir::Uniform{24, T::U64}, cleared);
             update.PublishFCmpFlags(left, ir::Imm{u64(compact)});
-            auto published = update.GetFlags(sum, ir::Flags::All).SetType(T::U64);
+            auto published = update.GetFlags(T::U64, sum, ir::Flags::All);
             update.StoreUniform(ir::Uniform{32, T::U64}, published);
             update.PublishSse42StrFlags(right, mask);
-            auto string_flags = update.GetFlags(sum, ir::Flags::All).SetType(T::U64);
+            auto string_flags = update.GetFlags(T::U64, sum, ir::Flags::All);
             update.StoreUniform(ir::Uniform{40, T::U64}, string_flags);
             // Branch-only publication is a canonical semantic equivalent;
             // future liveness optimization may omit its architectural store.
@@ -97,14 +96,14 @@ void NativeFlags() {
     // A conditional edge skips an update; its join must see the flags from
     // the path actually taken, even though compilation visits both paths.
     IntrusivePtr<ir::Block> joined{new ir::Block(ir::Location{0xa500})};
-    ir::Assembler join{joined.get()};
-    auto condition = join.LoadUniform(ir::Uniform{0, T::U8}).SetType(T::U8);
-    auto zero = join.Zero().SetType(T::U8);
+    compile::IrBuilder join{joined.get()};
+    auto condition = join.LoadUniform(T::U8, ir::Uniform{0, T::U8});
+    auto zero = join.Zero(T::U8);
     join.SaveFlags(zero, ir::Flags::Zero | ir::Flags::Parity);
     auto edge = join.Goto(ir::BOOL{condition});
     join.InvertCarry();
     join.BindLabel(edge);
-    auto snapshot = join.GetFlags(zero, ir::Flags::All).SetType(T::U64);
+    auto snapshot = join.GetFlags(T::U64, zero, ir::Flags::All);
     join.StoreUniform(ir::Uniform{8, T::U64}, snapshot);
     joined->SetTerminal(ir::terminal::Condition{ir::Cond::EQ,
             ir::terminal::LinkBlock{ir::Location{0xa501}},

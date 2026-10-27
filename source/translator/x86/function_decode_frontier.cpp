@@ -67,8 +67,8 @@ std::optional<FunctionDecodeFrontier::Split> FunctionDecodeFrontier::FindSplit(
         return std::nullopt;
     }
 
-    runtime::ir::HIRBlock* owner{};
-    const auto capture_owner = [&](runtime::ir::HIRBlock* candidate) {
+    const runtime::ir::HIRBlock* owner{};
+    const auto capture_owner = [&](const runtime::ir::HIRBlock* candidate) {
         auto* block = candidate->GetBlock();
         record.owner = candidate;
         record.provenance.owner_start = block->GetStartLocation();

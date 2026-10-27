@@ -100,6 +100,7 @@ public:
     [[nodiscard]] void* GetCycleFlagsMergeTokenRegionTrampoline() const;
     [[nodiscard]] void* GetCycleReasonRegionTrampoline() const;
     [[nodiscard]] void* GetReturnRegionTrampoline() const;
+    [[nodiscard]] void* GetPairCallRegionTrampoline() const;
     [[nodiscard]] arm64::RegionLinkContext* GetRegionLinkContext() const {
         return region_link_context_.get();
     }
@@ -120,6 +121,7 @@ private:
     u8* code_mem_mapped{};
     u8* code_cursor{};
     CodeRegion region{};
+    u32 pair_call_trampoline_offset{CodeRegion::kInvalidTrampolineOffset};
     std::array<u32, 16> flags_mask_trampoline_offsets{};
     std::array<u32, 16> flags_mask_token_trampoline_offsets{};
     std::unique_ptr<arm64::RegionLinkContext> region_link_context_{};

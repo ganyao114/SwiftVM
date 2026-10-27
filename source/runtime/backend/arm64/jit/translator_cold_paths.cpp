@@ -5,7 +5,7 @@
 namespace swift::runtime::backend::arm64 {
 
 JitTranslator::BlockColdPathRecipe JitTranslator::CaptureBlockColdPathRecipe(
-        ir::Block* block,
+        const ir::Block* block,
         bool density,
         std::span<const u32> density_ops,
         std::span<const u32> density_bytes,
@@ -59,7 +59,6 @@ JitTranslator::BlockColdPathRecipe JitTranslator::CaptureBlockColdPathRecipe(
     recipe.region_block_fallthroughs = statistics.region_block_fallthroughs;
     recipe.region_block_local_branch_bytes = statistics.region_block_local_branch_bytes;
     recipe.pending_exit_poll_faults = std::move(memory_state.pending_exit_poll_faults);
-    recipe.vec_nan_cold_sites = std::move(vec_nan_cold_sites);
     recipe.flags_audit = context.DeferFlagsRegsAudit();
 
     statistics.boundary_density_enabled = false;
@@ -91,7 +90,6 @@ void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
     ASSERT(!backedge_flags_recipe);
     ASSERT(!loop_hoist_body_entry);
     ASSERT(memory_state.pending_exit_poll_faults.empty());
-    ASSERT(vec_nan_cold_sites.empty());
 
     cur_block = recipe.block;
     statistics.pfaf_density_bytes = recipe.pfaf_density_bytes;
@@ -126,7 +124,6 @@ void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
     statistics.region_block_fallthroughs = recipe.region_block_fallthroughs;
     statistics.region_block_local_branch_bytes = recipe.region_block_local_branch_bytes;
     memory_state.pending_exit_poll_faults = std::move(recipe.pending_exit_poll_faults);
-    vec_nan_cold_sites = std::move(recipe.vec_nan_cold_sites);
     if (recipe.flags_audit) {
         context.ResumeFlagsRegsAudit(std::move(*recipe.flags_audit));
     }
@@ -144,8 +141,7 @@ void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
     InvalidateFlagsToken();
     EmitBackedgeColdPaths();
     if (backedge_exit_label) {
-        ResolveExitPollFaults(backedge_exit_label.get(),
-                              recipe.block->GetStartLocation());
+        ResolveExitPollFaults(backedge_exit_label.get());
     }
     backedge_exit_label.reset();
     backedge_exit_referenced = false;
@@ -156,13 +152,6 @@ void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
                             context.CurrentBufferSize());
         recipe.density_bytes[static_cast<size_t>(DensityCategory::Boundary)] +=
                 context.CurrentBufferSize() - boundary_cold_before;
-    }
-    const u32 nan_cold_before =
-            recipe.density ? context.CurrentBufferSize() : 0;
-    EmitVecNaNColdPaths();
-    if (recipe.density) {
-        recipe.density_bytes[static_cast<size_t>(DensityCategory::NaN)] +=
-                context.CurrentBufferSize() - nan_cold_before;
     }
     context.EndColdScratch();
     flags_audit_cold = false;
@@ -186,7 +175,6 @@ void JitTranslator::EmitBlockColdPathRecipe(BlockColdPathRecipe recipe) {
                       *recipe.loop_hoist,
                       recipe.loop_hoist_prefix_ops);
     ASSERT(memory_state.pending_exit_poll_faults.empty());
-    ASSERT(vec_nan_cold_sites.empty());
     flag_state.save_in_nzcv = true;
     flag_state.nzcv_dirty = false;
     flag_state.nzcv_requested = {};

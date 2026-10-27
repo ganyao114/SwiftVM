@@ -11,7 +11,7 @@
 
 namespace swift::runtime::ir {
 
-Value Value::WithDefinition(Inst* definition) const {
+Value Value::WithDefinition(const Inst* definition) const {
     ASSERT(Def() && definition);
     ASSERT(Type() != ValueType::VOID && definition->ReturnType() != ValueType::VOID);
     return Value{definition}.SetCastType(Type());
@@ -19,12 +19,14 @@ Value Value::WithDefinition(Inst* definition) const {
 
 void Value::Use() const {
     ASSERT(Def());
+    Def()->CheckMutable();
     ASSERT(Def()->num_use != UINT32_MAX);
     Def()->num_use++;
 }
 
 void Value::UnUse() const {
     ASSERT(Def());
+    Def()->CheckMutable();
     ASSERT(Def()->num_use != 0);
     Def()->num_use--;
 }
@@ -141,12 +143,12 @@ bool Lambda::IsTaggedImm() const {
 }
 
 Imm& Lambda::GetImm() {
-    ASSERT(address.type == ArgType::Imm || IsTaggedImm());
+    ASSERT(IsImm());
     return address.imm;
 }
 
-Imm& Lambda::GetImm() const {
-    ASSERT(address.type == ArgType::Imm || IsTaggedImm());
+const Imm& Lambda::GetImm() const {
+    ASSERT(IsImm());
     return address.imm;
 }
 
@@ -155,12 +157,23 @@ Value& Lambda::GetValue() {
     return address.value;
 }
 
-Value& Lambda::GetValue() const {
+const Value& Lambda::GetValue() const {
     ASSERT(address.type == ArgType::Value);
     return address.value;
 }
 
 bool Lambda::IsValue() const { return address.IsValue(); }
+
+bool Lambda::IsImm() const { return address.IsImm() || IsTaggedImm(); }
+
+HelperStateEffects HelperStateEffects::Resolve(const Lambda& helper) {
+    if (helper.IsValue()) return {};
+    return {true,
+            helper.GetHelperGuestStateEffect(),
+            helper.GetHelperFaultEffect(),
+            helper.GetHelperReentryEffect(),
+            helper.GetUniformEffectId()};
+}
 
 UniformEffectId Lambda::GetUniformEffectId() const {
     if ((static_cast<u8>(address.type) & kUniformEffectTag) == 0) {
@@ -213,11 +226,23 @@ HostFlagsEffect Lambda::GetHostFlagsEffect() const {
             : HostFlagsEffect::MayTouch;
 }
 
-void Params::Push(const Value& data) { Push(new Param(data)); }
+Params::~Params() { Destroy(); }
 
-void Params::Push(const Imm& data) { Push(new Param(data)); }
+Params::Params(Params&& other) noexcept : first_param(std::exchange(other.first_param, nullptr)) {}
 
-void Params::Push(Param* param) {
+Params& Params::operator=(Params&& other) noexcept {
+    if (this != &other) {
+        Destroy();
+        first_param = std::exchange(other.first_param, nullptr);
+    }
+    return *this;
+}
+
+void Params::Push(const Value& data) { Push(new Node(data)); }
+
+void Params::Push(const Imm& data) { Push(new Node(data)); }
+
+void Params::Push(Node* param) {
     if (first_param) {
         auto insert_point = first_param;
         while (insert_point->next_node) {
@@ -229,14 +254,18 @@ void Params::Push(Param* param) {
     }
 }
 
-void Params::Destroy() {
-    if (!first_param) return;
-    auto param = first_param;
-    do {
+void Params::Destroy() noexcept {
+    auto storage = ReleaseStorage();
+    DestroyStorage(storage);
+}
+
+void Params::DestroyStorage(Storage& storage) noexcept {
+    auto param = std::exchange(storage.first, nullptr);
+    while (param) {
         auto deleted = param;
         param = param->next_node;
         delete deleted;
-    } while (param);
+    }
 }
 
 Operand::Operand(const Imm& left) : left(left) {}
@@ -259,15 +288,9 @@ bool Uniform::operator==(const Uniform& rhs) const { return offset == rhs.offset
 
 bool Uniform::operator!=(const Uniform& rhs) const { return !(rhs == *this); }
 
-Params::Param::Param(const Value& value) {
-    data.value = value;
-    data.type = ArgType::Value;
-}
+Params::Node::Node(const Value& value) : data(value) {}
 
-Params::Param::Param(const Imm& imm) {
-    data.imm = imm;
-    data.type = ArgType::Imm;
-}
+Params::Node::Node(const Imm& imm) : data(imm) {}
 
 const char* CondString(Cond cond) {
 #define ENUM_CLASS Cond

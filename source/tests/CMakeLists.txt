@@ -119,8 +119,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     endforeach()
 endif()
 add_executable(swift_hir_lifetime_test hir_lifetime_test.cpp)
-target_link_libraries(swift_hir_lifetime_test PRIVATE swift::runtime)
-foreach(mode unfinished published construction finish-retry)
+target_link_libraries(swift_hir_lifetime_test PRIVATE swift_translator swift::runtime)
+foreach(mode unfinished published construction finish-retry retained thread-exit region-owner preparing prepared
+             prepared-blocks prepared-regions constant-window optimized-block optimized-function state-sink-failure)
     foreach(fast 0 1)
         add_test(NAME swift_hir_lifetime_${mode}_fast${fast}
                  COMMAND swift_hir_lifetime_test ${mode})
@@ -167,7 +168,7 @@ if("arm64" IN_LIST ARCHITECTURE)
         endforeach()
         add_executable(swift_arm64_retirement_static_test arm64/retirement_static_test.cpp)
         target_link_libraries(swift_arm64_retirement_static_test PRIVATE swift_translator swift::runtime)
-        foreach(mode direct dispatcher if condition condition-false region published
+        foreach(mode direct dispatcher if condition condition-false region region-dispatcher published
                      region-if-taken region-if-fall region-condition-taken region-condition-fall
                     call call-pending if-pending condition-pending condition-pending-false)
             add_test(NAME swift_arm64_retirement_static_${mode} COMMAND swift_arm64_retirement_static_test ${mode})
@@ -208,7 +209,7 @@ if("riscv" IN_LIST ARCHITECTURE OR "riscv64" IN_LIST ARCHITECTURE)
 endif()
 
 # Keep focused cases reusable without compiling the integration/fuzz suite.
-add_library(swift_ra_test_support STATIC support/register_alloc_test_support.cpp)
+add_library(swift_ra_test_support STATIC support/register_alloc_test_support.cpp support/allocation_fixture.h)
 target_link_libraries(swift_ra_test_support PUBLIC swift::runtime riscv64_asm)
 
 set(SWIFT_CASE_GROUPS config runtime uniform decode integer gpr fpr fault allocation fp_environment fp_shapes pressure flags coverage code_buffer)

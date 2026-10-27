@@ -208,7 +208,7 @@ unsigned __int128 VecFloatScalar64(unsigned __int128 a, unsigned __int128 b, Op 
 
 }  // namespace
 
-void Interpreter::RunVecFAdd(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFAdd(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const auto a = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto b = ReadVec(stack, inst->GetArg<ir::Value>(1));
@@ -218,7 +218,7 @@ void Interpreter::RunVecFAdd(ir::Inst* inst, InterpStack& stack) {
                         : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x + y; }, FloatBinaryKind::Add));
 }
 
-void Interpreter::RunVecFSub(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFSub(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const auto a = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto b = ReadVec(stack, inst->GetArg<ir::Value>(1));
@@ -228,7 +228,7 @@ void Interpreter::RunVecFSub(ir::Inst* inst, InterpStack& stack) {
                         : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x - y; }, FloatBinaryKind::Sub));
 }
 
-void Interpreter::RunVecFMul(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFMul(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const auto a = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto b = ReadVec(stack, inst->GetArg<ir::Value>(1));
@@ -238,7 +238,7 @@ void Interpreter::RunVecFMul(ir::Inst* inst, InterpStack& stack) {
                         : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x * y; }, FloatBinaryKind::Mul));
 }
 
-void Interpreter::RunVecFDiv(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFDiv(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const auto a = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const auto b = ReadVec(stack, inst->GetArg<ir::Value>(1));
@@ -248,7 +248,7 @@ void Interpreter::RunVecFDiv(ir::Inst* inst, InterpStack& stack) {
                         : VecFloatBinary<double>(a, b, bits, [](double x, double y) { return x / y; }, FloatBinaryKind::Div));
 }
 
-void Interpreter::RunVecFMinMax(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFMinMax(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const bool maximum = inst->GetArg<ir::Imm>(3).Get() != 0;
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
@@ -285,7 +285,7 @@ void Interpreter::RunVecFMinMax(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, result);
 }
 
-void Interpreter::RunVecFUnary(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFUnary(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const u32 kind = inst->GetArg<ir::Imm>(3).Get();
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
@@ -336,7 +336,7 @@ void Interpreter::RunVecFUnary(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, result);
 }
 
-void Interpreter::RunVecFCmp(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFCmp(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const u64 a = static_cast<u64>(ReadVec(stack, inst->GetArg<ir::Value>(0)));
     const u64 b = static_cast<u64>(ReadVec(stack, inst->GetArg<ir::Value>(1)));
@@ -348,7 +348,7 @@ void Interpreter::RunVecFCmp(ir::Inst* inst, InterpStack& stack) {
 // outcomes are mutually exclusive and exhaustive, so the lane's mask is simply
 // "is the outcome that occurred a member of the set", and all 16 sets (0 =
 // never, 15 = always) fall out of that with no per-predicate case at all.
-void Interpreter::RunVecFCmpMask(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFCmpMask(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const u32 relations = inst->GetArg<ir::Imm>(3).Get() & 15;
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;
@@ -394,8 +394,7 @@ void Interpreter::RunVecFCmpMask(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, result);
 }
 
-
-void Interpreter::RunVecFCvtIntToFloat(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFCvtIntToFloat(const ir::Inst* inst, InterpStack& stack) {
     const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
     const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
     const u64 raw = static_cast<u64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
@@ -414,7 +413,7 @@ void Interpreter::RunVecFCvtIntToFloat(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunVecFCvtFloatToInt(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFCvtFloatToInt(const ir::Inst* inst, InterpStack& stack) {
     const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
     const u32 dst_bits = inst->GetArg<ir::Imm>(2).Get();
     const bool round_nearest = inst->GetArg<ir::Imm>(3).Get() != 0;
@@ -448,13 +447,13 @@ void Interpreter::RunVecFCvtFloatToInt(ir::Inst* inst, InterpStack& stack) {
     }
 }
 
-void Interpreter::RunVecFCvtScalar(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFCvtScalar(const ir::Inst* inst, InterpStack& stack) {
     const u32 src_bits = inst->GetArg<ir::Imm>(1).Get();
     const u64 raw = static_cast<u64>(ReadScalar(stack, inst->GetArg<ir::Value>(0)));
     WriteScalar(stack, inst, ConvertFloatBits(raw, src_bits));
 }
 
-void Interpreter::RunVecFCvtPacked(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFCvtPacked(const ir::Inst* inst, InterpStack& stack) {
     const u128 source = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const u32 kind = inst->GetArg<ir::Imm>(1).Get();
     u128 result = 0;
@@ -517,8 +516,7 @@ void Interpreter::RunVecFCvtPacked(ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack, inst, result);
 }
 
-
-void Interpreter::RunVecFAddScalar32(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFAddScalar32(const ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
@@ -526,7 +524,7 @@ void Interpreter::RunVecFAddScalar32(ir::Inst* inst, InterpStack& stack) {
                               [](float a, float b) { return a + b; }));
 }
 
-void Interpreter::RunVecFSubScalar32(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFSubScalar32(const ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
@@ -534,7 +532,7 @@ void Interpreter::RunVecFSubScalar32(ir::Inst* inst, InterpStack& stack) {
                               [](float a, float b) { return a - b; }));
 }
 
-void Interpreter::RunVecFMulScalar32(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFMulScalar32(const ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
@@ -542,7 +540,7 @@ void Interpreter::RunVecFMulScalar32(ir::Inst* inst, InterpStack& stack) {
                               [](float a, float b) { return a * b; }));
 }
 
-void Interpreter::RunVecFDivScalar32(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFDivScalar32(const ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar32(ReadVec(stack, inst->GetArg<ir::Value>(0)),
@@ -550,12 +548,7 @@ void Interpreter::RunVecFDivScalar32(ir::Inst* inst, InterpStack& stack) {
                               [](float a, float b) { return a / b; }));
 }
 
-
-
-
-
-
-void Interpreter::RunVecFAddScalar64(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFAddScalar64(const ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
@@ -563,7 +556,7 @@ void Interpreter::RunVecFAddScalar64(ir::Inst* inst, InterpStack& stack) {
                               [](double a, double b) { return a + b; }));
 }
 
-void Interpreter::RunVecFSubScalar64(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFSubScalar64(const ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
@@ -571,7 +564,7 @@ void Interpreter::RunVecFSubScalar64(ir::Inst* inst, InterpStack& stack) {
                               [](double a, double b) { return a - b; }));
 }
 
-void Interpreter::RunVecFMulScalar64(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFMulScalar64(const ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
@@ -579,7 +572,7 @@ void Interpreter::RunVecFMulScalar64(ir::Inst* inst, InterpStack& stack) {
                               [](double a, double b) { return a * b; }));
 }
 
-void Interpreter::RunVecFDivScalar64(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFDivScalar64(const ir::Inst* inst, InterpStack& stack) {
     WriteVec(stack,
              inst,
              VecFloatScalar64(ReadVec(stack, inst->GetArg<ir::Value>(0)),
@@ -602,7 +595,7 @@ void Interpreter::RunVecFDivScalar64(ir::Inst* inst, InterpStack& stack) {
 // c), and an invalid operation with no NaN source -- Inf*0, or an infinite
 // product added to the opposite infinity -- yields the QNaN indefinite, whose
 // sign bit is SET.
-void Interpreter::RunVecFMulAdd(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFMulAdd(const ir::Inst* inst, InterpStack& stack) {
     const u128 a = ReadVec(stack, inst->GetArg<ir::Value>(0));
     const u128 b = ReadVec(stack, inst->GetArg<ir::Value>(1));
     const u128 c = ReadVec(stack, inst->GetArg<ir::Value>(2));
@@ -684,7 +677,7 @@ void Interpreter::RunVecFMulAdd(ir::Inst* inst, InterpStack& stack) {
 //    which follows the HOST rounding mode.  Nothing in this runtime calls
 //    fesetround today, but FRINTN is unconditionally ties-to-even, and a
 //    divergence between the two back ends is worse than either behaviour.
-void Interpreter::RunVecFRoundInt(ir::Inst* inst, InterpStack& stack) {
+void Interpreter::RunVecFRoundInt(const ir::Inst* inst, InterpStack& stack) {
     const u32 bits = inst->GetArg<ir::Imm>(2).Get();
     const u32 mode = inst->GetArg<ir::Imm>(3).Get();
     const bool scalar = inst->GetArg<ir::Imm>(4).Get() != 0;

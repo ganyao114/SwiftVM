@@ -11,9 +11,12 @@ namespace swift::runtime::backend::riscv64 {
 
 void JitContext::ConfigureInitialization(ir::Block* block) {
     initial_values.clear();
-    std::vector<ir::Inst*> insts;
-    std::unordered_map<ir::Inst*, u32> positions, targets;
-    for (auto& inst : block->GetInstList()) { positions[&inst] = insts.size(); insts.push_back(&inst); }
+    std::vector<const ir::Inst*> insts;
+    std::unordered_map<const ir::Inst*, u32> positions, targets;
+    for (auto& inst : block->GetInstList()) {
+        positions[&inst] = insts.size();
+        insts.push_back(&inst);
+    }
     if (insts.empty()) return;
     const u32 count = insts.size();
     std::vector<bool> leaders(count + 1);
@@ -81,7 +84,7 @@ void JitContext::ConfigureInitialization(ir::Block* block) {
         if (next == children[b].size()) { leave[b] = time++; walk.pop_back(); }
         else { const auto child = children[b][next++]; enter[child] = time++; walk.emplace_back(child, 0); }
     }
-    std::unordered_set<ir::Inst*> needed;
+    std::unordered_set<const ir::Inst*> needed;
     const auto use = [&](ir::Value value, u32 at, bool edge = false) {
         const u32 use_node = node[edge && at ? at - 1 : std::min(at, count - 1)];
         if (!visited[use_node]) return;
@@ -93,17 +96,22 @@ void JitContext::ConfigureInitialization(ir::Block* block) {
         if (!positions.contains(definition)) return; // Independent blocks reject foreign SSA.
         const u32 where = positions.at(definition), from = node[where], to = use_node;
         const bool dominates = visited[from] && (from == to ? where < at : enter[from] <= enter[to] && leave[to] <= leave[from]);
-        if (edge && !dominates) throw std::runtime_error("RV64 phi input does not dominate its incoming edge");
+        if (edge && !dominates)
+            throw std::runtime_error("RV64 phi input does not dominate its incoming edge");
         if (!dominates && !flow_targets.empty())
             throw std::runtime_error("RV64 function SSA input does not dominate its use");
         if (!dominates) needed.insert(value.Def());
     };
-    const auto operands = [&](ir::Inst* inst, u32 at) {
+    const auto operands = [&](const ir::Inst* inst, u32 at) {
         for (u32 slot = 0; slot < ir::Inst::max_args; ++slot) {
             auto& arg = inst->ArgAt(slot);
-            if (arg.IsValue()) use(arg.Get<ir::Value>(), at);
-            else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue()) use(arg.Get<ir::Lambda>().GetValue(), at);
-            else if (arg.IsParams()) for (const auto& param : arg.Get<ir::Params>()) if (param.data.IsValue()) use(param.data.value, at);
+            if (arg.IsValue())
+                use(arg.Get<ir::Value>(), at);
+            else if (arg.IsLambda() && arg.Get<ir::Lambda>().IsValue())
+                use(arg.Get<ir::Lambda>().GetValue(), at);
+            else if (arg.IsParams())
+                for (const auto& param : arg.Get<ir::Params>())
+                    if (param.data.IsValue()) use(param.data.value, at);
         }
     };
     for (u32 i = 0; i < count; ++i) {

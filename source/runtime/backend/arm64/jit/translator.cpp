@@ -1,9 +1,8 @@
 #include "base/logging.h"
-#include "placement_experiment.h"
-#pragma once
+#include "runtime/ir/hir_builder.h"
 
+#include "runtime/backend/arm64/compile/edge_flags.h"
 #include "translator.h"
-#include "runtime/backend/arm64/alloc/edge_flags_analysis.h"
 
 #include <algorithm>
 #include <array>
@@ -16,11 +15,13 @@
 #include <string_view>
 #include <type_traits>
 #include "aarch64/disasm-aarch64.h"
-#include "runtime/backend/context.h"
 #include "runtime/backend/arm64/defines.h"
+#include "runtime/backend/context.h"
 #include "runtime/backend/function_entry_contract.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/svm_config.h"
+#include "runtime/compile/analysis/effects.h"
+#include "runtime/compile/analysis/facts.h"
 #include "translator/x86/cpu.h"
 
 namespace swift::runtime::backend::arm64 {
@@ -28,13 +29,6 @@ namespace swift::runtime::backend::arm64 {
 namespace {
 
 constexpr u32 kCycleTailShareMinStubs = 2;
-
-ir::Value ResolveBitCastValue(ir::Value value) {
-    while (value.Defined() && value.Def()->IsBitCastOperation()) {
-        value = value.Def()->GetArg<ir::Value>(0);
-    }
-    return value;
-}
 
 bool IsScalarFPRBinary(ir::OpCode op) {
     using O = ir::OpCode;
@@ -161,20 +155,6 @@ DensityCategory DensityClass(ir::OpCode op) {
         case O::VecInsert16:
         case O::VecTableLookup8:
             return DensityCategory::MoveWidth;
-        case O::VecFAddScalar32:
-        case O::VecFSubScalar32:
-        case O::VecFMulScalar32:
-        case O::VecFDivScalar32:
-        case O::VecFAddScalar64:
-        case O::VecFSubScalar64:
-        case O::VecFMulScalar64:
-        case O::VecFDivScalar64:
-        case O::VecFAdd:
-        case O::VecFSub:
-        case O::VecFMul:
-        case O::VecFDiv:
-        case O::VecFUnary:
-            return DensityCategory::NaN;
         case O::Goto:
         case O::NotGoto:
         case O::BindLabel:
@@ -230,7 +210,6 @@ JitTranslator::JitTranslator(JitContext& ctx)
     memory_state.mem_narrow_fuse = features.mem_narrow_fuse;
     memory_state.addr_ea_tie = features.addr_ea_tie;
     memory_state.abs_const_mat = features.abs_const_mat;
-    sse_nan_coldpath = features.sse_nan_coldpath;
     // Retirement must cut static cycles independently of optional SMC polls.
     direct_cycle_latch = true;
     backedge_latch = true;
@@ -313,38 +292,12 @@ FlagsRegsAuditEdgeKind JitTranslator::ClassifyFlagsAuditEdge(
     return classify(terminal);
 }
 
-bool JitTranslator::IsStrictInternalAdvancePC(ir::Block* block,
-                                              ir::Inst* advance) const {
-    if (!context.FlagsRegsAuditEnabled() || !RegionEdgesActive() || !block ||
-        !advance) {
-        return false;
-    }
-    bool after = false;
-    for (auto& inst : block->GetInstList()) {
-        if (&inst == advance) {
-            after = true;
-            continue;
-        }
-        if (after && MayFaultOrObserve(inst)) {
-            return false;
-        }
-    }
-    if (!after) return false;
-    std::vector<u64> targets;
-    CollectRegionTargets(block->GetTerminal(), targets);
-    if (targets.size() != 2) return false;
-    return std::all_of(targets.begin(), targets.end(), [&](u64 target) {
-        return RegionPlan().ContainsInternalBlock(target);
-    });
-}
-
-JitTranslator::BlockTranslateState
-JitTranslator::PrepareBlockState(ir::Block* block) {
+JitTranslator::BlockTranslateState JitTranslator::PrepareBlockState(const ir::Block* block) {
     const u32 preparation_begin = context.CurrentBufferSize();
     cur_block = block;
-    const auto transparent = RegionPlan().BlockTransparency(block);
-    ASSERT(transparent);
-    current_flags_transparent = *transparent;
+    const auto* edge_row = Edges().ForBlock(block);
+    ASSERT(edge_row);
+    current_flags_transparent = edge_row->transparent;
     memory_state.spilled_memory_operands.clear();
     memory_state.home_alignment_mod8.clear();
     const auto& loop_hoist = block->GetLoopHoistMetadata();
@@ -362,16 +315,9 @@ JitTranslator::PrepareBlockState(ir::Block* block) {
     statistics.region_block_cycles = 0;
     statistics.region_block_fallthroughs = 0;
     statistics.region_block_local_branch_bytes = 0;
-    cur_block_is_call = false;
-    for (auto& inst : block->GetInstList()) {
-        if (inst.GetOp() == ir::OpCode::PushRSB) {
-            cur_block_is_call = true;
-            break;
-        }
-    }
     static_next_loc.reset();
     dynamic_next_loc.reset();
-    dynamic_location_miss = nullptr;
+    dynamic_location_deferred = false;
     call_return_value.reset();
     call_return_pc.reset();
     flag_state.compound_logical_clear_pending = false;
@@ -380,26 +326,18 @@ JitTranslator::PrepareBlockState(ir::Block* block) {
     // before the per-block backedge proof marks the two sunk IR instructions.
     disable_instructions.resize(
             std::max<size_t>(disable_instructions.size(), block->MaxInstrId()));
-    ImportGPRBlock(block);
-    if (gpr_plan->memory)
-        for (auto* covered : gpr_plan->memory->covered) disable_instructions.set(covered->Id());
-    // Both allocation plans already own these nodes. Make their coverage
-    // visible to later integer/bit/funnel selection before those plans build.
-    PrepareScalarFPRPublications(block);
-    ImportIntegerBranchPlan();
-    ImportIntegerFlagPreparation();
-    if (gpr_plan->boolean_selects)
-        for (auto* covered : gpr_plan->boolean_selects->covered) disable_instructions.set(covered->Id());
-    for (auto* inst : ScalarPreparation().resident.Discarded())
-        disable_instructions.set(inst->Id());
+    ImportBlockActions(block);
+    cur_block_is_call = block_actions->PushesReturnAddress();
+    ImportIntegerBranchCondition();
+    ASSERT(!backedge_flags_recipe);
     flag_state.raw_carry_pending = nullptr;
     backedge_flags_recipe = ImportBackedgeFlagsRecipe();
     if (backedge_flags_recipe) {
-        if (backedge_flags_recipe->plan.polarity_load) {
-            disable_instructions.set(backedge_flags_recipe->plan.polarity_load->Id());
+        if (backedge_flags_recipe->plan.omit_polarity_load) {
+            disable_instructions.set(backedge_flags_recipe->plan.polarity_load);
         }
-        if (backedge_flags_recipe->plan.polarity_store) {
-            disable_instructions.set(backedge_flags_recipe->plan.polarity_store->Id());
+        if (backedge_flags_recipe->plan.omit_polarity_store) {
+            disable_instructions.set(backedge_flags_recipe->plan.polarity_store);
         }
     }
     backedge_exit_referenced = false;
@@ -436,57 +374,48 @@ JitTranslator::PrepareBlockState(ir::Block* block) {
         context.BindInternalEntry(block->GetStartLocation().Value());
     }
     return {&loop_hoist,
+            edge_row,
             loop_hoist_prefix_begin,
             loop_hoist_prefix_ops,
             split_flags_entry};
 }
 
-void JitTranslator::PlacementPoint(const char* kind, u64 guest_pc) {
-    const auto ops = GetPlacementExperiment().Padding(
-            kind, placement_unit_pc, guest_pc, context.CurrentBufferSize());
-    for (u32 i = 0; i < ops; ++i) __ Nop();
-}
-
-
-void JitTranslator::TranslateBlockInstructions(
-        ir::Block* block,
-        const ir::LoopHoistMetadata& loop_hoist,
-        bool density,
-        bool gap_audit,
-        std::span<u32> density_ops,
-        std::span<u32> density_bytes,
-        u32& density_scalar_fp_ops,
-        u32& loop_hoist_prefix_begin,
-        u32& loop_hoist_prefix_ops) {
+void JitTranslator::TranslateBlockInstructions(const ir::Block* block,
+                                               const EdgeBlockAction& edges,
+                                               const ir::LoopHoistMetadata& loop_hoist,
+                                               bool density,
+                                               bool gap_audit,
+                                               std::span<u32> density_ops,
+                                               std::span<u32> density_bytes,
+                                               u32& density_scalar_fp_ops,
+                                               u32& loop_hoist_prefix_begin,
+                                               u32& loop_hoist_prefix_ops) {
     loop_hoist_prefix_begin = context.CurrentBufferSize();
     terminal_body_inst = nullptr;
-    for (auto& inst : block->GetInstList()) {
-        if (inst.Id() >= disable_instructions.size() ||
-            !disable_instructions.test(inst.Id())) {
-            // The decoder places CallReturn after SetLocation. It is terminal
-            // metadata and emits no guest work; keep that static location
-            // deferred so the physical Call path can consume it.
-            if (inst.GetOp() == ir::OpCode::CallReturn) continue;
-            terminal_body_inst = &inst;
-        }
+    for (auto it = block->GetInstList().rbegin(); it != block->GetInstList().rend(); ++it) {
+        const auto& inst = *it;
+        if (InstructionDisabled(inst.Id()) || inst.GetOp() == ir::OpCode::CallReturn) continue;
+        // The decoder places CallReturn after SetLocation. It is terminal
+        // metadata; locate the final body using the encoder's actual coverage
+        // and dynamic suppression state, without a forward whole-block walk.
+        terminal_body_inst = &inst;
+        break;
     }
     VAddr audit_guest_pc = block->GetStartLocation().Value();
     if (gap_audit) {
-        u32 guest_insts = 0;
-        for (auto& inst : block->GetInstList()) {
-            if (inst.GetOp() == ir::OpCode::AdvancePC) ++guest_insts;
-        }
         SVM_DIAG_PRINT(Codegen,
-                     "[svm-gap-block] unit=0x%llx block=0x%llx bytes=%u "
-                     "insts=%u\n",
-                     static_cast<unsigned long long>(placement_unit_pc),
-                     static_cast<unsigned long long>(
-                             block->GetStartLocation().Value()),
-                     static_cast<unsigned>(
-                             block->GetEndLocation().Value() -
-                             block->GetStartLocation().Value()),
-                     guest_insts);
+                       "[svm-gap-block] unit=0x%llx block=0x%llx bytes=%u "
+                       "insts=%u\n",
+                       static_cast<unsigned long long>(unit_start_pc),
+                       static_cast<unsigned long long>(block->GetStartLocation().Value()),
+                       static_cast<unsigned>(block->GetEndLocation().Value() -
+                                             block->GetStartLocation().Value()),
+                       static_cast<u32>(edges.guest_instructions));
     }
+    const u16 strict_first = context.FlagsRegsAuditEnabled() && RegionEdgesActive()
+                                     ? edges.strict_advance_first
+                                     : UINT16_MAX;
+    bool strict_tail = false;
     for (auto& inst : block->GetInstList()) {
         auto category = DensityCategory::Work;
         if (density) {
@@ -495,40 +424,37 @@ void JitTranslator::TranslateBlockInstructions(
             density_scalar_fp_ops += DensityScalarFP(inst.GetOp());
         }
         cur_instr = &inst;
-        if (inst.Id() < disable_instructions.size() && disable_instructions.test(inst.Id())) {
+        const bool audit_advance = (gap_audit || context.FlagsRegsAuditEnabled()) &&
+                                   inst.GetOp() == ir::OpCode::AdvancePC;
+        // A covered first marker still starts the suffix for later advances.
+        // Equality follows IR order even in sparse/nonmonotonic fixtures.
+        if (audit_advance && inst.Id() == strict_first) strict_tail = true;
+        if (InstructionDisabled(inst.Id())) {
             continue;
         }
         const u32 before = density ? context.CurrentBufferSize() : 0;
-        const u32 nan_before = density ? context.DensityNaNBytes() : 0;
-        const bool audit_advance = (gap_audit || context.FlagsRegsAuditEnabled()) &&
-                inst.GetOp() == ir::OpCode::AdvancePC;
-        const bool audit_nzcv_dirty = audit_advance && flag_state.save_in_nzcv && flag_state.nzcv_dirty;
+        const bool audit_nzcv_dirty =
+                audit_advance && flag_state.save_in_nzcv && flag_state.nzcv_dirty;
         const u64 audit_nzcv_requested = audit_advance
                 ? static_cast<u64>(flag_state.nzcv_requested)
                 : 0;
-        flags_audit_strict_advance = audit_nzcv_dirty &&
-                IsStrictInternalAdvancePC(block, &inst);
+        flags_audit_strict_advance = audit_nzcv_dirty && strict_tail;
         Translate(&inst);
         flags_audit_strict_advance = false;
         if (loop_hoist_body_entry && &inst == loop_hoist.prefix_end) {
             loop_hoist_prefix_ops =
                     (context.CurrentBufferSize() - loop_hoist_prefix_begin) /
                     sizeof(u32);
-            PlacementPoint("body", block->GetStartLocation().Value());
             __ Bind(loop_hoist_body_entry.get());
         }
         if (density) {
             const u32 emitted = context.CurrentBufferSize() - before;
-            const u32 nan_emitted = context.DensityNaNBytes() - nan_before;
-            density_bytes[static_cast<size_t>(DensityCategory::NaN)] += nan_emitted;
             const auto emitted_category =
-                    category == DensityCategory::NaN
-                            ? DensityCategory::Work
-                            : (inst.GetOp() == ir::OpCode::AdvancePC
-                                       ? DensityCategory::Flags
-                                       : category);
+                    inst.GetOp() == ir::OpCode::AdvancePC
+                            ? DensityCategory::Flags
+                            : category;
             density_bytes[static_cast<size_t>(emitted_category)] +=
-                    emitted - nan_emitted;
+                    emitted;
             if (category == DensityCategory::Boundary &&
                 inst.GetOp() != ir::OpCode::AdvancePC) {
                 RecordBoundaryRange(inst.GetOp() == ir::OpCode::PushRSB
@@ -549,40 +475,45 @@ void JitTranslator::TranslateBlockInstructions(
                         inst.GetArg<ir::Value>(0).Id() == inst.GetArg<ir::Value>(1).Id();
                 const bool shufps_left_tied = shufps && context.SharesFPR(
                         ir::Value{&inst}, inst.GetArg<ir::Value>(0));
-                const bool shufps_left_fixed = shufps && context.IsHostReadCoalesced(
-                        ResolveBitCastValue(inst.GetArg<ir::Value>(0)).Id());
+                const bool shufps_left_fixed =
+                        shufps && context.IsHostReadCoalesced(
+                                          ir::ResolveBitCastSource(inst.GetArg<ir::Value>(0)).Id());
                 const auto pf = GetPseudoFlags(&inst);
-                const AluSplitFacts* alu_facts = nullptr;
-                if (gpr_plan->consumers) {
-                    const auto found = gpr_plan->consumers->alu_split.find(&inst);
-                    if (found != gpr_plan->consumers->alu_split.end()) alu_facts = &found->second;
-                }
+                const auto* alu_facts = context.GetActions().AluSplit(inst.Id());
                 const auto alu_split = ClassifyAluSplit(
                         alu_facts,
                         production_emitted,
                         !pf.Null(),
                         static_cast<u32>(pf.set));
                 SVM_DIAG_PRINT(Codegen,
-                             "[svm-gap-op] unit=0x%llx block=0x%llx guest_pc=0x%llx id=%u "
-                             "op=%s bytes=%u host_offset=%u scalar_binary=%u scalar_tied=%u "
-                             "shufps=%u shufps_imm=%u shufps_alias=%u "
-                             "shufps_left_tied=%u shufps_left_fixed=%u "
-                             "advpc_nzcv_dirty=%u advpc_nzcv_requested=0x%llx "
-                             "alu_role=%s value_uses=%u flags=%u pack_b=%u alu_b=%u addr_b=%u\n",
-                             static_cast<unsigned long long>(placement_unit_pc),
-                             static_cast<unsigned long long>(
-                                     block->GetStartLocation().Value()),
-                             static_cast<unsigned long long>(audit_guest_pc),
-                             inst.Id(), ir::GetIRMetaInfo(inst.GetOp()).name,
-                             production_emitted, before,
-                             scalar_binary ? 1u : 0u, scalar_tied ? 1u : 0u,
-                             shufps ? 1u : 0u, shufps_imm,
-                             shufps_alias ? 1u : 0u, shufps_left_tied ? 1u : 0u,
-                             shufps_left_fixed ? 1u : 0u,
-                             audit_nzcv_dirty ? 1u : 0u,
-                             static_cast<unsigned long long>(audit_nzcv_requested),
-                             alu_split.role, alu_split.value_uses, alu_split.flags,
-                             alu_split.pack_b, alu_split.alu_b, alu_split.addr_b);
+                               "[svm-gap-op] unit=0x%llx block=0x%llx guest_pc=0x%llx id=%u "
+                               "op=%s bytes=%u host_offset=%u scalar_binary=%u scalar_tied=%u "
+                               "shufps=%u shufps_imm=%u shufps_alias=%u "
+                               "shufps_left_tied=%u shufps_left_fixed=%u "
+                               "advpc_nzcv_dirty=%u advpc_nzcv_requested=0x%llx "
+                               "alu_role=%s value_uses=%u flags=%u pack_b=%u alu_b=%u addr_b=%u\n",
+                               static_cast<unsigned long long>(unit_start_pc),
+                               static_cast<unsigned long long>(block->GetStartLocation().Value()),
+                               static_cast<unsigned long long>(audit_guest_pc),
+                               inst.Id(),
+                               ir::GetIRMetaInfo(inst.GetOp()).name,
+                               production_emitted,
+                               before,
+                               scalar_binary ? 1u : 0u,
+                               scalar_tied ? 1u : 0u,
+                               shufps ? 1u : 0u,
+                               shufps_imm,
+                               shufps_alias ? 1u : 0u,
+                               shufps_left_tied ? 1u : 0u,
+                               shufps_left_fixed ? 1u : 0u,
+                               audit_nzcv_dirty ? 1u : 0u,
+                               static_cast<unsigned long long>(audit_nzcv_requested),
+                               alu_split.role,
+                               alu_split.value_uses,
+                               alu_split.flags,
+                               alu_split.pack_b,
+                               alu_split.alu_b,
+                               alu_split.addr_b);
             }
         }
         if (inst.GetOp() == ir::OpCode::AdvancePC) {
@@ -593,11 +524,10 @@ void JitTranslator::TranslateBlockInstructions(
     terminal_body_inst = nullptr;
 }
 
-void JitTranslator::EmitBlockTerminal(
-        ir::Block* block,
-        bool density,
-        std::span<u32> density_bytes) {
-    ASSERT_MSG(gpr_plan->pinned->MatchesFrozenIR(), "IR changed during GPR plan emission");
+void JitTranslator::EmitBlockTerminal(const ir::Block* block,
+                                      bool density,
+                                      std::span<u32> density_bytes) {
+    ASSERT_MSG(context.HasBoundBlockActions(block), "Allocation changed during GPR emission");
     // Publish the last instruction's deferred definitions before scratch or
     // any conditional terminal arm can reuse their registers.
     context.FlushSpillWrites();
@@ -641,18 +571,16 @@ void JitTranslator::EmitBlockTerminal(
     context.FinishHotCoalesceBlock();
 }
 
-
-bool JitTranslator::Translate(ir::Block* block) {
+bool JitTranslator::Translate(const ir::Block* block) {
     vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
-    ASSERT(vec_nan_cold_sites.empty());
     ASSERT(!True(terminal_bypass_nzcv));
     {
         PerfScope2 perf_plan{GetPerfStats2().codegen_plan};
-        if (!context.RequireGPRPlan(block)) return false;
+        if (!context.RequireBlockForEmission(block)) return false;
     }
-    if (!translating_function && !ImportRegionPreparation(block, nullptr)) return false;
+    if (!translating_function && !ImportUnitEdges(block, nullptr)) return false;
     if (!translating_function) {
-        placement_unit_pc = block->GetStartLocation().Value();
+        unit_start_pc = block->GetStartLocation().Value();
         ASSERT(memory_state.unaligned_atomic_fallbacks.empty());
     }
     // Each block is a dual-entry direct. Do not inherit a compile-time
@@ -662,10 +590,6 @@ bool JitTranslator::Translate(ir::Block* block) {
     flag_state.nzcv_dirty = false;
     flag_state.nzcv_requested = {};
     flag_state.edge_carry_source.Reset();
-    // Keep entry padding outside the block density/hot accounting window.  It
-    // is reached only on the first fallthrough; every self edge targets the
-    // label bound after it.
-    PlacementPoint("block", block->GetStartLocation().Value());
     const bool density = context.DensityProfileEnabled();
     const bool gap_audit = density && GetSvmConfig().ra_hot_coalesce_all;
     ResetBoundaryDensity();
@@ -689,7 +613,6 @@ bool JitTranslator::Translate(ir::Block* block) {
         // only the self edge targets local_entry. This makes host NZCV valid
         // before a pre-producer guest fault without charging the steady loop.
         __ B(backedge_flags_recipe->external_entry.get());
-        PlacementPoint("flags", block->GetStartLocation().Value());
         __ Bind(backedge_flags_recipe->local_entry.get());
         context.BeginBackedgeBody();
         backedge_host_begin = context.CurrentBufferSize();
@@ -715,6 +638,7 @@ bool JitTranslator::Translate(ir::Block* block) {
     perf_prologue.Stop();
     PerfScope2 perf_body{GetPerfStats2().codegen_body};
     TranslateBlockInstructions(block,
+                               *block_state.edges,
                                loop_hoist,
                                density,
                                gap_audit,
@@ -742,30 +666,30 @@ bool JitTranslator::Translate(ir::Block* block) {
     if (!translating_function) {
         EmitUnalignedAtomicFallbacks();
         EmitDeferredNZCVMergeStubs();
-        PlacementPoint("unit", block->GetStartLocation().Value());
     }
     return true;
 }
 
-bool JitTranslator::Translate(ir::HIRFunction* function) {
-    if (!ImportRegionPreparation(nullptr, function)) return false;
+bool JitTranslator::Translate(const ir::HIRFunction* function) {
+    if (!ImportUnitEdges(nullptr, function)) return false;
     return EmitPreparedFunction(function);
 }
 
-bool JitTranslator::EmitPreparedFunction(ir::HIRFunction* function) {
+bool JitTranslator::EmitPreparedFunction(const ir::HIRFunction* function) {
     vixl::svm_vixl_prof::JitScope vixl_prof{context.GetFeatures().vixl_fast};
     ASSERT(function);
-    ASSERT(region_plan_owner && region_plan_owner->function == function &&
-           region_plan_owner->generation == context.GetAllocation().GPRLocationGeneration() &&
-           region_plan_owner->allocation_attempt == context.GetAllocation().AllocationAttempt() &&
-           region_plan_owner->options == CaptureRegionPreparationOptions(context.GetConfig(), context.GetFeatures()));
+    const auto* certificate = context.GetActions().Certificate();
+    ASSERT(edge_actions && certificate && certificate->function == function &&
+           certificate->generation == context.GetAllocation().GPRLocationGeneration() &&
+           certificate->allocation_attempt == context.GetAllocation().AllocationAttempt() &&
+           certificate->options == CaptureEdgeOptions(context.GetConfig(), context.GetFeatures()));
     ASSERT(block_cold_path_recipes.empty());
-    placement_unit_pc = function->GetFunction()->GetStartLocation().Value();
+    unit_start_pc = function->GetFunction()->GetStartLocation().Value();
     context.SetCurrent(function->GetFunction());
     disable_instructions.resize(function->MaxInstrCount());
     region_flags_canonical_stubs.clear();
     ReportRegionEdges();
-    std::vector<ir::Block*> emitted_blocks;
+    std::vector<const ir::Block*> emitted_blocks;
     for (auto& hir_block : function->GetHIRBlocksRPO()) {
         auto* block = hir_block.GetBlock();
         if (block->GetInstList().empty() && !block->HasTerminal()) {
@@ -773,9 +697,9 @@ bool JitTranslator::EmitPreparedFunction(ir::HIRFunction* function) {
         }
         emitted_blocks.push_back(block);
     }
-    PrepareHostCallThunks(emitted_blocks);
+    BindHostCallThunks();
     ASSERT(memory_state.unaligned_atomic_fallbacks.empty());
-    terminal_location_publication.Prepare(emitted_blocks, context);
+    terminal_location_publication.Reset();
     share_cycle_exit_reason =
             CountCycleExitCandidates() >=
             kCycleTailShareMinStubs;
@@ -835,14 +759,12 @@ bool JitTranslator::EmitPreparedFunction(ir::HIRFunction* function) {
     perf_unit_tail.Stop();
     translating_function = false;
     share_cycle_exit_reason = false;
-    PlacementPoint("unit", placement_unit_pc);
     next_region_block.reset();
     canonical_entries_active = false;
     return true;
 }
 
-
-Label* JitTranslator::GetLocalLabel(ir::Inst* inst) {
+Label* JitTranslator::GetLocalLabel(const ir::Inst* inst) {
     if (auto itr = local_labels.find(inst); itr != local_labels.end()) {
         return &itr->second;
     }
@@ -872,11 +794,10 @@ Register JitTranslator::MaterializeOperand(const Operand& operand, ir::ValueType
     return tmp;
 }
 
-void JitTranslator::Translate(ir::Inst* inst) {
+void JitTranslator::Translate(const ir::Inst* inst) {
     ASSERT(inst);
-    ASSERT_MSG((gpr_plan->pinned && context.GetAllocation().GPRLocationsFrozen()) && context.GetAllocation().GPRLocationsFrozen() &&
-                       gpr_plan->pinned->Generation() == context.GetAllocation().GPRLocationGeneration(),
-               "instruction emission requires the current frozen GPR plan");
+    ASSERT_MSG(context.HasBoundBlockActions(inst->GetBlock()),
+               "instruction emission requires the current prepared GPR facts");
     const bool preservation = !context.GetAllocation().GPRPreservationsBefore(inst->Id()).empty();
     const bool forward_spilled_width_input = !preservation &&
             context.HasPendingSpillWrites() &&
@@ -889,18 +810,23 @@ void JitTranslator::Translate(ir::Inst* inst) {
             context.HasPendingSpillWrites() &&
             CanAdoptPendingSpillWrite(
                     inst, forward_spilled_memory_input.has_value());
-    context.TickIR(inst, forward_spilled_width_input,
-                   adopt_pending_spill_write,
-                   forward_spilled_memory_input,
-                   IsGPRZeroExtendElided(inst));
+    context.TickIR(
+            inst,
+            forward_spilled_width_input,
+            adopt_pending_spill_write,
+            forward_spilled_memory_input,
+            IsGPRZeroExtendElided(inst) || (inst->GetOp() == ir::OpCode::SetLocation &&
+                                            context.GetActions().DefersTerminalLocation(inst)));
     context.ExecuteGPRPreservations(inst->Id());
+    if (flag_state.flags_clear != ir::Flags::None)
+        PrepareFlagRead(compile::InstructionFlagAccess(*inst).read);
     TrackHomeAlignment(inst);
     if (inst->GetOp() != ir::OpCode::SetLocation &&
         inst->GetOp() != ir::OpCode::CallReturn) {
         static_next_loc.reset();
         if (inst->GetOp() != ir::OpCode::PopRSB) {
             dynamic_next_loc.reset();
-            dynamic_location_miss = nullptr;
+            dynamic_location_deferred = false;
         }
     }
 
@@ -919,38 +845,7 @@ void JitTranslator::Translate(ir::Inst* inst) {
     context.EndInstructionScratch();
 }
 
-bool JitTranslator::MatchMemoryOffsetCase(ir::Inst* inst) { return false; }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+bool JitTranslator::MatchMemoryOffsetCase(const ir::Inst* inst) { return false; }
 
 Operand JitTranslator::EmitOperand(ir::Operand& ir_op) {
     if (ir_op.GetRight().Null()) {
@@ -1097,14 +992,15 @@ Operand JitTranslator::EmitOperand(ir::Operand& ir_op) {
 }  // namespace swift::runtime::backend::arm64
 
 namespace swift::runtime::backend::arm64 {
-void JitTranslator::ImportGPRBlock(ir::Block* block) {
-    ASSERT(context.RequireGPRPlan(block));
-    gpr_plan_owner = context.GetAllocation().GPRPlanFor(block);
-    gpr_plan = gpr_plan_owner.get();
+void JitTranslator::ImportBlockActions(const ir::Block* block) {
+    ASSERT(context.RequireBlockForEmission(block));
+    block_actions = context.GetActions().ForBlock(block);
+    pseudo_flags = context.GetActions().PseudoFlagsForBlock(block);
+    integer_branch = context.GetActions().IntegerBranch(block);
     // The complete unit's exact IR/CFG certificate was checked once before
     // any entry code. Import consumes that proof instead of rescanning blocks.
-    ASSERT(gpr_plan && gpr_plan->region == region_plan_owner &&
-           gpr_plan->pinned->MatchesAllocation());
-    context.BindInstructionScratchPlan(block, gpr_plan->pinned);
+    ASSERT(block_actions && edge_actions == &context.GetActions().Edges() &&
+           context.GetActions().HasPreparedScratch(block));
+    context.BindInstructionScratchPlan(block);
 }
 } // namespace swift::runtime::backend::arm64

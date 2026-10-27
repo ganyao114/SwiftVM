@@ -1,5 +1,10 @@
+#include "tests/support/rewrite_fixture.h"
+using swift::runtime::test::RewriteFixture;
+
+#include "runtime/compile/analysis/guest_state.h"
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
+#include <optional>
 
 TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
     using namespace swift::runtime;
@@ -30,13 +35,13 @@ TEST_CASE("Uniform elimination preserves rotate-by-zero carry polarity load") {
     };
     auto decode = [&](Arm64Features arm64_features) {
         Block block{0, Location{address}};
-        Assembler assembler{&block};
+        swift::runtime::compile::IrBuilder assembler{&block};
         X64Decoder decoder{address, &memory, &assembler, true,
                            arm64_features, false, false, FeatureSet{}};
         decoder.Decode();
 
-        UniformInfo info{.uniform_size = sizeof(ThreadContext64)};
-        UniformEliminationPass::Run(&block, info, FeatureSet{});
+        swift::runtime::compile::GuestStateLayout info{.uniform_size = sizeof(ThreadContext64)};
+        swift::runtime::compile::CleanupState(RewriteFixture{&block, false}.Get(), info, FeatureSet{});
 
         Shape shape;
         for (auto& inst : block.GetInstList()) {
@@ -86,7 +91,7 @@ TEST_CASE("narrow rotate compact recognizes only the verified U16 immediate-eigh
         };
         const auto address = reinterpret_cast<VAddr>(code.data());
         Block block{0, Location{address}};
-        Assembler assembler{&block};
+        swift::runtime::compile::IrBuilder assembler{&block};
         FeatureSet features{};
         features.narrow_rotate_compact = enabled;
         X64Decoder decoder{address, &memory, &assembler, true,
@@ -128,7 +133,7 @@ TEST_CASE("narrow rotate compact recognizes only the verified U16 immediate-eigh
     std::array<swift::u8, 6> memory_code{0x66, 0xc1, 0x00, 0x08, 0xf4, 0x90};
     const auto address = reinterpret_cast<VAddr>(memory_code.data());
     Block block{0, Location{address}};
-    Assembler assembler{&block};
+    swift::runtime::compile::IrBuilder assembler{&block};
     FeatureSet features{};
     features.narrow_rotate_compact = true;
     X64Decoder decoder{address, &memory, &assembler, true,
@@ -162,9 +167,9 @@ TEST_CASE("function decoder replays at a late block entry") {
     const auto boundary = start + 5;
     HIRBuilder builder{1, true, false, FeatureSet{}};
     auto* function = builder.AppendFunction(Location{start});
-    auto* first = function->GetCurrentBlock();
+    auto* first = &function->EditBlock(function->GetCurrentBlock());
 
-    Assembler first_assembler{&builder};
+    swift::runtime::compile::IrBuilder first_assembler{&builder};
     X64Decoder first_decoder{start,
                              &memory,
                              &first_assembler,
@@ -180,7 +185,7 @@ TEST_CASE("function decoder replays at a late block entry") {
                               return inst.GetOp() == OpCode::RorImm;
                           }) == 1);
 
-    HIRBlock* second{};
+    const HIRBlock* second{};
     for (auto& block : function->GetHIRBlockList()) {
         if (block.GetBlock()->GetStartLocation().Value() == boundary) {
             second = &block;
@@ -190,7 +195,7 @@ TEST_CASE("function decoder replays at a late block entry") {
     REQUIRE(second != nullptr);
     REQUIRE(builder.ResetDecodedBlock(first));
 
-    Assembler replay_assembler{&builder};
+    swift::runtime::compile::IrBuilder replay_assembler{&builder};
     X64Decoder replay_decoder{start,
                               &memory,
                               &replay_assembler,
@@ -218,7 +223,7 @@ TEST_CASE("function decoder replays at a late block entry") {
                                }));
 
     builder.SetCurBlock(second);
-    Assembler second_assembler{&builder};
+    swift::runtime::compile::IrBuilder second_assembler{&builder};
     X64Decoder second_decoder{boundary,
                               &memory,
                               &second_assembler,
@@ -259,11 +264,11 @@ TEST_CASE("function decoder links an unconditional jump only to an existing bloc
     auto decode = [&](bool create_target) {
         HIRBuilder builder{1, true, false, FeatureSet{}};
         auto* function = builder.AppendFunction(Location{start});
-        auto* entry = function->GetCurrentBlock();
+        auto* entry = &function->EditBlock(function->GetCurrentBlock());
         if (create_target) {
             function->CreateOrGetBlock(target);
         }
-        Assembler assembler{&builder};
+        swift::runtime::compile::IrBuilder assembler{&builder};
         X64Decoder decoder{start,
                            &memory,
                            &assembler,
@@ -351,6 +356,302 @@ TEST_CASE("structured V128 address wraps inside the 4GB guest window") {
     X86Instance::Destroy(instance);
     swift::runtime::backend::SmcTracker::SetEnabled(true);
     munmap(window, page * 2);
+}
+
+TEST_CASE("INC DEC local terminal flags exclude carry narrow and memory forms", "[inc-dec-local-flags]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+    struct RestoreCfinv {
+        std::optional<std::string> previous;
+        ~RestoreCfinv() {
+            if (previous) SetSvmConfigEnvForTest("SVM_FLAGS_CFINV", previous->c_str(), 1);
+            else UnsetSvmConfigEnvForTest("SVM_FLAGS_CFINV");
+        }
+    } restore;
+    if (const char* previous = GetRawSvmConfigEnvForTest("SVM_FLAGS_CFINV")) restore.previous = previous;
+    struct Memory final : MemoryInterface {
+        bool Read(void* dst, size_t address, size_t size) override {
+            return std::memcpy(dst, reinterpret_cast<const void*>(address), size);
+        }
+        bool Write(void* src, size_t address, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(address), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+    for (bool cfinv : {false, true}) for (bool flagm : {false, true})
+    for (bool prior_sub : {false, true})
+    for (bool enabled : {false, true}) for (bool dec : {false, true})
+    for (unsigned width : {8u, 16u, 32u, 64u}) for (bool indirect : {false, true})
+    for (swift::u8 branch : {swift::u8{0x75}, swift::u8{0x72}}) {
+        CAPTURE(cfinv, flagm, prior_sub, enabled, dec, width, indirect, branch);
+        SetSvmConfigEnvForTest("SVM_FLAGS_CFINV", cfinv ? "1" : "0", 1);
+        std::vector<swift::u8> code;
+        if (prior_sub) code.insert(code.end(), {0x83, 0xea, 1}); // sub edx,1
+        if (width == 16) code.push_back(0x66);
+        if (width == 64) code.push_back(0x48);
+        code.push_back(width == 8 ? 0xfe : 0xff);
+        code.push_back((indirect ? 0x00 : 0xc0) | (dec ? 0x08 : 0x00));
+        code.insert(code.end(), {branch, 1, 0xf4, 0xf4}); // JNE/JB to distinct HLT arms.
+        code.resize(code.size() + 16, 0x90);
+        FeatureSet features{};
+        features.flags_terminal_jcc = enabled;
+        features.flags_branch_only = false;
+        Block block{0, Location{reinterpret_cast<VAddr>(code.data())}};
+        swift::runtime::compile::IrBuilder builder{&block};
+        X64Decoder decoder{block.GetStartLocation().Value(), &memory, &builder, true,
+                           flagm ? Arm64Features::FlagM : Arm64Features::None,
+                           false, false, features};
+        decoder.Decode();
+        size_t local = 0, restores = 0;
+        for (const auto& inst : block.GetInstList()) {
+            local += inst.GetOp() == OpCode::LocalCondSet;
+            restores += inst.GetOp() == OpCode::SetCarry;
+            if (inst.GetOp() == OpCode::LocalCondSet)
+                REQUIRE(inst.GetArg<ir::Cond>(0) == ir::Cond::NE);
+        }
+        REQUIRE(local == size_t{enabled && !indirect && width >= 32 && branch == 0x75});
+        const bool canonical_register = cfinv && flagm && !indirect && width >= 32;
+        REQUIRE(restores == size_t{!canonical_register});
+    }
+}
+
+TEST_CASE("INC DEC terminal branches preserve dirty carry and all arithmetic flags", "[inc-dec-local-flags]") {
+#if defined(__aarch64__)
+    using namespace swift::runtime;
+    using namespace swift::translator;
+    using namespace swift::translator::x86;
+    using namespace swift::x86;
+    const long page = sysconf(_SC_PAGESIZE);
+    REQUIRE(page >= 4096);
+    const auto bytes = static_cast<size_t>(page) * 4;
+    auto* window = static_cast<swift::u8*>(mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                                              MAP_PRIVATE | MAP_ANON, -1, 0));
+    REQUIRE(window != MAP_FAILED);
+    struct Window {
+        swift::u8* data;
+        size_t size;
+        bool smc;
+        ~Window() { munmap(data, size); backend::SmcTracker::SetEnabled(smc); }
+    } cleanup{window, bytes, backend::SmcTracker::IsEnabled()};
+    backend::SmcTracker::SetEnabled(false);
+    std::unique_ptr<X86Instance, decltype(&X86Instance::Destroy)> instance{
+            X86Instance::Make(), &X86Instance::Destroy};
+    std::unique_ptr<X86Core, decltype(&X86Core::Destroy)> core{
+            X86Core::Make(instance.get()), &X86Core::Destroy};
+    size_t index = 0;
+    for (unsigned width : {8u, 16u, 32u, 64u}) for (bool indirect : {false, true}) {
+        if (indirect && width < 32) continue;
+        const swift::u64 mask = width == 64 ? UINT64_MAX : (swift::u64{1} << width) - 1;
+        const swift::u64 sign = swift::u64{1} << (width - 1);
+        for (bool dec : {false, true}) for (bool carry : {false, true})
+        for (swift::u64 input : {dec ? swift::u64{1} : mask, dec ? sign : sign - 1,
+                                swift::u64{0x0f}, swift::u64{0x10}}) {
+            CAPTURE(width, indirect, dec, carry, input);
+            // ADD defines CF lazily immediately before INC/DEC captures it.
+            // The old committed CF starts opposite, exposing stale-carrier reads.
+            std::vector<swift::u8> code{swift::u8(carry ? 0xf8 : 0xf9), 0xba};
+            const swift::u32 seed = carry ? UINT32_MAX : 0;
+            for (unsigned i = 0; i < 4; ++i) code.push_back(swift::u8(seed >> (8 * i)));
+            code.insert(code.end(), {0x83, 0xc2, 1}); // add edx,1
+            if (width == 16) code.push_back(0x66);
+            if (width == 64) code.push_back(0x48);
+            code.push_back(width == 8 ? 0xfe : 0xff);
+            code.push_back((indirect ? 0x00 : 0xc0) | (dec ? 0x08 : 0x00));
+            code.insert(code.end(), {0x75, 7, 0xbb, 0, 0, 0, 0, 0xeb, 5, 0xbb, 1, 0, 0, 0,
+                                    0x49, 0x89, 0xc1, // mov r9,rax before LAHF changes AH
+                                    0x0f, 0x92, 0xc1, // setc cl
+                                    0x0f, 0x90, 0xc2, // seto dl
+                                    0x40, 0x0f, 0x94, 0xc6, // setz sil
+                                    0x40, 0x0f, 0x98, 0xc7, // sets dil
+                                    0x41, 0x0f, 0x9a, 0xc0, // setp r8b
+                                    0x9f, 0xf4}); // lahf; hlt
+            const auto guest = swift::u64{0x800} + index++ * 0x80;
+            REQUIRE(guest + code.size() < bytes);
+            std::memcpy(window + guest, code.data(), code.size());
+            std::memcpy(window + 0x100, &input, sizeof(input));
+            auto& context = core->GetContext();
+            context.rip.qword = reinterpret_cast<uintptr_t>(window + guest);
+            const swift::u64 original = width < 64 ? UINT64_C(0x6b5a000000000000) | input : input;
+            context.rax.qword = indirect ? reinterpret_cast<uintptr_t>(window + 0x100) : original;
+            context.rbx.qword = context.rcx.qword = context.rdx.qword = 0;
+            context.rsi.qword = context.rdi.qword = context.r8.qword = context.r9.qword = 0;
+            REQUIRE(core->Run() == ExitReason::None);
+            const swift::u64 result = (dec ? input - 1 : input + 1) & mask;
+            const bool zero = result == 0, negative = (result & sign) != 0;
+            const bool overflow = input == (dec ? sign : sign - 1);
+            const bool parity = (std::popcount(swift::u8(result)) & 1) == 0;
+            const bool auxiliary = ((input ^ result ^ 1) & 0x10) != 0;
+            REQUIRE(context.rbx.qword == swift::u64{!zero});
+            REQUIRE((context.rcx.qword & 0xff) == swift::u64{carry});
+            REQUIRE((context.rdx.qword & 0xff) == swift::u64{overflow});
+            REQUIRE((context.rsi.qword & 0xff) == swift::u64{zero});
+            REQUIRE((context.rdi.qword & 0xff) == swift::u64{negative});
+            REQUIRE((context.r8.qword & 0xff) == swift::u64{parity});
+            const swift::u64 lahf = 2 | swift::u64{carry} | (swift::u64{parity} << 2) |
+                                    (swift::u64{auxiliary} << 4) | (swift::u64{zero} << 6) |
+                                    (swift::u64{negative} << 7);
+            REQUIRE(((context.rax.qword >> 8) & 0xff) == lahf);
+            if (indirect) {
+                swift::u64 stored{};
+                std::memcpy(&stored, window + 0x100, sizeof(stored));
+                REQUIRE((stored & mask) == result);
+            } else {
+                const auto expected = width < 32 ? (original & ~mask) | result : result;
+                REQUIRE(context.r9.qword == expected);
+            }
+        }
+    }
+#endif
+}
+
+TEST_CASE("INC DEC old carry reaches the immediately following ADC SBB or JC", "[inc-dec-local-flags]") {
+#if defined(__aarch64__)
+    using namespace swift::runtime;
+    using namespace swift::translator;
+    using namespace swift::translator::x86;
+    using namespace swift::x86;
+    const long page = sysconf(_SC_PAGESIZE);
+    REQUIRE(page >= 4096);
+    const auto bytes = static_cast<size_t>(page) * 4;
+    auto* window = static_cast<swift::u8*>(mmap(nullptr, bytes, PROT_READ | PROT_WRITE,
+                                              MAP_PRIVATE | MAP_ANON, -1, 0));
+    REQUIRE(window != MAP_FAILED);
+    struct Window {
+        swift::u8* data;
+        size_t size;
+        bool smc;
+        ~Window() { munmap(data, size); backend::SmcTracker::SetEnabled(smc); }
+    } cleanup{window, bytes, backend::SmcTracker::IsEnabled()};
+    backend::SmcTracker::SetEnabled(false);
+    std::unique_ptr<X86Instance, decltype(&X86Instance::Destroy)> instance{
+            X86Instance::Make(), &X86Instance::Destroy};
+    std::unique_ptr<X86Core, decltype(&X86Core::Destroy)> core{
+            X86Core::Make(instance.get()), &X86Core::Destroy};
+    size_t index = 0;
+    for (unsigned width : {32u, 64u}) for (bool dec : {false, true})
+    for (bool prior_sub : {false, true}) for (bool carry : {false, true})
+    for (unsigned consumer : {0u, 1u, 2u}) {
+        CAPTURE(width, dec, prior_sub, carry, consumer);
+        std::vector<swift::u8> code;
+        const swift::u32 seed = prior_sub ? (carry ? 0 : 1) : (carry ? UINT32_MAX : 0);
+        code.insert(code.end(), {0x83, swift::u8(prior_sub ? 0xea : 0xc2), 1});
+        if (width == 64) code.push_back(0x48);
+        code.insert(code.end(), {0xff, swift::u8(dec ? 0xc8 : 0xc0)});
+        if (consumer < 2) {
+            code.insert(code.end(), {0x48, 0x83, swift::u8(consumer == 0 ? 0xd3 : 0xdb), 0}); // adc/sbb rbx,0
+        } else {
+            code.insert(code.end(), {0x72, 7, 0xbb, 0, 0, 0, 0, 0xeb, 5, 0xbb, 1, 0, 0, 0}); // jc
+        }
+        code.push_back(0xf4);
+        const auto offset = swift::u64{0x800} + index++ * 0x80;
+        REQUIRE(offset + code.size() < bytes);
+        std::memcpy(window + offset, code.data(), code.size());
+        auto& context = core->GetContext();
+        context.rip.qword = reinterpret_cast<uintptr_t>(window + offset);
+        context.rax.qword = dec ? 1 : (width == 64 ? UINT64_MAX : swift::u64{UINT32_MAX});
+        context.rbx.qword = 10;
+        context.rdx.qword = seed; // Keep the incoming flags producer dependent on runtime data.
+        // No SETcc/LAHF or other flag reader may flush the producer before this consumer.
+        REQUIRE(core->Run() == ExitReason::None);
+        REQUIRE(context.rax.qword == 0);
+        const swift::u64 expected = consumer == 0 ? 10 + swift::u64{carry}
+                                  : consumer == 1 ? 10 - swift::u64{carry}
+                                                  : swift::u64{carry};
+        REQUIRE(context.rbx.qword == expected);
+    }
+#endif
+}
+
+TEST_CASE("decoded INC DEC HIR refuses branch-only flags while successors read carry", "[inc-dec-local-flags][branch-only]") {
+    using namespace swift::runtime;
+    using namespace swift::runtime::ir;
+    using namespace swift::x86;
+    struct RestoreCfinv {
+        std::optional<std::string> previous;
+        ~RestoreCfinv() {
+            if (previous) SetSvmConfigEnvForTest("SVM_FLAGS_CFINV", previous->c_str(), 1);
+            else UnsetSvmConfigEnvForTest("SVM_FLAGS_CFINV");
+        }
+    } restore;
+    if (const char* previous = GetRawSvmConfigEnvForTest("SVM_FLAGS_CFINV")) restore.previous = previous;
+    SetSvmConfigEnvForTest("SVM_FLAGS_CFINV", "1", 1);
+    struct Memory final : MemoryInterface {
+        bool Read(void* dst, size_t address, size_t size) override {
+            return std::memcpy(dst, reinterpret_cast<const void*>(address), size);
+        }
+        bool Write(void* src, size_t address, size_t size) override {
+            return std::memcpy(reinterpret_cast<void*>(address), src, size);
+        }
+        void* GetPointer(void* src) override { return src; }
+    } memory;
+    for (unsigned width : {32u, 64u}) for (bool dec : {false, true})
+    for (bool overwrite_first : {false, true}) for (bool memory_prefix : {false, true}) {
+        CAPTURE(width, dec, overwrite_first, memory_prefix);
+        std::array<swift::u8, 128> code{};
+        code.fill(0x90);
+        std::vector<swift::u8> prefix{0x83, 0xc2, 1}; // a dirty incoming CF from ADD
+        if (width == 64) prefix.push_back(0x48);
+        prefix.insert(prefix.end(), {0xff, swift::u8(dec ? 0xc8 : 0xc0)});
+        const size_t fallthrough = prefix.size() + 2;
+        prefix.insert(prefix.end(), {0x75, swift::u8(64 - fallthrough)});
+        std::copy(prefix.begin(), prefix.end(), code.begin());
+        for (size_t offset : {fallthrough, size_t{64}}) {
+            // These orderings differ solely in whether incoming CF is read
+            // before a full flags overwrite. Both arms retain the SETC result.
+            const std::array<swift::u8, 7> live{0x0f, 0x92, 0xc1, 0x83, 0xc2, 1, 0xf4};
+            const std::array<swift::u8, 7> dead{0x83, 0xc2, 1, 0x0f, 0x92, 0xc1, 0xf4};
+            const auto& suffix = overwrite_first ? dead : live;
+            if (memory_prefix) {
+                // Incoming flags remain observable if this MOV faults before
+                // either successor reaches its full flags overwrite.
+                for (swift::u8 byte : {0x48, 0x8b, 0x1a}) code[offset++] = byte; // mov rbx,[rdx]
+            }
+            std::copy(suffix.begin(), suffix.end(), code.begin() + offset);
+        }
+        FeatureSet features{};
+        features.flags_branch_only = true;
+        features.flags_terminal_jcc = true;
+        const auto start = reinterpret_cast<VAddr>(code.data());
+        HIRBuilder builder{1, true, false, features};
+        auto* function = builder.AppendFunction(Location{start}, Location{start + code.size()});
+        auto* source = &function->EditBlock(function->GetCurrentBlock());
+        compile::IrBuilder assembler{&builder};
+        X64Decoder decoder{start, &memory, &assembler, true, Arm64Features::FlagM,
+                           false, false, features};
+        decoder.Decode();
+        const auto& instructions = source->GetInstList();
+        const bool branch_only = overwrite_first && !memory_prefix;
+        REQUIRE(std::count_if(instructions.begin(), instructions.end(), [](const Inst& inst) {
+                    return inst.GetOp() == OpCode::BranchOnlyEdges;
+                }) == int(branch_only));
+        REQUIRE(std::none_of(instructions.begin(), instructions.end(), [](const Inst& inst) {
+            return inst.GetOp() == OpCode::SetCarry || inst.GetOp() == OpCode::TestFlags;
+        }));
+        Value produced{};
+        for (const auto& inst : instructions)
+            if (inst.GetOp() == OpCode::SaveFlags) produced = inst.GetArg<Value>(0);
+        REQUIRE(produced.Defined());
+        for (size_t offset : {fallthrough, size_t{64}}) {
+            auto* successor = function->CreateOrGetBlock(Location{start + offset});
+            REQUIRE(successor);
+            builder.SetCurBlock(successor);
+            compile::IrBuilder next{&builder};
+            X64Decoder successor_decoder{start + offset, &memory, &next, true,
+                                         Arm64Features::FlagM, false, false, features};
+            successor_decoder.Decode();
+        }
+        function->EndFunction();
+        function->ComputeRPO();
+        function->IdByRPO();
+        compile::EliminateFlags(RewriteFixture{function}.Get(), features);
+        const auto selected = CollectPseudoOperations(*source->GetBlock(), produced.Def(), OpCode::BranchOnlyFlags);
+        REQUIRE(selected.size() == size_t{branch_only});
+        if (branch_only) REQUIRE(selected.front()->GetArg<Flags>(1) == Flags::Zero);
+        else REQUIRE(std::none_of(source->GetInstList().begin(), source->GetInstList().end(), [](const Inst& inst) {
+            return inst.GetOp() == OpCode::BranchOnlyFlags;
+        }));
+    }
 }
 
 TEST_CASE("A1 host-base fold gate is exact and Q UXTW encoding is valid") {
@@ -558,11 +859,11 @@ TEST_CASE("structured address reloads RAX after every partial alias write") {
         // address state LoadUniform directly, and the alias write forces two
         // distinct definitions rather than reusing the first capture.
         Block block{0, Location{code_guest}};
-        Assembler assembler{&block};
+        swift::runtime::compile::IrBuilder assembler{&block};
         X64Decoder decoder{code_guest, &decode_memory, &assembler, true,
                            Arm64Features::None, false, false, FeatureSet{}};
         decoder.Decode();
-        std::vector<Inst*> v128_loads;
+        std::vector<const Inst*> v128_loads;
         for (auto& inst : block.GetInstList()) {
             if (inst.GetOp() == OpCode::LoadMemory &&
                 inst.ReturnType() == ValueType::V128) {

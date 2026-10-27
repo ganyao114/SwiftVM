@@ -5,7 +5,6 @@
 #include "runtime/frontend/x86/decoder_internal.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
@@ -382,12 +381,12 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
-        auto status = __ CallHostWithTraits(kResidentStringHelperTraits,
+        auto status = __ CallHostWithTraits(ir::ValueType::U64,
+                                            kResidentStringHelperTraits,
                                             kRepMovsResident,
                                             dst_addr,
                                             src_addr,
-                                            packed)
-                              .SetType(ir::ValueType::U64);
+                                            packed);
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
@@ -397,13 +396,15 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
         RaiseIfGuestFault(status, insn_pc);
         auto backward = __ TestNotZero(df);
         R(src_reg,
-          __ Select(backward,
+          __ Select(src_addr.Type(),
+                    backward,
                     __ Sub(src_addr, ir::Operand{bytes}),
-                    __ Add(src_addr, ir::Operand{bytes})).SetType(src_addr.Type()));
+                    __ Add(src_addr, ir::Operand{bytes})));
         R(dst_reg,
-          __ Select(backward,
+          __ Select(dst_addr.Type(),
+                    backward,
                     __ Sub(dst_addr, ir::Operand{bytes}),
-                    __ Add(dst_addr, ir::Operand{bytes})).SetType(dst_addr.Type()));
+                    __ Add(dst_addr, ir::Operand{bytes})));
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
     } else {
         auto size = GetSize(op0.size);
@@ -416,13 +417,15 @@ void X64Decoder::DecodeMovs(_DInst& insn) {
         auto step = ir::Imm(u64(ir::GetValueSizeByte(size)));
         auto backward = __ TestNotZero(DirectionValue());
         R(src_reg,
-          __ Select(backward,
+          __ Select(src_addr.Type(),
+                    backward,
                     __ Sub(src_addr, ir::Operand{step}),
-                    __ Add(src_addr, ir::Operand{step})).SetType(src_addr.Type()));
+                    __ Add(src_addr, ir::Operand{step})));
         R(dst_reg,
-          __ Select(backward,
+          __ Select(dst_addr.Type(),
+                    backward,
                     __ Sub(dst_addr, ir::Operand{step}),
-                    __ Add(dst_addr, ir::Operand{step})).SetType(dst_addr.Type()));
+                    __ Add(dst_addr, ir::Operand{step})));
     }
 }
 
@@ -456,12 +459,12 @@ void X64Decoder::DecodeStos(_DInst& insn) {
             __ MemoryBarrierTSO();
         }
         const u64 step = ir::GetValueSizeByte(size);
-        auto status = __ CallHostWithTraits(kResidentStringHelperTraits,
+        auto status = __ CallHostWithTraits(ir::ValueType::U64,
+                                            kResidentStringHelperTraits,
                                             kRepStosResident[StringHelperIndex(step)],
                                             dst_addr,
                                             acc64,
                                             packed_count);
-        status = status.SetType(ir::ValueType::U64);
         if (TsoOrdered(insn)) {
             __ MemoryBarrierTSO();
         }
@@ -472,18 +475,20 @@ void X64Decoder::DecodeStos(_DInst& insn) {
         auto bytes = __ Mul(count, ir::Operand{ir::Imm(step)});
         auto backward = __ TestNotZero(DirectionValue());
         R(dst_reg,
-          __ Select(backward,
+          __ Select(dst_addr.Type(),
+                    backward,
                     __ Sub(dst_addr, ir::Operand{bytes}),
-                    __ Add(dst_addr, ir::Operand{bytes})).SetType(dst_addr.Type()));
+                    __ Add(dst_addr, ir::Operand{bytes})));
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
     } else {
-        MemStore(ir::Operand{dst_addr}, acc.SetType(size), TsoOrdered(insn));
+        MemStore(ir::Operand{dst_addr}, acc, TsoOrdered(insn));
         auto step = ir::Imm(u64(ir::GetValueSizeByte(size)));
         auto backward = __ TestNotZero(DirectionValue());
         R(dst_reg,
-          __ Select(backward,
+          __ Select(dst_addr.Type(),
+                    backward,
                     __ Sub(dst_addr, ir::Operand{step}),
-                    __ Add(dst_addr, ir::Operand{step})).SetType(dst_addr.Type()));
+                    __ Add(dst_addr, ir::Operand{step})));
     }
 }
 
@@ -512,23 +517,26 @@ void X64Decoder::DecodeLods(_DInst& insn) {
         auto skip = __ NotGoto(do_load);
         auto last = __ Sub(count, ir::Operand{ir::Imm(u64(1))});
         auto last_off = __ Mul(last, ir::Operand{ir::Imm(step)});
-        auto last_addr = __ Select(backward,
-                                  __ Sub(si0, ir::Operand{last_off}),
-                                  __ Add(si0, ir::Operand{last_off})).SetType(si0.Type());
+        auto last_addr = __ Select(si0.Type(),
+                                   backward,
+                                   __ Sub(si0, ir::Operand{last_off}),
+                                   __ Add(si0, ir::Operand{last_off}));
         R(acc_reg, MemLoad(ir::Operand{last_addr}, size, TsoOrdered(insn)));
         __ BindLabel(skip);
         auto adv = __ Mul(count, ir::Operand{ir::Imm(step)});
         R(si_reg,
-          __ Select(backward,
+          __ Select(si0.Type(),
+                    backward,
                     __ Sub(si0, ir::Operand{adv}),
-                    __ Add(si0, ir::Operand{adv})).SetType(si0.Type()));
+                    __ Add(si0, ir::Operand{adv})));
         R(cnt_reg, __ LoadImm(ir::Imm(u64(0))));
     } else {
         R(acc_reg, MemLoad(ir::Operand{si0}, size, TsoOrdered(insn)));
         R(si_reg,
-          __ Select(backward,
+          __ Select(si0.Type(),
+                    backward,
                     __ Sub(si0, ir::Operand{ir::Imm(step)}),
-                    __ Add(si0, ir::Operand{ir::Imm(step)})).SetType(si0.Type()));
+                    __ Add(si0, ir::Operand{ir::Imm(step)})));
     }
 }
 
@@ -553,13 +561,15 @@ void X64Decoder::DecodeCmps(_DInst& insn) {
         auto b = MemLoad(ir::Operand{di0}, size, TsoOrdered(insn));
         cmp_flags(a, b);
         R(si_reg,
-          __ Select(backward,
+          __ Select(si0.Type(),
+                    backward,
                     __ Sub(si0, ir::Operand{ir::Imm(step)}),
-                    __ Add(si0, ir::Operand{ir::Imm(step)})).SetType(si0.Type()));
+                    __ Add(si0, ir::Operand{ir::Imm(step)})));
         R(di_reg,
-          __ Select(backward,
+          __ Select(di0.Type(),
+                    backward,
                     __ Sub(di0, ir::Operand{ir::Imm(step)}),
-                    __ Add(di0, ir::Operand{ir::Imm(step)})).SetType(di0.Type()));
+                    __ Add(di0, ir::Operand{ir::Imm(step)})));
         return;
     }
     auto count = __ ZeroExtend64(R(cnt_reg));
@@ -574,32 +584,33 @@ void X64Decoder::DecodeCmps(_DInst& insn) {
     // branches on its basic count before the flag-defining work.)
     auto skip = __ NotGoto(__ TestNotZero(count));
     const auto& helpers = repnz ? kRepCmpsNZResident : kRepCmpsZResident;
-    auto iters = __ CallHostWithTraits(kResidentStringHelperTraits,
+    auto iters = __ CallHostWithTraits(ir::ValueType::U64,
+                                       kResidentStringHelperTraits,
                                        helpers[StringHelperIndex(step)],
                                        si0,
                                        di0,
                                        packed_count);
-    iters = iters.SetType(ir::ValueType::U64);
     // The comparison consumed every element it was allowed to touch and the
     // next one is unmapped: guest #PF. Checked before iters is used, so the
     // flag bit can never leak into RSI/RDI/RCX.
     RaiseIfGuestFault(iters, insn_pc);
     auto adv = __ Mul(iters, ir::Operand{ir::Imm(step)});
     R(si_reg,
-      __ Select(backward, __ Sub(si0, ir::Operand{adv}), __ Add(si0, ir::Operand{adv}))
-              .SetType(si0.Type()));
+      __ Select(
+              si0.Type(), backward, __ Sub(si0, ir::Operand{adv}), __ Add(si0, ir::Operand{adv})));
     R(di_reg,
-      __ Select(backward, __ Sub(di0, ir::Operand{adv}), __ Add(di0, ir::Operand{adv}))
-              .SetType(di0.Type()));
+      __ Select(
+              di0.Type(), backward, __ Sub(di0, ir::Operand{adv}), __ Add(di0, ir::Operand{adv})));
     R(cnt_reg, __ Sub(count, ir::Operand{iters}));
-    auto last_off = __ Mul(__ Sub(iters, ir::Operand{ir::Imm(u64(1))}),
-                           ir::Operand{ir::Imm(step)});
-    auto last_si = __ Select(backward,
-                            __ Sub(si0, ir::Operand{last_off}),
-                            __ Add(si0, ir::Operand{last_off})).SetType(si0.Type());
-    auto last_di = __ Select(backward,
-                            __ Sub(di0, ir::Operand{last_off}),
-                            __ Add(di0, ir::Operand{last_off})).SetType(di0.Type());
+    auto last_off = __ Mul(__ Sub(iters, ir::Operand{ir::Imm(u64(1))}), ir::Operand{ir::Imm(step)});
+    auto last_si = __ Select(si0.Type(),
+                             backward,
+                             __ Sub(si0, ir::Operand{last_off}),
+                             __ Add(si0, ir::Operand{last_off}));
+    auto last_di = __ Select(di0.Type(),
+                             backward,
+                             __ Sub(di0, ir::Operand{last_off}),
+                             __ Add(di0, ir::Operand{last_off}));
     auto a = MemLoad(ir::Operand{last_si}, size, TsoOrdered(insn));
     auto b = MemLoad(ir::Operand{last_di}, size, TsoOrdered(insn));
     cmp_flags(a, b);
@@ -628,9 +639,10 @@ void X64Decoder::DecodeScas(_DInst& insn) {
         auto b = MemLoad(ir::Operand{di0}, size, TsoOrdered(insn));
         ArithWithFlags(acc, b, ArithOp::Sub, op0.size, ir::Flags::All);
         R(di_reg,
-          __ Select(backward,
+          __ Select(di0.Type(),
+                    backward,
                     __ Sub(di0, ir::Operand{ir::Imm(step)}),
-                    __ Add(di0, ir::Operand{ir::Imm(step)})).SetType(di0.Type()));
+                    __ Add(di0, ir::Operand{ir::Imm(step)})));
         return;
     }
     auto count = __ ZeroExtend64(R(cnt_reg));
@@ -642,28 +654,26 @@ void X64Decoder::DecodeScas(_DInst& insn) {
     // no-op path; ArithWithFlags is the final flag commit on the active path.
     auto skip = __ NotGoto(__ TestNotZero(count));
     const auto& helpers = repnz ? kRepScasNZResident : kRepScasZResident;
-    auto iters = __ CallHostWithTraits(kResidentStringHelperTraits,
+    auto iters = __ CallHostWithTraits(ir::ValueType::U64,
+                                       kResidentStringHelperTraits,
                                        helpers[StringHelperIndex(step)],
                                        acc64,
                                        di0,
                                        packed_count);
-    iters = iters.SetType(ir::ValueType::U64);
     RaiseIfGuestFault(iters, insn_pc);
     auto adv = __ Mul(iters, ir::Operand{ir::Imm(step)});
     R(di_reg,
-      __ Select(backward, __ Sub(di0, ir::Operand{adv}), __ Add(di0, ir::Operand{adv}))
-              .SetType(di0.Type()));
+      __ Select(
+              di0.Type(), backward, __ Sub(di0, ir::Operand{adv}), __ Add(di0, ir::Operand{adv})));
     R(cnt_reg, __ Sub(count, ir::Operand{iters}));
-    auto last_off = __ Mul(__ Sub(iters, ir::Operand{ir::Imm(u64(1))}),
-                           ir::Operand{ir::Imm(step)});
-    auto last_di = __ Select(backward,
-                            __ Sub(di0, ir::Operand{last_off}),
-                            __ Add(di0, ir::Operand{last_off})).SetType(di0.Type());
+    auto last_off = __ Mul(__ Sub(iters, ir::Operand{ir::Imm(u64(1))}), ir::Operand{ir::Imm(step)});
+    auto last_di = __ Select(di0.Type(),
+                             backward,
+                             __ Sub(di0, ir::Operand{last_off}),
+                             __ Add(di0, ir::Operand{last_off}));
     auto b = MemLoad(ir::Operand{last_di}, size, TsoOrdered(insn));
     ArithWithFlags(acc, b, ArithOp::Sub, op0.size, ir::Flags::All);
     __ BindLabel(skip);
 }
-
-
 
 }  // namespace swift::x86

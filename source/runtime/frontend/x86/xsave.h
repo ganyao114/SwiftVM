@@ -111,20 +111,20 @@ u64 XgetbvHelper(u64 ecx);
 // in the shared decoder.h.  `next_pc` is the decoder's `pc`, which at handler
 // time already points past the instruction.
 // ---------------------------------------------------------------------------
-void EmitXgetbv(ir::Assembler* assembler, VAddr next_pc);
+void EmitXgetbv(compile::IrBuilder* assembler, VAddr next_pc);
 // insn_pc is the XSAVE/XRSTOR's own guest pc: an unmapped state area raises
 // a guest page fault, and the halt must report that instruction, not the next.
-void EmitXsave(ir::Assembler* assembler,
+void EmitXsave(compile::IrBuilder* assembler,
                ir::Value address,
                VAddr next_pc,
                VAddr insn_pc,
                bool restore,
                bool sse_afp_nan = false);
-void EmitXsaveopt(ir::Assembler* assembler,
+void EmitXsaveopt(compile::IrBuilder* assembler,
                   ir::Value address,
                   VAddr next_pc,
                   VAddr insn_pc);
-void EmitXsavec(ir::Assembler* assembler,
+void EmitXsavec(compile::IrBuilder* assembler,
                 ir::Value address,
                 VAddr next_pc,
                 VAddr insn_pc);

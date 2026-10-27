@@ -1,3 +1,6 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
 #include "runtime/common/object_pool.h"
@@ -176,14 +179,17 @@ TEST_CASE("Test runtime ir") {
     Params params{};
     params.Push(local1);
     params.Push(local2);
-    hir_builder.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+    hir_builder.CallDynamic(ValueType::VOID, Lambda(Imm(uint64_t(1))), std::move(params));
 
     hir_builder.Return();
-    CFGAnalysisPass::Run(&hir_builder);
-    ReIdInstrPass::Run(&hir_builder);
-    RegAlloc reg_alloc{function->MaxInstrCount(), GPRSMask{0}, FPRSMask{0},
-                       FeatureSet{}};
-    RegisterAllocPass::Run(&hir_builder, &reg_alloc, FeatureSet{});
+    function->ComputeRPO();
+    function->IdByRPO();
+    AllocationFixture reg_alloc{function->MaxInstrCount(), GPRSMask{0}, FPRSMask{0}, FeatureSet{}};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &reg_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    function, reg_alloc, FeatureSet{}));
 
     MemMap mem_arena{0x100000, true};
 
@@ -229,16 +235,21 @@ TEST_CASE("Test runtime ir cfg") {
     Params params{};
     params.Push(local1);
     params.Push(local2);
-    hir_builder.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+    hir_builder.CallDynamic(ValueType::VOID, Lambda(Imm(uint64_t(1))), std::move(params));
 
     hir_builder.Return();
-    CFGAnalysisPass::Run(&hir_builder);
-    ReIdInstrPass::Run(&hir_builder);
+    function->ComputeRPO();
+    function->IdByRPO();
 #define ARM64_X_REGS_MASK 0b1111111111111111111
     swift::runtime::backend::GPRSMask gprs{ARM64_X_REGS_MASK};
     swift::runtime::backend::FPRSMask fprs{ARM64_X_REGS_MASK};
-    RegAlloc reg_alloc{0x100, gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::Run(&hir_builder, &reg_alloc, FeatureSet{});
+    AllocationFixture reg_alloc{0x100, gprs, fprs, FeatureSet{}};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &reg_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    function, reg_alloc, FeatureSet{}));
+    ;
 
     assert(local2.Defined());
 
@@ -270,11 +281,11 @@ TEST_CASE("Test runtime ir loop") {
     hir_builder.SetCurBlock(then_);
     hir_builder.Return();
 
-    CFGAnalysisPass::Run(&hir_builder);
-    ReIdInstrPass::Run(&hir_builder);
+    function->ComputeRPO();
+    function->IdByRPO();
 }
 
-TEST_CASE("CFG analysis terminates and computes dominators for an irreducible loop") {
+TEST_CASE("production CFG ordering terminates and covers an irreducible loop") {
     using namespace swift::runtime::ir;
 
     Inst::InitializeSlabHeap(0x100000);
@@ -295,11 +306,9 @@ TEST_CASE("CFG analysis terminates and computes dominators for an irreducible lo
     //              ^          |
     //              +----------+
     //
-    // `right <-> loop` is an irreducible cycle with entries from root and
-    // left. The old one-pass dominator walk first made left dominate exit,
-    // then revised loop's dominator after seeing the second cycle entry without
-    // propagating that revision to exit. Dominance-frontier construction then
-    // chased the stale chain to entry, whose dominator is itself, forever.
+    // `right <-> loop` has entries from root and left. Exercise the production
+    // successor walk: every reachable real block must occur exactly once,
+    // including after recomputing the order of this irreducible graph.
     auto [left, right] =
             hir_builder.If(terminal::If{condition,
                                        terminal::LinkBlock{2},
@@ -324,18 +333,21 @@ TEST_CASE("CFG analysis terminates and computes dominators for an irreducible lo
     REQUIRE(child >= 0);
     if (child == 0) {
         alarm(2);
-        CFGAnalysisPass::Run(function);
+        function->ComputeRPO();
+        function->IdByRPO();
+        function->ComputeRPO();
+        function->IdByRPO();
         alarm(0);
 
-        auto* entry = function->GetEntryBlock();
-        const bool dominators_are_correct =
-                entry->GetDominator() == entry &&
-                function->GetHIRBlocks()[1]->GetDominator() == entry &&
-                left->GetDominator() == function->GetHIRBlocks()[1] &&
-                right->GetDominator() == function->GetHIRBlocks()[1] &&
-                loop->GetDominator() == function->GetHIRBlocks()[1] &&
-                exit->GetDominator() == function->GetHIRBlocks()[1];
-        _exit(dominators_are_correct ? 0 : 1);
+        const std::array<const HIRBlock*, 5> expected{
+                function->GetHIRBlocks()[1], left, right, loop, exit};
+        const auto& rpo = function->GetHIRBlocksRPO();
+        bool valid = rpo.size() == expected.size();
+        for (auto* block : expected) {
+            valid &= std::count_if(rpo.begin(), rpo.end(),
+                    [block](const auto& item) { return &item == block; }) == 1;
+        }
+        _exit(valid ? 0 : 1);
     }
 
     int status = 0;
@@ -444,13 +456,13 @@ TEST_CASE("Test block ir print") {
     using namespace swift::runtime::backend;
     using namespace swift::runtime::ir;
     Block block{0, Location{0x1000}};
-    auto imm32 = block.LoadImm(Imm{8u}).SetType(ValueType::U32);
-    auto imm8 = block.LoadImm<BOOL>(Imm{8u}).SetType(ValueType::U8);
+    auto imm32 = block.LoadImm(ValueType::U32, Imm{8u});
+    auto imm8 = block.LoadImm(ValueType::U8, Imm{8u});
     block.StoreUniform(Uniform{32, ValueType::U32}, imm8);
     Params params{};
     params.Push(imm8);
     params.Push(imm8);
-    block.CallDynamic(Lambda(Imm(uint64_t(1))), params);
+    block.CallDynamic(ValueType::VOID, Lambda(Imm(uint64_t(1))), std::move(params));
     block.SaveFlags(imm8, Flags{Flags::NZCV});
     block.SetTerminal(terminal::If(terminal::If{imm8, terminal::LinkBlock{0x1000}, terminal::LinkBlock{0x2000}}));
     std::cout << block.ToString() << std::endl;

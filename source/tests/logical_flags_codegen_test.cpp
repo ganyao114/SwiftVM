@@ -1,4 +1,11 @@
+#include "tests/support/rewrite_fixture.h"
+using swift::runtime::test::RewriteFixture;
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/compile/workspace.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <array>
@@ -9,18 +16,17 @@
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
-#include "runtime/backend/runtime.h"
+#include "runtime/backend/arm64/compile/actions.h"
+#include "runtime/backend/arm64/compile/lower_predicates.h"
 #include "runtime/backend/arm64/jit/translator.h"
+#include "runtime/backend/runtime.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
-#include "runtime/backend/arm64/jit/block_analysis_index.h"
+#include "runtime/compile/allocate/allocation.h"
+#include "runtime/compile/analysis/block_index.h"
+#include "runtime/compile/passes/passes.h"
 #include "runtime/frontend/x86/decoder.h"
-#include "runtime/common/svm_config.h"
-#include "runtime/ir/opts/flags_elimination_pass.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -53,12 +59,9 @@ LogicalFlagEmission EmitLogicalFlagDirect(bool observe_result) {
     auto module = address_space.GetDefaultModule();
 
     IntrusivePtr<Block> block{new Block(0, Location{0x89c0})};
-    auto source = block->GetHostGPR(HostRegIndex(22), Imm{0u})
-                          .SetType(ValueType::U32);
-    auto extract = block->BitExtract(source, Imm{0u}, Imm{8u})
-                           .SetType(ValueType::U8);
-    auto result = block->Or(extract, Operand{Imm{swift::u64{0}}})
-                          .SetType(ValueType::U8);
+    auto source = block->GetHostGPR(ValueType::U32, HostRegIndex(22), Imm{0u});
+    auto extract = block->BitExtract(ValueType::U8, source, Imm{0u}, Imm{8u});
+    auto result = block->Or(ValueType::U8, extract, Operand{Imm{swift::u64{0}}});
     block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
     if (observe_result) {
         block->StoreUniform(Uniform{0, ValueType::U8}, result);
@@ -67,15 +70,20 @@ LogicalFlagEmission EmitLogicalFlagDirect(bool observe_result) {
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
     const bool extract_tied =
             alloc.ValueGPR(source).id == alloc.ValueGPR(extract).id;
 
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -144,8 +152,8 @@ std::vector<std::string> BeforeRequestTail(
     size_t cold = instructions.size();
     unsigned polls{};
     for (size_t i = 0; i + 1 < instructions.size(); ++i) {
-        if (!instructions[i].starts_with("ldarb ") ||
-            !instructions[i + 1].starts_with("cbz ")) continue;
+        if (!instructions[i].starts_with("ldar x") || !instructions[i + 1].starts_with("cbz x"))
+            continue;
         const auto* check = reinterpret_cast<const Instruction*>(begin + (i + 1) * sizeof(swift::u32));
         const auto* resume = reinterpret_cast<const swift::u8*>(check->GetImmPCOffsetTarget());
         REQUIRE(resume > begin + (i + 1) * sizeof(swift::u32));
@@ -160,7 +168,7 @@ std::vector<std::string> BeforeRequestTail(
     }
     REQUIRE(polls == 2);
     const std::vector<std::string> hot{instructions.begin(), instructions.begin() + cold};
-    REQUIRE(Count(hot, "ldarb ") == 2);
+    REQUIRE(Count(hot, "ldar x") == 2);
     return hot;
 }
 
@@ -183,11 +191,11 @@ std::vector<std::string> EmitNarrowArithmetic(OpCode op,
             Uniform{0, ValueType::U8});
     Value result;
     if (op == OpCode::Add) {
-        result = block->Add(source, Operand{Imm{3u}}).SetType(ValueType::U8);
+        result = block->Add(ValueType::U8, source, Operand{Imm{3u}});
     } else if (op == OpCode::Sub) {
-        result = block->Sub(source, Operand{Imm{3u}}).SetType(ValueType::U8);
+        result = block->Sub(ValueType::U8, source, Operand{Imm{3u}});
     } else {
-        result = block->Neg(source).SetType(ValueType::U8);
+        result = block->Neg(ValueType::U8, source);
     }
     if (branch_only) {
         block->AppendInst(OpCode::BranchOnlyFlags, result, flags);
@@ -201,12 +209,17 @@ std::vector<std::string> EmitNarrowArithmetic(OpCode op,
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -230,11 +243,11 @@ std::vector<std::string> EmitPackedCVAFClear(
             Uniform{0, ValueType::U32});
     Value result;
     if (producer == OpCode::Add) {
-        result = block->Add(source, Operand{Imm{1u}}).SetType(ValueType::U32);
+        result = block->Add(ValueType::U32, source, Operand{Imm{1u}});
     } else if (producer == OpCode::Xor) {
-        result = block->Xor(source, Operand{source}).SetType(ValueType::U32);
+        result = block->Xor(ValueType::U32, source, Operand{source});
     } else {
-        result = block->And(source, Operand{source}).SetType(ValueType::U32);
+        result = block->And(ValueType::U32, source, Operand{source});
     }
     const auto clear = exact_clear
             ? Flags::CV | Flags::AuxiliaryCarry
@@ -245,12 +258,17 @@ std::vector<std::string> EmitPackedCVAFClear(
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -270,27 +288,29 @@ std::vector<std::string> EmitParityOnlyLogicalBeforeSelect() {
     auto module = address_space.GetDefaultModule();
 
     IntrusivePtr<Block> block{new Block(0, Location{0x89e0})};
-    auto source = block->LoadUniform<TypedValue<ValueType::U64>>(
-            Uniform{0, ValueType::U64});
-    auto parity = block->Or(source, Operand{Imm{swift::u64{0}}})
-                          .SetType(ValueType::U64);
+    auto source = block->LoadUniform<TypedValue<ValueType::U64>>(Uniform{0, ValueType::U64});
+    auto parity = block->Or(ValueType::U64, source, Operand{Imm{swift::u64{0}}});
     block->SaveFlags(parity, Flags::Parity);
-    auto condition = block->LoadImm(Imm{swift::u64{1}}).SetType(ValueType::U8);
-    auto true_value = block->LoadImm(Imm{swift::u64{2}}).SetType(ValueType::U64);
-    auto false_value = block->LoadImm(Imm{swift::u64{3}}).SetType(ValueType::U64);
-    auto selected = block->Select(condition, true_value, false_value)
-                            .SetType(ValueType::U64);
+    auto condition = block->LoadImm(ValueType::U8, Imm{swift::u64{1}});
+    auto true_value = block->LoadImm(ValueType::U64, Imm{swift::u64{2}});
+    auto false_value = block->LoadImm(ValueType::U64, Imm{swift::u64{3}});
+    auto selected = block->Select(ValueType::U64, condition, true_value, false_value);
     block->StoreUniform(Uniform{8, ValueType::U64}, selected);
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -412,7 +432,7 @@ TEST_CASE("narrow register self tests skip the redundant AND") {
          }) {
         const auto& code = test.code;
         Block block{0, Location{reinterpret_cast<swift::VAddr>(code.data())}};
-        swift::runtime::ir::Assembler assembler{&block};
+        swift::runtime::compile::IrBuilder assembler{&block};
         swift::x86::X64Decoder decoder{
                 reinterpret_cast<swift::VAddr>(code.data()), &memory, &assembler,
                 true, swift::x86::Arm64Features::None, false, false, FeatureSet{}};
@@ -443,20 +463,18 @@ TEST_CASE("dead-edge fixed-home self tests branch without a logical result") {
     };
     AddressSpace address_space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0x8a80})};
-    auto base = block->GetHostGPR(HostRegIndex(22), Imm{0u})
-                        .SetType(ValueType::U64);
-    auto loaded = block->LoadMemory(Operand{base}).SetType(ValueType::U64);
-    auto* publication = block->AppendInst(
-            OpCode::SetHostGPR, loaded, HostRegIndex(22), Imm{0u});
+    auto base = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+    auto loaded = block->LoadMemory(ValueType::U64, Operand{base});
+    auto* publication = block->AppendInst(OpCode::SetHostGPR, loaded, HostRegIndex(22), Imm{0u});
     block->AdvancePC(Imm{3u});
-    auto left = block->BitCast(loaded).SetType(ValueType::U64);
-    auto right = block->BitCast(loaded).SetType(ValueType::U64);
-    auto tested = block->And(left, Operand{right}).SetType(ValueType::U64);
+    auto left = block->BitCast(ValueType::U64, loaded);
+    auto right = block->BitCast(ValueType::U64, loaded);
+    auto tested = block->And(ValueType::U64, left, Operand{right});
     block->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
     block->SaveFlags(tested, Flags::Negate | Flags::Zero | Flags::Parity);
     block->AdvancePC(Imm{3u});
     block->BranchOnlyEdges();
-    auto condition = block->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+    auto condition = block->LocalCondSet(ValueType::U8, Cond::EQ);
     block->SetTerminal(terminal::If{
             condition,
             terminal::LinkBlock{Location{0x8a90}},
@@ -464,34 +482,55 @@ TEST_CASE("dead-edge fixed-home self tests branch without a logical result") {
     });
 
     FeatureSet features{};
-    FlagsEliminationPass::Run(block.get(), nullptr, features);
+    swift::runtime::compile::EliminateFlags(RewriteFixture{block.get(), true, nullptr}.Get(), features);
     block->ReIdInstr();
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
     alloc.MapRegister(loaded.Id(), HostGPR{22});
     alloc.MarkHostWriteCoalesced(publication->Id());
     // The independent builder never materializes a value to prove eligibility.
-    arm64::BlockAnalysisIndex analysis;
+    compile::CompileWorkspace predicate_workspace;
+    compile::BlockAnalysisIndex analysis;
     analysis.Build(block.get());
-    arm64::GuestStateMap facts;
-    facts.Analyze(block.get(), features);
-    REQUIRE(arm64::BuildIntegerBranchPlan(block.get(), analysis, alloc, features, facts));
+    REQUIRE(arm64::LowerIntegerBranch(block.get(),
+                                      analysis,
+                                      predicate_workspace,
+                                      alloc,
+                                      features,
+                                      alloc.PrepareFixedGPRHomes()));
     alloc.MapRegister(loaded.Id(), HostGPR{23});
-    REQUIRE_FALSE(arm64::BuildIntegerBranchPlan(block.get(), analysis, alloc, features, facts));
+    REQUIRE_FALSE(arm64::LowerIntegerBranch(block.get(),
+                                            analysis,
+                                            predicate_workspace,
+                                            alloc,
+                                            features,
+                                            alloc.PrepareFixedGPRHomes()));
     alloc.MapMemSpill(loaded.Id(), SpillSlot{2});
-    REQUIRE_FALSE(arm64::BuildIntegerBranchPlan(block.get(), analysis, alloc, features, facts));
+    REQUIRE_FALSE(arm64::LowerIntegerBranch(block.get(),
+                                            analysis,
+                                            predicate_workspace,
+                                            alloc,
+                                            features,
+                                            alloc.PrepareFixedGPRHomes()));
     alloc.MapRegister(loaded.Id(), HostGPR{22});
-    alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-    const auto plan = alloc.GPRPlanFor(block.get());
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                              alloc);
+    const auto plan = alloc.Actions().ForBlock(block.get());
     REQUIRE(plan);
-    REQUIRE(plan->integer_branch);
-    REQUIRE(plan->integer_branch->edge.zero_target == 22);
-    REQUIRE(plan->integer_branch->edge.condition == condition.Def());
-    REQUIRE_FALSE(plan->integer_branch->narrow);
-    REQUIRE(plan->pinned->MatchesFrozenIR());
-    arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+    const auto* branch = alloc.Actions().IntegerBranch(block.get());
+    REQUIRE(branch);
+    REQUIRE(branch->ZeroTarget() == 22);
+    REQUIRE(branch->condition == condition.Id());
+    REQUIRE_FALSE(branch->IsNarrow());
+    REQUIRE(alloc.Actions().MatchesAllocation(alloc));
+    arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -521,7 +560,7 @@ TEST_CASE("compact FP compare preserves carry polarity across audited moves") {
         DirectMemory memory;
         const auto address = reinterpret_cast<swift::VAddr>(code.data());
         IntrusivePtr<Block> block{new Block(0, Location{address})};
-        swift::runtime::ir::Assembler assembler{block.get()};
+        swift::runtime::compile::IrBuilder assembler{block.get()};
         FeatureSet features{};
         features.flags_fcmp_fuse = true;
         features.flags_fcmp_compact = true;
@@ -554,12 +593,18 @@ TEST_CASE("compact FP compare preserves carry polarity across audited moves") {
         };
         AddressSpace address_space{config};
         auto module = address_space.GetDefaultModule();
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-        alloc.CompleteGPRAllocation(module);
-        arm64::JitContext context{module, alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+        arm64::JitContext context{module, alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -601,7 +646,7 @@ TEST_CASE("dead-edge FP compares branch on raw host flags") {
         DirectMemory memory;
         const auto address = reinterpret_cast<swift::VAddr>(code.data());
         IntrusivePtr<Block> block{new Block(0, Location{address})};
-        Assembler assembler{block.get()};
+        swift::runtime::compile::IrBuilder assembler{block.get()};
         FeatureSet features{};
         const auto arm64_features = Arm64Features::AXFlag | Arm64Features::FlagM;
         swift::x86::X64Decoder decoder{
@@ -621,7 +666,7 @@ TEST_CASE("dead-edge FP compares branch on raw host flags") {
         REQUIRE(count_op(OpCode::PublishFCmpFlags) == 1);
         REQUIRE(count_op(OpCode::InvertCarry) == 1);
 
-        FlagsEliminationPass::Run(block.get(), nullptr, features);
+        swift::runtime::compile::EliminateFlags(RewriteFixture{block.get(), true, nullptr}.Get(), features);
         REQUIRE(count_op(OpCode::BranchOnlyEdges) == 0);
         REQUIRE(count_op(OpCode::PublishFCmpFlags) == 0);
         REQUIRE(count_op(OpCode::InvertCarry) == 0);
@@ -638,12 +683,19 @@ TEST_CASE("dead-edge FP compares branch on raw host flags") {
                 .arm64_features = arm64_features,
         };
         AddressSpace address_space{config};
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-        arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                                  alloc);
+        arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -683,7 +735,7 @@ TEST_CASE("dead-edge integer compares branch on raw host flags") {
         DirectMemory memory;
         const auto address = reinterpret_cast<swift::VAddr>(code.data());
         IntrusivePtr<Block> block{new Block(0, Location{address})};
-        Assembler assembler{block.get()};
+        swift::runtime::compile::IrBuilder assembler{block.get()};
         FeatureSet features{};
         constexpr auto arm64_features = Arm64Features::FlagM;
         swift::x86::X64Decoder decoder{
@@ -702,7 +754,7 @@ TEST_CASE("dead-edge integer compares branch on raw host flags") {
         REQUIRE(count_op(OpCode::BranchOnlyEdges) == 1);
         REQUIRE(count_op(OpCode::InvertCarry) == 1);
 
-        FlagsEliminationPass::Run(block.get(), nullptr, features);
+        swift::runtime::compile::EliminateFlags(RewriteFixture{block.get(), true, nullptr}.Get(), features);
         REQUIRE(count_op(OpCode::BranchOnlyEdges) == 0);
         const bool zero_only = test.opcode == 0x74 || test.opcode == 0x75;
         if (zero_only) {
@@ -712,9 +764,7 @@ TEST_CASE("dead-edge integer compares branch on raw host flags") {
                                            return inst.GetOp() == OpCode::InvertCarry;
                                        });
             REQUIRE(invert != block->GetInstList().end());
-            auto* victim = &*invert;
-            block->GetInstList().erase(invert);
-            delete victim;
+            block->DestroyInst(&*invert);
         }
         REQUIRE(count_op(OpCode::InvertCarry) == (zero_only ? 0 : 1));
         REQUIRE(block->HasDeadEdgeIntegerBranchProof());
@@ -730,12 +780,19 @@ TEST_CASE("dead-edge integer compares branch on raw host flags") {
                 .arm64_features = arm64_features,
         };
         AddressSpace address_space{config};
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-        arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                                  alloc);
+        arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -746,7 +803,7 @@ TEST_CASE("dead-edge integer compares branch on raw host flags") {
         REQUIRE(Count(instructions, "uxtb ") == 1);
         REQUIRE(Count(instructions, "cmp ") == 1);
         REQUIRE(CountMnemonic(instructions, "lsl ") == 0);
-        REQUIRE(Count(instructions, "ldarb ") == 2);
+        REQUIRE(Count(instructions, "ldar x") == 2);
         REQUIRE(Count(instructions, "lsr ") == 0);
         REQUIRE(std::ranges::count_if(instructions, [](const auto& instruction) {
             return instruction.starts_with("cmp ") &&
@@ -773,7 +830,7 @@ TEST_CASE("incoming packed carry-zero branches test the flags carrier") {
         DirectMemory memory;
         const auto address = reinterpret_cast<swift::VAddr>(code.data());
         IntrusivePtr<Block> block{new Block(0, Location{address})};
-        Assembler assembler{block.get()};
+        swift::runtime::compile::IrBuilder assembler{block.get()};
         FeatureSet features{};
         constexpr auto arm64_features = Arm64Features::FlagM;
         swift::x86::X64Decoder decoder{
@@ -792,12 +849,19 @@ TEST_CASE("incoming packed carry-zero branches test the flags carrier") {
                 .arm64_features = arm64_features,
         };
         AddressSpace address_space{config};
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-        arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                                  alloc);
+        arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -844,7 +908,7 @@ TEST_CASE("branch-only narrow equality compares extend the register operand") {
         DirectMemory memory;
         const auto address = reinterpret_cast<swift::VAddr>(code.data());
         IntrusivePtr<Block> block{new Block(0, Location{address})};
-        Assembler assembler{block.get()};
+        swift::runtime::compile::IrBuilder assembler{block.get()};
         FeatureSet features{};
         constexpr auto arm64_features = Arm64Features::FlagM;
         swift::x86::X64Decoder decoder{
@@ -852,7 +916,7 @@ TEST_CASE("branch-only narrow equality compares extend the register operand") {
                 features};
         decoder.Decode();
 
-        FlagsEliminationPass::Run(block.get(), nullptr, features);
+        swift::runtime::compile::EliminateFlags(RewriteFixture{block.get(), true, nullptr}.Get(), features);
         block->ReIdInstr();
         Config config{
                 .loc_start = 0,
@@ -864,12 +928,19 @@ TEST_CASE("branch-only narrow equality compares extend the register operand") {
                 .arm64_features = arm64_features,
         };
         AddressSpace address_space{config};
-        RegAlloc alloc{block->MaxInstrId(),
-                       address_space.GetTrampolines().GetGPRRegs(),
-                       address_space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &alloc, false, features);
-        alloc.CompleteGPRAllocation(address_space.GetDefaultModule());
-        arm64::JitContext context{address_space.GetDefaultModule(), alloc};
+        AllocationFixture alloc{block->MaxInstrId(),
+                                address_space.GetTrampolines().GetGPRRegs(),
+                                address_space.GetTrampolines().GetFPRRegs(),
+                                features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &alloc,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), alloc, features),
+                false);
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(address_space.GetDefaultModule(),
+                                                                  alloc);
+        arm64::JitContext context{address_space.GetDefaultModule(), alloc, alloc.Actions()};
         arm64::JitTranslator translator{context};
         translator.Translate(block.get());
         context.Finish();
@@ -883,12 +954,12 @@ TEST_CASE("branch-only narrow equality compares extend the register operand") {
     }
 }
 
-TEST_CASE("dead-edge proof follows one direct call to a dominating flag write") {
+TEST_CASE("dead-edge proof rejects a call before a dominating flag write", "[flags][fault]") {
     auto decode_marker = [](const std::array<swift::u8, 36>& code) {
         DirectMemory memory;
         const auto address = reinterpret_cast<swift::VAddr>(code.data());
         IntrusivePtr<Block> block{new Block(0, Location{address})};
-        Assembler assembler{block.get()};
+        swift::runtime::compile::IrBuilder assembler{block.get()};
         FeatureSet features{};
         swift::x86::X64Decoder decoder{
                 address, &memory, &assembler, true, Arm64Features::FlagM,
@@ -910,12 +981,11 @@ TEST_CASE("dead-edge proof follows one direct call to a dominating flag write") 
             0x0a, 0x84, 0xc9, 0xf4,
     };
     const auto [markers, dependencies] = decode_marker(code);
-    REQUIRE(markers == 1);
-    REQUIRE(dependencies.size() == 1);
-    REQUIRE(dependencies[0].start.Value() ==
-            reinterpret_cast<swift::VAddr>(code.data()) + 20);
-    REQUIRE(dependencies[0].end.Value() ==
-            reinterpret_cast<swift::VAddr>(code.data()) + 35);
+    // CALL can fault while pushing its return address, and this callee
+    // loads memory before TEST overwrites flags. Neither path proves that
+    // the incoming flags are unobservable before the full overwrite.
+    REQUIRE(markers == 0);
+    REQUIRE(dependencies.empty());
 
     code[33] = 0x74;
     code[34] = 0x00;
@@ -929,7 +999,7 @@ TEST_CASE("dead-edge proof follows one direct jump to a dominating flag write") 
         DirectMemory memory;
         const auto address = reinterpret_cast<swift::VAddr>(code.data());
         IntrusivePtr<Block> block{new Block(0, Location{address})};
-        Assembler assembler{block.get()};
+        swift::runtime::compile::IrBuilder assembler{block.get()};
         FeatureSet features{};
         swift::x86::X64Decoder decoder{
                 address, &memory, &assembler, true, Arm64Features::FlagM,
@@ -964,59 +1034,84 @@ TEST_CASE("dead-edge proof follows one direct jump to a dominating flag write") 
 }
 
 TEST_CASE("dead-edge zero home remains intact until terminal consumption", "[integer-branch]") {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     for (unsigned mode : {0u, 1u, 2u, 3u, 4u, 5u}) {
         CAPTURE(mode);
         Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
                       .has_local_operation = false, .backend_isa = kArm64};
         AddressSpace space{config}; FeatureSet features{};
         IntrusivePtr<Block> block{new Block(0, Location{0x8ab0})};
-        const auto base = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
-        const auto loaded = block->LoadMemory(Operand{base}).SetType(ValueType::U64);
-        auto* publication = block->AppendInst(OpCode::SetHostGPR, loaded, HostRegIndex(22), Imm{0u});
+        const auto base = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+        const auto loaded = block->LoadMemory(ValueType::U64, Operand{base});
+        auto* publication =
+                block->AppendInst(OpCode::SetHostGPR, loaded, HostRegIndex(22), Imm{0u});
         block->AdvancePC(Imm{1u});
-        const auto result = block->And(loaded, Operand{loaded}).SetType(ValueType::U64);
+        const auto result = block->And(ValueType::U64, loaded, Operand{loaded});
         block->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
         block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
-        block->AdvancePC(Imm{1u}); block->BranchOnlyEdges();
-        const auto condition = block->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
-        const auto intruder = block->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+        block->AdvancePC(Imm{1u});
+        block->BranchOnlyEdges();
+        const auto condition = block->LocalCondSet(ValueType::U8, Cond::EQ);
+        const auto intruder = block->LoadImm(ValueType::U64, Imm{swift::u64{7}});
         if (mode == 3 || mode == 5) {
-            const auto changed = block->Add(loaded, Operand{Imm{1u}}).SetType(ValueType::U64);
+            const auto changed = block->Add(ValueType::U64, loaded, Operand{Imm{1u}});
             auto* save = block->AppendInst(OpCode::SaveFlags, changed, Flags::NZCV);
             if (mode == 5) {
-                block->RemoveInst(changed.Def()); block->InsertBefore(changed.Def(), condition.Def());
-                block->RemoveInst(save); block->InsertBefore(save, condition.Def());
+                compile::RewriteContext{block.get(), compilation_workspace, nullptr, false}.Change(
+                        block.get(), changed.Def(), [&](Inst& target) {
+                            block->RemoveInst(&target);
+                            block->InsertBefore(&target, condition.Def());
+                        });
+                block->RemoveInst(save);
+                block->InsertBefore(save, condition.Def());
             }
         }
         if (mode == 4) {
-            const auto observed = block->LoadMemory(Operand{base}).SetType(ValueType::U64);
+            const auto observed = block->LoadMemory(ValueType::U64, Operand{base});
             block->StoreUniform(Uniform{8, ValueType::U64}, observed);
         }
         if (mode == 2) block->SetHostGPR(intruder, HostRegIndex(22), Imm{0u});
         else block->StoreUniform(Uniform{0, ValueType::U64}, intruder);
         block->SetTerminal(terminal::If{condition, terminal::LinkBlock{Location{0x8ac0}},
                                       terminal::LinkBlock{Location{0x8ad0}}});
-        FlagsEliminationPass::Run(block.get(), nullptr, features); block->ReIdInstr();
+        swift::runtime::compile::EliminateFlags(RewriteFixture{block.get(), true, nullptr}.Get(), features); block->ReIdInstr();
         REQUIRE(block->HasDeadEdgeIntegerBranchProof());
-        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                            space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
         allocation.MapRegister(loaded.Id(), HostGPR{22});
         allocation.MarkHostWriteCoalesced(publication->Id());
         allocation.MapRegister(intruder.Id(), HostGPR{static_cast<swift::u16>(mode == 1 ? 22 : 23)});
-        arm64::BlockAnalysisIndex analysis; analysis.Build(block.get());
-        arm64::GuestStateMap facts; facts.Analyze(block.get(), features);
-        const auto direct = arm64::BuildIntegerBranchPlan(block.get(), analysis, allocation, features, facts);
+        compile::CompileWorkspace predicate_workspace;
+        compile::BlockAnalysisIndex analysis;
+        analysis.Build(block.get());
+        const auto direct = arm64::LowerIntegerBranch(block.get(),
+                                                      analysis,
+                                                      predicate_workspace,
+                                                      allocation,
+                                                      features,
+                                                      allocation.PrepareFixedGPRHomes());
         if (mode == 0) REQUIRE(direct);
         else REQUIRE_FALSE(direct);
         // The ordinary-writer cell proves the pure builder without imposing an
         // invalid manual overlap on the allocator's final target replay.
         if (mode == 1 || mode >= 3) continue;
-        allocation.CompleteGPRAllocation(space.GetDefaultModule());
-        const auto frozen = allocation.GPRPlanFor(block.get()); REQUIRE(frozen);
-        if (mode == 0) REQUIRE(frozen->integer_branch);
-        else REQUIRE_FALSE(frozen->integer_branch);
-        arm64::JitContext context{space.GetDefaultModule(), allocation};
+        ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(),
+                                                                  allocation);
+        const auto frozen = allocation.Actions().ForBlock(block.get());
+        REQUIRE(frozen);
+        if (mode == 0)
+            REQUIRE(allocation.Actions().IntegerBranch(block.get()));
+        else
+            REQUIRE_FALSE(allocation.Actions().IntegerBranch(block.get()));
+        arm64::JitContext context{space.GetDefaultModule(), allocation, allocation.Actions()};
         arm64::JitTranslator translator{context}; translator.Translate(block.get()); context.Finish();
         const auto instructions = Disassemble(context);
         const auto zero_branches = Count(instructions, "cbnz x22") + Count(instructions, "cbz x22");
@@ -1032,27 +1127,43 @@ TEST_CASE("dead-edge CBZ requires a complete 32 or 64 bit home", "[integer-branc
                       .has_local_operation = false, .backend_isa = kArm64};
         AddressSpace space{config}; FeatureSet features{};
         IntrusivePtr<Block> block{new Block(0, Location{0x8ae0})};
-        const auto base = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
-        const auto loaded = block->LoadMemory(Operand{base}).SetType(type);
-        auto* publication = block->AppendInst(OpCode::SetHostGPR, loaded, HostRegIndex(22), Imm{0u});
+        const auto base = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+        const auto loaded = block->LoadMemory(type, Operand{base});
+        auto* publication =
+                block->AppendInst(OpCode::SetHostGPR, loaded, HostRegIndex(22), Imm{0u});
         block->AdvancePC(Imm{1u});
-        const auto result = block->And(loaded, Operand{loaded}).SetType(type);
+        const auto result = block->And(type, loaded, Operand{loaded});
         block->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
         block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
-        block->AdvancePC(Imm{1u}); block->BranchOnlyEdges();
-        const auto condition = block->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
-        block->SetTerminal(terminal::If{condition, terminal::LinkBlock{Location{0x8af0}},
-                                      terminal::LinkBlock{Location{0x8b00}}});
-        FlagsEliminationPass::Run(block.get(), nullptr, features); block->ReIdInstr();
+        block->AdvancePC(Imm{1u});
+        block->BranchOnlyEdges();
+        const auto condition = block->LocalCondSet(ValueType::U8, Cond::EQ);
+        block->SetTerminal(terminal::If{condition,
+                                        terminal::LinkBlock{Location{0x8af0}},
+                                        terminal::LinkBlock{Location{0x8b00}}});
+        swift::runtime::compile::EliminateFlags(RewriteFixture{block.get(), true, nullptr}.Get(), features); block->ReIdInstr();
         REQUIRE(block->HasDeadEdgeIntegerBranchProof());
-        RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                            space.GetTrampolines().GetFPRRegs(), features};
-        RegisterAllocPass::Run(block.get(), &allocation, false, features);
+        AllocationFixture allocation{block->MaxInstrId(),
+                                     space.GetTrampolines().GetGPRRegs(),
+                                     space.GetTrampolines().GetFPRRegs(),
+                                     features};
+        ::swift::runtime::compile::AllocateBlock(
+                block.get(),
+                &allocation,
+                ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                        block.get(), allocation, features),
+                false);
         allocation.MapRegister(loaded.Id(), HostGPR{22});
         allocation.MarkHostWriteCoalesced(publication->Id());
-        arm64::BlockAnalysisIndex analysis; analysis.Build(block.get());
-        arm64::GuestStateMap facts; facts.Analyze(block.get(), features);
-        const auto direct = arm64::BuildIntegerBranchPlan(block.get(), analysis, allocation, features, facts);
+        compile::CompileWorkspace predicate_workspace;
+        compile::BlockAnalysisIndex analysis;
+        analysis.Build(block.get());
+        const auto direct = arm64::LowerIntegerBranch(block.get(),
+                                                      analysis,
+                                                      predicate_workspace,
+                                                      allocation,
+                                                      features,
+                                                      allocation.PrepareFixedGPRHomes());
         REQUIRE(direct.has_value() == (ir::GetValueSizeByte(type) >= 4));
     }
 }
@@ -1068,30 +1179,41 @@ TEST_CASE("dead-edge terminal fallback preserves the captured zero relation", "[
             constexpr swift::u64 start = 0xfa00, yes = 0xfa10, no = 0xfa20;
             IntrusivePtr<Block> entry{new Block(0, Location{start})};
             const auto width = ir::GetValueSizeByte(type);
-            const auto initial = entry->LoadImm(Imm{static_cast<swift::u64>(low | (width < 8 ? 1ull << (width * 8) : 0ull))}).SetType(ValueType::U64);
+            const auto initial = entry->LoadImm(
+                    ValueType::U64,
+                    Imm{static_cast<swift::u64>(low | (width < 8 ? 1ull << (width * 8) : 0ull))});
             entry->SetHostGPR(initial, HostRegIndex(22), Imm{0u});
-            const auto captured = entry->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(type);
+            const auto captured = entry->GetHostGPR(type, HostRegIndex(22), Imm{0u});
             entry->SetHostGPR(captured, HostRegIndex(22), Imm{0u});
             entry->AdvancePC(Imm{1u});
-            const auto result = entry->And(captured, Operand{captured}).SetType(type);
+            const auto result = entry->And(type, captured, Operand{captured});
             entry->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
             entry->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
-            entry->AdvancePC(Imm{1u}); entry->BranchOnlyEdges();
-            const auto condition = entry->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
-            const auto changed = entry->LoadImm(Imm{swift::u64{7}}).SetType(ValueType::U64);
+            entry->AdvancePC(Imm{1u});
+            entry->BranchOnlyEdges();
+            const auto condition = entry->LocalCondSet(ValueType::U8, Cond::EQ);
+            const auto changed = entry->LoadImm(ValueType::U64, Imm{swift::u64{7}});
             entry->SetHostGPR(changed, HostRegIndex(22), Imm{0u});
             entry->SetTerminal(terminal::If{condition, terminal::LinkBlock{Location{yes}},
                                           terminal::LinkBlock{Location{no}}});
-            FlagsEliminationPass::Run(entry.get(), nullptr, features);
+            swift::runtime::compile::EliminateFlags(RewriteFixture{entry.get(), true, nullptr}.Get(), features);
             REQUIRE(entry->HasDeadEdgeIntegerBranchProof());
             auto publish = [&](Block* block, bool inspect) {
                 block->ReIdInstr();
-                RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                                    space.GetTrampolines().GetFPRRegs(), features};
-                RegisterAllocPass::Run(block, &allocation, false, features);
-                allocation.CompleteGPRAllocation(module);
-                if (inspect) REQUIRE_FALSE(allocation.GPRPlanFor(block)->integer_branch);
-                arm64::JitContext context{module, allocation}; arm64::JitTranslator translator{context};
+                AllocationFixture allocation{block->MaxInstrId(),
+                                             space.GetTrampolines().GetGPRRegs(),
+                                             space.GetTrampolines().GetFPRRegs(),
+                                             features};
+                ::swift::runtime::compile::AllocateBlock(
+                        block,
+                        &allocation,
+                        ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                                block, allocation, features),
+                        false);
+                ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+                if (inspect) REQUIRE_FALSE(allocation.Actions().IntegerBranch(block));
+                arm64::JitContext context{module, allocation, allocation.Actions()};
+                arm64::JitTranslator translator{context};
                 translator.Translate(block); context.Finish();
                 const auto [index, buffer] = module->AllocCodeCache(context.CurrentBufferSize(), context.RequiresRegionTrampoline());
                 REQUIRE(index != INVALID_CACHE_ID); context.Flush(buffer);
@@ -1100,7 +1222,8 @@ TEST_CASE("dead-edge terminal fallback preserves the captured zero relation", "[
             publish(entry.get(), true);
             for (const auto target : {yes, no}) {
                 IntrusivePtr<Block> outcome{new Block(0, Location{target})};
-                const auto answer = outcome->LoadImm(Imm{target == yes ? swift::u64{111} : swift::u64{222}}).SetType(ValueType::U64);
+                const auto answer = outcome->LoadImm(
+                        ValueType::U64, Imm{target == yes ? swift::u64{111} : swift::u64{222}});
                 outcome->StoreUniform(Uniform{0, ValueType::U64}, answer);
                 outcome->SetTerminal(terminal::ReturnToHost{}); publish(outcome.get(), false);
             }

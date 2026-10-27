@@ -7,7 +7,7 @@ namespace swift::runtime::backend::riscv64 {
 
 using namespace biscuit;
 
-void JitContext::ConfigurePhiRegisters(std::span<ir::Inst* const> phis) {
+void JitContext::ConfigurePhiRegisters(std::span<const ir::Inst* const> phis) {
     const u32 capacity = scalar_registers.size() - u32(flags_enabled);
     for (auto* inst : phis) {
         PhiBinding binding{inst};
@@ -31,55 +31,74 @@ void JitContext::ConfigurePhiRegisters(std::span<ir::Inst* const> phis) {
     used_gprs |= reserved_gprs;
 }
 
-void JitContext::AssignPhi(ir::Inst* inst, GPR low, GPR high) {
-    for (const auto& binding : phi_bindings) if (binding.inst == inst) {
-        if (binding.vector_index != UINT32_MAX) {
-            SetVectorType(64, 2); masm.VMV(v7, high);
-            masm.VSLIDE1UP(Vec{binding.vector_index + 8}, v7, low);
+void JitContext::AssignPhi(const ir::Inst* inst, GPR low, GPR high) {
+    for (const auto& binding : phi_bindings)
+        if (binding.inst == inst) {
+            if (binding.vector_index != UINT32_MAX) {
+                SetVectorType(64, 2);
+                masm.VMV(v7, high);
+                masm.VSLIDE1UP(Vec{binding.vector_index + 8}, v7, low);
+                return;
+            }
+            if (binding.gpr_indices[0] != UINT32_MAX) {
+                masm.MV(scalar_registers[binding.gpr_indices[0]], low);
+                if (binding.gpr_indices[1] != UINT32_MAX)
+                    masm.MV(scalar_registers[binding.gpr_indices[1]], high);
+                return;
+            }
+            Store(low, values, s64(inst->Id()) * kValueStride);
+            ++value_stats.stores;
+            if (!ZeroHigh(inst)) {
+                Store(high, values, s64(inst->Id()) * kValueStride + 8);
+                ++value_stats.stores;
+            }
             return;
         }
-        if (binding.gpr_indices[0] != UINT32_MAX) {
-            masm.MV(scalar_registers[binding.gpr_indices[0]], low);
-            if (binding.gpr_indices[1] != UINT32_MAX) masm.MV(scalar_registers[binding.gpr_indices[1]], high);
-            return;
-        }
-        Store(low, values, s64(inst->Id()) * kValueStride); ++value_stats.stores;
-        if (!ZeroHigh(inst)) { Store(high, values, s64(inst->Id()) * kValueStride + 8); ++value_stats.stores; }
-        return;
-    }
     PANIC("RV64 phi has no edge-assignment binding");
 }
 
-bool JitContext::AssignPhiValue(ir::Inst* inst, ir::Value value) {
-    for (const auto& binding : phi_bindings) if (binding.inst == inst) {
-        const u32 size = ir::GetValueSizeByte(inst->ReturnType());
-        if (binding.vector_index != UINT32_MAX) {
-            const auto source = SourceVector(value, v1), target = Vec{binding.vector_index + 8};
-            if (size == 16) { SetVectorType(64, 2); masm.VMV(target, source); }
-            else {
-                SetVectorType(64, 2); masm.VMV(target, 0);
-                SetVectorType(size * 8, 1); masm.VRGATHER(target, source, 0u);
+bool JitContext::AssignPhiValue(const ir::Inst* inst, ir::Value value) {
+    for (const auto& binding : phi_bindings)
+        if (binding.inst == inst) {
+            const u32 size = ir::GetValueSizeByte(inst->ReturnType());
+            if (binding.vector_index != UINT32_MAX) {
+                const auto source = SourceVector(value, v1), target = Vec{binding.vector_index + 8};
+                if (size == 16) {
+                    SetVectorType(64, 2);
+                    masm.VMV(target, source);
+                } else {
+                    SetVectorType(64, 2);
+                    masm.VMV(target, 0);
+                    SetVectorType(size * 8, 1);
+                    masm.VRGATHER(target, source, 0u);
+                }
+                return true;
             }
-            return true;
-        }
-        if (binding.gpr_indices[0] != UINT32_MAX && size <= 8) {
-            const auto source = SourcePart(value, 0, t0), target = scalar_registers[binding.gpr_indices[0]];
-            if (source != target) masm.MV(target, source);
-            Mask(target, size * 8);
-            return true;
-        }
-        if (binding.gpr_indices[0] == UINT32_MAX && features.vector && ir::IsFloatValueType(inst->ReturnType())) {
-            auto source = SourceVector(value, v1);
-            if (size < 16) {
-                SetVectorType(64, 2); masm.VMV(v7, 0);
-                SetVectorType(size * 8, 1); masm.VRGATHER(v7, source, 0u); source = v7;
+            if (binding.gpr_indices[0] != UINT32_MAX && size <= 8) {
+                const auto source = SourcePart(value, 0, t0),
+                           target = scalar_registers[binding.gpr_indices[0]];
+                if (source != target) masm.MV(target, source);
+                Mask(target, size * 8);
+                return true;
             }
-            SetVectorType(64, 2); Address(t6, values, s64(inst->Id()) * kValueStride);
-            masm.VSE64(source, t6); ++value_stats.stores;
-            return true;
+            if (binding.gpr_indices[0] == UINT32_MAX && features.vector &&
+                ir::IsFloatValueType(inst->ReturnType())) {
+                auto source = SourceVector(value, v1);
+                if (size < 16) {
+                    SetVectorType(64, 2);
+                    masm.VMV(v7, 0);
+                    SetVectorType(size * 8, 1);
+                    masm.VRGATHER(v7, source, 0u);
+                    source = v7;
+                }
+                SetVectorType(64, 2);
+                Address(t6, values, s64(inst->Id()) * kValueStride);
+                masm.VSE64(source, t6);
+                ++value_stats.stores;
+                return true;
+            }
+            return false;
         }
-        return false;
-    }
     return false;
 }
 

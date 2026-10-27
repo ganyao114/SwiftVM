@@ -22,8 +22,8 @@ namespace {
 
 u64 MemoryAddress(State* state, u64 guest, u64 size);
 
-void ExecuteInstruction(State* state, ir::Block* block, ir::Inst* inst,
-                        u64* slots, u64 count) noexcept {
+void ExecuteInstruction(
+        State* state, ir::Block* block, const ir::Inst* inst, u64* slots, u64 count) noexcept {
     try {
         const auto scalar = [&](ir::Value value) { return slots[size_t(value.Def()->Id()) * 2]; };
         const auto lambda = [&](const ir::Lambda& value) {
@@ -88,21 +88,27 @@ void JitTranslator::Translate(ir::Block* input) {
     // Validate final emission terminals before WidePlan or any code bytes.
     if (input->HasTerminal()) VerifyRVTerminalConditions(input->GetTerminal());
     for (const auto& [marker, terminal] : function_exits) VerifyRVTerminalConditions(terminal);
+    for (const auto* anchor : input->GetLoopHoistMetadata().anchors)
+        if (!ir::Value{anchor}.HasValidDataView())
+            throw std::runtime_error("RV64 hoist root has an invalid type view");
     // Module-backed entries have an exact Config state span; raw contexts
     // without a module retain their explicit external-storage contract.
     const auto uniform_capacity = context.UniformCapacity();
     // Direct entry must reject before WidePlan or any code/frame emission.
     for (const auto& inst : input->GetInstList()) {
+        if (!inst.HasValidResultType() || !inst.HasValidArguments())
+            throw std::runtime_error("RV64 IR has an invalid result or arguments");
         if (uniform_capacity) VerifyNativeCallContractsForConfiguredEmission(inst, *uniform_capacity, input);
         else VerifyNativeCallContractsForEmission(inst, input);
     }
     if (WidePlan::Needed(input)) {
         auto wide = WidePlan::Build(input);
         context.RemapFlow(wide.instructions);
-        std::unordered_map<ir::Inst*, ir::Terminal> exits;
-        for (const auto& [inst, terminal] : function_exits) exits.emplace(wide.instructions.at(inst), terminal);
+        std::unordered_map<const ir::Inst*, ir::Terminal> exits;
+        for (const auto& [inst, terminal] : function_exits)
+            exits.emplace(wide.instructions.at(inst), terminal);
         function_exits = std::move(exits);
-        std::unordered_set<ir::Inst*> checks;
+        std::unordered_set<const ir::Inst*> checks;
         for (auto* inst : function_halt_checks) checks.insert(wide.instructions.at(inst));
         function_halt_checks = std::move(checks);
         memory_extents = std::move(wide.memory_extents);
@@ -223,7 +229,7 @@ void JitTranslator::Translate(ir::Block* input) {
         if (!InstructionIRIdentity(*canonical_input) || !InstructionIRIdentity(*block))
             throw std::runtime_error("RV64 instruction resume rejected: terminal or Params IR");
     }
-    std::unordered_map<ir::Inst*, u32> retirement_head_offsets;
+    std::unordered_map<const ir::Inst*, u32> retirement_head_offsets;
     auto& as = context.GetMasm();
     context.AcquireMemoryLease();
     context.InitializeValues();
@@ -312,7 +318,7 @@ void JitTranslator::Translate(ir::Block* input) {
                 context.ReleaseDeadValues(position++);
                 continue;
             }
-            context.Read(t0, inst.GetArg<ir::Value>(0));
+            context.ReadCondition(t0, inst.GetArg<ir::Value>(0));
             context.PublishFlags();
             const auto fallthrough = context.CaptureValues();
             Label skip;
@@ -454,7 +460,7 @@ void JitTranslator::Return(HaltReason reason) {
     context.Jump(epilogue);
 }
 
-void JitTranslator::EmitHelper(ir::Inst* inst) {
+void JitTranslator::EmitHelper(const ir::Inst* inst) {
     context.MarkABICall();
     // Helpers read canonical homes and can write pair-result pseudo homes.
     context.PublishFlags();
@@ -493,10 +499,18 @@ void JitTranslator::EmitHelper(ir::Inst* inst) {
     context.BranchZero(t0, epilogue, false);
 }
 
-bool JitTranslator::EmitScalar(ir::Inst* inst) {
+bool JitTranslator::EmitScalar(const ir::Inst* inst) {
     auto& as = context.GetMasm();
     const auto op = inst->GetOp();
     if (ir::IsFloatValueType(inst->ReturnType())) return false;
+    if (const auto kind = inst->GetIntegerPredicateKind(); kind != ir::IntegerPredicateKind::None) {
+        EmitIntegerPredicate(inst, kind);
+        return true;
+    }
+    if (const auto kind = ir::ClassifyIntegerShift(op); kind != ir::IntegerShiftKind::None) {
+        EmitIntegerShift(inst, kind);
+        return true;
+    }
     const auto result = context.ResultRegister(inst);
     bool normalized = false;
     switch (op) {
@@ -540,28 +554,31 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
         case O::MemoryBarrierTSO: as.FENCE(); return true;
         case O::GetOperand: context.Operand(result, inst->GetArg<ir::Operand>(0)); break;
         case O::ZeroExtend32: case O::ZeroExtend32To64: case O::ZeroExtend64:
-        case O::SignExtend: case O::Neg: case O::TestZero: case O::TestNotZero:
-        case O::TestBit:
+        case O::SignExtend: {
+            const auto input = inst->GetArg<ir::Value>(0);
+            const u32 bits = ir::IntegerConversionInputBits(op, ir::GetScalarIntegerBits(input.Type()));
+            context.Read(result, input);
+            if (op == O::SignExtend) context.SignExtend(result, bits);
+            else context.Mask(result, bits);
+            const u32 result_bits = ir::GetScalarIntegerBits(inst->ReturnType());
+            normalized = op == O::SignExtend ? result_bits == 64 : bits <= result_bits;
+            break;
+        }
+        case O::Neg:
             context.Read(result, inst->GetArg<ir::Value>(0));
-            if (op == O::ZeroExtend32 || op == O::ZeroExtend32To64) context.Mask(result, 32);
-            if (op == O::SignExtend) context.SignExtend(result, Bits(inst->GetArg<ir::Value>(0).Type()));
-            if (op == O::Neg) as.SUB(result, x0, result);
-            if (op == O::TestZero) as.SEQZ(result, result);
-            if (op == O::TestNotZero) as.SNEZ(result, result);
-            if (op == O::TestBit) {
-                as.SRLI(result, result, inst->GetArg<ir::Imm>(1).Get() & 63);
-                as.ANDI(result, result, 1);
-            }
+            as.SUB(result, x0, result);
             break;
         case O::CondSet: case O::LocalCondSet:
             context.Condition(result, inst->GetArg<ir::Cond>(0)); break;
         case O::Select: case O::SelectZero: case O::CondSelect: {
             if (ir::IsFloatValueType(inst->GetArg<ir::Value>(1).Type())) return false;
-            if (op == O::CondSelect) context.Condition(result, inst->GetArg<ir::Cond>(0));
-            else context.Read(result, inst->GetArg<ir::Value>(0));
+            // The output may reuse a selected arm. Keep the normalized
+            // condition in scratch until the branch has chosen that arm.
+            if (op == O::CondSelect) context.Condition(t0, inst->GetArg<ir::Cond>(0));
+            else context.ReadCondition(t0, inst->GetArg<ir::Value>(0));
             Label other, done;
-            if (op == O::SelectZero) as.BNE(result, x0, &other);
-            else as.BEQ(result, x0, &other);
+            if (op == O::SelectZero) as.BNE(t0, x0, &other);
+            else as.BEQ(t0, x0, &other);
             context.Read(result, inst->GetArg<ir::Value>(1));
             as.J(&done);
             as.Bind(&other);
@@ -627,9 +644,8 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
             break;
         }
         case O::Not:
-            if (inst->ArgAt(1).IsVoid()) {
-                context.Read(result, inst->GetArg<ir::Value>(0)); as.SEQZ(result, result);
-            } else { context.Operand(result, inst->GetArg<ir::Operand>(1)); as.NOT(result, result); }
+            context.Operand(result, inst->GetArg<ir::Operand>(1));
+            as.NOT(result, result);
             break;
         case O::MulHigh: case O::MulSub: case O::SignedDiv64:
             context.Read(result, inst->GetArg<ir::Value>(0));
@@ -646,74 +662,13 @@ bool JitTranslator::EmitScalar(ir::Inst* inst) {
                 as.Bind(&nonzero); as.DIV(result, result, t1); as.Bind(&done);
             }
             break;
-        case O::LslImm: case O::LslValue: case O::LsrImm: case O::LsrValue:
-        case O::AsrImm: case O::AsrValue: case O::RorImm: case O::RorValue: {
-            const auto value = inst->GetArg<ir::Value>(0);
-            const auto bits = Bits(inst->ReturnType());
-            const bool left = op == O::LslImm || op == O::LslValue;
-            const bool right = op == O::LsrImm || op == O::LsrValue;
-            const bool arithmetic = op == O::AsrImm || op == O::AsrValue;
-            // RV64I word shifts discard raw upper bits and mask the count to
-            // five bits. This also handles narrow BitCast/GetResult inputs,
-            // whose slots are deliberately not normalized to their IR type.
-            const bool word_shift = bits == 32 && (left || right ||
-                    (arithmetic && Bits(value.Type()) == 32));
-            auto source = context.SourceRegister(value, t0);
-            if (!word_shift && (arithmetic || (!left && bits < 64))) {
-                if (result != source) as.MV(result, source);
-                if (arithmetic) context.SignExtend(result, Bits(value.Type()));
-                else context.Mask(result, bits);
-                source = result;
-            }
-            if (inst->ArgAt(1).IsImm()) {
-                const u32 shift = inst->GetArg<ir::Imm>(1).Get() & (bits - 1);
-                if (word_shift) {
-                    if (left) as.SLLIW(result, source, shift);
-                    else if (right) as.SRLIW(result, source, shift);
-                    else as.SRAIW(result, source, shift);
-                    // SRLIW with count zero can sign-extend bit 31.
-                    normalized = right && shift != 0;
-                } else if (left) as.SLLI(result, source, shift);
-                else if (right) { as.SRLI(result, source, shift); normalized = true; }
-                else if (arithmetic) as.SRAI(result, source, shift);
-                else if (!shift) { if (result != source) as.MV(result, source); }
-                else if (context.Features().zbb && bits == 64) as.RORI(result, source, shift);
-                else if (context.Features().zbb && bits == 32) as.RORIW(result, source, shift);
-                else {
-                    as.SRLI(t2, source, shift); as.SLLI(result, source, bits - shift);
-                    as.OR(result, result, t2);
-                }
-            } else {
-                auto shift = context.SourceRegister(inst->GetArg<ir::Value>(1), t1);
-                // XLEN and word shifts perform the required count masking.
-                if (bits < 64 && !word_shift) {
-                    if (shift != t1) as.MV(t1, shift);
-                    as.ANDI(t1, t1, bits - 1);
-                    shift = t1;
-                }
-                if (word_shift) {
-                    if (left) as.SLLW(result, source, shift);
-                    else if (right) as.SRLW(result, source, shift);
-                    else as.SRAW(result, source, shift);
-                } else if (left) as.SLL(result, source, shift);
-                else if (right) { as.SRL(result, source, shift); normalized = true; }
-                else if (arithmetic) as.SRA(result, source, shift);
-                else if (context.Features().zbb && bits == 64) as.ROR(result, source, shift);
-                else if (context.Features().zbb && bits == 32) as.RORW(result, source, shift);
-                else {
-                    as.SUB(t2, x0, shift); as.ANDI(t2, t2, bits - 1);
-                    as.SLL(t2, source, t2); as.SRL(result, source, shift); as.OR(result, result, t2);
-                }
-            }
-            break;
-        }
         default: return false;
     }
     context.Write(inst, result, normalized);
     return true;
 }
 
-void JitTranslator::EmitMemory(ir::Inst* inst, bool store, bool ordered, GPR result) {
+void JitTranslator::EmitMemory(const ir::Inst* inst, bool store, bool ordered, GPR result) {
     auto& as = context.GetMasm();
     const auto type = store ? inst->GetArg<ir::Value>(1).Type() : inst->ReturnType();
     const u32 size = ir::GetValueSizeByte(type);
@@ -782,7 +737,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal) {
             Link(term.next.Value());
         } else if constexpr (std::is_same_v<T, ir::terminal::If> ||
                              std::is_same_v<T, ir::terminal::Condition>) {
-            if constexpr (std::is_same_v<T, ir::terminal::If>) context.Read(t0, term.cond);
+            if constexpr (std::is_same_v<T, ir::terminal::If>) context.ReadCondition(t0, term.cond);
             else context.Condition(t0, term.cond);
             Label other;
             context.BranchZero(t0, other);

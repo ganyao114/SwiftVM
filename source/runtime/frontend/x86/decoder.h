@@ -10,7 +10,7 @@
 #include "distorm.h"
 #include "mnemonics.h"
 #include "runtime/backend/context.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/common/svm_config.h"
 #include "runtime/include/config.h"
 #include "vex_decoder.h"
@@ -262,7 +262,7 @@ class X64Decoder {
 public:
     X64Decoder(VAddr start,
                runtime::MemoryInterface* memory,
-               ir::Assembler* visitor,
+               compile::IrBuilder* visitor,
                bool is_64bit,
                runtime::Arm64Features arm64_features = runtime::Arm64Features::None,
                bool sse_afp_nan = false,
@@ -545,10 +545,8 @@ private:
     // Extend a value to a (wider) type, signed or unsigned.
     ir::Value Extend(ir::Value value, ir::ValueType type, bool sign);
 
-    // Narrow (or widen) a value to a type safely: SetType on a U64-producing
-    // instruction would make its emitter use 32 bit registers on 64 bit
-    // operands (e.g. invalid W shifts), so narrowing goes through an explicit
-    // ZeroExtend32 (W-adjust) plus a W-register-safe SetType.
+    // Keep the producer's width intact. Narrowing uses a ZeroExtend32 result
+    // and a use-edge view for sub-32-bit stores; widening uses ZeroExtend64.
     ir::Value NarrowTo(ir::Value value, ir::ValueType type);
 
     // Segment override base: FS/GS read the 64-bit bases from the context
@@ -946,8 +944,8 @@ private:
     // every false return happens BEFORE any IR is emitted, so a decline never
     // leaves a half-built block behind. The two families share no
     // (map, opcode) pair, so dispatch order between them does not matter.
-    using AvxIntBinFn = ir::Value (*)(ir::Assembler*, ir::Value, ir::Value, u32, u32);
-    using AvxIntUnFn = ir::Value (*)(ir::Assembler*, ir::Value, u32);
+    using AvxIntBinFn = ir::Value (*)(compile::IrBuilder*, ir::Value, ir::Value, u32, u32);
+    using AvxIntUnFn = ir::Value (*)(compile::IrBuilder*, ir::Value, u32);
 
     bool DecodeAvxInt(const VexInsn& v);
 
@@ -1019,7 +1017,7 @@ private:
 
     // ---- VEX.256 (decoder_avx.cc) ---------------------------------------
     // A 256-bit operation is two independent V128 operations (contract C1:
-    // ARM64 V registers are 128 bits and RegAlloc maps one value onto one
+    // ARM64 V registers are 128 bits and Allocation maps one value onto one
     // register, so no V256 IR value can exist). These write BOTH halves of
     // the destination and therefore must NOT call ZeroYmmHigh.
     bool DecodeAvx256(_DInst& insn, const VexInfo& vex);
@@ -1058,8 +1056,8 @@ private:
 
     // Per-128-bit-lane callbacks, the legacy twins of AvxIntBinFn/AvxIntUnFn
     // (no `half` argument: a legacy SSE form has exactly one 128-bit lane).
-    using SseBinFn = ir::Value (*)(ir::Assembler*, ir::Value, ir::Value, u32);
-    using SseUnFn = ir::Value (*)(ir::Assembler*, ir::Value, u32);
+    using SseBinFn = ir::Value (*)(compile::IrBuilder*, ir::Value, ir::Value, u32);
+    using SseUnFn = ir::Value (*)(compile::IrBuilder*, ir::Value, u32);
 
     ir::Value SseNarrowSrc(_DInst& insn, _Operand& op, u32 bytes);
     void DecodeSseBinary(_DInst& insn, SseBinFn fn, u32 param);
@@ -1120,7 +1118,7 @@ private:
     // by the time DecodeSwitch runs). Handlers that raise a synchronous guest
     // fault must SetLocation to this, or the halt reports the wrong rip.
     VAddr insn_pc{0};
-    ir::Assembler* assembler;
+    compile::IrBuilder* assembler;
     runtime::MemoryInterface* memory;
     bool end_decode{false};
     bool is_64bit{false};

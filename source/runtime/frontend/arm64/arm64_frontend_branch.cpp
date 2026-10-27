@@ -1,7 +1,6 @@
 #include "arm64_frontend_internal.h"
 
 namespace swift::arm64 {
-
 #define __ assembler->
 
 namespace {
@@ -16,15 +15,13 @@ void A64Decoder::VisitPCRelAddressing(const Instruction* instr) {
         VIXL_ASSERT(instr->Mask(PCRelAddressingMask) == ADR);
         address = current_pc + s64(instr->GetImmPCRel());
     }
-    WriteXRegister(instr->GetRd(),
-                   __ LoadImm<ir::U64>(ir::Imm{address}).SetType(ir::ValueType::U64));
+    WriteXRegister(instr->GetRd(), __ LoadImm(ir::ValueType::U64, ir::Imm{address}));
 }
 
 void A64Decoder::VisitUnconditionalBranch(const Instruction* instr) {
     VAddr target = current_pc + s64(instr->GetImmUncondBranch()) * kInstructionSize;
     if (instr->Mask(UnconditionalBranchMask) == BL) {
-        WriteXRegister(kLinkRegCode,
-                       __ LoadImm<ir::U64>(ir::Imm{NextPC()}).SetType(ir::ValueType::U64));
+        WriteXRegister(kLinkRegCode, __ LoadImm(ir::ValueType::U64, ir::Imm{NextPC()}));
         __ PushRSB(ir::Lambda{ir::Imm{NextPC()}});
         if (assembler->IsFunctionMode()) {
             // A direct call ends this compilation region. Treating BL like an
@@ -108,8 +105,7 @@ void A64Decoder::VisitUnconditionalBranchToRegister(const Instruction* instr) {
         }
         case BLR: {
             auto target = ReadXRegister(instr->GetRn());
-            WriteXRegister(kLinkRegCode,
-                       __ LoadImm<ir::U64>(ir::Imm{NextPC()}).SetType(ir::ValueType::U64));
+            WriteXRegister(kLinkRegCode, __ LoadImm(ir::ValueType::U64, ir::Imm{NextPC()}));
             __ PushRSB(ir::Lambda{ir::Imm{NextPC()}});
             WritePC(ir::Lambda{target});
             __ ReturnToDispatcher();

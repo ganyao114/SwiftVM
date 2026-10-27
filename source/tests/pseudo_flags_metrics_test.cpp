@@ -1,10 +1,14 @@
-#include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
 using namespace swift::runtime;
@@ -19,27 +23,35 @@ Metrics Compile(unsigned shape, unsigned length) {
                   .has_local_operation = false, .backend_isa = kArm64};
     AddressSpace space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0xd900})};
-    auto value = block->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
+    auto value = block->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
     for (unsigned i = 0; i < length; ++i) {
-        value = block->Add(value, Operand{Imm{1u}}).SetType(ValueType::U32);
+        value = block->Add(ValueType::U32, value, Operand{Imm{1u}});
         if (shape == 1) {
             block->SaveFlags(value, Flags::NZCV);
             block->SaveFlags(value, Flags::Parity | Flags::AuxiliaryCarry);
         } else if (shape == 2) {
             for (unsigned j = 0; j < 8; ++j) block->SaveFlags(value, j & 1 ? Flags::NZCV : Flags::Parity | Flags::AuxiliaryCarry);
-        } else if (shape == 3) block->BranchOnlyFlags(value, Flags::NZCV);
+        } else if (shape == 3)
+            block->BranchOnlyFlags(value, Flags::NZCV);
         if (shape == 1 || shape == 2) block->AdvancePC(Imm{swift::u64{1}});
     }
     block->StoreUniform(Uniform{8, ValueType::U32}, value);
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
     FeatureSet features{};
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    allocation.CompleteGPRAllocation(space.GetDefaultModule());
-    arm64::JitContext context{space.GetDefaultModule(), allocation};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(), allocation);
+    arm64::JitContext context{space.GetDefaultModule(), allocation, allocation.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -47,8 +59,8 @@ Metrics Compile(unsigned shape, unsigned length) {
     result.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
     result.bytes = context.CurrentBufferSize();
     result.spills = allocation.SpillCount();
-    result.reloads = allocation.RAShape().spill_loads;
-    result.stores = allocation.RAShape().spill_stores;
+    result.reloads = context.GetRAShapeCounters().spill_loads;
+    result.stores = context.GetRAShapeCounters().spill_stores;
     const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < result.bytes; ++i) result.hash = (result.hash ^ bytes[i]) * 1099511628211ull;
     return result;

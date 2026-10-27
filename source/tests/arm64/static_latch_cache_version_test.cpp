@@ -40,7 +40,12 @@ u8* Compile(const std::shared_ptr<Module>& module) {
     HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
     auto* function = builder.AppendFunction(Location{guest_pc}, Location{guest_pc + 4});
     function->StoreUniform(Uniform{0, ValueType::U64},
-                          function->LoadImm(Imm{expected}).SetType(ValueType::U64));
+                           function->LoadImm(ValueType::U64, Imm{expected}));
+    const auto raw = function->LoadUniform(Uniform{8, ValueType::U64});
+    const auto predicate = Value{function->AppendInst(
+            OpCode::TestZero, ValueType::U64, Value{raw}.SetCastType(ValueType::U8))};
+    function->StoreUniform(Uniform{16, ValueType::U64}, predicate);
+    function->StoreUniform(Uniform{24, ValueType::U64}, raw);
     function->EndBlock(terminal::ReturnToHost{});
     function->EndFunction();
     auto* entry = static_cast<u8*>(TranslateIR(module, function));
@@ -50,17 +55,25 @@ u8* Compile(const std::shared_ptr<Module>& module) {
 
 void VerifyExecution(AddressSpace& space) {
     Runtime runtime{&space};
-    runtime.SetLocation(guest_pc);
-    Check(runtime.Run() == HaltReason::CallHost, "execute actual current artifact");
-    u64 result{};
-    std::memcpy(&result, runtime.GetUniformBuffer().data(), sizeof(result));
-    Check(result == expected, "current artifact retains independently expected answer");
-    Check(runtime.GetState()->rsb_empty && runtime.GetState()->rsb_pointer == runtime.GetState()->rsb_empty,
-          "current artifact balances external frame state");
+    for (const u64 raw : {u64{0x100}, u64{0x101}, u64{0x100000000}}) {
+        std::memcpy(runtime.GetUniformBuffer().data() + 8, &raw, sizeof(raw));
+        runtime.SetLocation(guest_pc);
+        Check(runtime.Run() == HaltReason::CallHost, "execute actual current artifact");
+        u64 result{}, predicate{}, preserved{};
+        std::memcpy(&result, runtime.GetUniformBuffer().data(), sizeof(result));
+        std::memcpy(&predicate, runtime.GetUniformBuffer().data() + 16, sizeof(predicate));
+        std::memcpy(&preserved, runtime.GetUniformBuffer().data() + 24, sizeof(preserved));
+        Check(result == expected, "current artifact retains independently expected answer");
+        Check(predicate == ((raw & 255) == 0), "installed predicate reads only its logical byte");
+        Check(preserved == raw, "installed predicate preserves the full raw source");
+        Check(runtime.GetState()->rsb_empty && runtime.GetState()->rsb_pointer == runtime.GetState()->rsb_empty,
+              "current artifact balances external frame state");
+    }
 }
 
 void Run() {
-    Check(kCacheFormatVersion == 31 && !FlagsRegsEnabled(), "test supported format31 flags0 contract");
+    Check(kCacheFormatVersion >= 42 && !FlagsRegsEnabled(),
+          "test conditional PF/AF, terminal and fault-resume cache compatibility with flags0");
     GuestWindow guest;
     Config config{};
     config.loc_start = 0;
@@ -128,8 +141,10 @@ void Run() {
     Check(current.units[0].link_sites.empty(), "supported control has no AOT link metadata");
     AddressSpace destination{config};
     aot::LoadReport report{};
-    Check(aot::InstallArtifact(destination, current, guest.data, config.guest_addr_mask, report, error) == aot::kAotOk,
-          "format31 actual artifact installs through production loader");
+    Check(aot::InstallArtifact(
+                  destination, current, guest.data, config.guest_addr_mask, report, error) ==
+                  aot::kAotOk,
+          "current artifact installs through production loader");
     Check(report.units_installed == 1 && report.code_bytes == current.units[0].code_size,
           "current loader publishes the actual unit");
     auto* installed_entry = destination.GetCodeCache(Location{guest_pc});
@@ -142,19 +157,32 @@ void Run() {
     auto* entry_before = destination.GetCodeCache(Location{guest_pc});
     auto* offset_before = aot::ResolveCodeOffset(0);
     Check(entry_before && offset_before, "current dispatch and code-offset mapping are visible");
-    auto old = current;
-    old.key.format_version = 30;
-    aot::LoadReport rejected{};
-    error.clear();
-    const int status = aot::InstallArtifact(destination, old, guest.data, config.guest_addr_mask, rejected, error);
-    Check(status == aot::kAotKeyMismatch && error == "format version 30 != 31",
-          "only format30 change produces the exact AOT compatibility rejection");
-    Check(rejected.units_installed == 0 && rejected.dispatch_slots == 0 && rejected.code_bytes == 0,
-          "old format publishes no code or dispatch assignments");
-    Check(destination.GetCodeCache(Location{guest_pc}) == entry_before && aot::ResolveCodeOffset(0) == offset_before,
-          "old format rejection preserves existing dispatch and code-offset identities");
-    VerifyExecution(destination);
-    std::printf("aot current=31 old=30 status=%d error=%s units=%u\n", status, error.c_str(), rejected.units_installed);
+    // Older contracts predate terminal flags, predicates or state-publication rules.
+    for (const u64 stale_version : {u64{30}, u64{31}, u64{32}, u64{35}, u64{36}, u64{37}, u64{38}, u64{40}, u64{41}}) {
+        auto old = current;
+        old.key.format_version = stale_version;
+        aot::LoadReport rejected{};
+        error.clear();
+        const int status = aot::InstallArtifact(
+                destination, old, guest.data, config.guest_addr_mask, rejected, error);
+        const auto expected_error = "format version " + std::to_string(stale_version) +
+                                    " != " + std::to_string(kCacheFormatVersion);
+        Check(status == aot::kAotKeyMismatch && error == expected_error,
+              "only the stale code format changes the AOT compatibility result");
+        Check(rejected.units_installed == 0 && rejected.dispatch_slots == 0 &&
+                      rejected.code_bytes == 0,
+              "old format publishes no code or dispatch assignments");
+        Check(destination.GetCodeCache(Location{guest_pc}) == entry_before &&
+                      aot::ResolveCodeOffset(0) == offset_before,
+              "old format rejection preserves existing dispatch and code-offset identities");
+        VerifyExecution(destination);
+        std::printf("aot current=%llu old=%llu status=%d error=%s units=%u\n",
+                    static_cast<unsigned long long>(kCacheFormatVersion),
+                    static_cast<unsigned long long>(stale_version),
+                    status,
+                    error.c_str(),
+                    rejected.units_installed);
+    }
 }
 } // namespace
 

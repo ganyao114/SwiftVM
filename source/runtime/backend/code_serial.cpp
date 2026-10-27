@@ -2,13 +2,14 @@
 // See code_serial.h for the design rationale.
 //
 
+#include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/pair_call_trampoline.h"
 #include "runtime/backend/code_serial.h"
 #include "runtime/backend/function_entry_contract.h"
-#include "runtime/backend/address_space.h"
 #include "runtime/backend/link_manager.h"
 #include "runtime/backend/module.h"
-#include "runtime/common/svm_config.h"
 #include "runtime/backend/riscv64/host_features.h"
+#include "runtime/common/svm_config.h"
 
 #include <algorithm>
 #include <array>
@@ -226,7 +227,11 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
                         const HostImageInfo& image,
                         u64 guest_window_size,
                         std::span<const u32> external_bl_offsets,
-                        ISA isa) {
+                        ISA isa,
+                        std::span<const SerialRegionBranch> region_branches) {
+    if (!ValidRegionBranches(region_branches, code.size()) ||
+        (!region_branches.empty() && isa != kArm64))
+        return {false, "invalid shared region branch metadata"};
     if (isa == kRiscv64) return ScanRiscvCodeUnit(code, image, guest_window_size);
     if (isa != kArm64) return {false, "unsupported serialization ISA"};
     ScanResult result{};
@@ -262,6 +267,7 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
         }
     }
     std::size_t next_external_bl{};
+    std::size_t next_region_branch{};
     std::array<Pending, 32> pending{};
     // Materializations that landed inside the host image, in program order.
     struct Candidate {
@@ -282,6 +288,14 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
     for (std::size_t i = 0; i < n_inst; ++i) {
         const u32 offset = static_cast<u32>(i * kInstSize);
         const u32 insn = ReadInst(code, offset);
+        bool pair_call{};
+        if (next_region_branch < region_branches.size() &&
+            region_branches[next_region_branch].code_offset == offset) {
+            const auto& branch = region_branches[next_region_branch++];
+            pair_call = branch.kind == SerialRegionBranchKind::PairCall;
+            if (insn != branch.UnlinkedInstruction())
+                return {false, "changed shared region branch placeholder"};
+        }
 
         // ---- reject classes we cannot serialize ---------------------------
         if (IsAdrp(insn)) {
@@ -378,6 +392,21 @@ ScanResult ScanCodeUnit(std::span<const u8> code,
         }
 
         // ---- modelled uses -------------------------------------------------
+        if (pair_call) {
+            // The checked region recipe calls the fixed pair-result ABI,
+            // which branches through the saved x11, not the BL instruction's LR.
+            constexpr auto rn = arm64::PairCallFrame::TargetRegister;
+            if (pending[rn].state != Pending::State::Known || !image.Contains(pending[rn].value) ||
+                pending[rn].inst_count != 4 || pending[rn].first_offset + 16 != offset)
+                return {false, "pair-call helper is not a host-image constant"};
+            candidates.push_back({rn,
+                                  pending[rn].first_offset,
+                                  pending[rn].inst_count,
+                                  pending[rn].value,
+                                  RelocUse::BranchTarget});
+            pending[rn] = Pending{};
+            continue;
+        }
         if (IsBrOrBlr(insn)) {
             const u32 rn = BranchRegRn(insn);
             if (rn < 31 && pending[rn].state != Pending::State::Empty) {
@@ -461,13 +490,37 @@ bool ApplyRelocations(u8* rw_code,
                       std::size_t code_size,
                       std::span<const Relocation> relocs,
                       const HostImageInfo& image,
-                      std::string* error, ISA isa) {
+                      std::string* error,
+                      ISA isa,
+                      std::span<const SerialRegionBranch> region_branches) {
     auto fail = [&](const char* msg) {
         if (error) *error = msg;
         return false;
     };
     if (image.size == 0) {
         return fail("host image span unknown");
+    }
+    if (!ValidRegionBranches(region_branches, code_size) ||
+        (!region_branches.empty() && isa != kArm64))
+        return fail("invalid shared region branch metadata");
+    for (const auto& branch : region_branches) {
+        u32 instruction{};
+        std::memcpy(&instruction, rw_code + branch.code_offset, sizeof(instruction));
+        if (instruction != branch.UnlinkedInstruction())
+            return fail("changed shared region branch placeholder");
+        if (branch.kind != SerialRegionBranchKind::PairCall) continue;
+        if (branch.code_offset < 16 ||
+            std::count_if(
+                    relocs.begin(),
+                    relocs.end(),
+                    [&](const auto& relocation) {
+                        return relocation.code_offset == branch.code_offset - 16 &&
+                               relocation.inst_count == 4 &&
+                               relocation.reg == arm64::PairCallFrame::TargetRegister &&
+                               relocation.kind == RelocKind::HostImageAbs64 &&
+                               relocation.use == RelocUse::BranchTarget;
+                    }) != 1)
+            return fail("pair-call helper relocation is incomplete");
     }
     if (isa == kRiscv64) {
         // Re-scan the recorded image before changing any byte: a corrupt
@@ -614,6 +667,21 @@ bool BlobReader::Bytes(void* out, std::size_t n) {
     return true;
 }
 
+bool ValidSerialFaultSite(const SerialFaultSite& site,
+                          std::size_t code_size,
+                          bool precise_guest_faults) {
+    if ((site.host_begin & 3u) || (site.host_end & 3u) || site.host_begin >= site.host_end ||
+        site.host_end > code_size ||
+        (site.recovery_offset != UINT32_MAX &&
+         ((site.recovery_offset & 3u) || site.recovery_offset >= code_size)) ||
+        site.recovery_kind > static_cast<u8>(FaultRecoveryKind::GuestRange))
+        return false;
+    const auto kind = static_cast<FaultRecoveryKind>(site.recovery_kind);
+    const bool range = kind == FaultRecoveryKind::GuestRange ||
+                       (!precise_guest_faults && kind == FaultRecoveryKind::GuestFault);
+    return range || site.host_end == site.host_begin + sizeof(u32);
+}
+
 bool SerialBlock::ValidEntryContract(std::size_t code_size) const {
     if (!ValidEntryFlags() || guest_end < guest_start ||
         !pending_flags_contract.IsWellFormed() || code_size > UINT32_MAX || code_size == 0) return false;
@@ -677,6 +745,8 @@ void* RegionBranchTarget(CodeCache& cache, const SerialRegionBranch& branch) {
         case SerialRegionBranchKind::Return: return cache.GetReturnRegionTrampoline();
         case SerialRegionBranchKind::ReturnNZCV: return cache.GetReturnFlagsMergeRegionTrampoline();
         case SerialRegionBranchKind::ReturnNZCVToken: return cache.GetReturnFlagsMergeTokenRegionTrampoline();
+        case SerialRegionBranchKind::PairCall:
+            return cache.GetPairCallRegionTrampoline();
         case SerialRegionBranchKind::Count: return nullptr;
     }
     return nullptr;
@@ -705,7 +775,7 @@ bool FreezeRegionBranches(CodeCache& cache, const u8* original_rx, std::span<u8>
     for (size_t offset = 0; offset < code.size(); offset += 4) {
         u32 instruction{};
         std::memcpy(&instruction, code.data() + offset, 4);
-        if ((instruction & 0xfc00'0000u) != 0x1400'0000u) continue;
+        if (!IsBImm(instruction)) continue;
         const s64 words = (s64(instruction & 0x03ff'ffffu) ^ (s64{1} << 25)) - (s64{1} << 25);
         const s64 destination = s64(offset) + words * 4;
         if (destination >= 0 && destination < s64(code.size())) continue;
@@ -718,6 +788,7 @@ bool FreezeRegionBranches(CodeCache& cache, const u8* original_rx, std::span<u8>
                 SerialRegionBranch branch{static_cast<u32>(offset), type, mask};
                 const auto* entry = RegionBranchTarget(cache, branch);
                 if (entry && reinterpret_cast<uintptr_t>(entry) == target) {
+                    if ((instruction & 0xfc00'0000u) != branch.UnlinkedInstruction()) return false;
                     collected.push_back(branch);
                     found = true;
                     break;
@@ -725,10 +796,10 @@ bool FreezeRegionBranches(CodeCache& cache, const u8* original_rx, std::span<u8>
             }
         }
         // An arbitrary external branch never becomes an admitted recipe.
-        if (!found) return false;
+        if (!found && !IsBLImm(instruction)) return false;
     }
     for (const auto& branch : collected) {
-        const u32 placeholder = 0x1400'0000u;
+        const u32 placeholder = branch.UnlinkedInstruction();
         std::memcpy(code.data() + branch.code_offset, &placeholder, 4);
     }
     branches = std::move(collected);
@@ -745,14 +816,16 @@ bool RebindRegionBranches(CodeCache& cache, const u8* destination_rx, std::span<
         std::memcpy(&instruction, code.data() + branch.code_offset, 4);
         const auto* target = RegionBranchTarget(cache, branch);
         const auto site = reinterpret_cast<uintptr_t>(destination_rx) + branch.code_offset;
-        if (instruction != 0x1400'0000u || !target || !cache.GetRegion().ContainsRx(target) ||
-            !Imm26Reachable(reinterpret_cast<const void*>(site), target)) return false;
+        if (instruction != branch.UnlinkedInstruction() || !target ||
+            !cache.GetRegion().ContainsRx(target) ||
+            !Imm26Reachable(reinterpret_cast<const void*>(site), target))
+            return false;
     }
     for (const auto& branch : branches) {
         const auto target = reinterpret_cast<uintptr_t>(RegionBranchTarget(cache, branch));
         const auto site = reinterpret_cast<uintptr_t>(destination_rx) + branch.code_offset;
         const auto delta = static_cast<intptr_t>(target) - static_cast<intptr_t>(site);
-        const u32 instruction = 0x1400'0000u | (u32(delta / 4) & 0x03ff'ffffu);
+        const u32 instruction = branch.UnlinkedInstruction() | (u32(delta / 4) & 0x03ff'ffffu);
         std::memcpy(code.data() + branch.code_offset, &instruction, 4);
     }
     return true;
@@ -886,7 +959,7 @@ bool CaptureSerialCode(Module& module, const u8* allocation, u32 code_size,
     std::vector<SerialRegionBranch> branches;
     if (!FreezeRegionBranches(*cache, allocation, code, branches) ||
         !ValidSerialLinkSites(links, branches, code_size)) return fail("shared branch and source recipes overlap");
-    const auto scan = ScanCodeUnit(code, image, window, {}, region.isa);
+    const auto scan = ScanCodeUnit(code, image, window, {}, region.isa, branches);
     if (!scan.ok) { if (error) *error = scan.reject_reason; return false; }
     std::vector<SerialFaultSite> serial_faults;
     for (const auto& fault : faults) {
@@ -1066,11 +1139,7 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
             !r.U8(site.recovery_kind)) {
             return false;
         }
-        if ((site.host_begin & 3u) != 0 || (site.host_end & 3u) != 0 || site.host_end <= site.host_begin ||
-            site.host_end > code_size ||
-            (site.recovery_offset != UINT32_MAX &&
-             ((site.recovery_offset & 3u) != 0 || site.recovery_offset >= code_size)) ||
-            site.recovery_kind > static_cast<u8>(FaultRecoveryKind::ExternalContinuation)) {
+        if (!ValidSerialFaultSite(site, code_size)) {
             return false;
         }
     }
@@ -1078,7 +1147,7 @@ bool ReadUnit(BlobReader& r, SerialUnit& unit) {
     for (const auto& branch : unit.region_branches) {
         u32 instruction{};
         std::memcpy(&instruction, unit.code.data() + branch.code_offset, 4);
-        if (instruction != 0x1400'0000u) return false;
+        if (instruction != branch.UnlinkedInstruction()) return false;
     }
     return true;
 }

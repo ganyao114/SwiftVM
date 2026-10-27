@@ -3,10 +3,9 @@
 #include <cstdlib>
 
 #include "runtime/backend/interp/interpreter.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
-
 using T = ir::ValueType;
 using O = ir::OpCode;
 
@@ -82,18 +81,44 @@ void NativeVectorFloat(bool vector) {
                     op == O::VecFMulAdd || op == O::VecFRoundInt ? 4 : op == O::VecFCvtPacked ? 8 : 1;
             for (u32 scalar = 0; scalar < (configurable_scalar ? 2u : 1u); ++scalar) for (u32 mode = 0; mode < modes; ++mode) {
                 IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc600})};
-                ir::Assembler as{block.get()};
-                auto left = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-                auto right = as.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128);
-                auto third = as.LoadUniform(ir::Uniform{32, T::V128}).SetType(T::V128);
+                compile::IrBuilder as{block.get()};
+                auto left = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+                auto right = as.LoadUniform(T::V128, ir::Uniform{16, T::V128});
+                auto third = as.LoadUniform(T::V128, ir::Uniform{32, T::V128});
                 ir::Value result;
-                if (op >= O::VecFAddScalar32 && op <= O::VecFDivScalar64) result = ir::Value{block->AppendInst(op, left, right)};
-                else if (op == O::VecFCvtPacked) result = as.VecFCvtPacked(left, ir::Imm{u64(mode)});
-                else if (op == O::VecFMulAdd) result = as.VecFMulAdd(left, right, third, ir::Imm{u64(bits)}, ir::Imm{u64(mode)});
-                else if (configurable_scalar) result = ir::Value{block->AppendInst(op, left, right, ir::Imm{u64(bits)}, ir::Imm{u64(mode)}, ir::Imm{u64(scalar)})};
-                else if (op == O::VecFCmp) result = as.VecFCmp(left, right, ir::Imm{u64(bits)}, ir::Imm{u64{0}});
-                else result = ir::Value{block->AppendInst(op, left, right, ir::Imm{u64(bits)})};
-                result = result.SetType(op == O::VecFCmp ? T::U64 : T::V128);
+                if (op >= O::VecFAddScalar32 && op <= O::VecFDivScalar64)
+                    result = ir::Value{block->AppendInst(
+                            op, op == O::VecFCmp ? T::U64 : T::V128, left, right)};
+                else if (op == O::VecFCvtPacked)
+                    result = as.VecFCvtPacked(
+                            op == O::VecFCmp ? T::U64 : T::V128, left, ir::Imm{u64(mode)});
+                else if (op == O::VecFMulAdd)
+                    result = as.VecFMulAdd(op == O::VecFCmp ? T::U64 : T::V128,
+                                           left,
+                                           right,
+                                           third,
+                                           ir::Imm{u64(bits)},
+                                           ir::Imm{u64(mode)});
+                else if (configurable_scalar)
+                    result = ir::Value{block->AppendInst(op,
+                                                         op == O::VecFCmp ? T::U64 : T::V128,
+                                                         left,
+                                                         right,
+                                                         ir::Imm{u64(bits)},
+                                                         ir::Imm{u64(mode)},
+                                                         ir::Imm{u64(scalar)})};
+                else if (op == O::VecFCmp)
+                    result = as.VecFCmp(op == O::VecFCmp ? T::U64 : T::V128,
+                                        left,
+                                        right,
+                                        ir::Imm{u64(bits)},
+                                        ir::Imm{u64{0}});
+                else
+                    result = ir::Value{block->AppendInst(op,
+                                                         op == O::VecFCmp ? T::U64 : T::V128,
+                                                         left,
+                                                         right,
+                                                         ir::Imm{u64(bits)})};
                 as.StoreUniform(ir::Uniform{64, result.Type()}, result);
                 block->SetTerminal(ir::terminal::ReturnToHost{});
                 exercise(block.get(), op, op == O::VecFCvtPacked && (mode == 4 || mode == 5 || mode == 7) ? 64 : bits, mode, scalar);
@@ -106,13 +131,23 @@ void NativeVectorFloat(bool vector) {
         for (u32 input_bits : {32u, 64u}) for (u32 output_bits : {32u, 64u}) for (u32 mode = 0; mode < 2; ++mode) {
             if (op == O::VecFCvtScalar && output_bits == input_bits) continue;
             IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc610})};
-            ir::Assembler as{block.get()};
-            auto input = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+            compile::IrBuilder as{block.get()};
+            auto input = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
             ir::Value result;
-            if (op == O::VecFCvtScalar) result = as.VecFCvtScalar(input, ir::Imm{u64(input_bits)});
-            else if (op == O::VecFCvtIntToFloat) result = as.VecFCvtIntToFloat(input, ir::Imm{u64(input_bits)}, ir::Imm{u64(output_bits)});
-            else result = as.VecFCvtFloatToInt(input, ir::Imm{u64(input_bits)}, ir::Imm{u64(output_bits)}, ir::Imm{u64(mode)});
-            result = result.SetType(output_bits == 32 ? T::U32 : T::U64);
+            if (op == O::VecFCvtScalar)
+                result = as.VecFCvtScalar(
+                        output_bits == 32 ? T::U32 : T::U64, input, ir::Imm{u64(input_bits)});
+            else if (op == O::VecFCvtIntToFloat)
+                result = as.VecFCvtIntToFloat(output_bits == 32 ? T::U32 : T::U64,
+                                              input,
+                                              ir::Imm{u64(input_bits)},
+                                              ir::Imm{u64(output_bits)});
+            else
+                result = as.VecFCvtFloatToInt(output_bits == 32 ? T::U32 : T::U64,
+                                              input,
+                                              ir::Imm{u64(input_bits)},
+                                              ir::Imm{u64(output_bits)},
+                                              ir::Imm{u64(mode)});
             as.StoreUniform(ir::Uniform{64, result.Type()}, result);
             block->SetTerminal(ir::terminal::ReturnToHost{});
             exercise(block.get(), op, input_bits, mode, true);

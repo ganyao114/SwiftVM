@@ -82,14 +82,13 @@ struct FunctionEntryDependency {
 
 class FunctionEntryContract final {
 public:
-    [[nodiscard]] static FunctionEntryContract Build(
-            ir::HIRFunction& function,
-            ir::Block& block,
-            FunctionEntryCodeOffsets offsets,
-            EdgeFlagsTargetContract pending_flags_contract,
-            bool canonical_terminal = false);
-    [[nodiscard]] static std::unordered_set<u64>
-    AnalyzeCanonicalTerminalEntries(ir::HIRFunction& function);
+    [[nodiscard]] static FunctionEntryContract Build(const ir::HIRFunction& function,
+                                                     const ir::Block& block,
+                                                     FunctionEntryCodeOffsets offsets,
+                                                     EdgeFlagsTargetContract pending_flags_contract,
+                                                     bool canonical_terminal = false);
+    [[nodiscard]] static std::unordered_set<u64> AnalyzeCanonicalTerminalEntries(
+            const ir::HIRFunction& function);
     [[nodiscard]] static FunctionEntryContract Restore(
             ir::Location guest,
             ir::Location guest_end,

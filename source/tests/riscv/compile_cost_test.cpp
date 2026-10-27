@@ -5,7 +5,7 @@
 #include <sys/resource.h>
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/riscv64/jit/compile.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 using namespace swift;
 using namespace swift::runtime;
@@ -33,12 +33,11 @@ void ReportLateBarrier(const char* kind, const ir::Block* block) {
               << " uniform_ranges=" << uniforms << " definite_producers=" << saves << '\n';
 }
 
-template <typename Assembler>
-void Body(Assembler& as, unsigned operations) {
-    auto value = as.LoadUniform(ir::Uniform{0, ir::ValueType::U64}).SetType(ir::ValueType::U64);
-    auto right = as.LoadUniform(ir::Uniform{8, ir::ValueType::U64}).SetType(ir::ValueType::U64);
+template <typename Assembler> void Body(Assembler& as, unsigned operations) {
+    auto value = as.LoadUniform(ir::ValueType::U64, ir::Uniform{0, ir::ValueType::U64});
+    auto right = as.LoadUniform(ir::ValueType::U64, ir::Uniform{8, ir::ValueType::U64});
     for (unsigned i = 0; i < operations; ++i) {
-        value = as.Add(value, ir::Operand{right}).SetType(ir::ValueType::U64);
+        value = as.Add(ir::ValueType::U64, value, ir::Operand{right});
         as.SaveFlags(value, ir::Flags::All);
     }
     as.StoreUniform(ir::Uniform{16, ir::ValueType::U64}, value);
@@ -67,7 +66,7 @@ void Measure(const char* kind, bool whole_function, bool rejected = false,
             function->EndFunction();
             for (auto* hir : function->GetHIRBlocks()) {
                 if (rejected && hir->GetBlock()->GetStartLocation() == guest) {
-                    hir->GetBlock()->AppendInst(ir::OpCode::MemoryBarrierTSO);
+                    function->EditBlock(hir).GetBlock()->AppendInst(ir::OpCode::MemoryBarrierTSO);
                     if (i == 0) ReportLateBarrier(kind, hir->GetBlock());
                 }
             }
@@ -80,7 +79,7 @@ void Measure(const char* kind, bool whole_function, bool rejected = false,
                     saves += inst.GetOp() == ir::OpCode::SaveFlags;
         } else {
             IntrusivePtr<ir::Block> block{new ir::Block(guest)};
-            ir::Assembler as{block.get()};
+            compile::IrBuilder as{block.get()};
             Body(as, operations);
             if (rejected) block->AppendInst(ir::OpCode::MemoryBarrierTSO);
             block->SetTerminal(ir::terminal::ReturnToHost{});

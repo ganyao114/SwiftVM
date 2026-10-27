@@ -14,8 +14,7 @@ namespace swift::runtime::backend::arm64 {
 #define __ masm.
 
 bool JitTranslator::IsCanonicalTerminalEntry() const {
-    return cur_block && CanonicalTerminalEntries().contains(
-            cur_block->GetStartLocation().Value());
+    return cur_block && IsCanonicalTerminalEntry(cur_block->GetStartLocation().Value());
 }
 
 bool JitTranslator::EmitCanonicalTerminalEdge(ir::Location target) {
@@ -27,10 +26,11 @@ bool JitTranslator::EmitCanonicalTerminalEdge(ir::Location target) {
     statistics.region_block_local_branch_bytes += sizeof(u32);
     const u32 link_before = context.CurrentBufferSize();
     auto* cycle_exit = GetExternalCycleExit(target);
-    RecordExitPollFault(context.ForwardPublishedEntry(
-            target, cycle_exit, cycle_exit ? nullptr : GetTerminalRequestExit()),
+    RecordExitPollFault(
+            context.ForwardPublishedEntry(
+                    target, cycle_exit, cycle_exit ? nullptr : GetTerminalRequestExit()),
             cycle_exit ? cycle_exit : GetTerminalRequestExit(),
-            cycle_exit ? std::nullopt : std::optional<ir::Location>{target});
+            target);
     RecordBoundaryRange(BoundarySubsequence::LinkTail,
                         link_before,
                         context.CurrentBufferSize());
@@ -59,18 +59,27 @@ void JitTranslator::EmitDispatcherTerminal(
     const auto terminal_flags_bypass = local_flags_bypass.Valid()
             ? local_flags_bypass
             : flags_bypass;
+    const bool canonical_return = context.ContinuationActive() && call_return_value &&
+                                  call_return_pc &&
+                                  context.RequiresUnitState(ir::Location{*call_return_pc});
+    if (canonical_return) {
+        // A guest callee may overwrite ordinary SSA registers and spill
+        // slots. Return through canonical dispatch instead of this unit's
+        // captured continuation; its dependent entry is never exported.
+        ContinuationContract::PublishExternalFrame(masm, context.X(*call_return_value));
+        direct_link_kind = LinkSiteKind::Unconditional;
+    }
     context.RecordExecCounter(
             call_exit && cur_block_is_call
                     ? exec_offset_exit_call
                     : (static_next_loc ? exec_offset_exit_direct
                                        : exec_offset_exit_indirect));
-    if (!EmitStaticForward(call_continuation ? LinkSiteKind::Call
-                                             : direct_link_kind,
+    if (!EmitStaticForward(call_continuation ? LinkSiteKind::Call : direct_link_kind,
                            terminal_flags_bypass,
-                           external_edge) &&
-        !(CanUseIndirectCallContinuation()
-                  ? EmitIndirectCallForward(pending_call_flags)
-                  : EmitIndirectForward())) {
+                           external_edge,
+                           !call_return_value) &&
+        !(CanUseIndirectCallContinuation() ? EmitIndirectCallForward(pending_call_flags)
+                                           : EmitIndirectForward())) {
         if (!TryEmitReturnFlagsBypass(terminal_flags_bypass)) {
             context.ReturnHost();
         }
@@ -101,7 +110,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
         } else if constexpr (std::is_same_v<T, ir::terminal::ExternalLinkBlock>) {
             static_next_loc = term.next.Value();
             dynamic_next_loc.reset();
-            dynamic_location_miss = nullptr;
+            dynamic_location_deferred = false;
             EmitDispatcherTerminal(direct_link_kind, flags_bypass, true, false);
         } else if constexpr (std::is_same_v<T, ir::terminal::ReturnToHost>) {
             MergeNZCV(FlagsRegsAuditMergeCause::HostExit,
@@ -143,11 +152,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                                     exit,
                                     self_target,
                                     direct_link_kind,
-                                    local_flags_bypass.Valid() ? local_flags_bypass
-                                                              : flags_bypass,
+                                    local_flags_bypass.Valid() ? local_flags_bypass : flags_bypass,
                                     exit ? nullptr : GetTerminalRequestExit()),
                     exit ? exit : GetTerminalRequestExit(),
-                    exit ? std::nullopt : std::optional<ir::Location>{term.next});
+                    term.next);
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::LinkBlockFast>) {
@@ -183,11 +191,10 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                                     exit,
                                     self_target,
                                     direct_link_kind,
-                                    local_flags_bypass.Valid() ? local_flags_bypass
-                                                              : flags_bypass,
+                                    local_flags_bypass.Valid() ? local_flags_bypass : flags_bypass,
                                     exit ? nullptr : GetTerminalRequestExit()),
                     exit ? exit : GetTerminalRequestExit(),
-                    exit ? std::nullopt : std::optional<ir::Location>{term.next});
+                    term.next);
             RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                 context.CurrentBufferSize());
         } else if constexpr (std::is_same_v<T, ir::terminal::PopRSBHint>) {
@@ -222,7 +229,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                         ? std::optional{context.X(*dynamic_next_loc)}
                         : std::nullopt;
                 dynamic_next_loc.reset();
-                dynamic_location_miss = nullptr;
+                dynamic_location_deferred = false;
                 context.EmitRSBPop(actual_target, GetTerminalRequestExit());
                 RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                                     context.CurrentBufferSize());
@@ -269,7 +276,7 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                     __ B(&else_label,
                          static_cast<Condition>(static_cast<u8>(*local) ^ 1));
                 } else {
-                    __ Cbz(context.W(term.cond), &else_label);
+                    __ Cbz(ConditionRegister(term.cond), &else_label);
                 }
             }
             EmitTerminal(term.then_,
@@ -280,6 +287,24 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                          LinkSiteKind::ConditionalElse,
                          branch_flags_bypass, canonical_edges);
         } else if constexpr (std::is_same_v<T, ir::terminal::Condition>) {
+            if (ir::IsAlwaysCondition(term.cond)) {
+                // AL and NV both mean true, with no conditional inverse.
+                // Publish pending producers before using the canonical word:
+                // an independent ClearFlags can update x26 without PSTATE.
+                // A transparent successor must not merge those old bits back.
+                if (FlagsRegsEnabled()) {
+                    if (!canonical_transfer)
+                        MergeNZCV(FlagsRegsAuditMergeCause::TerminalDispatcher,
+                                  flags_audit_block_edge);
+                    flag_state.nzcv_dirty = false;
+                    flag_state.nzcv_requested = {};
+                    InvalidateFlagsToken();
+                }
+                EmitTerminal(term.then_, direct_link_kind,
+                             FlagsRegsEnabled() ? DirectLinkFlagsBypass{} : flags_bypass,
+                             canonical_transfer || FlagsRegsEnabled());
+                return;
+            }
             if (EmitRegionCondition(
                         term,
                         direct_link_kind == LinkSiteKind::Unconditional,
@@ -301,8 +326,12 @@ void JitTranslator::EmitTerminal(const ir::Terminal& terminal,
                 }
                 if (!complete_pstate) LoadNZCVFromFlags();
             } else {
-                if (!canonical_transfer && FlagsRegsEnabled() &&
-                    BlockIsFlagsTransparent(cur_block)) {
+                // A PF token can still be pending after NZCV was committed
+                // or cleared. Publish the complete guest flags before the
+                // split invalidates that token. PendingNZCVMergeMask decides
+                // whether PSTATE is authoritative; a nontransparent block
+                // must not import its unrelated host NZCV here.
+                if (!canonical_transfer && FlagsRegsEnabled()) {
                     MergeNZCV(FlagsRegsAuditMergeCause::TerminalDispatcher,
                               flags_audit_block_edge);
                 }
@@ -397,27 +426,32 @@ std::optional<Condition> JitTranslator::LocalConditionFor(ir::Value value) const
     if (!value.Def()) {
         return std::nullopt;
     }
-    if (auto it = local_conditions.find(value.Def()); it != local_conditions.end()) {
+    if (auto it = local_conditions.find(value.Id()); it != local_conditions.end()) {
         return it->second;
     }
     return std::nullopt;
 }
 
-bool JitTranslator::LaterNeedsHostPstate(ir::Inst* from) const {
-    return !local_conditions.empty() || (gpr_plan->consumers && gpr_plan->consumers->later_pstate.contains(from));
+bool JitTranslator::LaterNeedsHostPstate(const ir::Inst* from) const {
+    return !local_conditions.empty() ||
+           (from && context.GetActions().Consumer(from->Id()) &&
+            context.GetActions().Consumer(from->Id())->Has(ConsumerFlag::LaterPstate));
 }
 
 bool JitTranslator::IsCompactFCmp(ir::Value value) const {
     if (!value.Def() || value.Def()->GetOp() != ir::OpCode::VecFCmp ||
-        value.Def()->GetArg<ir::Imm>(3).Get() == 0) return false;
-    if (!gpr_plan->consumers) return true;
-    const auto found = gpr_plan->consumers->comparisons.find(value.Def());
-    return found == gpr_plan->consumers->comparisons.end() || !found->second.packed_relation;
+        value.Def()->GetArg<ir::Imm>(3).Get() == 0)
+        return false;
+    const auto* use = cur_instr ? context.GetActions().Consumer(cur_instr->Id()) : nullptr;
+    if (use && use->Has(ConsumerFlag::IncomingPacked)) return false;
+    const auto* row = context.GetActions().Consumer(value.Id());
+    return !row || !row->Has(ConsumerFlag::PackedRelation);
 }
 
-bool JitTranslator::RecordLocalCondition(ir::Inst* inst, ir::Cond cond) {
-    if (!gpr_plan->consumers || !gpr_plan->consumers->local_conditions.contains(inst)) return false;
-    local_conditions.emplace(inst, MapCond(cond));
+bool JitTranslator::RecordLocalCondition(const ir::Inst* inst, ir::Cond cond) {
+    const auto* row = inst ? context.GetActions().Consumer(inst->Id()) : nullptr;
+    if (!row || !row->Has(ConsumerFlag::LocalCondition)) return false;
+    local_conditions.emplace(inst->Id(), MapCond(cond));
     return true;
 }
 
@@ -430,28 +464,42 @@ bool JitTranslator::RecordLocalCondition(ir::Inst* inst, ir::Cond cond) {
 // translation degrades to the Cbz fallback rather than to a wild branch.
 bool JitTranslator::EmitStaticForward(LinkSiteKind direct_link_kind,
                                       DirectLinkFlagsBypass flags_bypass,
-                                      bool external_edge) {
+                                      bool external_edge,
+                                      bool preserve_unit_state) {
     if (!static_next_loc) {
         return false;
     }
     const u64 target = *static_next_loc;
     const u32 link_before = context.CurrentBufferSize();
     const auto location = ir::Location{target};
-    auto* cycle_exit = external_edge ? GetExternalCycleExit(location)
-                                     : GetDirectCycleExit(location);
+    // Published entries and static dispatcher transfers can reach an internal
+    // block without traversing its ordinary IR edge. Keep their ordered cut
+    // even when the target belongs to this Function's region.
+    auto* cycle_exit = external_edge || IsRegionInternalEdge(location)
+                               ? GetExternalCycleExit(location)
+                               : GetDirectCycleExit(location);
     // Forward links emit no exit poll: any cycle through linked units
     // contains a backward edge, and backward external edges poll through
     // their direct cycle cut (cycle_exit) or the dispatcher. This edge
     // therefore only delays exit observation by a bounded chain length.
     Label* request_exit = nullptr;
     const bool publish_frame = context.ContinuationActive() && direct_link_kind == LinkSiteKind::Call;
-    const auto forwarded = external_edge && IsRegionInternalEdge(location)
-            ? JitContext::StaticForwardResult{
-                      true, context.ForwardPublishedEntry(location, cycle_exit,
-                                                          request_exit, publish_frame)}
-            : context.ForwardStatic(
-                      location, cycle_exit, direct_link_kind, flags_bypass, request_exit);
-    RecordExitPollFault(forwarded.poll_fault, cycle_exit);
+    const auto forwarded =
+            external_edge && direct_link_kind != LinkSiteKind::Call &&
+                            (preserve_unit_state || !context.RequiresUnitState(location)) &&
+                            IsRegionInternalEdge(location)
+                    ? JitContext::StaticForwardResult{true,
+                                                      context.ForwardPublishedEntry(location,
+                                                                                    cycle_exit,
+                                                                                    request_exit,
+                                                                                    publish_frame)}
+                    : context.ForwardStatic(location,
+                                            cycle_exit,
+                                            direct_link_kind,
+                                            flags_bypass,
+                                            request_exit,
+                                            preserve_unit_state);
+    RecordExitPollFault(forwarded.poll_fault, cycle_exit, location);
     if (forwarded.emitted) {
         static_next_loc.reset();
     } else {
@@ -468,8 +516,10 @@ bool JitTranslator::EmitIndirectForward() {
     }
     const auto location = context.X(*dynamic_next_loc);
     dynamic_next_loc.reset();
-    auto* miss = dynamic_location_miss;
-    dynamic_location_miss = nullptr;
+    auto* miss = dynamic_location_deferred
+                         ? terminal_location_publication.GetOrCreateMissLabel(location)
+                         : nullptr;
+    dynamic_location_deferred = false;
     const u32 link_before = context.CurrentBufferSize();
     const auto fault = context.ForwardIndirectL1(location, miss, GetTerminalRequestExit());
     memory_state.fault_metadata.push_back({
@@ -489,6 +539,8 @@ bool JitTranslator::EmitContinuationForward() {
     }
     const auto location = context.X(*dynamic_next_loc);
     dynamic_next_loc.reset();
+    if (dynamic_location_deferred)
+        (void)terminal_location_publication.GetOrCreateMissLabel(location);
     auto& mismatch_site = continuation_mismatch_sites[location.GetCode()];
     if (!mismatch_site.label) {
         mismatch_site.label = std::make_unique<Label>();
@@ -499,7 +551,7 @@ bool JitTranslator::EmitContinuationForward() {
         dispatch_site.label = std::make_unique<Label>();
         dispatch_site.guest_start = cur_block->GetStartLocation().Value();
     }
-    dynamic_location_miss = nullptr;
+    dynamic_location_deferred = false;
     const u32 link_before = context.CurrentBufferSize();
     const auto fault = context.ForwardContinuation(location,
                                                    mismatch_site.label.get(),
@@ -543,18 +595,16 @@ void JitTranslator::ResolveDeferredFaults(Label* recovery) {
 
 bool JitTranslator::CanUseCallContinuation() const {
     return context.ContinuationActive() && call_return_value && call_return_pc &&
-           static_next_loc && next_region_block == call_return_pc &&
-           context.IsGPRMappedTo(*call_return_value, 14) &&
-           !backedge_exit_label && direct_cycle_exits.empty() &&
-           !backedge_flags_recipe && vec_nan_cold_sites.empty();
+           !context.RequiresUnitState(ir::Location{*call_return_pc}) && static_next_loc &&
+           next_region_block == call_return_pc && context.IsGPRMappedTo(*call_return_value, 14) &&
+           !backedge_exit_label && direct_cycle_exits.empty() && !backedge_flags_recipe;
 }
 
 bool JitTranslator::CanUseIndirectCallContinuation() const {
     return context.ContinuationActive() && call_return_value && call_return_pc &&
-           dynamic_next_loc && next_region_block == call_return_pc &&
-           context.IsGPRMappedTo(*call_return_value, 14) &&
-           !backedge_exit_label && direct_cycle_exits.empty() &&
-           !backedge_flags_recipe && vec_nan_cold_sites.empty();
+           !context.RequiresUnitState(ir::Location{*call_return_pc}) && dynamic_next_loc &&
+           next_region_block == call_return_pc && context.IsGPRMappedTo(*call_return_value, 14) &&
+           !backedge_exit_label && direct_cycle_exits.empty() && !backedge_flags_recipe;
 }
 
 bool JitTranslator::EmitIndirectCallForward(bool pending_flags) {
@@ -563,6 +613,8 @@ bool JitTranslator::EmitIndirectCallForward(bool pending_flags) {
     }
     const auto location = context.X(*dynamic_next_loc);
     dynamic_next_loc.reset();
+    if (dynamic_location_deferred)
+        (void)terminal_location_publication.GetOrCreateMissLabel(location);
     auto& miss_site = (pending_flags ? pending_call_miss_sites
                                      : indirect_call_miss_sites)[location.GetCode()];
     if (!miss_site.label) {
@@ -583,8 +635,7 @@ bool JitTranslator::EmitIndirectCallForward(bool pending_flags) {
             .guest_start = cur_block->GetStartLocation().Value(),
             .host_begin = faults.lookup_fault.begin,
             .host_end = faults.lookup_fault.end,
-            .recovery_reg = dynamic_location_miss ? location.GetCode()
-                                                  : UINT32_MAX,
+            .recovery_reg = dynamic_location_deferred ? location.GetCode() : UINT32_MAX,
     });
     RecordDeferredFault(
             faults.target_fault, miss_site.label.get(), FaultRecoveryKind::IndirectCallMiss);
@@ -592,7 +643,7 @@ bool JitTranslator::EmitIndirectCallForward(bool pending_flags) {
         flag_state.nzcv_dirty = false;
         flag_state.nzcv_requested = {};
     }
-    dynamic_location_miss = nullptr;
+    dynamic_location_deferred = false;
     RecordBoundaryRange(BoundarySubsequence::LinkTail, link_before,
                         context.CurrentBufferSize());
     return true;

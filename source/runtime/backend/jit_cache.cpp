@@ -56,9 +56,9 @@ JitDiskCache::JitDiskCache(AddressSpace& space)
     }
     const auto& config = address_space.GetConfig();
     if (config.backend_isa == kArm64 && (BackedgeFlagsEnabled() ||
-        (config.region_edges && svm_config.backedge_flags) ||
-        svm_config.flags_loop_lazy)) {
-        // Legacy backedge/loop-lazy recipes have their own eligibility state.
+        (config.region_edges && svm_config.backedge_flags))) {
+        // The legacy backedge ABI still disables caching. Loop-lazy imports
+        // are disabled by the actual enabled cache before any IR suppression.
         // Format29 carries the flags-register ABI's entries, precise recovery
         // metadata and shared-region branches, but does not admit that older ABI.
         LOG_WARNING("SVM_JIT_CACHE: lazy flags ABI is incompatible; cache disabled");
@@ -171,11 +171,8 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
                         blocks, link_sites, fault_sites);
         return;
     }
-    // A module override can enable the older loop-lazy ABI after construction.
+    // Enabled caches import no loop-lazy recipe, including module overrides.
     const auto resolved_features = ResolveFeatureSet(module->GetModuleConfig());
-    if (resolved_features.flags_loop_lazy) {
-        return;
-    }
 
     SerialUnit unit{};
     unit.guest_start = guest_start;
@@ -293,7 +290,8 @@ void JitDiskCache::RecordUnit(const std::shared_ptr<Module>& module,
     const u64 window =
             address_space.GetConfig().guest_addr_mask ? address_space.GetConfig().guest_addr_mask + 1
                                                       : 0;
-    auto scan = ScanCodeUnit(unit.code, host_image, window, external_bl_offsets);
+    auto scan = ScanCodeUnit(
+            unit.code, host_image, window, external_bl_offsets, kArm64, unit.region_branches);
     if (!scan.ok) {
         stats.reject_scan.fetch_add(1, std::memory_order_relaxed);
         return;
@@ -449,13 +447,7 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
             !ValidRegionBranches(unit.region_branches, unit.code.size()) ||
             (rv && !unit.region_branches.empty())) return reject();
         for (const auto& site : unit.fault_sites) {
-            if ((site.host_begin & 3u) || (site.host_end & 3u) ||
-                site.host_begin >= site.host_end || site.host_end > unit.code.size() ||
-                (!rv && site.host_end != site.host_begin + sizeof(u32)) ||
-                (site.recovery_offset != UINT32_MAX &&
-                 ((site.recovery_offset & 3u) || site.recovery_offset >= unit.code.size())) ||
-                site.recovery_kind > static_cast<u8>(FaultRecoveryKind::ExternalContinuation))
-                return reject();
+            if (!ValidSerialFaultSite(site, unit.code.size(), !rv)) return reject();
         }
         std::sort(emitted.begin(), emitted.end(), [](const auto* a, const auto* b) {
             return a->code_offset < b->code_offset;
@@ -487,8 +479,14 @@ bool JitDiskCache::ReviveUnit(const std::shared_ptr<Module>& module, const Seria
         });
         std::memcpy(buffer.rw_data, unit.code.data(), unit.code.size());
         std::string error;
-        if (!ApplyRelocations(buffer.rw_data, unit.code.size(), unit.relocs, host_image,
-                              &error, address_space.GetConfig().backend_isa)) return reject();
+        if (!ApplyRelocations(buffer.rw_data,
+                              unit.code.size(),
+                              unit.relocs,
+                              host_image,
+                              &error,
+                              address_space.GetConfig().backend_isa,
+                              unit.region_branches))
+            return reject();
         if (rv) {
             if (!riscv64::RegisterLinkSites(module, buffer, unit.link_sites)) return reject();
         } else {

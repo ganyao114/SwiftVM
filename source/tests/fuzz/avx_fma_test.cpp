@@ -27,6 +27,11 @@
 // varies with the surrounding program), so agreement is evidence and not
 // proof.  Everything below that looked surprising was cross-read against the
 // Intel SDM before the data was accepted.
+// The literals remain unchanged under native NaN selection. Only written
+// result lanes that are quiet NaNs on both sides may differ in sign/payload;
+// every finite/Inf/zero result bit, fused result, inactive scalar lane,
+// VEX.128 upper half, source and bystander remains exact. The priority
+// measurements below describe the x86 reference, not a software repair policy.
 //
 // WHY THE ROWS CARRY THE ENCODING
 // -------------------------------
@@ -97,6 +102,7 @@
 #include <string>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
+#include "tests/support/native_nan_test_support.h"
 #include <fmt/format.h>
 #include <sys/mman.h>
 #include "runtime/common/svm_config.h"
@@ -141,6 +147,7 @@ constexpr Entry kEntries[] = {
 };
 
 using Vec256 = std::array<u8, 32>;
+using swift::tests::MatchesNativeNaNResult;
 
 u8 Nib(char ch) { return u8(ch <= '9' ? ch - '0' : (ch | 0x20) - 'a' + 10); }
 
@@ -256,7 +263,7 @@ bool IsAddSub(const char* name) {
 
 }  // namespace
 
-TEST_CASE("x86 avx fma vs rosetta reference") {
+TEST_CASE("x86 avx fma vs rosetta reference with native NaN results") {
     if (!swift::runtime::GetSvmConfig().avx) {
         SUCCEED("SVM_AVX is not set; FMA3 Rosetta differential skipped");
         return;
@@ -569,6 +576,9 @@ TEST_CASE("x86 avx fma vs rosetta reference") {
         REQUIRE(code.size() < 0x100);
         REQUIRE(code_addr + 0x100 < stack);
         const Vec256 want = ParseHex32(ref.result);
+        const auto& entry = *FindEntry(ref.name);
+        const u32 lane_bits = entry.w ? 64 : 32;
+        const u32 written_bytes = entry.scalar ? lane_bits / 8 : ref.width / 8;
         const auto& a = ins_a[size_t(ref.input)];
         const auto& b = ins_b[size_t(ref.input)];
         const auto& c = ins_c[size_t(ref.input)];
@@ -590,7 +600,11 @@ TEST_CASE("x86 avx fma vs rosetta reference") {
             }
             continue;
         }
-        if (jit.ymm != itp.ymm || jit.exit != itp.exit) {
+        bool same_vectors = MatchesNativeNaNResult(
+                jit.ymm[0], itp.ymm[0], lane_bits, written_bytes);
+        for (u32 i = 1; i < jit.ymm.size(); ++i)
+            same_vectors &= jit.ymm[i] == itp.ymm[i];
+        if (!same_vectors || jit.exit != itp.exit) {
             if (divergences++ < 15) {
                 problems.push_back(fmt::format("{}: JIT/interpreter divergence (ymm0 {} vs {})",
                                                label, Hex(jit.ymm[0]), Hex(itp.ymm[0])));
@@ -599,7 +613,8 @@ TEST_CASE("x86 avx fma vs rosetta reference") {
 
         for (const auto& [backend, got] : {std::pair<const char*, const Out*>{"jit", &jit},
                                            std::pair<const char*, const Out*>{"interp", &itp}}) {
-            if (got->ymm[0] != want && mismatches++ < 15) {
+            if (!MatchesNativeNaNResult(got->ymm[0], want, lane_bits, written_bytes) &&
+                mismatches++ < 15) {
                 problems.push_back(fmt::format("{} [{}]: got {}, Rosetta says {} (enc {})", label,
                                                backend, Hex(got->ymm[0]), Hex(want), ref.enc));
             }

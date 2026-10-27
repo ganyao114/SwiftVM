@@ -1,17 +1,22 @@
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "base/scope_exit.h"
 
 #include "aot/aot_artifact.h"
 #include "aot/aot_load.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/context.h"
 #include "runtime/backend/function_entry_contract.h"
+#include "runtime/backend/jit_cache.h"
 #include "runtime/backend/link_manager.h"
 #include "runtime/backend/runtime.h"
 #include "runtime/common/svm_config.h"
@@ -111,8 +116,8 @@ void Contract(const std::vector<SerialBlock>& blocks, const SerialUnit& input) {
 }
 
 void Reject() {
-    Check(kCacheFormatVersion == 31 && aot::kAotFormatVersion == 6,
-          "complete entry schema has distinct disk and AOT format versions");
+    Check(kCacheFormatVersion >= 35 && aot::kAotFormatVersion == 6,
+          "entry-state artifacts require code format 35 and artifact schema 6");
     const auto input = Fixture();
     using Offset = u32 SerialBlock::*;
     const std::array<Offset, 5> offsets{&SerialBlock::code_offset, &SerialBlock::direct_code_offset,
@@ -124,13 +129,29 @@ void Reject() {
         Check(!Disk(bad, disk), "disk rejects malformed complete entry contract");
         Check(!Aot(bad, artifact), "AOT rejects malformed complete entry contract");
     };
+    {
+        auto ranged = input;
+        ranged.fault_sites.push_back(
+                {0x200, 20, 40, UINT32_MAX, static_cast<u8>(FaultRecoveryKind::GuestRange)});
+        SerialUnit disk;
+        aot::AotImage artifact;
+        Check(Disk(ranged, disk) && disk.fault_sites.back().recovery_kind ==
+                                            static_cast<u8>(FaultRecoveryKind::GuestRange),
+              "disk codec preserves explicit committed-state block ranges");
+        Check(Aot(ranged, artifact) && artifact.units.front().fault_sites.back().recovery_kind ==
+                                               static_cast<u8>(FaultRecoveryKind::GuestRange),
+              "AOT codec preserves explicit committed-state block ranges");
+        auto bad = ranged;
+        bad.fault_sites.back().recovery_kind = static_cast<u8>(FaultRecoveryKind::IndirectCallMiss);
+        rejected(bad);
+    }
     for (u8 kind = 0; kind < u8(SerialRegionBranchKind::Count); ++kind) {
         const auto type = static_cast<SerialRegionBranchKind>(kind);
         const bool masked = type == SerialRegionBranchKind::MergeMask || type == SerialRegionBranchKind::MergeMaskToken;
         for (u8 mask = masked ? 1 : 0; mask < (masked ? 15 : 1); ++mask) {
             auto valid = input;
             valid.region_branches.push_back({20, type, mask});
-            const u32 placeholder = 0x1400'0000u;
+            const u32 placeholder = valid.region_branches.back().UnlinkedInstruction();
             std::memcpy(valid.code.data() + 20, &placeholder, 4);
             SerialUnit disk;
             aot::AotImage artifact;
@@ -253,7 +274,7 @@ void AotLinks() {
     }
 }
 
-void Native() {
+void Native(bool dependent = false) {
     using namespace swift::runtime::ir;
     const auto bytes = 8 * static_cast<size_t>(getpagesize());
     void* guest = mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -274,6 +295,34 @@ void Native() {
 #else
     config.backend_isa = kArm64;
 #endif
+    std::string cache_directory;
+    const std::array<const char*, 3> cache_env{
+            "SVM_JIT_CACHE", "SVM_FLAGS_LOOP_LAZY", "SVM_BACKEDGE_FLAGS"};
+    std::array<std::optional<std::string>, 3> saved_env;
+    const auto restore_cache = ScopeExit([&] {
+        if (cache_directory.empty()) return;
+        for (size_t i = 0; i < cache_env.size(); ++i) {
+            if (saved_env[i])
+                SetSvmConfigEnvForTest(cache_env[i], saved_env[i]->c_str(), 1);
+            else
+                UnsetSvmConfigEnvForTest(cache_env[i]);
+        }
+        std::filesystem::remove_all(cache_directory);
+    });
+    if (dependent) {
+#if defined(__ANDROID__)
+        char directory[] = "/data/local/tmp/swiftvm-entry-state.XXXXXX";
+#else
+        char directory[] = "/tmp/swiftvm-entry-state.XXXXXX";
+#endif
+        Check(mkdtemp(directory) != nullptr, "create owned entry-state cache directory");
+        cache_directory = directory;
+        for (size_t i = 0; i < cache_env.size(); ++i)
+            if (const auto* value = GetRawSvmConfigEnvForTest(cache_env[i])) saved_env[i] = value;
+        SetSvmConfigEnvForTest(cache_env[0], cache_directory.c_str(), 1);
+        SetSvmConfigEnvForTest(cache_env[1], "0", 1);
+        SetSvmConfigEnvForTest(cache_env[2], "0", 1);
+    }
     aot::AotImage image;
     {
         AddressSpace source{config};
@@ -281,14 +330,17 @@ void Native() {
         HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
         auto* function = builder.AppendFunction(Location{0x100}, Location{0x104});
         const auto left = function->LoadUniform(Uniform{8, ValueType::U64});
-        const auto one = function->LoadImm(Imm{u64{1}}).SetType(ValueType::U64);
-        const auto sum = function->Add(left, Operand{one}).SetType(ValueType::U64);
+        const auto one = function->LoadImm(ValueType::U64, Imm{u64{1}});
+        const auto sum = function->Add(ValueType::U64, left, Operand{one});
         function->SaveFlags(sum, Flags::All);
         function->StoreUniform(Uniform{0, ValueType::U64}, sum);
         function->AdvancePC(Imm{u64{1}});
         auto* tail = builder.LinkBlock(terminal::LinkBlock{Location{0x102}});
         builder.SetCurBlock(tail);
-        function->StoreUniform(Uniform{16, ValueType::U64}, one);
+        // Exercise both an independent public entry and the old Function's
+        // dependent body, which must survive persistence without publication.
+        function->StoreUniform(Uniform{16, ValueType::U64},
+                               dependent ? one : function->LoadImm(ValueType::U64, Imm{u64{1}}));
         function->AdvancePC(Imm{u64{1}});
         function->EndBlock(terminal::ReturnToHost{});
         function->EndFunction();
@@ -301,6 +353,37 @@ void Native() {
         Check(target && target->host_pc == source.GetCodeCache(Location{0x100}) &&
               target->target_owner.allocation == allocation.host_start,
               "capture actual published function target contract");
+        const auto canonical_entry = source.GetCodeCache(Location{0x100});
+        const auto secondary_entry = source.GetCodeCache(Location{0x102});
+        Check(module->GetJitCache(Location{0x100}) == canonical_entry,
+              "module lookup returns the exact root canonical Function entry");
+        Check(!module->GetJitCache(Location{0x101}) && !source.GetCodeCache(Location{0x101}) &&
+                      !module->GetJitCache(Location{0x103}) &&
+                      !source.GetCodeCache(Location{0x103}),
+              "instruction interiors do not alias the Function allocation entry");
+        if (config.backend_isa == kArm64 && !dependent) {
+            const auto secondary_target = source.GetLinkManager().QueryTarget(0x102);
+            Check(secondary_entry && secondary_entry != canonical_entry && secondary_target &&
+                          secondary_target->host_pc == secondary_entry,
+                  "address-space lookup returns the distinct published secondary Function entry");
+            Check(source.GetCodeCacheTable().Zero(0x100) && source.GetCodeCacheTable().Zero(0x102),
+                  "clear only the two canonical dispatch slots while retaining their owner");
+            Check(!module->GetJitCache(Location{0x100}) && !source.GetCodeCache(Location{0x100}) &&
+                          !module->GetJitCache(Location{0x102}) &&
+                          !source.GetCodeCache(Location{0x102}),
+                  "missing Function entries stay missing instead of resurrecting the allocation "
+                  "start");
+            source.PushCodeCache(Location{0x100}, canonical_entry);
+            source.PushCodeCache(Location{0x102}, secondary_entry);
+            Check(module->GetJitCache(Location{0x100}) == canonical_entry &&
+                          source.GetCodeCache(Location{0x102}) == secondary_entry,
+                  "republishing exact Function slots restores their distinct entries");
+        } else if (dependent) {
+            Check(!secondary_entry && !source.GetLinkManager().QueryTarget(0x102) &&
+                          !module->GetJitCache(Location{0x102}) &&
+                          !source.GetCallCodeCacheTable().Lookup(0x102),
+                  "dependent Function body is absent from every external entry table");
+        }
         const auto offset = [&](const void* pointer) -> u32 {
             if (!pointer) return UINT32_MAX;
             auto* address = static_cast<const u8*>(pointer);
@@ -360,10 +443,62 @@ void Native() {
         Check(cache && FreezeRegionBranches(*cache, allocation.host_start, image.code, image.units.front().region_branches),
               "freeze only exact known shared region branches from the actual code cache");
         image.code_hash = HashBytes(image.code.data(), image.code.size(), 0xCBF29CE484222325ull);
-        const auto scan = ScanCodeUnit(image.code, GetHostImage(), bytes, {}, config.backend_isa);
+        const auto scan = ScanCodeUnit(image.code,
+                                       GetHostImage(),
+                                       bytes,
+                                       {},
+                                       config.backend_isa,
+                                       image.units.front().region_branches);
         if (!scan.ok) throw std::runtime_error("actual five-entry relocation scan: " + scan.reject_reason);
         ++checks;
         image.units.front().relocs = scan.relocs;
+        IntrusivePtr<Block> single{new Block(0, Location{0x200})};
+        single->StoreUniform(Uniform{24, ValueType::U64},
+                             single->LoadImm(ValueType::U64, Imm{u64{7}}));
+        single->AdvancePC(Imm{u64{4}});
+        single->SetTerminal(terminal::ReturnToHost{});
+        Check(module->Push(single.get()), "publish independent Block ownership for exact lookup");
+        const auto block_entry = TranslateIR(module, single);
+        Check(block_entry && module->GetJitCache(Location{0x200}) == block_entry &&
+                      source.GetCodeCache(Location{0x200}) == block_entry,
+              "standalone Block retains its exact-start cache fallback");
+        Check(!module->GetJitCache(Location{0x201}) && !source.GetCodeCache(Location{0x201}),
+              "Block fallback does not publish an instruction interior");
+        if (dependent) {
+            const auto disk = source.GetJitDiskCache();
+            Check(disk && disk->Enabled() && disk->Stats().units_compiled.load() == 2 &&
+                          disk->Stats().reject_scan.load() == 0,
+                  "production recorder captures the dependent Function and independent Block");
+            disk->Save();
+            Check(disk->Stats().units_stored.load() == 2, "save actual dependent Function code");
+        }
+    }
+    if (dependent) {
+        AddressSpace disk_destination{config};
+        disk_destination.LoadJitCache();
+        const auto disk = disk_destination.GetJitDiskCache();
+        Check(disk && disk->Stats().units_loaded.load() == 2 &&
+                      disk_destination.GetCodeCache(Location{0x100}) &&
+                      !disk_destination.GetCodeCache(Location{0x102}) &&
+                      !disk_destination.GetLinkManager().QueryTarget(0x102),
+              (std::string{"fresh disk instance restores root and leaves dependent metadata "
+                           "unexported: loaded="} +
+               (disk ? std::to_string(disk->Stats().units_loaded.load()) : "disabled") +
+               " header=" + (disk ? std::to_string(disk->Stats().reject_header.load()) : "-") +
+               " relocation=" + (disk ? std::to_string(disk->Stats().reject_reloc.load()) : "-") +
+               " guest=" + (disk ? std::to_string(disk->Stats().reject_guest_bytes.load()) : "-"))
+                      .c_str());
+        Runtime runtime{&disk_destination};
+        const u64 input = 36;
+        std::memcpy(runtime.GetUniformBuffer().data() + 8, &input, sizeof(input));
+        runtime.SetLocation(0x100);
+        Check(runtime.Run() == HaltReason::CallHost,
+              "restored disk Function follows its retained internal value transfer");
+        u64 answer{};
+        std::memcpy(&answer, runtime.GetUniformBuffer().data(), sizeof(answer));
+        Check(answer == 37, "disk restoration preserves independent arithmetic result");
+        std::memcpy(&answer, runtime.GetUniformBuffer().data() + 16, sizeof(answer));
+        Check(answer == 1, "disk restoration preserves nonlocal SSA into its internal body");
     }
     const auto blob = aot::EncodeInfoBlob(image);
     aot::AotImage restored;
@@ -391,6 +526,32 @@ void Native() {
           reinterpret_cast<void*>(destination.GetCallCodeCacheTable().Lookup(0x100)) == pointer(block.continuation_code_offset) &&
           reinterpret_cast<void*>(destination.GetPendingCallCodeCacheTable().Lookup(0x100)) == pointer(block.pending_flags_continuation_code_offset),
           "canonical, call and pending-call tables publish the actual restored entries");
+    const auto& secondary = image.units.front().blocks[1];
+    Check(module->GetJitCache(Location{0x100}) == pointer(block.code_offset),
+          "restored Module root lookup returns the canonical entry rather than the allocation");
+    if (config.backend_isa == kArm64 && !dependent) {
+        Check(secondary.IsPublished() &&
+                      destination.GetCodeCache(Location{secondary.guest_start}) ==
+                              pointer(secondary.code_offset),
+              "restored address-space lookup preserves the exact secondary canonical entry");
+        Check(destination.GetCodeCacheTable().Zero(0x100) &&
+                      destination.GetCodeCacheTable().Zero(secondary.guest_start) &&
+                      !module->GetJitCache(Location{0x100}) &&
+                      !destination.GetCodeCache(Location{0x100}) &&
+                      !destination.GetCodeCache(Location{secondary.guest_start}),
+              "restored live Function ownership does not resurrect cleared canonical entries");
+        destination.PushCodeCache(Location{0x100}, pointer(block.code_offset));
+        destination.PushCodeCache(Location{secondary.guest_start}, pointer(secondary.code_offset));
+    } else if (dependent) {
+        Check(!secondary.IsPublished() && secondary.entry_flags == SerialBlock::MetadataOnly &&
+                      !destination.GetCodeCache(Location{secondary.guest_start}) &&
+                      !destination.GetLinkManager().QueryTarget(secondary.guest_start),
+              "AOT restores dependent guest extent without fabricating an external entry");
+    }
+    Check(!module->GetJitCache(Location{0x101}) && !destination.GetCodeCache(Location{0x101}) &&
+                  !module->GetJitCache(Location{0x103}) &&
+                  !destination.GetCodeCache(Location{0x103}),
+          "restored Function range does not publish instruction interiors");
     for (const u64 input : {u64{36}, ~u64{0}}) {
         Runtime runtime{&destination};
         std::memcpy(runtime.GetUniformBuffer().data() + 8, &input, sizeof(input));
@@ -399,6 +560,11 @@ void Native() {
         u64 value{};
         std::memcpy(&value, runtime.GetUniformBuffer().data(), sizeof(value));
         Check(value == input + 1, "actual restored flags-producing function computes the independent answer");
+        if (dependent) {
+            std::memcpy(&value, runtime.GetUniformBuffer().data() + 16, sizeof(value));
+            Check(value == 1, "restored AOT internal body receives its original SSA constant");
+            value = input + 1;
+        }
 #if defined(__aarch64__)
         Check((runtime.GetState()->host_cpu_flags & 0xf0000000u) == (value == 0 ? 0x60000000u : 0),
               "actual restored function preserves independent carry/zero/overflow/sign results");
@@ -469,9 +635,11 @@ void NativeLinks() {
             HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
             auto* function = builder.AppendFunction(Location{location}, Location{location + 4});
             const bool target = location == locations.front();
-            function->StoreUniform(Uniform{target ? u16{0} : u16{8}, ValueType::U64},
-                function->LoadImm(Imm{target ? u64{37} : location}).SetType(ValueType::U64));
-            if (target) function->EndBlock(terminal::ReturnToHost{});
+            function->StoreUniform(
+                    Uniform{target ? u16{0} : u16{8}, ValueType::U64},
+                    function->LoadImm(ValueType::U64, Imm{target ? u64{37} : location}));
+            if (target)
+                function->EndBlock(terminal::ReturnToHost{});
             else function->EndBlock(terminal::LinkBlock{Location{locations.front()}});
             function->EndFunction();
             auto* entry = static_cast<u8*>(TranslateIR(module, function));
@@ -560,6 +728,9 @@ int main(int argc, char** argv) {
             Reject();
         } else if (mode == "native") {
             Native();
+#if defined(__aarch64__)
+            Native(true);
+#endif
         } else if (mode == "aot-links") {
             AotLinks();
         } else if (mode == "native-links") {

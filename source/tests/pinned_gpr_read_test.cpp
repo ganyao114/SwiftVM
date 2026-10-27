@@ -1,4 +1,8 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <array>
@@ -15,11 +19,10 @@
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/smc_tracker.h"
 #include "runtime/common/svm_config.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "translator/x86/translator.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -52,7 +55,7 @@ enum class PinnedReadShape {
 
 std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
                                         ValueType type = ValueType::U32,
-                                        unsigned* target_replays = nullptr) {
+                                        unsigned* fpr_retries = nullptr) {
     Config config{
             .loc_start = 0,
             .loc_end = 1ull << 48,
@@ -84,165 +87,132 @@ std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
                shape == PinnedReadShape::LoadByteExtend) {
         type = ValueType::U8;
     }
-    auto value = shape == PinnedReadShape::LoadU16 ||
-                         shape == PinnedReadShape::SignedLoadU16 ||
-                         shape == PinnedReadShape::LoadU8Flags ||
-                         shape == PinnedReadShape::LoadU8SavedFlags ||
-                         shape == PinnedReadShape::LoadByteExtend ||
-                         shape == PinnedReadShape::LoadNarrowSubtract ||
-                         shape == PinnedReadShape::LoadCallerNarrowSubtract
-            ? block->LoadMemory(Operand{block->LoadImm(Imm{swift::u64{0x1000}})
-                                                .SetType(ValueType::U64)})
-                      .SetType(type)
-            : block->GetHostGPR(HostRegIndex(source_index), Imm{0u})
-                      .SetType(type);
+    auto value = shape == PinnedReadShape::LoadU16 || shape == PinnedReadShape::SignedLoadU16 ||
+                                 shape == PinnedReadShape::LoadU8Flags ||
+                                 shape == PinnedReadShape::LoadU8SavedFlags ||
+                                 shape == PinnedReadShape::LoadByteExtend ||
+                                 shape == PinnedReadShape::LoadNarrowSubtract ||
+                                 shape == PinnedReadShape::LoadCallerNarrowSubtract
+                         ? block->LoadMemory(
+                                   type,
+                                   Operand{block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}})})
+
+                         : block->GetHostGPR(type, HostRegIndex(source_index), Imm{0u});
     if (shape == PinnedReadShape::LoadByteExtend) {
-        auto extended = block->ZeroExtend32(value).SetType(ValueType::U32);
-        auto result = block->Xor(extended, Operand{Imm{0x5au}})
-                              .SetType(ValueType::U32);
+        auto extended = block->ZeroExtend32(ValueType::U32, value);
+        auto result = block->Xor(ValueType::U32, extended, Operand{Imm{0x5au}});
         block->StoreUniform(Uniform{64, ValueType::U32}, result);
     } else if (shape == PinnedReadShape::SignedLoadU16) {
-        auto signed_value = block->SignExtend(value).SetType(ValueType::S32);
-        auto extended = block->ZeroExtend32To64(signed_value)
-                                .SetType(ValueType::U64);
+        auto signed_value = block->SignExtend(ValueType::S32, value);
+        auto extended = block->ZeroExtend32To64(ValueType::U64, signed_value);
         block->SetHostGPR(extended, HostRegIndex(22), Imm{0u});
-        auto alias = block->BitExtract(extended, Imm{0u}, Imm{32u})
-                             .SetType(ValueType::U32);
-        auto widened = block->SignExtend(alias).SetType(ValueType::U64);
-        auto product = block->Mul(alias, Operand{Imm{3u}})
-                               .SetType(ValueType::U32);
+        auto alias = block->BitExtract(ValueType::U32, extended, Imm{0u}, Imm{32u});
+        auto widened = block->SignExtend(ValueType::U64, alias);
+        auto product = block->Mul(ValueType::U32, alias, Operand{Imm{3u}});
         block->StoreUniform(Uniform{64, ValueType::U64}, widened);
         block->StoreUniform(Uniform{72, ValueType::U32}, product);
     } else if (shape == PinnedReadShape::LoadNarrowSubtract ||
                shape == PinnedReadShape::LoadCallerNarrowSubtract) {
-        auto extended = block->ZeroExtend32(value).SetType(ValueType::U32);
-        auto published = block->ZeroExtend32To64(extended)
-                                 .SetType(ValueType::U64);
-        const auto target = shape == PinnedReadShape::LoadCallerNarrowSubtract
-                ? 2u
-                : 22u;
+        auto extended = block->ZeroExtend32(ValueType::U32, value);
+        auto published = block->ZeroExtend32To64(ValueType::U64, extended);
+        const auto target = shape == PinnedReadShape::LoadCallerNarrowSubtract ? 2u : 22u;
         block->SetHostGPR(published, HostRegIndex(target), Imm{0u});
         const auto width = ir::GetValueSizeByte(type) * 8;
-        auto alias = block->BitExtract(published, Imm{0u}, Imm{width})
-                             .SetType(type);
-        auto left = block->GetHostGPR(HostRegIndex(7), Imm{0u})
-                            .SetType(type);
-        auto result = block->Sub(left, Operand{alias}).SetType(type);
+        auto alias = block->BitExtract(type, published, Imm{0u}, Imm{width});
+        auto left = block->GetHostGPR(type, HostRegIndex(7), Imm{0u});
+        auto result = block->Sub(type, left, Operand{alias});
         block->SaveFlags(result, Flags::All);
     } else if (shape == PinnedReadShape::LoadU8Flags ||
                shape == PinnedReadShape::LoadU8SavedFlags ||
-                         shape == PinnedReadShape::LoadByteExtend ||
+               shape == PinnedReadShape::LoadByteExtend ||
                shape == PinnedReadShape::LoadByteExtend) {
-        auto extended = block->ZeroExtend32To64(value).SetType(ValueType::U64);
+        auto extended = block->ZeroExtend32To64(ValueType::U64, value);
         block->SetHostGPR(extended, HostRegIndex(23), Imm{0u});
-        auto alias = block->BitExtract(extended, Imm{0u}, Imm{8u})
-                             .SetType(ValueType::U8);
-        auto result = block->Or(alias, Operand{Imm{0u}})
-                               .SetType(ValueType::U8);
+        auto alias = block->BitExtract(ValueType::U8, extended, Imm{0u}, Imm{8u});
+        auto result = block->Or(ValueType::U8, alias, Operand{Imm{0u}});
         if (shape == PinnedReadShape::LoadU8Flags) {
             block->AppendInst(OpCode::BranchOnlyFlags, result, Flags::Zero);
         } else {
             block->SaveFlags(result, Flags::Zero | Flags::Parity);
         }
     } else if (shape == PinnedReadShape::FullAddAlias) {
-        auto narrow = block->GetHostGPR(HostRegIndex(29), Imm{0u})
-                              .SetType(ValueType::U8);
-        auto extended = block->ZeroExtend32(narrow).SetType(ValueType::U32);
-        auto published = block->ZeroExtend32To64(extended)
-                                 .SetType(ValueType::U64);
+        auto narrow = block->GetHostGPR(ValueType::U8, HostRegIndex(29), Imm{0u});
+        auto extended = block->ZeroExtend32(ValueType::U32, narrow);
+        auto published = block->ZeroExtend32To64(ValueType::U64, extended);
         block->SetHostGPR(published, HostRegIndex(29), Imm{0u});
-        auto alias = block->BitCast(published).SetType(ValueType::U64);
-        auto left = block->GetHostGPR(HostRegIndex(0), Imm{0u})
-                            .SetType(ValueType::U64);
-        auto result = block->Add(left, Operand{alias}).SetType(ValueType::U64);
+        auto alias = block->BitCast(ValueType::U64, published);
+        auto left = block->GetHostGPR(ValueType::U64, HostRegIndex(0), Imm{0u});
+        auto result = block->Add(ValueType::U64, left, Operand{alias});
         block->StoreUniform(Uniform{64, ValueType::U64}, result);
     } else if (shape == PinnedReadShape::Or) {
-        auto right = block->GetHostGPR(HostRegIndex(29), Imm{0u})
-                             .SetType(type);
-        auto result = block->Or(value, Operand{right}).SetType(type);
+        auto right = block->GetHostGPR(type, HostRegIndex(29), Imm{0u});
+        auto result = block->Or(type, value, Operand{right});
         block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
     } else if (shape == PinnedReadShape::TransferredCopy) {
-        auto published = block->ZeroExtend32To64(value).SetType(ValueType::U64);
+        auto published = block->ZeroExtend32To64(ValueType::U64, value);
         block->SetHostGPR(published, HostRegIndex(22), Imm{0u});
-        auto replacement = block->LoadImm(Imm{swift::u64{0x1234}})
-                                   .SetType(ValueType::U64);
+        auto replacement = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1234}});
         block->SetHostGPR(replacement, HostRegIndex(source_index), Imm{0u});
-        auto right = block->GetHostGPR(HostRegIndex(29), Imm{0u})
-                             .SetType(ValueType::U32);
-        auto result = block->Xor(value, Operand{right}).SetType(ValueType::U32);
+        auto right = block->GetHostGPR(ValueType::U32, HostRegIndex(29), Imm{0u});
+        auto result = block->Xor(ValueType::U32, value, Operand{right});
         block->StoreUniform(Uniform{64, ValueType::U32}, result);
-    } else if (shape == PinnedReadShape::SelfWrite ||
-               shape == PinnedReadShape::SelfWriteAddress ||
-                shape == PinnedReadShape::Copy ||
-               shape == PinnedReadShape::CopyU16 ||
+    } else if (shape == PinnedReadShape::SelfWrite || shape == PinnedReadShape::SelfWriteAddress ||
+               shape == PinnedReadShape::Copy || shape == PinnedReadShape::CopyU16 ||
                shape == PinnedReadShape::LoadU16) {
-        auto extended = shape == PinnedReadShape::CopyU16 ||
-                                shape == PinnedReadShape::LoadU16
-                ? block->ZeroExtend32(value).SetType(ValueType::U32)
-                : value;
-        auto result = block->ZeroExtend32To64(extended).SetType(ValueType::U64);
+        auto extended = shape == PinnedReadShape::CopyU16 || shape == PinnedReadShape::LoadU16
+                                ? block->ZeroExtend32(ValueType::U32, value)
+                                : value;
+        auto result = block->ZeroExtend32To64(ValueType::U64, extended);
         block->SetHostGPR(result, HostRegIndex(22), Imm{0u});
-        auto address = block->BitCast(result).SetType(ValueType::U64);
+        auto address = block->BitCast(ValueType::U64, result);
         if (shape == PinnedReadShape::SelfWriteAddress) {
-            auto base = block->GetHostGPR(HostRegIndex(19), Imm{0u})
-                                .SetType(ValueType::U64);
-            address = block->GetOperand(
-                                   Operand{base, address,
-                                           {OperandOp::PlusExt, 2}})
-                              .SetType(ValueType::U64);
+            auto base = block->GetHostGPR(ValueType::U64, HostRegIndex(19), Imm{0u});
+            address = block->GetOperand(ValueType::U64,
+                                        Operand{base, address, {OperandOp::PlusExt, 2}});
         }
-        auto loaded = block->LoadMemory(Operand{address, Imm{8u}})
-                              .SetType(ValueType::U8);
+        auto loaded = block->LoadMemory(ValueType::U8, Operand{address, Imm{8u}});
         block->StoreUniform(Uniform{64, ValueType::U8}, loaded);
     } else if (overwritten_write) {
-        auto copied = block->ZeroExtend32To64(value).SetType(ValueType::U64);
+        auto copied = block->ZeroExtend32To64(ValueType::U64, value);
         block->SetHostGPR(copied, HostRegIndex(23), Imm{0u});
         block->AdvancePC(Imm{2u});
         if (shape == PinnedReadShape::OverwrittenWriteFault) {
-            auto address = block->LoadImm(Imm{swift::u64{0x1000}})
-                                   .SetType(ValueType::U64);
-            auto loaded = block->LoadMemory(Operand{address}).SetType(ValueType::U8);
+            auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
+            auto loaded = block->LoadMemory(ValueType::U8, Operand{address});
             block->StoreUniform(Uniform{64, ValueType::U8}, loaded);
         }
-        auto low = block->BitExtract(copied, Imm{0u}, Imm{32u})
-                           .SetType(ValueType::U32);
-        auto masked = block->And(low, Operand{Imm{swift::u32{0x70}}})
-                              .SetType(ValueType::U32);
-        auto result = block->ZeroExtend32To64(masked).SetType(ValueType::U64);
+        auto low = block->BitExtract(ValueType::U32, copied, Imm{0u}, Imm{32u});
+        auto masked = block->And(ValueType::U32, low, Operand{Imm{swift::u32{0x70}}});
+        auto result = block->ZeroExtend32To64(ValueType::U64, masked);
         block->SetHostGPR(result, HostRegIndex(23), Imm{0u});
     } else if (shape == PinnedReadShape::MemoryAddress) {
-        auto address = block->GetOperand(Operand{value}).SetType(ValueType::U64);
+        auto address = block->GetOperand(ValueType::U64, Operand{value});
         if (reuse_read) {
-            auto replacement = block->LoadImm(Imm{swift::u64{0x1000}})
-                                       .SetType(ValueType::U64);
+            auto replacement = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
             block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         }
-        auto loaded = block->LoadMemory(Operand{address}).SetType(ValueType::U32);
+        auto loaded = block->LoadMemory(ValueType::U32, Operand{address});
         block->StoreUniform(Uniform{64, ValueType::U32}, loaded);
     } else if (shape == PinnedReadShape::SelfAnd) {
-        auto result = block->And(value, Operand{value}).SetType(ValueType::U32);
+        auto result = block->And(ValueType::U32, value, Operand{value});
         block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
     } else if (shape == PinnedReadShape::NarrowStoreMemory) {
-        auto right = block->GetHostGPR(HostRegIndex(29), Imm{0u})
-                             .SetType(type);
-        auto result = block->Or(value, Operand{right}).SetType(type);
+        auto right = block->GetHostGPR(type, HostRegIndex(29), Imm{0u});
+        auto result = block->Or(type, value, Operand{right});
         block->SetHostGPR(result, HostRegIndex(22), Imm{0u});
-        auto low = block->BitExtract(result, Imm{0u}, Imm{16u})
-                           .SetType(ValueType::U16);
-        auto address = block->LoadImm(Imm{swift::u64{0x1000}})
-                               .SetType(ValueType::U64);
+        auto low = block->BitExtract(ValueType::U16, result, Imm{0u}, Imm{16u});
+        auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
         block->StoreMemory(Operand{address}, low);
     } else if (shape == PinnedReadShape::SignExtend) {
-        auto result = block->SignExtend(value).SetType(ValueType::U64);
+        auto result = block->SignExtend(ValueType::U64, value);
         block->StoreUniform(Uniform{8, ValueType::U64}, result);
     } else if (shape == PinnedReadShape::Subtract ||
                shape == PinnedReadShape::CallerNarrowSubtract) {
-        auto right = block->LoadImm(Imm{swift::u32{1}}).SetType(type);
-        auto result = block->Sub(value, Operand{right}).SetType(type);
+        auto right = block->LoadImm(type, Imm{swift::u32{1}});
+        auto result = block->Sub(type, value, Operand{right});
         block->SaveFlags(result, Flags::All);
     } else {
-        auto address = block->LoadImm(Imm{swift::u64{0x1000}})
-                               .SetType(ValueType::U64);
+        auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
         block->StoreMemory(Operand{address}, value);
     }
     if (reuse_read && shape != PinnedReadShape::MemoryAddress) {
@@ -252,11 +222,15 @@ std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(),
-                   features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
     if (shape == PinnedReadShape::NarrowStoreMemory) {
         for (auto& inst : block->GetInstList()) {
             if (inst.GetOp() != OpCode::SetHostGPR ||
@@ -269,9 +243,9 @@ std::vector<std::string> EmitPinnedRead(PinnedReadShape shape, bool reuse_read,
             break;
         }
     }
-    alloc.CompleteGPRAllocation(module);
-    if (target_replays) *target_replays = alloc.TargetReplayCount();
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    if (fpr_retries) *fpr_retries = alloc.FPRContractRetryCount();
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -323,16 +297,16 @@ bool HasShiftPreparation(const std::vector<std::string>& lines) {
 TEST_CASE("narrow pinned reads need no target replay", "[fixed-gpr]") {
     for (auto type : {ValueType::U8, ValueType::U16, ValueType::U32}) {
         CAPTURE(type);
-        unsigned replays = UINT32_MAX;
-        (void)EmitPinnedRead(PinnedReadShape::Subtract, false, type, &replays);
-        REQUIRE(replays == 0);
+        unsigned fpr_retries = UINT32_MAX;
+        (void)EmitPinnedRead(PinnedReadShape::Subtract, false, type, &fpr_retries);
+        REQUIRE(fpr_retries == 0);
     }
-    unsigned replays = UINT32_MAX;
-    (void)EmitPinnedRead(PinnedReadShape::SelfAnd, false, ValueType::U32, &replays);
-    REQUIRE(replays == 0);
-    replays = UINT32_MAX;
-    (void)EmitPinnedRead(PinnedReadShape::SignExtend, false, ValueType::U32, &replays);
-    REQUIRE(replays == 0);
+    unsigned fpr_retries = UINT32_MAX;
+    (void)EmitPinnedRead(PinnedReadShape::SelfAnd, false, ValueType::U32, &fpr_retries);
+    REQUIRE(fpr_retries == 0);
+    fpr_retries = UINT32_MAX;
+    (void)EmitPinnedRead(PinnedReadShape::SignExtend, false, ValueType::U32, &fpr_retries);
+    REQUIRE(fpr_retries == 0);
 }
 
 TEST_CASE("a tied byte load extension needs no clean", "[fixed-gpr]") {

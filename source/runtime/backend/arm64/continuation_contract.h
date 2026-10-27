@@ -24,6 +24,8 @@ public:
     [[nodiscard]] static void* EncodeTraversal(void* target, ContinuationTraversal traversal);
     static void PublishFrame(vixl::aarch64::MacroAssembler& masm);
     static void PublishExternalFrame(vixl::aarch64::MacroAssembler& masm);
+    static void PublishExternalFrame(vixl::aarch64::MacroAssembler& masm,
+                                     const vixl::aarch64::Register& guest_return);
     static void ConsumeFrame(vixl::aarch64::MacroAssembler& masm,
                              const vixl::aarch64::Register& guest_return,
                              const vixl::aarch64::Register& host_continuation);

@@ -131,13 +131,11 @@
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 // Same packing convention as decoder_avx_int.cc: bits 15:0 are the lane width
 // in bits, bits 31:16 a per-operation selector.
 constexpr u32 Pack(u32 lane, u32 flag = 0) { return lane | (flag << 16); }
@@ -151,21 +149,21 @@ constexpr auto kV128 = ir::ValueType::V128;
 // operation over the pair is a pairwise operation over a and b, with a's
 // results in the low half of the destination and b's in the high half -- which
 // is precisely the 128-bit lane layout every instruction in this file wants.
-ir::Value Stream(ir::Assembler* as, ir::Value a, ir::Value b, u32 lane_bits, bool odd) {
-    return as->VecUnzip(a, b, ir::Imm(lane_bits), ir::Imm(odd ? 1u : 0u)).SetType(kV128);
+ir::Value Stream(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 lane_bits, bool odd) {
+    return as->VecUnzip(kV128, a, b, ir::Imm(lane_bits), ir::Imm(odd ? 1u : 0u));
 }
 
 // --- floating point: vhaddps / vhaddpd / vhsubps / vhsubpd -----------------
 // Flag(param): 0 = add, 1 = subtract.  Lane(param): 32 or 64.
 // EVEN is operand 1 of the arithmetic, which is what makes the subtract come
 // out as (even - odd) and gives the even element NaN priority on the add.
-ir::Value OpHorizontalFloat(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
+ir::Value OpHorizontalFloat(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
     const u32 lane_bits = Lane(param);
     const auto lanes = ir::Imm(lane_bits);
     auto even = Stream(as, a, b, lane_bits, false);
     auto odd = Stream(as, a, b, lane_bits, true);
-    return (Flag(param) ? as->VecFSub(even, odd, lanes) : as->VecFAdd(even, odd, lanes))
-            .SetType(kV128);
+    return (Flag(param) ? as->VecFSub(kV128, even, odd, lanes)
+                        : as->VecFAdd(kV128, even, odd, lanes));
 }
 
 // --- integer: vphaddw/d, vphaddsw, vphsubw/d, vphsubsw ---------------------
@@ -173,20 +171,20 @@ ir::Value OpHorizontalFloat(ir::Assembler* as, ir::Value a, ir::Value b, u32 par
 // The saturating forms are signed-only; x86 has no unsigned horizontal form.
 enum : u32 { kAdd = 0, kSub = 1, kSatAdd = 2, kSatSub = 3 };
 
-ir::Value OpHorizontalInt(ir::Assembler* as, ir::Value a, ir::Value b, u32 param, u32) {
+ir::Value OpHorizontalInt(compile::IrBuilder* as, ir::Value a, ir::Value b, u32 param, u32) {
     const u32 lane_bits = Lane(param);
     const auto lanes = ir::Imm(lane_bits);
     auto even = Stream(as, a, b, lane_bits, false);
     auto odd = Stream(as, a, b, lane_bits, true);
     switch (Flag(param)) {
         case kAdd:
-            return as->VecAdd(even, odd, lanes).SetType(kV128);
+            return as->VecAdd(kV128, even, odd, lanes);
         case kSub:
-            return as->VecSub(even, odd, lanes).SetType(kV128);
+            return as->VecSub(kV128, even, odd, lanes);
         case kSatAdd:
-            return as->VecSatAdd(even, odd, lanes, ir::Imm(1u)).SetType(kV128);
+            return as->VecSatAdd(kV128, even, odd, lanes, ir::Imm(1u));
         case kSatSub:
-            return as->VecSatSub(even, odd, lanes, ir::Imm(1u)).SetType(kV128);
+            return as->VecSatSub(kV128, even, odd, lanes, ir::Imm(1u));
         default:
             break;
     }
@@ -198,30 +196,27 @@ ir::Value OpHorizontalInt(ir::Assembler* as, ir::Value a, ir::Value b, u32 param
 // Each 16-bit lane holds one byte pair: bits 7:0 are element 2i and bits 15:8
 // element 2i+1.  The four in-lane extensions below turn those bytes into four
 // 16-bit vectors; see the header for why the 16-bit products are exact.
-ir::Value OpMaddUbs(ir::Assembler* as, ir::Value a, ir::Value b, u32, u32) {
+ir::Value OpMaddUbs(compile::IrBuilder* as, ir::Value a, ir::Value b, u32, u32) {
     const auto words = ir::Imm(16u);
-    auto eight = as->LoadImm(ir::Imm(u64(8))).SetType(ir::ValueType::U64);
+    auto eight = as->LoadImm(ir::ValueType::U64, ir::Imm(u64(8)));
 
     // Unsigned low byte: mask rather than shift-pair, since a zero-extension
     // in place is just an AND and the constant costs one Dup.
-    auto byte_mask = as->VecDup64(as->LoadImm(ir::Imm(u64(0x00FF00FF00FF00FFull)))
-                                          .SetType(ir::ValueType::U64))
-                             .SetType(kV128);
-    auto a_low = as->VecAnd(a, byte_mask).SetType(kV128);
+    auto byte_mask = as->VecDup64(
+            kV128, as->LoadImm(ir::ValueType::U64, ir::Imm(u64(0x00FF00FF00FF00FFull))));
+    auto a_low = as->VecAnd(kV128, a, byte_mask);
     // Unsigned high byte.
-    auto a_high = as->VecShiftRight(a, eight, words).SetType(kV128);
+    auto a_high = as->VecShiftRight(kV128, a, eight, words);
     // Signed low byte: shift it up to the top of the lane, then back down
     // arithmetically.
-    auto b_low = as->VecShiftRightArithmetic(as->VecShiftLeft(b, eight, words).SetType(kV128),
-                                             eight,
-                                             words)
-                         .SetType(kV128);
+    auto b_low = as->VecShiftRightArithmetic(
+            kV128, as->VecShiftLeft(kV128, b, eight, words), eight, words);
     // Signed high byte.
-    auto b_high = as->VecShiftRightArithmetic(b, eight, words).SetType(kV128);
+    auto b_high = as->VecShiftRightArithmetic(kV128, b, eight, words);
 
-    auto product_low = as->VecMul(a_low, b_low, words).SetType(kV128);
-    auto product_high = as->VecMul(a_high, b_high, words).SetType(kV128);
-    return as->VecSatAdd(product_low, product_high, words, ir::Imm(1u)).SetType(kV128);
+    auto product_low = as->VecMul(kV128, a_low, b_low, words);
+    auto product_high = as->VecMul(kV128, a_high, b_high, words);
+    return as->VecSatAdd(kV128, product_low, product_high, words, ir::Imm(1u));
 }
 
 }  // namespace

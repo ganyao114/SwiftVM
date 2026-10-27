@@ -17,7 +17,7 @@ u64 Repeated(u32 bits, u64 lane) {
     return result;
 }
 
-bool VectorShape(ir::Inst* inst) {
+bool VectorShape(const ir::Inst* inst) {
     if (ir::IsFloatValueType(inst->ReturnType())) return true;
     if (inst->GetOp() == O::StoreUniform || inst->GetOp() == O::StoreMemory || inst->GetOp() == O::StoreMemoryTSO)
         return ir::IsFloatValueType(inst->GetArg<ir::Value>(1).Type());
@@ -28,7 +28,7 @@ bool VectorShape(ir::Inst* inst) {
 
 }  // namespace
 
-bool JitTranslator::EmitVector(ir::Inst* inst) {
+bool JitTranslator::EmitVector(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::LoadUniform: case O::StoreUniform: case O::Zero: case O::LoadImm:
@@ -151,7 +151,7 @@ bool JitTranslator::EmitVector(ir::Inst* inst) {
             else { context.ReadPart(pair[0], input, 0); context.ReadPart(pair[1], input, 1); }
         } else {
             if (op == O::CondSelect) context.Condition(a0, inst->GetArg<ir::Cond>(0));
-            else context.Read(a0, inst->GetArg<ir::Value>(0));
+            else context.ReadCondition(a0, inst->GetArg<ir::Value>(0));
             // Read both before branching so both arms agree on vtype and the
             // canonical/register mapping; VMV is a 128-bit copy at VL=2.
             if (rvv) {

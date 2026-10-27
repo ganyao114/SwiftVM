@@ -200,13 +200,11 @@
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 // The three arithmetic roles, resolved from the encoded operands.
 struct FmaOperands {
     ir::Value a;  // multiplicand
@@ -226,9 +224,8 @@ FmaOperands OrderOperands(u32 order, ir::Value op1, ir::Value op2, ir::Value op3
     }
 }
 
-ir::Value Fma(ir::Assembler* as, const FmaOperands& o, u32 lane_bits, u32 flags) {
-    return as->VecFMulAdd(o.a, o.b, o.c, ir::Imm(lane_bits), ir::Imm(flags))
-            .SetType(ir::ValueType::V128);
+ir::Value Fma(compile::IrBuilder* as, const FmaOperands& o, u32 lane_bits, u32 flags) {
+    return as->VecFMulAdd(ir::ValueType::V128, o.a, o.b, o.c, ir::Imm(lane_bits), ir::Imm(flags));
 }
 
 // Interleave two whole-vector results so that the EVEN lanes come from `even`
@@ -236,11 +233,11 @@ ir::Value Fma(ir::Assembler* as, const FmaOperands& o, u32 lane_bits, u32 flags)
 // into the low half, UZP2 the odd lanes of the other, and ZIP1 re-interleaves
 // them; the same three steps work at 32- and 64-bit lanes, so vfmaddsub needs
 // no width special case.
-ir::Value InterleaveEvenOdd(ir::Assembler* as, ir::Value even, ir::Value odd, u32 lane_bits) {
+ir::Value InterleaveEvenOdd(compile::IrBuilder* as, ir::Value even, ir::Value odd, u32 lane_bits) {
     const auto bits = ir::Imm(lane_bits);
-    auto e = as->VecUnzip(even, even, bits, ir::Imm(0u)).SetType(ir::ValueType::V128);
-    auto o = as->VecUnzip(odd, odd, bits, ir::Imm(1u)).SetType(ir::ValueType::V128);
-    return as->VecZip(e, o, bits, ir::Imm(0u)).SetType(ir::ValueType::V128);
+    auto e = as->VecUnzip(ir::ValueType::V128, even, even, bits, ir::Imm(0u));
+    auto o = as->VecUnzip(ir::ValueType::V128, odd, odd, bits, ir::Imm(1u));
+    return as->VecZip(ir::ValueType::V128, e, o, bits, ir::Imm(0u));
 }
 
 }  // namespace
@@ -313,7 +310,7 @@ void X64Decoder::DecodeAvxFmaScalar(const VexInsn& v, u32 order, u32 flags, u32 
     auto dest_lo = XmmLo(XmmOf(v.reg));
     auto dest_hi = XmmHi(XmmOf(v.reg));
     auto result = Fma(assembler, OrderOperands(order, op1, op2, op3), lane_bits, flags);
-    auto result_lo = __ VecExtract64(result, ir::Imm(0u)).SetType(ir::ValueType::U64);
+    auto result_lo = __ VecExtract64(ir::ValueType::U64, result, ir::Imm(0u));
     ir::Value lo;
     if (lane_bits == 32) {
         lo = __ Or(__ And(dest_lo, ir::Operand{ir::Imm(u64(0xFFFFFFFF00000000))}),

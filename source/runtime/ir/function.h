@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <atomic>
 #include "runtime/ir/block.h"
 
 namespace swift::runtime::ir {
@@ -15,14 +16,16 @@ public:
     using ReadLock = std::shared_lock<RwSpinLock>;
     using WriteLock = std::unique_lock<RwSpinLock>;
 
-    explicit Function() = default;
+    explicit Function() : AddressNode(Location{0}, AddressNode::Function) {}
 
     explicit Function(const Location& location) : AddressNode(location, AddressNode::Function) {}
 
     ~Function();
 
     ir::Block* EntryBlock();
+    const ir::Block* EntryBlock() const;
     ir::Block* FindBlock(ir::Location location, bool block_start = true);
+    const ir::Block* FindBlock(ir::Location location, bool block_start = true) const;
     void AddBlock(ir::Block* block);
     // Detach only this exact node, relinquishing Function's deletion ownership.
     bool DetachBlock(ir::Block* block);
@@ -30,8 +33,10 @@ public:
     // Frees every instruction of every block, leaving the blocks (and their
     // guest ranges, jit_cache and dispatch indices) in place. Idempotent.
     void DestroyInstrs();
-    [[nodiscard]] BlockMap& GetBlocks() { return blocks; }
     [[nodiscard]] const BlockMap& GetBlocks() const { return blocks; }
+    [[nodiscard]] bool IsIRReadOnly() const {
+        return read_only_regions.load(std::memory_order_acquire) != 0;
+    }
 
     [[nodiscard]] ReadLock LockRead() { return std::shared_lock{func_lock}; }
 
@@ -42,18 +47,34 @@ public:
     [[nodiscard]] u32 GetDispatchIndex() const { return dispatch_index; }
 
 private:
+    friend struct AddressNode;
+    friend class HIRFunction;
+    friend class compile::CompileUnit;
+    void CheckMutable() const { ASSERT(!IsIRReadOnly()); }
+    void CheckOwnershipMutable() const {
+        CheckMutable();
+        ASSERT(compiling_regions.load(std::memory_order_acquire) == 0);
+    }
+    void AcquireCompilation();
+    void ReleaseCompilation();
+    void AcquireIRReadOnly();
+    void ReleaseIRReadOnly();
+    bool TransferBlocksFrom(std::span<Function* const> regions);
     union {
         u32 id{};
         u32 dispatch_index;
     };
     BlockMap blocks{};
     RwSpinLock func_lock{};
-    u16 v_stack{};
+    // Disjoint prepared regions can share this actual persistent parent.
+    // Releasing one region must preserve the other consumers' structure seal.
+    std::atomic<u32> read_only_regions{};
+    std::atomic<u32> compiling_regions{};
     backend::JitCache jit_cache{};
 };
 
-using FunctionList = IntrusiveList<&Function::list_node>;
-using FunctionMap = IntrusiveMap<&Function::map_node>;
+using FunctionList = AddressNode::List;
+using FunctionMap = AddressNode::Map;
 
 // AddressNode is not itself reference counted -- Block and Function each carry
 // their own IntrusiveRefCounter base -- so a holder of the erased
@@ -65,7 +86,7 @@ inline void AddressNodeAddRef(AddressNode* node) {
     if (!node) {
         return;
     }
-    switch (node->node_type) {
+    switch (node->GetNodeType()) {
         case AddressNode::Function:
             IntrusivePtrAddRef(static_cast<Function*>(node));
             break;
@@ -81,7 +102,7 @@ inline void AddressNodeRelease(AddressNode* node) {
     if (!node) {
         return;
     }
-    switch (node->node_type) {
+    switch (node->GetNodeType()) {
         case AddressNode::Function:
             IntrusivePtrRelease(static_cast<Function*>(node));
             break;

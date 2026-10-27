@@ -1,11 +1,13 @@
 #include "base/logging.h"
+#include "base/scope_exit.h"
 //
 // Created by 甘尧 on 2023/9/7.
 //
 #pragma once
 
+#include "runtime/compile/analysis/guest_state.h"
+
 #include <algorithm>
-#include "runtime/common/signal_diagnostic.h"
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -18,10 +20,12 @@
 #include <utility>
 #include <unistd.h>
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/actions.h"
+#include "runtime/backend/arm64/compile/compiler.h"
+#include "runtime/backend/arm64/compile/target.h"
 #include "runtime/backend/arm64/constant.h"
 #include "runtime/backend/arm64/defines.h"
 #include "runtime/backend/arm64/fpcr_mode.h"
-#include "runtime/backend/arm64/alloc/target_allocation_planner.h"
 #include "runtime/backend/arm64/jit/function_code_object_emitter.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/atomic_fallback.h"
@@ -32,19 +36,18 @@
 #include "runtime/backend/interp/interpreter.h"
 #include "runtime/backend/interrupt_l1_mapping.h"
 #include "runtime/backend/interrupt_poll_state.h"
-#include "runtime/backend/runtime.h"
 #include "runtime/backend/riscv64/jit/compile.h"
+#include "runtime/backend/runtime.h"
 #include "runtime/backend/signal_handler.h"
 #include "runtime/backend/signal_owner_slot.h"
 #include "runtime/backend/translate_table.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/perf_stats.h"
+#include "runtime/common/signal_diagnostic.h"
+#include "runtime/compile/unit.h"
 #include "runtime/include/sruntime.h"
 #include "runtime/ir/function.h"
-#include "runtime/ir/opts/loop_invariant_hoist_pass.h"
-#include "runtime/ir/opts/pass_pipeline.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
 
 namespace swift::runtime {
 
@@ -714,12 +717,10 @@ struct Runtime::Impl final {
         //    matching case) return HaltReason::None without advancing
         //    current_loc. The loop below has no dispatch step, so it re-runs
         //    the same block forever.
-        // Neither is reachable without SMC: a dispatch slot is only ever
-        // zeroed while its module node is still live by SmcTracker's write
-        // fault (ClearDispatchSlots runs in the signal handler, DetachNode
-        // only later in CloseWriteWindow). Report CodeMiss instead so the
-        // translator recompiles and republishes the unit -- exactly what
-        // already happens when the node itself is gone.
+        // A Function body that requires predecessor SSA/width state is also
+        // intentionally absent from dispatch. Report CodeMiss so the frontend
+        // decodes that PC from canonical guest state. SMC can likewise clear a
+        // slot before detaching its still-live node at the quiescent boundary.
         if (address_space->GetConfig().enable_jit) {
             return HaltReason::CodeMiss;
         }
@@ -1123,8 +1124,8 @@ void RecordJitCacheUnit(const std::shared_ptr<backend::Module>& module,
                         const std::vector<SerialBlock>& blocks,
                         const CodeBuffer& buffer,
                         const backend::arm64::JitContext& context,
-                        std::span<const backend::arm64::JitTranslator* const>
-                                translators) {
+                        std::span<const backend::arm64::JitTranslator* const> translators,
+                        std::span<const SerialFaultSite> block_faults = {}) {
     if (module->GetAddressSpace().SerializableCodeEmission()) return;
     // A checks-forced (adaptive RCpc) unit must not enter the disk
     // cache: its key carries no per-unit mark, so recording it would
@@ -1148,7 +1149,7 @@ void RecordJitCacheUnit(const std::shared_ptr<backend::Module>& module,
                               site.flags_bypass.merge_branch_offset,
                               site.flags_bypass.edge_flags});
     }
-    std::vector<SerialFaultSite> fault_sites;
+    std::vector<SerialFaultSite> fault_sites{block_faults.begin(), block_faults.end()};
     for (const auto* translator : translators) {
         ASSERT(translator);
         fault_sites.reserve(fault_sites.size() +
@@ -1207,58 +1208,18 @@ void PublishIndirectL1Faults(
     }
 }
 
-// PassPipeline::BuildDefault builds a nine-entry vector of std::function
-// objects. It was rebuilt for every compiled unit even though its only input,
-// the address space's UniformInfo, is fixed for the life of that address space
-// -- so under lazy function compilation it ran once per decoded guest block.
-//
-// Cached per thread and keyed on the UniformInfo pointer rather than in a
-// basic static: an embedder can hold several Instances with different uniform
-// layouts, and a mismatched pipeline would silently apply the wrong uniform
-// map. A key change rebuilds; in the single-address-space case that never
-// happens after the first unit.
-const ir::PassPipeline& GetPassPipeline(const ir::UniformInfo* uni_info) {
-    static thread_local ir::PassPipeline cached{};
-    static thread_local const ir::UniformInfo* cached_key{};
-    static thread_local bool cached_valid{false};
-    if (!cached_valid || cached_key != uni_info) {
-        cached = ir::PassPipeline::BuildDefault(uni_info);
-        cached_key = uni_info;
-        cached_valid = true;
-    }
-    return cached;
-}
+// A failed region allocation has not published this buffer. Rebuild the
+// encoder in the same storage, releasing the translator before its context.
+struct BlockEmission {
+    BlockEmission(const std::shared_ptr<Module>& module,
+                  compile::AllocationView allocation,
+                  const arm64::UnitActions& actions,
+                  bool enable_direct_link)
+            : context(module, allocation, actions, enable_direct_link), translator(context) {}
 
-size_t PrepareFunctionGuestRanges(ir::HIRFunction* function) {
-    size_t decoded_blocks = 0;
-    VAddr max_end = function->GetFunction()->GetStartLocation().Value();
-    for (auto* hir_block : function->GetHIRBlocks()) {
-        if (!hir_block || hir_block == function->GetEntryBlock()) {
-            continue;
-        }
-        auto* block = hir_block->GetBlock();
-        if (block->GetInstList().empty()) {
-            continue;
-        }
-        ++decoded_blocks;
-        u64 block_size = 0;
-        for (auto& inst : block->GetInstList()) {
-            if (inst.GetOp() == ir::OpCode::AdvancePC) {
-                block_size += inst.GetArg<ir::Imm>(0).Get();
-            }
-        }
-        const VAddr block_start = block->GetStartLocation().Value();
-        // A one-instruction terminal block may not retain an AdvancePC: the
-        // assembler closes the block before the decoder's trailing
-        // AdvancePC. Never leave the constructor's zero end as an unsigned
-        // wraparound range; tracking the start byte still protects the
-        // containing host page.
-        block->SetEndLocation(ir::Location(block_start + std::max<u64>(block_size, 1)));
-        max_end = std::max(max_end, block->GetEndLocation().Value());
-    }
-    function->GetFunction()->SetEndLocation(ir::Location(max_end));
-    return decoded_blocks;
-}
+    arm64::JitContext context;
+    arm64::JitTranslator translator;
+};
 
 // Escape hatch for the release added at the end of TranslateIR(HIRFunction*).
 // `SVM_FUNC_IR_FREE=0` restores the old behaviour (function-mode IR retained
@@ -1275,196 +1236,26 @@ bool PublishIRFunction(const std::shared_ptr<backend::Module>& module,
     RetirementControl::Lease producer{module->GetRetirementControl(), RetirementControl::Kind::Producer};
     if (!producer) return false;
     if (!function || function->HasStandaloneBlocks()) return false;
-    PrepareFunctionGuestRanges(function);
+    (void)compile::PrepareFunctionGuestRanges(function);
     if (!module->Push(function->GetFunction())) {
         return false;
     }
-    function->ReleaseFunctionOwnership();
+    function->MarkFunctionPublished();
     return true;
 }
 
-static bool SupportsArm64IR(ir::Block* block) {
-    for (auto& inst : block->GetInstList()) {
-        if (inst.GetOp() == ir::OpCode::AddPhi || inst.GetOp() == ir::OpCode::DefineLocal ||
-            inst.GetOp() == ir::OpCode::LoadLocal || inst.GetOp() == ir::OpCode::StoreLocal) {
-            // Phi needs predecessor-edge parallel copies. The ARM64 local
-            // emitters are also unimplemented, so they are not a safe lowering.
-            SVM_DIAG_FORMAT(Codegen, "[unsupported-arm64-ir] op={} pc={:#x}\n",
-                            inst.GetOp(), block->GetStartLocation().Value());
-            return false;
-        }
-    }
-    return true;
-}
-
-static bool SupportsArm64IR(ir::HIRFunction* function) {
-    if (!function || function->HasStandaloneBlocks()) return false;
-    for (auto* block : function->GetHIRBlocks())
-        if (block && !SupportsArm64IR(block->GetBlock())) return false;
-    return true;
-}
-
-static FeatureSet ResolveBackendFeatures(const std::shared_ptr<backend::Module>& module) {
-    auto features = backend::ResolveFeatureSet(module->GetModuleConfig());
-    // induction tie 已由 Config 承载，本期保持既有所有权；FeatureSet 中保留
-    // 同名槽位只是为了与 B 类字段表一一对应，P3 再统一去重。
-    return features;
-}
-
-struct PreparedFunctionRegion final {
-    ir::HIRFunction* function{};
-    ir::Function* ir_function{};
-    VAddr guest_start{};
-    size_t decoded_blocks{};
-    backend::RegAlloc* reg_alloc{};
-};
-
-struct FunctionRegionAllocation final {
-    std::optional<backend::RegAlloc> baseline;
-    std::unique_ptr<backend::RegAlloc> hoisted;
-};
-
-PreparedFunctionRegion PrepareFunctionRegion(const std::shared_ptr<backend::Module>& module,
-                                             ir::HIRFunction* function,
-                                             const FeatureSet& features,
-                                             PerfFixedCapture2& fixed_capture,
-                                             FunctionRegionAllocation& allocation) {
-    PreparedFunctionRegion prepared{
-            .function = function,
-            .ir_function = function->GetFunction(),
-            .guest_start = function->GetFunction()->GetStartLocation().Value(),
-    };
-    PerfScope2 perf_prepare{GetPerfStats2().publish_prepare};
-    prepared.decoded_blocks = PrepareFunctionGuestRanges(function);
-    perf_prepare.Stop();
-
-    PerfScope perf_rpo{GetPerfStats().rpo_ns};
-    PerfScope2 perf_compute_rpo{GetPerfStats2().compute_rpo};
-    function->ComputeRPO();
-    perf_compute_rpo.Stop();
-    PerfScope2 perf_id_pre{GetPerfStats2().id_rpo_pre};
-    function->IdByRPO();
-    perf_id_pre.Stop();
-    perf_rpo.Stop();
-
-    const bool dump_ir = GetSvmConfig().dump_ir;
-    if (dump_ir) {
-        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} rpo-ready\n", prepared.guest_start);
-    }
-    const auto& address_space = module->GetAddressSpace();
-    const ir::UniformInfo* uni_info =
-            address_space.GetUniformInfo().uniform_size ? &address_space.GetUniformInfo() : nullptr;
-    PerfScope perf_opt{GetPerfStats().opt_ns};
-    GetPassPipeline(uni_info).RunFunction(
-            function, module->GetModuleConfig().optimizations, features);
-    perf_opt.Stop();
-
-    PerfScope perf_rpo2{GetPerfStats().rpo_ns};
-    PerfScope2 perf_id_post{GetPerfStats2().id_rpo_post};
-    function->IdByRPO();
-    perf_id_post.Stop();
-    perf_rpo2.Stop();
-    if (dump_ir) {
-        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} opts-ready\n", prepared.guest_start);
-    }
-
-    auto gprs{address_space.GetTrampolines().GetGPRRegs()};
-    auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    PerfScope perf_ra{GetPerfStats().regalloc_ns};
-    PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
-    allocation.baseline.emplace(static_cast<u32>(function->MaxInstrCount()),
-                                gprs,
-                                fprs,
-                                features,
-                                address_space.GetConfig().sse_afp_nan);
-    ir::RegisterAllocPass::RunWithScalarInsert(
-            function, &*allocation.baseline, address_space.GetConfig().sse_scalar_insert, features);
-    prepared.reg_alloc = &*allocation.baseline;
-    std::unique_ptr<ir::LoopInvariantHoistRecipe> hoist_recipe;
-    if (uni_info && (features.loop_gpr_hoist || features.loop_const_hoist)) {
-        hoist_recipe = ir::LoopInvariantHoistRecipe::Analyze(function, *uni_info, features);
-    }
-    if (hoist_recipe && !hoist_recipe->Empty()) {
-        hoist_recipe->Apply();
-        function->IdByRPO();
-        allocation.hoisted =
-                std::make_unique<backend::RegAlloc>(static_cast<u32>(function->MaxInstrCount()),
-                                                    gprs,
-                                                    fprs,
-                                                    features,
-                                                    address_space.GetConfig().sse_afp_nan);
-        ir::RegisterAllocPass::RunWithScalarInsert(function,
-                                                   allocation.hoisted.get(),
-                                                   address_space.GetConfig().sse_scalar_insert,
-                                                   features);
-        if (GetSvmConfig().density_prof) {
-            std::fprintf(stderr,
-                    "[hoist-census] guest=%#llx anchors=%u gpr=%u const=%u base_spills=%u hoist_spills=%u\n",
-                    static_cast<unsigned long long>(prepared.guest_start),
-                    hoist_recipe->AnchorCount(), hoist_recipe->GPRHoistCount(),
-                    hoist_recipe->ConstHoistCount(),
-                    allocation.baseline->SpillCount(), allocation.hoisted->SpillCount());
-        }
-        if (allocation.hoisted->SpillCount() <= allocation.baseline->SpillCount()) {
-            prepared.reg_alloc = allocation.hoisted.get();
-        } else {
-            hoist_recipe->Revert();
-            function->IdByRPO();
-        }
-    }
-    perf_ra_detail.Stop();
-    perf_ra.Stop();
-    fixed_capture.Record(static_cast<unsigned>(prepared.decoded_blocks));
-    if (dump_ir) {
-        SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} regalloc-ready\n", prepared.guest_start);
-    }
-    return prepared;
-}
-
-static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Module>& module,
-                                              std::span<PreparedFunctionRegion> prepared_regions) {
-    ASSERT(!prepared_regions.empty());
-    auto& prepared = prepared_regions.front();
-    auto* function = prepared.function;
-    auto* ir_function = prepared.ir_function;
-    const auto func_start = prepared.guest_start;
-    for (size_t i = 1; i < prepared_regions.size(); ++i) {
-        if (!ir_function->TakeBlocksFrom(*prepared_regions[i].ir_function)) {
-            return nullptr;
-        }
-    }
+static void* TranslatePreparedFunctionRegions(
+        const std::shared_ptr<backend::Module>& module,
+        std::span<const arm64::Arm64PreparedUnit> prepared_regions,
+        ir::HIRFunction* function) {
+    ASSERT(!prepared_regions.empty() && prepared_regions.front().Function() == function);
+    auto* ir_function = function->GetFunction();
+    const auto func_start = ir_function->GetStartLocation().Value();
     auto& jit_state = ir_function->GetJitCache();
     const bool dump_ir = GetSvmConfig().dump_ir;
     PerfScope perf_cg{GetPerfStats().codegen_ns};
     PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};
-    // Hoist selection and merged ownership are final before target planning.
-    // Keep the existing timer range; no encoder exists until all units finish.
-    {
-        PerfScope2 perf_complete{GetPerfStats2().codegen_complete};
-        for (auto& item : prepared_regions)
-            if (!backend::arm64::CompleteARM64UnitForEmission(
-                    module, *item.reg_alloc, nullptr, item.function)) return nullptr;
-    }
-    std::array<backend::arm64::FunctionRegionEmission, 1> single_region{};
-    std::vector<backend::arm64::FunctionRegionEmission> region_storage;
-    std::span<const backend::arm64::FunctionRegionEmission> regions;
-    if (prepared_regions.size() == 1) {
-        single_region.front() = {
-                .function = function,
-                .reg_alloc = prepared.reg_alloc,
-        };
-        regions = single_region;
-    } else {
-        region_storage.reserve(prepared_regions.size());
-        for (auto& item : prepared_regions) {
-            region_storage.push_back({
-                    .function = item.function,
-                    .reg_alloc = item.reg_alloc,
-            });
-        }
-        regions = region_storage;
-    }
-    backend::arm64::FunctionCodeObjectEmitter emitter{module, regions};
+    backend::arm64::FunctionCodeObjectEmitter emitter{module, prepared_regions};
     if (!emitter.Emit()) return nullptr;
     perf_cg_detail.Stop();
     perf_cg.Stop();
@@ -1494,7 +1285,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
         PerfAdd(GetPerfStats().host_bytes, buffer_size);
         size_t ir_insts{};
         for (const auto& item : prepared_regions) {
-            ir_insts += item.function->MaxInstrCount();
+            ir_insts += item.Function()->MaxInstrCount();
         }
         PerfAdd(GetPerfStats().ir_insts, ir_insts);
         if (PerfPerUnit()) {
@@ -1523,7 +1314,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
             }
             return nullptr;
         }
-        function->ReleaseFunctionOwnership();
+        function->MarkFunctionPublished();
         if (dump_ir) SVM_DIAG_FORMAT(Runtime, "[func-compile] {:#x} publish-ready\n", func_start);
         // Publish every decoded block label, not only the function entry.
         // External links, RSB return targets, and code misses are allowed to
@@ -1532,8 +1323,9 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
         const auto allocation_size = static_cast<u32>(buffer.size);
         backend::FunctionEntryPublisher entry_publisher{*module, buffer.exec_data, allocation_size};
         std::vector<backend::SerialBlock> cache_blocks;
+        std::vector<std::pair<u64, u32>> code_entries;
         for (auto& item : prepared_regions) {
-            auto* region_function = item.function;
+            const auto* region_function = item.Function();
             const auto canonical_terminal_entries =
                     backend::FunctionEntryContract::AnalyzeCanonicalTerminalEntries(
                             *region_function);
@@ -1541,60 +1333,80 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
                 auto* block = hir_block.GetBlock();
                 const auto guest = block->GetStartLocation().Value();
                 const bool canonical_terminal = canonical_terminal_entries.contains(guest);
-                if (block->GetInstList().empty() && !canonical_terminal) {
-                    continue;
-                }
+                if (block->GetInstList().empty() && !block->HasTerminal()) continue;
+                const auto* entry_inputs = item.Actions().Edges().ForBlock(block);
+                ASSERT(entry_inputs);
                 const auto offset = emitted_context->GetCodeOffset(guest);
-                const auto direct_offset = emitted_context->GetDirectLinkCodeOffset(guest);
-                const auto pending_flags_offset = emitted_context->GetPendingFlagsCodeOffset(guest);
-                const auto pending_flags_contract =
-                        emitted_context->GetPendingFlagsTargetContract(guest);
-                const auto call_offset = emitted_context->GetCallCodeOffset(guest);
-                const auto call_pending_flags_offset =
-                        emitted_context->GetCallPendingFlagsCodeOffset(guest);
-                const auto to_offset = [](ptrdiff_t value) {
-                    return value < 0 ? backend::kInvalidFunctionEntryOffset
-                                     : static_cast<u32>(value);
-                };
-                const auto entry_contract = backend::FunctionEntryContract::Build(
-                        *region_function,
-                        *block,
-                        {
-                                .canonical = to_offset(offset),
-                                .direct_link = to_offset(direct_offset),
-                                .pending_flags = to_offset(pending_flags_offset),
-                                .continuation = to_offset(call_offset),
-                                .pending_flags_continuation = to_offset(call_pending_flags_offset),
-                        },
-                        pending_flags_contract,
-                        canonical_terminal);
-                ASSERT(entry_contract.IsWellFormed(allocation_size));
-                {
-                    PerfScope2 perf_pub_l2{GetPerfStats2().publish_l2};
-                    (void)entry_publisher.Publish(entry_contract);
+                ASSERT(offset >= 0);
+                code_entries.emplace_back(guest, static_cast<u32>(offset));
+                const auto guest_end =
+                        canonical_terminal ? std::max(guest + 1, block->GetEndLocation().Value())
+                                           : block->GetEndLocation().Value();
+                if (entry_inputs->requires_unit_state ||
+                    (block->GetInstList().empty() && !canonical_terminal)) {
+                    // This body is reachable through certified local edges.
+                    // An external dispatch must decode from canonical guest
+                    // state instead of assuming its predecessor's SSA values.
+                    if (guest_end > guest)
+                        cache_blocks.push_back({
+                                .guest_start = guest,
+                                .guest_end = guest_end,
+                                .code_offset = UINT32_MAX,
+                                .entry_flags = backend::SerialBlock::MetadataOnly,
+                        });
+                } else {
+                    const auto to_offset = [](ptrdiff_t value) {
+                        return value < 0 ? backend::kInvalidFunctionEntryOffset
+                                         : static_cast<u32>(value);
+                    };
+                    const auto pending_contract =
+                            emitted_context->GetPendingFlagsTargetContract(guest);
+                    const auto contract = backend::FunctionEntryContract::Build(
+                            *region_function,
+                            *block,
+                            {.canonical = to_offset(offset),
+                             .direct_link =
+                                     to_offset(emitted_context->GetDirectLinkCodeOffset(guest)),
+                             .pending_flags =
+                                     to_offset(emitted_context->GetPendingFlagsCodeOffset(guest)),
+                             .continuation = to_offset(emitted_context->GetCallCodeOffset(guest)),
+                             .pending_flags_continuation = to_offset(
+                                     emitted_context->GetCallPendingFlagsCodeOffset(guest))},
+                            pending_contract,
+                            canonical_terminal);
+                    ASSERT(contract.IsWellFormed(allocation_size));
+                    {
+                        PerfScope2 perf_pub_l2{GetPerfStats2().publish_l2};
+                        (void)entry_publisher.Publish(contract);
+                    }
+                    cache_blocks.push_back({
+                            .guest_start = contract.Guest().Value(),
+                            .guest_end = contract.GuestEnd().Value(),
+                            .code_offset = contract.Canonical().code_offset,
+                            .guest_bytes_hash = 0,
+                            .direct_code_offset = contract.DirectLink().code_offset,
+                            .pending_flags_code_offset = contract.PendingFlags().code_offset,
+                            .pending_flags_contract = pending_contract,
+                            .entry_flags = static_cast<u8>(
+                                    contract.Linkable() ? backend::SerialBlock::Linkable : 0),
+                            .continuation_code_offset = contract.Continuation().code_offset,
+                            .pending_flags_continuation_code_offset =
+                                    contract.PendingFlagsContinuation().code_offset,
+                    });
                 }
-                cache_blocks.push_back({
-                        .guest_start = entry_contract.Guest().Value(),
-                        .guest_end = entry_contract.GuestEnd().Value(),
-                        .code_offset = entry_contract.Canonical().code_offset,
-                        .guest_bytes_hash = 0,
-                        .direct_code_offset = entry_contract.DirectLink().code_offset,
-                        .pending_flags_code_offset = entry_contract.PendingFlags().code_offset,
-                        .pending_flags_contract = pending_flags_contract,
-                        .entry_flags = static_cast<u8>(
-                                entry_contract.Linkable() ? backend::SerialBlock::Linkable : 0),
-                        .continuation_code_offset = entry_contract.Continuation().code_offset,
-                        .pending_flags_continuation_code_offset =
-                                entry_contract.PendingFlagsContinuation().code_offset,
-                });
+                for (const auto& dependency : block->GetGuestCodeDependencies()) {
+                    cache_blocks.push_back({
+                            .guest_start = dependency.start.Value(),
+                            .guest_end = dependency.end.Value(),
+                            .code_offset = UINT32_MAX,
+                            .entry_flags = backend::SerialBlock::DependencyOnly,
+                    });
+                }
                 if (!module->GetModuleConfig().read_only) {
                     PerfScope2 perf_pub_smc{GetPerfStats2().publish_smc};
                     mutable_address_space.GetSmcTracker().RegisterNode(
-                            module,
-                            ir_function,
-                            entry_contract.Guest().Value(),
-                            entry_contract.GuestEnd().Value());
-                    for (const auto& dependency : entry_contract.Dependencies()) {
+                            module, ir_function, guest, guest_end);
+                    for (const auto& dependency : block->GetGuestCodeDependencies()) {
                         mutable_address_space.GetSmcTracker().RegisterNode(module,
                                                                            ir_function,
                                                                            dependency.start.Value(),
@@ -1605,6 +1417,7 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
         }
         std::vector<const backend::arm64::JitTranslator*> emitted_translators;
         std::vector<backend::arm64::JitTranslator::BackedgeBlockMetadata> backedges;
+        std::vector<backend::SerialFaultSite> block_faults;
         emitted_translators.reserve(prepared_regions.size());
         for (size_t i = 0; i < prepared_regions.size(); ++i) {
             const auto& translator = emitter.Translator(i);
@@ -1622,29 +1435,34 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
                                       buffer.exec_data + buffer.size,
                                       func_start,
                                       buffer.exec_data);
-                for (size_t i = 0; i < cache_blocks.size(); ++i) {
-                    const auto recovery = std::find_if(
-                            backedges.begin(), backedges.end(), [&](const auto& item) {
-                                return item.guest_start == cache_blocks[i].guest_start;
+                for (size_t i = 0; i < code_entries.size(); ++i) {
+                    const auto recovery =
+                            std::find_if(backedges.begin(), backedges.end(), [&](const auto& item) {
+                                return item.guest_start == code_entries[i].first;
                             });
-                    const u32 begin = recovery != backedges.end()
-                            ? recovery->host_begin
-                            : cache_blocks[i].code_offset;
-                    const u32 end = recovery != backedges.end()
-                            ? recovery->host_end
-                            : (i + 1 < cache_blocks.size()
-                                       ? cache_blocks[i + 1].code_offset
-                                       : static_cast<u32>(buffer.size));
+                    const u32 begin = recovery != backedges.end() ? recovery->host_begin
+                                                                  : code_entries[i].second;
+                    const u32 end =
+                            recovery != backedges.end()
+                                    ? recovery->host_end
+                                    : (i + 1 < code_entries.size() ? code_entries[i + 1].second
+                                                                   : static_cast<u32>(buffer.size));
                     ASSERT(begin < end && end <= buffer.size);
                     module->AddFaultEntry(buffer.exec_data + begin,
                                           buffer.exec_data + end,
-                                          cache_blocks[i].guest_start,
+                                          code_entries[i].first,
                                           buffer.exec_data,
-                                          recovery != backedges.end() &&
-                                                          recovery->recovery_offset
-                                                  ? buffer.exec_data +
-                                                            recovery->recovery_offset
+                                          recovery != backedges.end() && recovery->recovery_offset
+                                                  ? buffer.exec_data + recovery->recovery_offset
                                                   : nullptr);
+                    block_faults.push_back(
+                            {code_entries[i].first,
+                             begin,
+                             end,
+                             recovery != backedges.end() && recovery->recovery_offset
+                                     ? recovery->recovery_offset
+                                     : UINT32_MAX,
+                             static_cast<u8>(backend::FaultRecoveryKind::GuestRange)});
                 }
             } else {
                 module->AddFaultEntry(buffer.exec_data,
@@ -1664,48 +1482,21 @@ static void* TranslatePreparedFunctionRegions(const std::shared_ptr<backend::Mod
                                cache_blocks,
                                buffer,
                                *emitted_context,
-                               emitted_translators);
+                               emitted_translators,
+                               block_faults);
         }
 
-        // Release the function's IR. Block mode has always done this (the
-        // Block::DestroyInstrs at the end of TranslateIR(IntrusivePtr<Block>));
-        // function mode never did, so every instruction of every compiled
-        // function stayed allocated until the unit was invalidated or the
-        // module torn down -- i.e. for the whole process in the normal case.
-        //
-        // Nothing reads it again:
-        //  - the host code is emitted and flushed, and the fault table, the L2
-        //    dispatch slots, the SMC ranges and the disk-cache record are all
-        //    written above from data that lives in the AddressNode (guest
-        //    start/end) or in the JitCache, not in the instruction list;
-        //  - Runtime::Impl::Interpreter refuses to run module IR whenever the
-        //    JIT is on and returns CodeMiss instead (see the comment there);
-        //    the enable_jit=false path never reaches this function, it
-        //    publishes through PublishIRFunction and keeps its IR;
-        //  - JitContext::Forward's `cur_function->FindBlock` only ever inspects
-        //    the unit being emitted right now;
-        //  - the AOT collector re-reads the published node's blocks, but only
-        //    their guest start/end;
-        //  - the disk-cache *load* path already publishes function nodes whose
-        //    blocks hold no instructions at all (jit_cache.cpp), so this is a
-        //    shape the rest of the runtime is required to handle anyway.
-        //
-        // The write lock mirrors the block path, which destroys under
-        // ir_block->LockWrite(). It is uncontended here: Translate() holds the
-        // frontend's coarse translate lock and the module read lock, so an
-        // invalidation cannot be detaching this node concurrently.
-        if (FuncIRFreeEnabled()) {
-            // Outside publish_ns so that counter keeps meaning what it did.
-            perf_pub.Stop();
-            perf_pub_total.Stop();
-            PerfScope perf_free{GetPerfStats().ir_free_ns};
-            PerfScope2 perf_free_detail{GetPerfStats2().ir_free};
-            auto ir_guard = ir_function->LockWrite();
-            ir_function->DestroyInstrs();
-        }
         return buffer.exec_data;
     }
     return nullptr;
+}
+
+static void ReleaseFunctionIR(ir::Function* function) {
+    // Call only after prepared results and encoders have released their IR borrows.
+    PerfScope perf_free{GetPerfStats().ir_free_ns};
+    PerfScope2 perf_free_detail{GetPerfStats2().ir_free};
+    auto guard = function->LockWrite();
+    function->DestroyInstrs();
 }
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module,
@@ -1717,20 +1508,14 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
         if (!function || function->HasStandaloneBlocks()) return nullptr;
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileFunctions(module, functions);
-    for (auto* function : functions) if (!SupportsArm64IR(function)) return nullptr;
-    const auto features = ResolveBackendFeatures(module);
-    PerfFixedCapture2 fixed_capture;
-    std::vector<std::unique_ptr<FunctionRegionAllocation>> allocations;
-    std::vector<PreparedFunctionRegion> prepared_regions;
-    allocations.reserve(functions.size());
-    prepared_regions.reserve(functions.size());
-    for (auto* function : functions) {
-        auto allocation = std::make_unique<FunctionRegionAllocation>();
-        prepared_regions.push_back(
-                PrepareFunctionRegion(module, function, features, fixed_capture, *allocation));
-        allocations.push_back(std::move(allocation));
+    void* code{};
+    {
+        auto prepared = arm64::PrepareFunctions(module, functions);
+        if (!prepared) return nullptr;
+        code = TranslatePreparedFunctionRegions(module, *prepared, functions.front());
     }
-    return TranslatePreparedFunctionRegions(module, prepared_regions);
+    if (code && FuncIRFreeEnabled()) ReleaseFunctionIR(functions.front()->GetFunction());
+    return code;
 }
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunction* function) {
@@ -1739,12 +1524,14 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRFunctio
     if (!function || function->HasStandaloneBlocks()) return nullptr;
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileFunctions(module, std::span{&function, 1});
-    if (!SupportsArm64IR(function)) return nullptr;
-    const auto features = ResolveBackendFeatures(module);
-    PerfFixedCapture2 fixed_capture;
-    FunctionRegionAllocation allocation;
-    auto prepared = PrepareFunctionRegion(module, function, features, fixed_capture, allocation);
-    return TranslatePreparedFunctionRegions(module, std::span{&prepared, 1});
+    void* code{};
+    {
+        auto prepared = arm64::PrepareFunction(module, function);
+        if (!prepared) return nullptr;
+        code = TranslatePreparedFunctionRegions(module, std::span{&*prepared, 1}, function);
+    }
+    if (code && FuncIRFreeEnabled()) ReleaseFunctionIR(function->GetFunction());
+    return code;
 }
 
 void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* block) {
@@ -1752,8 +1539,8 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     if (!producer) return nullptr;
     auto ir_block = block->GetBlock();
     auto block_start = ir_block->GetStartLocation().Value();
-    if (module->GetAddressSpace().GetConfig().backend_isa == kArm64 &&
-        !SupportsArm64IR(ir_block)) return nullptr;
+    if (module->GetAddressSpace().GetConfig().backend_isa == kArm64 && !arm64::SupportsIR(ir_block))
+        return nullptr;
     // Function and Module use the same intrusive map hook. Detach before Push,
     // and retain the Function owner until the module has taken its reference.
     if (!block->BeginStandalonePublication()) return nullptr;
@@ -1771,45 +1558,39 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module, ir::HIRBlock* 
     if (jit_state.jit_state == backend::JitState::Cached) {
         return module->GetJitCache(jit_state);
     }
-    const auto& address_space = module->GetAddressSpace();
-    const auto features = ResolveBackendFeatures(module);
-    auto gprs{address_space.GetTrampolines().GetGPRRegs()};
-    auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    const auto capacity = backend::arm64::ARM64StandaloneHIRCapacity(*ir_block);
-    if (!capacity) return nullptr;
-    backend::RegAlloc reg_alloc{
-            *capacity, gprs, fprs, features,
-            address_space.GetConfig().sse_afp_nan};
-    if (*capacity) {
-        ir::RegisterAllocPass::Run(ir_block, &reg_alloc,
-                address_space.GetConfig().sse_scalar_insert, features);
-    } else {
-        // The ordinary block collector rejects empty IR. Preserve its explicit
-        // initial compatibility path without admitting an unbound value.
-        reg_alloc.SetAllocationUnit(ir_block, nullptr, {});
-    }
-    if (!backend::arm64::CompleteARM64UnitForEmission(
-            module, reg_alloc, block->GetBlock(), nullptr)) return nullptr;
-    backend::arm64::JitContext context{module, reg_alloc};
-    backend::arm64::JitTranslator translator{context};
-    if (!translator.Translate(block->GetBlock())) return nullptr;
-    auto buffer_size = context.CurrentBufferSize();
-    backend::arm64::JitContext* emitted_context = &context;
-    backend::arm64::JitTranslator* emitted_translator = &translator;
-    std::optional<backend::arm64::JitContext> fallback_context;
-    std::optional<backend::arm64::JitTranslator> fallback_translator;
-    auto allocation = module->AllocCodeCache(buffer_size, context.RequiresRegionTrampoline());
-    if (allocation.first == backend::INVALID_CACHE_ID && context.RequiresRegionTrampoline()) {
-        fallback_context.emplace(module, reg_alloc, false);
-        fallback_translator.emplace(*fallback_context);
-        if (!fallback_translator->Translate(block->GetBlock())) return nullptr;
-        emitted_context = &*fallback_context;
-        emitted_translator = &*fallback_translator;
-        buffer_size = emitted_context->CurrentBufferSize();
+    auto prepared = arm64::PrepareFinalBlock(module, block);
+    if (!prepared) return nullptr;
+    const auto& reg_alloc = prepared->Allocation();
+    PerfScope perf_cg{GetPerfStats().codegen_ns};
+    PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};
+    std::optional<BlockEmission> emission{
+            std::in_place, module, reg_alloc, prepared->Actions(), true};
+    if (!emission->translator.Translate(block->GetBlock())) return nullptr;
+    perf_cg_detail.Stop();
+    perf_cg.Stop();
+    auto buffer_size = emission->context.CurrentBufferSize();
+    PerfScope2 perf_pub_total{GetPerfStats2().publish_total};
+    PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
+    auto allocation =
+            module->AllocCodeCache(buffer_size, emission->context.RequiresRegionTrampoline());
+    if (allocation.first == backend::INVALID_CACHE_ID &&
+        emission->context.RequiresRegionTrampoline()) {
+        emission.reset();
+        emission.emplace(module, reg_alloc, prepared->Actions(), false);
+        if (!emission->translator.Translate(block->GetBlock())) return nullptr;
+        buffer_size = emission->context.CurrentBufferSize();
         allocation = module->AllocCodeCache(buffer_size, false);
     }
+    perf_pub_alloc.Stop();
+    auto* emitted_context = &emission->context;
+    auto* emitted_translator = &emission->translator;
     if (auto [idx, buffer] = allocation;
         idx != backend::INVALID_CACHE_ID) {
+        PerfScope perf_pub{GetPerfStats().publish_ns};
+        if (PerfEnabled()) {
+            PerfAdd(GetPerfStats().host_bytes, buffer_size);
+            PerfAdd(GetPerfStats().ir_insts, ir_block->MaxInstrId());
+        }
         emitted_context->Flush(buffer);
         module->AddFaultEntry(buffer.exec_data, buffer.exec_data + buffer.size, block_start);
         if (module->GetAddressSpace().ExitLatchEnabled()) {
@@ -1839,7 +1620,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     if (!producer) return nullptr;
     if (module->GetAddressSpace().GetConfig().backend_isa == kRiscv64)
         return riscv64::CompileBlock(module, block.get());
-    if (!SupportsArm64IR(block.get())) return nullptr;
+    if (!arm64::SupportsIR(block.get())) return nullptr;
     auto& jit_state = block->GetJitCache();
 
     if (jit_state.jit_state == backend::JitState::Cached) {
@@ -1847,58 +1628,47 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
     }
 
     const auto& module_config = module->GetModuleConfig();
-    const auto features = ResolveBackendFeatures(module);
     const auto& address_space = module->GetAddressSpace();
-
-    // Optimize passes
-    const ir::UniformInfo* uni_info = address_space.GetUniformInfo().uniform_size
-                                      ? &address_space.GetUniformInfo() : nullptr;
-    GetPassPipeline(uni_info).RunBlock(
-            block.get(), module_config.optimizations, features);
-
-    auto gprs{address_space.GetTrampolines().GetGPRRegs()};
-    auto fprs{address_space.GetTrampolines().GetFPRRegs()};
-    backend::RegAlloc reg_alloc{
-            static_cast<u32>(block->MaxInstrId()), gprs, fprs, features,
-            address_space.GetConfig().sse_afp_nan};
-
-    PerfScope2 perf_ra_detail{GetPerfStats2().regalloc_total};
-    ir::RegisterAllocPass::Run(
-            block.get(), &reg_alloc,
-            module->GetAddressSpace().GetConfig().sse_scalar_insert,
-            features);
-    perf_ra_detail.Stop();
-
+    bool release_ir{};
+    auto destroy_ir = ScopeExit([&] {
+        if (!release_ir) return;
+        PerfScope perf_free{GetPerfStats().ir_free_ns};
+        PerfScope2 perf_free_detail{GetPerfStats2().ir_free};
+        block->DestroyInstrs();
+    });
+    auto prepared = arm64::PrepareBlock(module, block);
+    if (!prepared) return nullptr;
+    const auto& reg_alloc = prepared->Allocation();
+    PerfScope perf_cg{GetPerfStats().codegen_ns};
     PerfScope2 perf_cg_detail{GetPerfStats2().codegen_total};
-    {
-        PerfScope2 perf_complete{GetPerfStats2().codegen_complete};
-        if (!backend::arm64::CompleteARM64UnitForEmission(
-                module, reg_alloc, block.get(), nullptr)) return nullptr;
-    }
-    backend::arm64::JitContext context{module, reg_alloc};
-    backend::arm64::JitTranslator translator{context};
-    if (!translator.Translate(block.get())) return nullptr;
+    std::optional<BlockEmission> emission{
+            std::in_place, module, reg_alloc, prepared->Actions(), true};
+    if (!emission->translator.Translate(block.get())) return nullptr;
     perf_cg_detail.Stop();
-    auto buffer_size = context.CurrentBufferSize();
+    perf_cg.Stop();
+    auto buffer_size = emission->context.CurrentBufferSize();
     PerfScope2 perf_pub_total{GetPerfStats2().publish_total};
     PerfScope2 perf_pub_alloc{GetPerfStats2().publish_alloc};
-    backend::arm64::JitContext* emitted_context = &context;
-    backend::arm64::JitTranslator* emitted_translator = &translator;
-    std::optional<backend::arm64::JitContext> fallback_context;
-    std::optional<backend::arm64::JitTranslator> fallback_translator;
-    auto allocation = module->AllocCodeCache(buffer_size, context.RequiresRegionTrampoline());
-    if (allocation.first == backend::INVALID_CACHE_ID && context.RequiresRegionTrampoline()) {
-        fallback_context.emplace(module, reg_alloc, false);
-        fallback_translator.emplace(*fallback_context);
-        if (!fallback_translator->Translate(block.get())) return nullptr;
-        emitted_context = &*fallback_context;
-        emitted_translator = &*fallback_translator;
-        buffer_size = emitted_context->CurrentBufferSize();
+    auto allocation =
+            module->AllocCodeCache(buffer_size, emission->context.RequiresRegionTrampoline());
+    if (allocation.first == backend::INVALID_CACHE_ID &&
+        emission->context.RequiresRegionTrampoline()) {
+        emission.reset();
+        emission.emplace(module, reg_alloc, prepared->Actions(), false);
+        if (!emission->translator.Translate(block.get())) return nullptr;
+        buffer_size = emission->context.CurrentBufferSize();
         allocation = module->AllocCodeCache(buffer_size, false);
     }
     perf_pub_alloc.Stop();
+    auto* emitted_context = &emission->context;
+    auto* emitted_translator = &emission->translator;
     if (auto [idx, buffer] = allocation;
         idx != backend::INVALID_CACHE_ID) {
+        PerfScope perf_pub{GetPerfStats().publish_ns};
+        if (PerfEnabled()) {
+            PerfAdd(GetPerfStats().host_bytes, buffer_size);
+            PerfAdd(GetPerfStats().ir_insts, block->MaxInstrId());
+        }
         PerfScope2 perf_pub_flush{GetPerfStats2().publish_flush};
         emitted_context->Flush(buffer);
         perf_pub_flush.Stop();
@@ -1928,26 +1698,13 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
         // therefore guaranteed to see and deactivate this publication.
         (void)module->PublishLinkTarget(
                 block->GetStartLocation(), buffer.exec_data, buffer.exec_data);
-        // SMC tracking (Phase 4): fix the block's guest end location (the
-        // frontends never set node_size; AdvancePC immediates are per-
-        // instruction sizes and survive the opt pipeline, so their sum is
-        // the block's guest length) and write-protect the covered pages.
-        // Read-only (static) modules skip protection: their guests cannot
-        // legally self-modify.
+        // Protect the prepared guest range after publishing the target generation.
+        // Read-only modules skip protection: their guests cannot self-modify.
         if (!module_config.read_only) {
-            const VAddr block_start = block->GetStartLocation().Value();
-            u64 block_size = 0;
-            for (auto& inst : block->GetInstList()) {
-                if (inst.GetOp() == ir::OpCode::AdvancePC) {
-                    block_size += inst.GetArg<ir::Imm>(0).Get();
-                }
-            }
-            if (block_size) {
-                block->SetEndLocation(ir::Location(block_start + block_size));
-            }
             PerfScope2 perf_pub_smc{GetPerfStats2().publish_smc};
             address_space.GetSmcTracker().RegisterNode(
-                    module, block.get(), block_start, block->GetEndLocation().Value());
+                    module, block.get(), block->GetStartLocation().Value(),
+                    block->GetEndLocation().Value());
             for (const auto& dependency : block->GetGuestCodeDependencies()) {
                 address_space.GetSmcTracker().RegisterNode(
                         module, block.get(), dependency.start.Value(),
@@ -1972,8 +1729,7 @@ void* TranslateIR(const std::shared_ptr<backend::Module>& module,
                     *emitted_translator);
         }
         perf_pub_total.Stop();
-        PerfScope2 perf_free_detail{GetPerfStats2().ir_free};
-        block->DestroyInstrs();
+        release_ir = true;
         return buffer.exec_data;
     }
     return nullptr;

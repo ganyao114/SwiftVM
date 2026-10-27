@@ -87,7 +87,7 @@ struct Compiled {
 
 void NativeScalarBits(bool zbb = false);
 void NativeScalarALU(bool zbb = false);
-void NativeScalarShifts();
+void NativeScalarShifts(bool zbb = false);
 void ScalarShiftBenchmark();
 void ScalarFeatureBenchmark();
 void NativeFlags();

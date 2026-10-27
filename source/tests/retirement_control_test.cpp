@@ -231,7 +231,7 @@ void RuntimeColdLink() {
     Check(module->IsDirectLinkConfigured(), "production cold links enabled");
     HIRBuilder target_builder{1, true, ResolveFeatureSet(ModuleConfig{})};
     auto* target = target_builder.AppendFunction(Location{0x2000}, Location{0x2004});
-    auto poison = target->LoadImm(Imm{0xbad}).SetType(ValueType::U64);
+    auto poison = target->LoadImm(ValueType::U64, Imm{0xbad});
     target->StoreUniform(Uniform{8, ValueType::U64}, poison);
     target->EndBlock(terminal::ReturnToHost{});
     target->EndFunction();

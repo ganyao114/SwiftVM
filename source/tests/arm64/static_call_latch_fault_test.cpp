@@ -1,6 +1,6 @@
 #include <algorithm>
-#include <atomic>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -9,11 +9,12 @@
 #include <memory>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
+#include <vector>
 #include <sys/mman.h>
 #include <sys/wait.h>
-#include <thread>
 #include <unistd.h>
-#include <vector>
+#include "base/scope_exit.h"
 
 #include "aot/aot_load.h"
 #include "serialized_aot_fixture.h"
@@ -111,9 +112,9 @@ void SourceBody(HIRFunction* function) {
     const auto marker = reinterpret_cast<uintptr_t>(FptrCast(&SourceMarker));
     const auto count = function->CallLambda<TypedValue<ValueType::U64>>(Lambda{Imm{u64{marker}}});
     function->StoreUniform(Uniform{0, ValueType::U64}, count);
-    const auto left = function->LoadImm(Imm{~u64{0}}).SetType(ValueType::U64);
-    const auto one = function->LoadImm(Imm{u64{1}}).SetType(ValueType::U64);
-    const auto result = function->Add(left, Operand{one}).SetType(ValueType::U64);
+    const auto left = function->LoadImm(ValueType::U64, Imm{~u64{0}});
+    const auto one = function->LoadImm(ValueType::U64, Imm{u64{1}});
+    const auto result = function->Add(ValueType::U64, left, Operand{one});
     function->SaveFlags(result, Flags::All);
     function->StoreUniform(Uniform{40, ValueType::U64}, result);
 }
@@ -146,7 +147,7 @@ u8* CompileSource(const std::shared_ptr<Module>& module, u64 source_pc, bool cal
     SourceBody(function);
     if (call) {
         const auto choice = mixed ? function->LoadUniform(Uniform{16, ValueType::U64}) : Value{};
-        const auto ret = function->LoadImm(Imm{return_pc}).SetType(ValueType::U64);
+        const auto ret = function->LoadImm(ValueType::U64, Imm{return_pc});
         const auto destination = internal ? target_pc + 2 : target_pc;
         const auto target = indirect
                 ? Lambda{function->LoadUniform<TypedValue<ValueType::U64>>(Uniform{32, ValueType::U64})}
@@ -164,8 +165,9 @@ u8* CompileSource(const std::shared_ptr<Module>& module, u64 source_pc, bool cal
             function->EndBlock(terminal::ReturnToDispatch{});
         }
         builder.SetCurBlock(Location{return_pc});
-        if (rsb || internal) function->StoreUniform(Uniform{24, ValueType::U64},
-                function->LoadImm(Imm{u64{0x51ab}}).SetType(ValueType::U64));
+        if (rsb || internal)
+            function->StoreUniform(Uniform{24, ValueType::U64},
+                                   function->LoadImm(ValueType::U64, Imm{u64{0x51ab}}));
         function->AdvancePC(Imm{u64{1}});
         function->EndBlock(terminal::ReturnToHost{});
     } else {
@@ -181,13 +183,6 @@ u32 Instruction(const u8* address) {
     u32 instruction{};
     std::memcpy(&instruction, address, sizeof(instruction));
     return instruction;
-}
-
-const u8* BranchTarget(const u8* address) {
-    const u32 instruction = Instruction(address);
-    Check((instruction & 0xfc000000u) == 0x14000000u, "request arm ends with direct B");
-    const s32 words = static_cast<s32>((instruction & 0x03ffffffu) << 6) >> 6;
-    return address + static_cast<ptrdiff_t>(words) * 4;
 }
 
 std::vector<FaultEntry> PollEntries(const std::shared_ptr<Module>& module, u8* source, bool mixed, bool indirect = false) {
@@ -428,7 +423,9 @@ void Run(std::string_view mode) {
     std::memcpy(&result, runtime.GetUniformBuffer().data() + 40, sizeof(result));
     Check(result == 0, "preserve completed source arithmetic");
     if (explicit_request) {
-        Check(observed.count.load() == 0 && (callback_request & kRetirementExitRequest), "explicit request skips physical fault arm");
+        Check(observed.count.load() == (indirect ? 0u : 1u) &&
+                      (callback_request & kRetirementExitRequest),
+              "retirement request reaches the static latch or dynamic request poll");
         Check(returned_request == callback_request, "retirement request remains sticky until Resume");
         Check(callback_status == RetirementControl::DrainStatus::SelfActive &&
               control->CheckDrain(ticket) == RetirementControl::DrainStatus::Ready, "explicit request drains real execution");
@@ -441,6 +438,11 @@ void Run(std::string_view mode) {
     } else {
         Check(callback_request != 0 && (callback_request >> 62) == 0, "real low-bit SMC request reaches poll load");
         Check(returned_request == 0, "completed SMC generation is acknowledged on return");
+        Check(!space.GetLinkManager().QueryTarget(call_target_pc) &&
+                      space.GetLinkManager().QueryTarget(source_pc),
+              "SMC detaches target while retaining executing source");
+    }
+    if (!indirect) {
         Check(observed.count.load() == 1 && observed.address.load() == observed.latch, "one physical protected-latch fault");
         FaultEntry actual;
         Check(space.LookupFault(fault_pc, actual) && actual.owner_start == source_allocation.host_start &&
@@ -450,8 +452,6 @@ void Run(std::string_view mode) {
             Check(observed.return_register.load() == return_pc &&
                   observed.rsb_register.load() == reinterpret_cast<uintptr_t>(empty), "Call fault preserves live x14 and unpushed x25");
         }
-        Check(!space.GetLinkManager().QueryTarget(call_target_pc) && space.GetLinkManager().QueryTarget(source_pc),
-              "SMC detaches target while retaining executing source");
     }
     Check(state->rsb_pointer == (selected_call ? empty - 1 : empty), "single external call frame on physical poll recovery");
     if (selected_call) Check((empty - 1)->guest_location == return_pc && (empty - 1)->dispatch_index == 0,
@@ -459,11 +459,6 @@ void Run(std::string_view mode) {
     constexpr u32 push_frame = 0xa9bf7f2eu; // STP X14, XZR, [X25, #-16]!
     if (call && !polls.empty()) {
         Check(Instruction(polls[0].recovery) == push_frame, "Call recovery starts with frame publication");
-        Check(Instruction(polls[0].host_start - 8) == push_frame, "Call request has its own existing frame publication");
-    }
-    for (size_t index = 0; index < polls.size(); ++index) {
-        Check(BranchTarget(polls[index].host_start - 4) == polls[index].recovery + (call && index == 0 ? 4 : 0),
-              "request B skips only its Call fault frame wrapper");
     }
     if (mixed) Check(polls[0].recovery + 4 == polls[1].recovery && Instruction(polls[1].recovery) != push_frame,
                      "mixed Call and Branch recover independently through one common exit");

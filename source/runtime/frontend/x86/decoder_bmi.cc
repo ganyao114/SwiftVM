@@ -167,13 +167,11 @@
 #include "runtime/frontend/x86/vex_decoder.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 // VexInsn register numbers are architectural (0..15); distorm's GPR enum is in
 // the same order, so the 64-bit and 32-bit views are one addition apart.
 _RegisterType BmiGprOf(u32 index, bool wide) {
@@ -276,7 +274,7 @@ void X64Decoder::DecodeBmiAndn(const VexInsn& v, u32 width) {
     auto src2 = BmiSrc(v, width);
     // AndNot(left, right) is left AND NOT right, so the x86 operand order is
     // reversed here: the INVERTED source is the second argument.
-    auto result = __ AndNot(src2, ir::Operand{src1}).SetType(GetSize(width));
+    auto result = __ AndNot(GetSize(width), src2, ir::Operand{src1});
     __ ClearFlags(ir::Flags::Carry);
     BmiWriteFlagsNZ(result, width);
     // CF is a hard zero, which reads the same under either stored polarity.
@@ -296,16 +294,16 @@ void X64Decoder::DecodeBmiBls(const VexInsn& v, u32 width, u32 kind) {
     const bool wide = width == 64;
     const auto type = GetSize(width);
     auto src = BmiSrc(v, width);
-    auto decremented = __ Sub(src, ir::Operand{ir::Imm(u64(1))}).SetType(type);
+    auto decremented = __ Sub(type, src, ir::Operand{ir::Imm(u64(1))});
     ir::Value result;
     if (kind == 2) {
-        result = __ Xor(decremented, ir::Operand{src}).SetType(type);
+        result = __ Xor(type, decremented, ir::Operand{src});
     } else {
-        auto cleared = __ And(decremented, ir::Operand{src}).SetType(type);
+        auto cleared = __ And(type, decremented, ir::Operand{src});
         // BLSI is the lowest set bit, i.e. SRC minus BLSR(SRC).  Spelling it
         // this way keeps every operand at the guest width without needing a
         // width-typed zero constant to negate against.
-        result = kind == 3 ? __ Sub(src, ir::Operand{cleared}).SetType(type) : cleared;
+        result = kind == 3 ? __ Sub(type, src, ir::Operand{cleared}) : cleared;
     }
     BmiWriteFlagsNZ(result, width);
     // BLSI's CF is the complement of the other two: it is 1 for a NON-zero
@@ -328,20 +326,19 @@ void X64Decoder::DecodeBmiBzhi(const VexInsn& v, u32 width) {
     auto index = R(BmiGprOf(v.vvvv, wide));
     // Only the low byte of the index register participates, so N is 0..255 and
     // "N >= width" is exactly "N has a bit set at or above log2(width)".
-    auto n = __ And(index, ir::Operand{ir::Imm(u64(0xFF))}).SetType(type);
+    auto n = __ And(type, index, ir::Operand{ir::Imm(u64(0xFF))});
     const u64 over = width == 32 ? 0xE0 : 0xC0;
-    auto too_big = __ TestNotZero(__ And(n, ir::Operand{ir::Imm(over)}).SetType(type));
+    auto too_big = __ TestNotZero(__ And(type, n, ir::Operand{ir::Imm(over)}));
     // (1 << N) - 1.  Only evaluated for its own sake when N < width; for larger
     // N both backends fold the shift modulo the width and the Select below
     // discards the value (contract B4).
-    auto one = __ LoadImm(ir::Imm(u64(1))).SetType(type);
-    auto mask = __ Sub(__ LslValue(one, n).SetType(type), ir::Operand{ir::Imm(u64(1))})
-                        .SetType(type);
-    auto kept = __ And(src, ir::Operand{mask}).SetType(type);
-    auto result = __ Select(too_big, src, kept).SetType(type);
+    auto one = __ LoadImm(type, ir::Imm(u64(1)));
+    auto mask = __ Sub(type, __ LslValue(type, one, n), ir::Operand{ir::Imm(u64(1))});
+    auto kept = __ And(type, src, ir::Operand{mask});
+    auto result = __ Select(type, too_big, src, kept);
     // Select carries no flags, so the architectural SF/ZF come from a separate
     // flag-only op over the finished result.
-    auto flagged = __ Or(result, ir::Operand{ir::Imm(u64(0))}).SetType(type);
+    auto flagged = __ Or(type, result, ir::Operand{ir::Imm(u64(0))});
     BmiWriteFlagsNZ(flagged, width);
     __ SetCarry(too_big);
     carry_ = CarryPolarity::Direct;
@@ -360,24 +357,20 @@ void X64Decoder::DecodeBmiBextr(const VexInsn& v, u32 width) {
     const auto type = GetSize(width);
     auto src = BmiSrc(v, width);
     auto control = R(BmiGprOf(v.vvvv, wide));
-    auto start = __ And(control, ir::Operand{ir::Imm(u64(0xFF))}).SetType(type);
-    auto len = __ And(__ LsrImm(control, ir::Imm(8u)).SetType(type),
-                      ir::Operand{ir::Imm(u64(0xFF))})
-                       .SetType(type);
+    auto start = __ And(type, control, ir::Operand{ir::Imm(u64(0xFF))});
+    auto len = __ And(type, __ LsrImm(type, control, ir::Imm(8u)), ir::Operand{ir::Imm(u64(0xFF))});
     const u64 over = width == 32 ? 0xE0 : 0xC0;
     // Both START and LEN are 0..255 while the backends mask a shift by
     // width-1, so each needs an explicit out-of-range branch (contract B4).
-    auto start_over = __ TestNotZero(__ And(start, ir::Operand{ir::Imm(over)}).SetType(type));
-    auto zero = __ LoadImm(ir::Imm(u64(0))).SetType(type);
-    auto shifted =
-            __ Select(start_over, zero, __ LsrValue(src, start).SetType(type)).SetType(type);
-    auto len_over = __ TestNotZero(__ And(len, ir::Operand{ir::Imm(over)}).SetType(type));
-    auto one = __ LoadImm(ir::Imm(u64(1))).SetType(type);
-    auto len_mask = __ Sub(__ LslValue(one, len).SetType(type), ir::Operand{ir::Imm(u64(1))})
-                            .SetType(type);
-    auto all_ones = __ LoadImm(ir::Imm(width == 32 ? u64(0xFFFFFFFF) : ~u64(0))).SetType(type);
-    auto mask = __ Select(len_over, all_ones, len_mask).SetType(type);
-    auto result = __ And(shifted, ir::Operand{mask}).SetType(type);
+    auto start_over = __ TestNotZero(__ And(type, start, ir::Operand{ir::Imm(over)}));
+    auto zero = __ LoadImm(type, ir::Imm(u64(0)));
+    auto shifted = __ Select(type, start_over, zero, __ LsrValue(type, src, start));
+    auto len_over = __ TestNotZero(__ And(type, len, ir::Operand{ir::Imm(over)}));
+    auto one = __ LoadImm(type, ir::Imm(u64(1)));
+    auto len_mask = __ Sub(type, __ LslValue(type, one, len), ir::Operand{ir::Imm(u64(1))});
+    auto all_ones = __ LoadImm(type, ir::Imm(width == 32 ? u64(0xFFFFFFFF) : ~u64(0)));
+    auto mask = __ Select(type, len_over, all_ones, len_mask);
+    auto result = __ And(type, shifted, ir::Operand{mask});
     __ ClearFlags(ir::Flags::Carry | ir::Flags::Overflow | ir::Flags::AuxiliaryCarry);
     __ SaveFlags(result, ir::Flags::Zero);
     carry_ = CarryPolarity::Direct;
@@ -395,21 +388,20 @@ void X64Decoder::DecodeBmiShiftX(const VexInsn& v, u32 width, u32 kind) {
     const bool wide = width == 64;
     const auto type = GetSize(width);
     auto src = BmiSrc(v, width);
-    auto count = __ And(R(BmiGprOf(v.vvvv, wide)), ir::Operand{ir::Imm(u64(width - 1))})
-                         .SetType(type);
+    auto count = __ And(type, R(BmiGprOf(v.vvvv, wide)), ir::Operand{ir::Imm(u64(width - 1))});
     ir::Value result;
     switch (kind) {
         case 0:
-            result = __ LslValue(src, count).SetType(type);
+            result = __ LslValue(type, src, count);
             break;
         case 1:
-            result = __ LsrValue(src, count).SetType(type);
+            result = __ LsrValue(type, src, count);
             break;
         default:
             // AsrValue sign-extends from the SOURCE value's type and shifts in
             // a register of the RESULT's width, so both must be the guest
             // width or a 32-bit SARX would sign-extend from bit 63.
-            result = __ AsrValue(src, count).SetType(type);
+            result = __ AsrValue(type, src, count);
             break;
     }
     R(BmiGprOf(v.reg, wide), result);
@@ -424,8 +416,8 @@ void X64Decoder::DecodeBmiRorx(const VexInsn& v, u32 width) {
     const u32 rotate = v.imm8 & (width - 1);
     // A zero rotate is the direct.  Spelled as an explicit copy rather than
     // Ror #0 so neither backend has to accept a zero-width rotate.
-    auto result = rotate == 0 ? __ Or(src, ir::Operand{ir::Imm(u64(0))}).SetType(type)
-                              : __ RorImm(src, ir::Imm(rotate)).SetType(type);
+    auto result = rotate == 0 ? __ Or(type, src, ir::Operand{ir::Imm(u64(0))})
+                              : __ RorImm(type, src, ir::Imm(rotate));
     R(BmiGprOf(v.reg, wide), result);
 }
 
@@ -450,15 +442,15 @@ void X64Decoder::DecodeBmiMulx(const VexInsn& v, u32 width) {
         // upper-half zeroing both come from R()'s 32-bit-write path instead.
         auto a = __ ZeroExtend64(multiplicand);
         auto b = __ ZeroExtend64(multiplier);
-        auto product = __ Mul(a, ir::Operand{b}).SetType(ir::ValueType::U64);
-        low = __ And(product, ir::Operand{ir::Imm(u64(0xFFFFFFFF))}).SetType(ir::ValueType::U64);
-        high = __ LsrImm(product, ir::Imm(32u)).SetType(ir::ValueType::U64);
+        auto product = __ Mul(ir::ValueType::U64, a, ir::Operand{b});
+        low = __ And(ir::ValueType::U64, product, ir::Operand{ir::Imm(u64(0xFFFFFFFF))});
+        high = __ LsrImm(ir::ValueType::U64, product, ir::Imm(32u));
     } else {
-        low = __ Mul(multiplicand, ir::Operand{multiplier}).SetType(ir::ValueType::U64);
-        high = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&BmiMulHi64)}},
+        low = __ Mul(ir::ValueType::U64, multiplicand, ir::Operand{multiplier});
+        high = __ CallLambda(ir::ValueType::U64,
+                             ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&BmiMulHi64)}},
                              multiplicand,
-                             multiplier)
-                       .SetType(ir::ValueType::U64);
+                             multiplier);
     }
     R(BmiGprOf(v.vvvv, wide), low);
     R(BmiGprOf(v.reg, wide), high);
@@ -472,11 +464,10 @@ void X64Decoder::DecodeBmiDepExt(const VexInsn& v, u32 width, bool deposit) {
     auto data = __ ZeroExtend64(R(BmiGprOf(v.vvvv, wide)));
     auto mask = __ ZeroExtend64(BmiSrc(v, width));
     auto result = __ CallLambda(
-                          ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(deposit ? &BmiPdep64
-                                                                             : &BmiPext64)}},
-                          data,
-                          mask)
-                          .SetType(ir::ValueType::U64);
+            ir::ValueType::U64,
+            ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(deposit ? &BmiPdep64 : &BmiPext64)}},
+            data,
+            mask);
     R(BmiGprOf(v.reg, wide), result);
 }
 
@@ -609,21 +600,19 @@ void X64Decoder::DecodeTzcnt(_DInst& insn) {
         return;
     }
     auto src64 = __ ZeroExtend64(src);
-    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&BmiTzcnt64)}},
+    auto result = __ CallLambda(ir::ValueType::U64,
+                                ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&BmiTzcnt64)}},
                                 src64,
-                                __ LoadImm(ir::Imm(u64(width))))
-                          .SetType(ir::ValueType::U64);
+                                __ LoadImm(ir::Imm(u64(width))));
     // ZF is the result being zero (i.e. bit 0 of the source was set), NOT the
     // source being zero; CF is the source being zero.  SF/OF/PF/AF undefined.
-    __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u64(0))}).SetType(ir::ValueType::U64),
-                 ir::Flags::Zero);
+    __ SaveFlags(__ Or(ir::ValueType::U64, result, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
     __ SetCarry(__ TestZero(src64));
     carry_ = CarryPolarity::Direct;
     StorePolarity(false);
     if (width == 16) {
-        // NarrowTo, not And(...).SetType(U16): the And's left operand is a U64
-        // value, and a U16 return type would make the backend read it through
-        // a W register while writing an X one.
+        // NarrowTo keeps the U64 producer intact and gives the store a U16 view
+        // of an explicit W-register result.
         auto& info = x86_regs_table[op0.index];
         auto off = ToReg(info).GetOffset();
         __ StoreUniform(ir::Uniform{off, ir::ValueType::U16},
@@ -668,19 +657,17 @@ void X64Decoder::DecodeLzcntBmi(_DInst& insn) {
         return;
     }
     auto src64 = __ ZeroExtend64(src);
-    auto result = __ CallLambda(ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&BmiLzcnt64)}},
+    auto result = __ CallLambda(ir::ValueType::U64,
+                                ir::Lambda{ir::Imm{reinterpret_cast<VAddr>(&BmiLzcnt64)}},
                                 src64,
-                                __ LoadImm(ir::Imm(u64(width))))
-                          .SetType(ir::ValueType::U64);
-    __ SaveFlags(__ Or(result, ir::Operand{ir::Imm(u64(0))}).SetType(ir::ValueType::U64),
-                 ir::Flags::Zero);
+                                __ LoadImm(ir::Imm(u64(width))));
+    __ SaveFlags(__ Or(ir::ValueType::U64, result, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
     __ SetCarry(__ TestZero(src64));
     carry_ = CarryPolarity::Direct;
     StorePolarity(false);
     if (width == 16) {
-        // NarrowTo, not And(...).SetType(U16): the And's left operand is a U64
-        // value, and a U16 return type would make the backend read it through
-        // a W register while writing an X one.
+        // NarrowTo keeps the U64 producer intact and gives the store a U16 view
+        // of an explicit W-register result.
         auto& info = x86_regs_table[op0.index];
         auto off = ToReg(info).GetOffset();
         __ StoreUniform(ir::Uniform{off, ir::ValueType::U16},

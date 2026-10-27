@@ -56,7 +56,7 @@ void BuildGuestCode(FlatMemory& memory, EmitFn&& emit) {
 
 void DecodeAndPrint(FlatMemory& memory, VAddr start, const char* name) {
     auto block = new ir::Block(0, start);
-    ir::Assembler assembler{block};
+    compile::IrBuilder assembler{block};
     A64Decoder decoder{start, &memory, &assembler};
     decoder.Decode();
 

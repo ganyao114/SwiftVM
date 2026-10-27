@@ -1,15 +1,13 @@
 #include "test_support.h"
 
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/common/host_pair_result.h"
 
 namespace swift::tests::riscv {
-
 using T = ir::ValueType;
 using O = ir::OpCode;
 
 namespace {
-
 u64 ObserveArguments(u64 a, u64 b, u64 c, u64 d, u64 e, u64 f, u64 g, u64 h) {
     return a + b * 3 + c * 5 + d * 7 + e * 11 + f * 13 + g * 17 + h * 19;
 }
@@ -37,28 +35,38 @@ void NativeCalls(bool vector) {
         if (op == O::CallLambda && count > 3) continue;
         for (bool dynamic : {false, true}) {
             IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc700})};
-            ir::Assembler as{block.get()};
-            auto live = as.LoadImm(ir::Imm{u64{0x79548ed21678fb99}}).SetType(T::U64);
+            compile::IrBuilder as{block.get()};
+            auto live = as.LoadImm(T::U64, ir::Imm{u64{0x79548ed21678fb99}});
             std::array<ir::Value, 8> inputs;
             ir::Params params;
             for (u32 i = 0; i < count; ++i) {
-                inputs[i] = as.LoadUniform(ir::Uniform{i * 8, T::U64}).SetType(T::U64);
+                inputs[i] = as.LoadUniform(T::U64, ir::Uniform{i * 8, T::U64});
                 params.Push(inputs[i]);
             }
-            const auto target = dynamic ? ir::Lambda{as.LoadUniform(ir::Uniform{80, T::U64}).SetType(T::U64)}
-                                        : ir::Lambda{ir::Imm{reinterpret_cast<u64>(&ObserveArguments)}};
+            const auto target =
+                    dynamic ? ir::Lambda{as.LoadUniform(T::U64, ir::Uniform{80, T::U64})}
+                            : ir::Lambda{ir::Imm{reinterpret_cast<u64>(&ObserveArguments)}};
             ir::Value result;
             if (op == O::CallLambda) {
                 switch (count) {
-                    case 0: result = ir::Value{block->AppendInst(op, target)}; break;
-                    case 1: result = ir::Value{block->AppendInst(op, target, inputs[0])}; break;
-                    case 2: result = ir::Value{block->AppendInst(op, target, inputs[0], inputs[1])}; break;
-                    default: result = ir::Value{block->AppendInst(op, target, inputs[0], inputs[1], inputs[2])}; break;
+                    case 0:
+                        result = ir::Value{block->AppendInst(op, T::U64, target)};
+                        break;
+                    case 1:
+                        result = ir::Value{block->AppendInst(op, T::U64, target, inputs[0])};
+                        break;
+                    case 2:
+                        result = ir::Value{
+                                block->AppendInst(op, T::U64, target, inputs[0], inputs[1])};
+                        break;
+                    default:
+                        result = ir::Value{block->AppendInst(
+                                op, T::U64, target, inputs[0], inputs[1], inputs[2])};
+                        break;
                 }
-                params.Destroy();
-            } else result = ir::Value{block->AppendInst(op, target, params)};
-            result = result.SetType(T::U64);
-            auto retained = as.Xor(result, ir::Operand{live}).SetType(T::U64);
+            } else
+                result = ir::Value{block->AppendInst(op, T::U64, target, std::move(params))};
+            auto retained = as.Xor(T::U64, result, ir::Operand{live});
             as.StoreUniform(ir::Uniform{96, T::U64}, result);
             as.StoreUniform(ir::Uniform{104, T::U64}, retained);
             block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -84,10 +92,10 @@ void NativeCalls(bool vector) {
     }
     for (bool sign : {false, true}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc710})};
-        ir::Assembler as{block.get()};
-        auto high = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-        auto low = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-        auto divisor = as.LoadUniform(ir::Uniform{16, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto high = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+        auto low = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+        auto divisor = as.LoadUniform(T::U64, ir::Uniform{16, T::U64});
         auto quotient = as.Div128(high, low, divisor, ir::Imm{u64(sign)});
         auto remainder = as.Div128Remainder(quotient);
         as.StoreUniform(ir::Uniform{32, T::U64}, quotient); as.StoreUniform(ir::Uniform{40, T::U64}, remainder);
@@ -111,10 +119,11 @@ void NativeCalls(bool vector) {
             }
     }
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc720})};
-    ir::Assembler as{block.get()};
-    auto a = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    auto b = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-    auto first = as.Cpuid(a, b, ir::Imm{u64{0x9876543210}}, ir::Imm{reinterpret_cast<u64>(&PairProbe)});
+    compile::IrBuilder as{block.get()};
+    auto a = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    auto b = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+    auto first =
+            as.Cpuid(a, b, ir::Imm{u64{0x9876543210}}, ir::Imm{reinterpret_cast<u64>(&PairProbe)});
     auto second = as.CpuidUpper(first);
     as.StoreUniform(ir::Uniform{16, T::U64}, first); as.StoreUniform(ir::Uniform{24, T::U64}, second);
     block->SetTerminal(ir::terminal::ReturnToHost{});
@@ -124,16 +133,17 @@ void NativeCalls(bool vector) {
           "CPUID pair-return ABI and deferred upper pseudo");
     if (vector) {
         IntrusivePtr<ir::Block> boundary{new ir::Block(ir::Location{0xc730})};
-        ir::Assembler emit{boundary.get()};
-        auto left = emit.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-        auto right = emit.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128);
-        auto live = emit.VecFAdd(left, right, ir::Imm{u64{32}}).SetType(T::V128);
+        compile::IrBuilder emit{boundary.get()};
+        auto left = emit.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+        auto right = emit.LoadUniform(T::V128, ir::Uniform{16, T::V128});
+        auto live = emit.VecFAdd(T::V128, left, right, ir::Imm{u64{32}});
 #if defined(__riscv) && __riscv_xlen == 64
-        (void)emit.CallHost(&SwiftRiscvVectorRange).SetType(T::U64);
+        (void)emit.CallHost(T::U64, &SwiftRiscvVectorRange);
 #endif
-        auto mode = emit.CallHost(&ObserveRounding).SetType(T::U64);
-        auto after = emit.VecFMul(live, right, ir::Imm{u64{32}}).SetType(T::V128);
-        emit.StoreUniform(ir::Uniform{32, T::V128}, after); emit.StoreUniform(ir::Uniform{48, T::U64}, mode);
+        auto mode = emit.CallHost(T::U64, &ObserveRounding);
+        auto after = emit.VecFMul(T::V128, live, right, ir::Imm{u64{32}});
+        emit.StoreUniform(ir::Uniform{32, T::V128}, after);
+        emit.StoreUniform(ir::Uniform{48, T::U64}, mode);
         boundary->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled call{boundary.get(), true, features}; StateStorage input;
         input.Put(0, 0x3f8000003f800000ULL); input.Put(8, input.Get(0));

@@ -13,19 +13,20 @@
 #include "aarch64/macro-assembler-aarch64.h"
 #include "base/common_funcs.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/actions.h"
+#include "runtime/backend/arm64/compile/register_contract.h"
 #include "runtime/backend/arm64/constant.h"
 #include "runtime/backend/code_cache.h"
 #include "runtime/backend/edge_flags_state.h"
-#include "runtime/backend/reg_alloc.h"
 #include "runtime/common/hot_coalesce_prof.h"
 #include "runtime/common/types.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "runtime/include/config.h"
 #include "runtime/ir/instr.h"
 #include "runtime/ir/location.h"
 
 namespace swift::runtime::backend::arm64 {
 
-class FrozenGPRPlan;
 struct UnitScratchFacts;
 
 using namespace vixl::aarch64;
@@ -97,17 +98,22 @@ public:
         FaultRange target_fault{};
     };
 
-    explicit JitContext(const std::shared_ptr<Module> &module,
-                        RegAlloc& reg_alloc,
+    explicit JitContext(const std::shared_ptr<Module>& module,
+                        compile::AllocationView reg_alloc,
+                        const UnitActions& actions,
                         bool enable_direct_link = true);
     JitContext(const std::shared_ptr<Module>& module,
-               RegAlloc& reg_alloc,
+               compile::AllocationView reg_alloc,
+               const UnitActions& actions,
                MacroAssembler& assembler,
                bool enable_direct_link = true);
     // Raw assembly buffers cannot consume IR or an allocation plan.
     struct AssemblerOnlyTag {};
-    JitContext(const std::shared_ptr<Module>& module, RegAlloc& reg_alloc,
-               MacroAssembler& assembler, AssemblerOnlyTag);
+    JitContext(const std::shared_ptr<Module>& module,
+               compile::AllocationView reg_alloc,
+               const UnitActions& actions,
+               MacroAssembler& assembler,
+               AssemblerOnlyTag);
 
     void AbsorbEmissionState(JitContext& region);
 
@@ -116,37 +122,39 @@ public:
     [[nodiscard]] bool SharesGPR(const ir::Value& left, const ir::Value& right);
     [[nodiscard]] bool SharesFPR(const ir::Value& left, const ir::Value& right);
     [[nodiscard]] bool IsFPRMappedTo(const ir::Value& value, u16 target) {
-        return reg_alloc.ValueType(value) == RegAlloc::FPR &&
+        return reg_alloc.ValueType(value) == compile::Allocation::FPR &&
                reg_alloc.ValueFPR(value).id == target;
     }
     [[nodiscard]] bool IsGPRMappedTo(const ir::Value& value, u16 target) {
-        return reg_alloc.ValueType(value) == RegAlloc::GPR &&
+        return reg_alloc.ValueType(value) == compile::Allocation::GPR &&
                reg_alloc.ValueGPR(value).id == target;
     }
     [[nodiscard]] std::optional<u8> MappedGPRCode(const ir::Value& value) {
-        if (reg_alloc.ValueType(value) != RegAlloc::GPR) {
+        if (reg_alloc.ValueType(value) != compile::Allocation::GPR) {
             return std::nullopt;
         }
         return static_cast<u8>(reg_alloc.ValueGPR(value).id);
     }
-    [[nodiscard]] RegAlloc& GetAllocation() { return reg_alloc; }
-    [[nodiscard]] bool RequireGPRPlan(const ir::Block* block) const;
+    [[nodiscard]] compile::AllocationView GetAllocation() const { return reg_alloc; }
+    [[nodiscard]] const UnitActions& GetActions() const { return unit_actions; }
+    [[nodiscard]] bool RequireBlockForEmission(const ir::Block* block) const;
     [[nodiscard]] const std::shared_ptr<Module>& GetModule() const { return module; }
     // Select the use location before materializing it. A pinned hit must never
     // evaluate the spill fallback or lease an otherwise unnecessary scratch.
     [[nodiscard]] Register UseGPR(const ir::Value& value, const ir::Inst* consumer);
-    [[nodiscard]] RegAlloc::GPRLocation OperandLocation(
-            ir::Value value, const ir::Inst* consumer,
-            RegAlloc::GPRView view = RegAlloc::GPRView::Value) const;
+    [[nodiscard]] compile::Allocation::GPRLocation OperandLocation(
+            ir::Value value,
+            const ir::Inst* consumer,
+            compile::Allocation::GPRView view = compile::Allocation::GPRView::Value) const;
     // A residence probe is read-only. Materialization (including a spill
     // reload) happens only after the caller chooses its operand form.
     template<class RegisterType = Register>
     [[nodiscard]] std::optional<RegisterType> PlannedGPR(
             ir::Value value, const ir::Inst* consumer) const {
-        constexpr auto view = std::is_same_v<RegisterType, WRegister>
-                ? RegAlloc::GPRView::Low32
-                : std::is_same_v<RegisterType, XRegister>
-                        ? RegAlloc::GPRView::Definition : RegAlloc::GPRView::Value;
+        constexpr auto view =
+                std::is_same_v<RegisterType, WRegister>   ? compile::Allocation::GPRView::Low32
+                : std::is_same_v<RegisterType, XRegister> ? compile::Allocation::GPRView::Definition
+                                                          : compile::Allocation::GPRView::Value;
         const auto location = OperandLocation(value, consumer, view);
         if (!location.pinned) return std::nullopt;
         if constexpr (std::is_same_v<RegisterType, Register>)
@@ -156,6 +164,7 @@ public:
     }
     [[nodiscard]] Register R(const ir::Value& value, bool auto_cast = false);
     [[nodiscard]] Register RForWrite(const ir::Value& value);
+    [[nodiscard]] Register RForWrite(u32 id, ir::ValueType type);
     [[nodiscard]] XRegister X(const ir::Value& value);
     [[nodiscard]] WRegister W(const ir::Value& value);
     [[nodiscard]] VRegister V(const ir::Value& value);
@@ -166,7 +175,7 @@ public:
     // TBL with two tables encodes a consecutive register pair. Return false
     // without changing the scratch mask when pressure leaves no such pair.
     [[nodiscard]] bool TryGetConsecutiveTmpV2(VRegister& first, VRegister& second);
-    // Registers unavailable for the current IR instruction: RegAlloc's live set
+    // Registers unavailable for the current IR instruction: AllocationPreparation's live set
     // here (a conservative superset -- see register_alloc_pass.cpp), the
     // runtime's reserved registers, and every scratch GetTmpX/GetTmpV has
     // already handed out while emitting this instruction.  A register absent
@@ -196,9 +205,7 @@ public:
     void BeginTerminalScratch();
     void EndTerminalScratch();
     void ReserveLevel3IndirectTarget(const ir::Value& value);
-    // Cold NaN stubs resume an earlier instruction and therefore may not use
-    // any implicit GPR scratch at all; their explicit x13 ABI is declared on
-    // the originating opcode.
+    // Deferred cold tails emit outside the current opcode's scratch scope.
     void BeginColdScratch();
     void EndColdScratch();
     [[nodiscard]] bool ColdScratchActive() const { return auxiliary_scratch; }
@@ -220,11 +227,14 @@ public:
     ForwardPublishedEntry(ir::Location location, Label* cycle_exit = nullptr,
                           Label* request_exit = nullptr, bool publish_frame = false);
     [[nodiscard]] bool CanBypassDispatcher(ir::Location location) const;
+    [[nodiscard]] bool RequiresUnitState(ir::Location location) const;
+    [[nodiscard]] bool CanCarryUnitState(ir::Location location) const;
     [[nodiscard]] bool CanEmitDirectLink(ir::Location location) const;
     [[nodiscard]] bool CanUseRegionTrampoline() const { return direct_link_active; }
     [[nodiscard]] bool RequiresRegionTrampoline() const {
         return !pending_direct_link_sites.empty() || !pending_return_sites.empty() ||
-               !flags_merge_sites.empty() || !cycle_reason_sites.empty();
+               !flags_merge_sites.empty() || !cycle_reason_sites.empty() ||
+               !pair_call_sites.empty();
     }
     [[nodiscard]] const std::vector<DirectLinkSiteInfo>& GetDirectLinkSites() const {
         return pending_direct_link_sites;
@@ -235,17 +245,19 @@ public:
     void EmitCycleReasonBranch();
     void EmitCycleFlagsMergeBranch(bool token);
     void EmitReturnFlagsMergeBranch(bool token);
+    void EmitPairCallBranch();
     // Dispatch to a compile-time-constant guest location, for the
     // "SetLocation(imm) + ReturnToDispatch" shape a direct jmp/call decodes to.
     // Prefer a tracked direct-link site and retain the inline L2 lookup when the
     // region cannot host one. Emits nothing when the target is not linkable;
     // Commits state->current_loc only on a dispatcher fallback.
-    [[nodiscard]] StaticForwardResult
-    ForwardStatic(ir::Location location,
-                  Label* cycle_exit = nullptr,
-                  LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional,
-                  DirectLinkFlagsBypass flags_bypass = {},
-                  Label* request_exit = nullptr);
+    [[nodiscard]] StaticForwardResult ForwardStatic(
+            ir::Location location,
+            Label* cycle_exit = nullptr,
+            LinkSiteKind direct_link_kind = LinkSiteKind::Unconditional,
+            DirectLinkFlagsBypass flags_bypass = {},
+            Label* request_exit = nullptr,
+            bool preserve_unit_state = true);
     [[nodiscard]] FaultRange
     ForwardIndirectL1(const Register& location, Label* miss = nullptr, Label* request_exit = nullptr);
     [[nodiscard]] FaultRange
@@ -307,9 +319,9 @@ public:
     void EmitPendingFlagsCallEntry(LocationDescriptor location);
     [[nodiscard]] bool IsUniform(const Register& reg);
     [[nodiscard]] bool IsSpilled(const ir::Value& value) {
-        return reg_alloc.ValueType(value) == RegAlloc::MEM;
+        return reg_alloc.ValueType(value) == compile::Allocation::MEM;
     }
-    [[nodiscard]] bool HasSpillReloadAtDefinition(ir::Inst* inst) const {
+    [[nodiscard]] bool HasSpillReloadAtDefinition(const ir::Inst* inst) const {
         return inst && reg_alloc.SpillReloadAt(ir::Value{inst}, inst->Id());
     }
     [[nodiscard]] bool HasPendingSpillWrites() const {
@@ -377,11 +389,16 @@ public:
         return reg_alloc.DirtyGPR(id);
     }
     [[nodiscard]] RAShapeUnitCounters& GetRAShapeCounters() {
-        return reg_alloc.RAShape();
+        if (!emission_shape) emission_shape = reg_alloc.RAShape();
+        return *emission_shape;
+    }
+    [[nodiscard]] const RAShapeUnitCounters& GetRAShapeCounters() const {
+        return emission_shape ? *emission_shape : reg_alloc.RAShape();
     }
 
-    void SetCurrent(ir::Function *function);
-    void SetCurrent(ir::Block *block, bool split_backedge_entry = false,
+    void SetCurrent(const ir::Function* function);
+    void SetCurrent(const ir::Block* block,
+                    bool split_backedge_entry = false,
                     bool defer_published_entry = false);
     void BindInternalEntry(LocationDescriptor location);
     [[nodiscard]] vixl::aarch64::Label* GetCountedEntryLabel(
@@ -389,7 +406,7 @@ public:
     // Completes a split block entry after the translator has emitted the
     // published-entry branch and bound the self-only body label.
     void BeginBackedgeBody();
-    void TickIR(ir::Inst* instr,
+    void TickIR(const ir::Inst* instr,
                 bool forward_spilled_width_input = false,
                 bool adopt_pending_spill_write = false,
                 std::optional<u32> forward_spilled_memory_input = std::nullopt,
@@ -404,10 +421,7 @@ public:
     void RecordExecutionTrace(u64 guest_rip, const XRegister& guest_rsp);
     [[nodiscard]] bool HotCoalesceEnabled() const { return hot_coalesce_enabled; }
     void FinishHotCoalesceBlock();
-    void BeginHotNaNGuard(u32 instruction_count);
-    void EndHotNaNGuard();
     [[nodiscard]] bool DensityProfileEnabled() const { return density_profile_enabled; }
-    [[nodiscard]] u32 DensityNaNBytes() const { return density_nan_bytes; }
     [[nodiscard]] bool FlagsRegsAuditEnabled() const {
         return flags_regs_audit_enabled;
     }
@@ -434,20 +448,26 @@ private:
     void PollTerminalExit(std::optional<XRegister> target, Label* exit,
                           bool pop_frame = false, bool publish_frame = false);
     friend class JitTranslator;
-    // Translator binds only after RequireGPRPlan admits the complete unit.
+    // Translator binds only after RequireBlockForEmission admits the complete unit.
     // The context and immutable owner then have the same allocation epoch.
-    void BindInstructionScratchPlan(const ir::Block* block,
-                                    std::shared_ptr<const FrozenGPRPlan> plan) {
-        scratch_plan_block = block;
-        instruction_scratch_plan = std::move(plan);
+    void BindInstructionScratchPlan(const ir::Block* block) {
+        instruction_scratch = unit_actions.ScratchForBlock(block);
         instruction_scratch_next = 0;
     }
     void ClearInstructionScratchPlan() {
-        scratch_plan_block = nullptr;
-        instruction_scratch_plan.reset();
+        instruction_scratch = {};
         instruction_scratch_next = 0;
     }
-    void BindFrozenGPRPlan(u32 generation, u32 attempt) {
+    [[nodiscard]] bool HasBoundBlockActions(const ir::Block* block) const {
+        return block && instruction_scratch.block == block && HasBoundAllocation();
+    }
+    [[nodiscard]] bool HasBoundAllocation() const {
+        return !assembler_only_context && unit_actions.MatchesAllocation(reg_alloc) &&
+               reg_alloc.GPRLocationsFrozen() &&
+               gpr_generation == reg_alloc.GPRLocationGeneration() &&
+               gpr_attempt == reg_alloc.AllocationAttempt();
+    }
+    void BindAllocationForEmission(u32 generation, u32 attempt) {
         gpr_generation = generation;
         gpr_attempt = attempt;
     }
@@ -461,7 +481,7 @@ private:
                                       LinkSiteKind kind,
                                       DirectLinkFlagsBypass flags_bypass = {});
 
-    // --- RegAlloc::MEM (spilled value) support ---------------------------
+    // --- compile::Allocation::MEM (spilled value) support ---------------------------
     // A value the linear scan could not keep in a host register lives in
     // State::spill_area (backend/context.h). Spilled defs compute into a
     // scratch register and are written back at the next instruction or block
@@ -475,7 +495,7 @@ private:
     //    forward an allocator-visible scratch only across one proven edge.
     //    SIMD spill scratch still comes from GetTmpV and PANICs loudly if that
     //    contract is ever violated.
-    //  - The spill area holds kMaxSpillSlots u64 slots; the allocator
+    //  - The spill area holds compile::kMaxSpillSlots u64 slots; the allocator
     //    PANICs beyond that rather than overrunning the uniform buffer.
     //  - A few block terminals (Invalid/ReturnToDispatch/ReturnToHost/
     //    PopRSBHint/Switch-fallthrough) Ret directly out of the translator
@@ -485,16 +505,18 @@ private:
     //    final instruction into such a terminal would be affected.
     struct PendingSpillWrite;
     [[nodiscard]] Register SpillGPR(const ir::Value& value, bool definition = false);
+    [[nodiscard]] Register SpillGPR(u32 id, bool definition);
     [[nodiscard]] VRegister SpillFPR(const ir::Value& value);
     void FlushSpillWrites();
     [[nodiscard]] std::optional<u8> FlushSpillWrites(
-            ir::Inst* consumer,
+            const ir::Inst* consumer,
+            const InstructionScratchFacts* scratch = nullptr,
             bool forward_spilled_width_input = false,
             bool adopt_pending_spill_write = false,
             std::optional<u32> forward_spilled_memory_input = std::nullopt,
             bool consumer_deferred = false);
-    [[nodiscard]] bool AdoptPendingSpillWrite(
-            const PendingSpillWrite& write, ir::Inst* consumer);
+    [[nodiscard]] bool AdoptPendingSpillWrite(const PendingSpillWrite& write,
+                                              const ir::Inst* consumer);
     void EmitSpillWriteback(const PendingSpillWrite& write);
     [[nodiscard]] static bool IsFloatValue(const ir::Value& value);
 
@@ -503,7 +525,7 @@ private:
     // for it only in units that actually spilled.
     [[nodiscard]] XRegister GetSpillTmpX();
     [[nodiscard]] VRegister GetSpillTmpV();
-    [[nodiscard]] backend::ScratchNeed CurrentBudget() const;
+    [[nodiscard]] compile::ScratchNeed CurrentBudget() const;
     [[nodiscard]] UnitScratchFacts CurrentUnitScratch() const;
     void BeginVixlScratch(bool allow_pool);
     void EndVixlScratch();
@@ -519,10 +541,11 @@ private:
 
     std::shared_ptr<Module> module;
     const FeatureSet features;
-    ir::Function *cur_function{};
-    ir::Block *cur_block{};
-    ir::Inst *cur_inst{};
-    RegAlloc& reg_alloc;
+    const ir::Function* cur_function{};
+    const ir::Block* cur_block{};
+    const ir::Inst* cur_inst{};
+    compile::AllocationView reg_alloc;
+    const UnitActions& unit_actions;
     bool assembler_only_context{};
     u32 gpr_generation{}, gpr_attempt{};
     std::unique_ptr<MacroAssembler> owned_masm;
@@ -531,6 +554,7 @@ private:
     bool unit_start_set{};
     bool rcpc_force_checks{};
     bool host_bytes_dumped{};
+    std::optional<RAShapeUnitCounters> emission_shape;
     bool ra_shape_submitted{};
     bool exec_profile_enabled{};
     bool execution_trace_enabled{};
@@ -541,25 +565,18 @@ private:
     bool hot_counter_storage_enabled{};
     bool density_profile_enabled{};
     bool direct_link_active{};
-    bool density_nan_open{};
-    u32 density_nan_start{};
-    u32 density_nan_bytes{};
     u32 exec_access_pad{};
     u32 hot_coalesce_slot{kHotCoalesceInvalidSlot};
     u32 flags_regs_audit_finished_slot{kHotCoalesceInvalidSlot};
     std::vector<u32> hot_coalesce_slots{};
     u32 hot_code_start{};
-    u32 hot_nan_start{};
-    u32 hot_nan_expected{};
     bool hot_collecting{};
-    bool hot_nan_open{};
     HotCoalesceUnitStatic hot_shape{};
     struct HotCodeRange {
         u32 begin{};
         u32 end{};
     };
     std::vector<HotCodeRange> hot_check_ranges{};
-    std::vector<HotCodeRange> hot_nan_ranges{};
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_gprs;
     std::array<ir::HostGPR, ARM64_MAX_X_REGS> spilled_fprs;
     std::map<LocationDescriptor, Label> labels;
@@ -612,6 +629,7 @@ private:
         CycleReasonTrampolineKind kind{};
     };
     std::vector<CycleReasonSiteInfo> cycle_reason_sites;
+    std::vector<u32> pair_call_sites;
 
     GPRSMask cur_dirty_gprs{};
     GPRSMask cur_dirty_fprs{};
@@ -624,10 +642,9 @@ private:
     u32 spill_tmp_fprs{};
     u32 last_instruction_scratch_gpr{};
     u32 instruction_audit_clobbers{};
-    const ir::Block* scratch_plan_block{};
-    std::shared_ptr<const FrozenGPRPlan> instruction_scratch_plan;
+    InstructionScratchView instruction_scratch;
     size_t instruction_scratch_next{};
-    backend::ScratchNeed instruction_scratch_budget{backend::kDefaultScratchGPR,
+    compile::ScratchNeed instruction_scratch_budget{backend::kDefaultScratchGPR,
                                                     backend::kDefaultScratchFPR};
     bool instruction_vixl_x87{};
     bool instruction_has_value_uses : 1 {};

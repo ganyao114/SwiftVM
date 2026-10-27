@@ -1,11 +1,18 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "runtime/compile/analysis/semantic_facts.h"
+#include "runtime/compile/workspace.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
-#include "runtime/backend/arm64/alloc/zero_store_verifier.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/arm64/compile/certificates.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 #include "runtime/backend/arm64/jit/translator.h"
 #include "runtime/backend/runtime.h"
+#include "runtime/compile/allocate/allocation.h"
+#include "runtime/compile/passes/passes.h"
 #include "runtime/ir/hir_builder.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
 
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
@@ -14,28 +21,29 @@ using namespace swift::runtime::ir;
 TEST_CASE("zero store certificates require all compatible local consumers", "[zero-store-plan]") {
     for (unsigned scenario = 0; scenario < 8; ++scenario) {
         IntrusivePtr<Block> block{new Block(0, Location{0xc100})};
-        const auto zero = block->LoadImm(Imm{scenario == 1 ? 1u : 0u}).SetType(ValueType::U32);
+        const auto zero = block->LoadImm(ValueType::U32, Imm{scenario == 1 ? 1u : 0u});
         Value extended;
         if (scenario == 2 || scenario == 3 || scenario == 4) {
-            extended = block->ZeroExtend32To64(zero).SetType(ValueType::U64);
+            extended = block->ZeroExtend32To64(ValueType::U64, zero);
             block->StoreUniform(Uniform{0, ValueType::U64}, extended);
         } else if (scenario == 5) {
-            const auto result = block->Add(zero, Operand{Imm{1u}}).SetType(ValueType::U32);
+            const auto result = block->Add(ValueType::U32, zero, Operand{Imm{1u}});
             block->StoreUniform(Uniform{0, ValueType::U32}, result);
         } else if (scenario == 6) {
             block->StoreMemory(Operand{zero}, zero);
-        } else block->StoreUniform(Uniform{0, ValueType::U32}, zero);
+        } else
+            block->StoreUniform(Uniform{0, ValueType::U32}, zero);
         if (scenario == 4) block->StoreUniform(Uniform{8, ValueType::U32}, zero);
         block->SetTerminal(terminal::ReturnToHost{});
         block->ReIdInstr();
-        RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+        AllocationFixture allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
         allocation.MapRegister(zero.Id(), HostGPR{14});
         if (extended.Defined()) allocation.MapRegister(extended.Id(), HostGPR{15});
         if (scenario == 3) allocation.MapMemSpill(extended.Id(), SpillSlot{0});
         if (scenario == 7) allocation.MapMemSpill(zero.Id(), SpillSlot{0});
-        arm64::BlockAnalysisIndex analysis;
+        compile::BlockAnalysisIndex analysis;
         analysis.Build(block.get());
-        const auto ids = arm64::VerifyZeroStoreValues(analysis, allocation);
+        const auto ids = arm64::ProveZeroStores(analysis, allocation);
         const bool accepted = scenario == 0 || scenario == 2 || scenario == 4;
         REQUIRE((std::find(ids.begin(), ids.end(), zero.Id()) != ids.end()) == accepted);
         if (extended.Defined()) REQUIRE((std::find(ids.begin(), ids.end(), extended.Id()) != ids.end()) == (scenario != 3));
@@ -44,51 +52,60 @@ TEST_CASE("zero store certificates require all compatible local consumers", "[ze
 
 TEST_CASE("zero store validation memoizes shared extension consumers", "[zero-store-plan]") {
     IntrusivePtr<Block> block{new Block(0, Location{0xc108})};
-    auto value = block->LoadImm(Imm{0u}).SetType(ValueType::U32);
+    auto value = block->LoadImm(ValueType::U32, Imm{0u});
     std::vector<Value> values{value};
     for (unsigned i = 0; i < 128; ++i) {
-        value = block->ZeroExtend32(value).SetType(ValueType::U32);
+        value = block->ZeroExtend32(ValueType::U32, value);
         values.push_back(value);
         block->StoreUniform(Uniform{0, ValueType::U32}, value);
     }
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
+    AllocationFixture allocation{block->MaxInstrId(), GPRSMask{}, FPRSMask{}, FeatureSet{}};
     for (auto item : values) allocation.MapRegister(item.Id(), HostGPR{14});
-    arm64::BlockAnalysisIndex analysis;
+    compile::BlockAnalysisIndex analysis;
     analysis.Build(block.get());
-    const auto ids = arm64::VerifyZeroStoreValues(analysis, allocation);
+    const auto ids = arm64::ProveZeroStores(analysis, allocation);
     REQUIRE(ids.size() == values.size());
     allocation.BeginTargetPlanning();
     for (auto id : ids) allocation.CertifyZeroStore(id);
-    REQUIRE(allocation.ZeroStoreVerified(values.front().Id()));
+    REQUIRE(allocation.Actions().ZeroStoreVerified(values.front().Id()));
     allocation.AbortTargetPlanning();
-    REQUIRE_FALSE(allocation.ZeroStoreVerified(values.front().Id()));
+    REQUIRE_FALSE(allocation.Actions().ZeroStoreVerified(values.front().Id()));
 }
 
 TEST_CASE("incoming zero store proof is scoped to its consuming block", "[zero-store-plan][incoming]") {
+    ::swift::runtime::compile::CompileWorkspace compilation_workspace;
     for (unsigned scenario = 0; scenario < 4; ++scenario) {
         IntrusivePtr<Block> predecessor{new Block(0, Location{0xc110})};
-        const auto zero = predecessor->LoadImm(Imm{0u}).SetType(ValueType::U32);
+        const auto zero = predecessor->LoadImm(ValueType::U32, Imm{0u});
         if (scenario == 1) predecessor->StoreUniform(Uniform{0, ValueType::U32}, zero);
         predecessor->ReIdInstr();
         IntrusivePtr<Block> block{new Block(0, Location{0xc118})};
         Value extension;
         if (scenario == 2) {
-            extension = block->ZeroExtend32To64(zero).SetType(ValueType::U64);
+            extension = block->ZeroExtend32To64(ValueType::U64, zero);
             block->StoreUniform(Uniform{8, ValueType::U64}, extension);
-        } else block->StoreUniform(Uniform{8, ValueType::U32}, zero);
+        } else
+            block->StoreUniform(Uniform{8, ValueType::U32}, zero);
+        if (scenario == 0) block->StoreUniform(Uniform{12, ValueType::U32}, zero);
         swift::u16 id = 4;
-        for (auto& inst : block->GetInstList()) inst.SetId(id++);
-        RegAlloc allocation{8, GPRSMask{}, FPRSMask{}, FeatureSet{}};
+        for (const auto& inst : block->GetInstList())
+            ::swift::runtime::compile::RewriteContext{
+                    block.get(), compilation_workspace, nullptr, false}
+                    .Change(block.get(), &inst, [&](Inst& target) { target.SetId(id++); });
+        AllocationFixture allocation{8, GPRSMask{}, FPRSMask{}, FeatureSet{}};
         allocation.MapRegister(zero.Id(), HostGPR{14});
         if (extension.Defined()) allocation.MapRegister(extension.Id(), HostGPR{15});
         if (scenario == 3) allocation.MapMemSpill(zero.Id(), SpillSlot{0});
-        arm64::BlockAnalysisIndex before, consumer;
-        before.Build(predecessor.get()); consumer.Build(block.get());
-        REQUIRE(arm64::VerifyZeroStoreValues(before, allocation).empty());
+        compile::SemanticFacts before_facts{predecessor.get()}, consumer_facts{block.get()};
+        auto& before = before_facts.PrepareIndex(predecessor.get());
+        auto& consumer = consumer_facts.PrepareIndex(block.get());
+        REQUIRE_FALSE(consumer.UsesReady());
+        REQUIRE(arm64::ProveZeroStores(before, allocation).empty());
         std::vector<const Inst*> incoming;
-        const auto local = arm64::VerifyZeroStoreValues(consumer, allocation, &incoming);
+        const auto local = arm64::ProveZeroStores(consumer, allocation, &incoming);
+        REQUIRE(consumer.UsesReady() == (scenario != 3));
         REQUIRE(incoming.size() == (scenario == 0 || scenario == 2 ? 1 : 0));
         if (!incoming.empty()) REQUIRE(incoming.front() == zero.Def());
         REQUIRE((std::find(local.begin(), local.end(), zero.Id()) == local.end()));
@@ -107,25 +124,34 @@ TEST_CASE("function finalization binds incoming zero without eliding predecessor
     AddressSpace space{config};
     HIRBuilder builder{1, true};
     auto* function = builder.AppendFunction(Location{0xc120}, Location{0xc122});
-    const auto zero = function->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
+    const auto zero = function->LoadImm(ValueType::U64, Imm{swift::u64{0}});
     auto* body = builder.LinkBlock(terminal::LinkBlock{Location{0xc121}});
     builder.SetCurBlock(body);
     function->StoreUniform(Uniform{0, store_type}, Value{zero}.SetCastType(store_type));
+    const auto* store = &body->GetBlock()->GetInstList().back();
     function->EndBlock(terminal::ReturnToHost{});
     function->EndFunction();
     function->ComputeRPO();
     function->IdByRPO();
     FeatureSet features{};
-    RegAlloc allocation{function->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
-    RegisterAllocPass::Run(function, &allocation, features);
-    allocation.CompleteGPRAllocation(space.GetDefaultModule());
-    arm64::JitContext context{space.GetDefaultModule(), allocation};
-    REQUIRE_FALSE(allocation.ZeroStoreVerified(zero.Id()));
-    const auto plan = allocation.GPRPlanFor(body->GetBlock());
+    AllocationFixture allocation{function->MaxInstrCount(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    function, allocation, features));
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(), allocation);
+    arm64::JitContext context{space.GetDefaultModule(), allocation, allocation.Actions()};
+    REQUIRE_FALSE(allocation.Actions().ZeroStoreVerified(zero.Id()));
+    const auto plan = allocation.Actions().ForBlock(body->GetBlock());
     REQUIRE(plan);
-    REQUIRE(plan->consumers);
-    REQUIRE(plan->consumers->incoming_zeros.contains(zero.Def()));
+    const auto* incoming = allocation.Actions().Consumer(store->Id());
+    REQUIRE(incoming);
+    REQUIRE(incoming->Has(arm64::ConsumerFlag::IncomingZero));
+    REQUIRE(incoming->MatchesZeroInput(*store, zero));
     arm64::JitTranslator translator{context};
     REQUIRE_NOTHROW(translator.Translate(function));
     context.Finish();
@@ -136,7 +162,7 @@ TEST_CASE("function finalization binds incoming zero without eliding predecessor
     REQUIRE(cache_id != INVALID_CACHE_ID);
     context.Flush(buffer);
     REQUIRE(module->Push(function->GetFunction()));
-    function->ReleaseFunctionOwnership();
+    function->MarkFunctionPublished();
     space.PushCodeCache(Location{0xc120}, buffer.exec_data + context.GetCodeOffset(LocationDescriptor{0xc120}));
     const auto body_offset = context.GetCodeOffset(LocationDescriptor{0xc121});
     space.PushCodeCache(Location{0xc121}, buffer.exec_data + body_offset);

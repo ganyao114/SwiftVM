@@ -19,15 +19,10 @@
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/ir/hir_builder.h"
 #include "runtime/ir/ir_meta.h"
-#include "runtime/ir/opts/cfg_analysis_pass.h"
-#include "runtime/ir/opts/const_folding_pass.h"
-#include "runtime/ir/opts/deadcode_elimination_pass.h"
-#include "runtime/ir/opts/flags_elimination_pass.h"
-#include "runtime/ir/opts/loop_invariant_hoist_pass.h"
-#include "runtime/ir/opts/reid_instr_pass.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
-#include "runtime/ir/opts/uniform_elimination_pass.h"
-#include "runtime/ir/opts/uniform_store_sink_pass.h"
+#include "runtime/compile/passes/passes.h"
+#include "runtime/compile/passes/loop_hoist.h"
+#include "runtime/backend/arm64/compile/target.h"
+#include "runtime/compile/allocate/allocation.h"
 #include "runtime/backend/mem_map.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/code_serial.h"
@@ -46,7 +41,11 @@
 #include "runtime/frontend/x86/sse42str_helper.h"
 #include "runtime/frontend/x86/x87.h"
 #include "compiler/slang/slang.h"
+// The assembler's CHECK is a release-disabled assert; retain Catch's test macro.
+#pragma push_macro("CHECK")
+#undef CHECK
 #include "assembler_riscv64.h"
+#pragma pop_macro("CHECK")
 #include "fmt/format.h"
 #include "translator/linux/guest_memory.h"
 #include "translator/linux/module_features.h"

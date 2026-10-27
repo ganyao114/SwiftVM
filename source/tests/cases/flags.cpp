@@ -1,5 +1,9 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include "../support/case_support.h"
 #include "../support/fp_environment.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 
 static swift::runtime::ir::Block* BuildMulCarryOverflowBlock() {
     using namespace swift::runtime::ir;
@@ -33,11 +37,16 @@ TEST_CASE("SaveCV commits x86 CF/OF into the flags register") {
     const auto fprs = address_space.GetTrampolines().GetFPRRegs();
 
     swift::runtime::IntrusivePtr<Block> block{BuildMulCarryOverflowBlock()};
-    RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
+    AllocationFixture reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &reg_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), reg_alloc, FeatureSet{}),
+            false);
 
-    reg_alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, reg_alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, reg_alloc);
+    arm64::JitContext context{module, reg_alloc, reg_alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();
@@ -73,10 +82,10 @@ static swift::runtime::ir::Block* BuildCondSetArithmeticBlock(
         swift::runtime::ir::Cond cond) {
     using namespace swift::runtime::ir;
     auto* block = new Block(0, Location{0x7100});
-    auto flags_value = block->LoadImm(Imm{std::uint64_t(0ull)}).SetType(ValueType::U64);
+    auto flags_value = block->LoadImm(ValueType::U64, Imm{std::uint64_t(0ull)});
     block->SaveFlags(flags_value, Flags::NZCV);
-    auto one = block->CondSet(cond).SetType(ValueType::U64);
-    auto base = block->LoadImm(Imm{std::uint64_t(41ull)}).SetType(ValueType::U64);
+    auto one = block->CondSet(ValueType::U64, cond);
+    auto base = block->LoadImm(ValueType::U64, Imm{std::uint64_t(41ull)});
     auto sum = block->Add(base, Operand{one});
     block->StoreUniform(Uniform{0, ValueType::U64}, sum);
     block->SetTerminal(terminal::ReturnToDispatch{});
@@ -101,11 +110,16 @@ static std::string TranslateCondSetArithmeticBlock(swift::runtime::ir::Cond cond
     const auto fprs = address_space.GetTrampolines().GetFPRRegs();
 
     swift::runtime::IntrusivePtr<Block> block{BuildCondSetArithmeticBlock(cond)};
-    RegAlloc reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
-    RegisterAllocPass::Run(block.get(), &reg_alloc, false, FeatureSet{});
+    AllocationFixture reg_alloc{block->MaxInstrId(), gprs, fprs, FeatureSet{}};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &reg_alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), reg_alloc, FeatureSet{}),
+            false);
 
-    reg_alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, reg_alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, reg_alloc);
+    arm64::JitContext context{module, reg_alloc, reg_alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();

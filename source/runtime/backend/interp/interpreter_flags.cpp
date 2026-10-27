@@ -10,7 +10,7 @@ using ir::ValueType;
 // Guest flags
 // ---------------------------------------------------------------------------
 
-void Interpreter::SaveGuestFlags(InterpStack& stack, ir::Inst* def, ir::Flags f) {
+void Interpreter::SaveGuestFlags(InterpStack& stack, const ir::Inst* def, ir::Flags f) {
     const auto type = def->ReturnType();
     const u32 bits = TypeBits(type);
     if (bits == 0 || bits > 64) {

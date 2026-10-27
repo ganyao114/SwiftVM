@@ -47,8 +47,6 @@ struct NoneAddressNode {};
 
 using AddressNodeRef = boost::variant<NoneAddressNode, IntrusivePtr<ir::Block>, IntrusivePtr<ir::Function>>;
 
-using AddressNodeRefs = StackVector<AddressNodeRef, 32>;
-
 inline bool IsEmpty(const AddressNodeRef& node) { return node.empty() || node.which() == 0; }
 
 inline bool IsBlock(const AddressNodeRef& node) { return !IsEmpty(node) && node.which() == 1; }
@@ -109,11 +107,7 @@ public:
 
     [[nodiscard]] AddressNodeRef GetNode(ir::Location location);
 
-    [[nodiscard]] AddressNodeRefs GetNodes(ir::Location start, ir::Location end);
-
     [[nodiscard]] AddressNodeRef GetNodeOrCreate(ir::Location location, bool function = false);
-
-    [[nodiscard]] AddressNodeRefs GetRangeNodes(ir::Location start, ir::Location end);
 
     [[nodiscard]] CodeCache* GetCodeCache(u8* exe_ptr);
 

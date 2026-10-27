@@ -1,21 +1,20 @@
 #include "test_support.h"
 
 #include "runtime/backend/interp/interpreter.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
-
 void NativeLocals(bool vector) {
     using T = ir::ValueType;
     rv::HostFeatures features{}; features.vector = vector;
     for (auto type : {T::U8, T::U16, T::U32, T::U64, T::V8, T::V16, T::V32, T::V64, T::V128}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc500})};
-        ir::Assembler as{block.get()};
+        compile::IrBuilder as{block.get()};
         ir::Local local{3, type};
         as.DefineLocal(local);
-        auto input = as.LoadUniform(ir::Uniform{0, type}).SetType(type);
+        auto input = as.LoadUniform(type, ir::Uniform{0, type});
         as.StoreLocal(local, input);
-        auto loaded = as.LoadLocal(local).SetType(type);
+        auto loaded = as.LoadLocal(type, local);
         as.StoreUniform(ir::Uniform{32, type}, loaded);
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled cached{block.get(), true, features}, uncached{block.get(), false, features};
@@ -40,8 +39,8 @@ void NativeLocals(bool vector) {
     }
     for (u64 mask : {u64{0}, u64{7}, u64{65535}, u64{0x8000000000000000}}) {
         IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc510})};
-        ir::Assembler as{block.get()};
-        auto address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
+        compile::IrBuilder as{block.get()};
+        auto address = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
         as.CheckMemoryAlignment(address, ir::Imm{mask});
         block->SetTerminal(ir::terminal::ReturnToHost{});
         Compiled compiled{block.get(), true, features};

@@ -8,7 +8,7 @@ namespace swift::runtime::backend::riscv64 {
 using namespace biscuit;
 using O = ir::OpCode;
 
-bool JitTranslator::EmitControl(ir::Inst* inst) {
+bool JitTranslator::EmitControl(const ir::Inst* inst) {
     // Pop is performed by the terminal after all architectural effects.
     // CallReturn is a frontend continuation marker, paired with PushRSB.
     if (inst->GetOp() != O::PushRSB || !context.RSBEnabled()) return true;

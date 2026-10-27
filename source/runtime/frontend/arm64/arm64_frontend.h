@@ -10,7 +10,7 @@
 #include "aarch64/instructions-aarch64.h"
 #include "cpu-features.h"
 #include "cpu.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/include/config.h"
 
 namespace swift::arm64 {
@@ -20,7 +20,7 @@ using namespace runtime;
 
 class A64Decoder : public DecoderVisitor {
 public:
-    explicit A64Decoder(VAddr start, runtime::MemoryInterface* memory, runtime::ir::Assembler* visitor);
+    explicit A64Decoder(VAddr start, runtime::MemoryInterface* memory, runtime::compile::IrBuilder* visitor);
 
     // Decodes one basic block starting at the constructor's start address.
     // Fetches guest instructions through the memory interface, dispatches
@@ -191,11 +191,11 @@ private:
     // Stops translation, stores the exit reason and returns to the host.
     void Interrupt(InterruptReason reason, VAddr resume_pc);
 
-    ir::Assembler* assembler;
+    compile::IrBuilder* assembler;
     runtime::MemoryInterface* memory;
     VAddr current_pc;
     // Set once a block terminal (branch / return / host exit) was emitted.
-    // Tracked locally because Assembler::EndCommit() is only updated for
+    // Tracked locally because IrBuilder::EndCommit() is only updated for
     // some terminals depending on the assembler mode (Block vs HIRBuilder).
     bool end_decode_{false};
 };

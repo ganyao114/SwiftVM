@@ -12,19 +12,17 @@
 #include <vector>
 #include "base/common_funcs.h"
 #include "jit_context.h"
-#include "runtime/backend/arm64/alloc/narrow_bit_plan.h"
-#include "runtime/backend/arm64/alloc/region_pfaf_plan.h"
-#include "runtime/backend/arm64/alloc/narrow_integer_flags_plan.h"
-#include "runtime/backend/arm64/alloc/backedge_flags_plan.h"
-#include "runtime/backend/arm64/alloc/gpr_block_plan.h"
-#include "runtime/backend/arm64/alloc/scalar_fpr_publication_plan.h"
-#include "terminal_location_publication.h"
+#include "runtime/backend/arm64/compile/edges.h"
 #include "runtime/backend/code_cache.h"
 #include "runtime/common/types.h"
 #include "runtime/include/config.h"
 #include "runtime/ir/atomic_rmw.h"
 #include "runtime/ir/block.h"
+#include "terminal_location_publication.h"
 
+namespace swift::runtime::compile {
+struct PseudoFlagsDemand;
+}
 namespace swift::runtime::backend::arm64 {
 
 // x87 TOP has no dedicated host register. Every inline X87Op extracts it into
@@ -107,9 +105,9 @@ public:
 
     explicit JitTranslator(JitContext& ctx);
 
-    bool Translate(ir::Block *block);
+    bool Translate(const ir::Block* block);
 
-    bool Translate(ir::HIRFunction *function);
+    bool Translate(const ir::HIRFunction* function);
 
     [[nodiscard]] const std::vector<BackedgeBlockMetadata>&
     GetBackedgeBlockMetadata() const {
@@ -127,14 +125,13 @@ public:
     // folded into a scratch register instead of [base + pt].
     // structured_guest_ea is set only by ordinary V128 Load/StoreMemory; TSO
     // and atomic callers retain the established address materialization.
-    MemOperand EmitMemOperand(ir::Operand &ir_op,
+    MemOperand EmitMemOperand(ir::Operand& ir_op,
                               ir::ValueType type,
                               bool pair = false,
                               bool atomic = false,
                               bool allow_writeback = true,
                               bool structured_guest_ea = false,
-                              ir::Inst* memory_inst = nullptr);
-
+                              const ir::Inst* memory_inst = nullptr);
 
     // Residue (mod 8) of a value whose alignment is derivable from a
     // pinned-home read with a recorded residue, an immediate constant, or
@@ -144,15 +141,19 @@ public:
     // homes are rewritten both by SetHostGPR publications and by ordinary
     // producers the allocator placed on the home, so both must refresh or
     // drop the recorded residue before the instruction emits.
-    void TrackHomeAlignment(ir::Inst* inst);
+    void TrackHomeAlignment(const ir::Inst* inst);
 
-#define INST(name, ...) void Emit##name(ir::Inst *inst);
+#define INST(name, ...) void Emit##name(const ir::Inst* inst);
 #include "runtime/ir/ir.inc"
 #undef INST
 
 private:
+    void EmitIntegerShift(const ir::Inst* inst);
+    void EmitIntegerPredicate(const ir::Inst* inst);
+    void CompareIntegerZero(ir::Value value);
+    [[nodiscard]] Register ConditionRegister(ir::Value value);
     friend class FunctionCodeObjectEmitter;
-    bool EmitPreparedFunction(ir::HIRFunction* function);
+    bool EmitPreparedFunction(const ir::HIRFunction* function);
     friend class JitTranslatorTestSupport;
     void EmitExecutionTrace(u64 guest_rip);
     void EmitByteMovMask(const VRegister& source,
@@ -160,52 +161,35 @@ private:
                          const VRegister& work,
                          const VRegister& packed);
     [[nodiscard]] bool CanUseZeroStoreRegister(ir::Value value);
-    [[nodiscard]] bool CanConsumeForwardedWidthSpill(ir::Inst* inst);
-    [[nodiscard]] std::optional<u32> ForwardedMemorySpillInput(ir::Inst* inst);
-    [[nodiscard]] bool CanFusePinnedZeroExtendPublication(ir::Inst* inst) const;
-    [[nodiscard]] bool CanAdoptPendingSpillWrite(
-            ir::Inst* inst, bool reads_forwarded_memory_input);
-    using MemoryUpdate = GPRMemoryUpdate;
-    [[nodiscard]] std::optional<MemoryUpdate>
-    MatchPreIndexMemoryUpdate(ir::Inst* update) const;
-    [[nodiscard]] std::optional<MemoryUpdate>
-    MatchBiasedMemoryUpdate(ir::Inst* update) const;
-    using PinnedLoadUpdate = GPRLoadUpdate;
-    void PrepareScalarFPRPublications(ir::Block* block);
+    [[nodiscard]] bool CanConsumeForwardedWidthSpill(const ir::Inst* inst);
+    [[nodiscard]] std::optional<u32> ForwardedMemorySpillInput(const ir::Inst* inst);
+    [[nodiscard]] bool CanFusePinnedZeroExtendPublication(const ir::Inst* inst) const;
+    [[nodiscard]] bool CanAdoptPendingSpillWrite(const ir::Inst* inst,
+                                                 bool reads_forwarded_memory_input);
+    [[nodiscard]] const MemoryTransferAction* PreparedMemoryUpdate(
+            const ir::Inst* update, MemoryTransferAction::Kind kind) const;
     [[nodiscard]] bool EmitPshufdDirect(const VRegister& result,
                                         const VRegister& source,
                                         u32 control);
 
-    using NarrowExtractExtension = arm64::NarrowExtractExtension;
-    using NarrowMaskedInput = arm64::NarrowMaskedInput;
-    using ShiftMaskedInput = arm64::ShiftMaskedInput;
-    void ImportIntegerFlagPreparation();
-    const IntegerFlagPreparationPlan& IntegerFlagPreparation() const {
-        static const IntegerFlagPreparationPlan empty;
-        return gpr_plan->integer_flags ? *gpr_plan->integer_flags : empty;
+    [[nodiscard]] ir::Value ResolveNarrowFlagsInput(ir::Value value, const ir::Inst* consumer);
+    const IntegerFlagsAction* NarrowCarryFor(const ir::Inst* inst) const {
+        return context.GetActions().NarrowCarry(inst->Id());
     }
-    [[nodiscard]] ir::Value ResolveNarrowFlagsInput(ir::Value value,
-                                                    ir::Inst* consumer);
-    const NarrowCarryAction* NarrowCarryFor(ir::Inst* inst) const {
-        const auto found = IntegerFlagPreparation().integer.carries.find(inst);
-        return found == IntegerFlagPreparation().integer.carries.end() ? nullptr : &found->second;
+    const IntegerFlagsAction* NarrowCompareFor(const ir::Inst* inst) const {
+        return context.GetActions().NarrowCompare(inst->Id());
     }
-    const NarrowCompareAction* NarrowCompareFor(ir::Inst* inst) const {
-        const auto found = IntegerFlagPreparation().integer.comparisons.find(inst);
-        return found == IntegerFlagPreparation().integer.comparisons.end() ? nullptr : &found->second;
-    }
-    using PinnedMemoryAddress = GPRMemoryAddress;
     struct SpilledMemoryOperand {
-        ir::Inst* consumer{};
+        u16 consumer{UINT16_MAX};
         XRegister base{};
         s64 offset{};
     };
     [[nodiscard]] std::optional<MemOperand> TryEmitSpilledMemoryOperand(
-            ir::Inst* address,
+            const ir::Inst* address,
             ir::ValueType type,
             bool pair,
             bool atomic,
-            ir::Inst* memory_inst);
+            const ir::Inst* memory_inst);
 
     enum class BoundarySubsequence : size_t {
         Prologue,
@@ -221,39 +205,37 @@ private:
 
     struct BlockTranslateState {
         const ir::LoopHoistMetadata* loop_hoist{};
+        const EdgeBlockAction* edges{};
         u32 loop_hoist_prefix_begin{};
         u32 loop_hoist_prefix_ops{};
         bool split_flags_entry{};
     };
 
-    [[nodiscard]] BlockTranslateState PrepareBlockState(ir::Block* block);
+    [[nodiscard]] BlockTranslateState PrepareBlockState(const ir::Block* block);
 
     struct UniformDensityCounts {
         u32 gpr_uniform_accesses{};
         u32 xmm_uniform_accesses{};
     };
 
-    [[nodiscard]] UniformDensityCounts
-    CollectUniformDensity(ir::Block* block, bool density);
+    [[nodiscard]] UniformDensityCounts CollectUniformDensity(const ir::Block* block, bool density);
 
-    void TranslateBlockInstructions(
-            ir::Block* block,
-            const ir::LoopHoistMetadata& loop_hoist,
-            bool density,
-            bool gap_audit,
-            std::span<u32> density_ops,
-            std::span<u32> density_bytes,
-            u32& density_scalar_fp_ops,
-            u32& loop_hoist_prefix_begin,
-            u32& loop_hoist_prefix_ops);
+    void TranslateBlockInstructions(const ir::Block* block,
+                                    const EdgeBlockAction& edges,
+                                    const ir::LoopHoistMetadata& loop_hoist,
+                                    bool density,
+                                    bool gap_audit,
+                                    std::span<u32> density_ops,
+                                    std::span<u32> density_bytes,
+                                    u32& density_scalar_fp_ops,
+                                    u32& loop_hoist_prefix_begin,
+                                    u32& loop_hoist_prefix_ops);
 
-    void EmitBlockTerminal(ir::Block* block,
-                           bool density,
-                           std::span<u32> density_bytes);
+    void EmitBlockTerminal(const ir::Block* block, bool density, std::span<u32> density_bytes);
 
     struct BlockColdPathRecipe;
     [[nodiscard]] BlockColdPathRecipe CaptureBlockColdPathRecipe(
-            ir::Block* block,
+            const ir::Block* block,
             bool density,
             std::span<const u32> density_ops,
             std::span<const u32> density_bytes,
@@ -262,7 +244,7 @@ private:
             u32 loop_hoist_prefix_ops);
     void EmitBlockColdPathRecipe(BlockColdPathRecipe recipe);
 
-    void PrintBlockDensity(ir::Block* block,
+    void PrintBlockDensity(const ir::Block* block,
                            bool density,
                            std::span<const u32> density_ops,
                            std::span<const u32> density_bytes,
@@ -270,15 +252,13 @@ private:
                            const ir::LoopHoistMetadata& loop_hoist,
                            u32 loop_hoist_prefix_ops);
 
-    void PlacementPoint(const char* kind, u64 guest_pc);
-
     struct BackedgeFlagsRecipe {
         bool optimized{true};
-        const std::shared_ptr<const BackedgeFlagsPlan> plan_owner;
-        const BackedgeFlagsPlan& plan;
+        const BackedgeAction& plan;
+        const PFAFAction* pfaf{};
         const HostFlags requested;
-        BackedgeFlagsRecipe(std::shared_ptr<const BackedgeFlagsPlan> owner, HostFlags mask)
-                : plan_owner(std::move(owner)), plan(*plan_owner), requested(mask) {}
+        BackedgeFlagsRecipe(const BackedgeAction& plan, const PFAFAction* pfaf, HostFlags mask)
+                : plan(plan), pfaf(pfaf), requested(mask) {}
         std::unique_ptr<Label> local_entry{std::make_unique<Label>()};
         std::unique_ptr<Label> external_entry{std::make_unique<Label>()};
         std::unique_ptr<Label> cold_exit{std::make_unique<Label>()};
@@ -288,20 +268,19 @@ private:
 
     [[nodiscard]] std::unique_ptr<BackedgeFlagsRecipe>
     ImportBackedgeFlagsRecipe();
+    [[nodiscard]] bool CanImportBackedgeFlagsRecipe() const;
+    [[nodiscard]] bool RequiresCanonicalBackedgeEntry(ir::Location target) const;
     [[nodiscard]] bool CanonicalCarryEnabled() const;
     [[nodiscard]] bool TargetKillsIncomingFlags(ir::Location target) const;
-    [[nodiscard]] bool RegionBranchPFAFActive(ir::Inst* producer) const;
+    [[nodiscard]] bool RegionBranchPFAFActive(const ir::Inst* producer) const;
     [[nodiscard]] bool EmitBackedgeFlagsTerminal(const ir::Terminal& terminal);
     void EmitBackedgeMaterialize(const BackedgeFlagsRecipe& recipe);
     void EmitRegionBranchPFAF(const BackedgeFlagsRecipe& recipe);
     void EmitBackedgeColdPaths();
     [[nodiscard]] bool RetainsPendingHostNZCV(const ir::Inst& inst) const;
     [[nodiscard]] static bool PreservesHostNZCV(ir::OpCode op);
-    [[nodiscard]] bool MayFaultOrObserve(const ir::Inst& inst) const;
-    [[nodiscard]] static bool MayFaultOrObserve(ir::OpCode op);
-    [[nodiscard]] EdgeFlagsState PendingEdgeFlagsState(
-            HostFlags valid,
-            EdgeFlagsProducer producer) const;
+    [[nodiscard]] EdgeFlagsState PendingEdgeFlagsState(HostFlags valid,
+                                                       EdgeFlagsProducer producer) const;
     void ObserveEdgeCarryPolarity(ir::Uniform uniform, ir::Value value);
     [[nodiscard]] EdgeFlagsTargetContract AnalyzeEdgeFlagsTarget(
             ir::Location target) const;
@@ -327,13 +306,13 @@ private:
                             ir::Value operand,
                             ir::Value carry);
 
-    [[nodiscard]] Label* GetUnalignedAtomicFallback(ir::Inst* inst);
+    [[nodiscard]] Label* GetUnalignedAtomicFallback(const ir::Inst* inst);
     void EmitUnalignedAtomicFallbacks();
     void EmitUnalignedAtomicFallback(const UnalignedAtomicFallbackKey& key);
 
-    using PseudoFlags = PseudoFlagsDemand;
+    using PseudoFlags = compile::PseudoFlagsDemand;
 
-    void Translate(ir::Inst *inst);
+    void Translate(const ir::Inst* inst);
     void PublishPendingStaticLocation();
 
     // Terminals
@@ -347,19 +326,15 @@ private:
                                 bool call_exit);
     [[nodiscard]] bool CanBypassTerminalFlagsMerge(
             const ir::Terminal& terminal) const;
-    bool ImportRegionPreparation(ir::Block* block, ir::HIRFunction* function);
+    bool ImportUnitEdges(const ir::Block* block, const ir::HIRFunction* function);
     void ReportRegionEdges();
-    const RegionPreparationPlan& RegionPlan() const {
-        return region_plan_owner ? *region_plan_owner : EmptyRegionPreparationPlan();
+    const EdgeActions& Edges() const {
+        static const EdgeActions empty;
+        return edge_actions ? *edge_actions : empty;
     }
-    bool RegionEdgesActive() const {
-        return region_function_mode && RegionPlan().active;
-    }
-    const auto& RegionBlockMap() const { return RegionPlan().blocks; }
-    const auto& RegionCycleEdges() const { return RegionPlan().cycle_edges; }
-    const auto& CanonicalTerminalEntries() const {
-        return canonical_entries_active ? RegionPlan().canonical_terminal_entries
-                                        : EmptyRegionPreparationPlan().canonical_terminal_entries;
+    bool RegionEdgesActive() const { return region_function_mode && Edges().active; }
+    bool IsCanonicalTerminalEntry(u64 location) const {
+        return canonical_entries_active && Edges().IsCanonicalEntry(location);
     }
     [[nodiscard]] bool IsRegionInternalEdge(ir::Location target) const;
     [[nodiscard]] bool IsRegionCycleEdge(ir::Location target) const;
@@ -410,7 +385,7 @@ private:
     [[nodiscard]] bool EmitRegionIf(const ir::terminal::If& terminal,
                                     bool allow_fallthrough,
                                     bool canonical_transfer = false);
-    [[nodiscard]] bool BlockIsFlagsTransparent(ir::Block* block) const;
+    [[nodiscard]] bool BlockIsFlagsTransparent(const ir::Block* block) const;
     [[nodiscard]] bool EmitRegionCondition(const ir::terminal::Condition& terminal,
                                            bool allow_fallthrough,
                                            bool canonical_transfer = false);
@@ -424,18 +399,19 @@ private:
     void EmitCycleExitReasonTail(Label* reason, bool allow_outline = true);
     [[nodiscard]] Label* GetTerminalRequestExit();
     void EmitTerminalRequestExitStub();
+    // The edge body has executed: even a shared cycle-exit stub must resume
+    // at this edge's target, never at the source block.
     void RecordExitPollFault(std::optional<JitContext::FaultRange> fault,
                              Label* recovery,
-                             std::optional<ir::Location> guest_start = std::nullopt);
-    void ResolveExitPollFaults(Label* recovery, ir::Location resume_location,
-                               std::optional<u32> frame_recovery = std::nullopt);
+                             ir::Location resume_location);
+    void ResolveExitPollFaults(Label* recovery, std::optional<u32> frame_recovery = std::nullopt);
     void RecordDeferredFault(JitContext::FaultRange fault,
                              Label* recovery,
                              FaultRecoveryKind recovery_kind);
     void ResolveDeferredFaults(Label* recovery);
 
     // Labels used by Goto / NotGoto / BindLabel
-    Label *GetLocalLabel(ir::Inst *inst);
+    Label* GetLocalLabel(const ir::Inst* inst);
 
     // Flags
     void SaveHostFlags(HostFlags host, ir::Flags guest);
@@ -447,35 +423,29 @@ private:
     // Records a LocalCondSet/FCmpCondSet whose sole use is a branch or select.
     // The marker itself then emits no CSET; its consumer reads the producer's
     // still-live host NZCV directly.
-    bool RecordLocalCondition(ir::Inst *inst, ir::Cond cond);
+    bool RecordLocalCondition(const ir::Inst* inst, ir::Cond cond);
     [[nodiscard]] std::optional<Condition> LocalConditionFor(ir::Value value) const;
-    [[nodiscard]] bool LaterNeedsHostPstate(ir::Inst* from) const;
-    bool PstateAvailable(ir::Inst* test, ir::Flags flag) const {
-        return gpr_plan->consumers && gpr_plan->consumers->pstate && True(gpr_plan->consumers->pstate->At(test) & flag);
+    [[nodiscard]] bool LaterNeedsHostPstate(const ir::Inst* from) const;
+    bool PstateAvailable(const ir::Inst* test, ir::Flags flag) const {
+        const auto* row = test ? context.GetActions().Consumer(test->Id()) : nullptr;
+        return row && True(row->Pstate() & flag);
     }
-    ir::Inst* SoleConsumer(ir::Inst* value) const {
-        if (!gpr_plan->consumers) return nullptr;
-        const auto found = gpr_plan->consumers->sole_users.find(value);
-        return found == gpr_plan->consumers->sole_users.end() ? nullptr : found->second;
-    }
-    bool FoldCcFromCarryTest(ir::Inst* test_flags);
+    bool FoldCcFromCarryTest(const ir::Inst* test_flags);
     [[nodiscard]] bool IsCompactFCmp(ir::Value value) const;
-    [[nodiscard]] bool CanUseCompactFCmpCarrier(ir::Inst* fcmp) const;
-    [[nodiscard]] ir::Inst* RawFCmpCondition(ir::Inst* fcmp, ir::Inst* consumer = nullptr) const;
+    [[nodiscard]] bool CanUseCompactFCmpCarrier(const ir::Inst* fcmp) const;
+    [[nodiscard]] bool RawFCmpCondition(const ir::Inst* fcmp,
+                                        const ir::Inst* consumer = nullptr) const;
 
-    void ImportIntegerBranchPlan();
-    const DeadEdgeIntegerBranch* DeadEdgePlan() const {
-        return gpr_plan->integer_branch ? &gpr_plan->integer_branch->edge : nullptr;
+    void ImportIntegerBranchCondition();
+    const IntegerBranchAction* DeadEdgePlan() const { return integer_branch; }
+    const IntegerBranchAction* DeadNarrowPlan() const {
+        const auto* row = DeadEdgePlan();
+        return row && row->IsNarrow() ? row : nullptr;
     }
-    const DeadNarrowImmediateBranch* DeadNarrowPlan() const {
-        return gpr_plan->integer_branch && gpr_plan->integer_branch->narrow
-                ? &*gpr_plan->integer_branch->narrow : nullptr;
-    }
-    [[nodiscard]] bool IsDeadEdgeIntegerBranchProducer(ir::Inst* inst) const;
-    [[nodiscard]] std::optional<ir::Cond>
-    DeadEdgeIntegerBranchCondition(ir::Inst* inst) const;
-    bool EmitDeadEdgeZeroBranch(ir::Value condition, Label* label,
-                                bool on_true);
+    [[nodiscard]] bool IsDeadEdgeIntegerBranchProducer(const ir::Inst* inst) const;
+    [[nodiscard]] std::optional<ir::Cond> DeadEdgeIntegerBranchCondition(
+            const ir::Inst* inst) const;
+    bool EmitDeadEdgeZeroBranch(ir::Value condition, Label* label, bool on_true);
 
     // Merge pending guest flags kept in host NZCV into the flags register.
     // B0 tags the existing sequence only; the tags never affect emission.
@@ -501,10 +471,11 @@ private:
 
     // Restore host NZCV from the flags register (uses the emission's shared scratch).
     void LoadNZCVFromFlags();
-    [[nodiscard]] static ir::Flags FlagsForCondition(ir::Cond cond);
+    void PrepareFlagRead(ir::Flags requested);
+    void PrepareCarryInput();
     [[nodiscard]] bool PendingNZCVCovers(ir::Flags flags) const;
-    [[nodiscard]] bool TryEmitCondSetFromFlags(ir::Inst* inst, ir::Cond cond);
-    void EmitZeroTestPreservingPstate(ir::Inst* inst, bool nonzero);
+    [[nodiscard]] bool TryEmitCondSetFromFlags(const ir::Inst* inst, ir::Cond cond);
+    void EmitZeroTestPreservingPstate(const ir::Inst* inst, bool nonzero);
 
     // Merge host N/Z into the flags register and clear stale C/V (x86 logical ops)
     void MergeLogicalFlagsNZ(ir::Flags requested);
@@ -548,29 +519,30 @@ private:
                          const Register& address);
 
     // Host C-ABI call helper (saves/restores caller-saved allocated GPRs)
-    void EmitHostCall(const ir::Lambda &lambda,
-                      const std::vector<ir::DataClass> &args,
+    void EmitHostCall(const ir::Lambda& lambda,
+                      const std::vector<ir::DataClass>& args,
                       bool has_result,
-                      const Register &result,
+                      const Register& result,
                       std::optional<Register> secondary_result = std::nullopt);
-    void EmitSse42StrVectorCall(ir::Inst* inst,
+    void EmitSse42StrVectorCall(const ir::Inst* inst,
                                 const VRegister& left,
                                 const VRegister& right,
                                 const WRegister& result,
                                 VAddr target,
                                 u8 imm);
-    void PrepareHostCallThunks(const std::vector<ir::Block*>& blocks);
+    void BindHostCallThunks();
+    [[nodiscard]] Label* FindHostCallThunk(u64 target) const;
     void MaterializeHostCallTarget(u64 target);
     bool TryEmitSharedHostCall(const ir::Lambda& lambda);
     bool TryEmitSharedHostBranch(const ir::Lambda& lambda);
     void EmitHostCallThunks();
-    ir::Inst* PairSecondaryResult(ir::Inst* inst, ir::OpCode secondary) const;
-    void EmitPreserveAllPairCall(ir::Inst* inst,
-                                 VAddr target,
-                                 const std::array<ir::DataClass, 3>& args,
-                                 ir::Inst* secondary,
-                                 ir::HostRegisterEffect host_registers =
-                                         ir::HostRegisterEffect::MayTouchSIMD);
+    std::optional<u16> PairSecondaryResult(const ir::Inst* inst, ir::OpCode secondary) const;
+    void EmitPreserveAllPairCall(
+            const ir::Inst* inst,
+            VAddr target,
+            const std::array<ir::DataClass, 3>& args,
+            std::optional<u16> secondary,
+            ir::HostRegisterEffect host_registers = ir::HostRegisterEffect::MayTouchSIMD);
     void SpillStaticFPRUniforms();
     void RestoreStaticFPRUniforms();
 
@@ -584,7 +556,8 @@ private:
 
     void SaveOF(Register &value, ir::ValueType type);
 
-    void SaveAuxiliaryCarry(Register &left, const Operand &right, Register &result);
+    void SaveAuxiliaryCarry(Register &left, const Operand &right, Register &result,
+                            bool reuse_left = false);
 
     void GetParityFlag(const Register &result);
 
@@ -605,64 +578,22 @@ private:
     void RecordPFAFDensity(PFAFDensityKind kind, u32 begin);
     [[nodiscard]] FlagsRegsAuditEdgeKind
     ClassifyFlagsAuditEdge(const ir::Terminal& terminal) const;
-    [[nodiscard]] bool IsStrictInternalAdvancePC(ir::Block* block,
-                                                 ir::Inst* advance) const;
 
-    // ARM and x86 can choose different signs/payloads when a packed FP
-    // operation consumes a NaN. Adjust each lane to x86's first-NaN,
-    // quiet-preserving rule after the NEON arithmetic instruction.
-    void EmitVecFloatNaNFixup(const VRegister &result,
-                              const VRegister &left,
-                              const VRegister &right,
-                              u32 lane_bits,
-                              u32 lane_count,
-                              ir::Inst *inst);
-    void EmitVecFScalarBinaryLegacy(ir::Inst *inst, u32 lane_bits);
-    void EmitVecFScalarBinaryTied(ir::Inst *inst, u32 lane_bits);
-    void EmitFRINTTSFloatToInt(const Register &result,
-                               const VRegister &source,
+    void EmitVecFScalarBinaryLegacy(const ir::Inst* inst, u32 lane_bits);
+    void EmitVecFScalarBinaryTied(const ir::Inst* inst, u32 lane_bits);
+    void EmitFRINTTSFloatToInt(const Register& result,
+                               const VRegister& source,
                                u32 src_bits,
                                u32 dst_bits,
                                bool host_rounding);
-    [[nodiscard]] bool UseAFPNaN(ir::Inst *inst) const;
-    VRegister PreserveNaNColdSource(ir::Inst *inst,
-                                    const VRegister &source,
-                                    const VRegister &result,
-                                    const VRegister &reserved);
-
-    enum class VecNaNColdKind : u8 {
-        BinaryScalar32,
-        BinaryScalar64,
-        BinaryPacked32,
-        BinaryPacked64,
-        SqrtScalar32,
-        SqrtScalar64,
-        SqrtPacked32,
-        SqrtPacked64,
-    };
-
-    struct VecNaNColdSite {
-        VecNaNColdKind kind;
-        VRegister left;
-        VRegister right;
-        VRegister result;
-        std::unique_ptr<Label> slow{std::make_unique<Label>()};
-        std::unique_ptr<Label> continuation{std::make_unique<Label>()};
-        std::unique_ptr<Label> repaired{std::make_unique<Label>()};
-    };
-
     struct PendingExitPollFault {
         size_t metadata_index{};
         Label* recovery{};
         bool publish_frame{};
-        // Terminal polls carry their own resume location (the poll
-        // target); Resolve must not overwrite it with the shared
-        // stub resume used for cycle polls.
-        bool guest_final{};
     };
 
     struct BlockColdPathRecipe {
-        ir::Block* block{};
+        const ir::Block* block{};
         bool density{};
         std::array<u32, static_cast<size_t>(DensityCategory::Count)>
                 density_ops{};
@@ -704,90 +635,72 @@ private:
         u32 region_block_fallthroughs{};
         u32 region_block_local_branch_bytes{};
         std::vector<PendingExitPollFault> pending_exit_poll_faults{};
-        std::vector<std::unique_ptr<VecNaNColdSite>> vec_nan_cold_sites{};
         std::optional<JitContext::DeferredFlagsRegsAudit> flags_audit{};
     };
 
-    void QueueVecNaNColdPath(VecNaNColdKind kind,
-                             const VRegister &result,
-                             const VRegister &left,
-                             const VRegister &right = NoVReg);
-    void EmitVecNaNColdPaths();
-    void EmitVecNaNColdHandler(VecNaNColdKind kind);
+    [[nodiscard]] PseudoFlags GetPseudoFlags(const ir::Inst* inst);
 
-    [[nodiscard]] PseudoFlags GetPseudoFlags(ir::Inst *inst);
-
-    [[nodiscard]] bool MatchMemoryOffsetCase(ir::Inst *inst);
+    [[nodiscard]] bool MatchMemoryOffsetCase(const ir::Inst* inst);
 
     void FlushFlags();
 
-    [[nodiscard]] Register FlagsResultRegister(
-            ir::Inst* inst, const PseudoFlags& pseudo);
+    [[nodiscard]] Register FlagsResultRegister(const ir::Inst* inst, const PseudoFlags& pseudo);
     void BeginFlagsTokenProducer(const PseudoFlags& pseudo);
-    void CaptureFlagsToken(const Register& result,
-                           ir::ValueType type,
-                           ir::Inst* producer);
+    void CaptureFlagsToken(const Register& result, ir::ValueType type, const ir::Inst* producer);
     void FinishFlagsTokenProducer(const Register& result,
                                   ir::ValueType type,
                                   const PseudoFlags& pseudo,
-                                  ir::Inst* producer);
-    [[nodiscard]] bool CanRetainFlagsTokenResult(
-            ir::Inst* producer, const Register& result);
+                                  const ir::Inst* producer);
+    [[nodiscard]] bool CanRetainFlagsTokenResult(const ir::Inst* producer, const Register& result);
     [[nodiscard]] XRegister FlagsTokenResult() const;
     void MaterializeFlagsTokenResult();
     void InvalidateFlagsToken();
     void EmitSplitFlagsPublish();
     [[nodiscard]] bool TryEmitCycleExitFlags();
-    [[nodiscard]] ir::Inst* PlannedCompoundProducer(ir::Inst* inst) const;
+    [[nodiscard]] std::optional<u16> PlannedCompoundProducer(const ir::Inst* inst) const;
     void ParkFlagsHot();
     void UnparkFlagsHot();
-    void EmitFlagsPublishedVeneer(ir::Block* block);
+    void EmitFlagsPublishedVeneer(const ir::Block* block);
 
     JitContext &context;
     MacroAssembler &masm;
-    ir::Block *cur_block{};
-    ir::Inst *cur_instr{};
-    ir::Inst *terminal_body_inst{};
+    const ir::Block* cur_block{};
+    const ir::Inst* cur_instr{};
+    const ir::Inst* terminal_body_inst{};
     TerminalLocationPublication terminal_location_publication{};
-    Label* dynamic_location_miss{};
+    bool dynamic_location_deferred{};
     BitVector disable_instructions{};
-    std::map<ir::Inst *, Label> local_labels{};
-    std::map<ir::Inst *, Condition> local_conditions{};
-    void ImportGPRBlock(ir::Block* block);
-    const GPRResidenceFacts& ActiveGPRFacts() const {
-        static const GPRResidenceFacts empty;
-        return gpr_plan->pinned ? gpr_plan->pinned->Facts() : empty;
+    bool InstructionDisabled(u32 id) const {
+        return (id < disable_instructions.size() && disable_instructions.test(id)) ||
+               context.GetActions().InstructionCovered(id);
     }
-    bool IsGPRZeroExtendElided(ir::Inst* inst) const { return ActiveGPRFacts().zero_extends.contains(inst); }
-    bool IsGPRSignExtendElided(ir::Inst* inst) const { return ActiveGPRFacts().sign_extends.contains(inst); }
-    std::optional<u16> GPRLowViewHome(ir::Inst* inst) const {
+    std::map<const ir::Inst*, Label> local_labels{};
+    // Instruction IDs are unique throughout the owning prepared unit.
+    std::map<u32, Condition> local_conditions{};
+    void ImportBlockActions(const ir::Block* block);
+    const GPRResidenceAction* ActiveGPRResidence(const ir::Inst* inst) const {
+        return block_actions ? context.GetActions().Residence(inst) : nullptr;
+    }
+    bool IsGPRZeroExtendElided(const ir::Inst* inst) const {
+        const auto* action = ActiveGPRResidence(inst);
+        return action && action->Has(GPRResidenceAction::ZeroExtend);
+    }
+    bool IsGPRSignExtendElided(const ir::Inst* inst) const {
+        const auto* action = ActiveGPRResidence(inst);
+        return action && action->Has(GPRResidenceAction::SignExtend);
+    }
+    std::optional<u16> GPRLowViewHome(const ir::Inst* inst) const {
         return inst ? context.GetAllocation().GPRLowView(inst->Id()) : std::nullopt;
     }
-    bool HasGPRLowView(ir::Inst* inst) const { return GPRLowViewHome(inst).has_value(); }
-    std::optional<FixedGPRValue> FixedGPRHomeForUse(ir::Value value, const ir::Inst* consumer) const {
+    bool HasGPRLowView(const ir::Inst* inst) const { return GPRLowViewHome(inst).has_value(); }
+    std::optional<FixedGPRValue> FixedGPRHomeForUse(ir::Value value,
+                                                    const ir::Inst* consumer) const {
         return value.Defined() && consumer ? context.GetAllocation().GPRUseHome(value.Id(), consumer->Id())
                                           : std::nullopt;
     }
-    std::shared_ptr<const GPRBlockPlan> gpr_plan_owner;
-    const GPRBlockPlan* gpr_plan{&EmptyGPRBlockPlan()};
-    // Borrowed from gpr_plan's immutable consumer storage after block import.
-    const NarrowBitPlan& NarrowBits() const {
-        static const NarrowBitPlan empty;
-        return gpr_plan && gpr_plan->narrow_bits ? *gpr_plan->narrow_bits : empty;
-    }
-    const ScalarFPRPublicationPlan& ScalarPublicationPlan() const {
-        static const ScalarFPRPublicationPlan empty;
-        return gpr_plan && gpr_plan->scalar_fpr ? *gpr_plan->scalar_fpr : empty;
-    }
-    const ScalarPreparationPlan& ScalarPreparation() const {
-        static const ScalarPreparationPlan empty;
-        return gpr_plan && gpr_plan->scalar_preparation ? *gpr_plan->scalar_preparation : empty;
-    }
-    // Default-on exact policy: keep the common path to the host FP operation
-    // plus one combined result-NaN test, and defer the x86 payload/indefinite
-    // repair to shared block-local stubs. =0 restores the legacy inline
-    // lowering byte-for-byte.
-    bool sse_nan_coldpath{true};
+    const BlockActions* block_actions{};
+    compile::PseudoFlagsView pseudo_flags;
+    const IntegerBranchAction* integer_branch{};
     // FEAT_AFP + FPCR.NEP is active for guest code, so scalar Advanced SIMD
     // instructions can update a tied destination's lane 0 in place.
     bool sse_scalar_insert{false};
@@ -807,7 +720,7 @@ private:
     std::optional<ir::Value> call_return_value{};
     std::optional<u64> call_return_pc{};
     // Set by EmitSetLocation when the next guest location is a compile-time
-    // constant, cleared by every other instruction (Translate(ir::Inst*)).
+    // constant, cleared by every other instruction (Translate(const ir::Inst*)).
     // A trailing SetLocation remains pending until its terminal needs a
     // dispatcher fallback.
     // A ReturnToDispatch/Invalid terminal reached with this set is a direct
@@ -818,7 +731,8 @@ private:
     // static target is known and the caller must Ret to the dispatcher.
     bool EmitStaticForward(LinkSiteKind direct_link_kind,
                            DirectLinkFlagsBypass flags_bypass = {},
-                           bool external_edge = false);
+                           bool external_edge = false,
+                           bool preserve_unit_state = true);
     // Dynamic SetLocation is remembered through the no-op PopRSB marker while
     // it remains the final semantic body value. The terminal can reuse its
     // register without extending an SSA lifetime or reloading State::current_loc.
@@ -854,7 +768,6 @@ private:
     std::array<IndirectExitMissSite, 32> indirect_call_miss_sites{};
     std::array<IndirectExitMissSite, 32> pending_call_miss_sites{};
     std::array<IndirectExitMissSite, 32> continuation_mismatch_sites{};
-    std::vector<std::unique_ptr<VecNaNColdSite>> vec_nan_cold_sites{};
     std::vector<BlockColdPathRecipe> block_cold_path_recipes{};
     struct DeferredNZCVMergeStub {
         XRegister scratch{};
@@ -873,19 +786,19 @@ private:
     std::map<RegionFlagsCanonicalStubKey, std::unique_ptr<Label>>
             region_flags_canonical_stubs{};
     struct HostCallThunk {
-        u32 uses{};
+        u64 target;
         std::unique_ptr<Label> entry{};
     };
-    std::map<u64, HostCallThunk> host_call_thunks{};
+    std::vector<HostCallThunk> host_call_thunks{};
     FlagsRegsAuditEdgeKind flags_audit_block_edge{
             FlagsRegsAuditEdgeKind::Dispatcher};
     bool flags_audit_strict_advance{};
     bool flags_audit_cold{};
-    std::shared_ptr<const RegionPreparationPlan> region_plan_owner;
+    const EdgeActions* edge_actions{};
     bool region_function_mode{}, canonical_entries_active{};
     bool current_flags_transparent{};
     std::optional<u64> next_region_block{};
-    u64 placement_unit_pc{};
+    u64 unit_start_pc{};
     bool translating_function{};
 
     struct FlagEmissionState {
@@ -893,7 +806,7 @@ private:
         ir::Flags flags_clear{};
         bool save_in_nzcv{true};
         bool nzcv_dirty{false};
-        ir::Inst* raw_carry_pending{};
+        const ir::Inst* raw_carry_pending{};
         bool flags_token_valid{false};
         u32 flags_token_result_code{};
         // Terminals may emit several successors. Keep the compile-time token
@@ -910,7 +823,7 @@ private:
     } flag_state;
 
     struct MemoryEmissionState {
-        std::map<ir::Inst*, SpilledMemoryOperand> spilled_memory_operands{};
+        std::map<const ir::Inst*, SpilledMemoryOperand> spilled_memory_operands{};
         // Statically proven residues (mod 8) of pinned guest-register
         // homes: seeded only from immediate-constant roots and maintained
         // across home rewrites by TrackHomeAlignment. A dynamic alignment

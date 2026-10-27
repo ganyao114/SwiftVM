@@ -133,6 +133,12 @@ void JitContext::Store(GPR value, GPR base, s64 offset, u32 size) {
 
 void JitContext::Read(GPR result, ir::Value value) { ReadPart(result, value, 0); }
 
+void JitContext::ReadCondition(GPR result, ir::Value value) {
+    Read(result, value);
+    if (!value.Def()->HasBooleanResult())
+        Mask(result, ir::GetScalarIntegerBits(value.Type()));
+}
+
 void JitContext::ReadPart(GPR result, ir::Value value, u32 part) {
     const auto source = SourcePart(value, part, result);
     if (source != result) masm.MV(result, source);
@@ -140,7 +146,7 @@ void JitContext::ReadPart(GPR result, ir::Value value, u32 part) {
 
 GPR JitContext::SourceRegister(ir::Value value, GPR scratch) { return SourcePart(value, 0, scratch); }
 
-bool JitContext::ZeroHigh(ir::Inst* inst) {
+bool JitContext::ZeroHigh(const ir::Inst* inst) {
     if (inst->GetOp() == ir::OpCode::BitCast || inst->GetOp() == ir::OpCode::GetResult)
         return ZeroHigh(inst->GetArg<ir::Value>(0).Def());
     return !ir::IsFloatValueType(inst->ReturnType());
@@ -228,7 +234,7 @@ void JitContext::SignExtend(GPR value, u32 bits) {
     }
 }
 
-GPR JitContext::ResultRegister(ir::Inst* inst) {
+GPR JitContext::ResultRegister(const ir::Inst* inst) {
     if (!cache_scalars || inst->ReturnType() == ir::ValueType::VOID ||
         ir::IsFloatValueType(inst->ReturnType())) return t0;
     return ReserveRegister();
@@ -255,7 +261,7 @@ GPR JitContext::ReserveRegister(GPR excluded) {
     return scalar_registers[index];
 }
 
-void JitContext::Write(ir::Inst* inst, GPR value, bool normalized) {
+void JitContext::Write(const ir::Inst* inst, GPR value, bool normalized) {
     if (inst->ReturnType() == ir::ValueType::VOID) return;
     if (!normalized) Mask(value, ir::GetValueSizeByte(inst->ReturnType()) * 8);
     if (cache_scalars) {

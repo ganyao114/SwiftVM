@@ -130,8 +130,8 @@ void JitTranslator::PrintBoundaryDensity(u64 guest_pc,
     std::fputc('\n', stderr);
 }
 
-JitTranslator::UniformDensityCounts
-JitTranslator::CollectUniformDensity(ir::Block* block, bool density) {
+JitTranslator::UniformDensityCounts JitTranslator::CollectUniformDensity(const ir::Block* block,
+                                                                         bool density) {
     // Count the remaining x86 GPR uniform-buffer traffic dynamically without
     // instrumenting each access: add the block's static emitted access count
     // once on entry. ThreadContext64 begins with the 16 8-byte GPRs, so the
@@ -237,14 +237,13 @@ JitTranslator::CollectUniformDensity(ir::Block* block, bool density) {
     return {gpr_uniform_accesses, xmm_uniform_accesses};
 }
 
-void JitTranslator::PrintBlockDensity(
-        ir::Block* block,
-        bool density,
-        std::span<const u32> density_ops,
-        std::span<const u32> density_bytes,
-        u32 density_scalar_fp_ops,
-        const ir::LoopHoistMetadata& loop_hoist,
-        u32 loop_hoist_prefix_ops) {
+void JitTranslator::PrintBlockDensity(const ir::Block* block,
+                                      bool density,
+                                      std::span<const u32> density_ops,
+                                      std::span<const u32> density_bytes,
+                                      u32 density_scalar_fp_ops,
+                                      const ir::LoopHoistMetadata& loop_hoist,
+                                      u32 loop_hoist_prefix_ops) {
     if (density) {
         const u32 total_ops = std::accumulate(density_ops.begin(), density_ops.end(), 0u);
         const u32 total_bytes =

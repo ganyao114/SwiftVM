@@ -53,6 +53,7 @@ template <typename... Args> void LogMessage(Level log_level,
 }
 
 [[noreturn]] void AssertFailed(const std::string& message);
+[[noreturn, gnu::cold, gnu::noinline]] void AssertConditionFailed(const char* condition);
 
 }  // namespace swift::log
 
@@ -93,7 +94,7 @@ template <typename... Args> void LogMessage(Level log_level,
 #define ASSERT(cond)                                                                               \
     do {                                                                                           \
         if (!(cond)) {                                                                             \
-            swift::log::AssertFailed(fmt::format("Check failed: \"{}\"", #cond));         \
+            swift::log::AssertConditionFailed(#cond);                                               \
         }                                                                                          \
     } while (0)
 

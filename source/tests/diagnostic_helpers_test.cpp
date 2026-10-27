@@ -1,13 +1,11 @@
-#include <catch2/catch_test_macros.hpp>
 #include <array>
 #include <atomic>
 #include <cerrno>
-#include <fcntl.h>
 #include <string>
 #include <thread>
+#include <catch2/catch_test_macros.hpp>
 #include <unistd.h>
 #include "base/logging.h"
-#include "runtime/backend/arm64/jit/placement_experiment.h"
 #include "runtime/common/logging.h"
 #include "runtime/common/signal_diagnostic.h"
 #include "translator/linux/syscall_diagnostics.h"
@@ -154,38 +152,4 @@ TEST_CASE("signal diagnostics are bounded and preserve errno", "[diagnostic-help
     CHECK(swift::runtime::ClaimDiagnosticSample(samples, 1));
     CHECK_FALSE(swift::runtime::ClaimDiagnosticSample(samples, 1));
     CHECK(samples == 1);
-}
-
-TEST_CASE("layout input rejects malformed rows without aborting compilation", "[diagnostic-helpers]") {
-    char path[] = "/tmp/swiftvm-layout-test-XXXXXX";
-    const int fd = mkstemp(path);
-    REQUIRE(fd >= 0);
-    struct Remove {
-        const char* path;
-        int fd;
-        ~Remove() { close(fd); unlink(path); }
-    } remove{path, fd};
-    const std::string rows =
-            "entry 0x10 0x20 12\n"
-            "bad xyz 0x20 12\n"
-            "negative 0x10 0x20 -4\n"
-            "unaligned 0x10 0x20 3\n"
-            "overflow 0x10 0x20 4294967296\n"
-            "large 0x10 0x20 4294967292\n"
-            "far 0x10 0x20 65540\n"
-            "limit 0x10 0x20 1048576\n";
-    REQUIRE(write(fd, rows.data(), rows.size()) == static_cast<ssize_t>(rows.size()));
-    using swift::runtime::backend::arm64::PlacementExperiment;
-    PlacementExperiment enabled{1, path};
-    CHECK(enabled.Padding("entry", 0x10, 0x20, 4) == 2);
-    CHECK(enabled.Padding("entry", 0x10, 0x20, 16) == 0);
-    CHECK(enabled.Padding("negative", 0x10, 0x20, 0) == 0);
-    CHECK(enabled.Padding("unaligned", 0x10, 0x20, 0) == 0);
-    CHECK(enabled.Padding("overflow", 0x10, 0x20, 0) == 0);
-    CHECK(enabled.Padding("large", 0x10, 0x20, 0) == 0);
-    CHECK(enabled.Padding("far", 0x10, 0x20, 0) == 0);
-    CHECK(enabled.Padding("far", 0x10, 0x20, 4) == 16384);
-    CHECK(enabled.Padding("limit", 0x10, 0x20, 1048572) == 1);
-    PlacementExperiment disabled{0, path};
-    CHECK(disabled.Padding("entry", 0x10, 0x20, 4) == 0);
 }

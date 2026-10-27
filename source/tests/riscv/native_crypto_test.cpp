@@ -2,10 +2,9 @@
 
 #include <bit>
 #include "runtime/backend/interp/interpreter.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 
 namespace swift::tests::riscv {
-
 using T = ir::ValueType;
 using O = ir::OpCode;
 
@@ -22,17 +21,27 @@ void NativeCrypto(bool vector, bool scalar_crypto, bool vector_crypto) {
         const u32 modes = op == O::VecAesKeygenAssist ? 12 : op == O::VecPclMul ? 4 : 1;
         for (u32 mode = 0; mode < modes; ++mode) {
             IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc900})};
-            ir::Assembler as{block.get()};
-            auto a = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-            auto b = as.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128);
-            auto c = as.LoadUniform(ir::Uniform{32, T::V128}).SetType(T::V128);
+            compile::IrBuilder as{block.get()};
+            auto a = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+            auto b = as.LoadUniform(T::V128, ir::Uniform{16, T::V128});
+            auto c = as.LoadUniform(T::V128, ir::Uniform{32, T::V128});
             ir::Value output;
-            if (op == O::VecAesKeygenAssist) output = ir::Value{block->AppendInst(op, a, ir::Imm{u64(mode < 10 ? (1u << mode) : mode == 10 ? 0x1b : 0xff)})};
-            else if (op == O::VecPclMul) output = ir::Value{block->AppendInst(op, a, b, ir::Imm{u64((mode & 1) | ((mode & 2) << 3))})};
-            else if (op == O::VecSha256Rnds2 || (op >= O::VecAesEncFast && op <= O::VecAesDecLastFast))
-                output = ir::Value{block->AppendInst(op, a, b, c)};
-            else output = ir::Value{block->AppendInst(op, a, b)};
-            as.StoreUniform(ir::Uniform{64, T::V128}, output.SetType(T::V128));
+            if (op == O::VecAesKeygenAssist)
+                output = ir::Value{block->AppendInst(op,
+                                                     T::V128,
+                                                     a,
+                                                     ir::Imm{u64(mode < 10    ? (1u << mode)
+                                                                 : mode == 10 ? 0x1b
+                                                                              : 0xff)})};
+            else if (op == O::VecPclMul)
+                output = ir::Value{block->AppendInst(
+                        op, T::V128, a, b, ir::Imm{u64((mode & 1) | ((mode & 2) << 3))})};
+            else if (op == O::VecSha256Rnds2 ||
+                     (op >= O::VecAesEncFast && op <= O::VecAesDecLastFast))
+                output = ir::Value{block->AppendInst(op, T::V128, a, b, c)};
+            else
+                output = ir::Value{block->AppendInst(op, T::V128, a, b)};
+            as.StoreUniform(ir::Uniform{64, T::V128}, output);
             block->SetTerminal(ir::terminal::ReturnToHost{});
             Compiled cached{block.get(), true, features}, uncached{block.get(), false, features};
             Check(cached.translator.Stats().helpers == 0 && uncached.translator.Stats().helpers == 0, "every crypto IR emits native instructions");
@@ -73,13 +82,14 @@ void NativeCrypto(bool vector, bool scalar_crypto, bool vector_crypto) {
         return bytes;
     };
     IntrusivePtr<ir::Block> block{new ir::Block(ir::Location{0xc910})};
-    ir::Assembler as{block.get()};
-    auto data = as.LoadUniform(ir::Uniform{0, T::V128}).SetType(T::V128);
-    auto key = as.LoadUniform(ir::Uniform{16, T::V128}).SetType(T::V128);
-    data = as.VecXor(data, key).SetType(T::V128);
+    compile::IrBuilder as{block.get()};
+    auto data = as.LoadUniform(T::V128, ir::Uniform{0, T::V128});
+    auto key = as.LoadUniform(T::V128, ir::Uniform{16, T::V128});
+    data = as.VecXor(T::V128, data, key);
     for (u32 round = 1; round <= 10; ++round) {
-        key = as.LoadUniform(ir::Uniform{16 + round * 16, T::V128}).SetType(T::V128);
-        data = (round == 10 ? as.VecAesEncLast(data, key) : as.VecAesEnc(data, key)).SetType(T::V128);
+        key = as.LoadUniform(T::V128, ir::Uniform{16 + round * 16, T::V128});
+        data = (round == 10 ? as.VecAesEncLast(T::V128, data, key)
+                            : as.VecAesEnc(T::V128, data, key));
     }
     as.StoreUniform(ir::Uniform{256, T::V128}, data); block->SetTerminal(ir::terminal::ReturnToHost{});
     Compiled compiled{block.get(), true, features}; StateStorage state;

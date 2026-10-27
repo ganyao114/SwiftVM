@@ -1,17 +1,23 @@
-#include <catch2/catch_test_macros.hpp>
+#include "tests/support/rewrite_fixture.h"
+using swift::runtime::test::RewriteFixture;
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <catch2/catch_test_macros.hpp>
 #include "runtime/backend/address_space.h"
-#include "runtime/backend/runtime.h"
-#include "runtime/backend/context.h"
+#include "runtime/backend/arm64/compile/compiler.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/hir_builder.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
-#include "runtime/ir/opts/flags_elimination_pass.h"
+#include "runtime/backend/context.h"
+#include "runtime/backend/runtime.h"
 #include "runtime/common/svm_config.h"
+#include "runtime/compile/allocate/allocation.h"
+#include "runtime/compile/passes/passes.h"
+#include "runtime/ir/hir_builder.h"
 #include "translator/x86/cpu.h"
 
 namespace {
@@ -28,20 +34,23 @@ Metrics Compile(unsigned shape, unsigned length) {
                   .has_local_operation = false, .backend_isa = kArm64};
     config.region_edges = true;
     config.uniform_buffer_size = 64;
-    FeatureSet features{};
-    features.flags_region_branch = true;
     AddressSpace space{config};
+    ModuleConfig module_config{};
+    module_config.feature_overrides.Set(FeatureId::flags_region_branch, true);
+    auto module = space.MapModule(LocationDescriptor{start},
+                                  LocationDescriptor{hot_start + length + 1}, module_config);
+    const auto features = ResolveFeatureSet(module->GetModuleConfig());
     HIRBuilder builder{1, true, features};
     auto* function = builder.AppendFunction(Location{start}, Location{hot_start + length + 1});
     HIRBlock* hot = nullptr;
     for (unsigned source = 0; source < length; ++source) {
-        auto condition = function->LoadUniform(Uniform{0, ValueType::U8}).SetType(ValueType::U8);
+        auto condition = function->LoadUniform(ValueType::U8, Uniform{0, ValueType::U8});
         if (shape == 0) {
-            const auto one = function->LoadImm(Imm{swift::u8{1}}).SetType(ValueType::U8);
-            const auto result = function->Sub(condition, Operand{one}).SetType(ValueType::U8);
+            const auto one = function->LoadImm(ValueType::U8, Imm{swift::u8{1}});
+            const auto result = function->Sub(ValueType::U8, condition, Operand{one});
             function->SaveFlags(result, Flags::NZCV);
             function->AdvancePC(Imm{swift::u64{1}});
-            condition = function->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+            condition = function->LocalCondSet(ValueType::U8, Cond::EQ);
         }
         if (shape == 2) {
             auto* next = builder.LinkBlock(terminal::LinkBlock{Location{start + source + 1}});
@@ -72,21 +81,27 @@ Metrics Compile(unsigned shape, unsigned length) {
     function->EndFunction();
     function->ComputeRPO();
     function->IdByRPO();
-    RegAlloc allocation{function->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{function->MaxInstrCount(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(function, &allocation, features);
-    allocation.CompleteGPRAllocation(space.GetDefaultModule());
-    arm64::JitContext context{space.GetDefaultModule(), allocation};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    function, allocation, features));
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, allocation);
+    arm64::JitContext context{module, allocation, allocation.Actions()};
     arm64::JitTranslator translator{context};
-    translator.Translate(function);
+    REQUIRE(translator.Translate(function));
     context.Finish();
     Metrics metrics;
     metrics.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
     metrics.bytes = context.CurrentBufferSize();
     metrics.spills = allocation.SpillCount();
-    metrics.reloads = allocation.RAShape().spill_loads;
-    metrics.stores = allocation.RAShape().spill_stores;
+    metrics.reloads = context.GetRAShapeCounters().spill_loads;
+    metrics.stores = context.GetRAShapeCounters().spill_stores;
     const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < metrics.bytes; ++i) metrics.hash = (metrics.hash ^ bytes[i]) * 1099511628211ull;
     return metrics;
@@ -121,58 +136,67 @@ Metrics CompileIntegerBranch(unsigned shape, unsigned length, BranchPhases* phas
                   .has_local_operation = false, .backend_isa = kArm64};
     AddressSpace space{config};
     IntrusivePtr<Block> block{new Block(0, Location{0xf000})};
-    FeatureSet features{};
-    const auto type = shape == 1 ? ValueType::U8
-                    : shape == 2 ? ValueType::U16 : ValueType::U64;
-    const auto base = block->GetHostGPR(HostRegIndex(22), Imm{0u}).SetType(ValueType::U64);
-    const auto source = shape == 0 ? block->LoadMemory(Operand{base}).SetType(type)
-                                   : block->BitExtract(base, Imm{0u}, Imm{ir::GetValueSizeByte(type) * 8}).SetType(type);
-    Inst* publication = nullptr;
-    if (shape == 0) publication = block->AppendInst(
-            OpCode::SetHostGPR, source, HostRegIndex(22), Imm{0u});
+    const auto features = ResolveFeatureSet(space.GetDefaultModule()->GetModuleConfig());
+    const auto type = shape == 1 ? ValueType::U8 : shape == 2 ? ValueType::U16 : ValueType::U64;
+    const auto base = block->GetHostGPR(ValueType::U64, HostRegIndex(22), Imm{0u});
+    const auto source =
+            shape == 0
+                    ? block->LoadMemory(type, Operand{base})
+                    : block->BitExtract(type, base, Imm{0u}, Imm{ir::GetValueSizeByte(type) * 8});
+    const Inst* publication = nullptr;
+    if (shape == 0)
+        publication = block->AppendInst(OpCode::SetHostGPR, source, HostRegIndex(22), Imm{0u});
     for (unsigned i = 0; i < length; ++i) {
-        auto value = block->LoadImm(Imm{swift::u64{i + 17}}).SetType(ValueType::U64);
+        auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{i + 17}});
         block->StoreUniform(Uniform{0, ValueType::U64}, value);
     }
     block->AdvancePC(Imm{1u});
     if (shape == 0) {
-        const auto result = block->And(source, Operand{source}).SetType(type);
+        const auto result = block->And(type, source, Operand{source});
         block->ClearFlags(Flags::Carry | Flags::Overflow | Flags::AuxiliaryCarry);
         block->SaveFlags(result, Flags::Negate | Flags::Zero | Flags::Parity);
     } else {
-        const auto immediate = block->LoadImm(Imm{3u}).SetType(type);
-        const auto result = block->Sub(source, Operand{immediate}).SetType(type);
+        const auto immediate = block->LoadImm(type, Imm{3u});
+        const auto result = block->Sub(type, source, Operand{immediate});
         block->SaveFlags(result, Flags::All);
         block->InvertCarry();
     }
     block->AdvancePC(Imm{1u});
     // Exercise the post-producer proof window as well as the long prefix.
     for (unsigned i = 0; i < length; ++i) {
-        auto value = block->LoadImm(Imm{swift::u64{i + 31}}).SetType(ValueType::U64);
+        auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{i + 31}});
         block->StoreUniform(Uniform{8, ValueType::U64}, value);
     }
     block->BranchOnlyEdges();
-    const auto condition = block->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+    const auto condition = block->LocalCondSet(ValueType::U8, Cond::EQ);
     block->SetTerminal(terminal::If{condition,
-            terminal::LinkBlock{Location{0xf010}}, terminal::LinkBlock{Location{0xf020}}});
-    FlagsEliminationPass::Run(block.get(), nullptr, features);
+                                    terminal::LinkBlock{Location{0xf010}},
+                                    terminal::LinkBlock{Location{0xf020}}});
+    swift::runtime::compile::EliminateFlags(RewriteFixture{block.get(), true, nullptr}.Get(), features);
     REQUIRE(block->HasDeadEdgeIntegerBranchProof());
     block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
     const auto allocation_end = phases ? std::chrono::steady_clock::now() : begin;
     if (shape == 0) {
         allocation.MapRegister(source.Id(), HostGPR{22});
         allocation.MarkHostWriteCoalesced(publication->Id());
     }
     const auto mapping_end = phases ? std::chrono::steady_clock::now() : begin;
-    allocation.CompleteGPRAllocation(space.GetDefaultModule());
-    arm64::JitContext context{space.GetDefaultModule(), allocation};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(), allocation);
+    arm64::JitContext context{space.GetDefaultModule(), allocation, allocation.Actions()};
     const auto planning_end = phases ? std::chrono::steady_clock::now() : begin;
     arm64::JitTranslator translator{context};
-    translator.Translate(block.get());
+    REQUIRE(translator.Translate(block.get()));
     const auto emission_end = phases ? std::chrono::steady_clock::now() : begin;
     context.Finish();
     const auto finish_end = phases ? std::chrono::steady_clock::now() : begin;
@@ -185,7 +209,7 @@ Metrics CompileIntegerBranch(unsigned shape, unsigned length, BranchPhases* phas
                    ns(planning_end - mapping_end), ns(emission_end - planning_end), ns(finish_end - emission_end)};
     }
     metrics.bytes = context.CurrentBufferSize(); metrics.spills = allocation.SpillCount();
-    metrics.reloads = allocation.RAShape().spill_loads; metrics.stores = allocation.RAShape().spill_stores;
+    metrics.reloads = context.GetRAShapeCounters().spill_loads; metrics.stores = context.GetRAShapeCounters().spill_stores;
     const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < metrics.bytes; ++i) metrics.hash = (metrics.hash ^ bytes[i]) * 1099511628211ull;
     return metrics;
@@ -231,37 +255,45 @@ namespace {
 Metrics CompileNarrowInteger(unsigned shape, unsigned length) {
     Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
                   .has_local_operation = false, .backend_isa = kArm64};
-    AddressSpace space{config}; FeatureSet features{};
+    AddressSpace space{config};
+    const auto features = ResolveFeatureSet(space.GetDefaultModule()->GetModuleConfig());
     IntrusivePtr<Block> block{new Block(0, Location{0xfb00})};
     for (unsigned i = 0; i < length; ++i) {
-        const auto value = block->LoadImm(Imm{swift::u64{i + 31}}).SetType(ValueType::U64);
+        const auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{i + 31}});
         block->StoreUniform(Uniform{24, ValueType::U64}, value);
     }
     if (shape == 2) {
-        const auto base = block->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-        const auto producer = block->Add(base, Operand{Imm{1u}}).SetType(ValueType::U32);
+        const auto base = block->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+        const auto producer = block->Add(ValueType::U32, base, Operand{Imm{1u}});
         block->SaveFlags(producer, Flags::Carry);
-        const auto zero = block->LoadImm(Imm{0u}).SetType(ValueType::U32);
-        const auto test = block->TestFlags(Flags::Carry).SetType(ValueType::U32);
-        const auto carry = block->Add(zero, Operand{test}).SetType(ValueType::U32);
-        const auto result = block->Add(base, Operand{carry}).SetType(ValueType::U32);
+        const auto zero = block->LoadImm(ValueType::U32, Imm{0u});
+        const Value test{block->TestFlags(ValueType::U32, Flags::Carry).Def()};
+        const auto carry = block->Add(ValueType::U32, zero, Operand{test});
+        const auto result = block->Add(ValueType::U32, base, Operand{carry});
         block->StoreUniform(Uniform{8, ValueType::U8}, Value{result}.SetCastType(ValueType::U8));
     } else {
         const auto type = shape == 1 ? ValueType::U16 : ValueType::U8;
         const auto source_type = shape == 3 ? ValueType::U32 : type;
-        const auto source = block->LoadUniform(Uniform{0, source_type}).SetType(source_type);
-        const auto immediate = block->LoadImm(Imm{7u}).SetType(ValueType::U32);
-        const auto sub = block->Sub(source, Operand{immediate}).SetType(type);
+        const auto source = block->LoadUniform(source_type, Uniform{0, source_type});
+        const auto immediate = block->LoadImm(ValueType::U32, Imm{7u});
+        const auto sub = block->Sub(type, source, Operand{immediate});
         block->SaveFlags(sub, Flags::Carry);
     }
     block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    allocation.CompleteGPRAllocation(space.GetDefaultModule());
-    arm64::JitContext context{space.GetDefaultModule(), allocation};
-    arm64::JitTranslator translator{context}; translator.Translate(block.get()); context.Finish();
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(), allocation);
+    arm64::JitContext context{space.GetDefaultModule(), allocation, allocation.Actions()};
+    arm64::JitTranslator translator{context}; REQUIRE(translator.Translate(block.get())); context.Finish();
     Metrics metrics;
     metrics.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
     metrics.bytes = context.CurrentBufferSize(); metrics.spills = allocation.SpillCount();
@@ -294,49 +326,61 @@ Metrics CompileScalarPreparation(unsigned shape, unsigned length) {
                   .has_local_operation = false, .backend_isa = kArm64};
     config.uniform_buffer_size = 64; config.stack_alignment = 16;
     config.arm64_features = Arm64Features::FlagM;
-    AddressSpace space{config}; FeatureSet features{};
+    AddressSpace space{config};
+    const auto features = ResolveFeatureSet(space.GetDefaultModule()->GetModuleConfig());
     IntrusivePtr<Block> block{new Block(0, Location{0xbf80})};
-    const auto address = block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
+    const auto address = block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
     for (unsigned i = 0; i < length; ++i) {
         if (shape == 0) {
-            const auto input = block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
-            const auto left = block->BitExtract(input, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-            const auto right = block->BitExtract(input, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-            const auto result = block->Xor(left, Operand{right}).SetType(ValueType::U32);
+            const auto input = block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
+            const auto left = block->BitExtract(ValueType::U32, input, Imm{0u}, Imm{32u});
+            const auto right = block->BitExtract(ValueType::U32, input, Imm{0u}, Imm{32u});
+            const auto result = block->Xor(ValueType::U32, left, Operand{right});
             block->SaveFlags(result, Flags::Zero | Flags::Negate | Flags::Parity);
             block->StoreUniform(Uniform{16, ValueType::U32}, result);
         } else if (shape == 1) {
-            const auto input = block->LoadUniform(Uniform{8, ValueType::U32}).SetType(ValueType::U32);
-            const auto comparison = block->Sub(input, Operand{Imm{7u}}).SetType(ValueType::U32);
+            const auto input = block->LoadUniform(ValueType::U32, Uniform{8, ValueType::U32});
+            const auto comparison = block->Sub(ValueType::U32, input, Operand{Imm{7u}});
             block->SaveFlags(comparison, Flags::Carry | Flags::Zero);
-            block->InvertCarry(); block->AdvancePC(Imm{1u});
-            const auto carry = block->TestFlags(Flags::Carry).SetType(ValueType::U8);
-            const auto no_carry = block->TestZero(carry).SetType(ValueType::U8);
-            const auto nonzero = block->CondSet(Cond::NE).SetType(ValueType::U8);
-            const auto condition = block->And(no_carry, Operand{nonzero}).SetType(ValueType::U8);
-            const auto alternative = block->LoadUniform(Uniform{24, ValueType::U32}).SetType(ValueType::U32);
-            const auto selected = block->Select(BOOL{condition}, input, alternative).SetType(ValueType::U32);
+            block->InvertCarry();
+            block->AdvancePC(Imm{1u});
+            const auto carry = block->TestFlags(ValueType::U8, Flags::Carry);
+            const auto no_carry = block->TestZero(ValueType::U8, carry);
+            const auto nonzero = block->CondSet(ValueType::U8, Cond::NE);
+            const auto condition = block->And(ValueType::U8, no_carry, Operand{nonzero});
+            const auto alternative =
+                    block->LoadUniform(ValueType::U32, Uniform{24, ValueType::U32});
+            const auto selected =
+                    block->Select(ValueType::U32, BOOL{condition}, input, alternative);
             block->StoreUniform(Uniform{16, ValueType::U32}, selected);
         } else if (shape == 2) {
-            const auto value = block->GetHostFPR(HostRegIndex(17), Imm{0u}).SetType(ValueType::U64);
+            const auto value = block->GetHostFPR(ValueType::U64, HostRegIndex(17), Imm{0u});
             block->StoreMemory(Operand{address, Imm{swift::u64{i * 8}}}, value);
         } else {
-            const auto old = block->GetHostFPR(HostRegIndex(17), Imm{0u}).SetType(ValueType::V128);
-            const auto zero = block->VecXor(old, old).SetType(ValueType::V128);
+            const auto old = block->GetHostFPR(ValueType::V128, HostRegIndex(17), Imm{0u});
+            const auto zero = block->VecXor(ValueType::V128, old, old);
             block->SetHostFPR(zero, HostRegIndex(17), Imm{0u});
-            const auto input = block->LoadUniform(Uniform{8, ValueType::U32}).SetType(ValueType::U32);
-            const auto converted = block->VecFCvtIntToFloat(input, Imm{32u}, Imm{64u}).SetType(ValueType::U64);
+            const auto input = block->LoadUniform(ValueType::U32, Uniform{8, ValueType::U32});
+            const auto converted =
+                    block->VecFCvtIntToFloat(ValueType::U64, input, Imm{32u}, Imm{64u});
             block->SetHostFPR(converted, HostRegIndex(17), Imm{0u});
         }
     }
     block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    allocation.CompleteGPRAllocation(space.GetDefaultModule());
-    arm64::JitContext context{space.GetDefaultModule(), allocation};
-    arm64::JitTranslator translator{context}; translator.Translate(block.get()); context.Finish();
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(), allocation);
+    arm64::JitContext context{space.GetDefaultModule(), allocation, allocation.Actions()};
+    arm64::JitTranslator translator{context}; REQUIRE(translator.Translate(block.get())); context.Finish();
     Metrics result;
     result.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
     result.bytes = context.CurrentBufferSize(); result.spills = allocation.SpillCount();
@@ -369,43 +413,52 @@ Metrics CompileBitFunnel(unsigned shape, unsigned length) {
     Config config{.loc_start = 0, .loc_end = 1ull << 48, .enable_jit = true,
                   .has_local_operation = false, .backend_isa = kArm64};
     config.uniform_buffer_size = 64; config.stack_alignment = 16;
-    AddressSpace space{config}; FeatureSet features{};
+    AddressSpace space{config};
+    const auto features = ResolveFeatureSet(space.GetDefaultModule()->GetModuleConfig());
     IntrusivePtr<Block> block{new Block(0, Location{0xbf90})};
     for (unsigned i = 0; i < length; ++i) {
         if (shape < 3) {
             const auto type = shape == 2 ? ValueType::U8 : ValueType::U32;
-            const auto input = block->LoadUniform(Uniform{0, type}).SetType(type);
-            const auto extract = block->BitExtract(input, Imm{0u}, Imm{8u}).SetType(ValueType::U8);
+            const auto input = block->LoadUniform(type, Uniform{0, type});
+            const auto extract = block->BitExtract(ValueType::U8, input, Imm{0u}, Imm{8u});
             Value result;
-            if (shape == 2) result = block->And(extract, Operand{Imm{15u}}).SetType(ValueType::U8);
+            if (shape == 2)
+                result = block->And(ValueType::U8, extract, Operand{Imm{15u}});
             else {
-                result = block->ZeroExtend32(extract).SetType(ValueType::U8);
-                if (shape == 1) result = block->LsrImm(result, Imm{1u}).SetType(ValueType::U32);
+                result = block->ZeroExtend32(ValueType::U8, extract);
+                if (shape == 1) result = block->LsrImm(ValueType::U32, result, Imm{1u});
             }
             block->StoreUniform(Uniform{16, result.Type()}, result);
         } else if (shape == 3) {
-            const auto input = block->LoadUniform(Uniform{0, ValueType::U32}).SetType(ValueType::U32);
-            const auto shifted = block->LsrImm(input, Imm{8u}).SetType(ValueType::U32);
-            const auto result = block->And(shifted, Operand{Imm{1u}}).SetType(ValueType::U32);
+            const auto input = block->LoadUniform(ValueType::U32, Uniform{0, ValueType::U32});
+            const auto shifted = block->LsrImm(ValueType::U32, input, Imm{8u});
+            const auto result = block->And(ValueType::U32, shifted, Operand{Imm{1u}});
             block->StoreUniform(Uniform{16, ValueType::U32}, result);
         } else {
-            const auto low = block->LoadUniform(Uniform{0, ValueType::U64}).SetType(ValueType::U64);
-            const auto high = block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
-            const auto right = block->LsrImm(low, Imm{32u}).SetType(ValueType::U64);
-            const auto left = block->LslImm(high, Imm{32u}).SetType(ValueType::U64);
-            const auto result = block->Or(right, Operand{left}).SetType(ValueType::U64);
+            const auto low = block->LoadUniform(ValueType::U64, Uniform{0, ValueType::U64});
+            const auto high = block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
+            const auto right = block->LsrImm(ValueType::U64, low, Imm{32u});
+            const auto left = block->LslImm(ValueType::U64, high, Imm{32u});
+            const auto result = block->Or(ValueType::U64, right, Operand{left});
             if (shape == 5) block->StoreUniform(Uniform{24, ValueType::U64}, right);
             block->StoreUniform(Uniform{16, ValueType::U64}, result);
         }
     }
     block->SetTerminal(terminal::ReturnToHost{}); block->ReIdInstr();
-    RegAlloc allocation{block->MaxInstrId(), space.GetTrampolines().GetGPRRegs(),
-                        space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{block->MaxInstrId(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(block.get(), &allocation, false, features);
-    allocation.CompleteGPRAllocation(space.GetDefaultModule());
-    arm64::JitContext context{space.GetDefaultModule(), allocation};
-    arm64::JitTranslator translator{context}; translator.Translate(block.get()); context.Finish();
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    block.get(), allocation, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(space.GetDefaultModule(), allocation);
+    arm64::JitContext context{space.GetDefaultModule(), allocation, allocation.Actions()};
+    arm64::JitTranslator translator{context}; REQUIRE(translator.Translate(block.get())); context.Finish();
     Metrics result;
     result.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
     result.bytes = context.CurrentBufferSize(); result.spills = allocation.SpillCount();
@@ -446,74 +499,83 @@ Metrics CompileBackedge(unsigned shape, unsigned length, bool native_probe = fal
     const auto features = ResolveFeatureSet(module->GetModuleConfig());
     HIRBuilder builder{3, true, features};
     auto* function = builder.AppendFunction(Location{start}, Location{cold_start + 16});
-    auto* source = function->GetCurrentBlock();
+    auto* source = &function->EditBlock(function->GetCurrentBlock());
     auto* hot = function->AppendBlock(Location{hot_start}, Location{hot_start + 16});
     auto* cold = function->AppendBlock(Location{cold_start}, Location{cold_start + 16});
     function->AddEdge(source, hot); function->AddEdge(source, cold);
     builder.SetCurBlock(source);
     for (unsigned i = 0; i < length; ++i) function->AdvancePC(Imm{swift::u64{1}});
-    const auto left = function->LoadUniform(Uniform{0, ValueType::U16}).SetType(ValueType::U16);
-    const auto sub = function->Sub(left, Operand{Imm{swift::u64{1}}}).SetType(ValueType::U16);
+    const auto left = function->LoadUniform(ValueType::U16, Uniform{0, ValueType::U16});
+    const auto sub = function->Sub(ValueType::U16, left, Operand{Imm{swift::u64{1}}});
     function->SaveFlags(sub, Flags::All);
     Value condition;
-    if (shape == 2) condition = function->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
+    if (shape == 2) condition = function->LocalCondSet(ValueType::U8, Cond::EQ);
     if (shape == 1) {
-        const auto zero = function->LoadImm(Imm{swift::u8{0}}).SetType(ValueType::U8);
+        const auto zero = function->LoadImm(ValueType::U8, Imm{swift::u8{0}});
         function->StoreUniform(Uniform{0, ValueType::U8}, zero);
     } else if (shape == 2) {
         // Compile-only opaque helper address: deterministic across all control ELFs.
-        (void)function->CallLambda(Lambda{Imm{swift::u64{0x1234}}});
+        (void)function->CallLambda(ValueType::VOID, Lambda{Imm{swift::u64{0x1234}}});
     } else if (shape == 3) {
-        const auto address = function->LoadUniform(Uniform{16, ValueType::U64}).SetType(ValueType::U64);
-        const auto loaded = function->LoadMemory(Operand{address}).SetType(ValueType::U32);
+        const auto address = function->LoadUniform(ValueType::U64, Uniform{16, ValueType::U64});
+        const auto loaded = function->LoadMemory(ValueType::U32, Operand{address});
         function->StoreUniform(Uniform{32, ValueType::U32}, loaded);
     }
     if (GetSvmConfig().flags_cfinv && True(config.arm64_features & Arm64Features::FlagM)) {
         function->InvertCarry();
     } else {
-        const auto polarity = function->LoadImm(Imm{swift::u8{0}}).SetType(ValueType::U8);
-        function->StoreUniform(Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted), ValueType::U8}, polarity);
+        const auto polarity = function->LoadImm(ValueType::U8, Imm{swift::u8{0}});
+        function->StoreUniform(
+                Uniform{offsetof(swift::x86::ThreadContext64, carry_inverted), ValueType::U8},
+                polarity);
     }
     function->AdvancePC(Imm{swift::u64{1}});
-    if (shape != 2) condition = function->LocalCondSet(Cond::EQ).SetType(ValueType::U8);
-    function->EndBlock(terminal::If{condition, terminal::LinkBlock{Location{hot_start}}, terminal::LinkBlock{Location{cold_start}}});
+    if (shape != 2) condition = function->LocalCondSet(ValueType::U8, Cond::EQ);
+    function->EndBlock(terminal::If{condition,
+                                    terminal::LinkBlock{Location{hot_start}},
+                                    terminal::LinkBlock{Location{cold_start}}});
     builder.SetCurBlock(hot);
-    const auto two = function->LoadImm(Imm{swift::u16{2}}).SetType(ValueType::U16);
-    const auto next = function->Sub(two, Operand{Imm{swift::u64{1}}}).SetType(ValueType::U16);
-    function->SaveFlags(next, Flags::All); function->AdvancePC(Imm{swift::u64{1}});
+    const auto two = function->LoadImm(ValueType::U16, Imm{swift::u16{2}});
+    const auto next = function->Sub(ValueType::U16, two, Operand{Imm{swift::u64{1}}});
+    function->SaveFlags(next, Flags::All);
+    function->AdvancePC(Imm{swift::u64{1}});
     function->EndBlock(terminal::ReturnToHost{});
     builder.SetCurBlock(cold);
-    const auto pf = function->TestFlags(Flags::Parity).SetType(ValueType::U32);
-    const auto af = function->TestFlags(Flags::AuxiliaryCarry).SetType(ValueType::U32);
+    // BOOL returns an U8 use view; these state slots consume the declared U32 result.
+    const Value pf{function->TestFlags(ValueType::U32, Flags::Parity).Def()};
+    const Value af{function->TestFlags(ValueType::U32, Flags::AuxiliaryCarry).Def()};
     function->StoreUniform(Uniform{24, ValueType::U32}, pf);
     function->StoreUniform(Uniform{28, ValueType::U32}, af);
     function->EndBlock(terminal::ReturnToHost{}); function->EndFunction();
     function->ComputeRPO(); function->IdByRPO();
-    RegAlloc allocation{function->MaxInstrCount(), space.GetTrampolines().GetGPRRegs(), space.GetTrampolines().GetFPRRegs(), features};
+    AllocationFixture allocation{function->MaxInstrCount(),
+                                 space.GetTrampolines().GetGPRRegs(),
+                                 space.GetTrampolines().GetFPRRegs(),
+                                 features};
     const auto begin = std::chrono::steady_clock::now();
-    RegisterAllocPass::Run(function, &allocation, false, features);
-    []<class Context>(auto& allocation, const auto& module) {
-        if constexpr (requires { typename Context::AssemblerOnlyTag; }) allocation.CompleteGPRAllocation(module);
-    }.template operator()<arm64::JitContext>(allocation, module);
-    arm64::JitContext context{module, allocation}; arm64::JitTranslator translator{context};
+    ::swift::runtime::compile::AllocateFunction(
+            function,
+            &allocation,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(
+                    function, allocation, features),
+            {.block_intervals = false});
+    arm64::CompleteARM64Allocation(module, allocation);
+    arm64::JitContext context{module, allocation, allocation.Actions()};
+    arm64::JitTranslator translator{context};
     REQUIRE(translator.Translate(function)); context.Finish();
     Metrics metrics;
     metrics.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count();
     // Prove this family actually selects its intended actions, outside the clock.
-    // The complete original architecture has no frozen Backedge action API.
-    [](const auto& allocation, auto* source, unsigned shape) {
-        const auto actions = allocation.GPRPlanFor(source->GetBlock());
-        if constexpr (requires { actions->backedge_flags; }) {
-            REQUIRE(actions);
-            if (shape < 2) {
-                REQUIRE(actions->backedge_flags);
-                REQUIRE(actions->backedge_flags->dead_successor);
-                REQUIRE(actions->backedge_flags->pfaf.has_value() == (shape == 0));
-            } else REQUIRE_FALSE(actions->backedge_flags);
-        }
-    }(allocation, source, shape);
+    REQUIRE(allocation.Actions().ForBlock(source->GetBlock()));
+    const auto* backedge = allocation.Actions().BackedgeFor(source->GetBlock());
+    if (shape < 2) {
+        REQUIRE(backedge);
+        REQUIRE(backedge->dead_successor);
+        REQUIRE((allocation.Actions().PFAFFor(source->GetBlock()) != nullptr) == (shape == 0));
+    } else
+        REQUIRE_FALSE(backedge);
     metrics.bytes = context.CurrentBufferSize(); metrics.spills = allocation.SpillCount();
-    metrics.reloads = allocation.RAShape().spill_loads; metrics.stores = allocation.RAShape().spill_stores;
+    metrics.reloads = context.GetRAShapeCounters().spill_loads; metrics.stores = context.GetRAShapeCounters().spill_stores;
     const auto* bytes = context.GetMasm().GetBuffer()->GetStartAddress<const swift::u8*>();
     for (size_t i = 0; i < metrics.bytes; ++i) metrics.hash = (metrics.hash ^ bytes[i]) * 1099511628211ull;
 #if defined(__aarch64__)

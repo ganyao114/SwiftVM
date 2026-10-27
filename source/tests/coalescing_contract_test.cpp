@@ -1,14 +1,29 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
+#include <type_traits>
+#include <utility>
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
+
+static_assert(std::is_constructible_v<arm64::JitContext,
+                                      const std::shared_ptr<Module>&,
+                                      compile::AllocationView,
+                                      const arm64::UnitActions&>);
+static_assert(std::is_same_v<decltype(std::declval<arm64::JitContext&>().GetAllocation()),
+                             compile::AllocationView>);
+static_assert(std::is_same_v<decltype(std::declval<const arm64::JitContext&>().GetAllocation()),
+                             compile::AllocationView>);
 
 void CheckCoalescingContract(OpCode opcode, bool live) {
     Config config{.loc_start = 0, .loc_end = 1ull << 48,
@@ -24,18 +39,18 @@ void CheckCoalescingContract(OpCode opcode, bool live) {
     Value result;
     switch (opcode) {
         case OpCode::GetHostFPR:
-            result = block->GetHostFPR(HostRegIndex(24), Imm{0u}).SetType(ValueType::U64);
+            result = block->GetHostFPR(ValueType::U64, HostRegIndex(24), Imm{0u});
             break;
         case OpCode::SignedDiv64: {
-            auto left = block->LoadImm(Imm{swift::u64{42}}).SetType(ValueType::U64);
-            auto right = block->LoadImm(Imm{swift::u64{3}}).SetType(ValueType::U64);
+            auto left = block->LoadImm(ValueType::U64, Imm{swift::u64{42}});
+            auto right = block->LoadImm(ValueType::U64, Imm{swift::u64{3}});
             result = block->SignedDiv64(left, right);
             break;
         }
         case OpCode::VecMovMask: {
-            auto input = block->GetHostFPR(HostRegIndex(24), Imm{0u}).SetType(ValueType::V128);
-            result = block->VecMovMask(input, Imm{8u}).SetType(ValueType::U32);
-            result = block->ZeroExtend32To64(result).SetType(ValueType::U64);
+            auto input = block->GetHostFPR(ValueType::V128, HostRegIndex(24), Imm{0u});
+            result = block->VecMovMask(ValueType::U32, input, Imm{8u});
+            result = block->ZeroExtend32To64(ValueType::U64, result);
             break;
         }
         default: FAIL("unexpected test opcode");
@@ -49,12 +64,16 @@ void CheckCoalescingContract(OpCode opcode, bool live) {
                             22u, 23u, 25u, 26u, 27u, 28u, 29u, 30u, 31u}) {
         gprs.Mark(code);
     }
-    RegAlloc alloc{block->MaxInstrId(), gprs, FPRSMask{~((1u << 8) - 1u)}, features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{block->MaxInstrId(), gprs, FPRSMask{~((1u << 8) - 1u)}, features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
     REQUIRE(alloc.IsHostWriteCoalesced(publication->Id()));
     REQUIRE(alloc.ValueGPR(result).id == 19);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     REQUIRE_NOTHROW(translator.Translate(block.get()));
     REQUIRE_NOTHROW(context.Finish());

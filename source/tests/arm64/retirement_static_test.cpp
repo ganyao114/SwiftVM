@@ -45,12 +45,13 @@ u64 TargetMarker() {
 }
 
 void WriteFlags(HIRFunction* function, bool source, bool pending_source = false) {
-    const auto left = function->LoadImm(Imm{source ? ~u64{0} : u64{1}}).SetType(ValueType::U64);
-    const auto one = function->LoadImm(Imm{u64{1}}).SetType(ValueType::U64);
-    const auto result = function->Add(left, Operand{one}).SetType(ValueType::U64);
-    function->SaveFlags(result, pending_source
-            ? Flags::Carry | Flags::Overflow | Flags::Zero | Flags::Negate
-            : Flags::All);
+    const auto left = function->LoadImm(ValueType::U64, Imm{source ? ~u64{0} : u64{1}});
+    const auto one = function->LoadImm(ValueType::U64, Imm{u64{1}});
+    const auto result = function->Add(ValueType::U64, left, Operand{one});
+    function->SaveFlags(result,
+                        pending_source
+                                ? Flags::Carry | Flags::Overflow | Flags::Zero | Flags::Negate
+                                : Flags::All);
     function->StoreUniform(Uniform{40, ValueType::U64}, result);
 }
 
@@ -81,7 +82,7 @@ u8* Compile(const std::shared_ptr<Module>& module, u64 guest, std::string_view m
     HIRBuilder builder{1, true, ResolveFeatureSet(module->GetModuleConfig())};
     auto* function = builder.AppendFunction(Location{guest}, Location{source && call ? return_pc + 4 : guest + 4});
     if (!source && pending) {
-        auto* entry = function->GetCurrentBlock();
+        auto* entry = &function->EditBlock(function->GetCurrentBlock());
         WriteFlags(function, false);
         function->AdvancePC(Imm{u64{1}});
         auto* body = function->AppendBlock(Location{guest + 1});
@@ -91,9 +92,11 @@ u8* Compile(const std::shared_ptr<Module>& module, u64 guest, std::string_view m
     }
     const auto count = Marker(function, source, false, source && pending && !call);
     if (!source && call) {
+        function->AdvancePC(Imm{u64{1}});
+        function->SetLocation(Lambda{Imm{guest + 1}});
         function->EndBlock(terminal::ReturnToHost{});
     } else if (source && call) {
-        const auto ret = function->LoadImm(Imm{return_pc}).SetType(ValueType::U64);
+        const auto ret = function->LoadImm(ValueType::U64, Imm{return_pc});
         function->CallReturn(ret, Imm{return_pc}, Lambda{Imm{first_pc}});
         function->SetLocation(Lambda{Imm{first_pc}});
         builder.RegisterCallReturn(Location{return_pc});
@@ -102,7 +105,7 @@ u8* Compile(const std::shared_ptr<Module>& module, u64 guest, std::string_view m
         function->AdvancePC(Imm{u64{1}});
         function->EndBlock(terminal::ReturnToHost{});
     } else if (source && (mode.starts_with("if") || mode.starts_with("condition"))) {
-        const auto condition = function->And(count, Operand{Imm{u64{1}}}).SetType(ValueType::U64);
+        const auto condition = function->And(ValueType::U64, count, Operand{Imm{u64{1}}});
         function->EndBlock(Branch(condition, mode));
     } else if (mode == "dispatcher") {
         function->SetLocation(Lambda{Imm{source ? first_pc : source_pc}});
@@ -121,7 +124,7 @@ u8* CompileRegion(const std::shared_ptr<Module>& module, std::string_view mode) 
     const bool conditional = mode.find("if-") != std::string_view::npos ||
                              mode.find("condition-") != std::string_view::npos;
     auto* function = builder.AppendFunction(Location{source_pc}, Location{second_pc + 4});
-    auto* source = function->GetCurrentBlock();
+    auto* source = &function->EditBlock(function->GetCurrentBlock());
     auto* first = function->AppendBlock(Location{first_pc});
     auto* second = conditional ? function->AppendBlock(Location{second_pc}) : nullptr;
     function->AddEdge(source, first);
@@ -133,7 +136,7 @@ u8* CompileRegion(const std::shared_ptr<Module>& module, std::string_view mode) 
     function->SetCurBlock(source);
     const auto count = Marker(function, true);
     if (conditional) {
-        const auto condition = function->And(count, Operand{Imm{u64{1}}}).SetType(ValueType::U64);
+        const auto condition = function->And(ValueType::U64, count, Operand{Imm{u64{1}}});
         function->EndBlock(Branch(condition, mode));
     } else if (mode == "published") {
         function->EndBlock(terminal::ExternalLinkBlock{Location{first_pc}});
@@ -142,7 +145,12 @@ u8* CompileRegion(const std::shared_ptr<Module>& module, std::string_view mode) 
     }
     function->SetCurBlock(first);
     (void)Marker(function, false);
-    function->EndBlock(terminal::LinkBlock{Location{source_pc}});
+    if (mode == "region-dispatcher") {
+        function->SetLocation(Lambda{Imm{source_pc}});
+        function->EndBlock(terminal::ReturnToDispatch{});
+    } else {
+        function->EndBlock(terminal::LinkBlock{Location{source_pc}});
+    }
     if (second) {
         function->SetCurBlock(second);
         (void)Marker(function, false, true);
@@ -226,7 +234,13 @@ void Run(std::string_view mode) {
     phase = 2;
     runtime.SetLocation(source_pc);
     const auto halt = runtime.Run();
-    const u64 expected_pc = mode.ends_with("taken") || mode.ends_with("false") ? second_pc : first_pc;
+    // Forward links may defer observation to a cycle cut or a finite callee's
+    // host return. This two-node fixture must never execute the source twice
+    // or complete more than the selected target once after closure.
+    const u64 completed_targets = target_count.load();
+    const u64 selected_pc =
+            mode.ends_with("taken") || mode.ends_with("false") ? second_pc : first_pc;
+    const u64 expected_pc = completed_targets == 0 ? selected_pc : call ? first_pc + 1 : source_pc;
     std::printf("static=%.*s halt=%u pc=%llx source=%llu target=%llu while_closed=%llu rescue_interrupt=0\n",
             static_cast<int>(mode.size()), mode.data(), static_cast<unsigned>(halt),
             static_cast<unsigned long long>(runtime.GetLocation()),
@@ -234,20 +248,42 @@ void Run(std::string_view mode) {
             static_cast<unsigned long long>(target_count.load()),
             static_cast<unsigned long long>(target_while_closed.load()));
     Check(callback_status == RetirementControl::DrainStatus::SelfActive, "callback drain defers own lease");
-    Check(source_count.load() == 1 && target_count.load() == 0 && target_while_closed.load() == 0,
-          "closed callback prevents every target body");
+    Check(source_count.load() == 1 && completed_targets <= 1 &&
+                  target_while_closed.load() == completed_targets,
+          "closed callback reaches a poll within one selected target and never repeats the source");
     Check(halt == HaltReason::Retirement, "static request returns Retirement");
-    Check(runtime.GetLocation() == expected_pc, "publish selected static target PC");
-    Check((runtime.GetState()->host_cpu_flags & 0xf0000000u) == 0x60000000u, "preserve source arithmetic NZCV");
+    Check(runtime.GetLocation() == expected_pc,
+          "publish the next PC after the last completed body");
+    Check((runtime.GetState()->host_cpu_flags & 0xf0000000u) ==
+                  (completed_targets ? 0u : 0x60000000u),
+          "preserve the last completed body's arithmetic NZCV");
     u64 result = ~u64{0};
     std::memcpy(&result, runtime.GetUniformBuffer().data() + 40, sizeof(result));
-    Check(result == 0, "publish live arithmetic result");
+    Check(result == (completed_targets ? 2u : 0u),
+          "publish the last completed body's live arithmetic result");
     Check(runtime.GetState()->rsb_pointer == (call ? empty - 1 : empty), "single correct frame consumption/publication");
-    if (call) Check((empty - 1)->guest_location == return_pc && (empty - 1)->dispatch_index == 0,
-                    "cancelled static call publishes external return frame");
+    if (call) {
+        const auto& frame = *(empty - 1);
+        Check(frame.guest_location == return_pc,
+              "static call retains the exact guest return frame");
+        if (completed_targets) {
+            FaultEntry allocation;
+            Check(module->LookupCodeAllocation(source, allocation),
+                  "retain the completed call's source allocation");
+            const auto continuation = frame.dispatch_index;
+            Check(continuation >= reinterpret_cast<uintptr_t>(allocation.host_start) &&
+                          continuation < reinterpret_cast<uintptr_t>(allocation.host_end) &&
+                          (frame.dispatch_index & 3u) == 0,
+                  "completed static call retains a source-owned continuation");
+        } else {
+            Check(frame.dispatch_index == 0,
+                  "cancelled static call publishes an external return frame");
+        }
+    }
     Check(control->CheckDrain(callback_ticket) == RetirementControl::DrainStatus::Ready, "execution drains");
     Check((runtime.GetState()->exit_request & kRetirementExitRequest) != 0, "request remains sticky");
-    Check(runtime.Run() == HaltReason::Retirement && source_count.load() == 1 && target_count.load() == 0,
+    Check(runtime.Run() == HaltReason::Retirement && source_count.load() == 1 &&
+                  target_count.load() == completed_targets,
           "closed Run remains blocked");
     Check(control->SealPublications(callback_ticket), "seal after native drain");
     Check(control->Resume(callback_ticket), "reopen retained code");
@@ -263,11 +299,12 @@ int main(int argc, char** argv) {
         if (argc != 2) throw std::runtime_error("expected static terminal mode");
         const std::string_view mode{argv[1]};
         if (mode != "direct" && mode != "dispatcher" && mode != "if" && mode != "condition" &&
-            mode != "condition-false" && mode != "region" && mode != "published" &&
-            mode != "region-if-taken" && mode != "region-if-fall" &&
+            mode != "condition-false" && mode != "region" && mode != "region-dispatcher" &&
+            mode != "published" && mode != "region-if-taken" && mode != "region-if-fall" &&
             mode != "region-condition-taken" && mode != "region-condition-fall" &&
-            mode != "if-pending" && mode != "condition-pending" && mode != "condition-pending-false" &&
-            mode != "call" && mode != "call-pending") throw std::runtime_error("unknown static terminal mode");
+            mode != "if-pending" && mode != "condition-pending" &&
+            mode != "condition-pending-false" && mode != "call" && mode != "call-pending")
+            throw std::runtime_error("unknown static terminal mode");
         SmcTracker::SetEnabled(false);
         Run(mode);
         std::printf("mode=%s checks=%u passed\n", argv[1], checks);

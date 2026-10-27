@@ -69,4 +69,8 @@ void LogMessage(Level level, const std::string& message) {
 
 void AssertFailed(const std::string& message) { throw std::logic_error(message); }
 
+[[noreturn, gnu::cold, gnu::noinline]] void AssertConditionFailed(const char* condition) {
+    AssertFailed(fmt::format("Check failed: \"{}\"", condition));
+}
+
 }  // namespace swift::log

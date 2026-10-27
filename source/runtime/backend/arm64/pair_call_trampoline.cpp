@@ -31,7 +31,7 @@ void EmitPairCallTrampoline(MacroAssembler& assembler) {
         assembler.Ldr(XRegister(index),
                       MemOperand(sp, frame_size + PairCallFrame::Argument(index)));
     }
-    assembler.Ldr(x16, MemOperand(sp, 11 * sizeof(u64)));
+    assembler.Ldr(x16, MemOperand(sp, PairCallFrame::TargetRegister * sizeof(u64)));
     assembler.Blr(x16);
     assembler.Str(x0, MemOperand(sp, frame_size + PairCallFrame::PrimaryResult));
     assembler.Str(x1, MemOperand(sp, frame_size + PairCallFrame::SecondaryResult));

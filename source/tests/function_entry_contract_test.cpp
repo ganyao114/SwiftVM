@@ -4,7 +4,6 @@
 #include "runtime/ir/hir_builder.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -17,7 +16,7 @@ TEST_CASE("function entry contract captures external entry requirements",
 
     HIRBuilder builder{4, true, false, FeatureSet{}};
     auto* function = builder.AppendFunction(Location{kStart});
-    auto* root = function->GetCurrentBlock();
+    auto* root = &function->EditBlock(function->GetCurrentBlock());
     root->GetBlock()->SetEndLocation(Location{kEnd});
     auto* target = function->CreateOrGetBlock(Location{kTarget});
     target->GetBlock()->SetEndLocation(Location{kEnd});
@@ -133,9 +132,7 @@ TEST_CASE("canonical terminal entries propagate through stateless links",
     builder.SetCurBlock(relay);
     auto* target = builder.LinkBlock(terminal::LinkBlock{Location{kTarget}});
     builder.SetCurBlock(target);
-    const auto value = function
-                               ->LoadImm(Imm{swift::u64{1}})
-                               .SetType(ValueType::U64);
+    const auto value = function->LoadImm(ValueType::U64, Imm{swift::u64{1}});
     function->StoreUniform(Uniform{0, ValueType::U64}, value);
     target->GetBlock()->SetEndLocation(Location{kTarget + 1});
     function->EndBlock(terminal::ReturnToHost{});

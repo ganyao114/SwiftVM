@@ -1,7 +1,6 @@
 #include "arm64_frontend_internal.h"
 
 namespace swift::arm64 {
-
 #define __ assembler->
 
 static u32 VRegOff(u8 code) {
@@ -33,15 +32,15 @@ void A64Decoder::VisitNEONCopy(const Instruction* instr) {
             : ReadXRegister(rn);
         if (esize < 8) {
             u64 mask = (esize == 1) ? 0xFF : (esize == 2) ? 0xFFFF : 0xFFFFFFFF;
-            src = __ And<ir::U64>(src, SingleOperand(ir::Imm{mask})).SetType(ir::ValueType::U64);
+            src = __ And(ir::ValueType::U64, src, SingleOperand(ir::Imm{mask}));
         }
         // Build the broadcast pattern step by step using shift+or.
         // Each step doubles the number of copies.
         ir::Value half = src;
         u32 shift = esize * 8;
         while (shift < 64) {
-            auto shifted = __ LslImm<ir::U64>(half, ir::Imm{shift}).SetType(ir::ValueType::U64);
-            half = __ Or<ir::U64>(half, SingleOperand(shifted)).SetType(ir::ValueType::U64);
+            auto shifted = __ LslImm(ir::ValueType::U64, half, ir::Imm{shift});
+            half = __ Or(ir::ValueType::U64, half, SingleOperand(shifted));
             shift *= 2;
         }
         auto voff = VRegOff(rd);
@@ -54,13 +53,14 @@ void A64Decoder::VisitNEONCopy(const Instruction* instr) {
         u32 byte_off = index * esize;
         u32 half_sel = byte_off >= 8 ? 8 : 0;
         u32 shift_in_half = (byte_off - half_sel) * 8;
-        ir::Value val = __ LoadUniform(ir::Uniform{voff + half_sel, ir::ValueType::U64}).SetType(ir::ValueType::U64);
+        ir::Value val = __ LoadUniform(ir::ValueType::U64,
+                                       ir::Uniform{voff + half_sel, ir::ValueType::U64});
         if (shift_in_half) {
-            val = __ LsrImm<ir::U64>(val, ir::Imm{shift_in_half}).SetType(ir::ValueType::U64);
+            val = __ LsrImm(ir::ValueType::U64, val, ir::Imm{shift_in_half});
         }
         if (esize < 8) {
             u64 mask = (esize == 1) ? 0xFF : (esize == 2) ? 0xFFFF : 0xFFFFFFFF;
-            val = __ And<ir::U64>(val, SingleOperand(ir::Imm{mask})).SetType(ir::ValueType::U64);
+            val = __ And(ir::ValueType::U64, val, SingleOperand(ir::Imm{mask}));
         }
         if (is_q) { WriteXRegister(rd, val); }
         else      { WriteWRegister(rd, val); }
@@ -121,11 +121,9 @@ void A64Decoder::VisitNEONModifiedImmediate(const Instruction* instr) {
             result = ImmValue(op_bit ? ~fill : fill, ir::ValueType::U64);
         } else {
             auto old = ReadVHalf(instr->GetRd(), high);
-            result = op_bit
-                    ? __ And<ir::U64>(old, SingleOperand(ir::Imm{~fill}))
-                              .SetType(ir::ValueType::U64)
-                    : __ Or<ir::U64>(old, SingleOperand(ir::Imm{fill}))
-                              .SetType(ir::ValueType::U64);
+            result = op_bit ? __ And(ir::ValueType::U64, old, SingleOperand(ir::Imm{~fill}))
+
+                            : __ Or(ir::ValueType::U64, old, SingleOperand(ir::Imm{fill}));
         }
         return result;
     };
@@ -161,17 +159,13 @@ void A64Decoder::VisitNEON3Same(const Instruction* instr) {
             auto dest = ReadVHalf(rd, high);
             auto source = ReadVHalf(rn, high);
             auto mask = ReadVHalf(rm, high);
-            auto kept = __ And<ir::U64>(
-                    dest,
-                    SingleOperand(__ Xor<ir::U64>(
-                            mask, SingleOperand(ir::Imm{u64(-1)}))))
-                                .SetType(ir::ValueType::U64);
-            auto inserted = __ And<ir::U64>(source, SingleOperand(mask))
-                                    .SetType(ir::ValueType::U64);
-            auto result = __ Or<ir::U64>(kept, SingleOperand(inserted))
-                                  .SetType(ir::ValueType::U64);
-            auto offset = u32(offsetof(ThreadContext64, v) + rd * sizeof(u128)) +
-                          (high ? 8 : 0);
+            auto kept =
+                    __ And(ir::ValueType::U64,
+                           dest,
+                           SingleOperand(__ Xor<ir::U64>(mask, SingleOperand(ir::Imm{u64(-1)}))));
+            auto inserted = __ And(ir::ValueType::U64, source, SingleOperand(mask));
+            auto result = __ Or(ir::ValueType::U64, kept, SingleOperand(inserted));
+            auto offset = u32(offsetof(ThreadContext64, v) + rd * sizeof(u128)) + (high ? 8 : 0);
             __ StoreUniform(ir::Uniform{offset, ir::ValueType::U64}, result);
         }
         return;
@@ -183,10 +177,10 @@ void A64Decoder::VisitNEON3Same(const Instruction* instr) {
     }
 
     if (instr->Mask(NEON3SameMask) == NEON_CMEQ) {
-        auto low = __ Xor<ir::U64>(ReadVHalf(rn, false), SingleOperand(ReadVHalf(rm, false)))
-                           .SetType(ir::ValueType::U64);
-        auto high = __ Xor<ir::U64>(ReadVHalf(rn, true), SingleOperand(ReadVHalf(rm, true)))
-                            .SetType(ir::ValueType::U64);
+        auto low = __ Xor(
+                ir::ValueType::U64, ReadVHalf(rn, false), SingleOperand(ReadVHalf(rm, false)));
+        auto high =
+                __ Xor(ir::ValueType::U64, ReadVHalf(rn, true), SingleOperand(ReadVHalf(rm, true)));
         WriteVHalves(rd, ZeroByteMask(low), ZeroByteMask(high));
         return;
     }
@@ -197,26 +191,20 @@ void A64Decoder::VisitNEON3Same(const Instruction* instr) {
             auto right_half = ReadVHalf(rm, high);
             auto packed = ImmValue(0, ir::ValueType::U64);
             for (u32 i = 0; i < 8; ++i) {
-                auto left = __ And<ir::U64>(
-                        __ LsrImm<ir::U64>(left_half, ir::Imm{i * 8}),
-                        SingleOperand(ir::Imm{0xFF}))
-                                    .SetType(ir::ValueType::U64);
-                auto right = __ And<ir::U64>(
-                        __ LsrImm<ir::U64>(right_half, ir::Imm{i * 8}),
-                        SingleOperand(ir::Imm{0xFF}))
-                                     .SetType(ir::ValueType::U64);
-                auto diff = __ Sub<ir::U64>(left, SingleOperand(right))
-                                    .SetType(ir::ValueType::U64);
+                auto left = __ And(ir::ValueType::U64,
+                                   __ LsrImm<ir::U64>(left_half, ir::Imm{i * 8}),
+                                   SingleOperand(ir::Imm{0xFF}));
+                auto right = __ And(ir::ValueType::U64,
+                                    __ LsrImm<ir::U64>(right_half, ir::Imm{i * 8}),
+                                    SingleOperand(ir::Imm{0xFF}));
+                auto diff = __ Sub(ir::ValueType::U64, left, SingleOperand(right));
                 __ SaveFlags(diff, ir::Flags::NZCV);
-                auto lane = __ Mul<ir::U64>(
-                        Widen(CondPassed(cs)), SingleOperand(ir::Imm{0xFF}))
-                                    .SetType(ir::ValueType::U64);
+                auto lane = __ Mul(
+                        ir::ValueType::U64, Widen(CondPassed(cs)), SingleOperand(ir::Imm{0xFF}));
                 if (i != 0) {
-                    lane = __ LslImm<ir::U64>(lane, ir::Imm{i * 8})
-                                   .SetType(ir::ValueType::U64);
+                    lane = __ LslImm(ir::ValueType::U64, lane, ir::Imm{i * 8});
                 }
-                packed = __ Or<ir::U64>(packed, SingleOperand(lane))
-                                 .SetType(ir::ValueType::U64);
+                packed = __ Or(ir::ValueType::U64, packed, SingleOperand(lane));
             }
             return packed;
         };
@@ -233,35 +221,25 @@ void A64Decoder::VisitNEON3Same(const Instruction* instr) {
             for (u32 i = 0; i < 8; ++i) {
                 auto source = i < 4 ? source_low : source_high;
                 const u32 byte = (i % 4) * 2;
-                auto left = __ LsrImm<ir::U64>(source, ir::Imm{byte * 8})
-                                    .SetType(ir::ValueType::U64);
-                auto right = __ LsrImm<ir::U64>(source, ir::Imm{(byte + 1) * 8})
-                                     .SetType(ir::ValueType::U64);
-                left = __ And<ir::U64>(left, SingleOperand(ir::Imm{0xFF}))
-                               .SetType(ir::ValueType::U64);
-                right = __ And<ir::U64>(right, SingleOperand(ir::Imm{0xFF}))
-                                .SetType(ir::ValueType::U64);
+                auto left = __ LsrImm(ir::ValueType::U64, source, ir::Imm{byte * 8});
+                auto right = __ LsrImm(ir::ValueType::U64, source, ir::Imm{(byte + 1) * 8});
+                left = __ And(ir::ValueType::U64, left, SingleOperand(ir::Imm{0xFF}));
+                right = __ And(ir::ValueType::U64, right, SingleOperand(ir::Imm{0xFF}));
                 ir::Value lane;
                 if (op == NEON_ADDP) {
-                    lane = __ Add<ir::U64>(left, SingleOperand(right))
-                                   .SetType(ir::ValueType::U64);
+                    lane = __ Add(ir::ValueType::U64, left, SingleOperand(right));
                 } else {
-                    auto diff = __ Sub<ir::U64>(left, SingleOperand(right))
-                                        .SetType(ir::ValueType::U64);
+                    auto diff = __ Sub(ir::ValueType::U64, left, SingleOperand(right));
                     __ SaveFlags(diff, ir::Flags::NZCV);
                     auto left_ge = CondPassed(cs);
-                    lane = op == NEON_UMAXP
-                            ? __ Select(left_ge, left, right).SetType(ir::ValueType::U64)
-                            : __ Select(left_ge, right, left).SetType(ir::ValueType::U64);
+                    lane = op == NEON_UMAXP ? __ Select(ir::ValueType::U64, left_ge, left, right)
+                                            : __ Select(ir::ValueType::U64, left_ge, right, left);
                 }
-                lane = __ And<ir::U64>(lane, SingleOperand(ir::Imm{0xFF}))
-                               .SetType(ir::ValueType::U64);
+                lane = __ And(ir::ValueType::U64, lane, SingleOperand(ir::Imm{0xFF}));
                 if (i != 0) {
-                    lane = __ LslImm<ir::U64>(lane, ir::Imm{i * 8})
-                                   .SetType(ir::ValueType::U64);
+                    lane = __ LslImm(ir::ValueType::U64, lane, ir::Imm{i * 8});
                 }
-                packed = __ Or<ir::U64>(packed, SingleOperand(lane))
-                                 .SetType(ir::ValueType::U64);
+                packed = __ Or(ir::ValueType::U64, packed, SingleOperand(lane));
             }
             return packed;
         };
@@ -294,10 +272,9 @@ void A64Decoder::VisitNEONExtract(const Instruction* instr) {
 
     auto combine = [&](ir::Value low, ir::Value high, u32 bytes) {
         const u32 shift = bytes * 8;
-        return __ Or<ir::U64>(
-                __ LsrImm<ir::U64>(low, ir::Imm{shift}),
-                SingleOperand(__ LslImm<ir::U64>(high, ir::Imm{64 - shift})))
-                .SetType(ir::ValueType::U64);
+        return __ Or(ir::ValueType::U64,
+                     __ LsrImm<ir::U64>(low, ir::Imm{shift}),
+                     SingleOperand(__ LslImm<ir::U64>(high, ir::Imm{64 - shift})));
     };
     if (index < 8) {
         WriteVHalves(instr->GetRd(),
@@ -325,14 +302,12 @@ void A64Decoder::VisitNEONShiftImmediate(const Instruction* instr) {
     auto packed = ImmValue(0, ir::ValueType::U64);
     for (u32 i = 0; i < 8; ++i) {
         auto source = i < 4 ? low : high;
-        auto lane = __ LsrImm<ir::U64>(source, ir::Imm{u32((i % 4) * 16 + 4)})
-                            .SetType(ir::ValueType::U64);
-        lane = __ And<ir::U64>(lane, SingleOperand(ir::Imm{0xFF}))
-                       .SetType(ir::ValueType::U64);
+        auto lane = __ LsrImm(ir::ValueType::U64, source, ir::Imm{u32((i % 4) * 16 + 4)});
+        lane = __ And(ir::ValueType::U64, lane, SingleOperand(ir::Imm{0xFF}));
         if (i != 0) {
-            lane = __ LslImm<ir::U64>(lane, ir::Imm{i * 8}).SetType(ir::ValueType::U64);
+            lane = __ LslImm(ir::ValueType::U64, lane, ir::Imm{i * 8});
         }
-        packed = __ Or<ir::U64>(packed, SingleOperand(lane)).SetType(ir::ValueType::U64);
+        packed = __ Or(ir::ValueType::U64, packed, SingleOperand(lane));
     }
     WriteVHalves(instr->GetRd(), packed, ImmValue(0, ir::ValueType::U64));
 }
@@ -358,10 +333,8 @@ void A64Decoder::VisitNEONLoadStoreMultiStructPostIndex(const Instruction* instr
     auto offset = instr->GetRm() == 31
             ? ir::DataClass{ir::Imm{16}}
             : ir::DataClass{ReadXRegister(instr->GetRm())};
-    WriteXRegister(rn,
-                   __ Add<ir::U64>(address, SingleOperand(offset))
-                           .SetType(ir::ValueType::U64),
-                   Reg31IsStackPointer);
+    WriteXRegister(
+            rn, __ Add(ir::ValueType::U64, address, SingleOperand(offset)), Reg31IsStackPointer);
 }
 
 void A64Decoder::VisitFPIntegerConvert(const Instruction* instr) {

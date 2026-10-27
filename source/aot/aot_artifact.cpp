@@ -24,13 +24,8 @@ bool AotUnit::ValidFaultSites() const {
                site.guest_start == guest_start;
     });
     return has_owner && std::all_of(fault_sites.begin(), fault_sites.end(), [&](const auto& site) {
-        return (site.host_begin & 3u) == 0 && (site.host_end & 3u) == 0 &&
-               site.host_begin < site.host_end && site.host_end <= code_size &&
-               (site.recovery_offset == UINT32_MAX ||
-                ((site.recovery_offset & 3u) == 0 && site.recovery_offset < code_size)) &&
-               site.recovery_kind <= static_cast<u8>(
-                       runtime::backend::FaultRecoveryKind::ExternalContinuation);
-    });
+               return runtime::backend::ValidSerialFaultSite(site, code_size);
+           });
 }
 
 namespace {

@@ -79,7 +79,7 @@ void JitTranslator::EmitAddress(u64 size) {
     as.Bind(&done);
 }
 
-bool JitTranslator::EmitMemoryCopy(ir::Inst* inst) {
+bool JitTranslator::EmitMemoryCopy(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::MemoryCopy: case O::MemoryCopyTSO: break;

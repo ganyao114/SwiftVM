@@ -8,7 +8,7 @@ namespace swift::runtime::backend::riscv64 {
 using namespace biscuit;
 using O = ir::OpCode;
 
-bool JitTranslator::EmitVectorLocal(ir::Inst* inst) {
+bool JitTranslator::EmitVectorLocal(const ir::Inst* inst) {
     auto& as = context.GetMasm();
     switch (inst->GetOp()) {
         case O::DefineLocal: return true;

@@ -40,7 +40,7 @@ HostPairResult QueryPair(State* state, u64 target, u64 first, u64 second, u64 fe
 
 }  // namespace
 
-bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
+bool JitTranslator::EmitNativeCall(const ir::Inst* inst) {
     const auto op = inst->GetOp();
     switch (op) {
         case O::CallLambda: case O::CallLocation: case O::CallDynamic:
@@ -56,7 +56,7 @@ bool JitTranslator::EmitNativeCall(ir::Inst* inst) {
     const auto pair = paired || vector_return ? context.ResultPair(inst) : std::array<GPR, 2>{x0, x0};
     const auto result = paired || vector_return ? pair[0] : context.ResultRegister(inst);
     if (paired) {
-        ir::Inst* secondary{};
+        const ir::Inst* secondary{};
         const auto secondary_op = op == O::Cpuid ? O::CpuidUpper : O::Div128Remainder;
         const auto pseudos = ir::CollectPseudoOperations(*block, inst, secondary_op);
         if (!pseudos.empty()) secondary = pseudos.front();

@@ -1,13 +1,17 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <algorithm>
 #include <string>
 #include <vector>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include "aarch64/disasm-aarch64.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 TEST_CASE("indirect L1 cold lookup preserves its target register",
           "[indirect-l1][continuation]") {
@@ -40,11 +44,15 @@ TEST_CASE("indirect L1 cold lookup preserves its target register",
     }
     FPRSMask fprs{~u32{0}};
     const auto features = ResolveFeatureSet(module_config);
-    RegAlloc alloc{block->MaxInstrId(), gprs, fprs, features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
+    AllocationFixture alloc{block->MaxInstrId(), gprs, fprs, features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
 
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     context.SetCurrent(block.get());
     context.BeginColdScratch();
     vixl::aarch64::Label miss;

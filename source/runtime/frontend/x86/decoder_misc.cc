@@ -9,13 +9,11 @@
 #include "runtime/frontend/x86/xsave.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
 
 namespace {
-
 u64 ReadVirtualTsc() {
 #if defined(__APPLE__)
     // Darwin does not guarantee EL0 access to CNTVCT_EL0. Use its supported
@@ -121,35 +119,31 @@ void X64Decoder::DecodeCpuid(_DInst& insn) {
 
     auto leaf = __ ZeroExtend64(R(_RegisterType::R_EAX));
     auto subleaf = __ ZeroExtend64(R(_RegisterType::R_ECX));
-    auto lower = __ Cpuid(leaf,
+    auto lower = __ Cpuid(ir::ValueType::U64,
+                          leaf,
                           subleaf,
                           ir::Imm(features),
-                          ir::Imm(reinterpret_cast<VAddr>(&QueryCpuid)))
-                         .SetType(ir::ValueType::U64);
-    auto upper = __ CpuidUpper(lower).SetType(ir::ValueType::U64);
-    R(_RegisterType::R_EAX,
-      __ BitExtract(lower, ir::Imm(0u), ir::Imm(32u)).SetType(ir::ValueType::U32));
+                          ir::Imm(reinterpret_cast<VAddr>(&QueryCpuid)));
+    auto upper = __ CpuidUpper(ir::ValueType::U64, lower);
+    R(_RegisterType::R_EAX, __ BitExtract(ir::ValueType::U32, lower, ir::Imm(0u), ir::Imm(32u)));
     R(_RegisterType::R_EBX,
       __ BitExtract(lower, ir::Imm(32u), ir::Imm(32u)).SetCastType(ir::ValueType::U32));
-    R(_RegisterType::R_ECX,
-      __ BitExtract(upper, ir::Imm(0u), ir::Imm(32u)).SetType(ir::ValueType::U32));
+    R(_RegisterType::R_ECX, __ BitExtract(ir::ValueType::U32, upper, ir::Imm(0u), ir::Imm(32u)));
     R(_RegisterType::R_EDX,
       __ BitExtract(upper, ir::Imm(32u), ir::Imm(32u)).SetCastType(ir::ValueType::U32));
 }
 
 void X64Decoder::DecodeTimestamp(bool rdtscp) {
     if (HelperValuesEnabled()) {
-        auto tsc = __ CallHostUniformPure(&ReadGuestTsc).SetType(ir::ValueType::U64);
-        R(_RegisterType::R_EAX,
-          __ BitExtract(tsc, ir::Imm(0u), ir::Imm(32u)).SetType(ir::ValueType::U32));
+        auto tsc = __ CallHostUniformPure(ir::ValueType::U64, &ReadGuestTsc);
+        R(_RegisterType::R_EAX, __ BitExtract(ir::ValueType::U32, tsc, ir::Imm(0u), ir::Imm(32u)));
         R(_RegisterType::R_EDX,
-          __ BitExtract(tsc, ir::Imm(32u), ir::Imm(32u))
-                  .SetCastType(ir::ValueType::U32));
+          __ BitExtract(tsc, ir::Imm(32u), ir::Imm(32u)).SetCastType(ir::ValueType::U32));
     } else {
         // Legacy ABI: the helper writes EAX/EDX through ThreadContext64 and
         // W50 metadata describes the affected byte ranges.
-        auto context = __ GetUniformAddress(ir::Imm(0)).SetType(ir::ValueType::U64);
-        __ CallHostWithUniformEffects(ReadGuestTscEffects(), &ReadGuestTscContext, context);
+        auto context = __ GetUniformAddress(ir::ValueType::U64, ir::Imm(0));
+        __ CallHostWithUniformEffects(ir::ValueType::VOID, ReadGuestTscEffects(), &ReadGuestTscContext, context);
     }
     if (rdtscp) {
         // A single virtual CPU/core direct is exposed.
@@ -159,13 +153,12 @@ void X64Decoder::DecodeTimestamp(bool rdtscp) {
 
 void X64Decoder::DecodeRandomRegister(_RegisterType reg, u32 width) {
     if (HelperValuesEnabled()) {
-        auto value = __ CallHostUniformPure(&GuestRandom).SetType(ir::ValueType::U64);
-        R(reg, __ BitExtract(value, ir::Imm(0u), ir::Imm(width)).SetType(GetSize(width)));
+        auto value = __ CallHostUniformPure(ir::ValueType::U64, &GuestRandom);
+        R(reg, __ BitExtract(GetSize(width), value, ir::Imm(0u), ir::Imm(width)));
     } else {
-        const auto destination =
-                __ GetUniformAddress(ir::Imm(ToReg(x86_regs_table[reg]).GetOffset()))
-                        .SetType(ir::ValueType::U64);
-        __ CallHost(&GuestRandomContext, destination, __ LoadImm(ir::Imm(u64(width))));
+        const auto destination = __ GetUniformAddress(
+                ir::ValueType::U64, ir::Imm(ToReg(x86_regs_table[reg]).GetOffset()));
+        __ CallHost(ir::ValueType::VOID, &GuestRandomContext, destination, __ LoadImm(ir::Imm(u64(width))));
     }
     // RDRAND/RDSEED report success in CF and clear OF/SF/ZF/AF/PF.
     __ ClearFlags(ir::Flags::All);
@@ -187,7 +180,7 @@ void X64Decoder::DecodeMovbe(_DInst& insn) {
     //   F1: op0=memory,   op1=register (store)
     const u32 width = dst.size;
     auto value = ToValue(Src(insn, src));
-    auto swapped = __ ByteSwap(value, ir::Imm(width)).SetType(GetSize(width));
+    auto swapped = __ ByteSwap(GetSize(width), value, ir::Imm(width));
     Dst(insn, dst, swapped);
 }
 
@@ -210,7 +203,7 @@ void X64Decoder::DecodeBswap(_DInst& insn) {
     auto& op0 = insn.ops[0];
     u64 width = op0.size ? op0.size : 32;
     auto src = ToValue(Src(insn, op0));
-    auto result = __ ByteSwap(src, ir::Imm(width)).SetType(GetSize(width));
+    auto result = __ ByteSwap(GetSize(width), src, ir::Imm(width));
     Dst(insn, op0, result);
 }
 

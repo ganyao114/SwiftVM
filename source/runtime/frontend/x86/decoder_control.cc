@@ -1,7 +1,6 @@
 #include "runtime/frontend/x86/decoder_internal.h"
 
 namespace swift::x86 {
-
 using namespace swift::runtime::frontend;
 
 #define __ assembler->
@@ -52,14 +51,14 @@ void X64Decoder::DecodeCondJump(_DInst& insn, Cond cond) {
                 }
                 ir::BOOL check_result =
                         local->fcmp.Def()
-                                ? __ FCmpCondSet(local->fcmp, local->arm)
-                                          .SetType(ir::ValueType::U8)
+                                ? __ FCmpCondSet(ir::ValueType::U8, local->fcmp, local->arm)
+
                         : local->parity.Def()
-                                ? __ LocalParitySet(
-                                          local->parity,
-                                          ir::Imm(u8(local->parity_inverted ? 1 : 0)))
-                                          .SetType(ir::ValueType::U8)
-                                : __ LocalCondSet(local->arm).SetType(ir::ValueType::U8);
+                                ? __ LocalParitySet(ir::ValueType::U8,
+                                                    local->parity,
+                                                    ir::Imm(u8(local->parity_inverted ? 1 : 0)))
+
+                                : __ LocalCondSet(ir::ValueType::U8, local->arm);
                 CondGoto(check_result, address, pc);
                 return;
             }
@@ -94,7 +93,7 @@ void X64Decoder::DecodeSetCC(_DInst& insn, Cond cond) {
     }
     auto one = __ LoadImm(ir::Imm(u8(1)));
     auto zero = __ LoadImm(ir::Imm(u8(0)));
-    auto result = __ Select(check_result, one, zero);
+    auto result = __ Select(ir::ValueType::U8, check_result, one, zero);
     Dst(insn, insn.ops[0], result);
 }
 
@@ -108,7 +107,7 @@ void X64Decoder::DecodeCondMov(_DInst& insn, Cond cond) {
     auto check_result = CheckCond(cond);
     auto dst_val = ToValue(Src(insn, op0));
     auto src_val = ToValue(Src(insn, op1));
-    auto result = __ Select(check_result, src_val, dst_val).SetType(GetSize(op0.size));
+    auto result = __ Select(GetSize(op0.size), check_result, src_val, dst_val);
     Dst(insn, op0, result);
 }
 
@@ -126,7 +125,7 @@ void X64Decoder::Push(ir::Value value, ir::ValueType type) {
     auto sp = _RegisterType::R_RSP;
     auto address = R(sp);
     auto new_sp = __ Sub(address, ir::Operand{ir::Imm(u64(size_byte))});
-    MemStore(ir::Operand{new_sp}, value.SetType(type), GetTsoMode() == runtime::TsoMode::AcqRel);
+    MemStore(ir::Operand{new_sp}, NarrowTo(value, type), GetTsoMode() == runtime::TsoMode::AcqRel);
     R(sp, new_sp);
 }
 
@@ -136,7 +135,7 @@ void X64Decoder::DecodePush(_DInst& insn) {
     auto type = GetSize(width);
     if (op0.type == O_IMM || op0.type == O_IMM1) {
         // distorm keeps the immediate sign extended in imm.sqword.
-        auto value = __ LoadImm(ir::Imm(insn.imm.sqword)).SetType(GetSignedContainer(width));
+        auto value = __ LoadImm(GetSignedContainer(width), ir::Imm(insn.imm.sqword));
         Push(value, type);
         return;
     }
@@ -160,24 +159,19 @@ void X64Decoder::DecodePushf(_DInst& insn) {
     const auto mask_bit = [&](ir::Value bit, u32 position) {
         return __ LslImm(__ ZeroExtend64(bit), ir::Imm(position));
     };
-    auto cf_pf = __ Or(mask_bit(CarryValue(), 0),
-                      ir::Operand{mask_bit(
-                              __ TestFlags(ir::Flags::Parity).SetType(ir::ValueType::U8), 2)});
-    auto af_zf = __ Or(
-            mask_bit(__ TestFlags(ir::Flags::AuxiliaryCarry).SetType(ir::ValueType::U8), 4),
-            ir::Operand{mask_bit(
-                    __ TestFlags(ir::Flags::Zero).SetType(ir::ValueType::U8), 6)});
-    auto sf_df = __ Or(mask_bit(
-                              __ TestFlags(ir::Flags::Negate).SetType(ir::ValueType::U8), 7),
-                      ir::Operand{mask_bit(DirectionValue(), 10)});
-    auto dynamic = __ Or(__ Or(cf_pf, ir::Operand{af_zf}),
-                         ir::Operand{__ Or(
-                                 sf_df,
-                                 ir::Operand{mask_bit(
-                                         __ TestFlags(ir::Flags::Overflow)
-                                                 .SetType(ir::ValueType::U8),
-                                         11)})});
-    auto packed = __ Or(__ LoadImm(ir::Imm(u64(0x202))), ir::Operand{dynamic}).SetType(type);
+    auto cf_pf =
+            __ Or(mask_bit(CarryValue(), 0),
+                  ir::Operand{mask_bit(__ TestFlags(ir::ValueType::U8, ir::Flags::Parity), 2)});
+    auto af_zf = __ Or(mask_bit(__ TestFlags(ir::ValueType::U8, ir::Flags::AuxiliaryCarry), 4),
+                       ir::Operand{mask_bit(__ TestFlags(ir::ValueType::U8, ir::Flags::Zero), 6)});
+    auto sf_df = __ Or(mask_bit(__ TestFlags(ir::ValueType::U8, ir::Flags::Negate), 7),
+                       ir::Operand{mask_bit(DirectionValue(), 10)});
+    auto dynamic = __ Or(
+            __ Or(cf_pf, ir::Operand{af_zf}),
+            ir::Operand{__ Or(sf_df,
+                              ir::Operand{mask_bit(
+                                      __ TestFlags(ir::ValueType::U8, ir::Flags::Overflow), 11)})});
+    auto packed = __ Or(type, __ LoadImm(ir::Imm(u64(0x202))), ir::Operand{dynamic});
     Push(packed, type);
 }
 
@@ -192,17 +186,17 @@ void X64Decoder::DecodePopf(_DInst& insn) {
     auto one = __ LoadImm(ir::Imm(u64(1)));
     auto zero = __ LoadImm(ir::Imm(u64(0)));
 
-    auto parity_value = __ Select(__ TestNotZero(bit(2)), zero, one);
+    auto parity_value = __ Select(ir::ValueType::U64, __ TestNotZero(bit(2)), zero, one);
     __ SaveFlags(__ Or(parity_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Parity);
-    auto zero_value = __ Select(__ TestNotZero(bit(6)), zero, one);
+    auto zero_value = __ Select(ir::ValueType::U64, __ TestNotZero(bit(6)), zero, one);
     __ SaveFlags(__ Or(zero_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Zero);
-    auto sign_value = __ LslImm(bit(7), ir::Imm(63u)).SetType(ir::ValueType::U64);
+    auto sign_value = __ LslImm(ir::ValueType::U64, bit(7), ir::Imm(63u));
     __ SaveFlags(__ Or(sign_value, ir::Operand{ir::Imm(u64(0))}), ir::Flags::Negate);
     auto auxiliary_value = __ Add(__ LoadImm(ir::Imm(u64(0xF))), ir::Operand{bit(4)});
     __ SaveFlags(auxiliary_value, ir::Flags::AuxiliaryCarry);
     __ SetCarry(bit(0));
     __ SetOverflow(bit(11));
-    __ StoreUniform(DirectionUniform(), bit(10).SetType(ir::ValueType::U8));
+    __ StoreUniform(DirectionUniform(), NarrowTo(bit(10), ir::ValueType::U8));
     carry_ = CarryPolarity::Direct;
     StorePolarity(false);
 }
@@ -229,19 +223,19 @@ void X64Decoder::DecodePopA(_DInst& insn) {
     auto type = GetSize(op0.size);
     ASSERT(type == runtime::ir::ValueType::U32);
     auto sp = R(_RegisterType::R_ESP);
-    auto edi = __ LoadMemory(ir::Operand{sp});
+    auto edi = __ LoadMemory(type, ir::Operand{sp});
     R(R_EDI, edi);
-    auto esi = __ LoadMemory(ir::Operand{sp, 4u});
+    auto esi = __ LoadMemory(type, ir::Operand{sp, 4u});
     R(R_ESI, esi);
-    auto ebp = __ LoadMemory(ir::Operand{sp, 8u});
+    auto ebp = __ LoadMemory(type, ir::Operand{sp, 8u});
     R(R_EBP, ebp);
-    auto ebx = __ LoadMemory(ir::Operand{sp, 16u});
+    auto ebx = __ LoadMemory(type, ir::Operand{sp, 16u});
     R(R_EBX, ebx);
-    auto edx = __ LoadMemory(ir::Operand{sp, 20u});
+    auto edx = __ LoadMemory(type, ir::Operand{sp, 20u});
     R(R_EDX, edx);
-    auto ecx = __ LoadMemory(ir::Operand{sp, 24u});
+    auto ecx = __ LoadMemory(type, ir::Operand{sp, 24u});
     R(R_ECX, ecx);
-    auto eax = __ LoadMemory(ir::Operand{sp, 28u});
+    auto eax = __ LoadMemory(type, ir::Operand{sp, 28u});
     R(R_EAX, eax);
     auto new_sp = __ Add(sp, ir::Operand{32u});
     R(_RegisterType::R_ESP, new_sp);
@@ -256,9 +250,10 @@ void X64Decoder::DecodeLoop(_DInst& insn) {
     if (insn.opcode != I_LOOP) {
         auto zf = CheckCond(Cond::EQ);
         take = insn.opcode == I_LOOPZ
-                     ? __ And(take, ir::Operand{zf})
-                     : __ And(take, ir::Operand{
-                               __ Xor(zf, ir::Operand{ir::Imm(u64(1))}).SetType(ir::ValueType::U8)});
+                       ? __ And(take, ir::Operand{zf})
+                       : __ And(take,
+                                ir::Operand{__ Xor(
+                                        ir::ValueType::U8, zf, ir::Operand{ir::Imm(u64(1))})});
     }
     auto skip = __ NotGoto(take);
     __ SetLocation(ir::Lambda{ir::Imm{u64(pc + insn.imm.sqword)}});

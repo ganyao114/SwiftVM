@@ -9,6 +9,8 @@
 #pragma clang diagnostic ignored "-Wpragma-pack"
 #endif
 
+#include <utility>
+
 #include "base/common_funcs.h"
 #include "runtime/common/logging.h"
 #include "runtime/common/slab_alloc.h"
@@ -17,10 +19,15 @@
 #include "fmt/format.h"
 
 namespace swift::runtime::ir {
-
 class Inst;
 class Arg;
+class HIRFunction;
+class HIRTestSupport;
 struct ArgClass;
+namespace terminal {
+struct If;
+struct Switch;
+}  // namespace terminal
 
 #define COND_ENUM(X) \
     X(EQ) \
@@ -42,10 +49,18 @@ struct ArgClass;
 
 enum class Cond : u8 { COND_ENUM(ENUM_DEFINE) };
 
+constexpr bool IsValidCondition(Cond condition) {
+    return static_cast<u8>(condition) <= static_cast<u8>(Cond::NV);
+}
+
+constexpr bool IsAlwaysCondition(Cond condition) {
+    return condition == Cond::AL || condition == Cond::NV;
+}
+
 const char *CondString(Cond cond);
 
 struct Void {
-    explicit Void(Inst*) {}
+    explicit Void(const Inst*) {}
 };
 
 #pragma pack(push, 1)
@@ -130,13 +145,11 @@ const inline Imm HostRegIndex(u16 index) {
 
 class Value {
 public:
-    constexpr Value(Inst* in = {}) : inst(in) {}
+    constexpr Value(const Inst* in = {}) : inst(in) {}
 
-    [[nodiscard]] Inst* Def() const { return inst; }
+    [[nodiscard]] const Inst* Def() const { return inst; }
 
     [[nodiscard]] bool Defined() const { return inst; }
-
-    [[nodiscard]] Value SetType(ValueType type);
 
     [[nodiscard]] Value SetCastType(ValueType type) {
         ASSERT(Def());
@@ -145,20 +158,28 @@ public:
     }
 
     // A type view belongs to a use edge, not to its canonical definition.
-    [[nodiscard]] Value WithDefinition(Inst* definition) const;
+    [[nodiscard]] Value WithDefinition(const Inst* definition) const;
 
     [[nodiscard]] ValueType Type() const;
+    [[nodiscard]] bool HasValidTypeView() const;
+    [[nodiscard]] bool HasValidDataView() const;
 
     bool operator==(const Value& rhs) const { return inst == rhs.inst; }
     bool operator!=(const Value& rhs) const { return !(rhs == *this); }
 
-    void Use() const;
-    void UnUse() const;
     [[nodiscard]] u16 Id() const;
 
 protected:
-    Inst* inst;
+    const Inst* inst;
     ValueType cast_type{ValueType::VOID};
+
+private:
+    friend class Inst;
+    friend class HIRFunction;
+    friend struct terminal::If;
+    friend struct terminal::Switch;
+    void Use() const;
+    void UnUse() const;
 };
 
 template <ValueType type_> class TypedValue final : public Value {
@@ -174,7 +195,7 @@ public:
 
     constexpr TypedValue(const Value& value) : Value(value) { cast_type = type_; }
 
-    constexpr TypedValue(Inst* inst) : TypedValue(Value(inst)) { cast_type = type_; }
+    constexpr TypedValue(const Inst* inst) : TypedValue(Value(inst)) { cast_type = type_; }
 };
 
 using VOID = TypedValue<ValueType::VOID>;
@@ -337,11 +358,12 @@ public:
     Lambda(const DataClass& value, HelperCallTraits traits);
 
     bool IsValue() const;
+    bool IsImm() const;
 
     Value& GetValue();
-    Value& GetValue() const;
+    const Value& GetValue() const;
     Imm& GetImm();
-    Imm& GetImm() const;
+    const Imm& GetImm() const;
     UniformEffectId GetUniformEffectId() const;
     HelperABI GetHelperABI() const;
     HostFpEffect GetHostFpEffect() const;
@@ -354,8 +376,35 @@ public:
 private:
     [[nodiscard]] bool IsTaggedImm() const;
 
-    mutable FuncAddr address;
+    FuncAddr address;
     u8 helper_effects{};
+};
+
+// Parsed direct-helper semantics, independent of host ABI/register policy.
+// The body traits do not describe reentry: consumers must account for it
+// separately. Uniform write ranges likewise do not prove absence of reads,
+// faults or reentry. Indirect helpers retain the conservative defaults.
+struct HelperStateEffects final {
+    bool direct{};
+    HelperGuestStateEffect access{HelperGuestStateEffect::MayReadWrite};
+    HelperFaultEffect fault{HelperFaultEffect::MayFault};
+    HelperReentryEffect reentry{HelperReentryEffect::MayReenter};
+    UniformEffectId uniform{UniformEffectId::Unknown};
+
+    [[nodiscard]] static HelperStateEffects Resolve(const Lambda& helper);
+    [[nodiscard]] bool ReadsGuestState() const {
+        return access == HelperGuestStateEffect::MayReadWrite ||
+               access == HelperGuestStateEffect::ReadOnly;
+    }
+    [[nodiscard]] bool WritesGuestState() const {
+        return access == HelperGuestStateEffect::MayReadWrite ||
+               access == HelperGuestStateEffect::WriteOnly;
+    }
+    [[nodiscard]] bool MayFault() const { return fault == HelperFaultEffect::MayFault; }
+    [[nodiscard]] bool MayReenter() const { return reentry == HelperReentryEffect::MayReenter; }
+    [[nodiscard]] bool RequiresGuestStatePublication() const {
+        return ReadsGuestState() || WritesGuestState() || MayFault() || MayReenter();
+    }
 };
 
 struct FlagsBit {
@@ -418,71 +467,89 @@ constexpr OperandOp OperandLsl{OperandOp::LSL};
 constexpr OperandOp OperandLsr{OperandOp::LSR};
 
 class Params {
+    friend class Arg;
+    friend struct ArgClass;
+    friend class HIRTestSupport;
+
+    struct Node : SlabObject<Node, true> {
+        explicit Node(const Value& value);
+        explicit Node(const Imm& imm);
+
+        DataClass data;
+        Node* next_node{};
+    };
+
+    // Installed lists belong to Inst, whose teardown decides whether to
+    // unregister uses. Keep this payload trivial inside the packed ArgClass.
+    struct Storage {
+        Node* first;
+    };
+
 public:
-    class Param : public SlabObject<Param, true> {
-    public:
-        explicit Param() = default;
-        explicit Param(const Value& value);
-        explicit Param(const Imm& imm);
-
-        DataClass data{};
-
-    private:
-        friend class Params;
-        Param* next_node{};
+    // A detached data snapshot: iteration never lends a node or write alias,
+    // including while a Params owner is still waiting to be installed.
+    struct Param {
+        DataClass data;
     };
 
     class Iterator {
     public:
         using value_type = Param;
         using difference_type = std::ptrdiff_t;
-        using pointer = Param*;
-        using reference = Param&;
+        using pointer = void;
+        using reference = Param;
         using iterator_category = std::forward_iterator_tag;
 
-        explicit Iterator(pointer ptr) : ptr_(ptr) {}
-
-        reference operator*() const { return *ptr_; }
-        pointer operator->() { return ptr_; }
-
-        Iterator& operator++() {
-            ptr_ = ptr_->next_node;
-            return *this;
-        }
-
-        Iterator operator++(int) {
-            Iterator temp = *this;
-            ptr_ = ptr_->next_node;
-            return temp;
-        }
-
-        bool operator==(const Iterator& other) const {
-            return ptr_ == other.ptr_;
-        }
-
-        bool operator!=(const Iterator& other) const {
-            return ptr_ != other.ptr_;
-        }
-
+        Iterator() = default;
+        explicit Iterator(const Node* ptr) : ptr_(ptr) {}
+        reference operator*() const { return Param{ptr_->data}; }
+        Iterator& operator++() { ptr_ = ptr_->next_node; return *this; }
+        Iterator operator++(int) { auto old = *this; ++*this; return old; }
+        bool operator==(const Iterator& other) const { return ptr_ == other.ptr_; }
+        bool operator!=(const Iterator& other) const { return !(*this == other); }
     private:
-        pointer ptr_;
+        const Node* ptr_{};
     };
+    using ConstIterator = Iterator;
+
+    class View {
+    public:
+        ConstIterator begin() const { return ConstIterator(first); }
+        ConstIterator end() const { return ConstIterator(nullptr); }
+    private:
+        friend class Params;
+        explicit View(const Node* first) : first(first) {}
+        const Node* first;
+    };
+
+    Params() = default;
+    ~Params();
+    Params(const Params&) = delete;
+    Params& operator=(const Params&) = delete;
+    Params(Params&& other) noexcept;
+    Params& operator=(Params&& other) noexcept;
 
     void Push(const Imm& data);
     void Push(const Value& data);
 
-    [[nodiscard]] Iterator begin() const { return Iterator(first_param); }
+    [[nodiscard]] ConstIterator begin() const { return ConstIterator(first_param); }
+    [[nodiscard]] ConstIterator end() const { return ConstIterator(nullptr); }
+    [[nodiscard]] View Read() const { return View(first_param); }
 
-    [[nodiscard]] Iterator end() const { return Iterator(nullptr); }
-
-    void Destroy();
+    void Destroy() noexcept;
 
 private:
-    void Push(Param* param);
-    Param* first_param{};
+    [[nodiscard]] Storage ReleaseStorage() noexcept { return {std::exchange(first_param, nullptr)}; }
+    [[nodiscard]] static View ReadStorage(const Storage& storage) { return View(storage.first); }
+    static void DestroyStorage(Storage& storage) noexcept;
+    void Push(Node* param);
+    Node* first_param{};
 };
 
 struct ArgClass {
+private:
+    friend class Arg;
+
     ArgType type;
     union {
         Value value;
@@ -493,9 +560,10 @@ struct ArgClass {
         Uniform uniform;
         Lambda lambda;
         Flags flags;
-        Params params;
+        Params::Storage params;
     };
 
+public:
     explicit ArgClass() : type(ArgType::Void) {}
 
     explicit ArgClass(const Value& v) {
@@ -538,11 +606,6 @@ struct ArgClass {
         type = ArgType::Flags;
     }
 
-    explicit ArgClass(const Params& v) {
-        params = v;
-        type = ArgType::Params;
-    }
-
     constexpr ArgClass& operator=(const Uniform& v) {
         uniform = v;
         type = ArgType::Uniform;
@@ -561,6 +624,8 @@ struct ArgClass {
         return *this;
     }
 };
+static_assert(std::is_trivially_copyable_v<ArgClass>);
+static_assert(std::is_trivially_destructible_v<ArgClass>);
 #pragma pack(pop)
 
 class Operand {
@@ -600,6 +665,22 @@ class Arg {
     friend class Inst;
 
 public:
+    Arg(const Arg&) = delete;
+    Arg& operator=(const Arg&) = delete;
+    Arg(Arg&& other) noexcept : value(other.value) {
+        if (other.IsParams()) other.value.params = {};
+        other.value.type = ArgType::Void;
+    }
+    Arg& operator=(Arg&& other) noexcept {
+        if (this == &other) return *this;
+        // Only Inst can install Params. It must unregister its old uses and
+        // destroy that list before replacing the storage.
+        ASSERT(!IsParams());
+        value = other.value;
+        if (other.IsParams()) other.value.params = {};
+        other.value.type = ArgType::Void;
+        return *this;
+    }
     Arg() : value() {}
     Arg(const Void& v) : value() {}
     Arg(const ArgClass& v) : value(v) {}
@@ -612,7 +693,6 @@ public:
     Arg(const Local& v) : value(v) {}
     Arg(const Uniform& v) : value(v) {}
     Arg(const Lambda& v) : value(v) {}
-    Arg(const Params& v) : value(v) {}
 
     [[nodiscard]] constexpr bool IsImm() const { return value.type == ArgType::Imm; }
 
@@ -628,39 +708,60 @@ public:
 
     [[nodiscard]] ArgType GetType() const { return value.type; }
 
-    template <typename T> constexpr T& Get() {
+    template <typename T> constexpr decltype(auto) Get() const {
+        if constexpr (std::is_same_v<T, Params>) {
+            ASSERT(IsParams());
+            return Params::ReadStorage(value.params);
+        } else return Storage<T>(*this);
+    }
+    template <typename T> constexpr decltype(auto) Get() {
+        if constexpr (std::is_same_v<T, Params>) return std::as_const(*this).Get<T>();
+        else return Storage<T>(*this);
+    }
+
+private:
+    void AdoptParams(Params&& params) noexcept {
+        ASSERT(IsVoid());
+        value.params = params.ReleaseStorage();
+        value.type = ArgType::Params;
+    }
+    void DestroyParams() noexcept {
+        ASSERT(IsParams());
+        Params::DestroyStorage(value.params);
+        value.type = ArgType::Void;
+    }
+
+    template <typename T, typename Self> static constexpr auto& Storage(Self& self) {
         if constexpr (std::is_same<T, Value>::value) {
-            ASSERT(value.type == ArgType::Value);
-            return value.value;
+            ASSERT(self.value.type == ArgType::Value);
+            return self.value.value;
         } else if constexpr (std::is_same<T, Imm>::value) {
-            ASSERT(value.type == ArgType::Imm);
-            return value.imm;
+            ASSERT(self.value.type == ArgType::Imm);
+            return self.value.imm;
         } else if constexpr (std::is_same<T, Local>::value) {
-            ASSERT(value.type == ArgType::Local);
-            return value.local;
+            ASSERT(self.value.type == ArgType::Local);
+            return self.value.local;
         } else if constexpr (std::is_same<T, Uniform>::value) {
-            ASSERT(value.type == ArgType::Uniform);
-            return value.uniform;
+            ASSERT(self.value.type == ArgType::Uniform);
+            return self.value.uniform;
         } else if constexpr (std::is_same<T, Cond>::value) {
-            ASSERT(value.type == ArgType::Cond);
-            return value.cond;
+            ASSERT(self.value.type == ArgType::Cond);
+            return self.value.cond;
         } else if constexpr (std::is_same<T, OperandOp>::value) {
-            ASSERT(value.type == ArgType::Operand);
-            return value.operand;
+            ASSERT(self.value.type == ArgType::Operand);
+            return self.value.operand;
         } else if constexpr (std::is_same<T, Lambda>::value) {
-            ASSERT(value.type == ArgType::Lambda);
-            return value.lambda;
+            ASSERT(self.value.type == ArgType::Lambda);
+            return self.value.lambda;
         } else if constexpr (std::is_same<T, Flags>::value) {
-            ASSERT(value.type == ArgType::Flags);
-            return value.flags;
-        } else if constexpr (std::is_same<T, Params>::value) {
-            ASSERT(value.type == ArgType::Params);
-            return value.params;
+            ASSERT(self.value.type == ArgType::Flags);
+            return self.value.flags;
         } else {
             PANIC();
         }
     }
 
+public:
     [[maybe_unused]] DataClass ToDataClass() const {
         if (value.type == ArgType::Value) {
             return value.value;
@@ -776,8 +877,8 @@ template <> struct fmt::formatter<swift::runtime::ir::Operand> : fmt::formatter<
 };
 
 template <> struct fmt::formatter<swift::runtime::ir::Params> : fmt::formatter<std::string> {
-    template <typename FormatContext>
-    auto format(const swift::runtime::ir::Params &params, FormatContext& ctx) const {
+    template <typename ParamsType, typename FormatContext>
+    auto format(const ParamsType& params, FormatContext& ctx) const {
         std::string result{};
         bool first{true};
         for (auto param : params) {
@@ -790,3 +891,6 @@ template <> struct fmt::formatter<swift::runtime::ir::Params> : fmt::formatter<s
         return formatter<std::string>::format(fmt::format("Params[{}]", result), ctx);
     }
 };
+
+template <> struct fmt::formatter<swift::runtime::ir::Params::View>
+        : fmt::formatter<swift::runtime::ir::Params> {};

@@ -1,4 +1,8 @@
+#include "runtime/backend/arm64/compile/inputs.h"
+#include "tests/support/allocation_fixture.h"
+using swift::runtime::test::AllocationFixture;
 #include <catch2/catch_test_macros.hpp>
+#include "runtime/backend/arm64/compile/compiler.h"
 
 #include <algorithm>
 #include <string>
@@ -9,10 +13,9 @@
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/arm64/jit/jit_context.h"
 #include "runtime/backend/arm64/jit/translator.h"
-#include "runtime/ir/opts/register_alloc_pass.h"
+#include "runtime/compile/allocate/allocation.h"
 
 namespace {
-
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
 using namespace swift::runtime::ir;
@@ -42,103 +45,103 @@ std::vector<std::string> EmitWidthFact(PinnedWidthShape shape, bool overwrite_ta
     IntrusivePtr<Block> block{new Block(0, Location{0x9750})};
 
     if (shape == PinnedWidthShape::NarrowSelect) {
-        auto address = block->LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
-        auto loaded = block->LoadMemory(Operand{address}).SetType(ValueType::U16);
-        auto widened = block->ZeroExtend32(loaded).SetType(ValueType::U32);
-        auto published = block->ZeroExtend32To64(widened).SetType(ValueType::U64);
+        auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
+        auto loaded = block->LoadMemory(ValueType::U16, Operand{address});
+        auto widened = block->ZeroExtend32(ValueType::U32, loaded);
+        auto published = block->ZeroExtend32To64(ValueType::U64, widened);
         block->SetHostGPR(published, HostRegIndex(22), Imm{0u});
         if (overwrite_target) {
-            auto replacement = block->LoadImm(Imm{swift::u64{0x2000}}).SetType(ValueType::U64);
+            auto replacement = block->LoadImm(ValueType::U64, Imm{swift::u64{0x2000}});
             block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         }
-        auto condition = block->LoadImm(Imm{swift::u32{1}}).SetType(ValueType::U32);
-        auto alternate = block->LoadImm(Imm{swift::u32{7}}).SetType(ValueType::U32);
-        auto selected = block->Select(condition, alternate, widened).SetType(ValueType::U32);
+        auto condition = block->LoadImm(ValueType::U32, Imm{swift::u32{1}});
+        auto alternate = block->LoadImm(ValueType::U32, Imm{swift::u32{7}});
+        auto selected = block->Select(ValueType::U32, condition, alternate, widened);
         block->StoreUniform(Uniform{64, ValueType::U32}, selected);
     } else if (shape == PinnedWidthShape::PublishedLow32 ||
                shape == PinnedWidthShape::PublishedLow32MultiUse) {
-        auto base = block->GetHostGPR(HostRegIndex(1), Imm{0u}).SetType(ValueType::U64);
-        auto value = block->Add(base, Operand{Imm{1u}}).SetType(ValueType::U64);
+        auto base = block->GetHostGPR(ValueType::U64, HostRegIndex(1), Imm{0u});
+        auto value = block->Add(ValueType::U64, base, Operand{Imm{1u}});
         block->SetHostGPR(value, HostRegIndex(22), Imm{0u});
         if (overwrite_target) {
-            auto replacement = block->LoadImm(Imm{swift::u64{0x2000}}).SetType(ValueType::U64);
+            auto replacement = block->LoadImm(ValueType::U64, Imm{swift::u64{0x2000}});
             block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         }
-        auto low = block->BitExtract(value, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-        auto compare = block->Sub(low, Operand{Imm{8u}}).SetType(ValueType::U32);
+        auto low = block->BitExtract(ValueType::U32, value, Imm{0u}, Imm{32u});
+        auto compare = block->Sub(ValueType::U32, low, Operand{Imm{8u}});
         block->SaveFlags(compare, Flags::All);
         if (shape == PinnedWidthShape::PublishedLow32MultiUse) {
-            auto sum = block->Add(low, Operand{Imm{3u}}).SetType(ValueType::U32);
+            auto sum = block->Add(ValueType::U32, low, Operand{Imm{3u}});
             block->StoreUniform(Uniform{72, ValueType::U32}, sum);
         }
     } else if (shape == PinnedWidthShape::PublishedZero8 ||
                shape == PinnedWidthShape::PublishedZero8Compare ||
                shape == PinnedWidthShape::PublishedZero8Store) {
-        auto address = block->LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
-        auto narrow = block->LoadMemory(Operand{address}).SetType(ValueType::U8);
-        auto widened = block->ZeroExtend32(narrow).SetType(ValueType::U32);
-        auto published = block->ZeroExtend32To64(widened).SetType(ValueType::U64);
+        auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
+        auto narrow = block->LoadMemory(ValueType::U8, Operand{address});
+        auto widened = block->ZeroExtend32(ValueType::U32, narrow);
+        auto published = block->ZeroExtend32To64(ValueType::U64, widened);
         block->SetHostGPR(published, HostRegIndex(22), Imm{0u});
         if (overwrite_target) {
-            auto replacement = block->LoadImm(Imm{swift::u64{0x2000}})
-                                       .SetType(ValueType::U64);
+            auto replacement = block->LoadImm(ValueType::U64, Imm{swift::u64{0x2000}});
             block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         }
         if (shape == PinnedWidthShape::PublishedZero8Compare) {
-            auto compare = block->Sub(narrow, Operand{Imm{swift::u8{5}}})
-                                   .SetType(ValueType::U8);
+            auto compare = block->Sub(ValueType::U8, narrow, Operand{Imm{swift::u8{5}}});
             block->SaveFlags(compare, Flags::Carry);
         } else if (shape == PinnedWidthShape::PublishedZero8Store) {
-            auto output = block->LoadImm(Imm{swift::u64{0x2000}})
-                                  .SetType(ValueType::U64);
+            auto output = block->LoadImm(ValueType::U64, Imm{swift::u64{0x2000}});
             block->StoreMemory(Operand{output}, narrow);
         } else {
-            auto reused = block->ZeroExtend32(narrow).SetType(ValueType::U32);
+            auto reused = block->ZeroExtend32(ValueType::U32, narrow);
             block->StoreUniform(Uniform{80, ValueType::U32}, reused);
         }
     } else if (shape == PinnedWidthShape::PublishedSign8) {
-        auto address = block->LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
-        auto narrow = block->LoadMemory(Operand{address}).SetType(ValueType::S8);
-        auto published = block->SignExtend(narrow).SetType(ValueType::U64);
+        auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
+        auto narrow = block->LoadMemory(ValueType::S8, Operand{address});
+        auto published = block->SignExtend(ValueType::U64, narrow);
         block->SetHostGPR(published, HostRegIndex(22), Imm{0u});
         if (overwrite_target) {
-            auto replacement = block->LoadImm(Imm{swift::u64{0x2000}})
-                                       .SetType(ValueType::U64);
+            auto replacement = block->LoadImm(ValueType::U64, Imm{swift::u64{0x2000}});
             block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         }
-        auto reused = block->SignExtend(narrow).SetType(ValueType::U64);
+        auto reused = block->SignExtend(ValueType::U64, narrow);
         block->StoreUniform(Uniform{88, ValueType::U64}, reused);
     } else {
-        auto test = block->LoadImm(Imm{swift::u64{3}}).SetType(ValueType::U64);
-        auto zero = block->LoadImm(Imm{swift::u64{0}}).SetType(ValueType::U64);
-        auto value = block->LoadImm(Imm{swift::u64{9}}).SetType(ValueType::U64);
-        auto selected = block->SelectZero(test, zero, value).SetType(ValueType::U64);
+        auto test = block->LoadImm(ValueType::U64, Imm{swift::u64{3}});
+        auto zero = block->LoadImm(ValueType::U64, Imm{swift::u64{0}});
+        auto value = block->LoadImm(ValueType::U64, Imm{swift::u64{9}});
+        auto selected = block->SelectZero(ValueType::U64, test, zero, value);
         if (shape == PinnedWidthShape::SelectPublicationFault) {
-            auto address = block->LoadImm(Imm{swift::u64{0x1000}}).SetType(ValueType::U64);
-            auto observed = block->LoadMemory(Operand{address}).SetType(ValueType::U64);
+            auto address = block->LoadImm(ValueType::U64, Imm{swift::u64{0x1000}});
+            auto observed = block->LoadMemory(ValueType::U64, Operand{address});
             block->StoreUniform(Uniform{80, ValueType::U64}, observed);
         }
-        auto published = block->ZeroExtend32To64(selected).SetType(ValueType::U64);
+        auto published = block->ZeroExtend32To64(ValueType::U64, selected);
         block->SetHostGPR(published, HostRegIndex(22), Imm{0u});
         if (overwrite_target) {
-            auto replacement = block->LoadImm(Imm{swift::u64{0x2000}}).SetType(ValueType::U64);
+            auto replacement = block->LoadImm(ValueType::U64, Imm{swift::u64{0x2000}});
             block->SetHostGPR(replacement, HostRegIndex(22), Imm{0u});
         }
-        auto low = block->BitExtract(published, Imm{0u}, Imm{32u}).SetType(ValueType::U32);
-        auto sum = block->Add(low, Operand{Imm{1u}}).SetType(ValueType::U32);
+        auto low = block->BitExtract(ValueType::U32, published, Imm{0u}, Imm{32u});
+        auto sum = block->Add(ValueType::U32, low, Operand{Imm{1u}});
         block->StoreUniform(Uniform{88, ValueType::U32}, sum);
     }
     block->SetTerminal(terminal::ReturnToDispatch{});
     block->ReIdInstr();
 
     FeatureSet features{};
-    RegAlloc alloc{block->MaxInstrId(),
-                   address_space.GetTrampolines().GetGPRRegs(),
-                   address_space.GetTrampolines().GetFPRRegs(),
-                   features};
-    RegisterAllocPass::Run(block.get(), &alloc, false, features);
-    alloc.CompleteGPRAllocation(module);
-    arm64::JitContext context{module, alloc};
+    AllocationFixture alloc{block->MaxInstrId(),
+                            address_space.GetTrampolines().GetGPRRegs(),
+                            address_space.GetTrampolines().GetFPRRegs(),
+                            features};
+    ::swift::runtime::compile::AllocateBlock(
+            block.get(),
+            &alloc,
+            ::swift::runtime::backend::arm64::PrepareAllocationInputs(block.get(), alloc, features),
+            false);
+    ::swift::runtime::backend::arm64::CompleteARM64Allocation(module, alloc);
+    arm64::JitContext context{module, alloc, alloc.Actions()};
     arm64::JitTranslator translator{context};
     translator.Translate(block.get());
     context.Finish();

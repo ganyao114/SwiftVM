@@ -1,3 +1,5 @@
+
+#include "runtime/compile/analysis/guest_state.h"
 #include "base/logging.h"
 //
 // Created by 甘尧 on 2023/9/8.
@@ -6,6 +8,7 @@
 #include "runtime/common/signal_diagnostic.h"
 #include "address_space.h"
 #include "runtime/backend/arm64/trampolines.h"
+#include "runtime/backend/arm64/compile/target.h"
 #include "runtime/backend/riscv64/trampolines.h"
 #include "runtime/common/backedge_control.h"
 #include "runtime/common/logging.h"
@@ -51,38 +54,42 @@ void AddressSpace::Init() {
     }
 
     // Keep empty metadata valid even when there is no uniform buffer.
-    uniform_info = std::make_unique<ir::UniformInfo>();
+    guest_layout = std::make_unique<compile::GuestStateLayout>();
     if (config.uniform_buffer_size) {
-        uniform_info->uniform_size = config.uniform_buffer_size;
+        guest_layout->uniform_size = config.uniform_buffer_size;
         for (const auto& range : config.xmm_uniform_ranges) {
-            uniform_info->xmm_uniform_ranges.emplace_back(range.offset,
+            guest_layout->xmm_uniform_ranges.emplace_back(range.offset,
                                                            range.offset + range.size);
         }
         for (const auto& range : config.loop_gpr_uniform_ranges) {
-            uniform_info->loop_gpr_uniform_ranges.emplace_back(
+            guest_layout->loop_gpr_uniform_ranges.emplace_back(
                     range.offset, range.offset + range.size);
         }
         for (auto& desc : config.buffers_static_alloc) {
             auto type = desc.is_float ? ir::GetVecIRValueType(desc.size)
                                       : ir::GetIRValueType(desc.size);
-            ir::UniformRegister reg{.uniform = ir::Uniform{desc.offset, type}};
+            compile::GuestRegisterBinding reg{.uniform = ir::Uniform{desc.offset, type}};
             reg.host_reg.is_fpr = desc.is_float;
             if (desc.is_float) {
                 reg.host_reg.fpr = ir::HostFPR{desc.reg};
-                uniform_info->uni_fprs.Mark(desc.reg);
+                guest_layout->uni_fprs.Mark(desc.reg);
             } else {
                 reg.host_reg.gpr = ir::HostGPR{desc.reg};
-                uniform_info->uni_gprs.Mark(desc.reg);
+                guest_layout->uni_gprs.Mark(desc.reg);
             }
-            uniform_info->uniform_regs_map.Map(desc.offset, desc.offset + desc.size, reg);
+            guest_layout->uniform_regs_map.Map(desc.offset, desc.offset + desc.size, reg);
         }
+    }
+
+    if (config.backend_isa == kArm64) {
+        arm64::ConfigureGuestStatePolicy(*guest_layout);
     }
 
     // JIT disk cache (off unless SVM_JIT_CACHE names a directory). 这里只构造；
     // driver 必须先完成 MapModule，再显式 LoadJitCache，cache unit 才能按
     // guest 地址恢复到正确 module。
-    if ((config.backend_isa == kArm64 || config.backend_isa == kRiscv64) && JitDiskCache::Requested() &&
-        GetSvmConfig().placement_pad == 0) {
+    if ((config.backend_isa == kArm64 || config.backend_isa == kRiscv64) &&
+        JitDiskCache::Requested()) {
         jit_disk_cache = std::make_unique<JitDiskCache>(*this);
     }
     trampolines->CommitConstruction();
@@ -314,9 +321,9 @@ const Config& AddressSpace::GetConfig() { return config; }
 
 const Config& AddressSpace::GetConfig() const { return config; }
 
-const ir::UniformInfo& AddressSpace::GetUniformInfo() { return *uniform_info; }
+const compile::GuestStateLayout& AddressSpace::GetGuestStateLayout() { return *guest_layout; }
 
-const ir::UniformInfo& AddressSpace::GetUniformInfo() const { return *uniform_info; }
+const compile::GuestStateLayout& AddressSpace::GetGuestStateLayout() const { return *guest_layout; }
 
 AddressSpace::ShutdownResult AddressSpace::TryShutdown(const RetirementControl::Ticket& ticket) {
     if (ticket.owner != retirement_control) return {};

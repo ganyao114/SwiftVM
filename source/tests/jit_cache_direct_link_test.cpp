@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -18,8 +19,13 @@
 #include <mach-o/dyld.h>
 #endif
 #include <catch2/catch_test_macros.hpp>
+#include "base/scope_exit.h"
+#include "runtime/common/backedge_control.h"
 #include "runtime/common/svm_config.h"
+#include "runtime/backend/arm64/compile/lower_edges.h"
+#include "translator/x86/cpu.h"
 #include "runtime/backend/address_space.h"
+#include "runtime/backend/context.h"
 #include "runtime/backend/code_serial.h"
 #include "runtime/backend/jit_cache.h"
 #include "runtime/backend/link_manager.h"
@@ -27,7 +33,6 @@
 #include "runtime/ir/block.h"
 
 namespace {
-
 using namespace swift;
 using namespace swift::runtime;
 using namespace swift::runtime::backend;
@@ -41,7 +46,7 @@ constexpr const char* kRoundTripTest =
 IntrusivePtr<Block> BuildTarget(VAddr guest, u64 fingerprint) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    const auto value = block->LoadImm(Imm{fingerprint}).SetType(ValueType::U64);
+    const auto value = block->LoadImm(ValueType::U64, Imm{fingerprint});
     block->StoreUniform(Uniform{0, ValueType::U64}, value);
     block->SetTerminal(terminal::ReturnToHost{});
     block->ReIdInstr();
@@ -53,8 +58,7 @@ IntrusivePtr<Block> BuildConditionalSource(VAddr guest,
                                            VAddr else_target) {
     IntrusivePtr<Block> block{new Block(0, Location{guest})};
     block->SetEndLocation(Location{guest + 1});
-    const auto selector =
-            block->LoadUniform(Uniform{8, ValueType::U64}).SetType(ValueType::U64);
+    const auto selector = block->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
     const auto condition = block->TestNotZero(selector);
     block->SetTerminal(terminal::If{
             condition,
@@ -424,6 +428,44 @@ TEST_CASE("disk cache scanner keeps move-wide constants and rejects PC-relative 
         REQUIRE_FALSE(scan.ok);
         REQUIRE(scan.reject_reason == "unit contains a literal-pool load");
     }
+
+    SECTION("pair-call helper uses its checked region ABI recipe") {
+        const std::array<u32, 5> original{
+                0xd280000bu | (0x1234u << 5), 0xf2a0000bu, 0xf2c0002bu, 0xf2e0000bu, 0x94000000u};
+        auto words = original;
+        const auto code =
+                std::span<const u8>{reinterpret_cast<const u8*>(words.data()), sizeof(words)};
+        const std::array branches{SerialRegionBranch{16, SerialRegionBranchKind::PairCall}};
+        const auto scan = ScanCodeUnit(code, image, 0x1000000, {}, kArm64, branches);
+        REQUIRE(scan.ok);
+        REQUIRE(scan.relocs.size() == 1);
+        REQUIRE(scan.relocs.front().recorded_value == image.base + 0x1234);
+        REQUIRE(scan.relocs.front().use == RelocUse::BranchTarget);
+        REQUIRE_FALSE(ScanCodeUnit(code, image, 0x1000000).ok);
+        std::string error;
+        const HostImageInfo shifted{.base = image.base + 0x1000000, .size = image.size};
+        auto* bytes = reinterpret_cast<u8*>(words.data());
+        REQUIRE_FALSE(
+                ApplyRelocations(bytes, sizeof(words), {}, shifted, &error, kArm64, branches));
+        REQUIRE(words == original);
+        REQUIRE(ApplyRelocations(
+                bytes, sizeof(words), scan.relocs, shifted, &error, kArm64, branches));
+        const auto rebased = ScanCodeUnit(code, shifted, 0x1000000, {}, kArm64, branches);
+        REQUIRE(rebased.ok);
+        REQUIRE(rebased.relocs.size() == 1);
+        REQUIRE(rebased.relocs.front().recorded_value == shifted.base + 0x1234);
+        for (size_t changed = 0; changed < original.size(); ++changed) {
+            words = original;
+            if (changed == 4)
+                words[changed] = 0x14000000u;
+            else
+                words[changed] = (words[changed] & ~31u) | 12u;
+            REQUIRE_FALSE(ScanCodeUnit(code, image, 0x1000000, {}, kArm64, branches).ok);
+        }
+        words = original;
+        words[2] = 0xf2c0004bu;
+        REQUIRE_FALSE(ScanCodeUnit(code, image, 0x1000000, {}, kArm64, branches).ok);
+    }
 }
 
 TEST_CASE("serializer accepts unit-local ADR targets and rejects escaping addresses",
@@ -599,5 +641,139 @@ TEST_CASE(kRoundTripTest, "[direct-link][jit-cache][production][smc]") {
     REQUIRE(std::filesystem::remove_all(feature_dir) > 0);
 #else
     SUCCEED("direct-link code generation requires AArch64");
+#endif
+}
+
+TEST_CASE("disk cache keeps an eligible module loop on the standard flags ABI",
+          "[direct-link][jit-cache][production][loop-flags]") {
+#if defined(__aarch64__)
+#if defined(__ANDROID__)
+    char directory[] = "/data/local/tmp/svm-eligible-loop-cache.XXXXXX";
+#else
+    char directory[] = "/tmp/svm-eligible-loop-cache.XXXXXX";
+#endif
+    REQUIRE(mkdtemp(directory) != nullptr);
+    const std::filesystem::path dir{directory};
+    const auto remove_directory = swift::ScopeExit([&] {
+        std::error_code ignored;
+        std::filesystem::remove_all(dir, ignored);
+    });
+    const std::array<const char*, 5> names{
+            "SVM_JIT_CACHE", "SVM_FLAGS_LOOP_LAZY", "SVM_BACKEDGE_FLAGS",
+            "SVM_BACKEDGE_LATCH", "SVM_FLAGS_REGS"};
+    std::array<std::optional<std::string>, 5> previous;
+    for (size_t i = 0; i < names.size(); ++i)
+        if (const auto* value = GetRawSvmConfigEnvForTest(names[i])) previous[i] = value;
+    const auto restore = swift::ScopeExit([&] {
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (previous[i]) SetSvmConfigEnvForTest(names[i], previous[i]->c_str(), 1);
+            else UnsetSvmConfigEnvForTest(names[i]);
+        }
+    });
+    const std::array<const char*, 5> values{directory, "0", "0", "1", "1"};
+    for (size_t i = 0; i < names.size(); ++i)
+        REQUIRE(SetSvmConfigEnvForTest(names[i], values[i], 1) == 0);
+    REQUIRE(GetSvmConfig().flags_regs); // The scratch import gate is independently eligible.
+
+    const size_t page = static_cast<size_t>(getpagesize());
+    const size_t guest_size = 16 * page;
+    void* guest = mmap(nullptr, guest_size, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANON, -1, 0);
+    REQUIRE(guest != MAP_FAILED);
+    const auto unmap = swift::ScopeExit([&] { munmap(guest, guest_size); });
+    std::memset(guest, 0xa5, guest_size);
+    auto config = MakeConfig(guest, guest_size);
+    config.uniform_buffer_size = static_cast<u32>(sizeof(swift::x86::ThreadContext64));
+    config.arm64_features = {};
+    const VAddr self = page + 0x100;
+    const VAddr cold = 5 * page + 0x100;
+    constexpr u64 fingerprint = 0x4c4f4f5043414348ull;
+    constexpr u32 carry_offset = offsetof(swift::x86::ThreadContext64, carry_inverted);
+    // The first AddressSpace is destroyed before reload, so no live RX owner
+    // or in-memory unit can stand in for the persisted cache.
+    for (const bool reload : {false, true}) {
+        CAPTURE(reload);
+        AddressSpace space{config};
+        auto module_config = space.GetDefaultModule()->GetModuleConfig();
+        module_config.feature_overrides.Set(FeatureId::flags_loop_lazy, true);
+        auto module = space.MapModule(self, cold + 1, module_config);
+        REQUIRE(module);
+        const auto features = ResolveFeatureSet(module->GetModuleConfig());
+        REQUIRE(features.flags_loop_lazy);
+        space.LoadJitCache(); // Mapping and its feature override precede load.
+        auto* disk = space.GetJitDiskCache();
+        REQUIRE(disk != nullptr);
+        REQUIRE(disk->Enabled());
+        if (!reload) {
+            REQUIRE(disk->Stats().units_loaded.load() == 0);
+            auto exit = BuildTarget(cold, fingerprint);
+            IntrusivePtr<Block> loop{new Block(0, Location{self})};
+            loop->SetEndLocation(Location{self + 1});
+            const auto count = loop->LoadUniform(ValueType::U64, Uniform{8, ValueType::U64});
+            const auto result = loop->Sub(ValueType::U64, count, Operand{Imm{u64{1}}});
+            loop->StoreUniform(Uniform{8, ValueType::U64}, result);
+            loop->SaveFlags(result, Flags::All);
+            const auto inverted = loop->LoadImm(ValueType::U8, Imm{u8{1}});
+            loop->StoreUniform(Uniform{carry_offset, ValueType::U8}, inverted);
+            loop->AdvancePC(Imm{u64{1}});
+            const auto condition = loop->LocalCondSet(Cond::NE);
+            loop->SetTerminal(terminal::If{condition, terminal::LinkBlock{Location{self}},
+                                           terminal::LinkBlock{Location{cold}}});
+            loop->ReIdInstr();
+            arm64::BackedgeInputs inputs{features};
+            inputs.self_enabled = BackedgeLatchEnabled() && features.flags_loop_lazy;
+            const auto eligible = arm64::LowerBackedge(*loop, inputs);
+            REQUIRE(eligible);
+            REQUIRE_FALSE(eligible->action.dead_successor);
+            REQUIRE(eligible->action.self_target == Location{self});
+            REQUIRE(eligible->action.Required() == Flags::NZCV);
+            REQUIRE(module->Push(exit.get()));
+            REQUIRE(module->Push(loop.get()));
+            auto* exit_code = TranslateIR(module, exit);
+            auto* loop_code = TranslateIR(module, loop);
+            REQUIRE(exit_code != nullptr);
+            REQUIRE(loop_code != nullptr);
+            space.PushCodeCache(Location{cold}, exit_code);
+            space.PushCodeCache(Location{self}, loop_code);
+            // TranslateIR must record both units; the test never calls RecordUnit.
+            REQUIRE(disk->Stats().units_compiled.load() == 2);
+        } else {
+            REQUIRE(disk->Stats().units_loaded.load() == 2);
+            REQUIRE(disk->Stats().units_compiled.load() == 0);
+        }
+        REQUIRE(space.GetCodeCache(Location{self}) != nullptr);
+        REQUIRE(space.GetCodeCache(Location{cold}) != nullptr);
+        FaultEntry allocation;
+        std::vector<FaultEntry> faults;
+        REQUIRE(module->LookupCodeAllocation(static_cast<const u8*>(space.GetCodeCache(Location{self})), allocation, &faults));
+        REQUIRE(std::none_of(faults.begin(), faults.end(), [&](const auto& fault) {
+            return fault.guest_loc == self && fault.recovery != nullptr &&
+                   fault.host_end - fault.host_start > sizeof(u32);
+        }));
+        Runtime runtime{&space};
+        SetUniform(runtime, 0, 0);
+        SetUniform(runtime, 8, 3);
+        SetUniform(runtime, carry_offset, 0);
+        runtime.GetState()->host_cpu_flags = 0xb4000001u;
+        runtime.SetLocation(self);
+        REQUIRE(runtime.Run() == HaltReason::CallHost);
+        REQUIRE(GetUniform(runtime, 8) == 0);
+        REQUIRE(GetUniform(runtime, 0) == fingerprint);
+        const auto flags = runtime.GetState()->host_cpu_flags;
+        REQUIRE((flags & 0xf0000000u) == 0x60000000u); // Last SUB1: N0/Z1/C1/V0.
+        REQUIRE((flags & (u64{1} << 26)) == 0);       // AF0.
+        REQUIRE((std::popcount(static_cast<u8>(flags)) & 1) == 0); // PF1.
+        REQUIRE((GetUniform(runtime, carry_offset) & 0xff) == 1); // Raw C is inverted x86 CF.
+        if (!reload) {
+            // Save after the actual dispatch slots and code have been published.
+            disk->Save();
+            REQUIRE(disk->Stats().reject_scan.load() == 0);
+            REQUIRE(disk->Stats().units_stored.load() == 2);
+            REQUIRE(std::filesystem::file_size(FindCacheFile(dir)) > 0);
+        } else REQUIRE(disk->Stats().units_compiled.load() == 0);
+    }
+    REQUIRE(std::filesystem::remove_all(dir) > 0);
+#else
+    SUCCEED("eligible disk-cache loop execution requires AArch64");
 #endif
 }

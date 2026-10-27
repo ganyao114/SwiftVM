@@ -60,8 +60,9 @@ void JitTranslator::ObserveEdgeCarryPolarity(ir::Uniform uniform,
 }
 
 EdgeFlagsTargetContract JitTranslator::AnalyzeEdgeFlagsTarget(ir::Location target) const {
-    const auto found = RegionBlockMap().find(target.Value());
-    return found == RegionBlockMap().end() ? EdgeFlagsTargetContract{} : found->second.edge_flags;
+    if (RequiresCanonicalBackedgeEntry(target)) return {};
+    const auto* found = Edges().InternalBlock(target.Value());
+    return found == nullptr ? EdgeFlagsTargetContract{} : found->edge_flags;
 }
 
 bool JitTranslator::TargetAcceptsEdgeFlags(
@@ -77,7 +78,7 @@ bool JitTranslator::TargetKillsIncomingFlags(ir::Location target) const {
                                   EdgeFlagsProducer::Restore));
 }
 
-void JitTranslator::EmitFlagsPublishedVeneer(ir::Block* block) {
+void JitTranslator::EmitFlagsPublishedVeneer(const ir::Block* block) {
     if (!FlagsRegsEnabled() || !RegionEdgesActive() || !block) {
         return;
     }

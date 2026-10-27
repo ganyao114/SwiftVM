@@ -1,7 +1,7 @@
 #include "test_support.h"
 #include "runtime/backend/address_space.h"
 #include "runtime/backend/riscv64/jit/compile.h"
-#include "runtime/frontend/ir_assembler.h"
+#include "runtime/compile/builder/ir_builder.h"
 #include "runtime/ir/hir_builder.h"
 #include <algorithm>
 #include <chrono>
@@ -12,14 +12,14 @@ namespace swift::tests::riscv {
 namespace {
 namespace be = runtime::backend;
 using T = ir::ValueType;
-template<class Assembler> void Body(Assembler& as) {
-    auto address = as.LoadUniform(ir::Uniform{0, T::U64}).SetType(T::U64);
-    auto increment = as.LoadUniform(ir::Uniform{8, T::U64}).SetType(T::U64);
-    auto value = as.LoadMemoryTSO(ir::Operand{address}).SetType(T::U64);
+template <class Assembler> void Body(Assembler& as) {
+    auto address = as.LoadUniform(T::U64, ir::Uniform{0, T::U64});
+    auto increment = as.LoadUniform(T::U64, ir::Uniform{8, T::U64});
+    auto value = as.LoadMemoryTSO(T::U64, ir::Operand{address});
     for (u32 index = 0; index < 4; ++index) {
-        value = as.Add(value, ir::Operand{increment}).SetType(T::U64);
+        value = as.Add(T::U64, value, ir::Operand{increment});
         as.StoreMemoryTSO(ir::Operand{address}, value);
-        value = as.LoadMemoryTSO(ir::Operand{address}).SetType(T::U64);
+        value = as.LoadMemoryTSO(T::U64, ir::Operand{address});
     }
     as.StoreUniform(ir::Uniform{16, T::U64}, value);
 }
@@ -45,7 +45,7 @@ void Measure(const char* kind, bool function) {
                 saves += inst.GetOp() == ir::OpCode::SaveFlags;
         } else {
             IntrusivePtr<ir::Block> block{new ir::Block(guest)};
-            ir::Assembler as{block.get()}; Body(as);
+            compile::IrBuilder as{block.get()}; Body(as);
             block->SetTerminal(ir::terminal::ReturnToHost{});
             const auto start = std::chrono::steady_clock::now();
             entry = be::riscv64::CompileBlock(module, block.get());

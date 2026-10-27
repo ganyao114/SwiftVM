@@ -31,7 +31,7 @@ static u32 ModuleCodeCacheSize(size_t address_space_size) {
 }
 
 static AddressNodeRef ToNodeRef(ir::AddressNode* node) {
-    switch (node->node_type) {
+    switch (node->GetNodeType()) {
         case ir::AddressNode::Function:
             return IntrusivePtr<ir::Function>((ir::Function*)node);
         case ir::AddressNode::Block:
@@ -111,7 +111,7 @@ Module::Module(ConstructionKey, AddressSpace& space,
 // because SmcTracker holds its own ir::NodeRef on exactly these nodes (that is
 // what 8d8ddba changed it to, after a borrowed pointer there was a
 // use-after-free), and callers can be holding IntrusivePtr handles from
-// GetNode/GetNodes. Releasing is correct under every one of those: the node
+// GetNode. Releasing is correct under every one of those: the node
 // dies here only if this map held the last reference.
 //
 // Ordering note for the common teardown path: AddressSpace declares
@@ -124,7 +124,7 @@ Module::~Module() {
     fault_catalog->RemoveModule(this);
     std::unique_lock guard(inner_lock);
     address_node_map.ReleaseAll(
-            [](const ir::AddressNode* node) { return node->location.Value(); },
+            [](const ir::AddressNode* node) { return node->GetStartLocation().Value(); },
             &ReleaseNodeRef);
 }
 
@@ -153,8 +153,8 @@ void Module::Remove(ir::AddressNode* node) {
     bool erased = false;
     {
         std::unique_lock guard(inner_lock);
-        if (address_node_map.Get(node->location.Value()) == node) {
-            address_node_map.Remove(node->location.Value());
+        if (address_node_map.Get(node->GetStartLocation().Value()) == node) {
+            address_node_map.Remove(node->GetStartLocation().Value());
             erased = true;
         }
     }
@@ -177,16 +177,6 @@ AddressNodeRef Module::GetNode(ir::Location location) {
         return ToNodeRef(node);
     }
     return {};
-}
-
-AddressNodeRefs Module::GetNodes(ir::Location start, ir::Location end) {
-    std::shared_lock guard(inner_lock);
-    auto nodes_ptr = address_node_map.GetRange(start.Value(), end.Value());
-    AddressNodeRefs nodes{};
-    for (auto node_ptr : nodes_ptr) {
-        nodes.push_back(ToNodeRef(node_ptr));
-    }
-    return nodes;
 }
 
 AddressNodeRef Module::GetNodeOrCreate(ir::Location location, bool is_func) {
@@ -212,16 +202,6 @@ AddressNodeRef Module::GetNodeOrCreate(ir::Location location, bool is_func) {
     }
 }
 
-AddressNodeRefs Module::GetRangeNodes(ir::Location start, ir::Location end) {
-    std::shared_lock guard(inner_lock);
-    auto nodes_ptr = address_node_map.GetRange(start.Value(), end.Value());
-    AddressNodeRefs nodes{};
-    for (auto node_ptr : nodes_ptr) {
-        nodes.push_back(ToNodeRef(node_ptr));
-    }
-    return nodes;
-}
-
 CodeCache* Module::GetCodeCache(u8* exe_ptr) {
     if (!address_space.load(std::memory_order_seq_cst)) return nullptr;
     std::shared_lock guard(cache_lock);
@@ -234,21 +214,26 @@ CodeCache* Module::GetCodeCache(u8* exe_ptr) {
 }
 
 void* Module::GetJitCache(ir::Location location) {
-    if (!address_space.load(std::memory_order_seq_cst)) return nullptr;
+    auto* space = address_space.load(std::memory_order_seq_cst);
+    if (!space) return nullptr;
     auto node = GetNode(location);
     if (IsEmpty(node)) {
         return nullptr;
     }
-    return VisitVariant<void*>(node, [this, location](auto x) -> void* {
+    return VisitVariant<void*>(node, [this, space, location](auto x) -> void* {
         using T = std::decay_t<decltype(x)>;
         if constexpr (std::is_same_v<T, IntrusivePtr<ir::Function>>) {
             if (x->code_lifetime && !x->code_lifetime->Live()) return nullptr;
             auto guard = x->LockRead();
-            if (GetAddressSpace().GetConfig().backend_isa == kRiscv64) {
+            if (space->GetConfig().backend_isa == kRiscv64) {
                 auto* block = x->FindBlock(location);
                 return block ? GetJitCache(block->GetJitCache()) : nullptr;
             }
-            return GetJitCache(x->GetJitCache());
+            // ARM64's Function cache describes the whole allocation, whose
+            // start can be a published-frame prologue. The exact root node
+            // must use its published canonical entry, including when that
+            // entry is absent. AddressSpace::GetCodeCache falls back here.
+            return reinterpret_cast<void*>(space->GetCodeCacheTable().Lookup(location.Value()));
         } else if constexpr (std::is_same_v<T, IntrusivePtr<ir::Block>>) {
             if (x->code_lifetime && !x->code_lifetime->Live()) return nullptr;
             auto guard = x->LockRead();
@@ -522,10 +507,10 @@ static u8* DetachFunction(Module& module, ir::Function* function) {
         // Function keeps those children alive after removal from the module;
         // none may keep resolving into the retired (and later reused) arena.
         for (auto& member : function->GetBlocks()) {
-            auto& block = static_cast<ir::Block&>(member);
+            auto& block = static_cast<const ir::Block&>(member);
             auto block_guard = block.LockWrite();
             if (block.code_lifetime) block.code_lifetime->Revoke();
-            block.GetJitCache() = {};
+            block.ClearJitCache();
         }
     }
     module.Remove(function);
@@ -541,7 +526,7 @@ u8* Module::DetachNode(ir::AddressNode* node) {
         for (auto& [allocation, entry] : instruction_allocations)
             if (entry.descriptor->original == node || entry.descriptor->emitted == node) entry.revoked = true;
     }
-    switch (node->node_type) {
+    switch (node->GetNodeType()) {
         case ir::AddressNode::Block:
             return DetachBlock(*this, static_cast<ir::Block*>(node));
         case ir::AddressNode::Function:
@@ -683,16 +668,16 @@ AddressSpace& Module::GetAddressSpace() const {
 }
 
 static void ClearNodePublication(ir::AddressNode* node) {
-    if (node->node_type == ir::AddressNode::Function) {
+    if (node->GetNodeType() == ir::AddressNode::Function) {
         auto* function = static_cast<ir::Function*>(node);
         auto guard = function->LockWrite();
         function->GetJitCache() = {};
         for (auto& member : function->GetBlocks()) {
-            auto& block = static_cast<ir::Block&>(member);
+            auto& block = static_cast<const ir::Block&>(member);
             auto block_guard = block.LockWrite();
-            block.GetJitCache() = {};
+            block.ClearJitCache();
         }
-    } else if (node->node_type == ir::AddressNode::Block) {
+    } else if (node->GetNodeType() == ir::AddressNode::Block) {
         auto* block = static_cast<ir::Block*>(node);
         auto guard = block->LockWrite();
         block->GetJitCache() = {};
