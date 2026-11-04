@@ -1,0 +1,86 @@
+{
+  "schema": 3,
+  "comparison_basis": "compile_excluding_decode",
+  "policy_fex_multipliers": {
+    "A": 0.5,
+    "B": 0.25,
+    "C": 0.9,
+    "D": 0.25,
+    "other": 0.1
+  },
+  "round_id": null,
+  "timer_semantics": null,
+  "workload": {
+    "kind": null,
+    "fixed": null,
+    "application_sha256": null,
+    "fingerprint_sha256": null
+  },
+  "fixed_fex_identity": {
+    "source_digest": null,
+    "binary_sha256": null
+  },
+  "stage_endpoints": {
+    "A": {
+      "start": null,
+      "end": null
+    },
+    "B": {
+      "start": null,
+      "end": null
+    },
+    "C": {
+      "start": null,
+      "end": null
+    },
+    "D": {
+      "start": null,
+      "end": null
+    }
+  },
+  "request_attempts": {
+    "block": null,
+    "function": null
+  },
+  "measurements": {
+    "block": {
+      "candidate": {
+        "path": null,
+        "sha256": null
+      },
+      "fex": {
+        "path": null,
+        "sha256": null
+      }
+    },
+    "function": {
+      "candidate": {
+        "path": null,
+        "sha256": null
+      },
+      "fex": {
+        "path": null,
+        "sha256": null
+      }
+    }
+  },
+  "_note": "Current comparison excludes decode on BOTH sides; require comparison_basis:compile_excluding_decode in manifest and each result. Both records still need measurement_kind:application_compile and complete post-decode application work, synthetic:false, partial_compile_coverage:false. Byte-decoder ISA coverage is deferred. Charged wall_intervals_ns must already exclude pure decode; each result supplies excluded_decode_intervals_ns (explicit [] for supplied decoded inputs) and decode_exclusion_kind:byte_decode_only, disjoint from charged time. Keep all IR initialization/construction, rewrites/resets, optimization, allocation, encoding, publishing, failure/abandonment and release even when inside a function named decode. Both sides use the same monotonic wall domain; no guessed decoder-duration subtraction from historical totals. A/full spans refer to the comparison basis; FEX is full within that basis. Stage windows must be contained and disjoint; zero stages require [] plus inclusive_ms:0. Authentic application-derived body writer replay remains a component, not full post-decode compile. Nulls remain missing evidence.",
+  "fex_endpoints": {
+    "start": null,
+    "end": null
+  },
+  "environment": {
+    "device_serial": null,
+    "cpu_affinity": null,
+    "policy_identity_sha256": null
+  },
+  "fixed_candidate_identity": {
+    "source_digest": null,
+    "binary_sha256": null
+  },
+  "wall_clock": {
+    "kind": "monotonic_wall",
+    "unit": "ns",
+    "domain": null
+  }
+}

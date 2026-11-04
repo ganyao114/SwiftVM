@@ -1,0 +1,3 @@
+simpleperf W workload.cpp:181] sched_setaffinity failed: Invalid argument
+simpleperf W workload.cpp:181] sched_setaffinity failed: Invalid argument
+simpleperf W workload.cpp:181] sched_setaffinity failed: Invalid argument

@@ -1,0 +1,54 @@
+{
+  "utc": "2026-11-04T20:51:55.561057+00:00",
+  "namespace": "/data/local/tmp/swiftvm-parity-batch37-20261103",
+  "allocated_bytes_removed": 37889024,
+  "df_actual_free_delta_bytes": 37949440,
+  "remaining_bytes": 0,
+  "active_processes": [],
+  "open_files": [],
+  "errors": [],
+  "commands": [
+    {
+      "command": "ps -A -o PID,PPID,ARGS",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": "lsof",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": "du -sk /data/local/tmp/swiftvm-parity-batch37-20261103",
+      "exit": 0,
+      "stdout": "37001\t/data/local/tmp/swiftvm-parity-batch37-20261103\n",
+      "stderr": ""
+    },
+    {
+      "command": "df -k /data/local/tmp",
+      "exit": 0,
+      "stdout": "Filesystem       1K-blocks      Used Available Use% Mounted on\n/dev/block/dm-52 476244812 470194988   5918752  99% /data/user/0\n",
+      "stderr": ""
+    },
+    {
+      "command": "rm -rf -- /data/local/tmp/swiftvm-parity-batch37-20261103",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": "test ! -e /data/local/tmp/swiftvm-parity-batch37-20261103",
+      "exit": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "command": "df -k /data/local/tmp",
+      "exit": 0,
+      "stdout": "Filesystem       1K-blocks      Used Available Use% Mounted on\n/dev/block/dm-52 476244812 470157928   5955812  99% /data/user/0\n",
+      "stderr": ""
+    }
+  ]
+}

@@ -1,0 +1,301 @@
+{
+  "kind": "git_evidence_packaging_index",
+  "batch": 37,
+  "original_evidence_root": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37",
+  "original_shared_log_root": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103",
+  "original_measurement_sha256": "fd0ebb07db6dd9237f5534ab538a0e568f766b4bfe7a317b5473c73f3fd14a4b",
+  "original_source80_digest": "79c8bf0c2046ab35ece932b5e74310b13d5de339b00ee01e4def117235cdd985",
+  "source_digest_is_not_git_commit": true,
+  "destination_branch": "refactor/middle-pipeline-rebuild-parity",
+  "destination_worktree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "base_commit_prefix_from_parent": "660b6ba1",
+  "original_repository_branch_index_and_wip_unchanged_by_packaging": true,
+  "original_files": [
+    {
+      "path": "runtime-summary.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-summary.json",
+      "bytes": 1703,
+      "sha256": "d6f73d91fd5bc8d2c594c6ef9a4603a13fec88fa4f97fdd6cac4e72a92d87e1d"
+    },
+    {
+      "path": "compile-summary.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/compile-summary.json",
+      "bytes": 35301,
+      "sha256": "93aa3cce9bbdbb795f329fa76554ea2b360863b674ffc41de1393a0840fbcb15"
+    },
+    {
+      "path": "runner-identity.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runner-identity.json",
+      "bytes": 286,
+      "sha256": "a38bb3b7f18ac371106359d3fbf7c723df5261bef91e02053e5d455f290bcf92"
+    },
+    {
+      "path": "source-manifest.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/source-manifest.json",
+      "bytes": 14212,
+      "sha256": "639501c2c2f3c1627e6c2883d140f9c324b858b2515dde65422ca022bbfb06a4"
+    },
+    {
+      "path": "measurement-receipt.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/measurement-receipt.json",
+      "bytes": 3703,
+      "sha256": "fd0ebb07db6dd9237f5534ab538a0e568f766b4bfe7a317b5473c73f3fd14a4b"
+    },
+    {
+      "path": "closeout-receipt.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/closeout-receipt.json",
+      "bytes": 925,
+      "sha256": "2b7f01ba75286d6a7ce6322b95368b9b70bdf52e6487d3f640934e79ba430b6d"
+    },
+    {
+      "path": "native-quality-review.md",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/native-quality-review.md",
+      "bytes": 3829,
+      "sha256": "53c37434dccdbb678da7bd425eb533d98476cfe65bf12134c7b71405df8e1567"
+    },
+    {
+      "path": "hot-actual/native-quality-comparison.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/hot-actual/native-quality-comparison.json",
+      "bytes": 16172,
+      "sha256": "54b4951a9bba6f738f0100e1cc5ee60a197bbfbb434e5ba232f50c5a693c0542"
+    },
+    {
+      "path": "phone-cleanup-receipt.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/phone-cleanup-receipt.json",
+      "bytes": 1482,
+      "sha256": "6a27d26115313ae76c4b66b2b2aba55cd1e1d0d60796439da80bc0de61dedc9f"
+    },
+    {
+      "path": "inputs.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/inputs.json",
+      "bytes": 2844,
+      "sha256": "cb99b9bd97a11c39df8f401ccca25598327400f51254a496d2ffa266a01c5f98"
+    },
+    {
+      "path": "environment.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/environment.json",
+      "bytes": 778,
+      "sha256": "b4a5933f6d1fbd7a06c23e706f98d163c723b8a415ffd1393c1128c1af088140"
+    },
+    {
+      "path": "commands.json",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/commands.json",
+      "bytes": 20899,
+      "sha256": "950f5a697338c4a22f2442e89514bef0684a8c4a465f6d68707e4d60d0e2bead"
+    },
+    {
+      "path": "backend-test.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/backend-test.stdout",
+      "bytes": 103,
+      "sha256": "831e7a9c8ae00d1c7f257ef25e16efafcb661613bcbfd1eb7a8f95307c1c65cb"
+    },
+    {
+      "path": "backend-test.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/backend-test.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "pipeline-test.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/pipeline-test.stdout",
+      "bytes": 88,
+      "sha256": "d8d8ac61ef7162c238adf29ee182165f8aa847043bc4d0ad5667c4b97ec12109"
+    },
+    {
+      "path": "pipeline-test.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/pipeline-test.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "compile-policy-before.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/compile-policy-before.stdout",
+      "bytes": 27,
+      "sha256": "ac6ad1c2b8e0530f608846d26e980619b9d73bf7416e14e1536099ad05cb18f4"
+    },
+    {
+      "path": "compile-policy-before.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/compile-policy-before.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "compile-policy-after.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/compile-policy-after.stdout",
+      "bytes": 27,
+      "sha256": "ac6ad1c2b8e0530f608846d26e980619b9d73bf7416e14e1536099ad05cb18f4"
+    },
+    {
+      "path": "compile-policy-after.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/compile-policy-after.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "runtime-policy-before.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-policy-before.stdout",
+      "bytes": 27,
+      "sha256": "ac6ad1c2b8e0530f608846d26e980619b9d73bf7416e14e1536099ad05cb18f4"
+    },
+    {
+      "path": "runtime-policy-before.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-policy-before.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "runtime-policy-after.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-policy-after.stdout",
+      "bytes": 27,
+      "sha256": "ac6ad1c2b8e0530f608846d26e980619b9d73bf7416e14e1536099ad05cb18f4"
+    },
+    {
+      "path": "runtime-policy-after.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-policy-after.stderr",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "runtime-block.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-block.stdout",
+      "bytes": 1137,
+      "sha256": "cb46c0f12ea5f24e5096a2c5a33bbc0729a1893af77609c45424cf64ef0f2503"
+    },
+    {
+      "path": "runtime-block.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-block.stderr",
+      "bytes": 1962,
+      "sha256": "0f0025dfe5f1d31d6961a89355cd8cd64083cdf2b2677fa974dde8a96a1dff5e"
+    },
+    {
+      "path": "runtime-function.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-function.stdout",
+      "bytes": 1140,
+      "sha256": "f8638c9cb2da674f6d450a883295d5066ad5c0d53b112afa40908e89b8b3e455"
+    },
+    {
+      "path": "runtime-function.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-function.stderr",
+      "bytes": 1962,
+      "sha256": "978afe0122ad3048fb12247b2048360ec86bd96cd54996640b8e56ac7d0095a0"
+    },
+    {
+      "path": "runtime-fex.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-fex.stdout",
+      "bytes": 1137,
+      "sha256": "107ebe3ac2fb9fbdbccb4098d1f77d9d9e43869e13cd4a117d143ae71d712f84"
+    },
+    {
+      "path": "runtime-fex.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/runtime-fex.stderr",
+      "bytes": 222,
+      "sha256": "bf922d0f8858f4842be35dd4d044a721e2cb48c660d73cada67467c89111b071"
+    },
+    {
+      "path": "formatter-guest-block.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/formatter-guest-block.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "formatter-guest-block.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/formatter-guest-block.stderr",
+      "bytes": 1646,
+      "sha256": "bba729e6fab79042ebf53dd31dca6337e7c057b08baec26ab667f8d799a43043"
+    },
+    {
+      "path": "formatter-guest-function.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/formatter-guest-function.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "formatter-guest-function.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/formatter-guest-function.stderr",
+      "bytes": 1633,
+      "sha256": "d1ec1074f71442b4583a064c323bd659209596fc6eb83cabd79ce635a644597a"
+    },
+    {
+      "path": "smc-guest-block.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/smc-guest-block.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "smc-guest-block.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/smc-guest-block.stderr",
+      "bytes": 1627,
+      "sha256": "372a1885ff5bfc918bb0f5b4f488b3da4457cf652ea80593b9e6840c45ded7db"
+    },
+    {
+      "path": "smc-guest-function.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/smc-guest-function.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "smc-guest-function.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/smc-guest-function.stderr",
+      "bytes": 1629,
+      "sha256": "03fce6d61bab29d76ef65afeaf17bd534ad11989b5d56927733089d99b5cf4c2"
+    },
+    {
+      "path": "smc-file-alias-eof-block.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/smc-file-alias-eof-block.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "smc-file-alias-eof-block.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/smc-file-alias-eof-block.stderr",
+      "bytes": 1747,
+      "sha256": "1fbf868ab0b250a57cf66e718c33a3fcc2b61bbb9dd170e6b3b7576fe0a8fd66"
+    },
+    {
+      "path": "smc-file-alias-eof-function.stdout",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/smc-file-alias-eof-function.stdout",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "smc-file-alias-eof-function.stderr",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/smc-file-alias-eof-function.stderr",
+      "bytes": 1746,
+      "sha256": "82f711344702a228288b713f4740bde0ac83553a23ab4f5239444cdb634478ed"
+    },
+    {
+      "path": "host-batch37-build.log",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/host-batch37-build.log",
+      "bytes": 554,
+      "sha256": "b2e7da56a29207480db965951c3a732dad1c16c8062dcaa365874562d273fdca"
+    },
+    {
+      "path": "host-batch37-ctest.log",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/host-batch37-ctest.log",
+      "bytes": 687,
+      "sha256": "3963477c3d2913e8454405ebad225dd26bad956d10c85606c40db726e3bb71f3"
+    },
+    {
+      "path": "android-batch37-build.log",
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/android-batch37-build.log",
+      "bytes": 756,
+      "sha256": "58d7933e35f9468b8349eeb198f4756b8a3f335ed585e99319fb57058d732c40"
+    }
+  ],
+  "generated_files": [
+    {
+      "path": "README.md",
+      "bytes": 2754,
+      "sha256": "dd028c03b654b82131f9e07d8ee211f455b3f69522d719d31f9c3c440059527d"
+    },
+    {
+      "path": "../../codegen-parity-checkpoint-2026-11-04.md",
+      "bytes": 4925,
+      "sha256": "55b7fa398a3fb1b678a48fb630c901cc6a9907d4804d485060e9ad919ca89859"
+    }
+  ],
+  "omitted": "Binaries, runner.gz, repeated source snapshots, old batches and raw per-sample compile streams; compile-summary retains all nine original compile records.",
+  "new_execution": false,
+  "submit_source80_verification": "Root verified all80 build-input file SHA-256 values against the frozen batch37 manifest before staging. Submission-tree default all-target build and five host contracts passed; no device remeasurement.",
+  "self_hash": "Not embedded; receipt.json SHA-256 is reported externally to avoid recursive self-hashing."
+}

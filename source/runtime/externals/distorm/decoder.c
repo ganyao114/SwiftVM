@@ -15,7 +15,6 @@ This library is licensed under the BSD license. See the file COPYING.
 #include "prefix.h"
 #include "x86defs.h"
 #include "operands.h"
-#include "insts.h"
 #include "mnemonics.h"
 
 
@@ -524,11 +523,14 @@ _DecodeResult decode_internal(_CodeInfo* _ci, int supportOldIntr, _DInst result[
 		 * so prefixSize includes that, and the returned size in pdi is simply the size of the real(=without prefixes) instruction.
 		 */
 		if (ci.dt == Decode64Bits) {
-			if (ps.decodedPrefixes & INST_PRE_REX) {
+			/* VEX lookup must still reject an earlier REX prefix. */
+			if ((ps.decodedPrefixes & INST_PRE_REX) && (ps.prefixExtType == PET_REX)) {
 				/* REX prefix must precede first byte of instruction. */
 				if (ps.rexPos != (code - 1)) {
 					ps.decodedPrefixes &= ~INST_PRE_REX;
 					ps.prefixExtType = PET_NONE;
+					/* Operand extraction also reads these bits directly. */
+					ps.vrex = 0;
 					prefixes_ignore(&ps, PFXIDX_REX);
 				}
 				/*

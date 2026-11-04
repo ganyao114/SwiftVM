@@ -1,0 +1,7 @@
+[1/7] Building CXX object CMakeFiles/svm_arm64.dir/source/runtime/backend/arm64/emit_state.cpp.o
+[2/7] Building CXX object CMakeFiles/svm_arm64.dir/source/runtime/backend/arm64/emit_vector.cpp.o
+[3/7] Building CXX object CMakeFiles/svm_arm64.dir/source/runtime/backend/arm64/compile.cpp.o
+[4/7] Linking CXX static library libsvm_arm64.a
+[5/7] Linking CXX executable svm_compile_pipeline_test
+[6/7] Building CXX object CMakeFiles/svm_arm64_compile_test.dir/source/tests/rebuild/arm64_compile_test.cpp.o
+[7/7] Linking CXX executable svm_arm64_compile_test

@@ -1,8 +1,0 @@
-//
-// Created by 甘尧 on 2023/12/18.
-//
-
-#ifndef SWIFTVM_ANDROID_ENTRY_H
-#define SWIFTVM_ANDROID_ENTRY_H
-
-#endif //SWIFTVM_ANDROID_ENTRY_H

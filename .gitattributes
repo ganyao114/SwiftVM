@@ -1,0 +1,3 @@
+# Frozen measurement outputs retain their exact bytes and hashes, including
+# simpleperf's trailing spaces. Do not normalize or whitespace-check them.
+docs/evidence/parity-batch37/** -text -whitespace

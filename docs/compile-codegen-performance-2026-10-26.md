@@ -4,6 +4,8 @@
 
 前一轮终点r9直接对原始9bb基线：CoreMark的Function/Block编译请求累计耗时分别减少约6.84%/5.88%，fp1分别减少约9.00%/9.29%。r9相对相邻已接受r7的FP发射缓冲各少32 B，标准PMU指令斜率减少约2.86%/3.06%，当时cycles和elapsed尚未证明稳定改善。该轮生产改动净增7行，没有新增pass或opcode。以下历史结果不改贴为后续二进制；不宣称FEX完整语义等价、精确纯编译差距或整个中间流程重构完成。
 
+后续实施路线见 [编译成本优化方案](compile-cost-optimization-plan-2026-10-27.md)，按 Block 与 Function 分开处理分配输入、目标准备和前端成本；方案中的收益目标尚未作为实测结果。
+
 ## 对照和约束
 
 - SVM 起点为 public-audit-v2：代码摘要6049ce553edc88a518a1ca551f4d0ad8d3ec360b2a424a5457a5301a7b3ebb24，launcher9bb79d52…。原始代码/Git/WIP和压缩产物索引保留；固定输入缓存另留一个独立inode的baseline ELF，防止后续链接覆写基线。

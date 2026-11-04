@@ -1,9 +1,0 @@
-include(import_remote.cmake)
-
-add_subdirectory(vixl)
-add_subdirectory(dlmalloc)
-add_subdirectory(riscv-asm)
-add_subdirectory(boost)
-add_subdirectory(distorm)
-add_subdirectory(biscuit)
-add_subdirectory(SoftFloat-3e)

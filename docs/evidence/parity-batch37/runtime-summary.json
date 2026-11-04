@@ -1,0 +1,71 @@
+{
+  "kind": "original_bionic_100000_valid_runtime_user_pmu_stat",
+  "tick_unit": "ms",
+  "ticks": {
+    "block": 16302,
+    "function": 15493,
+    "fex": 15072
+  },
+  "crcs": {
+    "block": "0xd340",
+    "function": "0xd340",
+    "fex": "0xd340"
+  },
+  "valid": {
+    "block": true,
+    "function": true,
+    "fex": true
+  },
+  "affinity": {
+    "block": {
+      "pid": 22293,
+      "exe": "/data/local/tmp/swiftvm-parity-batch37-20261103/candidate",
+      "cpus_allowed_list": "4"
+    },
+    "function": {
+      "pid": 22399,
+      "exe": "/data/local/tmp/swiftvm-parity-batch37-20261103/candidate",
+      "cpus_allowed_list": "4"
+    },
+    "fex": {
+      "pid": 22447,
+      "exe": "/data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader",
+      "cpus_allowed_list": "4"
+    }
+  },
+  "pmu_scope": "Whole child user events including setup and cold JIT; no sampling or byte clocks",
+  "pmu": {
+    "block": {
+      "cpu-cycles:u": 18728836155,
+      "instructions:u": 63676531817,
+      "branch-misses:u": 43130249
+    },
+    "function": {
+      "cpu-cycles:u": 17846732735,
+      "instructions:u": 61145976904,
+      "branch-misses:u": 14228779
+    },
+    "fex": {
+      "cpu-cycles:u": 17324067619,
+      "instructions:u": 61981552180,
+      "branch-misses:u": 18729668
+    }
+  },
+  "ratios": {
+    "block": 1.081608280254777,
+    "function": 1.0279325902335457
+  },
+  "goal_achieved": false,
+  "cpu-cycles:u_ratios": {
+    "block": 1.081087684884082,
+    "function": 1.0301698843190137
+  },
+  "instructions:u_ratios": {
+    "block": 1.0273465180748882,
+    "function": 0.9865189681992246
+  },
+  "branch-misses:u_ratios": {
+    "block": 2.3027770166561417,
+    "function": 0.7596920030830231
+  }
+}

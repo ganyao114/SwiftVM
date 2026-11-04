@@ -1,0 +1,18 @@
+{
+  "kind": "submission_integration_verification",
+  "base_commit": "660b6ba1",
+  "branch": "refactor/middle-pipeline-rebuild-parity",
+  "measured_source_digest": "79c8bf0c2046ab35ece932b5e74310b13d5de339b00ee01e4def117235cdd985",
+  "build_inputs_verified": 80,
+  "source_content_changes_since_measurement": false,
+  "host_default_all_targets_build": "passed",
+  "host_contracts": "5/5 passed",
+  "android_device_remeasured": false,
+  "preserved_measurement_sha256": "fd0ebb07db6dd9237f5534ab538a0e568f766b4bfe7a317b5473c73f3fd14a4b",
+  "extra_packaging": "README/architecture/history/evidence and upstream license texts; original source files unchanged",
+  "logs": {
+    "configure.log": "6bc2aa8a79be47b9638beade78c1ea597db6eca21cc748057d777d08302731d9",
+    "ctest.log": "e32bb33528b33d0b6f849da577a1eb8bd090adc3c5a9f9c9e650484fa97d0620",
+    "build.log": "ba2861e44fa6914d29b99a34a6c12c31efa76bfa44fc418b15e2574f7c78867a"
+  }
+}

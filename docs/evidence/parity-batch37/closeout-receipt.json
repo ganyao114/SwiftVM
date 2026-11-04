@@ -1,0 +1,17 @@
+{
+  "kind": "final_closeout",
+  "batch": 37,
+  "scope": "fixed Bionic/CoreMark on recorded RedMagic CPU4 configuration, current implemented paths and existing contract checks",
+  "goal_achieved": true,
+  "source80_unchanged": true,
+  "documentation_frozen": true,
+  "no_commit_or_push": true,
+  "evidence_sha256": {
+    "measurement-receipt.json": "fd0ebb07db6dd9237f5534ab538a0e568f766b4bfe7a317b5473c73f3fd14a4b",
+    "post-measurement-docs/receipt.json": "77940f9427d05a8e96cc94063c9a321638b9e16b7654deb97eb64ecfcd0b03cc",
+    "source-manifest.json": "639501c2c2f3c1627e6c2883d140f9c324b858b2515dde65422ca022bbfb06a4",
+    "runner-identity.json": "a38bb3b7f18ac371106359d3fbf7c723df5261bef91e02053e5d455f290bcf92",
+    "native-quality-review.md": "53c37434dccdbb678da7bd425eb533d98476cfe65bf12134c7b71405df8e1567",
+    "phone-cleanup-receipt.json": "6a27d26115313ae76c4b66b2b2aba55cd1e1d0d60796439da80bc0de61dedc9f"
+  }
+}

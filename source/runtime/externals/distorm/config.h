@@ -168,13 +168,43 @@ STATIC_INLINE uint64_t RULLONG(const uint8_t *s)
 #undef STATIC_INLINE
 
 #else
-/* Little endian macro's will just make the cast. */
-#define RSHORT(x) *(int16_t *)x
-#define RUSHORT(x) *(uint16_t *)x
-#define RLONG(x) *(int32_t *)x
-#define RULONG(x) *(uint32_t *)x
-#define RLLONG(x) *(int64_t *)x
-#define RULLONG(x) *(uint64_t *)x
+/* Instruction bytes need not satisfy the integer type's alignment. */
+static inline int16_t RSHORT(const uint8_t *s)
+{
+	int16_t value;
+	memcpy(&value, s, sizeof(value));
+	return value;
+}
+static inline uint16_t RUSHORT(const uint8_t *s)
+{
+	uint16_t value;
+	memcpy(&value, s, sizeof(value));
+	return value;
+}
+static inline int32_t RLONG(const uint8_t *s)
+{
+	int32_t value;
+	memcpy(&value, s, sizeof(value));
+	return value;
+}
+static inline uint32_t RULONG(const uint8_t *s)
+{
+	uint32_t value;
+	memcpy(&value, s, sizeof(value));
+	return value;
+}
+static inline int64_t RLLONG(const uint8_t *s)
+{
+	int64_t value;
+	memcpy(&value, s, sizeof(value));
+	return value;
+}
+static inline uint64_t RULLONG(const uint8_t *s)
+{
+	uint64_t value;
+	memcpy(&value, s, sizeof(value));
+	return value;
+}
 #endif
 
 #endif /* CONFIG_H */

@@ -1,16 +1,14 @@
 # SwiftVM 中间流水线重构方案
 
-日期：2026 年 10 月 21 日。基准分支：`refactor/middle-pipeline-simplification`，代码与交接状态以提交 `2804a51b` 为起点。
+本页第一节及以后正文完整保留2026-10-21起点与迁移历史，不作为当前代码状态。当前唯一实施主线为[完整compile方案](spill-and-compile-root-cause-plan-2026-10-28.md)；设计细则见[逐文件职责](middle-pipeline-file-layout-2026-10-28.md)、[IR合同](ir-representation-redesign-2026-10-28.md)及[已知目标边界](target-aware-middle-pipeline-design-2026-10-28.md)。同Store是当前实现选择；前后端解耦及两种RA范围保持，过程允许生成质量变化，最终门不降低。
 
-重构范围是 decode 时的 IR 构建、中端优化、分析事实、寄存器分配、ARM64 指令选择与发射准备，以及这些阶段之间的所有权和接口。目标是退役现有重复实现和 plan 容器，建立可以逐批替换、逐批删除旧代码的结构。IR/HIR 的指令语义、Block 与 Function 两种编译能力、现有运行时和代码发布契约继续保留。
+**2026-11-02 框架v2：原仓库8cda/Git索引继续冻结；用户已授权在独立工作树解决框架问题。当前候选151211da已实施首次分析解耦与完整raw/site关系，两目标构建及7个受影响case/4066断言通过；其余home/CFG与单次physical交付尚待实现，性能未授信。当前状态见[主方案7.1](spill-and-compile-root-cause-plan-2026-10-28.md#71-当前代码状态)，执行表见[7.2](spill-and-compile-root-cause-plan-2026-10-28.md#72-下一步执行表)，算法、检查分类与重做上界见[框架合同第12节](compile-framework-contract-2026-11-02.md#12-五项框架问题的算法决定)。旧细节扩域不恢复。**
 
-本文的目录、类型和阶段接口是目标设计；现状判断依据当前源码。此前方案中的“统一硬预着色替代 Bind”已被后续实验证据修正：当前施工路线是分配阶段内的局部 recolor 事务。详细背景见 [交接记录](middle-pipeline-handoff-2026-10-21.md) 与 [简化执行记录](middle-pipeline-simplification-2026-10-21.md)。
+以下8cda冻结基线已合A（resident Get按实际consumer做用途独证），两目标构建通过；3个case中2过、1个fixture失败，跟进02修正未应用。尚无A的ordinary完整方向或提速资格，B（RawDirect）未实现。原raw、receipt、checkpoint及失败身份不回填。
 
-FEX 流程对照固定于提交 `3b7daa5e8dc004f6e9cec3a877f3f3f1ddd6ce11`（2026 年 10 月 20 日），借鉴范围见 2.4。按需 facts、flags/DCE 协作、共享折叠规则、候选驱动 lowering 和临时存储复用属于本方案交付要求；构建期延迟标量状态写单列为 R2E 受控实验，不作为核心迁移的前置条件。
+最新ordinary仍为e0d6：Block完整Translate 2066.780ms、Function 1099.290ms，分别约为同轮fresh固定FEX的44.33×、23.24×。95bd与3625两轮PROF2归因均已闭合；3625的GPR独证695.636/103.768ms约占各自native admission的89%，不是A独占成本、可省时间或A的实测收益，不替换ordinary分母与端点。
 
-阅读导航：[流程与路径分工](#3-目标中间流程)、[decode 与 pass 边界](#4-decode-时开展的分析与优化)、[目标目录和逐文件职责](#10-目标目录与文件布局)、[旧文件退役表](#12-旧代码迁移与退役清单)、[施工顺序](#13-施工顺序与阶段交付)、[验收矩阵](#14-验证方案)。
-
-实施中的完成状态、构建参数和实际验证结果见 [重构执行记录](middle-pipeline-rebuild-progress-2026-10-21.md)。本文的现状清单以起点提交为准，目标和验收标准继续适用于完整迁移。
+原546行方案已包含native与物理交付；路线纠正须按实际退役、保留、新增工作及覆盖核对净减工，并以完整算法反馈判断继续或改线，不能用结构迁移、旧API退出或构建断言代替完整compile下降。最终不降质量、Block与完整Function各≤2×及Known/EarlyOff/Unknown合同不变。见[净减工与反馈纠正](spill-and-compile-root-cause-plan-2026-10-28.md#compile-net-work-correction)和[审查42](compile-gap-review-2026-10-31.md#performance-route-correction-latest)。
 
 ## 1 重构目标与范围
 

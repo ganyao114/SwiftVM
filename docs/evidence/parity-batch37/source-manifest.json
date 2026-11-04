@@ -1,0 +1,408 @@
+{
+  "root": "/Volumes/Data2/SwiftVM-rebuild-20261102",
+  "snapshot": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch37/source",
+  "digest": "79c8bf0c2046ab35ece932b5e74310b13d5de339b00ee01e4def117235cdd985",
+  "digest_recipe": "SHA256 compact sorted-key JSON files array",
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "bytes": 4759,
+      "sha256": "8b387e2452e23cf43adc2407da7a20212e2bef588f082b2085aabf51c69ba2a6"
+    },
+    {
+      "path": "benchmarks/README.md",
+      "bytes": 23091,
+      "sha256": "c8b4f408417dfbacbb388c13b7ec3c960e34e60b2131d11edce88e0b4b34e160"
+    },
+    {
+      "path": "benchmarks/app_inputs/build_coremark.py",
+      "bytes": 5784,
+      "sha256": "975483c5cb2da548515ea20190377e825bae2ba18278a44b777a6353d99ef1fb"
+    },
+    {
+      "path": "benchmarks/app_inputs/coremark_linux/core_portme.c",
+      "bytes": 5231,
+      "sha256": "61f1b0178da6f31aa2bc4e81734cfdd13cbecee971fc31f18d40f1f6b64fd5e7"
+    },
+    {
+      "path": "benchmarks/app_inputs/coremark_linux/core_portme.h",
+      "bytes": 1308,
+      "sha256": "9b9059abbd40e4e6b289ae55fa9473318f5b46b9d7e6a8b5d3117dc8e9e6ac2e"
+    },
+    {
+      "path": "benchmarks/app_inputs/coremark_linux/start_x86_64.S",
+      "bytes": 263,
+      "sha256": "1638ccbf93da84133affa55232e3e4f226c3e24f8599c1e61fe562e2df419657"
+    },
+    {
+      "path": "benchmarks/check_compile_budget.py",
+      "bytes": 19965,
+      "sha256": "045ffed0f4890ab60c4c41bd8583fce71bb008f7c99039c988044551e5f506f6"
+    },
+    {
+      "path": "benchmarks/compile_budget.template.json",
+      "bytes": 2610,
+      "sha256": "05fc8b1d240e82af1fed5ca43b961462db26bb42d1cd68e05c0a45c438b08cf2"
+    },
+    {
+      "path": "benchmarks/function_compile_bench.cpp",
+      "bytes": 7110,
+      "sha256": "605936d8a6792b9b22b7ad9ef0160302ee5b0f01f74cd504beeac014f90beb3b"
+    },
+    {
+      "path": "benchmarks/ir_birth_replay_bench.cpp",
+      "bytes": 27177,
+      "sha256": "175312797c7f18f0af085c7be93d74aefdf3998ed33c2e193b860689518f62e5"
+    },
+    {
+      "path": "benchmarks/ir_build_submit_bench.cpp",
+      "bytes": 37854,
+      "sha256": "8264455cc07293485874ad760a24fb113c0bf8e29e95478e1e926875918091e9"
+    },
+    {
+      "path": "benchmarks/ir_compile_bench.cpp",
+      "bytes": 7831,
+      "sha256": "86d5c85e4d8c856d43c0ed008884b7bb781c82ea00bda717f770357858d2b855"
+    },
+    {
+      "path": "benchmarks/normalize_birth_trace.py",
+      "bytes": 37504,
+      "sha256": "e652b98a573d3b4962b29a781222479bf0a61a1b01d4df077c21cd35c9a4e3e8"
+    },
+    {
+      "path": "benchmarks/x86_build_submit_bench.cpp",
+      "bytes": 17166,
+      "sha256": "71800e29cc0576efd64e0a37b92fcf262bfef81c73b7377ca8f96c63add4a003"
+    },
+    {
+      "path": "source/CMakeLists.txt",
+      "bytes": 76,
+      "sha256": "141020d7466a22f62cb10488dbf0744a6c491e5601b1dcca40629a99d0b46b8c"
+    },
+    {
+      "path": "source/launcher/linux/main.cpp",
+      "bytes": 10091,
+      "sha256": "b2dd7de7c263930d06f6b365dcbad5191855281065efe5361e3e1eb7d6a202c1"
+    },
+    {
+      "path": "source/runtime/backend/arm64/abi.h",
+      "bytes": 1714,
+      "sha256": "6d1b0ed5a1bd52dd5dbae1ac257f20418d9e2a2767990e90a7f0c6f4e9bbd669"
+    },
+    {
+      "path": "source/runtime/backend/arm64/allocate.cpp",
+      "bytes": 34562,
+      "sha256": "6a6d4f45c5200571da201a228b0985958d15cc720bd2ba1e058c65411befa42c"
+    },
+    {
+      "path": "source/runtime/backend/arm64/allocate.h",
+      "bytes": 2142,
+      "sha256": "38a43b69d5aa27503e266e392df0b7b0f92353165f0556ede20fb46978e213a0"
+    },
+    {
+      "path": "source/runtime/backend/arm64/compile.cpp",
+      "bytes": 97008,
+      "sha256": "1c45cf351e8b8bda832310a9380a025028f22e7995af77907407d6812a90d8e7"
+    },
+    {
+      "path": "source/runtime/backend/arm64/compile.h",
+      "bytes": 7230,
+      "sha256": "17451e0aa336ea94614fa7f5b7ebde96b63266b5aab725092e8fd897d3c826d3"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit.h",
+      "bytes": 21623,
+      "sha256": "a3e2b41a547334f53cd31c74554a4b2f3191f37fe17f5fe18de3a17a488d909c"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_state.cpp",
+      "bytes": 36348,
+      "sha256": "70019125dde5151c28a6e2ef1c47e2abd8eec50051dfe3dbce70dbf552d1acaf"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_vector.cpp",
+      "bytes": 25226,
+      "sha256": "fe8b98a44a4dcbe4bc1538c1db57fe20258ec85851c6b404fce393e9fda40e4d"
+    },
+    {
+      "path": "source/runtime/backend/arm64/helper_calls.cpp",
+      "bytes": 5353,
+      "sha256": "9cfb63342ecb4464c2b937a4ff6d8566f8bd9c5115441e801eb7b864dd6af62f"
+    },
+    {
+      "path": "source/runtime/compile/optimize.cpp",
+      "bytes": 57480,
+      "sha256": "d8c83501bff7e9ebad3f8571a14c0618070113ae6ad88b926925ef79e4154b0a"
+    },
+    {
+      "path": "source/runtime/compile/optimize.h",
+      "bytes": 2396,
+      "sha256": "8853e39797ebad53fec83af3b907edd36d5d6cb7f6ee539703f31321489f52f1"
+    },
+    {
+      "path": "source/runtime/execution/dispatch.cpp",
+      "bytes": 11965,
+      "sha256": "e96001a30b0046ca6b7e46d891d9022b717249ea478dc91d10dffe5f41873989"
+    },
+    {
+      "path": "source/runtime/execution/dispatch.h",
+      "bytes": 6131,
+      "sha256": "dbf09b50beab14318684668de133d1caf8ed9b2151b285c8db09bcb3c06cb77f"
+    },
+    {
+      "path": "source/runtime/execution/fault.cpp",
+      "bytes": 13428,
+      "sha256": "7f273c41ec76d8d9edd10a005fa132fc35b620b5f4cab50f05d685b3727d1258"
+    },
+    {
+      "path": "source/runtime/execution/fault.h",
+      "bytes": 2344,
+      "sha256": "7e715977120a3baf632f7c4e432604a18f476a92cea1db6d33e9643cd795040b"
+    },
+    {
+      "path": "source/runtime/execution/guest_cpu.cpp",
+      "bytes": 1792,
+      "sha256": "b2ba11e658a8eb7798343d06dd53fa4199554831ff23005e1fdede279d97e66f"
+    },
+    {
+      "path": "source/runtime/execution/guest_cpu.h",
+      "bytes": 507,
+      "sha256": "302771e9b0a53f19229dd5ea55368e1b46655224b1297e6990e037478f0a5b56"
+    },
+    {
+      "path": "source/runtime/execution/guest_state.h",
+      "bytes": 1014,
+      "sha256": "82986ed6c9cb7e1788b44b4d58396f8b360bc1224c2b385b73e8adc7431acad7"
+    },
+    {
+      "path": "source/runtime/execution/memory.cpp",
+      "bytes": 26590,
+      "sha256": "7f49d4133db8de1fe9cd243c312b927bb4046550cb2ca1300e865371a9f5502c"
+    },
+    {
+      "path": "source/runtime/execution/memory.h",
+      "bytes": 3466,
+      "sha256": "bb8fcc5f0da90f1f303800350a0485f0f33991cbc3f6714e4134f3d8f96c4d3c"
+    },
+    {
+      "path": "source/runtime/execution/native_code.cpp",
+      "bytes": 8840,
+      "sha256": "69880ef2bc80c5c30aad0208ae1d0fbd27236c0b8f3b6c49887aca79e6b8f1b2"
+    },
+    {
+      "path": "source/runtime/execution/native_code.h",
+      "bytes": 2551,
+      "sha256": "df03419ae51b566f6e5b90026ec494ddebdee8ca247584f086077d71227e2710"
+    },
+    {
+      "path": "source/runtime/execution/runtime.cpp",
+      "bytes": 44438,
+      "sha256": "91dea79db1e2bc10dc14a8d377b35c5a76ec480e370a9c4b451215e2673f17c2"
+    },
+    {
+      "path": "source/runtime/execution/runtime.h",
+      "bytes": 3013,
+      "sha256": "53c58ae47796df1a8abfc0657a2e03a45c70ef5eb7673ef031d6c0079674411c"
+    },
+    {
+      "path": "source/runtime/externals/distorm/CMakeLists.txt",
+      "bytes": 436,
+      "sha256": "e27f8b6433bcb0386fa9ab94ac75f09c9db01498cca0c283fd518907d4dfdf3d"
+    },
+    {
+      "path": "source/runtime/externals/distorm/config.h",
+      "bytes": 4916,
+      "sha256": "b635a457385b60cf95bf6abf5edf1cc73fb1e04a2d79f5249e45b99bd6abfa8d"
+    },
+    {
+      "path": "source/runtime/externals/distorm/decoder.c",
+      "bytes": 24818,
+      "sha256": "ce9ecb799e468b625cad4c8602f3a7c4638efc27d3de2185bdf5d60ac622308f"
+    },
+    {
+      "path": "source/runtime/externals/distorm/decoder.h",
+      "bytes": 1025,
+      "sha256": "ed4c054e190cbfb0856f0cfccaf5063c98016f7fad835b431e83b3d2501c0517"
+    },
+    {
+      "path": "source/runtime/externals/distorm/distorm.c",
+      "bytes": 16201,
+      "sha256": "3166475c0db99850271525fbdd5968357038fcedc38fa3baaa29eaa187e7693e"
+    },
+    {
+      "path": "source/runtime/externals/distorm/distorm.h",
+      "bytes": 19142,
+      "sha256": "f2355d492f32f2285d6409404c4f02cbaa3e26edaa640d124b956826481f832e"
+    },
+    {
+      "path": "source/runtime/externals/distorm/instructions.c",
+      "bytes": 24110,
+      "sha256": "d205141f9796f3407a858f2c3235de64ea22cfb51d14534d5a08e0cdf6daabef"
+    },
+    {
+      "path": "source/runtime/externals/distorm/instructions.h",
+      "bytes": 17113,
+      "sha256": "e8070255a93c6d4e43e6dccbea757646627b13296c334aae8983c58b86a4da89"
+    },
+    {
+      "path": "source/runtime/externals/distorm/insts.c",
+      "bytes": 193390,
+      "sha256": "ca71dbe9c69f5ec78d75c81d6daf5c946eddbdc4db8f102bc06bd269e8cadb0c"
+    },
+    {
+      "path": "source/runtime/externals/distorm/insts.h",
+      "bytes": 1898,
+      "sha256": "90b0c8de25f69c4d6b05283f199b9014ef1e5a7cc1553ea8e0cda0a203725f25"
+    },
+    {
+      "path": "source/runtime/externals/distorm/mnemonics.c",
+      "bytes": 24056,
+      "sha256": "a31ac2f5e518f5a1bfd6630d8ad1069f1b91cea38aa2715e04a90fc130296d97"
+    },
+    {
+      "path": "source/runtime/externals/distorm/mnemonics.h",
+      "bytes": 22133,
+      "sha256": "90d0c777c8622dd0463b09c85e8b92c9c99cd497feeccb3321f9b3b92158ca04"
+    },
+    {
+      "path": "source/runtime/externals/distorm/operands.c",
+      "bytes": 44390,
+      "sha256": "77bdecc70c42bfa5daf33833847a0e7b8d91be9c626f4fd57f75fdc1df16c342"
+    },
+    {
+      "path": "source/runtime/externals/distorm/operands.h",
+      "bytes": 710,
+      "sha256": "028cd4e3a7336d61d7c2327d2157de8ff631e59192996142f5bfbcd5fc909bf3"
+    },
+    {
+      "path": "source/runtime/externals/distorm/prefix.c",
+      "bytes": 12054,
+      "sha256": "ce4672ee8c104cdb960e1b639b70c8646e1e1087fe1d082075ed10d4e8c500d8"
+    },
+    {
+      "path": "source/runtime/externals/distorm/prefix.h",
+      "bytes": 2353,
+      "sha256": "5e35762724167dd01d381a3ce52a3e0e928792441703ccdf100116616225d587"
+    },
+    {
+      "path": "source/runtime/externals/distorm/textdefs.c",
+      "bytes": 6443,
+      "sha256": "3380aa6263d0fc538c0cc1084a5222690e1d475c98f9b434e1f001443477fda0"
+    },
+    {
+      "path": "source/runtime/externals/distorm/textdefs.h",
+      "bytes": 1350,
+      "sha256": "d6b85ebad5fc0358e94db8dea1a400d4699078c03a24fbe764cb5fb9082422ba"
+    },
+    {
+      "path": "source/runtime/externals/distorm/wstring.c",
+      "bytes": 888,
+      "sha256": "dd7c15b9e1462d1c0add57c23816c81b66e132640bad3f254febb2259d29fc75"
+    },
+    {
+      "path": "source/runtime/externals/distorm/wstring.h",
+      "bytes": 1022,
+      "sha256": "47bc6381a87c56e8f452f6ef820b202a8e2a5ebfce857c81de4cceea9eb49b8b"
+    },
+    {
+      "path": "source/runtime/externals/distorm/x86defs.h",
+      "bytes": 2027,
+      "sha256": "69c0cb86859e85512260184c810ae9059e9b52d83688d7f417c869610ba48ca3"
+    },
+    {
+      "path": "source/runtime/frontend/x86/build_ir.cpp",
+      "bytes": 142620,
+      "sha256": "9c03cc44864919874a028e4412793ac51f79e2cfd38533ef3776e33fd5396700"
+    },
+    {
+      "path": "source/runtime/frontend/x86/build_ir.h",
+      "bytes": 5525,
+      "sha256": "722f43c0689182a66c2cfc2424fc744e94f0b0ef53c0580ab368fcd31cce194e"
+    },
+    {
+      "path": "source/runtime/frontend/x86/decode.cpp",
+      "bytes": 7790,
+      "sha256": "2d613053aa53c9043a0f4d40f25db2e868ee7348d210cbc02b87db3a63644618"
+    },
+    {
+      "path": "source/runtime/frontend/x86/decode.h",
+      "bytes": 3177,
+      "sha256": "5b9eacbda094f8ebf9d1e168e166ba64e144decb9b59e0f696334dd12b388c9e"
+    },
+    {
+      "path": "source/runtime/ir/builder.cpp",
+      "bytes": 12429,
+      "sha256": "3ea84b28cc3df265a10a6eb5a27ea382ca21a7264678ef452ff8be98e36ec0d3"
+    },
+    {
+      "path": "source/runtime/ir/builder.h",
+      "bytes": 7181,
+      "sha256": "558d16a270a910c6fda6bf8f7475bfd191ede0c658583ff8112161249771edfe"
+    },
+    {
+      "path": "source/runtime/ir/builder_impl.h",
+      "bytes": 16585,
+      "sha256": "175123a914df202058dfa854d413dc072767dcd43220b012a050e1dd13f38fcf"
+    },
+    {
+      "path": "source/runtime/ir/opcode.h",
+      "bytes": 4086,
+      "sha256": "2c944ebb19dab553fbe1c62c17e5572a52207f8a1c5c9cc660af70bb91b486b5"
+    },
+    {
+      "path": "source/runtime/ir/opcodes.inc",
+      "bytes": 36090,
+      "sha256": "46efbe56c616d9bcddebef99c673ab9feab6dba549ebad309585d3d4c5cf02f2"
+    },
+    {
+      "path": "source/runtime/ir/program.cpp",
+      "bytes": 3191,
+      "sha256": "25c5870794bfba0fc41af67f99a77b3e756d3f0cbd98edc9279d35dae2d586b1"
+    },
+    {
+      "path": "source/runtime/ir/program.h",
+      "bytes": 6259,
+      "sha256": "10a709d12a60950a7036531592ba5b300d7b4ad0c633489396f48898f049ff6d"
+    },
+    {
+      "path": "source/runtime/ir/types.h",
+      "bytes": 14028,
+      "sha256": "99f9ff7146af41f7ba7cde9962190c819d710c9fc3f93702e0d678dd523aeb26"
+    },
+    {
+      "path": "source/tests/rebuild/arm64_compile_test.cpp",
+      "bytes": 197131,
+      "sha256": "00e63df561584119faef83fc17ce4bee19e99a48108639328c6c95a4716add48"
+    },
+    {
+      "path": "source/tests/rebuild/compile_pipeline_test.cpp",
+      "bytes": 21543,
+      "sha256": "4cd9f445f3edaacc1145a1f18ede74041c4b84bf4325ed6cc44a463adc995603"
+    },
+    {
+      "path": "source/tests/rebuild/function_fixture.h",
+      "bytes": 2096,
+      "sha256": "910295e1d9977efd8965937faf269c6274917b591d160485ee68f8864d00b1cd"
+    },
+    {
+      "path": "source/tests/rebuild/ir_construction_test.cpp",
+      "bytes": 71752,
+      "sha256": "170c8f37495e997e2b9bef32269505a828638d84adfbc4c0afea31f452771004"
+    },
+    {
+      "path": "source/tests/rebuild/ir_optimize_test.cpp",
+      "bytes": 58434,
+      "sha256": "3e78e4c941b797b55bde0129bdf5f0c653051312e3e2904e6fd4edac5bbb9d1c"
+    },
+    {
+      "path": "source/tests/rebuild/x86_construction_test.cpp",
+      "bytes": 58438,
+      "sha256": "dd0f59ca7da822b497c8b7068b72a8546f871cdb44d6f5737fe03117902a1b60"
+    },
+    {
+      "path": "source/tests/rebuild/x86_fixtures.h",
+      "bytes": 1555,
+      "sha256": "93d04a4b9514e9ff40fc380d57e54740366a296401204632ab9cf042966ef226"
+    }
+  ]
+}

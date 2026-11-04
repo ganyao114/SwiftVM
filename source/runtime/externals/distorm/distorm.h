@@ -38,7 +38,7 @@ This library is licensed under the BSD license. See the file COPYING.
 	#ifdef _MSC_VER
 		#define OFFSET_INTEGER unsigned __int64
 	#else
-		#include <stdint.h>
+#include <stdint.h>
 		#define OFFSET_INTEGER uint64_t
 	#endif
 #else

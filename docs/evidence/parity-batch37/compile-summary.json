@@ -1,0 +1,1218 @@
+{
+  "kind": "original_bionic_cold_compile_byte_parser_excluded",
+  "samples": 3,
+  "medians_ns": {
+    "block": 48187132,
+    "function": 84762869,
+    "fex": 47319687.5
+  },
+  "ratios": {
+    "block": 1.0183315771051953,
+    "function": 1.7912812505365763
+  },
+  "records": {
+    "block": [
+      {
+        "measurement_kind": "application_runtime",
+        "scope": "block",
+        "optimize": true,
+        "runtime_completed": true,
+        "exit_code": 0,
+        "compile_ns": 52443871,
+        "compile_includes_byte_decode": true,
+        "decode_excluded_available": true,
+        "decode_timing_diagnostic": true,
+        "byte_decoder_timing_perturbs_compile": true,
+        "frontend_ns": 17007261,
+        "optimize_ns": 8925642,
+        "backend_ns": 14596768,
+        "publication_ns": 8743146,
+        "code_release_ns": 397031,
+        "fault_service_ns": 174531,
+        "run_lifetime_ns": 59822657,
+        "compile_attempts": 2045,
+        "function_attempts": 0,
+        "block_attempts": 2045,
+        "fallbacks": 0,
+        "dispatches": 125412,
+        "cache_hits": 122935,
+        "directory_probe_steps": 125733,
+        "syscalls": 67,
+        "unsupported_syscalls": 6,
+        "emitted_guest_instructions": 12413,
+        "emitted_guest_bytes": 46706,
+        "native_bytes": 317132,
+        "peak_code_virtual_bytes": 2097152,
+        "peak_slabs": 1,
+        "peak_dual_slabs": 1,
+        "wx_fallback_used": false,
+        "cache_invalidations": 0,
+        "dispatch_cache": "native_single_linear_probe",
+        "cache_slot_bytes": 32,
+        "native_code_bytes": 40,
+        "cache_allocation_kind": "pc_slots_and_ready_code_rows",
+        "dispatch_count_kind": "diagnostic_native_inline_and_shared_lookup_attempts",
+        "dispatch_counts_available": true,
+        "resolved_links_bypass_dispatch_count": true,
+        "peak_cache_entries": 2045,
+        "peak_cache_occupied": 2607,
+        "peak_cache_slots": 32768,
+        "cache_table_allocations": 20,
+        "code_units_published": 2045,
+        "static_links": 2886,
+        "patched_links": 2261,
+        "pending_links": 625,
+        "pending_targets": 562,
+        "link_relocation_rows": 2886,
+        "link_relocation_capacity": 4096,
+        "private_uniforms": true,
+        "native_nzcv": true,
+        "pinned_uniform_slots": 16,
+        "smc_write_faults": 0,
+        "smc_function_single_block_attempts": 0,
+        "smc_file_write_invalidations": 0,
+        "compile_decode_ns": 4612726,
+        "compile_decode_calls": 12413,
+        "compile_without_byte_decode_ns": 47831145,
+        "ir_nodes": 36672,
+        "operand_words": 65867,
+        "ir_work_counts_include_rejected_prefixes": false,
+        "optimized_erased": 724,
+        "optimized_uniform_forwarded": 113,
+        "optimized_folded": 142,
+        "spill_slots": 25,
+        "max_frame_bytes": 48,
+        "guest_pc_policy": "native_fault_sites",
+        "packed_flags_policy": "native_pstate_nzcv_inverted_c",
+        "rcpc_loads": true,
+        "rcpc_imm9": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "fault_sites": 5106,
+        "unaligned_recoveries": 30,
+        "unaligned_patches": 30
+      },
+      {
+        "measurement_kind": "application_runtime",
+        "scope": "block",
+        "optimize": true,
+        "runtime_completed": true,
+        "exit_code": 0,
+        "compile_ns": 52993685,
+        "compile_includes_byte_decode": true,
+        "decode_excluded_available": true,
+        "decode_timing_diagnostic": true,
+        "byte_decoder_timing_perturbs_compile": true,
+        "frontend_ns": 17039435,
+        "optimize_ns": 9123711,
+        "backend_ns": 15536691,
+        "publication_ns": 8361496,
+        "code_release_ns": 415260,
+        "fault_service_ns": 13021,
+        "run_lifetime_ns": 60282031,
+        "compile_attempts": 2045,
+        "function_attempts": 0,
+        "block_attempts": 2045,
+        "fallbacks": 0,
+        "dispatches": 125412,
+        "cache_hits": 122935,
+        "directory_probe_steps": 125733,
+        "syscalls": 67,
+        "unsupported_syscalls": 6,
+        "emitted_guest_instructions": 12413,
+        "emitted_guest_bytes": 46706,
+        "native_bytes": 317132,
+        "peak_code_virtual_bytes": 2097152,
+        "peak_slabs": 1,
+        "peak_dual_slabs": 1,
+        "wx_fallback_used": false,
+        "cache_invalidations": 0,
+        "dispatch_cache": "native_single_linear_probe",
+        "cache_slot_bytes": 32,
+        "native_code_bytes": 40,
+        "cache_allocation_kind": "pc_slots_and_ready_code_rows",
+        "dispatch_count_kind": "diagnostic_native_inline_and_shared_lookup_attempts",
+        "dispatch_counts_available": true,
+        "resolved_links_bypass_dispatch_count": true,
+        "peak_cache_entries": 2045,
+        "peak_cache_occupied": 2607,
+        "peak_cache_slots": 32768,
+        "cache_table_allocations": 20,
+        "code_units_published": 2045,
+        "static_links": 2886,
+        "patched_links": 2261,
+        "pending_links": 625,
+        "pending_targets": 562,
+        "link_relocation_rows": 2886,
+        "link_relocation_capacity": 4096,
+        "private_uniforms": true,
+        "native_nzcv": true,
+        "pinned_uniform_slots": 16,
+        "smc_write_faults": 0,
+        "smc_function_single_block_attempts": 0,
+        "smc_file_write_invalidations": 0,
+        "compile_decode_ns": 4433189,
+        "compile_decode_calls": 12413,
+        "compile_without_byte_decode_ns": 48560496,
+        "ir_nodes": 36672,
+        "operand_words": 65867,
+        "ir_work_counts_include_rejected_prefixes": false,
+        "optimized_erased": 724,
+        "optimized_uniform_forwarded": 113,
+        "optimized_folded": 142,
+        "spill_slots": 25,
+        "max_frame_bytes": 48,
+        "guest_pc_policy": "native_fault_sites",
+        "packed_flags_policy": "native_pstate_nzcv_inverted_c",
+        "rcpc_loads": true,
+        "rcpc_imm9": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "fault_sites": 5106,
+        "unaligned_recoveries": 29,
+        "unaligned_patches": 29
+      },
+      {
+        "measurement_kind": "application_runtime",
+        "scope": "block",
+        "optimize": true,
+        "runtime_completed": true,
+        "exit_code": 0,
+        "compile_ns": 52704287,
+        "compile_includes_byte_decode": true,
+        "decode_excluded_available": true,
+        "decode_timing_diagnostic": true,
+        "byte_decoder_timing_perturbs_compile": true,
+        "frontend_ns": 17226257,
+        "optimize_ns": 9268280,
+        "backend_ns": 14823154,
+        "publication_ns": 8428383,
+        "code_release_ns": 411823,
+        "fault_service_ns": 12500,
+        "run_lifetime_ns": 59632187,
+        "compile_attempts": 2045,
+        "function_attempts": 0,
+        "block_attempts": 2045,
+        "fallbacks": 0,
+        "dispatches": 125412,
+        "cache_hits": 122935,
+        "directory_probe_steps": 125733,
+        "syscalls": 67,
+        "unsupported_syscalls": 6,
+        "emitted_guest_instructions": 12413,
+        "emitted_guest_bytes": 46706,
+        "native_bytes": 317132,
+        "peak_code_virtual_bytes": 2097152,
+        "peak_slabs": 1,
+        "peak_dual_slabs": 1,
+        "wx_fallback_used": false,
+        "cache_invalidations": 0,
+        "dispatch_cache": "native_single_linear_probe",
+        "cache_slot_bytes": 32,
+        "native_code_bytes": 40,
+        "cache_allocation_kind": "pc_slots_and_ready_code_rows",
+        "dispatch_count_kind": "diagnostic_native_inline_and_shared_lookup_attempts",
+        "dispatch_counts_available": true,
+        "resolved_links_bypass_dispatch_count": true,
+        "peak_cache_entries": 2045,
+        "peak_cache_occupied": 2607,
+        "peak_cache_slots": 32768,
+        "cache_table_allocations": 20,
+        "code_units_published": 2045,
+        "static_links": 2886,
+        "patched_links": 2261,
+        "pending_links": 625,
+        "pending_targets": 562,
+        "link_relocation_rows": 2886,
+        "link_relocation_capacity": 4096,
+        "private_uniforms": true,
+        "native_nzcv": true,
+        "pinned_uniform_slots": 16,
+        "smc_write_faults": 0,
+        "smc_function_single_block_attempts": 0,
+        "smc_file_write_invalidations": 0,
+        "compile_decode_ns": 4517155,
+        "compile_decode_calls": 12413,
+        "compile_without_byte_decode_ns": 48187132,
+        "ir_nodes": 36672,
+        "operand_words": 65867,
+        "ir_work_counts_include_rejected_prefixes": false,
+        "optimized_erased": 724,
+        "optimized_uniform_forwarded": 113,
+        "optimized_folded": 142,
+        "spill_slots": 25,
+        "max_frame_bytes": 48,
+        "guest_pc_policy": "native_fault_sites",
+        "packed_flags_policy": "native_pstate_nzcv_inverted_c",
+        "rcpc_loads": true,
+        "rcpc_imm9": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "fault_sites": 5106,
+        "unaligned_recoveries": 29,
+        "unaligned_patches": 29
+      }
+    ],
+    "function": [
+      {
+        "measurement_kind": "application_runtime",
+        "scope": "function",
+        "optimize": true,
+        "runtime_completed": true,
+        "exit_code": 0,
+        "compile_ns": 95912733,
+        "compile_includes_byte_decode": true,
+        "decode_excluded_available": true,
+        "decode_timing_diagnostic": true,
+        "byte_decoder_timing_perturbs_compile": true,
+        "frontend_ns": 42458137,
+        "optimize_ns": 19626192,
+        "backend_ns": 27830321,
+        "publication_ns": 4514322,
+        "code_release_ns": 399166,
+        "fault_service_ns": 11561,
+        "run_lifetime_ns": 102942761,
+        "compile_attempts": 746,
+        "function_attempts": 722,
+        "block_attempts": 24,
+        "fallbacks": 24,
+        "dispatches": 124099,
+        "cache_hits": 122933,
+        "directory_probe_steps": 124404,
+        "syscalls": 67,
+        "unsupported_syscalls": 6,
+        "emitted_guest_instructions": 33543,
+        "emitted_guest_bytes": 142175,
+        "native_bytes": 509124,
+        "peak_code_virtual_bytes": 2097152,
+        "peak_slabs": 1,
+        "peak_dual_slabs": 1,
+        "wx_fallback_used": false,
+        "cache_invalidations": 0,
+        "dispatch_cache": "native_single_linear_probe",
+        "cache_slot_bytes": 32,
+        "native_code_bytes": 40,
+        "cache_allocation_kind": "pc_slots_and_ready_code_rows",
+        "dispatch_count_kind": "diagnostic_native_inline_and_shared_lookup_attempts",
+        "dispatch_counts_available": true,
+        "resolved_links_bypass_dispatch_count": true,
+        "peak_cache_entries": 722,
+        "peak_cache_occupied": 818,
+        "peak_cache_slots": 8192,
+        "cache_table_allocations": 17,
+        "code_units_published": 722,
+        "static_links": 1417,
+        "patched_links": 1153,
+        "pending_links": 264,
+        "pending_targets": 96,
+        "link_relocation_rows": 1417,
+        "link_relocation_capacity": 2048,
+        "private_uniforms": true,
+        "native_nzcv": true,
+        "pinned_uniform_slots": 16,
+        "smc_write_faults": 0,
+        "smc_function_single_block_attempts": 0,
+        "smc_file_write_invalidations": 0,
+        "compile_decode_ns": 11211480,
+        "compile_decode_calls": 35119,
+        "compile_without_byte_decode_ns": 84701253,
+        "ir_nodes": 86893,
+        "operand_words": 152552,
+        "ir_work_counts_include_rejected_prefixes": false,
+        "optimized_erased": 1596,
+        "optimized_uniform_forwarded": 237,
+        "optimized_folded": 304,
+        "spill_slots": 42,
+        "max_frame_bytes": 64,
+        "guest_pc_policy": "native_fault_sites",
+        "packed_flags_policy": "native_pstate_nzcv_inverted_c",
+        "rcpc_loads": true,
+        "rcpc_imm9": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "fault_sites": 12673,
+        "unaligned_recoveries": 23,
+        "unaligned_patches": 23
+      },
+      {
+        "measurement_kind": "application_runtime",
+        "scope": "function",
+        "optimize": true,
+        "runtime_completed": true,
+        "exit_code": 0,
+        "compile_ns": 96446959,
+        "compile_includes_byte_decode": true,
+        "decode_excluded_available": true,
+        "decode_timing_diagnostic": true,
+        "byte_decoder_timing_perturbs_compile": true,
+        "frontend_ns": 42677254,
+        "optimize_ns": 19684585,
+        "backend_ns": 28101301,
+        "publication_ns": 4473533,
+        "code_release_ns": 388646,
+        "fault_service_ns": 12240,
+        "run_lifetime_ns": 103134323,
+        "compile_attempts": 746,
+        "function_attempts": 722,
+        "block_attempts": 24,
+        "fallbacks": 24,
+        "dispatches": 124098,
+        "cache_hits": 122932,
+        "directory_probe_steps": 124403,
+        "syscalls": 67,
+        "unsupported_syscalls": 6,
+        "emitted_guest_instructions": 33543,
+        "emitted_guest_bytes": 142175,
+        "native_bytes": 509124,
+        "peak_code_virtual_bytes": 2097152,
+        "peak_slabs": 1,
+        "peak_dual_slabs": 1,
+        "wx_fallback_used": false,
+        "cache_invalidations": 0,
+        "dispatch_cache": "native_single_linear_probe",
+        "cache_slot_bytes": 32,
+        "native_code_bytes": 40,
+        "cache_allocation_kind": "pc_slots_and_ready_code_rows",
+        "dispatch_count_kind": "diagnostic_native_inline_and_shared_lookup_attempts",
+        "dispatch_counts_available": true,
+        "resolved_links_bypass_dispatch_count": true,
+        "peak_cache_entries": 722,
+        "peak_cache_occupied": 818,
+        "peak_cache_slots": 8192,
+        "cache_table_allocations": 17,
+        "code_units_published": 722,
+        "static_links": 1417,
+        "patched_links": 1153,
+        "pending_links": 264,
+        "pending_targets": 96,
+        "link_relocation_rows": 1417,
+        "link_relocation_capacity": 2048,
+        "private_uniforms": true,
+        "native_nzcv": true,
+        "pinned_uniform_slots": 16,
+        "smc_write_faults": 0,
+        "smc_function_single_block_attempts": 0,
+        "smc_file_write_invalidations": 0,
+        "compile_decode_ns": 11345273,
+        "compile_decode_calls": 35119,
+        "compile_without_byte_decode_ns": 85101686,
+        "ir_nodes": 86893,
+        "operand_words": 152552,
+        "ir_work_counts_include_rejected_prefixes": false,
+        "optimized_erased": 1596,
+        "optimized_uniform_forwarded": 237,
+        "optimized_folded": 304,
+        "spill_slots": 42,
+        "max_frame_bytes": 64,
+        "guest_pc_policy": "native_fault_sites",
+        "packed_flags_policy": "native_pstate_nzcv_inverted_c",
+        "rcpc_loads": true,
+        "rcpc_imm9": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "fault_sites": 12673,
+        "unaligned_recoveries": 25,
+        "unaligned_patches": 25
+      },
+      {
+        "measurement_kind": "application_runtime",
+        "scope": "function",
+        "optimize": true,
+        "runtime_completed": true,
+        "exit_code": 0,
+        "compile_ns": 95761051,
+        "compile_includes_byte_decode": true,
+        "decode_excluded_available": true,
+        "decode_timing_diagnostic": true,
+        "byte_decoder_timing_perturbs_compile": true,
+        "frontend_ns": 42073282,
+        "optimize_ns": 19572698,
+        "backend_ns": 28145072,
+        "publication_ns": 4579458,
+        "code_release_ns": 364948,
+        "fault_service_ns": 12240,
+        "run_lifetime_ns": 102965990,
+        "compile_attempts": 746,
+        "function_attempts": 722,
+        "block_attempts": 24,
+        "fallbacks": 24,
+        "dispatches": 124098,
+        "cache_hits": 122932,
+        "directory_probe_steps": 124403,
+        "syscalls": 67,
+        "unsupported_syscalls": 6,
+        "emitted_guest_instructions": 33543,
+        "emitted_guest_bytes": 142175,
+        "native_bytes": 509124,
+        "peak_code_virtual_bytes": 2097152,
+        "peak_slabs": 1,
+        "peak_dual_slabs": 1,
+        "wx_fallback_used": false,
+        "cache_invalidations": 0,
+        "dispatch_cache": "native_single_linear_probe",
+        "cache_slot_bytes": 32,
+        "native_code_bytes": 40,
+        "cache_allocation_kind": "pc_slots_and_ready_code_rows",
+        "dispatch_count_kind": "diagnostic_native_inline_and_shared_lookup_attempts",
+        "dispatch_counts_available": true,
+        "resolved_links_bypass_dispatch_count": true,
+        "peak_cache_entries": 722,
+        "peak_cache_occupied": 818,
+        "peak_cache_slots": 8192,
+        "cache_table_allocations": 17,
+        "code_units_published": 722,
+        "static_links": 1417,
+        "patched_links": 1153,
+        "pending_links": 264,
+        "pending_targets": 96,
+        "link_relocation_rows": 1417,
+        "link_relocation_capacity": 2048,
+        "private_uniforms": true,
+        "native_nzcv": true,
+        "pinned_uniform_slots": 16,
+        "smc_write_faults": 0,
+        "smc_function_single_block_attempts": 0,
+        "smc_file_write_invalidations": 0,
+        "compile_decode_ns": 10998182,
+        "compile_decode_calls": 35119,
+        "compile_without_byte_decode_ns": 84762869,
+        "ir_nodes": 86893,
+        "operand_words": 152552,
+        "ir_work_counts_include_rejected_prefixes": false,
+        "optimized_erased": 1596,
+        "optimized_uniform_forwarded": 237,
+        "optimized_folded": 304,
+        "spill_slots": 42,
+        "max_frame_bytes": 64,
+        "guest_pc_policy": "native_fault_sites",
+        "packed_flags_policy": "native_pstate_nzcv_inverted_c",
+        "rcpc_loads": true,
+        "rcpc_imm9": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "fault_sites": 12673,
+        "unaligned_recoveries": 25,
+        "unaligned_patches": 25
+      }
+    ],
+    "fex": [
+      {
+        "schema": 2,
+        "pid": 22230,
+        "tid": 22230,
+        "reason": "guest_exit_group",
+        "clock": "cntvct_el0",
+        "cntfrq_hz": 19200000,
+        "clock_supported": true,
+        "root_calls": 255,
+        "root_ticks": 1078981,
+        "exclusive_ticks": 1078981,
+        "closed": true,
+        "qualified": true,
+        "execution_calls": 1,
+        "reentries": 0,
+        "stack_errors": 0,
+        "arithmetic_errors": 0,
+        "unclassified_pass_runs": 0,
+        "stages": [
+          {
+            "name": "compile_block",
+            "calls": 255,
+            "ticks": 1078981,
+            "children_ticks": 1071181,
+            "remaining_ticks": 7800
+          },
+          {
+            "name": "compile_code",
+            "calls": 255,
+            "ticks": 1028899,
+            "children_ticks": 1023836,
+            "remaining_ticks": 5063
+          },
+          {
+            "name": "generate_ir",
+            "calls": 255,
+            "ticks": 899859,
+            "children_ticks": 878070,
+            "remaining_ticks": 21789
+          },
+          {
+            "name": "raw_decode",
+            "calls": 255,
+            "ticks": 375401,
+            "children_ticks": 173119,
+            "remaining_ticks": 202282
+          },
+          {
+            "name": "builder",
+            "calls": 255,
+            "ticks": 211267,
+            "children_ticks": 0,
+            "remaining_ticks": 211267
+          },
+          {
+            "name": "pass_manager",
+            "calls": 255,
+            "ticks": 289415,
+            "children_ticks": 285316,
+            "remaining_ticks": 4099
+          },
+          {
+            "name": "x87",
+            "calls": 255,
+            "ticks": 905,
+            "children_ticks": 0,
+            "remaining_ticks": 905
+          },
+          {
+            "name": "dfe",
+            "calls": 255,
+            "ticks": 114971,
+            "children_ticks": 0,
+            "remaining_ticks": 114971
+          },
+          {
+            "name": "ra",
+            "calls": 255,
+            "ticks": 169440,
+            "children_ticks": 0,
+            "remaining_ticks": 169440
+          },
+          {
+            "name": "validation",
+            "calls": 0,
+            "ticks": 0,
+            "children_ticks": 0,
+            "remaining_ticks": 0
+          },
+          {
+            "name": "other_pass",
+            "calls": 0,
+            "ticks": 0,
+            "children_ticks": 0,
+            "remaining_ticks": 0
+          },
+          {
+            "name": "backend",
+            "calls": 255,
+            "ticks": 121600,
+            "children_ticks": 111444,
+            "remaining_ticks": 10156
+          },
+          {
+            "name": "emit",
+            "calls": 255,
+            "ticks": 87765,
+            "children_ticks": 0,
+            "remaining_ticks": 87765
+          },
+          {
+            "name": "tail_copy_cache",
+            "calls": 255,
+            "ticks": 23679,
+            "children_ticks": 2095,
+            "remaining_ticks": 21584
+          },
+          {
+            "name": "publish",
+            "calls": 255,
+            "ticks": 42282,
+            "children_ticks": 0,
+            "remaining_ticks": 42282
+          },
+          {
+            "name": "logical_release",
+            "calls": 765,
+            "ticks": 6459,
+            "children_ticks": 0,
+            "remaining_ticks": 6459
+          },
+          {
+            "name": "byte_decode",
+            "calls": 29915,
+            "ticks": 173119,
+            "children_ticks": 0,
+            "remaining_ticks": 173119
+          }
+        ],
+        "edges": [
+          {
+            "parent": 0,
+            "child": 1,
+            "calls": 255,
+            "ticks": 1028899
+          },
+          {
+            "parent": 0,
+            "child": 14,
+            "calls": 255,
+            "ticks": 42282
+          },
+          {
+            "parent": 1,
+            "child": 2,
+            "calls": 255,
+            "ticks": 899859
+          },
+          {
+            "parent": 1,
+            "child": 11,
+            "calls": 255,
+            "ticks": 121600
+          },
+          {
+            "parent": 1,
+            "child": 15,
+            "calls": 255,
+            "ticks": 2377
+          },
+          {
+            "parent": 2,
+            "child": 3,
+            "calls": 255,
+            "ticks": 375401
+          },
+          {
+            "parent": 2,
+            "child": 4,
+            "calls": 255,
+            "ticks": 211267
+          },
+          {
+            "parent": 2,
+            "child": 5,
+            "calls": 255,
+            "ticks": 289415
+          },
+          {
+            "parent": 2,
+            "child": 15,
+            "calls": 255,
+            "ticks": 1987
+          },
+          {
+            "parent": 3,
+            "child": 16,
+            "calls": 29915,
+            "ticks": 173119
+          },
+          {
+            "parent": 5,
+            "child": 6,
+            "calls": 255,
+            "ticks": 905
+          },
+          {
+            "parent": 5,
+            "child": 7,
+            "calls": 255,
+            "ticks": 114971
+          },
+          {
+            "parent": 5,
+            "child": 8,
+            "calls": 255,
+            "ticks": 169440
+          },
+          {
+            "parent": 11,
+            "child": 12,
+            "calls": 255,
+            "ticks": 87765
+          },
+          {
+            "parent": 11,
+            "child": 13,
+            "calls": 255,
+            "ticks": 23679
+          },
+          {
+            "parent": 13,
+            "child": 15,
+            "calls": 255,
+            "ticks": 2095
+          }
+        ],
+        "compile_without_byte_decode_ns": 47180312.5
+      },
+      {
+        "schema": 2,
+        "pid": 22246,
+        "tid": 22246,
+        "reason": "guest_exit_group",
+        "clock": "cntvct_el0",
+        "cntfrq_hz": 19200000,
+        "clock_supported": true,
+        "root_calls": 255,
+        "root_ticks": 1082755,
+        "exclusive_ticks": 1082755,
+        "closed": true,
+        "qualified": true,
+        "execution_calls": 1,
+        "reentries": 0,
+        "stack_errors": 0,
+        "arithmetic_errors": 0,
+        "unclassified_pass_runs": 0,
+        "stages": [
+          {
+            "name": "compile_block",
+            "calls": 255,
+            "ticks": 1082755,
+            "children_ticks": 1074777,
+            "remaining_ticks": 7978
+          },
+          {
+            "name": "compile_code",
+            "calls": 255,
+            "ticks": 1032796,
+            "children_ticks": 1026841,
+            "remaining_ticks": 5955
+          },
+          {
+            "name": "generate_ir",
+            "calls": 255,
+            "ticks": 884518,
+            "children_ticks": 863844,
+            "remaining_ticks": 20674
+          },
+          {
+            "name": "raw_decode",
+            "calls": 255,
+            "ticks": 355392,
+            "children_ticks": 153733,
+            "remaining_ticks": 201659
+          },
+          {
+            "name": "builder",
+            "calls": 255,
+            "ticks": 212569,
+            "children_ticks": 0,
+            "remaining_ticks": 212569
+          },
+          {
+            "name": "pass_manager",
+            "calls": 255,
+            "ticks": 293042,
+            "children_ticks": 288879,
+            "remaining_ticks": 4163
+          },
+          {
+            "name": "x87",
+            "calls": 255,
+            "ticks": 1377,
+            "children_ticks": 0,
+            "remaining_ticks": 1377
+          },
+          {
+            "name": "dfe",
+            "calls": 255,
+            "ticks": 120243,
+            "children_ticks": 0,
+            "remaining_ticks": 120243
+          },
+          {
+            "name": "ra",
+            "calls": 255,
+            "ticks": 167259,
+            "children_ticks": 0,
+            "remaining_ticks": 167259
+          },
+          {
+            "name": "validation",
+            "calls": 0,
+            "ticks": 0,
+            "children_ticks": 0,
+            "remaining_ticks": 0
+          },
+          {
+            "name": "other_pass",
+            "calls": 0,
+            "ticks": 0,
+            "children_ticks": 0,
+            "remaining_ticks": 0
+          },
+          {
+            "name": "backend",
+            "calls": 255,
+            "ticks": 140038,
+            "children_ticks": 128652,
+            "remaining_ticks": 11386
+          },
+          {
+            "name": "emit",
+            "calls": 255,
+            "ticks": 105380,
+            "children_ticks": 0,
+            "remaining_ticks": 105380
+          },
+          {
+            "name": "tail_copy_cache",
+            "calls": 255,
+            "ticks": 23272,
+            "children_ticks": 1904,
+            "remaining_ticks": 21368
+          },
+          {
+            "name": "publish",
+            "calls": 255,
+            "ticks": 41981,
+            "children_ticks": 0,
+            "remaining_ticks": 41981
+          },
+          {
+            "name": "logical_release",
+            "calls": 765,
+            "ticks": 7030,
+            "children_ticks": 0,
+            "remaining_ticks": 7030
+          },
+          {
+            "name": "byte_decode",
+            "calls": 29915,
+            "ticks": 153733,
+            "children_ticks": 0,
+            "remaining_ticks": 153733
+          }
+        ],
+        "edges": [
+          {
+            "parent": 0,
+            "child": 1,
+            "calls": 255,
+            "ticks": 1032796
+          },
+          {
+            "parent": 0,
+            "child": 14,
+            "calls": 255,
+            "ticks": 41981
+          },
+          {
+            "parent": 1,
+            "child": 2,
+            "calls": 255,
+            "ticks": 884518
+          },
+          {
+            "parent": 1,
+            "child": 11,
+            "calls": 255,
+            "ticks": 140038
+          },
+          {
+            "parent": 1,
+            "child": 15,
+            "calls": 255,
+            "ticks": 2285
+          },
+          {
+            "parent": 2,
+            "child": 3,
+            "calls": 255,
+            "ticks": 355392
+          },
+          {
+            "parent": 2,
+            "child": 4,
+            "calls": 255,
+            "ticks": 212569
+          },
+          {
+            "parent": 2,
+            "child": 5,
+            "calls": 255,
+            "ticks": 293042
+          },
+          {
+            "parent": 2,
+            "child": 15,
+            "calls": 255,
+            "ticks": 2841
+          },
+          {
+            "parent": 3,
+            "child": 16,
+            "calls": 29915,
+            "ticks": 153733
+          },
+          {
+            "parent": 5,
+            "child": 6,
+            "calls": 255,
+            "ticks": 1377
+          },
+          {
+            "parent": 5,
+            "child": 7,
+            "calls": 255,
+            "ticks": 120243
+          },
+          {
+            "parent": 5,
+            "child": 8,
+            "calls": 255,
+            "ticks": 167259
+          },
+          {
+            "parent": 11,
+            "child": 12,
+            "calls": 255,
+            "ticks": 105380
+          },
+          {
+            "parent": 11,
+            "child": 13,
+            "calls": 255,
+            "ticks": 23272
+          },
+          {
+            "parent": 13,
+            "child": 15,
+            "calls": 255,
+            "ticks": 1904
+          }
+        ],
+        "compile_without_byte_decode_ns": 48386562.5
+      },
+      {
+        "schema": 2,
+        "pid": 22261,
+        "tid": 22261,
+        "reason": "guest_exit_group",
+        "clock": "cntvct_el0",
+        "cntfrq_hz": 19200000,
+        "clock_supported": true,
+        "root_calls": 255,
+        "root_ticks": 1061906,
+        "exclusive_ticks": 1061906,
+        "closed": true,
+        "qualified": true,
+        "execution_calls": 1,
+        "reentries": 0,
+        "stack_errors": 0,
+        "arithmetic_errors": 0,
+        "unclassified_pass_runs": 0,
+        "stages": [
+          {
+            "name": "compile_block",
+            "calls": 255,
+            "ticks": 1061906,
+            "children_ticks": 1054590,
+            "remaining_ticks": 7316
+          },
+          {
+            "name": "compile_code",
+            "calls": 255,
+            "ticks": 1014947,
+            "children_ticks": 1009917,
+            "remaining_ticks": 5030
+          },
+          {
+            "name": "generate_ir",
+            "calls": 255,
+            "ticks": 888533,
+            "children_ticks": 869004,
+            "remaining_ticks": 19529
+          },
+          {
+            "name": "raw_decode",
+            "calls": 255,
+            "ticks": 351797,
+            "children_ticks": 153368,
+            "remaining_ticks": 198429
+          },
+          {
+            "name": "builder",
+            "calls": 255,
+            "ticks": 221263,
+            "children_ticks": 0,
+            "remaining_ticks": 221263
+          },
+          {
+            "name": "pass_manager",
+            "calls": 255,
+            "ticks": 294008,
+            "children_ticks": 289754,
+            "remaining_ticks": 4254
+          },
+          {
+            "name": "x87",
+            "calls": 255,
+            "ticks": 1117,
+            "children_ticks": 0,
+            "remaining_ticks": 1117
+          },
+          {
+            "name": "dfe",
+            "calls": 255,
+            "ticks": 121133,
+            "children_ticks": 0,
+            "remaining_ticks": 121133
+          },
+          {
+            "name": "ra",
+            "calls": 255,
+            "ticks": 167504,
+            "children_ticks": 0,
+            "remaining_ticks": 167504
+          },
+          {
+            "name": "validation",
+            "calls": 0,
+            "ticks": 0,
+            "children_ticks": 0,
+            "remaining_ticks": 0
+          },
+          {
+            "name": "other_pass",
+            "calls": 0,
+            "ticks": 0,
+            "children_ticks": 0,
+            "remaining_ticks": 0
+          },
+          {
+            "name": "backend",
+            "calls": 255,
+            "ticks": 119331,
+            "children_ticks": 109416,
+            "remaining_ticks": 9915
+          },
+          {
+            "name": "emit",
+            "calls": 255,
+            "ticks": 86278,
+            "children_ticks": 0,
+            "remaining_ticks": 86278
+          },
+          {
+            "name": "tail_copy_cache",
+            "calls": 255,
+            "ticks": 23138,
+            "children_ticks": 1912,
+            "remaining_ticks": 21226
+          },
+          {
+            "name": "publish",
+            "calls": 255,
+            "ticks": 39643,
+            "children_ticks": 0,
+            "remaining_ticks": 39643
+          },
+          {
+            "name": "logical_release",
+            "calls": 765,
+            "ticks": 5901,
+            "children_ticks": 0,
+            "remaining_ticks": 5901
+          },
+          {
+            "name": "byte_decode",
+            "calls": 29915,
+            "ticks": 153368,
+            "children_ticks": 0,
+            "remaining_ticks": 153368
+          }
+        ],
+        "edges": [
+          {
+            "parent": 0,
+            "child": 1,
+            "calls": 255,
+            "ticks": 1014947
+          },
+          {
+            "parent": 0,
+            "child": 14,
+            "calls": 255,
+            "ticks": 39643
+          },
+          {
+            "parent": 1,
+            "child": 2,
+            "calls": 255,
+            "ticks": 888533
+          },
+          {
+            "parent": 1,
+            "child": 11,
+            "calls": 255,
+            "ticks": 119331
+          },
+          {
+            "parent": 1,
+            "child": 15,
+            "calls": 255,
+            "ticks": 2053
+          },
+          {
+            "parent": 2,
+            "child": 3,
+            "calls": 255,
+            "ticks": 351797
+          },
+          {
+            "parent": 2,
+            "child": 4,
+            "calls": 255,
+            "ticks": 221263
+          },
+          {
+            "parent": 2,
+            "child": 5,
+            "calls": 255,
+            "ticks": 294008
+          },
+          {
+            "parent": 2,
+            "child": 15,
+            "calls": 255,
+            "ticks": 1936
+          },
+          {
+            "parent": 3,
+            "child": 16,
+            "calls": 29915,
+            "ticks": 153368
+          },
+          {
+            "parent": 5,
+            "child": 6,
+            "calls": 255,
+            "ticks": 1117
+          },
+          {
+            "parent": 5,
+            "child": 7,
+            "calls": 255,
+            "ticks": 121133
+          },
+          {
+            "parent": 5,
+            "child": 8,
+            "calls": 255,
+            "ticks": 167504
+          },
+          {
+            "parent": 11,
+            "child": 12,
+            "calls": 255,
+            "ticks": 86278
+          },
+          {
+            "parent": 11,
+            "child": 13,
+            "calls": 255,
+            "ticks": 23138
+          },
+          {
+            "parent": 13,
+            "child": 15,
+            "calls": 255,
+            "ticks": 1912
+          }
+        ],
+        "compile_without_byte_decode_ns": 47319687.5
+      }
+    ]
+  }
+}

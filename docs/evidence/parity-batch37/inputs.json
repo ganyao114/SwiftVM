@@ -1,0 +1,62 @@
+{
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/android/svm_rebuild_linux",
+    "bytes": 8447952,
+    "sha256": "d927b24230bd4e9b80cb771394d8761dd1c382a59a0391f750321d9a9aa051aa"
+  },
+  "backend-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/android/svm_arm64_compile_test",
+    "bytes": 6381328,
+    "sha256": "e2e8213df3b76f58bb0858dde77f4a32182d37800a77339b19df286b4ecbfbf6"
+  },
+  "pipeline-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/android/svm_compile_pipeline_test",
+    "bytes": 7544072,
+    "sha256": "f2c37a6b9a3cd8e5dbbe7979822513af516caa05d0aca42729c534a3a1fe2d80"
+  },
+  "formatter-guest": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/analysis/formatter-guest",
+    "bytes": 6728,
+    "sha256": "58757ab5ec6c4e6787158ca3d08b95b7775128fa3effdc4178637eb75be60a96"
+  },
+  "smc-guest": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/analysis/smc-guest",
+    "bytes": 1552,
+    "sha256": "f4edb6a12b701a7a626d4e8096ae822e0a7a047724c4ab2da71f18f7df3ba519"
+  },
+  "smc-file-alias-eof": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/analysis/smc-file-alias-eof",
+    "bytes": 2864,
+    "sha256": "9a5bcd592ab873dd63a4f4ba44da3a28e384cd3fa6232a23be32414cd95cfd93"
+  },
+  "coremark-bionic": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+    "bytes": 1921016,
+    "sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba"
+  },
+  "FEXLoader": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/pmu-inputs-fixed/FEXLoader-performance-a156",
+    "bytes": 4182680,
+    "sha256": "8632943c4736294ae8e76ab15c22a638e2f3db4959cdf5ca0e7c1d741024b175"
+  },
+  "FEXLoader-byte": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/application-runtime-20261103/fex-byte-decode/build-run/bin/FEXLoader",
+    "bytes": 4742976,
+    "sha256": "d2e4ce32b6c650bb9f7ce46a91aff8a098431ad3f5f52f52fd746d30b3500995"
+  },
+  "FEXServer": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/fex-android/build/Bin/FEXServer",
+    "bytes": 843688,
+    "sha256": "9fe58a9946e9105c49911518356fe29a4ed3143c1fe90803b57afe112c225e8c"
+  },
+  "fex-config/Config.json": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-direct-emit-20261103/Config.json",
+    "bytes": 153,
+    "sha256": "275a50c60d9852ef3399bd9fd665d93cf46a06850a5dd15bd31dffe11e9cb6b0"
+  },
+  "simpleperf": {
+    "path": "/Users/swift/Library/Android/sdk/ndk/29.0.13846066/simpleperf/bin/android/arm64/simpleperf",
+    "bytes": 3745096,
+    "sha256": "30b6cd23fb8d819c835487f2fe6c3c416324488c7ac26c194ee7ba200f15b575"
+  }
+}

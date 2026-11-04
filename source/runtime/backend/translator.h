@@ -1,8 +1,0 @@
-//
-// Created by 甘尧 on 2023/10/12.
-//
-
-#ifndef SWIFTHORIZON_TANSLATOR_H
-#define SWIFTHORIZON_TANSLATOR_H
-
-#endif  // SWIFTHORIZON_TANSLATOR_H

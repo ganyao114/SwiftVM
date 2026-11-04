@@ -1,0 +1,86 @@
+{
+  "kind": "aggregate_batch_qualification",
+  "batch": 37,
+  "qualification_scope": "Fixed original Bionic/CoreMark100000 workload on RedMagic CPU4; implemented-path and existing contract checks, not full ISA/all-application qualification",
+  "runner": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/android/svm_rebuild_linux",
+    "bytes": 8447952,
+    "sha256": "d927b24230bd4e9b80cb771394d8761dd1c382a59a0391f750321d9a9aa051aa",
+    "source_digest": "79c8bf0c2046ab35ece932b5e74310b13d5de339b00ee01e4def117235cdd985"
+  },
+  "source_snapshot_and_live80_match": true,
+  "compile_ns_medians": {
+    "block": 48187132,
+    "function": 84762869,
+    "fex": 47319687.5
+  },
+  "compile_ratios": {
+    "block": 1.0183315771051953,
+    "function": 1.7912812505365763
+  },
+  "runtime_ms": {
+    "block": 16302,
+    "function": 15493,
+    "fex": 15072
+  },
+  "runtime_ratios": {
+    "block": 1.081608280254777,
+    "function": 1.0279325902335457
+  },
+  "user_cycles_ratios": {
+    "block": 1.081087684884082,
+    "function": 1.0301698843190137
+  },
+  "user_instruction_ratios": {
+    "block": 1.0273465180748882,
+    "function": 0.9865189681992246
+  },
+  "limits": {
+    "block": {
+      "time_le_1_10": true,
+      "cycles_le_1_10": true,
+      "instructions_le_1_10": true,
+      "compile_le_2": true
+    },
+    "function": {
+      "time_le_1_10": true,
+      "cycles_le_1_10": true,
+      "instructions_le_1_10": true,
+      "compile_le_2": true
+    }
+  },
+  "host_tests": "5/5 passed",
+  "android_backend_cumulative_checks": 264579,
+  "pipeline": "12 base + 4170 native integer/flags/Jcc paths passed",
+  "combined_guests": "formatter/SMC exit0, file-alias EOF125 expected, both scopes",
+  "actual_patch_review": "P4 actual frozen patch SHA + all three contracts reviewed; no blocker",
+  "offline_quality": "4 exact units generated once; intended changes hit; IR/Home unchanged against existing baselines; fault/link layouts verified; no RX-binding claim",
+  "phone_cleanup": {
+    "utc": "2026-11-04T20:51:55.561057+00:00",
+    "namespace": "/data/local/tmp/swiftvm-parity-batch37-20261103",
+    "allocated_bytes_removed": 37889024,
+    "df_actual_free_delta_bytes": 37949440,
+    "remaining_bytes": 0,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "goal_achieved": true,
+  "goal_flag_provenance": "The runtime-only parser retains its historical hard-coded goal_achieved=false placeholder. This aggregate evaluates both scopes, compile, checks, real frozen-patch review and source closure; measured numbers are unchanged.",
+  "remaining_limitations": [
+    "spill25/42 and maxframe48/64B unchanged, first-eviction/20B proposal not implemented",
+    "requested Function includes722 Function attempts +24 actual Block retries",
+    "original repository/Git/index/WIP frozen; no commit/push",
+    "no full guest signal/thread/full ISA qualification"
+  ],
+  "evidence_sha256": {
+    "source-manifest.json": "639501c2c2f3c1627e6c2883d140f9c324b858b2515dde65422ca022bbfb06a4",
+    "runner-identity.json": "a38bb3b7f18ac371106359d3fbf7c723df5261bef91e02053e5d455f290bcf92",
+    "inputs.json": "cb99b9bd97a11c39df8f401ccca25598327400f51254a496d2ffa266a01c5f98",
+    "compile-summary.json": "93aa3cce9bbdbb795f329fa76554ea2b360863b674ffc41de1393a0840fbcb15",
+    "runtime-summary.json": "d6f73d91fd5bc8d2c594c6ef9a4603a13fec88fa4f97fdd6cac4e72a92d87e1d",
+    "native-quality-review.md": "53c37434dccdbb678da7bd425eb533d98476cfe65bf12134c7b71405df8e1567",
+    "phone-cleanup-receipt.json": "6a27d26115313ae76c4b66b2b2aba55cd1e1d0d60796439da80bc0de61dedc9f",
+    "madd-stage/receipt.json": "04a8f524517b054dbb6b62f36ff87e55c5593226564b5200f3bb7e3e30f9ddb1"
+  }
+}

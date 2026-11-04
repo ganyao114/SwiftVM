@@ -1,0 +1,575 @@
+[
+  {
+    "label": "namespace-absent",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "test ! -e /data/local/tmp/swiftvm-parity-batch37-20261103"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "mkdir",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "mkdir -p /data/local/tmp/swiftvm-parity-batch37-20261103 /data/local/tmp/swiftvm-parity-batch37-20261103/fex-data /data/local/tmp/swiftvm-parity-batch37-20261103/fex-config /data/local/tmp/swiftvm-parity-batch37-20261103/fex-tmp"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-candidate",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/android/svm_rebuild_linux",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/candidate"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-backend-test",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/android/svm_arm64_compile_test",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/backend-test"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-pipeline-test",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/android/svm_compile_pipeline_test",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/pipeline-test"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-formatter-guest",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/analysis/formatter-guest",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/formatter-guest"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-smc-guest",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/analysis/smc-guest",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/smc-guest"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-smc-file-alias-eof",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/analysis/smc-file-alias-eof",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/smc-file-alias-eof"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-coremark-bionic",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-FEXLoader",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-build-cache/pmu-inputs-fixed/FEXLoader-performance-a156",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-FEXLoader-byte",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/application-runtime-20261103/fex-byte-decode/build-run/bin/FEXLoader",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader-byte"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-FEXServer",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-build-cache/fex-android/build/Bin/FEXServer",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/FEXServer"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-fex-config-Config.json",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-direct-emit-20261103/Config.json",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/fex-config/Config.json"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "push-simpleperf",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "push",
+      "/Users/swift/Library/Android/sdk/ndk/29.0.13846066/simpleperf/bin/android/arm64/simpleperf",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/simpleperf"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "chmod",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "chmod 700 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate /data/local/tmp/swiftvm-parity-batch37-20261103/backend-test /data/local/tmp/swiftvm-parity-batch37-20261103/pipeline-test /data/local/tmp/swiftvm-parity-batch37-20261103/formatter-guest /data/local/tmp/swiftvm-parity-batch37-20261103/smc-guest /data/local/tmp/swiftvm-parity-batch37-20261103/smc-file-alias-eof /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic /data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader /data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader-byte /data/local/tmp/swiftvm-parity-batch37-20261103/FEXServer /data/local/tmp/swiftvm-parity-batch37-20261103/simpleperf"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "remote-identities",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "sha256sum /data/local/tmp/swiftvm-parity-batch37-20261103/candidate /data/local/tmp/swiftvm-parity-batch37-20261103/backend-test /data/local/tmp/swiftvm-parity-batch37-20261103/pipeline-test /data/local/tmp/swiftvm-parity-batch37-20261103/formatter-guest /data/local/tmp/swiftvm-parity-batch37-20261103/smc-guest /data/local/tmp/swiftvm-parity-batch37-20261103/smc-file-alias-eof /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic /data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader /data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader-byte /data/local/tmp/swiftvm-parity-batch37-20261103/FEXServer /data/local/tmp/swiftvm-parity-batch37-20261103/fex-config/Config.json /data/local/tmp/swiftvm-parity-batch37-20261103/simpleperf"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "backend-test",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 40 /data/local/tmp/swiftvm-parity-batch37-20261103/backend-test"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "pipeline-test",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 40 /data/local/tmp/swiftvm-parity-batch37-20261103/pipeline-test"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "formatter-guest-block",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 20 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --scope block /data/local/tmp/swiftvm-parity-batch37-20261103/formatter-guest"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "formatter-guest-function",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 20 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --scope function /data/local/tmp/swiftvm-parity-batch37-20261103/formatter-guest"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "smc-guest-block",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 20 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --scope block /data/local/tmp/swiftvm-parity-batch37-20261103/smc-guest"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "smc-guest-function",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 20 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --scope function /data/local/tmp/swiftvm-parity-batch37-20261103/smc-guest"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "smc-file-alias-eof-block",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 20 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --scope block /data/local/tmp/swiftvm-parity-batch37-20261103/smc-file-alias-eof /data/local/tmp/swiftvm-parity-batch37-20261103/smc-file.bin"
+    ],
+    "exit": 125
+  },
+  {
+    "label": "smc-file-alias-eof-function",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 20 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --scope function /data/local/tmp/swiftvm-parity-batch37-20261103/smc-file-alias-eof /data/local/tmp/swiftvm-parity-batch37-20261103/smc-file.bin"
+    ],
+    "exit": 125
+  },
+  {
+    "label": "compile-policy-before",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq /sys/devices/system/cpu/cpu4/cpufreq/scaling_cur_freq /sys/class/power_supply/battery/temp"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-fex-0",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 env -i PATH=/system/bin:/data/local/tmp/swiftvm-parity-batch37-20261103 FEX_APP_DATA_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-data/ FEX_APP_CONFIG_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-config/ FEX_SERVERSOCKETPATH=/data/local/tmp/swiftvm-parity-batch37-20261103/fex.sock XDG_RUNTIME_DIR=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-tmp FEX_ROOTFS=/ FEX_HOSTFEATURES=disableavx FEX_PORTABLE=1 FEX_CACHEOBJECTCODECOMPILATION=0 FEX_AOTIRLOAD=0 FEX_AOTIRCAPTURE=0 FEX_AOTIRGENERATE=0 FEX_TSOAUTOMIGRATION=0 FEX_TSOENABLED=1 FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=1 FEX_COMPILE_STAGE_PROBE=1 /data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader-byte /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-block-0",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --decode-timing --scope block /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-function-0",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --decode-timing --scope function /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-function-1",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --decode-timing --scope function /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-fex-1",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 env -i PATH=/system/bin:/data/local/tmp/swiftvm-parity-batch37-20261103 FEX_APP_DATA_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-data/ FEX_APP_CONFIG_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-config/ FEX_SERVERSOCKETPATH=/data/local/tmp/swiftvm-parity-batch37-20261103/fex.sock XDG_RUNTIME_DIR=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-tmp FEX_ROOTFS=/ FEX_HOSTFEATURES=disableavx FEX_PORTABLE=1 FEX_CACHEOBJECTCODECOMPILATION=0 FEX_AOTIRLOAD=0 FEX_AOTIRCAPTURE=0 FEX_AOTIRGENERATE=0 FEX_TSOAUTOMIGRATION=0 FEX_TSOENABLED=1 FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=1 FEX_COMPILE_STAGE_PROBE=1 /data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader-byte /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-block-1",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --decode-timing --scope block /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-block-2",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --decode-timing --scope block /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-function-2",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --decode-timing --scope function /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-fex-2",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "taskset 10 timeout -k 2 25 env -i PATH=/system/bin:/data/local/tmp/swiftvm-parity-batch37-20261103 FEX_APP_DATA_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-data/ FEX_APP_CONFIG_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-config/ FEX_SERVERSOCKETPATH=/data/local/tmp/swiftvm-parity-batch37-20261103/fex.sock XDG_RUNTIME_DIR=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-tmp FEX_ROOTFS=/ FEX_HOSTFEATURES=disableavx FEX_PORTABLE=1 FEX_CACHEOBJECTCODECOMPILATION=0 FEX_AOTIRLOAD=0 FEX_AOTIRCAPTURE=0 FEX_AOTIRGENERATE=0 FEX_TSOAUTOMIGRATION=0 FEX_TSOENABLED=1 FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=1 FEX_COMPILE_STAGE_PROBE=1 /data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader-byte /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 20 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "compile-policy-after",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq /sys/devices/system/cpu/cpu4/cpufreq/scaling_cur_freq /sys/class/power_supply/battery/temp"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "stop-server-after-compile",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "env -i PATH=/system/bin:/data/local/tmp/swiftvm-parity-batch37-20261103 FEX_APP_DATA_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-data/ FEX_APP_CONFIG_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-config/ FEX_SERVERSOCKETPATH=/data/local/tmp/swiftvm-parity-batch37-20261103/fex.sock XDG_RUNTIME_DIR=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-tmp FEX_ROOTFS=/ FEX_HOSTFEATURES=disableavx FEX_PORTABLE=1 FEX_CACHEOBJECTCODECOMPILATION=0 FEX_AOTIRLOAD=0 FEX_AOTIRCAPTURE=0 FEX_AOTIRGENERATE=0 FEX_TSOAUTOMIGRATION=0 FEX_TSOENABLED=1 FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=1 /data/local/tmp/swiftvm-parity-batch37-20261103/FEXServer -k"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "runtime-policy-before",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq /sys/devices/system/cpu/cpu4/cpufreq/scaling_cur_freq /sys/class/power_supply/battery/temp"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "block-pids",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "pidof candidate"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "block-owner-22293",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "readlink /proc/22293/exe"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "block-live-status",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cat /proc/22293/status"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "runtime-block",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/simpleperf stat -e cpu-cycles:u,instructions:u,branch-misses:u -- taskset 10 timeout -k 2 90 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --scope block /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 100000 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "function-pids",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "pidof candidate"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "function-owner-22399",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "readlink /proc/22399/exe"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "function-live-status",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cat /proc/22399/status"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "runtime-function",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/simpleperf stat -e cpu-cycles:u,instructions:u,branch-misses:u -- taskset 10 timeout -k 2 90 /data/local/tmp/swiftvm-parity-batch37-20261103/candidate --scope function /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 100000 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "fex-pids",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "pidof FEXLoader"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "fex-owner-22447",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "readlink /proc/22447/exe"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "fex-live-status",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cat /proc/22447/status"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "runtime-fex",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "/data/local/tmp/swiftvm-parity-batch37-20261103/simpleperf stat -e cpu-cycles:u,instructions:u,branch-misses:u -- taskset 10 timeout -k 2 90 env -i PATH=/system/bin:/data/local/tmp/swiftvm-parity-batch37-20261103 FEX_APP_DATA_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-data/ FEX_APP_CONFIG_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-config/ FEX_SERVERSOCKETPATH=/data/local/tmp/swiftvm-parity-batch37-20261103/fex.sock XDG_RUNTIME_DIR=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-tmp FEX_ROOTFS=/ FEX_HOSTFEATURES=disableavx FEX_PORTABLE=1 FEX_CACHEOBJECTCODECOMPILATION=0 FEX_AOTIRLOAD=0 FEX_AOTIRCAPTURE=0 FEX_AOTIRGENERATE=0 FEX_TSOAUTOMIGRATION=0 FEX_TSOENABLED=1 FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=1 /data/local/tmp/swiftvm-parity-batch37-20261103/FEXLoader /data/local/tmp/swiftvm-parity-batch37-20261103/coremark-bionic 0 0 0 100000 7 1 2000"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "runtime-policy-after",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cat /sys/devices/system/cpu/cpu4/cpufreq/scaling_min_freq /sys/devices/system/cpu/cpu4/cpufreq/scaling_max_freq /sys/devices/system/cpu/cpu4/cpufreq/scaling_cur_freq /sys/class/power_supply/battery/temp"
+    ],
+    "exit": 0
+  },
+  {
+    "label": "stop-server-final",
+    "argv": [
+      "/opt/homebrew/bin/adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "env -i PATH=/system/bin:/data/local/tmp/swiftvm-parity-batch37-20261103 FEX_APP_DATA_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-data/ FEX_APP_CONFIG_LOCATION=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-config/ FEX_SERVERSOCKETPATH=/data/local/tmp/swiftvm-parity-batch37-20261103/fex.sock XDG_RUNTIME_DIR=/data/local/tmp/swiftvm-parity-batch37-20261103/fex-tmp FEX_ROOTFS=/ FEX_HOSTFEATURES=disableavx FEX_PORTABLE=1 FEX_CACHEOBJECTCODECOMPILATION=0 FEX_AOTIRLOAD=0 FEX_AOTIRCAPTURE=0 FEX_AOTIRGENERATE=0 FEX_TSOAUTOMIGRATION=0 FEX_TSOENABLED=1 FEX_VECTORTSOENABLED=1 FEX_MEMCPYSETTSOENABLED=1 FEX_HALFBARRIERTSOENABLED=1 /data/local/tmp/swiftvm-parity-batch37-20261103/FEXServer -k"
+    ],
+    "exit": 0
+  }
+]

@@ -1,0 +1,25 @@
+2K performance run parameters for coremark.
+CoreMark Size    : 666
+Total ticks      : 16302
+Total time (secs): 16.302000
+Iterations/Sec   : 6134.216661
+Iterations       : 100000
+Compiler version : Android (13989888, based on r563880c) Clang 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 5e96669f06077099aa41290cdb4c5e6fa0f59349)
+Compiler flags   : -O2
+Memory location  : Please put data memory location here
+			(e.g. code in flash, data on heap etc)
+seedcrc          : 0xe9f5
+[0]crclist       : 0xe714
+[0]crcmatrix     : 0x1fd7
+[0]crcstate      : 0x8e3a
+[0]crcfinal      : 0xd340
+Correct operation validated. See README.md for run and reporting rules.
+CoreMark 1.0 : 6134.216661 / Android (13989888, based on r563880c) Clang 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 5e96669f06077099aa41290cdb4c5e6fa0f59349) -O2 / Heap
+Performance counter statistics:
+
+#          count  event_name        # count / runtime
+  18,728,836,155  cpu-cycles:u      # 1.143511 GHz
+  63,676,531,817  instructions:u    # 3.888 G/sec 
+      43,130,249  branch-misses:u   # 2.633 M/sec 
+
+Total test time: 16.389695 seconds.

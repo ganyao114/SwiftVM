@@ -1,0 +1,50 @@
+[1/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/distorm.c.o
+[2/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/decoder.c.o
+/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/externals/distorm/decoder.c:444:2: warning: expression result unused [-Wunused-value]
+  444 |         supportOldIntr; /* Unreferenced. */
+      |         ^~~~~~~~~~~~~~
+1 warning generated.
+[3/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/insts.c.o
+[4/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/instructions.c.o
+[5/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/mnemonics.c.o
+[6/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/prefix.c.o
+[7/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/operands.c.o
+[8/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/wstring.c.o
+[9/46] Building C object source/runtime/externals/distorm/CMakeFiles/distorm.dir/textdefs.c.o
+[10/46] Building CXX object CMakeFiles/svm_ir.dir/source/runtime/ir/program.cpp.o
+[11/46] Building CXX object CMakeFiles/svm_arm64.dir/source/runtime/backend/arm64/helper_calls.cpp.o
+[12/46] Building CXX object CMakeFiles/svm_ir.dir/source/runtime/ir/builder.cpp.o
+[13/46] Linking CXX static library libsvm_ir.a
+[14/46] Building CXX object CMakeFiles/svm_arm64.dir/source/runtime/backend/arm64/allocate.cpp.o
+[15/46] Building CXX object CMakeFiles/svm_compile.dir/source/runtime/compile/optimize.cpp.o
+[16/46] Building CXX object CMakeFiles/svm_arm64.dir/source/runtime/backend/arm64/emit_state.cpp.o
+[17/46] Building CXX object CMakeFiles/svm_arm64.dir/source/runtime/backend/arm64/emit_vector.cpp.o
+[18/46] Linking C static library source/runtime/externals/distorm/libdistorm.a
+[19/46] Linking CXX static library libsvm_compile.a
+[20/46] Building CXX object CMakeFiles/svm_arm64.dir/source/runtime/backend/arm64/compile.cpp.o
+[21/46] Linking CXX static library libsvm_arm64.a
+[22/46] Building CXX object CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/decode.cpp.o
+[23/46] Building CXX object CMakeFiles/svm_ir_optimize_test.dir/source/tests/rebuild/ir_optimize_test.cpp.o
+[24/46] Building CXX object CMakeFiles/svm_ir_construction_test.dir/source/tests/rebuild/ir_construction_test.cpp.o
+[25/46] Building CXX object CMakeFiles/svm_x86_construction_test.dir/source/tests/rebuild/x86_construction_test.cpp.o
+[26/46] Building CXX object CMakeFiles/svm_compile_pipeline_test.dir/source/tests/rebuild/compile_pipeline_test.cpp.o
+[27/46] Building CXX object CMakeFiles/svm_ir_build_submit_bench.dir/benchmarks/ir_build_submit_bench.cpp.o
+[28/46] Building CXX object CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/build_ir.cpp.o
+[29/46] Linking CXX static library libsvm_x86_ir.a
+[30/46] Building CXX object CMakeFiles/svm_ir_static_build_submit_bench.dir/benchmarks/ir_build_submit_bench.cpp.o
+[31/46] Building CXX object CMakeFiles/svm_x86_build_submit_bench.dir/benchmarks/x86_build_submit_bench.cpp.o
+[32/46] Building CXX object CMakeFiles/svm_arm64_compile_test.dir/source/tests/rebuild/arm64_compile_test.cpp.o
+[33/46] Linking CXX executable svm_ir_construction_test
+[34/46] Linking CXX executable svm_x86_construction_test
+[35/46] Linking CXX executable svm_ir_optimize_test
+[36/46] Linking CXX executable svm_arm64_compile_test
+[37/46] Linking CXX executable svm_compile_pipeline_test
+[38/46] Linking CXX executable svm_ir_build_submit_bench
+[39/46] Linking CXX executable svm_ir_static_build_submit_bench
+[40/46] Linking CXX executable svm_x86_build_submit_bench
+[41/46] Building CXX object CMakeFiles/svm_function_compile_bench.dir/benchmarks/function_compile_bench.cpp.o
+[42/46] Linking CXX executable svm_function_compile_bench
+[43/46] Building CXX object CMakeFiles/svm_ir_compile_bench.dir/benchmarks/ir_compile_bench.cpp.o
+[44/46] Linking CXX executable svm_ir_compile_bench
+[45/46] Building CXX object CMakeFiles/svm_ir_birth_replay_bench.dir/benchmarks/ir_birth_replay_bench.cpp.o
+[46/46] Linking CXX executable svm_ir_birth_replay_bench

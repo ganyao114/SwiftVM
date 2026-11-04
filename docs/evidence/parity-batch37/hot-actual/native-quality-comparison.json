@@ -1,0 +1,569 @@
+{
+  "kind": "batch37_four_actual_units_offline_quality",
+  "source_digest": "79c8bf0c2046ab35ece932b5e74310b13d5de339b00ee01e4def117235cdd985",
+  "callable_directory": true,
+  "target_features": 63,
+  "new_generations": 4,
+  "old_generations": 0,
+  "library_drift": false,
+  "library_read_lock_released": true,
+  "runtime_rx_matched": false,
+  "rows": [
+    {
+      "unit": "pc21c3b3.block",
+      "baseline": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch34/hot-actual/pc21c3b3.block",
+      "ir_home_byte_identical": true,
+      "words_byte_identical": false,
+      "words_old": 29,
+      "words_new": 29,
+      "nodes": 11,
+      "blocks": 1,
+      "frame_bytes": 0,
+      "spill_slots": 0,
+      "actual_policy": {
+        "pin_slots": 16,
+        "native_nzcv": true,
+        "native_fp_environment": true,
+        "private_uniforms": true,
+        "rcpc": true,
+        "rcpc_imm9": true,
+        "lse": true,
+        "crc32c": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "software_mxcsr_offset": 416,
+        "dispatch_mode": "Inline",
+        "dispatch_mode_value": 1,
+        "local_flags": true,
+        "pinned_vector_offset": 160,
+        "callable_directory": true
+      },
+      "actual_target": {
+        "mode": 0,
+        "target": 2660,
+        "features": 63,
+        "private_gprs": true,
+        "private_vectors": true,
+        "fault_locations": true
+      },
+      "faults": [
+        {
+          "guest_pc": "0x21c3b6",
+          "old_hot": [
+            2,
+            3
+          ],
+          "new_hot": [
+            2,
+            3
+          ],
+          "old_cold": 26,
+          "new_cold": 26,
+          "recipe_identical": true,
+          "hot_opcode_old": "99400043",
+          "hot_opcode_new": "99800042",
+          "cold_plain_opcode_new": "b8800042",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 3,
+          "cold_returns_fast_plus_one": true
+        }
+      ],
+      "links_old": [],
+      "links_new": [],
+      "artifacts_sha256": {
+        ".json": "7e1395d64da9d212b5b072b4c6848b4cdbcb7d0d73138b51d1aeec71f53f3878",
+        ".ir.txt": "ee9fb46c59972ec0c1975422c42e6b37c4b29c2c574a5a5b93743b0639ffc876",
+        ".words.bin": "f2a2fa7ffcf246648f3631d98c3312ca04e270732955c8bee48bd56547ede100",
+        ".words.txt": "3fb4d57c642a25453f19a73460e2dba9e69934f9b990a851f673087d1eaca6ba"
+      }
+    },
+    {
+      "unit": "pc21c4b1.block",
+      "baseline": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch36/next-two-state-hot/pc21c4b1.block",
+      "ir_home_byte_identical": true,
+      "words_byte_identical": false,
+      "words_old": 31,
+      "words_new": 29,
+      "nodes": 9,
+      "blocks": 1,
+      "frame_bytes": 0,
+      "spill_slots": 0,
+      "actual_policy": {
+        "pin_slots": 16,
+        "native_nzcv": true,
+        "native_fp_environment": true,
+        "private_uniforms": true,
+        "rcpc": true,
+        "rcpc_imm9": true,
+        "lse": true,
+        "crc32c": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "software_mxcsr_offset": 416,
+        "dispatch_mode": "Inline",
+        "dispatch_mode_value": 1,
+        "local_flags": true,
+        "pinned_vector_offset": 160,
+        "callable_directory": true
+      },
+      "actual_target": {
+        "mode": 0,
+        "target": 2660,
+        "features": 63,
+        "private_gprs": true,
+        "private_vectors": true,
+        "fault_locations": true
+      },
+      "faults": [],
+      "links_old": [
+        {
+          "pointer_word": 12,
+          "branch_word": 9,
+          "conditional_head": false,
+          "gate_word": 9,
+          "fallback_word": 14,
+          "target_pc": "0x21c4d0"
+        },
+        {
+          "pointer_word": 24,
+          "branch_word": 8,
+          "conditional_head": true,
+          "gate_word": 22,
+          "fallback_word": 26,
+          "target_pc": "0x21c4c0"
+        }
+      ],
+      "links_new": [
+        {
+          "pointer_word": 10,
+          "branch_word": 8,
+          "conditional_head": false,
+          "gate_word": 8,
+          "fallback_word": 12,
+          "target_pc": "0x21c4d0"
+        },
+        {
+          "pointer_word": 22,
+          "branch_word": 7,
+          "conditional_head": true,
+          "gate_word": 20,
+          "fallback_word": 24,
+          "target_pc": "0x21c4c0"
+        }
+      ],
+      "artifacts_sha256": {
+        ".json": "eff127713312f6b28ab5811d770f25fe5769a5bee86b531133f6f4dd80647fd9",
+        ".ir.txt": "996a4c04477e41db72ccbf9334401148d75d255918773693064dffd7028807fe",
+        ".words.bin": "ac781334781db7ce1e0ab6ad249dc1a60e727b38b4dd37bcae9ce7d6527045ab",
+        ".words.txt": "203bb7784b806c64601611973a1ded36d71903c8b09b044d969699c226f57f59"
+      }
+    },
+    {
+      "unit": "pc21b2d0.block",
+      "baseline": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch35/hot-actual/pc21b2d0.block",
+      "ir_home_byte_identical": true,
+      "words_byte_identical": false,
+      "words_old": 57,
+      "words_new": 55,
+      "nodes": 52,
+      "blocks": 1,
+      "frame_bytes": 0,
+      "spill_slots": 0,
+      "actual_policy": {
+        "pin_slots": 16,
+        "native_nzcv": true,
+        "native_fp_environment": true,
+        "private_uniforms": true,
+        "rcpc": true,
+        "rcpc_imm9": true,
+        "lse": true,
+        "crc32c": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "software_mxcsr_offset": 416,
+        "dispatch_mode": "Inline",
+        "dispatch_mode_value": 1,
+        "local_flags": true,
+        "pinned_vector_offset": 160,
+        "callable_directory": true
+      },
+      "actual_target": {
+        "mode": 0,
+        "target": 2660,
+        "features": 63,
+        "private_gprs": true,
+        "private_vectors": true,
+        "fault_locations": true
+      },
+      "faults": [
+        {
+          "guest_pc": "0x21b2d4",
+          "old_hot": [
+            2,
+            3
+          ],
+          "new_hot": [
+            2,
+            3
+          ],
+          "old_cold": 45,
+          "new_cold": 43,
+          "recipe_identical": true,
+          "hot_opcode_old": "59c00056",
+          "hot_opcode_new": "59c00056",
+          "cold_plain_opcode_new": "78c00056",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 3,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21b2dc",
+          "old_hot": [
+            5,
+            6
+          ],
+          "new_hot": [
+            5,
+            6
+          ],
+          "old_cold": 48,
+          "new_cold": 46,
+          "recipe_identical": true,
+          "hot_opcode_old": "59c00042",
+          "hot_opcode_new": "59c00042",
+          "cold_plain_opcode_new": "78c00042",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 6,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21b2eb",
+          "old_hot": [
+            11,
+            12
+          ],
+          "new_hot": [
+            11,
+            12
+          ],
+          "old_cold": 51,
+          "new_cold": 49,
+          "recipe_identical": true,
+          "hot_opcode_old": "59c00056",
+          "hot_opcode_new": "59c00056",
+          "cold_plain_opcode_new": "78c00056",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 12,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21b2f4",
+          "old_hot": [
+            14,
+            15
+          ],
+          "new_hot": [
+            14,
+            15
+          ],
+          "old_cold": 54,
+          "new_cold": 52,
+          "recipe_identical": true,
+          "hot_opcode_old": "59c00042",
+          "hot_opcode_new": "59c00042",
+          "cold_plain_opcode_new": "78c00042",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 15,
+          "cold_returns_fast_plus_one": true
+        }
+      ],
+      "links_old": [
+        {
+          "pointer_word": 26,
+          "branch_word": 23,
+          "conditional_head": false,
+          "gate_word": 23,
+          "fallback_word": 28,
+          "target_pc": "0x21b311"
+        },
+        {
+          "pointer_word": 38,
+          "branch_word": 22,
+          "conditional_head": true,
+          "gate_word": 36,
+          "fallback_word": 40,
+          "target_pc": "0x21b2d0"
+        }
+      ],
+      "links_new": [
+        {
+          "pointer_word": 24,
+          "branch_word": 22,
+          "conditional_head": false,
+          "gate_word": 22,
+          "fallback_word": 26,
+          "target_pc": "0x21b311"
+        },
+        {
+          "pointer_word": 36,
+          "branch_word": 21,
+          "conditional_head": true,
+          "gate_word": 34,
+          "fallback_word": 38,
+          "target_pc": "0x21b2d0"
+        }
+      ],
+      "artifacts_sha256": {
+        ".json": "0660421ae2d549e37bae73936e066950c3c124669a5d9adc90f5fc6f34fc4cbc",
+        ".ir.txt": "fc4c4e1e7549ce9bb9b9378dc0981af828ee163dacea2a71eef05678cf23de18",
+        ".words.bin": "416b8da1601763d7dcb4107eeca509d86a0368f605e0119db8ea7854e6afc4e5",
+        ".words.txt": "cdcd880bbcf439a03f620b6c39fa7f7816acd8b2807d331c273278f60a62975c"
+      }
+    },
+    {
+      "unit": "pc21c483.function",
+      "baseline": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-parity-implementation-20261103/batch36/hot-actual/pc21c483.function",
+      "ir_home_byte_identical": true,
+      "words_byte_identical": false,
+      "words_old": 148,
+      "words_new": 146,
+      "nodes": 84,
+      "blocks": 13,
+      "frame_bytes": 0,
+      "spill_slots": 0,
+      "actual_policy": {
+        "pin_slots": 16,
+        "native_nzcv": true,
+        "native_fp_environment": true,
+        "private_uniforms": true,
+        "rcpc": true,
+        "rcpc_imm9": true,
+        "lse": true,
+        "crc32c": true,
+        "fault_locations": true,
+        "recover_unaligned": true,
+        "software_mxcsr_offset": 416,
+        "dispatch_mode": "Inline",
+        "dispatch_mode_value": 1,
+        "local_flags": true,
+        "pinned_vector_offset": 160,
+        "callable_directory": true
+      },
+      "actual_target": {
+        "mode": 0,
+        "target": 2660,
+        "features": 63,
+        "private_gprs": true,
+        "private_vectors": true,
+        "fault_locations": true
+      },
+      "faults": [
+        {
+          "guest_pc": "0x21c48c",
+          "old_hot": [
+            9,
+            10
+          ],
+          "new_hot": [
+            9,
+            10
+          ],
+          "old_cold": 121,
+          "new_cold": 119,
+          "recipe_identical": true,
+          "hot_opcode_old": "99400043",
+          "hot_opcode_new": "99400043",
+          "cold_plain_opcode_new": "b8400043",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 10,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21c48c",
+          "old_hot": [
+            11,
+            12
+          ],
+          "new_hot": [
+            11,
+            12
+          ],
+          "old_cold": 124,
+          "new_cold": 122,
+          "recipe_identical": true,
+          "hot_opcode_old": "99000044",
+          "hot_opcode_new": "99000044",
+          "cold_plain_opcode_new": "d5033bbf",
+          "cold_dmb_new": "b8000044",
+          "cold_return_word": 12,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21c4fc",
+          "old_hot": [
+            28,
+            29
+          ],
+          "new_hot": [
+            27,
+            28
+          ],
+          "old_cold": 127,
+          "new_cold": 125,
+          "recipe_identical": true,
+          "hot_opcode_old": "99400043",
+          "hot_opcode_new": "99400043",
+          "cold_plain_opcode_new": "b8400043",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 28,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21c4fc",
+          "old_hot": [
+            30,
+            31
+          ],
+          "new_hot": [
+            29,
+            30
+          ],
+          "old_cold": 130,
+          "new_cold": 128,
+          "recipe_identical": true,
+          "hot_opcode_old": "99000044",
+          "hot_opcode_new": "99000044",
+          "cold_plain_opcode_new": "d5033bbf",
+          "cold_dmb_new": "b8000044",
+          "cold_return_word": 30,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21c4d0",
+          "old_hot": [
+            37,
+            38
+          ],
+          "new_hot": [
+            36,
+            37
+          ],
+          "old_cold": 4294967295,
+          "new_cold": 4294967295,
+          "recipe_identical": true,
+          "hot_opcode_old": "194002a8",
+          "hot_opcode_new": "194002a8"
+        },
+        {
+          "guest_pc": "0x21c3b6",
+          "old_hot": [
+            54,
+            55
+          ],
+          "new_hot": [
+            53,
+            54
+          ],
+          "old_cold": 133,
+          "new_cold": 131,
+          "recipe_identical": true,
+          "hot_opcode_old": "99400043",
+          "hot_opcode_new": "99800042",
+          "cold_plain_opcode_new": "b8800042",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 54,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21c509",
+          "old_hot": [
+            78,
+            79
+          ],
+          "new_hot": [
+            76,
+            77
+          ],
+          "old_cold": 136,
+          "new_cold": 134,
+          "recipe_identical": true,
+          "hot_opcode_old": "d9000375",
+          "hot_opcode_new": "d9000375",
+          "cold_plain_opcode_new": "d5033bbf",
+          "cold_dmb_new": "f8000375",
+          "cold_return_word": 77,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21c50c",
+          "old_hot": [
+            79,
+            80
+          ],
+          "new_hot": [
+            77,
+            78
+          ],
+          "old_cold": 139,
+          "new_cold": 137,
+          "recipe_identical": true,
+          "hot_opcode_old": "d9400302",
+          "hot_opcode_new": "d9400302",
+          "cold_plain_opcode_new": "f8400302",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 78,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21c4e8",
+          "old_hot": [
+            101,
+            102
+          ],
+          "new_hot": [
+            99,
+            100
+          ],
+          "old_cold": 142,
+          "new_cold": 140,
+          "recipe_identical": true,
+          "hot_opcode_old": "d9000375",
+          "hot_opcode_new": "d9000375",
+          "cold_plain_opcode_new": "d5033bbf",
+          "cold_dmb_new": "f8000375",
+          "cold_return_word": 100,
+          "cold_returns_fast_plus_one": true
+        },
+        {
+          "guest_pc": "0x21c4eb",
+          "old_hot": [
+            102,
+            103
+          ],
+          "new_hot": [
+            100,
+            101
+          ],
+          "old_cold": 145,
+          "new_cold": 143,
+          "recipe_identical": true,
+          "hot_opcode_old": "d9400302",
+          "hot_opcode_new": "d9400302",
+          "cold_plain_opcode_new": "f8400302",
+          "cold_dmb_new": "d50339bf",
+          "cold_return_word": 101,
+          "cold_returns_fast_plus_one": true
+        }
+      ],
+      "links_old": [],
+      "links_new": [],
+      "artifacts_sha256": {
+        ".json": "74d7fd0513ce3e128faf122edd1acf8758d43bdac06ecc2a590958e07cb40c89",
+        ".ir.txt": "208d2f8516c72ca76d2566c33b17fd5a47be6e6e31ef2fee0d42764e25403879",
+        ".words.bin": "a5c18d3a07d7d8ed1e843b6410950fb74ded994983a786d9453abba572bc44a1",
+        ".words.txt": "57c30492a06e22ea89d024c9cbc7b83de7a7292c97e00d93736092e80c1c026f"
+      }
+    }
+  ],
+  "no_whole_words_times_hits": true
+}
