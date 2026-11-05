@@ -92,7 +92,8 @@ multiply/add have bounded eligibility and ordinary fallbacks. They add no IR,
 node table or pass.
 
 The current static-ELF subset does not cover every feature of the retired VM.
-See the [Function entry reuse results](docs/function-entry-reuse-2026-11-05.md),
+See the [post-push benchmark anchor](docs/post-push-benchmark-2026-11-05.md),
+[Function entry reuse results](docs/function-entry-reuse-2026-11-05.md),
 [owner/publication results](docs/compile-owner-and-publication-optimization-2026-11-05.md),
 [FP and compile analysis](docs/fp-instruction-and-compile-cost-2026-11-05.md),
 [optimization checkpoint](docs/parity-gap-optimization-2026-11-05.md),

@@ -54,35 +54,39 @@ failed formation and actual Block retries.
 The November 5 UTC optimization checkpoint runs all eight fixed workloads in
 both SVM scopes. The original Bionic/CoreMark ELF uses 100000 iterations on
 RedMagic NX729J CPU4 against fixed FEX `a156752f`. All CoreMark runs exceeded
-10 seconds and validated CRC `0xd340`; each table entry is a median of three.
+10 seconds and validated CRC `0xd340`; each table entry is a median of five.
 
 | Metric | Block | Requested Function | FEX |
 | --- | ---: | ---: | ---: |
-| Runtime | 16.111 s | 15.633 s | 15.033 s |
-| Runtime / FEX | 1.072x | 1.040x | 1x |
-| User cycles / FEX | 1.070x | 1.039x | 1x |
+| Runtime | 16.119 s | 15.627 s | 15.047 s |
+| Runtime / FEX | 1.071x | 1.039x | 1x |
+| User cycles / FEX | 1.072x | 1.038x | 1x |
 | User instructions / FEX | 1.038x | 1.010x | 1x |
-| Cold compile excluding byte parser | 44.906 ms | 51.447 ms | 48.025 ms |
-| Compile / FEX | 0.935x | 1.071x | 1x |
+| Cold compile excluding byte parser | 45.688 ms | 51.463 ms | 47.700 ms |
+| Compile / FEX | 0.958x | 1.079x | 1x |
 
 Compile includes formation, IR construction, optimization, allocation, encoding,
 failures/retries, publication and release; only byte-parser calls are removed.
-All eight fixed inputs meet the 1.10x runtime/user-cycle limits in both scopes.
-Fifteen of sixteen compile comparisons meet 2x: the original x87 Block median
-is 2.109x. An independently planned seven-round paired check gives 1.966x;
-it does not replace the original samples or establish stable compliance.
-The original suite therefore retains 47/48 passing limits.
-Function entry reuse reduced CoreMark repeated construction from 15,889 to
-191 instruction occurrences and compile from 81.982 to 51.447 ms. Its runtime
-increased from 15.282 to 15.633 s, so this is not a zero-cost quality change.
-FP runtime is 0.955/0.947x FEX and FP instruction counts are 0.990/1.006x;
-x87 runtime is 0.678/0.675x. CoreMark spill
+The post-push checkpoint measures committed subject `390cf73d` with five fresh
+launches per arm/input: 120 runtime and 120 compile observations. All 48 fixed
+input limits pass in this round (1.10x runtime/user-cycles and 2x compile);
+worst median ratios are 1.0712x, 1.0771x and 1.9078x respectively.
+The earlier three-round x87 Block result of 2.109x and its independent seven-round
+confirmation remain archived. Short compile cases are near the limit; this
+checkpoint does not establish an upper bound for other inputs or environments.
+The same-source entry audit reduced CoreMark repeated construction from 15,889
+to 191 instruction occurrences. Current Function compile is 51.463 ms versus
+81.982 ms before entry reuse; runtime is 15.627 s versus 15.282 s at that earlier
+checkpoint, so the change retains a runtime tradeoff.
+FP runtime is 0.939/0.950x FEX and FP instruction counts are 0.990/1.006x;
+x87 runtime is 0.645/0.641x. CoreMark spill
 slots are 25/31 and maximum frames 48/64 bytes for Block/Function.
 Instruction counts still differ. The x87 guest has an exit-only oracle, with
 separate finite precision/state contracts; this checkpoint covers these fixed
 inputs rather than the entire x86 ISA or general application performance.
 
-See the [Function entry reuse and construction audit](docs/function-entry-reuse-2026-11-05.md),
+See the [post-push five-round benchmark anchor](docs/post-push-benchmark-2026-11-05.md),
+[Function entry reuse and construction audit](docs/function-entry-reuse-2026-11-05.md),
 [buffer reuse and publication](docs/compile-owner-and-publication-optimization-2026-11-05.md),
 [FP optimization and compile cost analysis](docs/fp-instruction-and-compile-cost-2026-11-05.md),
 [previous optimization results](docs/parity-gap-optimization-2026-11-05.md),

@@ -1,0 +1,142 @@
+{
+  "utc": "2026-11-05T12:42:33.432800+00:00",
+  "kind": "post-push-fixed-five-round-benchmark-anchor",
+  "subject_commit": "390cf73d7d8db5687a8d33cc8be5cdd6aa38638f",
+  "code_commit": "7f1f403a9c429c664914867439ef6315ac9f3e3b",
+  "remote_ref": "refs/heads/refactor/middle-pipeline-rebuild-parity",
+  "remote_subject_verified": true,
+  "source_digest": "a78fdec20b3de2f00fe47bb1dbfa67c6664c0efa7cd1b7f30658edd8f1ce1e52",
+  "source_files": 118,
+  "source_current_frozen_and_committed_match": true,
+  "ordinary_candidate_sha256": "13411690d78fa72df6fc84c61004bfe7c36a2060cc3a9a16cb22dcbfca9d77eb",
+  "ordinary_candidate_archive": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/post-push-benchmark-20261105/candidate.gz",
+  "FEX_revision": "a156752fae3a4f65fefb1ed95af980bcdfac43d7 + original Android patch",
+  "repetitions": 5,
+  "runtime_samples": 120,
+  "compile_samples": 120,
+  "all_output_oracles_valid": true,
+  "all_samples_retained": true,
+  "prior_samples_pooled": false,
+  "threshold_driven_followup": false,
+  "acceptance": {
+    "limits": {
+      "seconds": 1.1,
+      "cycles": 1.1,
+      "compile": 2.0
+    },
+    "passed": true,
+    "failures": [],
+    "n": 5,
+    "gated_checks": 48,
+    "passed_checks": 48,
+    "runtime_valid": 120,
+    "compile_valid": 120,
+    "time_kind": "CoreMark loop; other cases whole-child including startup/JIT; all8 cases gated"
+  },
+  "phone_cleanup": {
+    "utc": "2026-11-05T12:36:25.881806+00:00",
+    "namespace": "/data/local/tmp/swiftvm-post-push-20261105",
+    "allocated_bytes_removed": 42435584,
+    "df_actual_free_delta_bytes": 44470272,
+    "remaining_bytes": 0,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "raw_output_files": 1310,
+  "artifacts": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/post-push-benchmark-20261105",
+  "files": {
+    "analyze.py": {
+      "bytes": 25311,
+      "sha256": "582215517d892fff052ba43405f11884aa51701b195bea88b9767a79c63a6bf4"
+    },
+    "android-build.log": {
+      "bytes": 22,
+      "sha256": "8c35b1682f73592d30612d7b0fabdb384fcfff35cb5a076cb48b85b1368aa794"
+    },
+    "cases.json": {
+      "bytes": 1130,
+      "sha256": "e9485bc5fc5721e47258d169d593e6b9d3d186f6124640841350bf80dddc0f9b"
+    },
+    "commands.json": {
+      "bytes": 211598,
+      "sha256": "1917b7dbbc322b339f8a8323dd90ef1e72c6c94ff1e3b7c799debabcf1f8f9c5"
+    },
+    "comparison.json": {
+      "bytes": 50170,
+      "sha256": "932dcf4bd10aefdae2dbe348f5c266b8c78f91b4e063ed49b03c8af5d8af5441"
+    },
+    "compile-breakdown.json": {
+      "bytes": 15543,
+      "sha256": "9f1528e29cd7eed5f2ab1355f2a843b13e8c9b6ce88a41abe2d290df85b14faa"
+    },
+    "compile-records.json": {
+      "bytes": 445609,
+      "sha256": "aa547758e2363c4dcf88ab480fca7918bafec2287e5c5a2938c61a6f5887ed48"
+    },
+    "environment.json": {
+      "bytes": 754,
+      "sha256": "4f3fa830b5535d430a126f0bfb4d0ef8b10f347c9537c05230437e7e06d3a242"
+    },
+    "host-build.log": {
+      "bytes": 22,
+      "sha256": "8c35b1682f73592d30612d7b0fabdb384fcfff35cb5a076cb48b85b1368aa794"
+    },
+    "identity.json": {
+      "bytes": 930,
+      "sha256": "90fce658fa947fcec5aebcf8cdd1de9e0c682fd25cdc56293340139624dbc5de"
+    },
+    "inputs.json": {
+      "bytes": 3343,
+      "sha256": "4e9a2846abab4799c0833c649c8086cd16bcb1e0bf7b3602932c9200d5b94351"
+    },
+    "mode-probe-summary.json": {
+      "bytes": 5576,
+      "sha256": "8fa0220f73e69c61ac1412f55860f14a7a54c52fe42f3b30c1220f5eb830737c"
+    },
+    "package-evidence.py": {
+      "bytes": 4215,
+      "sha256": "3ce9ca755634f2ec88904532a8c39fe27e046d19c59e613b577bf4cd781a350a"
+    },
+    "phone-cleanup-receipt.json": {
+      "bytes": 276,
+      "sha256": "88cbe7124e37e18b39b8cfdbc3a6219fc4c15399ea5bb146daf837d870188db4"
+    },
+    "plan.json": {
+      "bytes": 2409,
+      "sha256": "39fcc0cc4bb042585a13820a7d52489e0119824902909ec1a1638d0195a3ca72"
+    },
+    "raw-output.jsonl": {
+      "bytes": 1555516,
+      "sha256": "18d586f3fe3d7ff6f3956c2c0fbf6f372e4ecb199986450b4c93d6e24e4aef53"
+    },
+    "render-report.py": {
+      "bytes": 21143,
+      "sha256": "d9687073a85d3ec456f2c9820f64f64508140f6a45440262404e1e5fb62ddb4d"
+    },
+    "run.py": {
+      "bytes": 16441,
+      "sha256": "da0e08ef2d68bb9f815eeac5c251286330bbd0822ba8e9599868f4711f842765"
+    },
+    "runtime-records.json": {
+      "bytes": 150847,
+      "sha256": "502df46152346db60f959e01f5a5b37322bb037f6ac98430aa41a51ab08211dd"
+    },
+    "smoke-summary.json": {
+      "bytes": 2104,
+      "sha256": "f9cb92f501e8193f196947b54effffd133e5cb5f947c375dd55aa06a6b828442"
+    },
+    "source-manifest.json": {
+      "bytes": 21669,
+      "sha256": "733dfac19ff99c64826ec2d0ff05295a610c02950226f5852febb8883c28cc4b"
+    },
+    "summary.json": {
+      "bytes": 299487,
+      "sha256": "41aec962aa8623e80be43f1550e1edd5ef10ea928a56d095f41f8bc2403f28b7"
+    },
+    "verify-closeout.py": {
+      "bytes": 5935,
+      "sha256": "48b7cb008e5e5d544fe6492e01ccf7708b0b28ac0268b6c0ae0fd8ac53dedb8a"
+    }
+  }
+}
