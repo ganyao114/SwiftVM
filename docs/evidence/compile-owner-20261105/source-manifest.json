@@ -1,0 +1,598 @@
+{
+  "base_commit": "13ffa48f1d984cd7d600b5c93601301462b13570",
+  "source_worktree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "digest": "842e4748e3263f6f50a28c53e1b8bdbb410bde70ae754940610ce43ed7eaed9b",
+  "digest_algorithm": "sha256(sorted UTF-8 path + NUL + contents-sha256 + LF)",
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "bytes": 5546,
+      "sha256": "a369a1e274207a6ad625f1f3c808eac34a04e603b6f6a75968551fdb802775c9"
+    },
+    {
+      "path": "benchmarks/README.md",
+      "bytes": 23091,
+      "sha256": "c8b4f408417dfbacbb388c13b7ec3c960e34e60b2131d11edce88e0b4b34e160"
+    },
+    {
+      "path": "benchmarks/app_inputs/build_coremark.py",
+      "bytes": 5784,
+      "sha256": "975483c5cb2da548515ea20190377e825bae2ba18278a44b777a6353d99ef1fb"
+    },
+    {
+      "path": "benchmarks/app_inputs/coremark_linux/core_portme.c",
+      "bytes": 5231,
+      "sha256": "61f1b0178da6f31aa2bc4e81734cfdd13cbecee971fc31f18d40f1f6b64fd5e7"
+    },
+    {
+      "path": "benchmarks/app_inputs/coremark_linux/core_portme.h",
+      "bytes": 1308,
+      "sha256": "9b9059abbd40e4e6b289ae55fa9473318f5b46b9d7e6a8b5d3117dc8e9e6ac2e"
+    },
+    {
+      "path": "benchmarks/app_inputs/coremark_linux/start_x86_64.S",
+      "bytes": 263,
+      "sha256": "1638ccbf93da84133affa55232e3e4f226c3e24f8599c1e61fe562e2df419657"
+    },
+    {
+      "path": "benchmarks/check_compile_budget.py",
+      "bytes": 19965,
+      "sha256": "045ffed0f4890ab60c4c41bd8583fce71bb008f7c99039c988044551e5f506f6"
+    },
+    {
+      "path": "benchmarks/compile_budget.template.json",
+      "bytes": 2610,
+      "sha256": "05fc8b1d240e82af1fed5ca43b961462db26bb42d1cd68e05c0a45c438b08cf2"
+    },
+    {
+      "path": "benchmarks/function_compile_bench.cpp",
+      "bytes": 7110,
+      "sha256": "605936d8a6792b9b22b7ad9ef0160302ee5b0f01f74cd504beeac014f90beb3b"
+    },
+    {
+      "path": "benchmarks/ir_birth_replay_bench.cpp",
+      "bytes": 27177,
+      "sha256": "175312797c7f18f0af085c7be93d74aefdf3998ed33c2e193b860689518f62e5"
+    },
+    {
+      "path": "benchmarks/ir_build_submit_bench.cpp",
+      "bytes": 37854,
+      "sha256": "8264455cc07293485874ad760a24fb113c0bf8e29e95478e1e926875918091e9"
+    },
+    {
+      "path": "benchmarks/ir_compile_bench.cpp",
+      "bytes": 7831,
+      "sha256": "86d5c85e4d8c856d43c0ed008884b7bb781c82ea00bda717f770357858d2b855"
+    },
+    {
+      "path": "benchmarks/normalize_birth_trace.py",
+      "bytes": 37504,
+      "sha256": "e652b98a573d3b4962b29a781222479bf0a61a1b01d4df077c21cd35c9a4e3e8"
+    },
+    {
+      "path": "benchmarks/x86_build_submit_bench.cpp",
+      "bytes": 17166,
+      "sha256": "71800e29cc0576efd64e0a37b92fcf262bfef81c73b7377ca8f96c63add4a003"
+    },
+    {
+      "path": "source/CMakeLists.txt",
+      "bytes": 76,
+      "sha256": "141020d7466a22f62cb10488dbf0744a6c491e5601b1dcca40629a99d0b46b8c"
+    },
+    {
+      "path": "source/launcher/linux/main.cpp",
+      "bytes": 10106,
+      "sha256": "735f41ef804dedb0bf95a9504a6c0130d089906e9ae5c40f759cec71b70717b5"
+    },
+    {
+      "path": "source/runtime/backend/arm64/abi.h",
+      "bytes": 1898,
+      "sha256": "06e8ed9cb0f8e16300a02af5486226c69ba5144fc677b01c34d7b76c69a17249"
+    },
+    {
+      "path": "source/runtime/backend/arm64/allocate.cpp",
+      "bytes": 34819,
+      "sha256": "d102706ae2a02d1452ce4745dabde7c63018f84907b1ac7c45c571877612d843"
+    },
+    {
+      "path": "source/runtime/backend/arm64/allocate.h",
+      "bytes": 2142,
+      "sha256": "38a43b69d5aa27503e266e392df0b7b0f92353165f0556ede20fb46978e213a0"
+    },
+    {
+      "path": "source/runtime/backend/arm64/compile.cpp",
+      "bytes": 104353,
+      "sha256": "6fa0fcbe24cc03976e75d31346fd3ee99190bd60601882db03acd4edea4f04ed"
+    },
+    {
+      "path": "source/runtime/backend/arm64/compile.h",
+      "bytes": 8230,
+      "sha256": "3ac11bfb75a9fa956b208c3ce40f85f12c623041019a940b03461bdce4dfa840"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit.h",
+      "bytes": 21853,
+      "sha256": "56f3b41a178c1ff6e26010a348ea4af0f89a014967da45650cba60a7985bd973"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_state.cpp",
+      "bytes": 36348,
+      "sha256": "70019125dde5151c28a6e2ef1c47e2abd8eec50051dfe3dbce70dbf552d1acaf"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_vector.cpp",
+      "bytes": 29124,
+      "sha256": "b8463effa710fc71b97d50e3968c0c39fd700a8a54a9f0835d501a08ff0ddead"
+    },
+    {
+      "path": "source/runtime/backend/arm64/helper_calls.cpp",
+      "bytes": 6729,
+      "sha256": "3e56056a11c90a888c396d174848894a54c29c9e0fee5502e7f9cde8232cc6b3"
+    },
+    {
+      "path": "source/runtime/compile/optimize.cpp",
+      "bytes": 57480,
+      "sha256": "d8c83501bff7e9ebad3f8571a14c0618070113ae6ad88b926925ef79e4154b0a"
+    },
+    {
+      "path": "source/runtime/compile/optimize.h",
+      "bytes": 2396,
+      "sha256": "8853e39797ebad53fec83af3b907edd36d5d6cb7f6ee539703f31321489f52f1"
+    },
+    {
+      "path": "source/runtime/execution/dispatch.cpp",
+      "bytes": 11965,
+      "sha256": "e96001a30b0046ca6b7e46d891d9022b717249ea478dc91d10dffe5f41873989"
+    },
+    {
+      "path": "source/runtime/execution/dispatch.h",
+      "bytes": 6131,
+      "sha256": "dbf09b50beab14318684668de133d1caf8ed9b2151b285c8db09bcb3c06cb77f"
+    },
+    {
+      "path": "source/runtime/execution/fault.cpp",
+      "bytes": 13428,
+      "sha256": "7f273c41ec76d8d9edd10a005fa132fc35b620b5f4cab50f05d685b3727d1258"
+    },
+    {
+      "path": "source/runtime/execution/fault.h",
+      "bytes": 2344,
+      "sha256": "7e715977120a3baf632f7c4e432604a18f476a92cea1db6d33e9643cd795040b"
+    },
+    {
+      "path": "source/runtime/execution/guest_cpu.cpp",
+      "bytes": 1792,
+      "sha256": "b2ba11e658a8eb7798343d06dd53fa4199554831ff23005e1fdede279d97e66f"
+    },
+    {
+      "path": "source/runtime/execution/guest_cpu.h",
+      "bytes": 507,
+      "sha256": "302771e9b0a53f19229dd5ea55368e1b46655224b1297e6990e037478f0a5b56"
+    },
+    {
+      "path": "source/runtime/execution/guest_state.h",
+      "bytes": 1101,
+      "sha256": "54b9560729d38259656ec2fb8c3d19c721ec793c5316b34bfaa1d634dd6c241c"
+    },
+    {
+      "path": "source/runtime/execution/memory.cpp",
+      "bytes": 26590,
+      "sha256": "7f49d4133db8de1fe9cd243c312b927bb4046550cb2ca1300e865371a9f5502c"
+    },
+    {
+      "path": "source/runtime/execution/memory.h",
+      "bytes": 3466,
+      "sha256": "bb8fcc5f0da90f1f303800350a0485f0f33991cbc3f6714e4134f3d8f96c4d3c"
+    },
+    {
+      "path": "source/runtime/execution/native_code.cpp",
+      "bytes": 11436,
+      "sha256": "53c4782f2a4625dcfb2f5f5229170ca87e03af7487009954cfee5b15406b6b42"
+    },
+    {
+      "path": "source/runtime/execution/native_code.h",
+      "bytes": 3032,
+      "sha256": "8ff8ce2aa73447c99650dcdb30cc8a7ddb6c9e7f8cc1321d61b439db6127810f"
+    },
+    {
+      "path": "source/runtime/execution/runtime.cpp",
+      "bytes": 47979,
+      "sha256": "164a9e4be7879451805afe5292cb4d0d677c7e18a4f8da123838d07ec9e249b2"
+    },
+    {
+      "path": "source/runtime/execution/runtime.h",
+      "bytes": 3013,
+      "sha256": "53c58ae47796df1a8abfc0657a2e03a45c70ef5eb7673ef031d6c0079674411c"
+    },
+    {
+      "path": "source/runtime/execution/x87.cpp",
+      "bytes": 10822,
+      "sha256": "70d21ed14fdbc759c25eae1e6dfda88a66df23191b89d955b9162dc0404f2503"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/CMakeLists.txt",
+      "bytes": 1224,
+      "sha256": "bee9374a1346fc3567bb6a03c167ca927a968c65552d284ccc0872605606fada"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/LICENSE",
+      "bytes": 1809,
+      "sha256": "1146d86afeaac90f41985b4aaec69beb1aba93f119d43e3b9df818deebaaeda9"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/README.swiftvm.md",
+      "bytes": 948,
+      "sha256": "a916c5860f07748198e51017e5d77f0869b37c3947da12f3a333024307a1a26b"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/include/SoftFloat-3e/opts-GCC.h",
+      "bytes": 3976,
+      "sha256": "5cbb99836df55f9c654752c060548c9b27dfd5657ba05a15aecb5082808ea120"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/include/SoftFloat-3e/platform.h",
+      "bytes": 2294,
+      "sha256": "93d27f2bae7146dea5577c73e24f0d63556578e519790fc4aa8b95b01262a6bc"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/include/SoftFloat-3e/primitiveTypes.h",
+      "bytes": 3397,
+      "sha256": "6b0841b1aa4a9c3a1c0a89e868d5d69592e54360dc8e4ba947f7853243a55dcc"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/include/SoftFloat-3e/softfloat.h",
+      "bytes": 17466,
+      "sha256": "9b21e9a4eb3ac332faebe3ea7bd58dabd81f3ded31d8e3b4109161decafc183a"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/include/SoftFloat-3e/softfloat_types.h",
+      "bytes": 6172,
+      "sha256": "849f527e93842bdf6cd238f95168e4b4ec6f1c0e90637cc031c37993982cdfac"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/extF80_add.c",
+      "bytes": 2799,
+      "sha256": "d8fdbcafe214ad09960742917e0da267cb248949a0a0a4134078f4a7f3c02184"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/extF80_div.c",
+      "bytes": 8014,
+      "sha256": "7d6494487aae806caadd2dde9e65d15719cf2543079143527a70b83965cbb49a"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/extF80_mul.c",
+      "bytes": 6030,
+      "sha256": "70f1007f81dd01dce23b3a20944d5fb96739688c6181fd9f79a34e8e458e97e7"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/extF80_sqrt.c",
+      "bytes": 7404,
+      "sha256": "e006bcb15aff71f0f86c54da1ea58c2afc400bf29b153921e4b6f67b74d0d00e"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/extF80_to_f64.c",
+      "bytes": 3940,
+      "sha256": "22e6b540af48e3a7c84edbd9fe11b693a85479aa0635ff1295bc5c2c20962591"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/f64_to_extF80.c",
+      "bytes": 3961,
+      "sha256": "6023ed33e0cf6801945912197e7025e05fb7ae54b37ece1dc5667a4e48c388ca"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/internals.h",
+      "bytes": 11300,
+      "sha256": "fe66fdda12a438bdd7097668ef405c873e016ade0c0b7593f8f2a5f036f0592e"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/primitives.h",
+      "bytes": 52092,
+      "sha256": "577cb132c3a9275e15cf023bf672d2b6eca52b2643d1dd13b173186dcbfce7ab"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_addMagsExtF80.c",
+      "bytes": 5693,
+      "sha256": "6a2b75a30b9237aae8495aab63142acef6e4146e2860addc6bd22f478ae81e29"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_approxRecipSqrt32_1.c",
+      "bytes": 2947,
+      "sha256": "db1b2370a41fb6377fe3ada834f23926e47b389bb23c3cb412c1c5814fe050dc"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_approxRecipSqrt_1Ks.c",
+      "bytes": 2275,
+      "sha256": "d7c4b4833ce9f42e86d9933a550ad0d6e4b8bc4df4bb30518c8a747b12699bf8"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_commonNaNToExtF80UI.c",
+      "bytes": 2486,
+      "sha256": "f5b8ddc9765f164368d97636cb724f8cc596341cfa10213cf9690e50bc4ec933"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_commonNaNToF64UI.c",
+      "bytes": 2403,
+      "sha256": "13d94cbd863b7878e4f6853657d31cbd7d0b5b7525ed2abe6f14793110f204cf"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_extF80UIToCommonNaN.c",
+      "bytes": 2757,
+      "sha256": "02901bf84fd4a30a4022403a12b37f963fa4b3d5d1c2c587db87cde40f1a1a99"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_f64UIToCommonNaN.c",
+      "bytes": 2641,
+      "sha256": "5463136144bea7222c89d296f3bf5dc929a8d00851745e3b0a15849c87f97081"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_normRoundPackToExtF80.c",
+      "bytes": 2650,
+      "sha256": "4ab88d5f92d7f87d3ce218931aa5e0ef9ba9ee74057986a10d371e343a8c34a0"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_normSubnormalExtF80Sig.c",
+      "bytes": 2168,
+      "sha256": "759ac9d4a7f6b3c1e8aef60f1effb3306492c5523d5a7ea4377b20f7458e8fbb"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_normSubnormalF64Sig.c",
+      "bytes": 2173,
+      "sha256": "f7b773899fd2f0dc2b342d35c1968d31e2984804b529d42075de4223dd0c5ba0"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_propagateNaNExtF80UI.c",
+      "bytes": 4508,
+      "sha256": "7311460a62feb8384b0ed51801d83f7539e9daf5da848c73821a9e7dad693f62"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_roundPackToExtF80.c",
+      "bytes": 11257,
+      "sha256": "db15deb0d1295f2f84d3eeec6145720ebc1d6e3b4e60ce7d2503b16ea627a89f"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_roundPackToF64.c",
+      "bytes": 5245,
+      "sha256": "7a66fb6efe64a9511bf6ece2b78ff3584b88c4f4fcd93b6299738884ce974469"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_shiftRightJam128.c",
+      "bytes": 2562,
+      "sha256": "ffb26555c1aba397392ca7f3f3edd0d470203767fd819977b078a29fcc649823"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/s_subMagsExtF80.c",
+      "bytes": 5831,
+      "sha256": "1127ed603bd25960c301180cbcc1645aeca0ad472c5437f95daaa68f132a3d05"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/softfloat_raiseFlags.c",
+      "bytes": 2444,
+      "sha256": "759eb7ace804453e4012ef0fd9b625647642117051539732b5bd8b8611240f05"
+    },
+    {
+      "path": "source/runtime/externals/SoftFloat-3e/src/specialize.h",
+      "bytes": 20257,
+      "sha256": "c7b07fab6f877d4d0c21bc1c7aa7e859e21d31e741e6f4710bfeabbb58fb8db6"
+    },
+    {
+      "path": "source/runtime/externals/distorm/CMakeLists.txt",
+      "bytes": 436,
+      "sha256": "e27f8b6433bcb0386fa9ab94ac75f09c9db01498cca0c283fd518907d4dfdf3d"
+    },
+    {
+      "path": "source/runtime/externals/distorm/COPYING",
+      "bytes": 1535,
+      "sha256": "951d8009149f9f7ec2166f731c8b0f7e09859a7b8818697b7d717e140ac1eceb"
+    },
+    {
+      "path": "source/runtime/externals/distorm/COPYING.GPL-3.0",
+      "bytes": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "source/runtime/externals/distorm/README.swiftvm.md",
+      "bytes": 1001,
+      "sha256": "8e53a2a1742f358809a30a1cc59b38d46865d9d964925e0e7409582e33dda210"
+    },
+    {
+      "path": "source/runtime/externals/distorm/config.h",
+      "bytes": 4916,
+      "sha256": "b635a457385b60cf95bf6abf5edf1cc73fb1e04a2d79f5249e45b99bd6abfa8d"
+    },
+    {
+      "path": "source/runtime/externals/distorm/decoder.c",
+      "bytes": 24818,
+      "sha256": "ce9ecb799e468b625cad4c8602f3a7c4638efc27d3de2185bdf5d60ac622308f"
+    },
+    {
+      "path": "source/runtime/externals/distorm/decoder.h",
+      "bytes": 1025,
+      "sha256": "ed4c054e190cbfb0856f0cfccaf5063c98016f7fad835b431e83b3d2501c0517"
+    },
+    {
+      "path": "source/runtime/externals/distorm/distorm.c",
+      "bytes": 16201,
+      "sha256": "3166475c0db99850271525fbdd5968357038fcedc38fa3baaa29eaa187e7693e"
+    },
+    {
+      "path": "source/runtime/externals/distorm/distorm.h",
+      "bytes": 19142,
+      "sha256": "f2355d492f32f2285d6409404c4f02cbaa3e26edaa640d124b956826481f832e"
+    },
+    {
+      "path": "source/runtime/externals/distorm/instructions.c",
+      "bytes": 24110,
+      "sha256": "d205141f9796f3407a858f2c3235de64ea22cfb51d14534d5a08e0cdf6daabef"
+    },
+    {
+      "path": "source/runtime/externals/distorm/instructions.h",
+      "bytes": 17113,
+      "sha256": "e8070255a93c6d4e43e6dccbea757646627b13296c334aae8983c58b86a4da89"
+    },
+    {
+      "path": "source/runtime/externals/distorm/insts.c",
+      "bytes": 193390,
+      "sha256": "ca71dbe9c69f5ec78d75c81d6daf5c946eddbdc4db8f102bc06bd269e8cadb0c"
+    },
+    {
+      "path": "source/runtime/externals/distorm/insts.h",
+      "bytes": 1898,
+      "sha256": "90b0c8de25f69c4d6b05283f199b9014ef1e5a7cc1553ea8e0cda0a203725f25"
+    },
+    {
+      "path": "source/runtime/externals/distorm/mnemonics.c",
+      "bytes": 24056,
+      "sha256": "a31ac2f5e518f5a1bfd6630d8ad1069f1b91cea38aa2715e04a90fc130296d97"
+    },
+    {
+      "path": "source/runtime/externals/distorm/mnemonics.h",
+      "bytes": 22133,
+      "sha256": "90d0c777c8622dd0463b09c85e8b92c9c99cd497feeccb3321f9b3b92158ca04"
+    },
+    {
+      "path": "source/runtime/externals/distorm/operands.c",
+      "bytes": 44390,
+      "sha256": "77bdecc70c42bfa5daf33833847a0e7b8d91be9c626f4fd57f75fdc1df16c342"
+    },
+    {
+      "path": "source/runtime/externals/distorm/operands.h",
+      "bytes": 710,
+      "sha256": "028cd4e3a7336d61d7c2327d2157de8ff631e59192996142f5bfbcd5fc909bf3"
+    },
+    {
+      "path": "source/runtime/externals/distorm/prefix.c",
+      "bytes": 12054,
+      "sha256": "ce4672ee8c104cdb960e1b639b70c8646e1e1087fe1d082075ed10d4e8c500d8"
+    },
+    {
+      "path": "source/runtime/externals/distorm/prefix.h",
+      "bytes": 2353,
+      "sha256": "5e35762724167dd01d381a3ce52a3e0e928792441703ccdf100116616225d587"
+    },
+    {
+      "path": "source/runtime/externals/distorm/textdefs.c",
+      "bytes": 6443,
+      "sha256": "3380aa6263d0fc538c0cc1084a5222690e1d475c98f9b434e1f001443477fda0"
+    },
+    {
+      "path": "source/runtime/externals/distorm/textdefs.h",
+      "bytes": 1350,
+      "sha256": "d6b85ebad5fc0358e94db8dea1a400d4699078c03a24fbe764cb5fb9082422ba"
+    },
+    {
+      "path": "source/runtime/externals/distorm/wstring.c",
+      "bytes": 888,
+      "sha256": "dd7c15b9e1462d1c0add57c23816c81b66e132640bad3f254febb2259d29fc75"
+    },
+    {
+      "path": "source/runtime/externals/distorm/wstring.h",
+      "bytes": 1022,
+      "sha256": "47bc6381a87c56e8f452f6ef820b202a8e2a5ebfce857c81de4cceea9eb49b8b"
+    },
+    {
+      "path": "source/runtime/externals/distorm/x86defs.h",
+      "bytes": 2027,
+      "sha256": "69c0cb86859e85512260184c810ae9059e9b52d83688d7f417c869610ba48ca3"
+    },
+    {
+      "path": "source/runtime/frontend/x86/build_ir.cpp",
+      "bytes": 159315,
+      "sha256": "39c288edac14f61ac2a4e728d8b3cb62e487b3fdfb6fd9e67f0f725c9d6a2417"
+    },
+    {
+      "path": "source/runtime/frontend/x86/build_ir.h",
+      "bytes": 6203,
+      "sha256": "28b256849a0f3a1fd8493e56a1674182982a9a44583571dd8d5d3deaedc42af2"
+    },
+    {
+      "path": "source/runtime/frontend/x86/decode.cpp",
+      "bytes": 9157,
+      "sha256": "668733c7c2598912bf218e902af65817734bed9cf25b06a65b4f46bff00f65f8"
+    },
+    {
+      "path": "source/runtime/frontend/x86/decode.h",
+      "bytes": 3177,
+      "sha256": "5b9eacbda094f8ebf9d1e168e166ba64e144decb9b59e0f696334dd12b388c9e"
+    },
+    {
+      "path": "source/runtime/ir/builder.cpp",
+      "bytes": 12834,
+      "sha256": "eefffc5a6974298fdb5f349c29d27085b673be3010df4f9806e88419b3448851"
+    },
+    {
+      "path": "source/runtime/ir/builder.h",
+      "bytes": 7386,
+      "sha256": "6270c940159b075acf4ee11ec78b67e8145f75fa452bf1ef2eaa4645528a121d"
+    },
+    {
+      "path": "source/runtime/ir/builder_impl.h",
+      "bytes": 16585,
+      "sha256": "175123a914df202058dfa854d413dc072767dcd43220b012a050e1dd13f38fcf"
+    },
+    {
+      "path": "source/runtime/ir/opcode.h",
+      "bytes": 4086,
+      "sha256": "2c944ebb19dab553fbe1c62c17e5572a52207f8a1c5c9cc660af70bb91b486b5"
+    },
+    {
+      "path": "source/runtime/ir/opcodes.inc",
+      "bytes": 36512,
+      "sha256": "cb33db029c721845c9c573490e744318d03feb0e65f553dba243d042e9afe1d4"
+    },
+    {
+      "path": "source/runtime/ir/program.cpp",
+      "bytes": 3191,
+      "sha256": "25c5870794bfba0fc41af67f99a77b3e756d3f0cbd98edc9279d35dae2d586b1"
+    },
+    {
+      "path": "source/runtime/ir/program.h",
+      "bytes": 6259,
+      "sha256": "10a709d12a60950a7036531592ba5b300d7b4ad0c633489396f48898f049ff6d"
+    },
+    {
+      "path": "source/runtime/ir/types.h",
+      "bytes": 14028,
+      "sha256": "99f9ff7146af41f7ba7cde9962190c819d710c9fc3f93702e0d678dd523aeb26"
+    },
+    {
+      "path": "source/runtime/ir/x87.h",
+      "bytes": 2534,
+      "sha256": "877a4a03bd95f97c0e734c5d0ee6f66a63b1af6cdbc8b3d2ee38e4eeb06cfd35"
+    },
+    {
+      "path": "source/tests/rebuild/arm64_compile_test.cpp",
+      "bytes": 225356,
+      "sha256": "23cfafee5dcdfe98dc0abfa9f5e3cc4f559aa6a53153c9fb0f63f52171f23308"
+    },
+    {
+      "path": "source/tests/rebuild/compile_pipeline_test.cpp",
+      "bytes": 28205,
+      "sha256": "86eccc9bd05958b71d1695376c3be880fbc5433488dddc363880185bdccbc92d"
+    },
+    {
+      "path": "source/tests/rebuild/function_fixture.h",
+      "bytes": 2096,
+      "sha256": "910295e1d9977efd8965937faf269c6274917b591d160485ee68f8864d00b1cd"
+    },
+    {
+      "path": "source/tests/rebuild/ir_construction_test.cpp",
+      "bytes": 73294,
+      "sha256": "fa0f1e9309c7b6ffcdaf18764bbc6f36ebb7832cab1be407e1ce2ddddb091607"
+    },
+    {
+      "path": "source/tests/rebuild/ir_optimize_test.cpp",
+      "bytes": 58434,
+      "sha256": "3e78e4c941b797b55bde0129bdf5f0c653051312e3e2904e6fd4edac5bbb9d1c"
+    },
+    {
+      "path": "source/tests/rebuild/x86_construction_test.cpp",
+      "bytes": 81064,
+      "sha256": "857a956392d651ad8a75507edb0c5f64735a1720ebd31a55b6d5252f8ab14a16"
+    },
+    {
+      "path": "source/tests/rebuild/x86_fixtures.h",
+      "bytes": 1555,
+      "sha256": "93d04a4b9514e9ff40fc380d57e54740366a296401204632ab9cf042966ef226"
+    }
+  ]
+}

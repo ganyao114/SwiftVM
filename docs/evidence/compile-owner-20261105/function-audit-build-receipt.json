@@ -1,0 +1,38 @@
+{
+  "kind": "cold_compilation_diagnostic_not_a_timing_baseline",
+  "root": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "cache": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android",
+  "sources": [
+    {
+      "path": "source/runtime/execution/runtime.cpp",
+      "source_sha256": "164a9e4be7879451805afe5292cb4d0d677c7e18a4f8da123838d07ec9e249b2",
+      "diagnostic_sha256": "a7bc0e63933c5b5ed06ecd6aed52140b9e89bc8cebd097b3fa0b57821809f78a"
+    },
+    {
+      "path": "source/runtime/frontend/x86/build_ir.cpp",
+      "source_sha256": "39c288edac14f61ac2a4e728d8b3cb62e487b3fdfb6fd9e67f0f725c9d6a2417",
+      "diagnostic_sha256": "0b0b8363567b14f1b25bbfa0a0bc8ce5870d76d4dacd243fd258795462b232e5"
+    }
+  ],
+  "patch_sha256": "a69a90bedbf43e4b967e311c72c4f8e06b582c0122490ff0b65bf18b6dab2ac3",
+  "binary": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-owner-optimization-20261105/function-audit/svm_rebuild_linux_function_audit",
+  "binary_sha256": "3c29e58ba491299e9f72bc647157e0cd245cea10d0ca7e5ff8e73441540e124a",
+  "binary_bytes": 8913632,
+  "objects": {
+    "runtime.o": "4b0c4838fafac4fd6e391c8b6a1da61a6dc4f80b017ecea45cfe6602190f390d",
+    "build_ir.o": "1561b384137fe3ac6638bc9282cf925e9854f06677b59f060a9565310ce0526b"
+  },
+  "ordinary_inputs_unchanged": true,
+  "ordinary_inputs_sha256": {
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/CMakeFiles/svm_rebuild_linux.dir/source/launcher/linux/main.cpp.o": "cb83d79ca0f2872c19c1502748b0fa7c25643ec55edd0517c5c107276790004b",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/libsvm_execution.a": "f47a66f5476d8ea01f2ac934524f1e0135554ddf74f384967371a226661d6c79",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/libsvm_x86_ir.a": "c8d5d1f1dc1903e13321d5f39214bfbd9bd46435a41eed0a6da3e641a0e38d40",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/source/runtime/externals/distorm/libdistorm.a": "2277d59868a6eee6aaa89776fb49be4816029b0469d9f04c5a2eb818f4a0f161",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/libsvm_compile.a": "f589f87e041c4171f691297b58a3baaac45c87ff86753fbf5060abff10cc1175",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/libsvm_arm64.a": "9bd780d0119e792dc1c3d1be4ca05222a6d91f88003b57d6ad856b035f174458",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/libsvm_ir.a": "425eb6f94b6752e2506079477f22a513a9b6ba9312d33b9ec277bb888ffb98c1",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/libsvm_x87.a": "4f760cc69b6d65cc01a5da08435a3395943c22b573c588a39647c646d35f0eb1",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/source/runtime/externals/SoftFloat-3e/libsvm_softfloat_ext80.a": "93bc686f0467aed981fc93d2532b55ed9040b3303a3e7de168447ea81b5addf6"
+  },
+  "build_exit_code": 0
+}

@@ -1,0 +1,21 @@
+{
+  "created_utc": "2026-11-05T11:55:21.566226+00:00",
+  "reason": "A3 fixed-suite x87 Block compile median 0.623230ms / FEX0.295572917ms =2.108549x failed original2x gate. Work/IR/native bytes unchanged; backend-time increase requires paired confirmation before claiming causal regression.",
+  "fixed_repetitions": 7,
+  "arms": [
+    "baseline",
+    "candidate",
+    "fex"
+  ],
+  "order": "rotate baseline/candidate/fex; candidate/fex/baseline; fex/baseline/candidate, repeated cyclically",
+  "no_optional_stopping": true,
+  "original_3_runs_retained_and_not_replaced": true,
+  "report_separately_from_72_sample_fixed_suite": true,
+  "byte_parser_only_excluded": true,
+  "baseline_sha256": "f7a345a603b1a9c16fd059504a09aeeb76df96f2da676828f723a734323ee548",
+  "candidate_sha256": "13411690d78fa72df6fc84c61004bfe7c36a2060cc3a9a16cb22dcbfca9d77eb",
+  "candidate_source_digest": "a78fdec20b3de2f00fe47bb1dbfa67c6664c0efa7cd1b7f30658edd8f1ce1e52",
+  "oracle": "exit0 only, inherited x87 benchmark has no checksum",
+  "scope": "block",
+  "no_frequency_or_service_changes": true
+}

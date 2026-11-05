@@ -1,0 +1,143 @@
+--- a/source/runtime/execution/runtime.cpp
++++ b/source/runtime/execution/runtime.cpp
+@@ -455,11 +455,20 @@
+             {
+                 Timer publish{stats.publication_ns};
+                 Cache().InsertReady(state.pc, code, compile_output.entries);
++                for (const auto& audit_entry : compile_output.entries) {
++                    NativeCode actual_owner;
++                    const auto actual = Cache().Find(audit_entry.pc, &actual_owner);
++                    const auto offered = reinterpret_cast<std::uintptr_t>(code.entry) + std::uintptr_t{audit_entry.word} * 4;
++                    std::fprintf(stderr, "{\"function_audit\":\"entry\",\"seq\":%llu,\"root_pc\":%llu,\"pc\":%llu,\"word\":%u,\"owner_base\":%llu,\"actual_entry\":%llu,\"actual_owner_base\":%llu,\"accepted_here\":%s}\n",
++                            static_cast<unsigned long long>(stats.compile_attempts), static_cast<unsigned long long>(state.pc), static_cast<unsigned long long>(audit_entry.pc), audit_entry.word, static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(code.entry)), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(actual)), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(actual_owner.entry)), reinterpret_cast<std::uintptr_t>(actual) == offered ? "true" : "false");
++                }
+                 // Extra entry records are borrowed only during registration;
+                 // retain ordinary output capacity, not an oversized peak.
+                 if (compile_output.entries.capacity() > 4096)
+                     std::vector<arm64::EntryPoint>{}.swap(compile_output.entries);
+             }
++            std::fprintf(stderr, "{\"function_audit\":\"ready\",\"seq\":%llu,\"pc\":%llu,\"fp_mode\":%u,\"native_bytes\":%zu,\"root_word\":0,\"owner_base\":%llu,\"entries_capacity_bytes\":%zu}\n",
++                    static_cast<unsigned long long>(stats.compile_attempts), static_cast<unsigned long long>(state.pc), static_cast<unsigned>(fp_mode), code.bytes, static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(code.entry)), compile_output.entries.capacity() * sizeof(arm64::EntryPoint));
+             entry = code.entry; // The root remains at unit offset zero.
+             ObserveCache();
+         }
+@@ -478,6 +487,8 @@
+     }
+     NativeCode CompileUnit(ir::Scope scope) {
+         ++stats.compile_attempts;
++        std::fprintf(stderr, "{\"function_audit\":\"begin\",\"seq\":%llu,\"pc\":%llu,\"scope\":\"%s\",\"fp_mode\":%u}\n",
++                static_cast<unsigned long long>(stats.compile_attempts), static_cast<unsigned long long>(state.pc), scope == ir::Scope::Function ? "function" : "block", static_cast<unsigned>(fp_mode));
+         scope == ir::Scope::Function ? ++stats.function_attempts : ++stats.block_attempts;
+         x86::StateLayout layout;
+         layout.gprs_offset = offsetof(GuestState, gprs); layout.pc_offset = offsetof(GuestState, pc); layout.stride = 8;
+@@ -501,7 +512,13 @@
+                     target.features |= static_cast<u64>(ir::TargetFeature::ExternalEntries);
+                 const auto ready = private_guest_state ? x86::ReadyEntryLookup{
+                         &Cache(), [](void* cache, u64 pc) noexcept {
+-                            return bool(static_cast<CodeCache*>(cache)->Find(pc));
++                            NativeCode audit_owner;
++                            const auto audit_entry = static_cast<CodeCache*>(cache)->Find(pc, &audit_owner);
++                            if (audit_entry) {
++                                std::fprintf(stderr, "{\"function_audit\":\"stop_ready\",\"pc\":%llu,\"entry\":%llu,\"owner_base\":%llu}\n",
++                                        static_cast<unsigned long long>(pc), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(audit_entry)), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(audit_owner.entry)));
++                            }
++                            return bool(audit_entry);
+                         }} : x86::ReadyEntryLookup{};
+                 std::vector<x86::BlockWindow> windows;
+                 for (const auto& region : memory.Regions())
+@@ -520,6 +537,8 @@
+             }
+         }
+         stats.emitted_instructions += built.instruction_count; stats.emitted_guest_bytes += built.decoded_bytes;
++        std::fprintf(stderr, "{\"function_audit\":\"front\",\"seq\":%llu,\"ok\":%s,\"error\":%u,\"ir_error\":%u,\"error_pc\":%llu,\"guest_instructions\":%zu,\"guest_bytes\":%zu,\"nodes_available\":%s,\"nodes\":%zu,\"words\":%zu,\"mutable_entry\":%s}\n",
++                static_cast<unsigned long long>(stats.compile_attempts), built ? "true" : "false", static_cast<unsigned>(built.error), static_cast<unsigned>(built.ir_error), static_cast<unsigned long long>(built.error_pc), built.instruction_count, built.decoded_bytes, built.program ? "true" : "false", built.program.Operations().size(), built.program.OperandArena().size(), mutable_entry ? "true" : "false");
+         if (!built) {
+             char message[256];
+             std::snprintf(message, sizeof(message), "x86 frontend rejected pc=0x%llx scope=%s error=%u ir_error=%u emitted=%zu bytes=%zu",
+@@ -541,6 +560,8 @@
+                 stats.optimized_uniform_forwarded += optimized.stats.uniform_forwarded;
+                 stats.optimized_folded += optimized.stats.folded;
+             }
++            std::fprintf(stderr, "{\"function_audit\":\"optimize\",\"seq\":%llu,\"ok\":%s,\"error\":%u,\"nodes\":%zu,\"words\":%zu}\n",
++                    static_cast<unsigned long long>(stats.compile_attempts), optimized ? "true" : "false", static_cast<unsigned>(optimized.error), optimized.program.Operations().size(), optimized.program.OperandArena().size());
+             built.program = std::move(optimized.program);
+             if (!optimized) { diagnostic = "IR optimization failed at the current compilation request"; return {}; }
+         }
+@@ -570,6 +591,8 @@
+         policy.deferred_pc = private_guest_state && faults.registered;
+         policy.entry_pc = state.pc;
+         { Timer backend{stats.backend_ns}; arm64::Compile(built.program, policy, compiled); }
++        std::fprintf(stderr, "{\"function_audit\":\"backend\",\"seq\":%llu,\"ok\":%s,\"error\":%u,\"node\":%u,\"block\":%u,\"nodes\":%zu,\"words\":%zu,\"native_bytes\":%zu,\"extra_entry_count\":%zu}\n",
++                static_cast<unsigned long long>(stats.compile_attempts), compiled ? "true" : "false", static_cast<unsigned>(compiled.error), compiled.node.value, compiled.block.value, built.program.Operations().size(), built.program.OperandArena().size(), compiled.words.size() * 4, compiled.entries.size());
+         if (options.decode_timing) {
+             stats.spill_slots += compiled.spill_slots;
+             stats.max_frame_bytes = std::max(stats.max_frame_bytes, static_cast<u64>(compiled.frame_bytes));
+@@ -614,11 +637,15 @@
+             if (mutable_entry)
+                 memory.ArmCodeWrites(state.pc, built.decoded_bytes);
+         }
++        const auto audit_nodes = built.program.Operations().size();
++        const auto audit_words = built.program.OperandArena().size();
+         // Keep only the actual working buffers; no native metadata borrows
+         // these. Oversized units finish normally without retaining their peak.
+         if (built.program.ReservedBytes() <= 8u * 1024 * 1024) ir_reuse = std::move(built.program);
+         if (compiled.words.capacity() > 1024u * 1024) std::vector<std::uint32_t>{}.swap(compiled.words);
+         if (compiled.links.capacity() > 4096) std::vector<arm64::LinkSite>{}.swap(compiled.links);
++        std::fprintf(stderr, "{\"function_audit\":\"publish\",\"seq\":%llu,\"root_pc\":%llu,\"owner_base\":%llu,\"nodes\":%zu,\"words\":%zu,\"native_bytes\":%zu,\"extra_entry_count\":%zu,\"ir_reuse_reserved_bytes\":%zu,\"word_capacity_bytes\":%zu,\"link_capacity_bytes\":%zu,\"entry_capacity_bytes\":%zu}\n",
++                static_cast<unsigned long long>(stats.compile_attempts), static_cast<unsigned long long>(state.pc), static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(code.entry)), audit_nodes, audit_words, code.bytes, compiled.entries.size(), ir_reuse.ReservedBytes(), compiled.words.capacity() * sizeof(std::uint32_t), compiled.links.capacity() * sizeof(arm64::LinkSite), compiled.entries.capacity() * sizeof(arm64::EntryPoint));
+         return code;
+     }
+     bool ReadString(u64 address, std::string& value) const {
+--- a/source/runtime/frontend/x86/build_ir.cpp
++++ b/source/runtime/frontend/x86/build_ir.cpp
+@@ -4,6 +4,7 @@
+ #include <array>
+ #include <bit>
+ #include <chrono>
++#include <cstdio>
+ #include <limits>
+ #include <utility>
+ #include <vector>
+@@ -2158,6 +2159,7 @@
+     }
+     std::size_t decoded{}, instruction_count{};
+     u64 pc = blocks.front().pc;
++    unsigned audit_opcode{}; u64 audit_opcode_pc = UINT64_MAX;
+     Emitter builder{scope, target, layout, reusable ? std::move(*reusable) : Program{}};
+     try {
+         const auto internal = [&](u64 address) {
+@@ -2233,6 +2235,7 @@
+             unsigned x87_following{};
+             for (std::size_t i = 0; i < slice.instruction_count; ++i) {
+                 const auto& instruction = instructions[slice.first_instruction + i];
++                audit_opcode = instruction.opcode; audit_opcode_pc = instruction.addr;
+                 if (instruction.addr != pc) throw Rejected{BuildError::InvalidInput};
+                 if (instruction.flags == FLAG_NOT_DECODABLE || !instruction.size ||
+                     instruction.size > 15) throw Rejected{BuildError::InvalidEncoding};
+@@ -2556,6 +2559,8 @@
+             return {BuildError::IRRejected, pc, decoded, instruction_count, submitted.error, {}};
+         return {BuildError::None, 0, decoded, instruction_count, Error::None, std::move(submitted.program)};
+     } catch (const Rejected& rejected) {
++        std::fprintf(stderr, "{\"function_audit\":\"rejected_prefix\",\"error\":%u,\"ir_error\":%u,\"pc\":%llu,\"guest_instructions\":%zu,\"guest_bytes\":%zu,\"nodes\":%zu,\"words\":null,\"opcode_available\":%s,\"opcode\":%u}\n",
++                static_cast<unsigned>(rejected.error), static_cast<unsigned>(rejected.detail), static_cast<unsigned long long>(pc), instruction_count, decoded, builder.Operations().size(), audit_opcode_pc == pc ? "true" : "false", audit_opcode);
+         if (collected) *collected = builder.CountWork();
+         return {rejected.error, pc, decoded, instruction_count, rejected.detail, {}};
+     }
+@@ -2577,6 +2582,17 @@
+     const bool entries = target.Has(TargetFeature::ExternalEntries);
+     const auto decoded = DecodeFunction(readable, entry_pc, limits, timing,
+                                          entries ? ready : ReadyEntryLookup{});
++    std::fprintf(stderr, "{\"function_audit\":\"formation\",\"entry\":%llu,\"error\":%u,\"error_pc\":%llu,\"instructions\":%zu,\"guest_bytes\":%zu,\"decode_calls\":%zu,\"blocks\":%zu,\"splits\":%zu,\"budget_exits\":%zu}\n",
++            static_cast<unsigned long long>(entry_pc), static_cast<unsigned>(decoded.error), static_cast<unsigned long long>(decoded.error_pc), decoded.instructions.size(), decoded.decoded_bytes, decoded.decode_calls, decoded.blocks.size(), decoded.splits, decoded.budget_exits);
++    for (const auto& slice : decoded.blocks) {
++        u64 end = slice.pc;
++        if (slice.instruction_count) {
++            const auto& last = decoded.instructions[std::size_t{slice.first_instruction} + slice.instruction_count - 1];
++            end = last.addr + last.size;
++        }
++        std::fprintf(stderr, "{\"function_audit\":\"block\",\"pc\":%llu,\"end\":%llu,\"count\":%u}\n",
++                static_cast<unsigned long long>(slice.pc), static_cast<unsigned long long>(end), slice.instruction_count);
++    }
+     if (!decoded) {
+         const auto error = decoded.error == DecodeError::InvalidInput ? BuildError::InvalidInput :
+                 decoded.error == DecodeError::Truncated ? BuildError::Truncated :

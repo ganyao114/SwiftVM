@@ -1,0 +1,15 @@
+{
+  "kind": "offline_existing_A3_trace_and_ELF_analysis_only",
+  "production_modified": false,
+  "built_or_executed": false,
+  "timing_used_for_qor": false,
+  "production_source_digest": "a78fdec20b3de2f00fe47bb1dbfa67c6664c0efa7cd1b7f30658edd8f1ce1e52",
+  "diagnostic_binary_sha256": "218342a432565743e40243ddc478a25c4e1a0920c79d1873854de02ff510e8ce",
+  "trace_sha256": "6a162f74ce284528c8d290872a7e034b501da7b86d84eb8546bb3fdc660922e6",
+  "files": {
+    "analyze.py": "3fdff1a34fff4a7d347b9e9663857f545ac7d81aab0b1f5f12bffaccea27e2ad",
+    "analysis.json": "856278561e27a072084b1699e9723f4f581e24ace5bf5b2d38123f59c0eee9de",
+    "unit-coverage.jsonl": "9a19dc2bc2f4becbd1dfc09380b65813249983e5f8c9c983651dae9567bdf544",
+    "report.md": "3aaff25113968eb22b48a2861a5f9083502f838c14bc419d1406c2bbdd806b6c"
+  }
+}

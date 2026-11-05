@@ -1,0 +1,20 @@
+{
+  "before-block": {
+    "native_words_including_data_and_cold_paths": 97,
+    "prefix_words_through_first_conditional_branch": 76,
+    "prefix_vector_moves": 25,
+    "note": "Offline exact guest-loop window, actual known mode0 pinned policy. Prefix count excludes conditional transfer tail; not a dynamic instruction estimate."
+  },
+  "final-block": {
+    "native_words_including_data_and_cold_paths": 69,
+    "prefix_words_through_first_conditional_branch": 48,
+    "prefix_vector_moves": 0,
+    "note": "Offline exact guest-loop window, actual known mode0 pinned policy. Prefix count excludes conditional transfer tail; not a dynamic instruction estimate."
+  },
+  "final-function": {
+    "native_words_including_data_and_cold_paths": 69,
+    "prefix_words_through_first_conditional_branch": 48,
+    "prefix_vector_moves": 0,
+    "note": "Offline exact guest-loop window, actual known mode0 pinned policy. Prefix count excludes conditional transfer tail; not a dynamic instruction estimate."
+  }
+}

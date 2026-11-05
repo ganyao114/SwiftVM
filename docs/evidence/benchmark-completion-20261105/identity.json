@@ -1,0 +1,10 @@
+{
+  "base_commit": "13ffa48f1d984cd7d600b5c93601301462b13570",
+  "working_tree_modified": true,
+  "source_digest": "e1b33899baf9b85e104bc5703eccc389e89cf415f902df9552476c4cdcee769a",
+  "device": "bf1359ff",
+  "cpu": 4,
+  "repetitions": 3,
+  "PMU": "Whole child user events, including cold JIT and same wrapper; FEXServer outside target tree is excluded. Fresh launcher each sample, no AOT/object cache, OS page cache retained.",
+  "time": "CoreMark loop timer; other cases whole-child simpleperf elapsed including startup/JIT. No cross-workload score aggregation."
+}

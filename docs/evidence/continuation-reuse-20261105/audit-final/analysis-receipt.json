@@ -1,0 +1,14 @@
+{
+  "kind": "offline_existing_trace_and_ELF_analysis_only",
+  "production_modified": false,
+  "built_or_executed": false,
+  "timing_used_for_qor": false,
+  "files": {
+    "analyze.py": "64fc45f2bddc2fe0abd43776a2f2baa5bf8c9ccb8752665046b1656b3895c173",
+    "func-tests-fallback-reasons.json": "cd45f15481c838398bf3bd57c783e601aa7aade7d2dea0927a771e79f842551f",
+    "func-tests-fallback-reasons.md": "005809528202aa56c5a4aa07ee4dde8bacf271bac3fb66bf07e2dd5bcb11d062",
+    "analysis.json": "be444318215a940a8486b32278df7dd81fc044f9a5d8277168f2354ba9ab9691",
+    "unit-coverage.jsonl": "5aee14d154e148fe7ace3f1aa817cec7e971acc17d4d85cfb5ba9c6966f03f34",
+    "report.md": "5f7a6eabba33e8e8d2b300190fa83e30a8c673627781fa9c8135ee5fb83c9b0f"
+  }
+}

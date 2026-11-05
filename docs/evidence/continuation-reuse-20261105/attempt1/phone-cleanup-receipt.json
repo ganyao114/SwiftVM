@@ -1,0 +1,10 @@
+{
+  "utc": "2026-11-05T11:19:30.745718+00:00",
+  "namespace": "/data/local/tmp/swiftvm-continuations-20261105",
+  "allocated_bytes_removed": 49412096,
+  "df_actual_free_delta_bytes": 49475584,
+  "remaining_bytes": 0,
+  "active_processes": [],
+  "open_files": [],
+  "errors": []
+}

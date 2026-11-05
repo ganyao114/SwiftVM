@@ -1,0 +1,13 @@
+{
+  "source_digest_unchanged": "9890a5f60446f0c57aadb34bbeea2d14088ffe9e87e613774ceeb9db5e11c8cc",
+  "deployed_inputs_unchanged": true,
+  "completed_records_preserved": 49,
+  "reason": "Data2 ENOSPC while saving first raw stdout of Block CoreMark round2; process completed but its observation was not persisted and is excluded.",
+  "missing_observations_to_resume": 23,
+  "unpersisted_execution": {
+    "case": "coremark",
+    "arm": "block",
+    "round": 2
+  },
+  "recorded_samples_repeated": false
+}

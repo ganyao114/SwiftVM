@@ -1,0 +1,441 @@
+{
+  "utc": "2026-11-05T08:05:45.495325+00:00",
+  "root": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation",
+  "reason": "Retired framework intermediate test binaries only. Baseline combined-02 and last combined-26 retained. Original source/Git/WIP, all measurement logs and current fixed caches untouched.",
+  "files_removed": [
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-20-query-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 46392852,
+      "allocated_bytes": 46395392
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-21-fixed-diagnostic/bin/svm_translator_linux.zst",
+      "logical_bytes": 46417605,
+      "allocated_bytes": 46419968
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-12-query-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 45939854,
+      "allocated_bytes": 45940736
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-16/bin/svm_translator_linux.zst",
+      "logical_bytes": 46372133,
+      "allocated_bytes": 46374912
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-16/bin/swift_ir_test.zst",
+      "logical_bytes": 57170355,
+      "allocated_bytes": 57171968
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-16/bin/swift_test.zst",
+      "logical_bytes": 93727169,
+      "allocated_bytes": 93728768
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-11/bin/svm_translator_linux.zst",
+      "logical_bytes": 45965177,
+      "allocated_bytes": 45965312
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-11/bin/swift_ir_test.zst",
+      "logical_bytes": 56758593,
+      "allocated_bytes": 56762368
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-11/bin/swift_test.zst",
+      "logical_bytes": 93353650,
+      "allocated_bytes": 93356032
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-18/bin/svm_translator_linux.zst",
+      "logical_bytes": 46392398,
+      "allocated_bytes": 46395392
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-18/bin/swift_ir_test.zst",
+      "logical_bytes": 57197187,
+      "allocated_bytes": 57200640
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-18/bin/swift_test.zst",
+      "logical_bytes": 93739292,
+      "allocated_bytes": 93741056
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-20/bin/svm_translator_linux.zst",
+      "logical_bytes": 46382470,
+      "allocated_bytes": 46383104
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-20/bin/swift_ir_test.zst",
+      "logical_bytes": 57207600,
+      "allocated_bytes": 57208832
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-20/bin/swift_test.zst",
+      "logical_bytes": 93767215,
+      "allocated_bytes": 93769728
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-17-query-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 46383008,
+      "allocated_bytes": 46383104
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-21/bin/svm_translator_linux.zst",
+      "logical_bytes": 46382603,
+      "allocated_bytes": 46383104
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-21/bin/swift_ir_test.zst",
+      "logical_bytes": 57221181,
+      "allocated_bytes": 57225216
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-21/bin/swift_test.zst",
+      "logical_bytes": 93763643,
+      "allocated_bytes": 93765632
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-03-diagnostic-03/bin/svm_translator_linux.zst",
+      "logical_bytes": 45046079,
+      "allocated_bytes": 45047808
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-19/bin/svm_translator_linux.zst",
+      "logical_bytes": 46394640,
+      "allocated_bytes": 46395392
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-19/bin/swift_ir_test.zst",
+      "logical_bytes": 57214745,
+      "allocated_bytes": 57217024
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-19/bin/swift_test.zst",
+      "logical_bytes": 93752054,
+      "allocated_bytes": 93753344
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-10/bin/svm_translator_linux.zst",
+      "logical_bytes": 45906723,
+      "allocated_bytes": 45907968
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-10/bin/swift_ir_test.zst",
+      "logical_bytes": 56719843,
+      "allocated_bytes": 56721408
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-10/bin/swift_test.zst",
+      "logical_bytes": 93332546,
+      "allocated_bytes": 93335552
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-17/bin/svm_translator_linux.zst",
+      "logical_bytes": 46372876,
+      "allocated_bytes": 46374912
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-17/bin/swift_ir_test.zst",
+      "logical_bytes": 57180358,
+      "allocated_bytes": 57184256
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-13-source-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 46229752,
+      "allocated_bytes": 46231552
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-04/bin/svm_translator_linux.zst",
+      "logical_bytes": 45523196,
+      "allocated_bytes": 45527040
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-04/bin/swift_ir_test.zst",
+      "logical_bytes": 56289684,
+      "allocated_bytes": 56291328
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-04/bin/swift_test.zst",
+      "logical_bytes": 92668522,
+      "allocated_bytes": 92672000
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-03/bin/svm_translator_linux.zst",
+      "logical_bytes": 45049076,
+      "allocated_bytes": 45051904
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-03/bin/swift_ir_test.zst",
+      "logical_bytes": 55733845,
+      "allocated_bytes": 55734272
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-03/bin/swift_test.zst",
+      "logical_bytes": 92103516,
+      "allocated_bytes": 92106752
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-03-point10fix/bin/svm_translator_linux.zst",
+      "logical_bytes": 45062814,
+      "allocated_bytes": 45064192
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-03-point10fix/bin/swift_ir_test.zst",
+      "logical_bytes": 55725228,
+      "allocated_bytes": 55726080
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-03-point10fix/bin/swift_test.zst",
+      "logical_bytes": 92129034,
+      "allocated_bytes": 92131328
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-14-query-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 46255557,
+      "allocated_bytes": 46256128
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-05/bin/svm_translator_linux.zst",
+      "logical_bytes": 45448979,
+      "allocated_bytes": 45449216
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-05/bin/swift_ir_test.zst",
+      "logical_bytes": 56203801,
+      "allocated_bytes": 56205312
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-05/bin/swift_test.zst",
+      "logical_bytes": 92644115,
+      "allocated_bytes": 92647424
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/point10fix-diagnostic/bin/svm_translator_linux.zst",
+      "logical_bytes": 45060767,
+      "allocated_bytes": 45064192
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-24-lifetime/bin/swift_hir_lifetime_test.zst",
+      "logical_bytes": 36643257,
+      "allocated_bytes": 36646912
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-23-query-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 46420386,
+      "allocated_bytes": 46424064
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/p4-02/bin/svm_translator_linux.zst",
+      "logical_bytes": 43821752,
+      "allocated_bytes": 43823104
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/p4-02/bin/swift_ir_test.zst",
+      "logical_bytes": 50939708,
+      "allocated_bytes": 50941952
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-24-query-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 46539073,
+      "allocated_bytes": 46542848
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-21-query-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 46397422,
+      "allocated_bytes": 46399488
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-12/bin/svm_translator_linux.zst",
+      "logical_bytes": 45946541,
+      "allocated_bytes": 45948928
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-12/bin/swift_ir_test.zst",
+      "logical_bytes": 56743214,
+      "allocated_bytes": 56745984
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-23/bin/svm_translator_linux.zst",
+      "logical_bytes": 46411895,
+      "allocated_bytes": 46415872
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-23/bin/swift_ir_test.zst",
+      "logical_bytes": 57255652,
+      "allocated_bytes": 57257984
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-23/bin/swift_test.zst",
+      "logical_bytes": 93781796,
+      "allocated_bytes": 93782016
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-24/bin/svm_translator_linux",
+      "logical_bytes": 159393744,
+      "allocated_bytes": 159395840
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-24/bin/swift_ir_test",
+      "logical_bytes": 199752112,
+      "allocated_bytes": 199753728
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-24/bin/swift_test.zst",
+      "logical_bytes": 81321976,
+      "allocated_bytes": 81321984
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-25/bin/svm_translator_linux.zst",
+      "logical_bytes": 46545138,
+      "allocated_bytes": 46546944
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-25/bin/swift_ir_test.zst",
+      "logical_bytes": 57381890,
+      "allocated_bytes": 57384960
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-25/bin/swift_hir_lifetime_test.zst",
+      "logical_bytes": 36664486,
+      "allocated_bytes": 36667392
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-25/bin/swift_test.zst",
+      "logical_bytes": 93850045,
+      "allocated_bytes": 93851648
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-22/bin/svm_translator_linux.zst",
+      "logical_bytes": 46416212,
+      "allocated_bytes": 46419968
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-22/bin/swift_ir_test.zst",
+      "logical_bytes": 57248316,
+      "allocated_bytes": 57249792
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-14/bin/svm_translator_linux.zst",
+      "logical_bytes": 46256612,
+      "allocated_bytes": 46260224
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-14/bin/swift_ir_test.zst",
+      "logical_bytes": 57039797,
+      "allocated_bytes": 57040896
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-14/bin/swift_test.zst",
+      "logical_bytes": 93603218,
+      "allocated_bytes": 93605888
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-13/bin/svm_translator_linux.zst",
+      "logical_bytes": 46206721,
+      "allocated_bytes": 46206976
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-13/bin/swift_ir_test.zst",
+      "logical_bytes": 57003057,
+      "allocated_bytes": 57004032
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-13/bin/swift_test.zst",
+      "logical_bytes": 93604801,
+      "allocated_bytes": 93605888
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-25-narrow-diagnostic/bin/swift_ir_test.zst",
+      "logical_bytes": 57376985,
+      "allocated_bytes": 57380864
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-09/bin/svm_translator_linux.zst",
+      "logical_bytes": 45772872,
+      "allocated_bytes": 45776896
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-09/bin/swift_ir_test.zst",
+      "logical_bytes": 56518623,
+      "allocated_bytes": 56520704
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-09/bin/swift_test.zst",
+      "logical_bytes": 92926567,
+      "allocated_bytes": 92930048
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-07/bin/svm_translator_linux.zst",
+      "logical_bytes": 45727832,
+      "allocated_bytes": 45731840
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-07/bin/swift_ir_test.zst",
+      "logical_bytes": 56442494,
+      "allocated_bytes": 56442880
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-07/bin/swift_test.zst",
+      "logical_bytes": 92859817,
+      "allocated_bytes": 92860416
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-06/bin/svm_translator_linux.zst",
+      "logical_bytes": 45475718,
+      "allocated_bytes": 45477888
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-06/bin/swift_ir_test.zst",
+      "logical_bytes": 56206289,
+      "allocated_bytes": 56209408
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-06/bin/swift_test.zst",
+      "logical_bytes": 92633564,
+      "allocated_bytes": 92635136
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-08/bin/svm_translator_linux.zst",
+      "logical_bytes": 45731770,
+      "allocated_bytes": 45731840
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-08/bin/swift_ir_test.zst",
+      "logical_bytes": 56469374,
+      "allocated_bytes": 56471552
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-08/bin/swift_test.zst",
+      "logical_bytes": 92895169,
+      "allocated_bytes": 92897280
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-18-lifetime/bin/swift_hir_lifetime_test.zst",
+      "logical_bytes": 36500874,
+      "allocated_bytes": 36503552
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-15-query-audit/bin/svm_translator_linux.zst",
+      "logical_bytes": 46260776,
+      "allocated_bytes": 46264320
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-14-query-detail/bin/svm_translator_linux.zst",
+      "logical_bytes": 46290108,
+      "allocated_bytes": 46292992
+    }
+  ],
+  "logical_bytes_removed": 5333859388,
+  "allocated_bytes_removed": 5334040576,
+  "df_free_delta_bytes": 5335826432,
+  "retained_paths": [
+    "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-02",
+    "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-26"
+  ],
+  "open_files_before": [],
+  "errors": []
+}

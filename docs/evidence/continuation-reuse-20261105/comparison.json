@@ -1,0 +1,530 @@
+{
+  "coremark": {
+    "block": {
+      "before_compile_ms": 44.535325,
+      "after_compile_ms": 44.905649,
+      "change_fraction": 0.008315286797615062,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 2043,
+        "function_attempts": 0,
+        "block_attempts": 2043,
+        "fallbacks": 0,
+        "code_units_published": 2043,
+        "emitted_guest_instructions": 12407,
+        "native_bytes": 389876,
+        "ir_nodes": 36651,
+        "operand_words": 65841,
+        "spill_slots": 25,
+        "max_frame_bytes": 48
+      },
+      "after_work": {
+        "compile_attempts": 2043,
+        "function_attempts": 0,
+        "block_attempts": 2043,
+        "fallbacks": 0,
+        "code_units_published": 2043,
+        "emitted_guest_instructions": 12407,
+        "native_bytes": 389876,
+        "ir_nodes": 36651,
+        "operand_words": 65841,
+        "spill_slots": 25,
+        "max_frame_bytes": 48
+      }
+    },
+    "function": {
+      "before_compile_ms": 81.981761,
+      "after_compile_ms": 51.446873,
+      "change_fraction": -0.3724595279186551,
+      "work_unchanged": false,
+      "before_work": {
+        "compile_attempts": 705,
+        "function_attempts": 700,
+        "block_attempts": 5,
+        "fallbacks": 5,
+        "code_units_published": 700,
+        "emitted_guest_instructions": 32159,
+        "native_bytes": 646764,
+        "ir_nodes": 87595,
+        "operand_words": 153728,
+        "spill_slots": 42,
+        "max_frame_bytes": 64
+      },
+      "after_work": {
+        "compile_attempts": 686,
+        "function_attempts": 681,
+        "block_attempts": 5,
+        "fallbacks": 5,
+        "code_units_published": 681,
+        "emitted_guest_instructions": 16584,
+        "native_bytes": 393248,
+        "ir_nodes": 50591,
+        "operand_words": 84624,
+        "spill_slots": 31,
+        "max_frame_bytes": 64
+      }
+    }
+  },
+  "int": {
+    "block": {
+      "before_compile_ms": 1.843482,
+      "after_compile_ms": 1.81894,
+      "change_fraction": -0.013312850356011152,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 38,
+        "function_attempts": 0,
+        "block_attempts": 38,
+        "fallbacks": 0,
+        "code_units_published": 38,
+        "emitted_guest_instructions": 295,
+        "native_bytes": 5632,
+        "ir_nodes": 601,
+        "operand_words": 1099,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 38,
+        "function_attempts": 0,
+        "block_attempts": 38,
+        "fallbacks": 0,
+        "code_units_published": 38,
+        "emitted_guest_instructions": 295,
+        "native_bytes": 5632,
+        "ir_nodes": 601,
+        "operand_words": 1099,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    },
+    "function": {
+      "before_compile_ms": 1.759633,
+      "after_compile_ms": 1.797454,
+      "change_fraction": 0.02149368646757588,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 38,
+        "function_attempts": 38,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 38,
+        "emitted_guest_instructions": 295,
+        "native_bytes": 5632,
+        "ir_nodes": 601,
+        "operand_words": 1099,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 38,
+        "function_attempts": 38,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 38,
+        "emitted_guest_instructions": 295,
+        "native_bytes": 5632,
+        "ir_nodes": 601,
+        "operand_words": 1099,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    }
+  },
+  "fp": {
+    "block": {
+      "before_compile_ms": 2.443271,
+      "after_compile_ms": 2.396197,
+      "change_fraction": -0.019266794391616937,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 42,
+        "function_attempts": 0,
+        "block_attempts": 42,
+        "fallbacks": 0,
+        "code_units_published": 42,
+        "emitted_guest_instructions": 591,
+        "native_bytes": 8240,
+        "ir_nodes": 1419,
+        "operand_words": 2705,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 42,
+        "function_attempts": 0,
+        "block_attempts": 42,
+        "fallbacks": 0,
+        "code_units_published": 42,
+        "emitted_guest_instructions": 591,
+        "native_bytes": 8240,
+        "ir_nodes": 1419,
+        "operand_words": 2705,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    },
+    "function": {
+      "before_compile_ms": 2.430731,
+      "after_compile_ms": 2.430219,
+      "change_fraction": -0.00021063622424699613,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 42,
+        "function_attempts": 42,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 42,
+        "emitted_guest_instructions": 591,
+        "native_bytes": 8240,
+        "ir_nodes": 1419,
+        "operand_words": 2705,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 42,
+        "function_attempts": 42,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 42,
+        "emitted_guest_instructions": 591,
+        "native_bytes": 8240,
+        "ir_nodes": 1419,
+        "operand_words": 2705,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    }
+  },
+  "mem": {
+    "block": {
+      "before_compile_ms": 2.144583,
+      "after_compile_ms": 2.208391,
+      "change_fraction": 0.029753103517094148,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 45,
+        "function_attempts": 0,
+        "block_attempts": 45,
+        "fallbacks": 0,
+        "code_units_published": 45,
+        "emitted_guest_instructions": 376,
+        "native_bytes": 7260,
+        "ir_nodes": 804,
+        "operand_words": 1493,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 45,
+        "function_attempts": 0,
+        "block_attempts": 45,
+        "fallbacks": 0,
+        "code_units_published": 45,
+        "emitted_guest_instructions": 376,
+        "native_bytes": 7260,
+        "ir_nodes": 804,
+        "operand_words": 1493,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    },
+    "function": {
+      "before_compile_ms": 2.2077,
+      "after_compile_ms": 2.210524,
+      "change_fraction": 0.0012791593060650364,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 45,
+        "function_attempts": 45,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 45,
+        "emitted_guest_instructions": 376,
+        "native_bytes": 7260,
+        "ir_nodes": 804,
+        "operand_words": 1493,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 45,
+        "function_attempts": 45,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 45,
+        "emitted_guest_instructions": 376,
+        "native_bytes": 7260,
+        "ir_nodes": 804,
+        "operand_words": 1493,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    }
+  },
+  "branch": {
+    "block": {
+      "before_compile_ms": 1.918283,
+      "after_compile_ms": 1.762604,
+      "change_fraction": -0.08115538739591599,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 38,
+        "function_attempts": 0,
+        "block_attempts": 38,
+        "fallbacks": 0,
+        "code_units_published": 38,
+        "emitted_guest_instructions": 314,
+        "native_bytes": 5688,
+        "ir_nodes": 601,
+        "operand_words": 1124,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 38,
+        "function_attempts": 0,
+        "block_attempts": 38,
+        "fallbacks": 0,
+        "code_units_published": 38,
+        "emitted_guest_instructions": 314,
+        "native_bytes": 5688,
+        "ir_nodes": 601,
+        "operand_words": 1124,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    },
+    "function": {
+      "before_compile_ms": 1.767874,
+      "after_compile_ms": 1.920841,
+      "change_fraction": 0.08652596282314251,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 38,
+        "function_attempts": 38,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 38,
+        "emitted_guest_instructions": 314,
+        "native_bytes": 5688,
+        "ir_nodes": 601,
+        "operand_words": 1124,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 38,
+        "function_attempts": 38,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 38,
+        "emitted_guest_instructions": 314,
+        "native_bytes": 5688,
+        "ir_nodes": 601,
+        "operand_words": 1124,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    }
+  },
+  "call": {
+    "block": {
+      "before_compile_ms": 2.056503,
+      "after_compile_ms": 1.900515,
+      "change_fraction": -0.07585109285033875,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 45,
+        "function_attempts": 0,
+        "block_attempts": 45,
+        "fallbacks": 0,
+        "code_units_published": 45,
+        "emitted_guest_instructions": 268,
+        "native_bytes": 7856,
+        "ir_nodes": 659,
+        "operand_words": 1173,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 45,
+        "function_attempts": 0,
+        "block_attempts": 45,
+        "fallbacks": 0,
+        "code_units_published": 45,
+        "emitted_guest_instructions": 268,
+        "native_bytes": 7856,
+        "ir_nodes": 659,
+        "operand_words": 1173,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    },
+    "function": {
+      "before_compile_ms": 1.855675,
+      "after_compile_ms": 1.852456,
+      "change_fraction": -0.0017346787557087628,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 45,
+        "function_attempts": 45,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 45,
+        "emitted_guest_instructions": 268,
+        "native_bytes": 7856,
+        "ir_nodes": 659,
+        "operand_words": 1173,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 45,
+        "function_attempts": 45,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 45,
+        "emitted_guest_instructions": 268,
+        "native_bytes": 7856,
+        "ir_nodes": 659,
+        "operand_words": 1173,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    }
+  },
+  "func_tests": {
+    "block": {
+      "before_compile_ms": 22.36998,
+      "after_compile_ms": 22.38707,
+      "change_fraction": 0.0007639702851767183,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 1126,
+        "function_attempts": 0,
+        "block_attempts": 1126,
+        "fallbacks": 0,
+        "code_units_published": 1126,
+        "emitted_guest_instructions": 5723,
+        "native_bytes": 220756,
+        "ir_nodes": 16902,
+        "operand_words": 28902,
+        "spill_slots": 14,
+        "max_frame_bytes": 16
+      },
+      "after_work": {
+        "compile_attempts": 1126,
+        "function_attempts": 0,
+        "block_attempts": 1126,
+        "fallbacks": 0,
+        "code_units_published": 1126,
+        "emitted_guest_instructions": 5723,
+        "native_bytes": 220756,
+        "ir_nodes": 16902,
+        "operand_words": 28902,
+        "spill_slots": 14,
+        "max_frame_bytes": 16
+      }
+    },
+    "function": {
+      "before_compile_ms": 38.516977,
+      "after_compile_ms": 32.835098,
+      "change_fraction": -0.14751622381995333,
+      "work_unchanged": false,
+      "before_work": {
+        "compile_attempts": 404,
+        "function_attempts": 388,
+        "block_attempts": 16,
+        "fallbacks": 16,
+        "code_units_published": 388,
+        "emitted_guest_instructions": 13871,
+        "native_bytes": 361660,
+        "ir_nodes": 36767,
+        "operand_words": 59999,
+        "spill_slots": 28,
+        "max_frame_bytes": 32
+      },
+      "after_work": {
+        "compile_attempts": 399,
+        "function_attempts": 383,
+        "block_attempts": 16,
+        "fallbacks": 16,
+        "code_units_published": 383,
+        "emitted_guest_instructions": 10626,
+        "native_bytes": 287644,
+        "ir_nodes": 29176,
+        "operand_words": 46216,
+        "spill_slots": 24,
+        "max_frame_bytes": 32
+      }
+    }
+  },
+  "x87_bench": {
+    "block": {
+      "before_compile_ms": 0.567186,
+      "after_compile_ms": 0.62323,
+      "change_fraction": 0.09881061944406233,
+      "work_unchanged": true,
+      "before_work": {
+        "compile_attempts": 3,
+        "function_attempts": 0,
+        "block_attempts": 3,
+        "fallbacks": 0,
+        "code_units_published": 3,
+        "emitted_guest_instructions": 30,
+        "native_bytes": 2364,
+        "ir_nodes": 59,
+        "operand_words": 106,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 3,
+        "function_attempts": 0,
+        "block_attempts": 3,
+        "fallbacks": 0,
+        "code_units_published": 3,
+        "emitted_guest_instructions": 30,
+        "native_bytes": 2364,
+        "ir_nodes": 59,
+        "operand_words": 106,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    },
+    "function": {
+      "before_compile_ms": 0.529117,
+      "after_compile_ms": 0.52625,
+      "change_fraction": -0.005418461323298929,
+      "work_unchanged": false,
+      "before_work": {
+        "compile_attempts": 1,
+        "function_attempts": 1,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 1,
+        "emitted_guest_instructions": 20,
+        "native_bytes": 1500,
+        "ir_nodes": 44,
+        "operand_words": 73,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      },
+      "after_work": {
+        "compile_attempts": 1,
+        "function_attempts": 1,
+        "block_attempts": 0,
+        "fallbacks": 0,
+        "code_units_published": 1,
+        "emitted_guest_instructions": 20,
+        "native_bytes": 1532,
+        "ir_nodes": 46,
+        "operand_words": 75,
+        "spill_slots": 0,
+        "max_frame_bytes": 0
+      }
+    }
+  }
+}

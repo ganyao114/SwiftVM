@@ -1,0 +1,45 @@
+{
+  "utc": "2026-11-05T05:27:32.978143+00:00",
+  "reason": "Final attempt8 qualified; retire regenerable candidate binaries from unsuccessful intermediate attempts; raw logs, input hashes and exact source snapshots retained.",
+  "removed": [
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt1/candidate.gz",
+      "bytes": 2124829,
+      "sha256": "42074c03bc1ecd05d22fa4b08ac5eba38442deccf54070bed64c4557dde2688a"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt2/candidate.gz",
+      "bytes": 2127854,
+      "sha256": "b2f2f8b5bfd895524cefcd0f52bef90cac66c9ead75a7db1445be4bf5f164d44"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt3/candidate.gz",
+      "bytes": 2146193,
+      "sha256": "a142298e49080d33e91a6ae71a27b5eb223fd2025b7852e0c3584b89480703c5"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt4/candidate.gz",
+      "bytes": 2166433,
+      "sha256": "4123e2e5bdbfc8205bac9ca2634f57a9b8427ec2cabc24432d580a7680d1289b"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt5/candidate.gz",
+      "bytes": 2166912,
+      "sha256": "4b3b2959d71346818be45e348f80c5d6c421576d143cb4eca60ad84c8acf0c93"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt6/candidate.gz",
+      "bytes": 2170572,
+      "sha256": "aa3a244fd08bb9083938c7a697a36d2740d2c98f4630200759ccb2d13971a579"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt7/candidate.gz",
+      "bytes": 2173297,
+      "sha256": "9c0bb07a858d1abf5f495f63b8a0883d3695a6e7824002e34d8d7a814001f73d"
+    }
+  ],
+  "removed_logical_bytes": 15076090,
+  "retained_candidate": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt8/candidate.gz",
+  "active_writers": false,
+  "errors": []
+}

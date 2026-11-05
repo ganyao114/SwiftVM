@@ -1,0 +1,23 @@
+{
+  "origin": "adb exec-out cat /proc/self/auxv; Android aarch64 ELF auxv of cat on same device/boot after measurements",
+  "AT_HWCAP": 4290772991,
+  "AT_HWCAP_hex": "0xffbfffff",
+  "AT_HWCAP2": 156033,
+  "AT_HWCAP2_hex": "0x26181",
+  "HWCAP2_AFP_bit20": false,
+  "probe_binary_built": false,
+  "boot_id_before": "10ea42f0-5592-4d3b-ba76-6b672423ad7a",
+  "boot_id_after": "10ea42f0-5592-4d3b-ba76-6b672423ad7a",
+  "boot_unchanged": true,
+  "auxv_argv": [
+    "/opt/homebrew/bin/adb",
+    "-s",
+    "bf1359ff",
+    "exec-out",
+    "cat",
+    "/proc/self/auxv"
+  ],
+  "AFP_bit_definition": "NDK29 sysroot aarch64-linux-android/asm/hwcap.h:61 HWCAP2_AFP=(1<<20)",
+  "reused_with_matching_boot_id": true,
+  "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt8/device-capabilities.json"
+}

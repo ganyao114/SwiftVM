@@ -1,0 +1,16 @@
+[1/16] Building CXX object CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/decode.cpp.o
+[2/16] Building CXX object CMakeFiles/svm_execution.dir/source/runtime/execution/runtime.cpp.o
+[3/16] Building CXX object CMakeFiles/svm_rebuild_linux.dir/source/launcher/linux/main.cpp.o
+[4/16] Building CXX object CMakeFiles/svm_compile_pipeline_test.dir/source/tests/rebuild/compile_pipeline_test.cpp.o
+[5/16] Building CXX object CMakeFiles/svm_x86_construction_test.dir/source/tests/rebuild/x86_construction_test.cpp.o
+[6/16] Building CXX object CMakeFiles/svm_x86_build_submit_bench.dir/benchmarks/x86_build_submit_bench.cpp.o
+[7/16] Building CXX object CMakeFiles/svm_function_compile_bench.dir/benchmarks/function_compile_bench.cpp.o
+[8/16] Building CXX object CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/build_ir.cpp.o
+[9/16] Linking CXX static library libsvm_x86_ir.a
+[10/16] Linking CXX static library libsvm_execution.a
+[11/16] Linking CXX executable svm_rebuild_linux
+[12/16] Linking CXX executable svm_compile_pipeline_test
+[13/16] Linking CXX executable svm_x86_construction_test
+[14/16] Linking CXX executable svm_x86_build_submit_bench
+[15/16] Linking CXX executable svm_function_compile_bench
+[16/16] Linking CXX executable svm_arm64_compile_test

@@ -1,0 +1,78 @@
+[
+  {
+    "name": "coremark",
+    "guest": "coremark",
+    "args": [
+      "0",
+      "0",
+      "0",
+      "100000",
+      "7",
+      "1",
+      "2000"
+    ],
+    "exit": 0
+  },
+  {
+    "name": "int",
+    "guest": "bench-suite",
+    "args": [
+      "int",
+      "1"
+    ],
+    "exit": 0,
+    "checksum": "0x105ad9f429eccccc"
+  },
+  {
+    "name": "fp",
+    "guest": "bench-suite",
+    "args": [
+      "fp",
+      "1"
+    ],
+    "exit": 0,
+    "checksum": "0x532dfc3f44b15cbe"
+  },
+  {
+    "name": "mem",
+    "guest": "bench-suite",
+    "args": [
+      "mem",
+      "1"
+    ],
+    "exit": 0,
+    "checksum": "0x5eac156a4d4ce784"
+  },
+  {
+    "name": "branch",
+    "guest": "bench-suite",
+    "args": [
+      "branch",
+      "1"
+    ],
+    "exit": 0,
+    "checksum": "0xdb17d164f01bca6b"
+  },
+  {
+    "name": "call",
+    "guest": "bench-suite",
+    "args": [
+      "call",
+      "1"
+    ],
+    "exit": 0,
+    "checksum": "0xee79813b94536693"
+  },
+  {
+    "name": "func_tests",
+    "guest": "func-tests",
+    "args": [],
+    "exit": 101
+  },
+  {
+    "name": "x87_bench",
+    "guest": "x87-bench",
+    "args": [],
+    "exit": 0
+  }
+]

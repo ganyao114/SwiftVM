@@ -1,0 +1,497 @@
+--- a/source/runtime/backend/arm64/compile.cpp
++++ b/source/runtime/backend/arm64/compile.cpp
+@@ -1689,12 +1689,14 @@
+ 
+ } // namespace detail
+ 
+-CompileResult Compile(const ir::Program& program, CompileOptions options) {
++void Compile(const ir::Program& program, CompileOptions options, CompileResult& result) {
++    result.error = CompileError::None; result.node = {}; result.block = {};
++    result.frame_bytes = result.spill_slots = 0;
++    result.words.clear(); result.faults.clear(); result.links.clear();
+     auto allocation = program.ScopeKind() == ir::Scope::Block ? AllocateBlock(program, &options) :
+             AllocateFunction(program, &options);
+-    CompileResult result;
+     if (!allocation) {
+-        result.error = allocation.error; result.node = allocation.node; result.block = allocation.block; return result;
++        result.error = allocation.error; result.node = allocation.node; result.block = allocation.block; return;
+     }
+     result.frame_bytes = (options.dispatcher || options.exit_handler ? 0 : 16) + ((allocation.spill_bytes + 15) & ~15u);
+     result.spill_slots = allocation.spill_bytes / 8;
+@@ -1714,6 +1716,11 @@
+         result.error = failure.error; result.node = failure.node; result.block = failure.block;
+         result.words.clear(); result.faults.clear(); result.links.clear();
+     }
++}
++
++CompileResult Compile(const ir::Program& program, CompileOptions options) {
++    CompileResult result;
++    Compile(program, options, result);
+     return result;
+ }
+ 
+--- a/source/runtime/backend/arm64/compile.h
++++ b/source/runtime/backend/arm64/compile.h
+@@ -135,5 +135,8 @@
+ // The optional fault table borrows no Program data. The caller supplies the
+ // actual signal recovery/publication service; this writer installs no handler.
+ CompileResult Compile(const ir::Program&, CompileOptions options = {});
++// Reuse this actual output's capacity. Fault tables transferred to a publisher
++// remain there; no Program or previous result contents are borrowed on entry.
++void Compile(const ir::Program&, CompileOptions, CompileResult& output);
+ 
+ } // namespace swift::runtime::backend::arm64
+--- a/source/runtime/execution/native_code.cpp
++++ b/source/runtime/execution/native_code.cpp
+@@ -24,20 +24,20 @@
+ }
+ 
+ void WriteLinkInstruction(std::uintptr_t* writable, const std::uintptr_t* executable,
+-                          std::uint32_t back_words, std::uint32_t instruction) noexcept {
++                          std::uint32_t back_words, std::uint32_t instruction, bool synchronize = true) noexcept {
+     auto* write = reinterpret_cast<std::uint32_t*>(writable) - back_words;
+     auto* execute = reinterpret_cast<const std::uint32_t*>(executable) - back_words;
+     if (__atomic_load_n(write, __ATOMIC_RELAXED) == instruction) return;
+     __atomic_store_n(write, instruction, __ATOMIC_RELEASE);
++    if (!synchronize) return;
+     __builtin___clear_cache(reinterpret_cast<char*>(write), reinterpret_cast<char*>(write + 1));
+     if (write != execute)
+         __builtin___clear_cache(reinterpret_cast<char*>(const_cast<std::uint32_t*>(execute)),
+                                 reinterpret_cast<char*>(const_cast<std::uint32_t*>(execute + 1)));
+ }
+-}
+ 
+-void PatchNativeLink(std::uintptr_t* writable, const std::uintptr_t* executable,
+-                     std::uintptr_t target, std::uint32_t back_words) noexcept {
++void PatchLink(std::uintptr_t* writable, const std::uintptr_t* executable,
++               std::uintptr_t target, std::uint32_t back_words, bool synchronize) noexcept {
+     // Keep the far fallback ready before publishing a direct instruction.
+     __atomic_store_n(writable, target, __ATOMIC_RELEASE);
+     const auto head = __atomic_load_n(reinterpret_cast<std::uint32_t*>(writable) - back_words, __ATOMIC_RELAXED);
+@@ -48,15 +48,21 @@
+     const auto instruction = !(delta & 3) && delta >= -(INT64_C(1) << 27) && delta < (INT64_C(1) << 27)
+             ? UINT32_C(0x14000000) | (static_cast<std::uint32_t>(delta / 4) & UINT32_C(0x03ffffff))
+             : UINT32_C(0x58000010) | (gate_back << 5); // Original LDR x16,DATA.
+-    WriteLinkInstruction(writable, executable, gate_back, instruction);
++    WriteLinkInstruction(writable, executable, gate_back, instruction, synchronize);
+     if (conditional) {
+         const auto head_from = reinterpret_cast<std::uintptr_t>(executable) - back_words * sizeof(std::uint32_t);
+         const auto distance = static_cast<std::int64_t>(target - head_from);
+         const auto words = !(distance & 3) && distance >= -(INT64_C(1) << 20) && distance < (INT64_C(1) << 20)
+                 ? static_cast<std::uint32_t>(distance / 4) : back_words - 2;
+         WriteLinkInstruction(writable, executable, back_words,
+-                (head & ~(UINT32_C(0x7ffff) << 5)) | ((words & UINT32_C(0x7ffff)) << 5));
++                (head & ~(UINT32_C(0x7ffff) << 5)) | ((words & UINT32_C(0x7ffff)) << 5), synchronize);
+     }
++}
++}
++
++void PatchNativeLink(std::uintptr_t* writable, const std::uintptr_t* executable,
++                     std::uintptr_t target, std::uint32_t back_words) noexcept {
++    PatchLink(writable, executable, target, back_words, true);
+ }
+ 
+ void UnlinkNativeLink(std::uintptr_t* writable, const std::uintptr_t* executable,
+@@ -85,7 +91,8 @@
+ }
+ 
+ NativeCode CodeArena::Publish(std::span<const std::uint32_t> words, std::vector<backend::arm64::FaultSite> faults,
+-                              std::span<const backend::arm64::LinkSite> links) {
++                              std::span<const backend::arm64::LinkSite> links,
++                              ReadyTargetResolver ready, void* opaque) {
+     if (words.empty() || words.size() > (std::numeric_limits<std::size_t>::max() - 4096) / 4)
+         throw std::runtime_error("invalid native code size");
+     const auto bytes = words.size() * 4;
+@@ -166,8 +173,19 @@
+             std::memcpy(write + (pointer + backend::arm64::abi::DynamicCacheWords - 2) * 4, &alias, sizeof(alias));
+             continue;
+         }
+-        const auto target = reinterpret_cast<std::uintptr_t>(execute + fallback * 4);
+-        std::memcpy(write + pointer * 4, &target, sizeof(target));
++        // An RX-only fallback has no writable alias for its eventual unlink.
++        // Keep its original cold transfer even when the target is ready.
++        const auto target = ready && slab.dual ? ready(opaque, link.target_pc) : 0;
++        if (target) {
++            // No entry can reach this slice yet. The ordinary final sync
++            // covers DATA, a B26/LDR gate and its possible imm19 head.
++            PatchLink(reinterpret_cast<std::uintptr_t*>(write + pointer * 4),
++                      reinterpret_cast<const std::uintptr_t*>(execute + pointer * 4),
++                      target, static_cast<std::uint32_t>(pointer - branch), false);
++        } else {
++            const auto cold = reinterpret_cast<std::uintptr_t>(execute + fallback * 4);
++            std::memcpy(write + pointer * 4, &cold, sizeof(cold));
++        }
+     }
+     __builtin___clear_cache(reinterpret_cast<char*>(write), reinterpret_cast<char*>(write + bytes));
+     if (!slab.dual && mprotect(slab.execute, slab.size, PROT_READ | PROT_EXEC)) Failed("code slab executable");
+--- a/source/runtime/execution/native_code.h
++++ b/source/runtime/execution/native_code.h
+@@ -36,12 +36,18 @@
+ // returns to the dispatcher. Cache items borrow entries; slabs own mappings.
+ class CodeArena {
+ public:
++    using ReadyTargetResolver = std::uintptr_t(*)(void*, std::uint64_t) noexcept;
+     CodeArena() = default;
+     ~CodeArena();
+     CodeArena(const CodeArena&) = delete;
+     CodeArena& operator=(const CodeArena&) = delete;
++    // The optional resolver only borrows already-ready entries; it must not
++    // publish or invalidate code. Zero keeps this static link's cold stub.
++    // With a writable alias, ready static links are patched before final sync.
++    // Single-mapping slices keep cold links so retirement never needs RX writes.
+     NativeCode Publish(std::span<const std::uint32_t>, std::vector<backend::arm64::FaultSite> faults = {},
+-                       std::span<const backend::arm64::LinkSite> links = {});
++                       std::span<const backend::arm64::LinkSite> links = {},
++                       ReadyTargetResolver ready = nullptr, void* opaque = nullptr);
+     void Clear() noexcept;
+     std::size_t Slabs() const noexcept { return slabs.size(); }
+     std::size_t DualSlabs() const noexcept;
+--- a/source/runtime/execution/runtime.cpp
++++ b/source/runtime/execution/runtime.cpp
+@@ -130,7 +130,11 @@
+         if (links.size() >= UINT32_MAX) throw std::length_error("native link-relocation capacity overflow");
+         if (slot.code_id != UINT32_MAX) {
+             links.push_back({pointer, executable, UINT32_MAX, back_words});
+-            Patch(links.back(), slot.entry); return;
++            // Publish already patched ready outgoing links before its one
++            // final sync. This row still owns their later unlink lifetime.
++            if (__atomic_load_n(pointer, __ATOMIC_RELAXED) == reinterpret_cast<std::uintptr_t>(slot.entry)) ++patched;
++            else Patch(links.back(), slot.entry);
++            return;
+         }
+         // Publish membership only after the actual row has been allocated.
+         // No scan of any other target's waiters is needed on insertion.
+@@ -288,6 +292,7 @@
+         Timer total{stats.compile_request_ns}, release{stats.code_release_ns};
+         for (auto& cache : caches) cache.Release();
+         arena.Clear();
++        ir_reuse = {}; compile_output = {}; // Actual retained capacities stay inside the charged lifetime.
+     }
+     int Run(const std::string& path, std::span<const std::string> argv, std::span<const std::string> environment) {
+ #if !defined(__aarch64__)
+@@ -340,6 +345,8 @@
+     RuntimeStats& stats;
+     GuestMemory memory;
+     CodeArena arena;
++    ir::Program ir_reuse;
++    arm64::CompileResult compile_output;
+     GuestState state;
+     FaultContext faults;
+     // Each used software DAZ/FTZ mode owns its actual directory and links.
+@@ -472,12 +479,12 @@
+                         if (!bytes.empty()) windows.push_back({region.address, bytes});
+                     }
+                 built = x86::BuildFunctionIR(windows, state.pc, layout, options.function_limits, target,
+-                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr);
++                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr, &ir_reuse);
+             } else {
+                 if (mutable_function) ++stats.smc_function_single_block_attempts;
+                 const x86::BlockWindow window{state.pc, memory.CodeAt(state.pc)};
+                 built = x86::BuildIR({&window, 1}, scope, layout, target,
+-                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr, mutable_entry);
++                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr, mutable_entry, &ir_reuse);
+             }
+         }
+         stats.emitted_instructions += built.instruction_count; stats.emitted_guest_bytes += built.decoded_bytes;
+@@ -505,7 +512,7 @@
+             built.program = std::move(optimized.program);
+             if (!optimized) { diagnostic = "IR optimization failed at the current compilation request"; return {}; }
+         }
+-        arm64::CompileResult compiled;
++        auto& compiled = compile_output;
+         arm64::CompileOptions policy{offsetof(GuestState, packed_flags)};
+         policy.rcpc_loads = rcpc_loads;
+         policy.rcpc_imm9 = rcpc_imm9;
+@@ -530,7 +537,7 @@
+         policy.pinned_vector_offset = private_guest_state ? offsetof(GuestState, xmm) : UINT32_MAX;
+         policy.deferred_pc = private_guest_state && faults.registered;
+         policy.entry_pc = state.pc;
+-        { Timer backend{stats.backend_ns}; compiled = arm64::Compile(built.program, policy); }
++        { Timer backend{stats.backend_ns}; arm64::Compile(built.program, policy, compiled); }
+         if (options.decode_timing) {
+             stats.spill_slots += compiled.spill_slots;
+             stats.max_frame_bytes = std::max(stats.max_frame_bytes, static_cast<u64>(compiled.frame_bytes));
+@@ -547,7 +554,10 @@
+         NativeCode code;
+         {
+             Timer publish{stats.publication_ns};
+-            code = arena.Publish(compiled.words, std::move(compiled.faults), compiled.links);
++            code = arena.Publish(compiled.words, std::move(compiled.faults), compiled.links,
++                    [](void* cache, u64 pc) noexcept -> std::uintptr_t {
++                        return reinterpret_cast<std::uintptr_t>(static_cast<CodeCache*>(cache)->Find(pc).entry);
++                    }, &Cache());
+             ++stats.code_units_published;
+             stats.static_links += std::count_if(compiled.links.begin(), compiled.links.end(),
+                     [](const auto& link) { return link.branch_word != UINT32_MAX; });
+@@ -572,6 +582,11 @@
+             if (mutable_entry)
+                 memory.ArmCodeWrites(state.pc, built.decoded_bytes);
+         }
++        // Keep only the actual working buffers; no native metadata borrows
++        // these. Oversized units finish normally without retaining their peak.
++        if (built.program.ReservedBytes() <= 8u * 1024 * 1024) ir_reuse = std::move(built.program);
++        if (compiled.words.capacity() > 1024u * 1024) std::vector<std::uint32_t>{}.swap(compiled.words);
++        if (compiled.links.capacity() > 4096) std::vector<arm64::LinkSite>{}.swap(compiled.links);
+         return code;
+     }
+     bool ReadString(u64 address, std::string& value) const {
+--- a/source/runtime/frontend/x86/build_ir.cpp
++++ b/source/runtime/frontend/x86/build_ir.cpp
+@@ -26,8 +26,8 @@
+ 
+ class Emitter final : public Builder {
+ public:
+-    Emitter(Scope scope, TargetInfo target, StateLayout layout)
+-            : Builder(scope, target), layout(layout), private_gprs(target.Has(TargetFeature::PrivateGPRState)),
++    Emitter(Scope scope, TargetInfo target, StateLayout layout, Program reusable)
++            : Builder(scope, target, std::move(reusable)), layout(layout), private_gprs(target.Has(TargetFeature::PrivateGPRState)),
+               private_vectors(target.Has(TargetFeature::PrivateVectorState)) {}
+     Error BeginBlock(BlockRef block) {
+         const auto error = Builder::BeginBlock(block);
+@@ -2144,7 +2144,7 @@
+ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const DecodedBlock> blocks,
+                         std::span<const BlockWindow> sources, Scope scope, StateLayout layout,
+                         TargetInfo target, WorkCounts* collected, DecodeFailure failure = {}, u32 entry_block = 0,
+-                        bool external_edges = false) {
++                        bool external_edges = false, Program* reusable = nullptr) {
+     if (collected) *collected = {};
+     if (!ValidRequest(blocks.size(), scope, layout, target) || !ValidSources(sources) || entry_block >= blocks.size())
+         return {BuildError::InvalidInput, 0, 0, 0, Error::None, {}};
+@@ -2158,7 +2158,7 @@
+     }
+     std::size_t decoded{}, instruction_count{};
+     u64 pc = blocks.front().pc;
+-    Emitter builder{scope, target, layout};
++    Emitter builder{scope, target, layout, reusable ? std::move(*reusable) : Program{}};
+     try {
+         const auto internal = [&](u64 address) {
+             if (external_edges) return BlockId{};
+@@ -2558,12 +2558,13 @@
+ 
+ BuildResult BuildDecodedIR(std::span<const _DInst> instructions, std::span<const DecodedBlock> blocks,
+                            std::span<const BlockWindow> source_bytes, Scope scope, StateLayout layout,
+-                           TargetInfo target, WorkCounts* collected, u32 entry_block) {
+-    return EmitDecoded(instructions, blocks, source_bytes, scope, layout, target, collected, {}, entry_block);
++                           TargetInfo target, WorkCounts* collected, u32 entry_block, Program* reusable) {
++    return EmitDecoded(instructions, blocks, source_bytes, scope, layout, target, collected, {}, entry_block, false, reusable);
+ }
+ 
+ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable, u64 entry_pc, StateLayout layout,
+-                            DecodeLimits limits, TargetInfo target, WorkCounts* collected, DecodeTiming* timing) {
++                            DecodeLimits limits, TargetInfo target, WorkCounts* collected, DecodeTiming* timing,
++                            Program* reusable) {
+     if (collected) *collected = {};
+     if (!ValidRequest(1, Scope::Function, layout, target))
+         return {BuildError::InvalidInput, entry_pc, 0, 0, Error::None, {}};
+@@ -2575,11 +2576,12 @@
+         return {error, decoded.error_pc, 0, 0, Error::None, {}};
+     }
+     return BuildDecodedIR(decoded.instructions, decoded.blocks, readable, Scope::Function, layout,
+-                          target, collected, decoded.entry_block);
++                          target, collected, decoded.entry_block, reusable);
+ }
+ 
+ BuildResult BuildIR(std::span<const BlockWindow> windows, Scope scope, StateLayout layout,
+-                    TargetInfo target, WorkCounts* collected, DecodeTiming* timing, bool external_edges) {
++                    TargetInfo target, WorkCounts* collected, DecodeTiming* timing, bool external_edges,
++                    Program* reusable) {
+     if (collected) *collected = {};
+     if (!ValidRequest(windows.size(), scope, layout, target) || !ValidSources(windows))
+         return {BuildError::InvalidInput, 0, 0, 0, Error::None, {}};
+@@ -2638,7 +2640,7 @@
+                 instruction.opcode == I_LDMXCSR || instruction.opcode == I_STOS) break;
+         }
+     }
+-    return EmitDecoded(instructions, blocks, windows, scope, layout, target, collected, failure, 0, external_edges);
++    return EmitDecoded(instructions, blocks, windows, scope, layout, target, collected, failure, 0, external_edges, reusable);
+ }
+ 
+ }  // namespace swift::x86
+--- a/source/runtime/frontend/x86/build_ir.h
++++ b/source/runtime/frontend/x86/build_ir.h
+@@ -58,13 +58,16 @@
+ // decoder calls only; nullptr reads no such clock.
+ // external_edges makes every control transfer dispatch, including self edges,
+ // while preserving the requested IR scope and allocation path.
++// Optional reusable is consumed only when IR construction starts. Its old
++// borrows end, capacity transfers, and the new Program gets a fresh full ID.
+ [[nodiscard]] BuildResult BuildIR(std::span<const BlockWindow> windows,
+                                   runtime::ir::Scope scope,
+                                   StateLayout layout,
+                                   runtime::ir::TargetInfo target = {},
+                                   runtime::ir::WorkCounts* collected = nullptr,
+                                   DecodeTiming* timing = nullptr,
+-                                  bool external_edges = false);
++                                  bool external_edges = false,
++                                  runtime::ir::Program* reusable = nullptr);
+ 
+ // The actual trusted-decoder records, with no second operand representation or
+ // re-decoding. Blocks select independently bounded slices in any physical
+@@ -87,7 +90,8 @@
+                                          StateLayout layout,
+                                          runtime::ir::TargetInfo target = {},
+                                          runtime::ir::WorkCounts* collected = nullptr,
+-                                         std::uint32_t entry_block = 0);
++                                         std::uint32_t entry_block = 0,
++                                         runtime::ir::Program* reusable = nullptr);
+ 
+ // Formation completes before any IR birth. Decode failures report zero emitted
+ // instruction/byte/work counts; DecodeFunction exposes their actual decode work.
+@@ -97,6 +101,7 @@
+                                           DecodeLimits limits = {},
+                                           runtime::ir::TargetInfo target = {},
+                                           runtime::ir::WorkCounts* collected = nullptr,
+-                                          DecodeTiming* timing = nullptr);
++                                          DecodeTiming* timing = nullptr,
++                                          runtime::ir::Program* reusable = nullptr);
+ 
+ }  // namespace swift::x86
+--- a/source/runtime/ir/builder.cpp
++++ b/source/runtime/ir/builder.cpp
+@@ -18,6 +18,13 @@
+         static_cast<unsigned>(target.mode) > static_cast<unsigned>(TargetMode::Unknown))
+         throw std::invalid_argument("invalid IR request metadata");
+     storage = std::make_unique<Program::Storage>(scope, target);
++}
++Builder::Builder(Scope scope, TargetInfo target, Program reusable) : Builder(scope, target) {
++    if (!reusable.storage) return;
++    storage->operations = std::move(reusable.storage->operations);
++    storage->operands = std::move(reusable.storage->operands);
++    storage->blocks = std::move(reusable.storage->blocks);
++    storage->operations.clear(); storage->operands.clear(); storage->blocks.clear();
+ }
+ Builder::~Builder() = default;
+ Builder::Builder(Builder&&) noexcept = default;
+--- a/source/runtime/ir/builder.h
++++ b/source/runtime/ir/builder.h
+@@ -11,6 +11,9 @@
+ class Builder {
+ public:
+     explicit Builder(Scope, TargetInfo = {});
++    // Start a fresh request using only the consumed owner's vector capacity.
++    // All old borrows end; immutable metadata and the full unit ID are new.
++    Builder(Scope, TargetInfo, Program reusable);
+     ~Builder();
+     Builder(Builder&&) noexcept;
+     Builder& operator=(Builder&&) noexcept;
+--- a/source/tests/rebuild/arm64_compile_test.cpp
++++ b/source/tests/rebuild/arm64_compile_test.cpp
+@@ -339,6 +339,16 @@
+             {Operand::Expression(OperandOp::Sub, 2), Operand::ValueOf(source), Operand::Immediate(0xffffffff, Type::U32)})));
+     Need(builder.EndBlock(Terminal::Return(shifted, Type::U64)));
+     auto program = Submit(builder); auto code = Compile(program, {104});
++    const auto expected_words = code.words;
++    const auto capacity = code.words.capacity();
++    Program empty;
++    arm64::Compile(empty, {104}, code);
++    Check(!code && code.words.empty() && code.faults.empty() && code.links.empty() &&
++            !code.frame_bytes && !code.spill_slots && code.words.capacity() == capacity,
++            "reused output rejects an empty owner without exposing stale code or discarding capacity");
++    arm64::Compile(program, {104}, code);
++    Check(bool(code) && code.words == expected_words && code.words.capacity() == capacity,
++            "success after a rejected request resets the actual output and reuses its buffer");
+     for (const auto word : code.words) Check(word != 0xd503201f, "Nop must not emit a machine instruction");
+     std::array<std::uint8_t, 136> state{};
+     Execute(code, state.data(), 0xffffffc0ULL);
+@@ -923,11 +933,34 @@
+     execution::CodeArena arena;
+     for (const auto* layout : {&code, &odd}) {
+         const auto published = arena.Publish(layout->words, {}, layout->links);
+-        if (!published.writable) continue;
+         const auto& site = layout->links.front();
+         const auto back_words = site.pointer_word - site.branch_word;
++        const auto entry = reinterpret_cast<std::uintptr_t>(published.entry);
++        struct Ready { u64 pc; std::uintptr_t entry; unsigned calls{}; } ready{site.target_pc, entry};
++        const auto lookup = [](void* opaque, u64 pc) noexcept -> std::uintptr_t {
++            auto& target = *static_cast<Ready*>(opaque); ++target.calls;
++            return pc == target.pc ? target.entry : 0;
++        };
++        const auto prelinked = arena.Publish(layout->words, {}, layout->links, lookup, &ready);
++        const auto linked_entry = reinterpret_cast<std::uintptr_t>(prelinked.entry);
++        const auto linked_delta = static_cast<std::int64_t>(entry - (linked_entry + site.branch_word * 4));
++        const auto* linked_words = reinterpret_cast<const std::uint32_t*>(prelinked.entry);
++        Check(linked_words[site.branch_word] == (prelinked.writable ?
++                    0x14000000u | (static_cast<std::uint32_t>(linked_delta / 4) & 0x03ffffffu) :
++                    0x58000010u | (back_words << 5)) &&
++                Read64(linked_words + site.pointer_word) == (prelinked.writable ? entry :
++                    linked_entry + (site.pointer_word + 2) * 4),
++                "ready links publish patched with an unlinkable alias; single mappings retain their cold owner");
++        ready.entry = entry + (std::uintptr_t{1} << 28);
++        const auto prelinked_far = arena.Publish(layout->words, {}, layout->links, lookup, &ready);
++        const auto* far_words = reinterpret_cast<const std::uint32_t*>(prelinked_far.entry);
++        Check(ready.calls == (prelinked.writable ? 2u : 0u) &&
++                far_words[site.branch_word] == (0x58000010u | (back_words << 5)) &&
++                Read64(far_words + site.pointer_word) == (prelinked_far.writable ? ready.entry :
++                    reinterpret_cast<std::uintptr_t>(prelinked_far.entry) + (site.pointer_word + 2) * 4),
++                "far ready links keep LDR/BR; a single mapping never creates a link it cannot later unlink");
++        if (!published.writable) continue;
+         auto* write = reinterpret_cast<std::uintptr_t*>(published.writable + site.pointer_word * 4);
+-        const auto entry = reinterpret_cast<std::uintptr_t>(published.entry);
+         const auto* execute = reinterpret_cast<const std::uintptr_t*>(entry + site.pointer_word * 4);
+         const auto* branch = reinterpret_cast<const std::uint32_t*>(entry) + site.branch_word;
+         const auto load = 0x58000010u | (back_words << 5);
+@@ -1150,13 +1183,15 @@
+             auto at = (other_pc ^ (other_pc >> arm64::abi::DispatchHashShift)) & (slots.size() - 1);
+             while (slots[at].occupied) at = (at + 1) & (slots.size() - 1);
+             slots[at].pc = other_pc; slots[at].entry = other_destination.entry; slots[at].occupied = true;
+-            const auto predicate_entry = arena.Publish(predicate_code.words, {}, predicate_code.links);
+-            if (predicate_entry.writable) for (const auto& link : predicate_code.links) {
+-                auto* write = reinterpret_cast<std::uintptr_t*>(predicate_entry.writable + link.pointer_word * 4);
+-                const auto* execute = reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(predicate_entry.entry) + link.pointer_word * 4);
+-                execution::PatchNativeLink(write, execute, reinterpret_cast<std::uintptr_t>(
+-                        link.target_pc == next_pc ? destination.entry : other_destination.entry), link.pointer_word - link.branch_word);
+-            }
++            struct ReadyTargets { std::uintptr_t no, yes; unsigned calls{}; } targets{
++                reinterpret_cast<std::uintptr_t>(destination.entry), reinterpret_cast<std::uintptr_t>(other_destination.entry)};
++            const auto predicate_entry = arena.Publish(predicate_code.words, {}, predicate_code.links,
++                    [](void* opaque, u64 pc) noexcept -> std::uintptr_t {
++                        auto& ready = *static_cast<ReadyTargets*>(opaque); ++ready.calls;
++                        return pc == next_pc ? ready.no : pc == other_pc ? ready.yes : 0;
++                    }, &targets);
++            Check(targets.calls == (predicate_entry.writable ? 2u : 0u),
++                    "only unlinkable conditional edges resolve during unpublished initialization");
+             resolver.first = &predicate_entry;
+             const auto run_predicate = [&](bool zero) {
+                 const auto flags = zero ? initial | (u64{1} << 30) : initial & ~(u64{1} << 30);
+--- a/source/tests/rebuild/ir_construction_test.cpp
++++ b/source/tests/rebuild/ir_construction_test.cpp
+@@ -275,6 +275,31 @@
+     CHECK(program.Blocks()[no.block.id.value].terminal.value == value.node);
+     CHECK(value.node.value == 0 && program.Blocks()[no.block.id.value].terminal.HasValue());
+     CHECK(program.Contains(sum.GetValue()));
++}
++
++void ReusedCapacityHasFreshIdentity() {
++    Builder first{Scope::Block};
++    CHECK(first.Reserve(32, 64, 8) == Error::None);
++    const auto old_block = first.CreateBlock(); CHECK(old_block);
++    CHECK(first.BeginBlock(old_block.block) == Error::None);
++    const auto old_value = Literal(first, 7).GetValue();
++    CHECK(first.EndBlock(Terminal::Return(old_value)) == Error::None);
++    auto submitted = first.Submit(); CHECK(submitted);
++    auto owner = std::move(submitted.program);
++    const auto capacity = owner.ReservedBytes();
++    const TargetInfo known{TargetMode::Known, 0xa64, 0};
++    Builder next{Scope::Function, known, std::move(owner)};
++    CHECK(!owner && next.UnitId() != old_value.unit && next.Operations().empty() && next.Blocks().empty());
++    const auto block = next.CreateBlock(); CHECK(block);
++    CHECK(next.BeginBlock(old_block.block) == Error::ForeignUnit);
++    CHECK(next.BeginBlock(block.block) == Error::None);
++    CHECK(next.Emit<OpCode::BitCast>(Type::U64, {Operand::ValueOf(old_value)}).error == Error::ForeignUnit);
++    const auto value = Literal(next, 11).GetValue();
++    CHECK(value.node == old_value.node && next.EndBlock(Terminal::Return(value)) == Error::None);
++    submitted = next.Submit(); CHECK(submitted);
++    CHECK(submitted.program.ScopeKind() == Scope::Function && submitted.program.Target() == known &&
++            submitted.program.ReservedBytes() == capacity && submitted.program.Contains(value) &&
++            !submitted.program.Contains(old_value));
+ }
+ 
+ void RejectedInputIsAtomic() {
+@@ -1224,6 +1249,7 @@
+         BlockConstructionRoundtrip();
+         FunctionConstructionAndIncompleteSubmit();
+         RejectedInputIsAtomic();
++        ReusedCapacityHasFreshIdentity();
+         WidePayloadsAndCompoundBoundaries();
+         AllocationFailureIsAtomic();
+         MoveAndSubmittedOwnerLifetime();

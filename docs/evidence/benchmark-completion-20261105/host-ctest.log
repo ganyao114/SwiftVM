@@ -1,0 +1,15 @@
+Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+    Start 1: ir_construction_contract
+1/5 Test #1: ir_construction_contract .........   Passed    0.01 sec
+    Start 2: x86_construction_contract
+2/5 Test #2: x86_construction_contract ........   Passed    0.00 sec
+    Start 3: ir_optimize_contract
+3/5 Test #3: ir_optimize_contract .............   Passed    0.01 sec
+    Start 4: arm64_compile_contract
+4/5 Test #4: arm64_compile_contract ...........   Passed    0.43 sec
+    Start 5: compile_pipeline_contract
+5/5 Test #5: compile_pipeline_contract ........   Passed    0.41 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =   0.87 sec

@@ -1,0 +1,46 @@
+{
+  "utc": "2026-11-05T12:07:55.090082+00:00",
+  "scope": "only this task derived diagnostics and recreated baseline runner; no source/Git/WIP/fixed caches/other projects removed",
+  "archived": [
+    {
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/audit-after/svm_rebuild_linux_function_audit",
+      "original_sha256": "fb246d67aa89f2107c9d17ed85dc71ed482c472678e1e51fa2e67056bd9230e4",
+      "original_bytes": 8986632,
+      "gzip_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/audit-after/svm_rebuild_linux_function_audit.gz",
+      "gzip_sha256": "1021fed9accf3156ed479ed1ab84d5f876e5d81c3f056ababe287da6be8f5a04",
+      "saved_allocated_bytes": 6791168,
+      "active_local_writer": false,
+      "decompression_verified": true
+    },
+    {
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/audit-final/svm_rebuild_linux_function_audit",
+      "original_sha256": "5759fda25b50c7accb92966c8d3187f307720ed8e95bde1c40537298cf3c1ef5",
+      "original_bytes": 8987160,
+      "gzip_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/audit-final/svm_rebuild_linux_function_audit.gz",
+      "gzip_sha256": "9e65e03fed8e1ae4a1a9a1e01c9f05df634347a0f0b3e29b71faa84842421e3c",
+      "saved_allocated_bytes": 6791168,
+      "active_local_writer": false,
+      "decompression_verified": true
+    },
+    {
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/audit-accepted-candidate/svm_rebuild_linux_function_audit",
+      "original_sha256": "218342a432565743e40243ddc478a25c4e1a0920c79d1873854de02ff510e8ce",
+      "original_bytes": 8986456,
+      "gzip_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/audit-accepted-candidate/svm_rebuild_linux_function_audit.gz",
+      "gzip_sha256": "748f2f1d16c0fc72a530bdc310167b9e698f1eec58faa3e5ad4a4796b7e855cc",
+      "saved_allocated_bytes": 6787072,
+      "active_local_writer": false,
+      "decompression_verified": true
+    },
+    {
+      "original_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/x87-paired-confirmation/baseline-ordinary",
+      "retained_archive": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-owner-optimization-20261105/buffers-publish/candidate.gz",
+      "original_sha256": "f7a345a603b1a9c16fd059504a09aeeb76df96f2da676828f723a734323ee548",
+      "saved_allocated_bytes": 8912896,
+      "active_local_writer": false,
+      "decompression_verified": true
+    }
+  ],
+  "reclaimed_allocated_bytes": 29282304,
+  "errors": []
+}

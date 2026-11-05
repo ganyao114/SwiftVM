@@ -1,0 +1,39 @@
+{
+  "utc": "2026-11-05T10:38:33.700536+00:00",
+  "reason": "Data2 headroom under 2GiB; compress only three idle retired SwiftVM combined-26 binaries, preserving all unique bytes and existing source/Git/WIP/results. Current submit caches and combined-02 untouched.",
+  "root": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-26/bin",
+  "open_files_before": [],
+  "files": [
+    {
+      "raw_path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-26/bin/swift_hir_lifetime_test",
+      "raw_bytes": 125172624,
+      "raw_sha256": "109b38f133517fbd65b46e356e748e93ab360cd3cbf6f9fd5673a29eef403bdc",
+      "preserved_compressed": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-26/bin/swift_hir_lifetime_test.zst",
+      "compressed_bytes": 36581581,
+      "compressed_sha256": "0b682be903ada1fb67219b1fd8580a6dc0eb347b0ee8492eec50096d2a2e2a34",
+      "roundtrip_verified": true
+    },
+    {
+      "raw_path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-26/bin/svm_translator_linux",
+      "raw_bytes": 159143504,
+      "raw_sha256": "d3ba13f46fbf7702c454828bca4d3e07b3c0e1d264a549ea2c054c80688390aa",
+      "preserved_compressed": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-26/bin/svm_translator_linux.zst",
+      "compressed_bytes": 46427987,
+      "compressed_sha256": "6d7e7f910a99f8e9b6539ba2827d4286fd1a017cb74a50af51b871ca8fd34dc9",
+      "roundtrip_verified": true
+    },
+    {
+      "raw_path": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-26/bin/swift_ir_test",
+      "raw_bytes": 199518504,
+      "raw_sha256": "53dd9a7abd0160f0eaa1d9bb58d631731927f30ae54ab5558e0b8d64802d07b3",
+      "preserved_compressed": "/Volumes/Data2/swiftvm-middle-build-cache/framework-continuation/combined-26/bin/swift_ir_test.zst",
+      "compressed_bytes": 57238627,
+      "compressed_sha256": "1f11cd195d4f4d157a0b7ba44ec68c693d3c801983e9c55f2e4c8224d5f6c315",
+      "roundtrip_verified": true
+    }
+  ],
+  "allocated_bytes_reclaimed": 343584768,
+  "independent_df_free_delta_bytes": 343617536,
+  "free_bytes_after": 2200363008,
+  "errors": []
+}

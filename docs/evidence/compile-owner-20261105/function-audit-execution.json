@@ -1,0 +1,13 @@
+{
+  "command": "taskset 10 timeout -k 2 60 env -i PATH=/system/bin /data/local/tmp/swiftvm-compile-owner-20261105/function-audit --decode-timing --scope function /data/local/tmp/swiftvm-compile-owner-20261105/coremark 0 0 0 20 7 1 2000",
+  "exit": 0,
+  "exit_basis": "target runtime_completed/exit_code record; direct ADB invocation",
+  "valid": true,
+  "oracle": "CoreMark20 CRC4983 and target exit0",
+  "initial_host_oracle_rejected": "Expected standard long-run validation text in a 20-iteration compile diagnostic; target CRC and exit were correct; no repeat execution.",
+  "diagnostic_not_performance": true,
+  "runner_sha256": "3c29e58ba491299e9f72bc647157e0cd245cea10d0ca7e5ff8e73441540e124a",
+  "observed_attempts": 705,
+  "observed_guest": 32159,
+  "observed_ir_nodes": 87595
+}

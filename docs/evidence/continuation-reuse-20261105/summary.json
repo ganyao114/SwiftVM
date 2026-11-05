@@ -1,0 +1,1216 @@
+{
+  "utc": "2026-11-05T11:57:33.844131+00:00",
+  "identity": {
+    "base_commit": "13ffa48f1d984cd7d600b5c93601301462b13570",
+    "working_tree_modified": true,
+    "source_digest": "a78fdec20b3de2f00fe47bb1dbfa67c6664c0efa7cd1b7f30658edd8f1ce1e52",
+    "device": "bf1359ff",
+    "cpu": 4,
+    "repetitions": 3,
+    "PMU": "Whole child user events, including cold JIT and same wrapper; FEXServer outside target tree is excluded. Fresh launcher each sample, no AOT/object cache, OS page cache retained.",
+    "time": "CoreMark loop timer; other cases whole-child simpleperf elapsed including startup/JIT. No cross-workload score aggregation."
+  },
+  "inputs": {
+    "FEXLoader": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/pmu-inputs-fixed/FEXLoader-performance-a156",
+      "bytes": 4182680,
+      "sha256": "8632943c4736294ae8e76ab15c22a638e2f3db4959cdf5ca0e7c1d741024b175"
+    },
+    "FEXLoader-byte": {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/application-runtime-20261103/fex-byte-decode/build-run/bin/FEXLoader",
+      "bytes": 4742976,
+      "sha256": "d2e4ce32b6c650bb9f7ce46a91aff8a098431ad3f5f52f52fd746d30b3500995"
+    },
+    "FEXServer": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/fex-android/build/Bin/FEXServer",
+      "bytes": 843688,
+      "sha256": "9fe58a9946e9105c49911518356fe29a4ed3143c1fe90803b57afe112c225e8c"
+    },
+    "simpleperf": {
+      "path": "/Users/swift/Library/Android/sdk/ndk/29.0.13846066/simpleperf/bin/android/arm64/simpleperf",
+      "bytes": 3745096,
+      "sha256": "30b6cd23fb8d819c835487f2fe6c3c416324488c7ac26c194ee7ba200f15b575"
+    },
+    "candidate": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+      "bytes": 8974936,
+      "sha256": "13411690d78fa72df6fc84c61004bfe7c36a2060cc3a9a16cb22dcbfca9d77eb"
+    },
+    "coremark": {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+      "bytes": 1921016,
+      "sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba"
+    },
+    "bench-suite": {
+      "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/bench_suite_x86_64",
+      "bytes": 6272,
+      "sha256": "df60aa3f57d40ed3eb0b44d124f2cb8c9d15899f90021b6d20e94be179240a6d"
+    },
+    "func-tests": {
+      "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/func_tests_x86_64",
+      "bytes": 799168,
+      "sha256": "4740aad183296f458756a6ebb5abf42a2affb17dddd3b74d115a8e2f3266ae60"
+    },
+    "x87-bench": {
+      "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/x87_bench_x86_64",
+      "bytes": 184,
+      "sha256": "60350fb2a0828e63934a3c8e4890302448d028ce8875a17dfa96b141f91bfabb"
+    },
+    "fex-config/Config.json": {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-direct-emit-20261103/Config.json",
+      "bytes": 153,
+      "sha256": "275a50c60d9852ef3399bd9fd665d93cf46a06850a5dd15bd31dffe11e9cb6b0"
+    },
+    "fp-mode-roundtrip": {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/parity-gap-optimization-20261105/fp-mode-roundtrip-covered",
+      "bytes": 1544,
+      "sha256": "23c46299245890a4430f16766857506e3e791cd148359a413f77cf02d16a027f"
+    },
+    "launch.sh": {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/attempt3/launch.sh",
+      "bytes": 263,
+      "sha256": "d40c9d3da3725904e37583e9665e64fd9595d4941621b9e2211df13665df39e5"
+    },
+    "backend-test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_arm64_compile_test",
+      "bytes": 7019032,
+      "sha256": "1eca5b5e54349ec225800847da1762bb6bbc59a8880430ec4ba1c4c9ac2fa5d8"
+    },
+    "pipeline-test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_compile_pipeline_test",
+      "bytes": 8090264,
+      "sha256": "36693eaa399538555e9a4ad591fa77fba89a74815204f1aeb20e51b0da718e2d"
+    }
+  },
+  "runtime": {
+    "coremark": {
+      "block": {
+        "n": 3,
+        "seconds": 16.111,
+        "min_seconds": 16.097,
+        "max_seconds": 16.117,
+        "whole_child_seconds": 16.245354,
+        "cycles": 18518536831,
+        "instructions": 64363384620,
+        "branch_misses": 36122353,
+        "ipc": 3.475619332530408
+      },
+      "function": {
+        "n": 3,
+        "seconds": 15.633,
+        "min_seconds": 15.63,
+        "max_seconds": 15.634,
+        "whole_child_seconds": 15.773433,
+        "cycles": 17982268544,
+        "instructions": 62632712714,
+        "branch_misses": 20188250,
+        "ipc": 3.483026118576021
+      },
+      "fex": {
+        "n": 3,
+        "seconds": 15.033,
+        "min_seconds": 14.997,
+        "max_seconds": 15.098,
+        "whole_child_seconds": 15.183634,
+        "cycles": 17300794738,
+        "instructions": 62013310568,
+        "branch_misses": 19311517,
+        "ipc": 3.5844197626246643
+      }
+    },
+    "int": {
+      "block": {
+        "n": 3,
+        "seconds": 0.301029,
+        "min_seconds": 0.29939,
+        "max_seconds": 0.302327,
+        "whole_child_seconds": 0.301029,
+        "cycles": 280197901,
+        "instructions": 588387495,
+        "branch_misses": 375332,
+        "ipc": 2.0999038568814976
+      },
+      "function": {
+        "n": 3,
+        "seconds": 0.303149,
+        "min_seconds": 0.301465,
+        "max_seconds": 0.307321,
+        "whole_child_seconds": 0.303149,
+        "cycles": 280311845,
+        "instructions": 608531236,
+        "branch_misses": 375482,
+        "ipc": 2.1709058316818544
+      },
+      "fex": {
+        "n": 3,
+        "seconds": 0.317518,
+        "min_seconds": 0.315852,
+        "max_seconds": 0.318675,
+        "whole_child_seconds": 0.317518,
+        "cycles": 282656422,
+        "instructions": 480619701,
+        "branch_misses": 423109,
+        "ipc": 1.700359176696859
+      }
+    },
+    "fp": {
+      "block": {
+        "n": 3,
+        "seconds": 0.252263,
+        "min_seconds": 0.24847,
+        "max_seconds": 0.270682,
+        "whole_child_seconds": 0.252263,
+        "cycles": 219635388,
+        "instructions": 262569638,
+        "branch_misses": 383993,
+        "ipc": 1.1954844180210158
+      },
+      "function": {
+        "n": 3,
+        "seconds": 0.250033,
+        "min_seconds": 0.249363,
+        "max_seconds": 0.254421,
+        "whole_child_seconds": 0.250033,
+        "cycles": 220189511,
+        "instructions": 266731104,
+        "branch_misses": 384372,
+        "ipc": 1.2113706179219408
+      },
+      "fex": {
+        "n": 3,
+        "seconds": 0.264063,
+        "min_seconds": 0.262154,
+        "max_seconds": 0.264558,
+        "whole_child_seconds": 0.264063,
+        "cycles": 223564795,
+        "instructions": 265173863,
+        "branch_misses": 426447,
+        "ipc": 1.186116369529469
+      }
+    },
+    "mem": {
+      "block": {
+        "n": 3,
+        "seconds": 2.149787,
+        "min_seconds": 2.149241,
+        "max_seconds": 2.15217,
+        "whole_child_seconds": 2.149787,
+        "cycles": 2389788301,
+        "instructions": 2405851102,
+        "branch_misses": 382379,
+        "ipc": 1.0067215175475077
+      },
+      "function": {
+        "n": 3,
+        "seconds": 2.167412,
+        "min_seconds": 2.16172,
+        "max_seconds": 2.181383,
+        "whole_child_seconds": 2.167412,
+        "cycles": 2410037505,
+        "instructions": 2466407326,
+        "branch_misses": 380619,
+        "ipc": 1.0233893928551125
+      },
+      "fex": {
+        "n": 3,
+        "seconds": 2.047394,
+        "min_seconds": 2.021843,
+        "max_seconds": 2.076566,
+        "whole_child_seconds": 2.047394,
+        "cycles": 2260722642,
+        "instructions": 1805293969,
+        "branch_misses": 426862,
+        "ipc": 0.7985471567635142
+      }
+    },
+    "branch": {
+      "block": {
+        "n": 3,
+        "seconds": 0.261421,
+        "min_seconds": 0.258424,
+        "max_seconds": 0.264377,
+        "whole_child_seconds": 0.261421,
+        "cycles": 229436384,
+        "instructions": 692427505,
+        "branch_misses": 376608,
+        "ipc": 3.017950487748273
+      },
+      "function": {
+        "n": 3,
+        "seconds": 0.259579,
+        "min_seconds": 0.259143,
+        "max_seconds": 0.260888,
+        "whole_child_seconds": 0.259579,
+        "cycles": 230937893,
+        "instructions": 704570244,
+        "branch_misses": 377851,
+        "ipc": 3.050907907954283
+      },
+      "fex": {
+        "n": 3,
+        "seconds": 0.266538,
+        "min_seconds": 0.264847,
+        "max_seconds": 0.268368,
+        "whole_child_seconds": 0.266538,
+        "cycles": 228595876,
+        "instructions": 608633228,
+        "branch_misses": 424465,
+        "ipc": 2.6624855996964705
+      }
+    },
+    "call": {
+      "block": {
+        "n": 3,
+        "seconds": 0.477202,
+        "min_seconds": 0.477027,
+        "max_seconds": 0.477722,
+        "whole_child_seconds": 0.477202,
+        "cycles": 482314564,
+        "instructions": 2164541355,
+        "branch_misses": 374601,
+        "ipc": 4.487821593129417
+      },
+      "function": {
+        "n": 3,
+        "seconds": 0.476507,
+        "min_seconds": 0.476118,
+        "max_seconds": 0.482023,
+        "whole_child_seconds": 0.476507,
+        "cycles": 480148298,
+        "instructions": 2180709517,
+        "branch_misses": 374733,
+        "ipc": 4.541743005407883
+      },
+      "fex": {
+        "n": 3,
+        "seconds": 0.459178,
+        "min_seconds": 0.451622,
+        "max_seconds": 0.459232,
+        "whole_child_seconds": 0.459178,
+        "cycles": 447100897,
+        "instructions": 1744712205,
+        "branch_misses": 425614,
+        "ipc": 3.9022784716086134
+      }
+    },
+    "func_tests": {
+      "block": {
+        "n": 3,
+        "seconds": 0.108749,
+        "min_seconds": 0.10826,
+        "max_seconds": 0.109544,
+        "whole_child_seconds": 0.108749,
+        "cycles": 57105516,
+        "instructions": 122482240,
+        "branch_misses": 589010,
+        "ipc": 2.14484078911046
+      },
+      "function": {
+        "n": 3,
+        "seconds": 0.120647,
+        "min_seconds": 0.119211,
+        "max_seconds": 0.121066,
+        "whole_child_seconds": 0.120647,
+        "cycles": 68127664,
+        "instructions": 158096820,
+        "branch_misses": 817234,
+        "ipc": 2.320588094727569
+      },
+      "fex": {
+        "n": 3,
+        "seconds": 0.138475,
+        "min_seconds": 0.137368,
+        "max_seconds": 0.141453,
+        "whole_child_seconds": 0.138475,
+        "cycles": 70843573,
+        "instructions": 151793357,
+        "branch_misses": 807961,
+        "ipc": 2.142436096496714
+      }
+    },
+    "x87_bench": {
+      "block": {
+        "n": 3,
+        "seconds": 0.555797,
+        "min_seconds": 0.554011,
+        "max_seconds": 0.560712,
+        "whole_child_seconds": 0.555797,
+        "cycles": 571037162,
+        "instructions": 2701265105,
+        "branch_misses": 514527,
+        "ipc": 4.730454136363195
+      },
+      "function": {
+        "n": 3,
+        "seconds": 0.553002,
+        "min_seconds": 0.551875,
+        "max_seconds": 0.55466,
+        "whole_child_seconds": 0.553002,
+        "cycles": 567885025,
+        "instructions": 2695209994,
+        "branch_misses": 508867,
+        "ipc": 4.746049883953182
+      },
+      "fex": {
+        "n": 3,
+        "seconds": 0.819708,
+        "min_seconds": 0.815607,
+        "max_seconds": 0.864075,
+        "whole_child_seconds": 0.819708,
+        "cycles": 863986327,
+        "instructions": 2122587499,
+        "branch_misses": 718305,
+        "ipc": 2.456767463404545
+      }
+    }
+  },
+  "compile": {
+    "coremark": {
+      "block": {
+        "n": 3,
+        "ms": 44.905649,
+        "min_ms": 44.888262,
+        "max_ms": 45.050312,
+        "stages_ms": {
+          "compile_ns": 49.309661,
+          "frontend_ns": 16.211389,
+          "optimize_ns": 9.029695,
+          "backend_ns": 14.294346,
+          "publication_ns": 7.655904,
+          "code_release_ns": 0.422448,
+          "compile_decode_ns": 4.421399
+        },
+        "work": {
+          "compile_attempts": 2043,
+          "function_attempts": 0,
+          "block_attempts": 2043,
+          "fallbacks": 0,
+          "code_units_published": 2043,
+          "emitted_guest_instructions": 12407,
+          "native_bytes": 389876,
+          "ir_nodes": 36651,
+          "operand_words": 65841,
+          "spill_slots": 25,
+          "max_frame_bytes": 48
+        }
+      },
+      "function": {
+        "n": 3,
+        "ms": 51.446873,
+        "min_ms": 50.926668,
+        "max_ms": 51.519318,
+        "stages_ms": {
+          "compile_ns": 57.207354,
+          "frontend_ns": 22.663449,
+          "optimize_ns": 12.056461,
+          "backend_ns": 16.899662,
+          "publication_ns": 4.522963,
+          "code_release_ns": 0.334791,
+          "compile_decode_ns": 5.85766
+        },
+        "work": {
+          "compile_attempts": 686,
+          "function_attempts": 681,
+          "block_attempts": 5,
+          "fallbacks": 5,
+          "code_units_published": 681,
+          "emitted_guest_instructions": 16584,
+          "native_bytes": 393248,
+          "ir_nodes": 50591,
+          "operand_words": 84624,
+          "spill_slots": 31,
+          "max_frame_bytes": 64
+        }
+      },
+      "fex": {
+        "n": 3,
+        "ms": 48.02526041666666,
+        "min_ms": 47.58765625,
+        "max_ms": 48.20619791666667,
+        "inclusive_stages_ms": {
+          "compile_block": 56.21796875,
+          "compile_code": 53.72416666666667,
+          "generate_ir": 46.42223958333334,
+          "raw_decode": 18.534166666666668,
+          "builder": 10.9084375,
+          "pass_manager": 15.473854166666667,
+          "x87": 0.0559375,
+          "dfe": 6.445,
+          "ra": 8.851354166666667,
+          "validation": 0.0,
+          "other_pass": 0.0,
+          "backend": 6.956927083333333,
+          "emit": 5.2846875,
+          "tail_copy_cache": 1.2428125,
+          "publish": 2.09296875,
+          "logical_release": 0.35109375,
+          "byte_decode": 8.119114583333333
+        }
+      }
+    },
+    "int": {
+      "block": {
+        "n": 3,
+        "ms": 1.81894,
+        "min_ms": 1.764002,
+        "max_ms": 2.050187,
+        "stages_ms": {
+          "compile_ns": 2.044632,
+          "frontend_ns": 0.835258,
+          "optimize_ns": 0.257761,
+          "backend_ns": 0.405105,
+          "publication_ns": 0.436251,
+          "code_release_ns": 0.056198,
+          "compile_decode_ns": 0.181519
+        },
+        "work": {
+          "compile_attempts": 38,
+          "function_attempts": 0,
+          "block_attempts": 38,
+          "fallbacks": 0,
+          "code_units_published": 38,
+          "emitted_guest_instructions": 295,
+          "native_bytes": 5632,
+          "ir_nodes": 601,
+          "operand_words": 1099,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "function": {
+        "n": 3,
+        "ms": 1.797454,
+        "min_ms": 1.782617,
+        "max_ms": 1.846457,
+        "stages_ms": {
+          "compile_ns": 1.976774,
+          "frontend_ns": 0.788285,
+          "optimize_ns": 0.276564,
+          "backend_ns": 0.423176,
+          "publication_ns": 0.383643,
+          "code_release_ns": 0.053229,
+          "compile_decode_ns": 0.181292
+        },
+        "work": {
+          "compile_attempts": 38,
+          "function_attempts": 38,
+          "block_attempts": 0,
+          "fallbacks": 0,
+          "code_units_published": 38,
+          "emitted_guest_instructions": 295,
+          "native_bytes": 5632,
+          "ir_nodes": 601,
+          "operand_words": 1099,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "fex": {
+        "n": 3,
+        "ms": 1.5925520833333333,
+        "min_ms": 1.4869270833333332,
+        "max_ms": 1.60890625,
+        "inclusive_stages_ms": {
+          "compile_block": 1.885625,
+          "compile_code": 1.83265625,
+          "generate_ir": 1.59734375,
+          "raw_decode": 0.5916666666666667,
+          "builder": 0.47828125,
+          "pass_manager": 0.48703125,
+          "x87": 0.0021875,
+          "dfe": 0.18583333333333332,
+          "ra": 0.25666666666666665,
+          "validation": 0.0,
+          "other_pass": 0.0,
+          "backend": 0.2171875,
+          "emit": 0.17265625,
+          "tail_copy_cache": 0.025208333333333333,
+          "publish": 0.046197916666666665,
+          "logical_release": 0.005208333333333333,
+          "byte_decode": 0.2930729166666667
+        }
+      }
+    },
+    "fp": {
+      "block": {
+        "n": 3,
+        "ms": 2.396197,
+        "min_ms": 2.325009,
+        "max_ms": 2.534529,
+        "stages_ms": {
+          "compile_ns": 2.677915,
+          "frontend_ns": 1.080992,
+          "optimize_ns": 0.403804,
+          "backend_ns": 0.60177,
+          "publication_ns": 0.436505,
+          "code_release_ns": 0.057188,
+          "compile_decode_ns": 0.281718
+        },
+        "work": {
+          "compile_attempts": 42,
+          "function_attempts": 0,
+          "block_attempts": 42,
+          "fallbacks": 0,
+          "code_units_published": 42,
+          "emitted_guest_instructions": 591,
+          "native_bytes": 8240,
+          "ir_nodes": 1419,
+          "operand_words": 2705,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "function": {
+        "n": 3,
+        "ms": 2.430219,
+        "min_ms": 2.419581,
+        "max_ms": 2.513645,
+        "stages_ms": {
+          "compile_ns": 2.723643,
+          "frontend_ns": 1.133284,
+          "optimize_ns": 0.442087,
+          "backend_ns": 0.62953,
+          "publication_ns": 0.412709,
+          "code_release_ns": 0.059375,
+          "compile_decode_ns": 0.304062
+        },
+        "work": {
+          "compile_attempts": 42,
+          "function_attempts": 42,
+          "block_attempts": 0,
+          "fallbacks": 0,
+          "code_units_published": 42,
+          "emitted_guest_instructions": 591,
+          "native_bytes": 8240,
+          "ir_nodes": 1419,
+          "operand_words": 2705,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "fex": {
+        "n": 3,
+        "ms": 1.7325520833333332,
+        "min_ms": 1.64578125,
+        "max_ms": 1.7773958333333333,
+        "inclusive_stages_ms": {
+          "compile_block": 2.08203125,
+          "compile_code": 2.0139583333333335,
+          "generate_ir": 1.7871354166666666,
+          "raw_decode": 0.6575520833333334,
+          "builder": 0.5085416666666667,
+          "pass_manager": 0.5198958333333333,
+          "x87": 0.001979166666666667,
+          "dfe": 0.20802083333333332,
+          "ra": 0.30572916666666666,
+          "validation": 0.0,
+          "other_pass": 0.0,
+          "backend": 0.220625,
+          "emit": 0.17348958333333334,
+          "tail_copy_cache": 0.025,
+          "publish": 0.05796875,
+          "logical_release": 0.005260416666666667,
+          "byte_decode": 0.3494791666666667
+        }
+      }
+    },
+    "mem": {
+      "block": {
+        "n": 3,
+        "ms": 2.208391,
+        "min_ms": 2.126094,
+        "max_ms": 2.333394,
+        "stages_ms": {
+          "compile_ns": 2.447819,
+          "frontend_ns": 0.934056,
+          "optimize_ns": 0.311879,
+          "backend_ns": 0.53469,
+          "publication_ns": 0.506412,
+          "code_release_ns": 0.119896,
+          "compile_decode_ns": 0.240048
+        },
+        "work": {
+          "compile_attempts": 45,
+          "function_attempts": 0,
+          "block_attempts": 45,
+          "fallbacks": 0,
+          "code_units_published": 45,
+          "emitted_guest_instructions": 376,
+          "native_bytes": 7260,
+          "ir_nodes": 804,
+          "operand_words": 1493,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "function": {
+        "n": 3,
+        "ms": 2.210524,
+        "min_ms": 2.124591,
+        "max_ms": 2.236561,
+        "stages_ms": {
+          "compile_ns": 2.487968,
+          "frontend_ns": 1.022078,
+          "optimize_ns": 0.336462,
+          "backend_ns": 0.540572,
+          "publication_ns": 0.388276,
+          "code_release_ns": 0.112552,
+          "compile_decode_ns": 0.251407
+        },
+        "work": {
+          "compile_attempts": 45,
+          "function_attempts": 45,
+          "block_attempts": 0,
+          "fallbacks": 0,
+          "code_units_published": 45,
+          "emitted_guest_instructions": 376,
+          "native_bytes": 7260,
+          "ir_nodes": 804,
+          "operand_words": 1493,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "fex": {
+        "n": 3,
+        "ms": 1.54,
+        "min_ms": 1.52359375,
+        "max_ms": 1.5429166666666667,
+        "inclusive_stages_ms": {
+          "compile_block": 1.8423958333333332,
+          "compile_code": 1.78140625,
+          "generate_ir": 1.5540625,
+          "raw_decode": 0.5939583333333334,
+          "builder": 0.46109375,
+          "pass_manager": 0.466875,
+          "x87": 0.0017708333333333332,
+          "dfe": 0.18953125,
+          "ra": 0.27005208333333336,
+          "validation": 0.0,
+          "other_pass": 0.0,
+          "backend": 0.21973958333333332,
+          "emit": 0.17322916666666666,
+          "tail_copy_cache": 0.02734375,
+          "publish": 0.05328125,
+          "logical_release": 0.004791666666666666,
+          "byte_decode": 0.3023958333333333
+        }
+      }
+    },
+    "branch": {
+      "block": {
+        "n": 3,
+        "ms": 1.762604,
+        "min_ms": 1.740714,
+        "max_ms": 1.917552,
+        "stages_ms": {
+          "compile_ns": 1.955,
+          "frontend_ns": 0.818643,
+          "optimize_ns": 0.266713,
+          "backend_ns": 0.386513,
+          "publication_ns": 0.389582,
+          "code_release_ns": 0.053386,
+          "compile_decode_ns": 0.192396
+        },
+        "work": {
+          "compile_attempts": 38,
+          "function_attempts": 0,
+          "block_attempts": 38,
+          "fallbacks": 0,
+          "code_units_published": 38,
+          "emitted_guest_instructions": 314,
+          "native_bytes": 5688,
+          "ir_nodes": 601,
+          "operand_words": 1124,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "function": {
+        "n": 3,
+        "ms": 1.920841,
+        "min_ms": 1.850889,
+        "max_ms": 1.941254,
+        "stages_ms": {
+          "compile_ns": 2.134797,
+          "frontend_ns": 0.821305,
+          "optimize_ns": 0.273488,
+          "backend_ns": 0.431193,
+          "publication_ns": 0.391769,
+          "code_release_ns": 0.058333,
+          "compile_decode_ns": 0.203853
+        },
+        "work": {
+          "compile_attempts": 38,
+          "function_attempts": 38,
+          "block_attempts": 0,
+          "fallbacks": 0,
+          "code_units_published": 38,
+          "emitted_guest_instructions": 314,
+          "native_bytes": 5688,
+          "ir_nodes": 601,
+          "operand_words": 1124,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "fex": {
+        "n": 3,
+        "ms": 1.53171875,
+        "min_ms": 1.5263020833333332,
+        "max_ms": 1.5725520833333333,
+        "inclusive_stages_ms": {
+          "compile_block": 1.8256770833333333,
+          "compile_code": 1.7633854166666667,
+          "generate_ir": 1.5552083333333333,
+          "raw_decode": 0.58125,
+          "builder": 0.463125,
+          "pass_manager": 0.4596875,
+          "x87": 0.0021875,
+          "dfe": 0.18723958333333332,
+          "ra": 0.264375,
+          "validation": 0.0,
+          "other_pass": 0.0,
+          "backend": 0.2075,
+          "emit": 0.15760416666666666,
+          "tail_copy_cache": 0.02421875,
+          "publish": 0.058645833333333335,
+          "logical_release": 0.005208333333333333,
+          "byte_decode": 0.2939583333333333
+        }
+      }
+    },
+    "call": {
+      "block": {
+        "n": 3,
+        "ms": 1.900515,
+        "min_ms": 1.856616,
+        "max_ms": 2.033545,
+        "stages_ms": {
+          "compile_ns": 2.080936,
+          "frontend_ns": 0.840985,
+          "optimize_ns": 0.259009,
+          "backend_ns": 0.46505,
+          "publication_ns": 0.416251,
+          "code_release_ns": 0.065105,
+          "compile_decode_ns": 0.200565
+        },
+        "work": {
+          "compile_attempts": 45,
+          "function_attempts": 0,
+          "block_attempts": 45,
+          "fallbacks": 0,
+          "code_units_published": 45,
+          "emitted_guest_instructions": 268,
+          "native_bytes": 7856,
+          "ir_nodes": 659,
+          "operand_words": 1173,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "function": {
+        "n": 3,
+        "ms": 1.852456,
+        "min_ms": 1.769739,
+        "max_ms": 1.934688,
+        "stages_ms": {
+          "compile_ns": 2.025105,
+          "frontend_ns": 0.755578,
+          "optimize_ns": 0.301511,
+          "backend_ns": 0.457026,
+          "publication_ns": 0.347663,
+          "code_release_ns": 0.061615,
+          "compile_decode_ns": 0.164955
+        },
+        "work": {
+          "compile_attempts": 45,
+          "function_attempts": 45,
+          "block_attempts": 0,
+          "fallbacks": 0,
+          "code_units_published": 45,
+          "emitted_guest_instructions": 268,
+          "native_bytes": 7856,
+          "ir_nodes": 659,
+          "operand_words": 1173,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "fex": {
+        "n": 3,
+        "ms": 1.6409375,
+        "min_ms": 1.6328125,
+        "max_ms": 1.7096354166666667,
+        "inclusive_stages_ms": {
+          "compile_block": 1.9386979166666667,
+          "compile_code": 1.8609375,
+          "generate_ir": 1.6349479166666667,
+          "raw_decode": 0.60515625,
+          "builder": 0.4763541666666667,
+          "pass_manager": 0.5111979166666667,
+          "x87": 0.0022916666666666667,
+          "dfe": 0.1853125,
+          "ra": 0.26369791666666664,
+          "validation": 0.0,
+          "other_pass": 0.0,
+          "backend": 0.22364583333333332,
+          "emit": 0.16260416666666666,
+          "tail_copy_cache": 0.031510416666666666,
+          "publish": 0.06890625,
+          "logical_release": 0.009114583333333334,
+          "byte_decode": 0.3028645833333333
+        }
+      }
+    },
+    "func_tests": {
+      "block": {
+        "n": 3,
+        "ms": 22.38707,
+        "min_ms": 21.151615,
+        "max_ms": 22.642582,
+        "stages_ms": {
+          "compile_ns": 24.375401,
+          "frontend_ns": 7.670988,
+          "optimize_ns": 4.156998,
+          "backend_ns": 7.214405,
+          "publication_ns": 4.235213,
+          "code_release_ns": 0.244062,
+          "compile_decode_ns": 2.027165
+        },
+        "work": {
+          "compile_attempts": 1126,
+          "function_attempts": 0,
+          "block_attempts": 1126,
+          "fallbacks": 0,
+          "code_units_published": 1126,
+          "emitted_guest_instructions": 5723,
+          "native_bytes": 220756,
+          "ir_nodes": 16902,
+          "operand_words": 28902,
+          "spill_slots": 14,
+          "max_frame_bytes": 16
+        }
+      },
+      "function": {
+        "n": 3,
+        "ms": 32.835098,
+        "min_ms": 32.040732,
+        "max_ms": 32.870822,
+        "stages_ms": {
+          "compile_ns": 36.684678,
+          "frontend_ns": 15.326295,
+          "optimize_ns": 7.001548,
+          "backend_ns": 10.145062,
+          "publication_ns": 3.4751,
+          "code_release_ns": 0.258489,
+          "compile_decode_ns": 3.966139
+        },
+        "work": {
+          "compile_attempts": 399,
+          "function_attempts": 383,
+          "block_attempts": 16,
+          "fallbacks": 16,
+          "code_units_published": 383,
+          "emitted_guest_instructions": 10626,
+          "native_bytes": 287644,
+          "ir_nodes": 29176,
+          "operand_words": 46216,
+          "spill_slots": 24,
+          "max_frame_bytes": 32
+        }
+      },
+      "fex": {
+        "n": 3,
+        "ms": 30.28666666666667,
+        "min_ms": 30.265364583333334,
+        "max_ms": 30.367552083333333,
+        "inclusive_stages_ms": {
+          "compile_block": 35.320625,
+          "compile_code": 33.432604166666664,
+          "generate_ir": 28.886770833333333,
+          "raw_decode": 11.544322916666667,
+          "builder": 6.57234375,
+          "pass_manager": 9.944947916666667,
+          "x87": 0.04510416666666667,
+          "dfe": 4.3221875,
+          "ra": 5.422239583333333,
+          "validation": 0.0,
+          "other_pass": 0.0,
+          "backend": 4.2117708333333335,
+          "emit": 3.0000520833333333,
+          "tail_copy_cache": 0.7594791666666667,
+          "publish": 1.59546875,
+          "logical_release": 0.25083333333333335,
+          "byte_decode": 4.953072916666667
+        }
+      }
+    },
+    "x87_bench": {
+      "block": {
+        "n": 3,
+        "ms": 0.62323,
+        "min_ms": 0.597501,
+        "max_ms": 0.658179,
+        "stages_ms": {
+          "compile_ns": 0.683749,
+          "frontend_ns": 0.274895,
+          "optimize_ns": 0.04802,
+          "backend_ns": 0.140051,
+          "publication_ns": 0.10625,
+          "code_release_ns": 0.103437,
+          "compile_decode_ns": 0.086248
+        },
+        "work": {
+          "compile_attempts": 3,
+          "function_attempts": 0,
+          "block_attempts": 3,
+          "fallbacks": 0,
+          "code_units_published": 3,
+          "emitted_guest_instructions": 30,
+          "native_bytes": 2364,
+          "ir_nodes": 59,
+          "operand_words": 106,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "function": {
+        "n": 3,
+        "ms": 0.52625,
+        "min_ms": 0.495159,
+        "max_ms": 0.53927,
+        "stages_ms": {
+          "compile_ns": 0.548958,
+          "frontend_ns": 0.225313,
+          "optimize_ns": 0.035312,
+          "backend_ns": 0.079218,
+          "publication_ns": 0.061667,
+          "code_release_ns": 0.127709,
+          "compile_decode_ns": 0.022708
+        },
+        "work": {
+          "compile_attempts": 1,
+          "function_attempts": 1,
+          "block_attempts": 0,
+          "fallbacks": 0,
+          "code_units_published": 1,
+          "emitted_guest_instructions": 20,
+          "native_bytes": 1532,
+          "ir_nodes": 46,
+          "operand_words": 75,
+          "spill_slots": 0,
+          "max_frame_bytes": 0
+        }
+      },
+      "fex": {
+        "n": 3,
+        "ms": 0.2955729166666667,
+        "min_ms": 0.29369791666666667,
+        "max_ms": 0.3063541666666667,
+        "inclusive_stages_ms": {
+          "compile_block": 0.31786458333333334,
+          "compile_code": 0.30786458333333333,
+          "generate_ir": 0.22046875,
+          "raw_decode": 0.04151041666666667,
+          "builder": 0.09614583333333333,
+          "pass_manager": 0.07776041666666667,
+          "x87": 0.019739583333333335,
+          "dfe": 0.022395833333333334,
+          "ra": 0.034166666666666665,
+          "validation": 0.0,
+          "other_pass": 0.0,
+          "backend": 0.08427083333333334,
+          "emit": 0.06598958333333334,
+          "tail_copy_cache": 0.010625,
+          "publish": 0.007916666666666667,
+          "logical_release": 0.0022395833333333334,
+          "byte_decode": 0.021927083333333333
+        }
+      }
+    }
+  },
+  "ratios": {
+    "coremark": {
+      "block": {
+        "seconds": 1.0717089070711103,
+        "cycles": 1.070386482901003,
+        "instructions": 1.0378962843698378,
+        "branch_misses": 1.8705083085911893,
+        "compile": 0.9350422800501039
+      },
+      "function": {
+        "seconds": 1.039912193175015,
+        "cycles": 1.0393897399697594,
+        "instructions": 1.009988212858283,
+        "branch_misses": 1.0453994888128157,
+        "compile": 1.071246101606685
+      }
+    },
+    "int": {
+      "block": {
+        "seconds": 0.9480690858471015,
+        "cycles": 0.9913020868848329,
+        "instructions": 1.2242267509545972,
+        "branch_misses": 0.8870811067597238,
+        "compile": 1.1421541681656147
+      },
+      "function": {
+        "seconds": 0.9547458726749349,
+        "cycles": 0.991705205268607,
+        "instructions": 1.2661387677905447,
+        "branch_misses": 0.8874356253353155,
+        "compile": 1.128662615691533
+      }
+    },
+    "fp": {
+      "block": {
+        "seconds": 0.9553136940805793,
+        "cycles": 0.9824238561353097,
+        "instructions": 0.9901791791599008,
+        "branch_misses": 0.9004471833545552,
+        "compile": 1.3830447136630093
+      },
+      "function": {
+        "seconds": 0.9468687396568244,
+        "cycles": 0.9849024351083542,
+        "instructions": 1.0058725282438563,
+        "branch_misses": 0.9013359221661777,
+        "compile": 1.402681641364798
+      }
+    },
+    "mem": {
+      "block": {
+        "seconds": 1.050011380320544,
+        "cycles": 1.057090443826324,
+        "instructions": 1.3326644542731534,
+        "branch_misses": 0.895790677080649,
+        "compile": 1.43402012987013
+      },
+      "function": {
+        "seconds": 1.058619884594758,
+        "cycles": 1.0660474045891384,
+        "instructions": 1.366208145793678,
+        "branch_misses": 0.891667564693039,
+        "compile": 1.4354051948051947
+      }
+    },
+    "branch": {
+      "block": {
+        "seconds": 0.9808019869587077,
+        "cycles": 1.0036768292355371,
+        "instructions": 1.1376761457394502,
+        "branch_misses": 0.8872533660019083,
+        "compile": 1.1507360603896766
+      },
+      "function": {
+        "seconds": 0.9738911524810722,
+        "cycles": 1.010245228570965,
+        "instructions": 1.1576269772770276,
+        "branch_misses": 0.8901817582132803,
+        "compile": 1.2540428848311742
+      }
+    },
+    "call": {
+      "block": {
+        "seconds": 1.0392527516562207,
+        "cycles": 1.0787600007879206,
+        "instructions": 1.2406294567074458,
+        "branch_misses": 0.8801425704981509,
+        "compile": 1.1581885355170445
+      },
+      "function": {
+        "seconds": 1.037739177399614,
+        "cycles": 1.0739148617722412,
+        "instructions": 1.2498964074135082,
+        "branch_misses": 0.8804527106721114,
+        "compile": 1.128901009331556
+      }
+    },
+    "func_tests": {
+      "block": {
+        "seconds": 0.7853330926159957,
+        "cycles": 0.8060789932207401,
+        "instructions": 0.8069011873820012,
+        "branch_misses": 0.7290079595426017,
+        "compile": 0.7391724631300902
+      },
+      "function": {
+        "seconds": 0.8712547391225854,
+        "cycles": 0.9616632972478675,
+        "instructions": 1.041526606464076,
+        "branch_misses": 1.0114770391145118,
+        "compile": 1.0841436715826547
+      }
+    },
+    "x87_bench": {
+      "block": {
+        "seconds": 0.678042668852811,
+        "cycles": 0.6609331006230148,
+        "instructions": 1.2726283869440616,
+        "branch_misses": 0.7163071397247687,
+        "compile": 2.1085490748898676
+      },
+      "function": {
+        "seconds": 0.6746329180635056,
+        "cycles": 0.65728473617384,
+        "instructions": 1.2697756842861723,
+        "branch_misses": 0.7084274785780413,
+        "compile": 1.7804405286343612
+      }
+    }
+  },
+  "source_closure": {
+    "digest": "a78fdec20b3de2f00fe47bb1dbfa67c6664c0efa7cd1b7f30658edd8f1ce1e52",
+    "files": 118,
+    "changed": []
+  },
+  "phone_cleanup": {
+    "utc": "2026-11-05T11:56:53.549005+00:00",
+    "namespace": "/data/local/tmp/swiftvm-continuations-20261105",
+    "allocated_bytes_removed": 59544576,
+    "df_actual_free_delta_bytes": 60801024,
+    "remaining_bytes": 0,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "deployed_inputs_unchanged": true,
+  "acceptance": {
+    "limits": {
+      "seconds": 1.1,
+      "cycles": 1.1,
+      "compile": 2.0
+    },
+    "passed": false,
+    "failures": [
+      {
+        "case": "x87_bench",
+        "arm": "block",
+        "metric": "compile",
+        "ratio": 2.1085490748898676,
+        "limit": 2.0
+      }
+    ],
+    "n": 3,
+    "runtime_valid": 72,
+    "compile_valid": 72,
+    "time_kind": "CoreMark guest loop; others whole-child elapsed, no cross-workload average"
+  },
+  "worst_ratios": {
+    "seconds": 1.0717089070711103,
+    "cycles": 1.0787600007879206,
+    "compile": 2.1085490748898676
+  },
+  "compile_breakdown": "compile-breakdown.json",
+  "comparison": "comparison.json",
+  "function_audit": "../audit-accepted-candidate/analysis.json",
+  "supplementary_x87_confirmation": {
+    "plan": "../x87-paired-confirmation/plan.json",
+    "records": "../x87-paired-confirmation/records.json",
+    "summary": "../x87-paired-confirmation/summary.json",
+    "separate_from_original_3_runs": true,
+    "changes_original_suite_acceptance": false
+  },
+  "status": "reuse_implemented_original_suite_has_one_compile_gate_failure"
+}

@@ -1,0 +1,97 @@
+0000: mov      w0, #0xff0
+0004: movk     w0, #0x40, lsl #16
+0008: str      x0, [x19, #0x80]
+000c: mov      v2.16b, v23.16b
+0010: mov      v3.16b, v22.16b
+0014: fmul     v4.2d, v2.2d, v3.2d
+0018: mov      v23.16b, v4.16b
+001c: mov      w2, #0x16e0
+0020: movk     w2, #0x40, lsl #16
+0024: ldr      q2, [x2]
+0028: dmb      ishld
+002c: fadd     v5.2d, v4.2d, v2.2d
+0030: mov      v4.16b, v24.16b
+0034: fcmgt    v6.2d, v5.2d, v4.2d
+0038: mov      v7.16b, v25.16b
+003c: and      v10.16b, v7.16b, v6.16b
+0040: bic      v11.16b, v5.16b, v6.16b
+0044: orr      v5.16b, v11.16b, v10.16b
+0048: mov      v6.16b, v21.16b
+004c: mov      v10.16b, v20.16b
+0050: fmul     v11.2d, v6.2d, v10.2d
+0054: fadd     v6.2d, v11.2d, v2.2d
+0058: fcmgt    v11.2d, v6.2d, v4.2d
+005c: and      v4.16b, v7.16b, v11.16b
+0060: bic      v7.16b, v6.16b, v11.16b
+0064: orr      v6.16b, v7.16b, v4.16b
+0068: mov      v4.16b, v19.16b
+006c: mov      v7.16b, v18.16b
+0070: fmul     v11.4s, v4.4s, v7.4s
+0074: mov      v4.16b, v29.16b
+0078: fadd     v12.4s, v11.4s, v4.4s
+007c: mov      v11.16b, v31.16b
+0080: fcmgt    v13.4s, v12.4s, v11.4s
+0084: and      v14.16b, v4.16b, v13.16b
+0088: bic      v15.16b, v12.16b, v13.16b
+008c: orr      v12.16b, v15.16b, v14.16b
+0090: mov      v13.16b, v17.16b
+0094: mov      v14.16b, v16.16b
+0098: fmul     v15.4s, v13.4s, v14.4s
+009c: fadd     v13.4s, v15.4s, v4.4s
+00a0: fcmgt    v15.4s, v13.4s, v11.4s
+00a4: and      v28.16b, v4.16b, v15.16b
+00a8: bic      v27.16b, v13.16b, v15.16b
+00ac: orr      v17.16b, v27.16b, v28.16b
+00b0: mov      v19.16b, v12.16b
+00b4: mov      v21.16b, v6.16b
+00b8: mov      v23.16b, v5.16b
+00bc: mov      v26.16b, v2.16b
+00c0: mov      w2, #0x16f0
+00c4: movk     w2, #0x40, lsl #16
+00c8: ldr      q2, [x2]
+00cc: dmb      ishld
+00d0: fmul     v4.2d, v3.2d, v2.2d
+00d4: mov      v22.16b, v4.16b
+00d8: mov      v26.16b, v2.16b
+00dc: mov      w2, #0x1700
+00e0: movk     w2, #0x40, lsl #16
+00e4: ldr      q3, [x2]
+00e8: dmb      ishld
+00ec: fadd     v5.2d, v4.2d, v3.2d
+00f0: fmul     v4.2d, v10.2d, v2.2d
+00f4: fadd     v2.2d, v4.2d, v3.2d
+00f8: mov      v4.16b, v30.16b
+00fc: fmul     v6.4s, v7.4s, v4.4s
+0100: fmul     v7.4s, v14.4s, v4.4s
+0104: mov      w29, w27
+0108: mrs      x30, nzcv
+010c: subs     x27, x27, #1
+0110: rmif     x30, #0x1c, #2
+0114: mov      v16.16b, v7.16b
+0118: mov      v18.16b, v6.16b
+011c: mov      v20.16b, v2.16b
+0120: mov      v22.16b, v5.16b
+0124: mov      v27.16b, v3.16b
+0128: mov      x1, x27
+012c: b.ne     #0x160
+0130: ldr      x16, #0x138
+0134: br       x16
+0138: .byte    0x00, 0x00, 0x10, 0x00
+013c: udf      #0
+0140: mov      w0, #0x10d2
+0144: movk     w0, #0x40, lsl #16
+0148: str      x0, [x19, #0x80]
+014c: ldr      x16, #0x158
+0150: br       x16
+0154: nop      
+0158: .byte    0x00, 0x00, 0x10, 0x00
+015c: udf      #0
+0160: ldr      x16, #0x168
+0164: br       x16
+0168: .byte    0x00, 0x00, 0x10, 0x00
+016c: udf      #0
+0170: mov      w0, #0xff0
+0174: movk     w0, #0x40, lsl #16
+0178: str      x0, [x19, #0x80]
+017c: ldr      x16, #0x158
+0180: br       x16

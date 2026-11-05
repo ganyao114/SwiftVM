@@ -1,0 +1,18 @@
+{
+  "utc": "2026-11-05T11:36:52.992232+00:00",
+  "argv": [
+    "/opt/homebrew/bin/adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "taskset 10 timeout -k 2 60 env -i PATH=/system/bin /data/local/tmp/swiftvm-continuations-20261105/function-audit-final --decode-timing --scope function /data/local/tmp/swiftvm-continuations-20261105/func-tests"
+  ],
+  "exit": 101,
+  "valid": true,
+  "oracle": "native stdout and exit 101",
+  "diagnostic_not_qor": true,
+  "source_digest": "8806171c19c9bbce1c60459d50dcfea80d6e262a21af4f7d710d3c34056a0ee8",
+  "runner_sha256": "5759fda25b50c7accb92966c8d3187f307720ed8e95bde1c40537298cf3c1ef5",
+  "stdout_sha256": "9c3194ff498da03869bbabbd81241fd2ec771619281f969c4b4edc55577a6810",
+  "stderr_sha256": "45234a4ff75c4a5cb6b6dc864e174d07dedff7604bffc4a01f1ff146890070a1"
+}

@@ -1,0 +1,8 @@
+{
+  "command": "taskset 10 timeout -k 2 60 env -i PATH=/system/bin /data/local/tmp/swiftvm-continuations-20261105/function-audit-stage1 --decode-timing --scope function /data/local/tmp/swiftvm-continuations-20261105/coremark 0 0 0 20 7 1 2000",
+  "exit": 0,
+  "valid": true,
+  "oracle": "CoreMark20 CRC4983 exit0; short-time warning allowed",
+  "diagnostic_not_qor": true,
+  "runner_sha256": "fb246d67aa89f2107c9d17ed85dc71ed482c472678e1e51fa2e67056bd9230e4"
+}

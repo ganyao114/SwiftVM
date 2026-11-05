@@ -1,0 +1,561 @@
+--- a/source/runtime/backend/arm64/compile.cpp
++++ b/source/runtime/backend/arm64/compile.cpp
+@@ -78,6 +78,19 @@
+         for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
+             node = NodeId{i};
+             const auto& operation = source.Operations()[i];
++            if (operation.opcode == OpCode::EntryPoint) {
++                if (source.ScopeKind() != Scope::Function || !Linked())
++                    Reject(CompileError::UnsupportedControlFlow);
++                if (i != body.first_node || operation.Metadata() != OperationMetadata{})
++                    Reject(CompileError::InvalidProgram);
++                const auto inputs = source.Operands(node);
++                Cursor cursor{inputs.begin(), inputs.end(), *this};
++                const auto pc = cursor.Take();
++                if (pc.TypeView() != Type::U64) Reject(CompileError::UnsupportedOperand);
++                output.entries.push_back({IntegerImmediate(pc), labels[b]});
++                cursor.Done();
++                continue; // A declaration must not disturb the local TEST prefix.
++            }
+             if ((operation.opcode == OpCode::Nop || operation.opcode == OpCode::FaultLocation) &&
+                     operation.Metadata() == OperationMetadata{}) {
+                 if (operation.opcode == OpCode::Nop) continue;
+@@ -119,6 +132,20 @@
+             }
+             instruction = (instruction & ~(0x7ffffu << 5)) | ((static_cast<u32>(distance) & 0x7ffffu) << 5);
+         }
++    }
++    // Keep entry prologues outside the body schedule: even an internal
++    // fallthrough must skip the frame allocation. Reuse the actual output
++    // resources to turn their temporary body words into callable stub words.
++    for (auto& entry : output.entries) {
++        const auto body_word = entry.word;
++        entry.word = static_cast<u32>(output.words.size());
++        StackAdjust(true);
++        if (allocation.publish_entry_pc) { Immediate(0, entry.pc); PCMemory(false); }
++        const auto distance = static_cast<std::int64_t>(body_word) -
++                static_cast<std::int64_t>(output.words.size());
++        if (distance < -(INT64_C(1) << 25) || distance >= (INT64_C(1) << 25))
++            Reject(CompileError::CodeTooLarge);
++        Put(0x14000000u | (static_cast<u32>(distance) & 0x03ffffffu));
+     }
+     // Close only the actual recoverable sites, after every hot block and link
+     // stub. A SIGBUS patches the one fast instruction to this cold sequence.
+@@ -1692,7 +1719,7 @@
+ void Compile(const ir::Program& program, CompileOptions options, CompileResult& result) {
+     result.error = CompileError::None; result.node = {}; result.block = {};
+     result.frame_bytes = result.spill_slots = 0;
+-    result.words.clear(); result.faults.clear(); result.links.clear();
++    result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
+     auto allocation = program.ScopeKind() == ir::Scope::Block ? AllocateBlock(program, &options) :
+             AllocateFunction(program, &options);
+     if (!allocation) {
+@@ -1708,13 +1735,13 @@
+             // No slice has been published. Keep the actual output capacity
+             // and Allocation; fresh Writer state rebuilds every word-based
+             // branch, fault and link location exactly once in the old form.
+-            result.words.clear(); result.faults.clear(); result.links.clear();
++            result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
+             (void)detail::Writer(program, allocation, result, options, true).Run();
+         }
+     }
+     catch (const detail::Rejected& failure) {
+         result.error = failure.error; result.node = failure.node; result.block = failure.block;
+-        result.words.clear(); result.faults.clear(); result.links.clear();
++        result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
+     }
+ }
+ 
+--- a/source/runtime/backend/arm64/compile.h
++++ b/source/runtime/backend/arm64/compile.h
+@@ -41,6 +41,14 @@
+ };
+ static_assert(sizeof(LinkSite) == 16);
+ 
++// Additional external entry into this same published range. Its stub owns
++// the unit frame; internal edges continue to use the original body label.
++struct EntryPoint {
++    std::uint64_t pc{};
++    std::uint32_t word{};
++};
++static_assert(sizeof(EntryPoint) == 16);
++
+ struct CompileResult {
+     CompileError error{CompileError::None};
+     ir::NodeId node{};
+@@ -50,6 +58,7 @@
+     explicit operator bool() const noexcept { return error == CompileError::None; }
+     std::vector<FaultSite> faults;
+     std::vector<LinkSite> links;
++    std::vector<EntryPoint> entries; // Extra entries only; the original root is word zero.
+ };
+ 
+ enum class DispatchMode : std::uint8_t { Callback, Inline, InlineCounted };
+--- a/source/runtime/execution/runtime.cpp
++++ b/source/runtime/execution/runtime.cpp
+@@ -77,11 +77,17 @@
+ public:
+     explicit CodeCache(bool counted) noexcept
+             : empty{.entry = reinterpret_cast<NativeCode::Function>(counted ? &SvmNativePendingCounted : &SvmNativePending)} {}
+-    NativeCode Find(u64 pc) const noexcept {
++    NativeCode::Function Find(u64 pc, NativeCode* unit = nullptr) const noexcept {
+         if (slots.empty()) return {};
+         auto at = Index(pc, slots.size() - 1);
+         while (slots[at].occupied) {
+-            if (slots[at].pc == pc) return slots[at].code_id != UINT32_MAX ? codes[slots[at].code_id] : NativeCode{};
++            if (slots[at].pc == pc) {
++                if (slots[at].code_id == UINT32_MAX) return {};
++                // The callable entry may be inside this one unit. Faults,
++                // writable offsets and anchor ranges always retain its base.
++                if (unit) *unit = codes[slots[at].code_id];
++                return slots[at].entry;
++            }
+             at = (at + 1) & (slots.size() - 1);
+         }
+         return {};
+@@ -95,35 +101,22 @@
+         }
+         return nullptr;
+     }
+-    void InsertReady(u64 pc, NativeCode code) {
++    void InsertReady(u64 pc, NativeCode code, std::span<const arm64::EntryPoint> extra) {
+         if (!code.entry) throw std::runtime_error("cannot cache an empty native entry");
+-        auto& slot = Reserve(pc);
+-        if (slot.code_id == UINT32_MAX) {
+-            if (codes.size() >= UINT32_MAX) throw std::length_error("native code metadata capacity overflow");
+-            const auto capacity = codes.capacity();
+-            codes.push_back(code);
+-            if (codes.capacity() != capacity) ++allocations;
+-            // A failed allocation leaves only an ordinary pending PC slot;
+-            // publish the numeric borrow and ready entry after it succeeds.
+-            slot.code_id = static_cast<std::uint32_t>(codes.size() - 1);
+-            ++entries;
+-        } else codes[slot.code_id] = code;
+-        slot.entry = code.entry;
+-        auto head = slot.pending_head;
+-        slot.pending_head = UINT32_MAX;
+-        if (head != UINT32_MAX) --pending_targets;
+-        while (head != UINT32_MAX) {
+-            const auto& link = links[head];
+-            Patch(link, code.entry);
+-            --pending_count;
+-            head = link.next;
+-        }
+-        // Cold resolver only: no native reader or retained slot reference.
+-        // Both probe paths remain occupied after the swap; only a pending
+-        // target moves deeper, with its original waiter head intact.
+-        const auto home = Index(pc, slots.size() - 1);
+-        if (&slot != &slots[home] && slots[home].occupied && slots[home].code_id == UINT32_MAX)
+-            std::swap(slot, slots[home]);
++        if (codes.size() >= UINT32_MAX) throw std::length_error("native code metadata capacity overflow");
++        const auto capacity = codes.capacity();
++        const auto id = static_cast<std::uint32_t>(codes.size());
++        codes.push_back(code);
++        if (codes.capacity() != capacity) ++allocations;
++        // One actual range/fault-table borrow per native unit. Root is a
++        // resolver miss; continuation PCs can already belong to older units.
++        BindReady(pc, id, code.entry);
++        for (const auto& entry : extra) {
++            if (entry.word >= code.bytes / sizeof(std::uint32_t))
++                throw std::runtime_error("native entry lies outside its owning unit");
++            const auto address = reinterpret_cast<std::uintptr_t>(code.entry) + std::uintptr_t{entry.word} * 4;
++            BindReady(entry.pc, id, reinterpret_cast<NativeCode::Function>(address));
++        }
+     }
+     void AddLink(u64 target, std::uintptr_t* pointer, const std::uintptr_t* executable, std::uint32_t back_words) {
+         auto& slot = Reserve(target);
+@@ -205,6 +198,30 @@
+     std::vector<LinkRelocation> links;
+     std::size_t entries{}, occupied{}, pending_count{}, pending_targets{};
+     u64 allocations{}, patched{};
++    void BindReady(u64 pc, std::uint32_t id, NativeCode::Function entry) {
++        auto& slot = Reserve(pc);
++        // First ready entry wins. Never replace a shared unit descriptor
++        // through one of its aliases or redirect its existing incoming links.
++        if (slot.code_id != UINT32_MAX) return;
++        slot.code_id = id;
++        slot.entry = entry;
++        ++entries;
++        auto head = slot.pending_head;
++        slot.pending_head = UINT32_MAX;
++        if (head != UINT32_MAX) --pending_targets;
++        while (head != UINT32_MAX) {
++            const auto& link = links[head];
++            Patch(link, entry);
++            --pending_count;
++            head = link.next;
++        }
++        // Cold resolver only: no native reader or retained slot reference.
++        // Both probe paths remain occupied after the swap; only a pending
++        // target moves deeper, with its original waiter head intact.
++        const auto home = Index(pc, slots.size() - 1);
++        if (&slot != &slots[home] && slots[home].occupied && slots[home].code_id == UINT32_MAX)
++            std::swap(slot, slots[home]);
++    }
+     static std::size_t Index(u64 pc, std::size_t mask) noexcept {
+         return static_cast<std::size_t>(pc ^ (pc >> arm64::abi::DispatchHashShift)) & mask;
+     }
+@@ -426,21 +443,30 @@
+         // Native dispatch cleared active before calling us. All prior code,
+         // fault ranges and relocation pointers were retained until this exit.
+         if (faults.smc_pending) Invalidate();
+-        auto code = Cache().Find(state.pc);
+-        if (!code.entry) {
++        NativeCode code;
++        auto entry = Cache().Find(state.pc, &code);
++        if (!entry) {
+             Timer total{stats.compile_request_ns};
+             if (options.scope == ir::Scope::Function) {
+                 code = CompileUnit(ir::Scope::Function);
+                 if (!code.entry) { ++stats.fallbacks; code = CompileUnit(ir::Scope::Block); }
+             } else code = CompileUnit(ir::Scope::Block);
+             if (!code.entry) { ObserveCache(); RefreshNative(context); return 0; }
+-            { Timer publish{stats.publication_ns}; Cache().InsertReady(state.pc, code); }
++            {
++                Timer publish{stats.publication_ns};
++                Cache().InsertReady(state.pc, code, compile_output.entries);
++                // Extra entry records are borrowed only during registration;
++                // retain ordinary output capacity, not an oversized peak.
++                if (compile_output.entries.capacity() > 4096)
++                    std::vector<arm64::EntryPoint>{}.swap(compile_output.entries);
++            }
++            entry = code.entry; // The root remains at unit offset zero.
+             ObserveCache();
+         }
+         anchor = code;
+         resolver_error = nullptr;
+         RefreshNative(context);
+-        return reinterpret_cast<std::uintptr_t>(code.entry);
++        return reinterpret_cast<std::uintptr_t>(entry);
+     }
+ 
+     void Invalidate() {
+@@ -471,6 +497,12 @@
+         {
+             Timer front{stats.frontend_ns};
+             if (scope == ir::Scope::Function && !mutable_function) {
++                if (private_guest_state)
++                    target.features |= static_cast<u64>(ir::TargetFeature::ExternalEntries);
++                const auto ready = private_guest_state ? x86::ReadyEntryLookup{
++                        &Cache(), [](void* cache, u64 pc) noexcept {
++                            return bool(static_cast<CodeCache*>(cache)->Find(pc));
++                        }} : x86::ReadyEntryLookup{};
+                 std::vector<x86::BlockWindow> windows;
+                 for (const auto& region : memory.Regions())
+                     if ((region.protection & (PROT_READ | PROT_EXEC)) == (PROT_READ | PROT_EXEC) &&
+@@ -479,7 +511,7 @@
+                         if (!bytes.empty()) windows.push_back({region.address, bytes});
+                     }
+                 built = x86::BuildFunctionIR(windows, state.pc, layout, options.function_limits, target,
+-                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr, &ir_reuse);
++                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr, &ir_reuse, ready);
+             } else {
+                 if (mutable_function) ++stats.smc_function_single_block_attempts;
+                 const x86::BlockWindow window{state.pc, memory.CodeAt(state.pc)};
+@@ -556,7 +588,7 @@
+             Timer publish{stats.publication_ns};
+             code = arena.Publish(compiled.words, std::move(compiled.faults), compiled.links,
+                     [](void* cache, u64 pc) noexcept -> std::uintptr_t {
+-                        return reinterpret_cast<std::uintptr_t>(static_cast<CodeCache*>(cache)->Find(pc).entry);
++                        return reinterpret_cast<std::uintptr_t>(static_cast<CodeCache*>(cache)->Find(pc));
+                     }, &Cache());
+             ++stats.code_units_published;
+             stats.static_links += std::count_if(compiled.links.begin(), compiled.links.end(),
+--- a/source/runtime/frontend/x86/build_ir.cpp
++++ b/source/runtime/frontend/x86/build_ir.cpp
+@@ -2223,6 +2223,12 @@
+             const auto& slice = blocks[block];
+             pc = slice.pc;
+             Require(builder.BeginBlock({unit, BlockId{static_cast<u32>(block)}}));
++            // Empty budget frontiers dispatch to their own PC so a later
++            // request can decode it. They must never become cached self entries.
++            if (scope == Scope::Function && target.Has(TargetFeature::ExternalEntries) &&
++                    block != entry_block && slice.instruction_count)
++                Require(builder.Emit<OpCode::EntryPoint>(Type::Void,
++                        {Operand::Immediate(pc, Type::U64)}));
+             bool ended{};
+             unsigned x87_following{};
+             for (std::size_t i = 0; i < slice.instruction_count; ++i) {
+@@ -2564,11 +2570,13 @@
+ 
+ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable, u64 entry_pc, StateLayout layout,
+                             DecodeLimits limits, TargetInfo target, WorkCounts* collected, DecodeTiming* timing,
+-                            Program* reusable) {
++                            Program* reusable, ReadyEntryLookup ready) {
+     if (collected) *collected = {};
+     if (!ValidRequest(1, Scope::Function, layout, target))
+         return {BuildError::InvalidInput, entry_pc, 0, 0, Error::None, {}};
+-    const auto decoded = DecodeFunction(readable, entry_pc, limits, timing);
++    const bool entries = target.Has(TargetFeature::ExternalEntries);
++    const auto decoded = DecodeFunction(readable, entry_pc, limits, timing,
++                                         entries ? ready : ReadyEntryLookup{});
+     if (!decoded) {
+         const auto error = decoded.error == DecodeError::InvalidInput ? BuildError::InvalidInput :
+                 decoded.error == DecodeError::Truncated ? BuildError::Truncated :
+--- a/source/runtime/frontend/x86/build_ir.h
++++ b/source/runtime/frontend/x86/build_ir.h
+@@ -102,6 +102,7 @@
+                                           runtime::ir::TargetInfo target = {},
+                                           runtime::ir::WorkCounts* collected = nullptr,
+                                           DecodeTiming* timing = nullptr,
+-                                          runtime::ir::Program* reusable = nullptr);
++                                          runtime::ir::Program* reusable = nullptr,
++                                          ReadyEntryLookup ready = {});
+ 
+ }  // namespace swift::x86
+--- a/source/runtime/frontend/x86/decode.cpp
++++ b/source/runtime/frontend/x86/decode.cpp
+@@ -59,7 +59,7 @@
+ }
+ 
+ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_pc, DecodeLimits limits,
+-                                DecodeTiming* timing) {
++                                DecodeTiming* timing, ReadyEntryLookup ready) {
+     DecodedFunction out;
+     if (!Valid(readable, limits) || ReadableAt(readable, entry_pc) == readable.end()) {
+         out.error = DecodeError::InvalidInput; out.error_pc = entry_pc; return out;
+@@ -73,6 +73,7 @@
+     };
+     const auto queue = [&](u64 target) {
+         if (ReadableAt(readable, target) == readable.end()) return true;
++        if (target != entry_pc && ready.Contains(target)) return true;
+         auto next = directory.lower_bound(target);
+         if (next != directory.end() && next->first == target) return true;
+         if (next != directory.begin()) {
+@@ -120,6 +121,7 @@
+             // Another admitted entry owns that stream from here onward.
+             if (has_next && pc == next_start) break;
+             if (out.instructions.size() == limits.max_instructions) { ++out.budget_exits; break; }
++            if (pc != entry_pc && ready.Contains(pc)) break;
+             // A readable-span boundary is a real exit frontier. Do not fetch
+             // across separate spans, even if their guest addresses touch.
+             if (window == readable.end() || pc - window->pc >= window->bytes.size()) break;
+@@ -156,6 +158,7 @@
+             if (instruction.size > bytes.size()) { fail(DecodeError::Truncated, pc); return out; }
+             const u64 after = pc + instruction.size;
+             if (has_next && after > next_start) { fail(DecodeError::OverlappingTarget, next_start); return out; }
++            const auto flow = META_GET_FC(instruction.meta);
+             out.instructions.push_back(instruction);
+             ++slice.count; slice.end = after;
+             out.decoded_bytes += instruction.size;
+@@ -163,11 +166,7 @@
+             // install the new FP environment. REP STOS dispatches after one
+             // restartable iteration. These frontiers admit no sequential edge.
+             if (instruction.opcode == I_CPUID || instruction.opcode == I_LDMXCSR || instruction.opcode == I_STOS) break;
+-            const auto flow = META_GET_FC(instruction.meta);
+             if (flow != FC_NONE && flow != FC_CMOV) {
+-                // Flow classification comes from this actual decoder record,
+-                // not another supported-ISA table. Calls/indirects stop here;
+-                // the emitter implements their dispatch or rejects the form.
+                 if ((flow == FC_CND_BRANCH || flow == FC_UNC_BRANCH) && instruction.ops[0].type == O_PC) {
+                     if (!queue(after + instruction.imm.addr)) return out;
+                     if (flow == FC_CND_BRANCH && !queue(after)) return out;
+--- a/source/runtime/frontend/x86/decode.h
++++ b/source/runtime/frontend/x86/decode.h
+@@ -21,6 +21,13 @@
+ 
+ struct DecodeLimits {
+     std::uint32_t max_instructions{4096}, max_blocks{256};
++};
++// A cold, read-only borrow of actual callable entries in the current execution
++// domain. Pending keys are not ready. No directory or code owner is copied.
++struct ReadyEntryLookup {
++    void* opaque{};
++    bool (*ready)(void*, std::uint64_t) noexcept{};
++    bool Contains(std::uint64_t pc) const noexcept { return ready && ready(opaque, pc); }
+ };
+ // Optional diagnostic accumulator over actual distorm_decompose calls only,
+ // including unsuccessful attempts. The caller owns/resets this accumulator;
+@@ -60,9 +67,14 @@
+ // Failure retains diagnostic decode work but has no usable block set or IR.
+ // The decoder can report a truncated byte sequence as InvalidEncoding.
+ // Allocation failures propagate. All traversal is iterative.
++// Ready entries are real exit frontiers; the request's own entry is always
++// decoded. CALL remains a region exit: its continuation is formed when first
++// requested, rather than expanding the speculative graph for entry reuse.
++// Without a ready lookup, discovery retains the original bounded region.
+ [[nodiscard]] DecodedFunction DecodeFunction(std::span<const BlockWindow> readable,
+                                               std::uint64_t entry_pc,
+                                               DecodeLimits limits = {},
+-                                              DecodeTiming* timing = nullptr);
++                                              DecodeTiming* timing = nullptr,
++                                              ReadyEntryLookup ready = {});
+ 
+ }  // namespace swift::x86
+--- a/source/runtime/ir/opcodes.inc
++++ b/source/runtime/ir/opcodes.inc
+@@ -543,6 +543,11 @@
+ // runtime must resolve the native fault PC; the successful path performs no
+ // guest-state write. This is actual exception metadata, not a validation pass.
+ INST(FaultLocation, Void, Void, (Effect::Location), Imm)
++// A complete external entry at this Function block's first node. The key is
++// a U64 guest PC, not a physical label. Each declared entry is an SSA root:
++// definitions must dominate uses from every actual external entry. Internal
++// edges keep their ordinary body entry; the backend owns its external prologue.
++INST(EntryPoint, Void, Void, (Effect::Location), Imm)
+ 
+ // Write one complete U64 uniform field. Any nonzero bit in the condition's
+ // logical integer view selects the first U64 literal; zero selects the second.
+--- a/source/runtime/ir/types.h
++++ b/source/runtime/ir/types.h
+@@ -79,6 +79,9 @@
+     // Signed widening products of consecutive low vector lanes are accepted
+     // directly. This describes neutral arithmetic, not physical registers.
+     VectorSignedMulWidenLow = UINT64_C(1) << 5,
++    // The execution owner accepts complete external entries into nonempty
++    // source blocks, sharing one native unit and its lifetime.
++    ExternalEntries = UINT64_C(1) << 6,
+ };
+ // Immutable target capabilities, consumed by the frontend without a host-ISA
+ // dependency. Unknown/EarlyOff preserve the bits but do not enable a feature.
+--- a/source/tests/rebuild/arm64_compile_test.cpp
++++ b/source/tests/rebuild/arm64_compile_test.cpp
+@@ -993,6 +993,65 @@
+     const auto eager = arm64::AllocateBlock(program, &options);
+     Check(bool(eager) && !eager.homes[target.value].terminal_only && bool(arm64::Compile(program, options)),
+             "generic linked ABI retains eager PC publication and literal materialization");
++}
++
++void CompleteAdditionalEntries() {
++#if defined(__aarch64__) && defined(__ANDROID__)
++    namespace execution = swift::runtime::execution;
++    struct State { execution::GuestState cpu; std::array<u64,20> inputs; u64 seen_pc{}; };
++    constexpr u64 first_pc=0x4100,other_pc=0x4200,flags=0xa5a50000bc000085ULL;
++    for (const bool native_nzcv:{false,true}) {
++        if (native_nzcv && !(getauxval(AT_HWCAP)&HWCAP_FLAGM)) continue;
++        Builder builder{Scope::Function}; const auto first=Create(builder),other=Create(builder);
++        Need(builder.BeginBlock(first));
++        Store(builder,offsetof(execution::GuestState,gprs)+execution::RDX*8,Constant(builder,123));
++        Need(builder.EndBlock(Terminal::Jump(other)));
++        Need(builder.BeginBlock(other));
++        Need(builder.Emit<OpCode::EntryPoint>(Type::Void,{Operand::Immediate(other_pc,Type::U64)}));
++        std::array<Value,20> values;
++        for (unsigned i=0;i<values.size();++i) values[i]=Load(builder,offsetof(State,inputs)+i*8);
++        auto sum=values.front();
++        for (unsigned i=1;i<values.size();++i)
++            sum=Need(builder.Emit<OpCode::Add>(Type::U64,{Operand::ValueOf(sum),Operand::ValueOf(values[i])}));
++        Store(builder,offsetof(execution::GuestState,gprs)+execution::R8*8,sum);
++        Store(builder,offsetof(State,seen_pc),Load(builder,offsetof(execution::GuestState,pc)));
++        Need(builder.EndBlock(Terminal::Return(Constant(builder,42))));
++        auto program=Submit(builder);
++        arm64::CompileOptions options{offsetof(execution::GuestState,packed_flags)};
++        options.dispatcher=reinterpret_cast<std::uintptr_t>(native_nzcv?&execution::SvmNativeDispatchNZCV:&execution::SvmNativeDispatch);
++        options.exit_handler=reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
++        options.pc_offset=offsetof(execution::GuestState,pc);
++        options.pinned_uniform_offset=offsetof(execution::GuestState,gprs);options.pinned_uniform_slots=16;
++        options.private_uniforms=options.fault_locations=options.deferred_pc=true;
++        options.native_nzcv=native_nzcv;options.entry_pc=first_pc;
++        const auto compiled=arm64::Compile(program,options);
++        Check(bool(compiled)&&compiled.entries.size()==1&&compiled.entries[0].pc==other_pc&&compiled.frame_bytes>0,
++                "additional entry owns the same actual nonzero frame as its original unit");
++        execution::CodeArena arena;
++        const auto unit=arena.Publish(compiled.words,compiled.faults,compiled.links);
++        const auto alternate=reinterpret_cast<execution::NativeCode::Function>(
++                reinterpret_cast<std::uintptr_t>(unit.entry)+std::uintptr_t{compiled.entries[0].word}*4);
++        struct Resolver { execution::NativeCode::Function entry; unsigned calls{}; } resolver{};
++        State state;std::atomic<const execution::NativeCode*> active{};
++        execution::NativeRunContext context;
++        context.state=&state.cpu;context.opaque=&resolver;
++        context.resolve=[](void* p,execution::NativeRunContext*) noexcept -> std::uintptr_t {
++            auto& value=*static_cast<Resolver*>(p);++value.calls;return reinterpret_cast<std::uintptr_t>(value.entry);
++        };
++        context.active=&active;context.anchor=&unit;
++        context.pinned_uniform_offset=options.pinned_uniform_offset;context.pinned_uniform_slots=16;
++        context.flags_offset=options.flags_offset;context.pc_offset=options.pc_offset;context.native_nzcv=native_nzcv;
++        for (const bool secondary:{false,true}) {
++            state={};state.cpu.pc=secondary?other_pc:first_pc;state.cpu.packed_flags=flags;
++            for (unsigned i=0;i<state.inputs.size();++i)state.inputs[i]=i+1;
++            resolver.entry=secondary?alternate:unit.entry;resolver.calls=0;
++            Check(execution::SvmRunNative(&state.cpu,&context)==42&&resolver.calls==1&&
++                    state.cpu.gprs[execution::R8]==210&&state.seen_pc==(secondary?other_pc:first_pc)&&
++                    state.cpu.gprs[execution::RDX]==(secondary?0:123)&&state.cpu.packed_flags==flags,
++                    "external prologue and internal body edge preserve SP, own PC, values and complete flags");
++        }
++    }
++#endif
+ }
+ 
+ void LinkedDynamicPC() {
+@@ -3123,7 +3182,8 @@
+         ConstantsAndViews(); StateAndMemory(); Spills(); CrossingLoops(); EmptyHeaderCollision(); ReorderedBodies(); EntryAndTerminals(); Unsupported();
+         ArithmeticFlags(); FlagsQueriesAndAliases(); FlagsWithSpilledResult(); LegacyFlags();
+         ExplicitEntry(); PureIntegers(); PureIntegerSpills(); InvalidIntegerShapes();
+-        DirectTerminalCondition(); DistantForwardEmission(); TerminalReadBoundaries(); PCTailPredicates(); DeferredPCLinks(); LinkedDynamicPC();
++        DirectTerminalCondition(); DistantForwardEmission(); TerminalReadBoundaries(); PCTailPredicates(); DeferredPCLinks();
++        CompleteAdditionalEntries(); LinkedDynamicPC();
+         FaultMetadataAndRecovery(); FaultLocationBoundaries();
+         ScalarAtomicSequence();
+         CpuQueryPairLifetime();
+--- a/source/tests/rebuild/x86_construction_test.cpp
++++ b/source/tests/rebuild/x86_construction_test.cpp
+@@ -501,6 +501,62 @@
+         return p.Operands(value).front().Payload();
+     }
+     throw std::runtime_error("block has no constant PC store");
++}
++
++void ExternalEntriesAndReadyFrontiers() {
++    // Entry reuse does not expand the region through a CALL. Its continuation
++    // is decoded only when actually requested, even with the entry capability.
++    const std::uint8_t bytes[]{0xe8,0xfb,0x0f,0x00,0x00,0x48,0x83,0xc0,0x01,0xc3};
++    const BlockWindow window{0x1000,bytes};
++    const auto capability=static_cast<std::uint64_t>(TargetFeature::ExternalEntries);
++    const TargetInfo known{TargetMode::Known,0xa64,capability};
++    const auto count_entries=[](const Program& p) {
++        std::vector<std::uint64_t> pcs;
++        for (const auto& op:p.Operations()) if (op.opcode==OpCode::EntryPoint) {
++            CHECK(op.Metadata()==OperationMetadata{});
++            pcs.push_back(p.Operands(op).front().Payload());
++        }
++        return pcs;
++    };
++    const auto built=swift::x86::BuildFunctionIR({&window,1},window.pc,layout,{},known);
++    CHECK(built && built.instruction_count==1 && built.program.Blocks().size()==1);
++    CHECK(count_entries(built.program).empty());
++    const auto continuation=swift::x86::BuildFunctionIR({&window,1},0x1005,layout,{},known);
++    CHECK(continuation && continuation.instruction_count==2 && count_entries(continuation.program).empty());
++    for (auto mode:{TargetMode::Unknown,TargetMode::EarlyOff}) {
++        const auto old=swift::x86::BuildFunctionIR({&window,1},window.pc,layout,{}, {mode,0xa64,capability});
++        CHECK(old && old.instruction_count==1 && count_entries(old.program).empty());
++    }
++    const std::uint8_t branch[]{0x75,0x02,0x90,0xc3,0xc3};
++    const BlockWindow frontier{0x2000,branch};
++    const auto formed=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{},known);
++    CHECK(formed && formed.instruction_count==4);
++    CHECK(count_entries(formed.program)==std::vector<std::uint64_t>({0x2002,0x2004}));
++    std::uint64_t ready_pc=0x2004;
++    const swift::x86::ReadyEntryLookup ready{&ready_pc,[](void* p,std::uint64_t pc) noexcept {
++        return pc==*static_cast<std::uint64_t*>(p);
++    }};
++    const auto stopped=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{},known,nullptr,nullptr,nullptr,ready);
++    CHECK(stopped && stopped.instruction_count==3 &&
++            count_entries(stopped.program)==std::vector<std::uint64_t>{0x2002});
++    ready_pc=0x2003;
++    const auto sequential=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{},known,nullptr,nullptr,nullptr,ready);
++    CHECK(sequential && sequential.instruction_count==3 &&
++            count_entries(sequential.program)==std::vector<std::uint64_t>({0x2002,0x2004}));
++    for (auto mode:{TargetMode::Unknown,TargetMode::EarlyOff}) {
++        const auto old=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{},
++                {mode,0xa64,capability},nullptr,nullptr,nullptr,ready);
++        CHECK(old && old.instruction_count==4 && count_entries(old.program).empty());
++    }
++    const auto bounded=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{2,8},known);
++    CHECK(bounded && bounded.instruction_count==2);
++    const auto entries=count_entries(bounded.program);
++    CHECK(std::find(entries.begin(),entries.end(),0x2004)==entries.end()); // Empty budget frontier cannot call itself.
++    const std::uint8_t noreturn[]{0xe8,0xfb,0x0f,0x00,0x00,0xcc};
++    const BlockWindow padded{0x3000,noreturn};
++    const auto before_trap=swift::x86::BuildFunctionIR({&padded,1},padded.pc,layout,{},known);
++    CHECK(before_trap && before_trap.instruction_count==1 && count_entries(before_trap.program).empty());
++    CHECK(swift::x86::BuildFunctionIR({&padded,1},0x3005,layout,{},known).error==swift::x86::BuildError::Unsupported);
+ }
+ 
+ void EveryConditionalBranchAndRealExits() {
+@@ -1327,6 +1383,7 @@
+         KnownTargetEmitsOneShiftedAddress();
+         IntegerAluAndDeferredFlags();
+         EveryConditionalBranchAndRealExits();
++        ExternalEntriesAndReadyFrontiers();
+         ActualDecodedBufferAndRejectedFrontier();
+         AutomaticFunctionDiscoveryAndEntry();
+         AutomaticFunctionFailuresAndFrontiers();

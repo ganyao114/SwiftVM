@@ -1,0 +1,75 @@
+{
+  "utc": "2026-11-05T11:35:37.136475+00:00",
+  "argv": [
+    "/opt/homebrew/bin/adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "taskset 10 timeout -k 2 60 env -i PATH=/system/bin /data/local/tmp/swiftvm-continuations-20261105/function-audit-final --decode-timing --scope function /data/local/tmp/swiftvm-continuations-20261105/coremark 0 0 0 20 7 1 2000"
+  ],
+  "exit": 0,
+  "oracle": "exit0 and crcfinal 0x4983; 20 iteration run is intentionally shorter than CoreMark validation minimum",
+  "source_digest": "8806171c19c9bbce1c60459d50dcfea80d6e262a21af4f7d710d3c34056a0ee8",
+  "runner_sha256": "5759fda25b50c7accb92966c8d3187f307720ed8e95bde1c40537298cf3c1ef5",
+  "diagnostic_not_qor": true,
+  "stdout_sha256": "2f863cd4bb1b5ec104216929e01ef39b3630387f47c6f4cc683fcfec3a0d8538",
+  "stderr_sha256": "197101f8c4cef88fec67070e08ac4d162b82539cfb0fa27eaae3d4470561fd0b",
+  "commands": [
+    {
+      "label": "before-ps",
+      "argv": [
+        "/opt/homebrew/bin/adb",
+        "-s",
+        "bf1359ff",
+        "shell",
+        "ps -A -o PID,PPID,ARGS"
+      ],
+      "exit": 0
+    },
+    {
+      "label": "push",
+      "argv": [
+        "/opt/homebrew/bin/adb",
+        "-s",
+        "bf1359ff",
+        "push",
+        "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/continuation-reuse-20261105/audit-final/svm_rebuild_linux_function_audit",
+        "/data/local/tmp/swiftvm-continuations-20261105/function-audit-final"
+      ],
+      "exit": 0
+    },
+    {
+      "label": "chmod",
+      "argv": [
+        "/opt/homebrew/bin/adb",
+        "-s",
+        "bf1359ff",
+        "shell",
+        "chmod 700 /data/local/tmp/swiftvm-continuations-20261105/function-audit-final"
+      ],
+      "exit": 0
+    },
+    {
+      "label": "remote-sha",
+      "argv": [
+        "/opt/homebrew/bin/adb",
+        "-s",
+        "bf1359ff",
+        "shell",
+        "sha256sum /data/local/tmp/swiftvm-continuations-20261105/function-audit-final"
+      ],
+      "exit": 0
+    },
+    {
+      "label": "coremark20-function",
+      "argv": [
+        "/opt/homebrew/bin/adb",
+        "-s",
+        "bf1359ff",
+        "shell",
+        "taskset 10 timeout -k 2 60 env -i PATH=/system/bin /data/local/tmp/swiftvm-continuations-20261105/function-audit-final --decode-timing --scope function /data/local/tmp/swiftvm-continuations-20261105/coremark 0 0 0 20 7 1 2000"
+      ],
+      "exit": 0
+    }
+  ]
+}

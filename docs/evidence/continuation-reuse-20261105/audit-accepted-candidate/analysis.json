@@ -1,0 +1,787 @@
+{
+  "kind": "A3_final_cold_function_coverage_entry_owner_audit_no_qor_timing",
+  "inputs": {
+    "production_source_digest": "a78fdec20b3de2f00fe47bb1dbfa67c6664c0efa7cd1b7f30658edd8f1ce1e52",
+    "production_source_manifest_sha256": "e95fd8e835510a4e53707beec90f3a1d53550c256e1cc84b934d4335f8f15f16",
+    "diagnostic_binary_sha256": "218342a432565743e40243ddc478a25c4e1a0920c79d1873854de02ff510e8ce",
+    "trace_sha256": "6a162f74ce284528c8d290872a7e034b501da7b86d84eb8546bb3fdc660922e6",
+    "stdout_sha256": "abb49577faea3a6d2dd7c5e9e2996161d86784cbc31db843dc9b1d9f3ddb2dd7",
+    "execution_sha256": "77a3e8dd54faad16fbe86bcb800bc67e033a02da384adb1fce75450fd413b9d0",
+    "guest_elf": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+    "guest_elf_sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba",
+    "baseline_analysis_sha256": "c3068407f0d9d7fbb43be926840563ac611a8281473bb0009613f456306eae4d",
+    "baseline_production_source_digest": "842e4748e3263f6f50a28c53e1b8bdbb410bde70ae754940610ce43ed7eaed9b"
+  },
+  "oracle": {
+    "runtime_completed": true,
+    "exit_code": 0,
+    "crcfinal": "0x4983",
+    "short_run_errors_detected_expected": true,
+    "timing_used_for_qor": false,
+    "reexecuted_for_host_assertion": false
+  },
+  "aggregate_closure": {
+    "compile_attempts": 686,
+    "function_attempts": 681,
+    "block_attempts": 5,
+    "fallbacks": 5,
+    "code_units_published": 681,
+    "emitted_guest_instructions": 16584,
+    "emitted_guest_bytes": 63906,
+    "ir_nodes": 50591,
+    "operand_words": 84624,
+    "successful_function_units": 676,
+    "successful_block_fallback_units": 5,
+    "failure_stage_counts": {
+      "frontend_emission": 5
+    },
+    "cache_invalidations": 0,
+    "peak_cache_entries": 3438
+  },
+  "boundary_validation": {
+    "decoder": "Capstone 5.0.7",
+    "unique_ranges_checked": 3448,
+    "all_logged_counts_and_endpoints_match": true,
+    "within_successful_unit_duplicate_instruction_occurrences": 0
+  },
+  "successful_coverage": {
+    "per_mode": [
+      {
+        "fp_mode": 0,
+        "instruction_occurrences": 16415,
+        "unique_instructions": 16224,
+        "repeated_instruction_occurrences": 191,
+        "guest_byte_occurrences": 63295,
+        "unique_guest_bytes": 62642
+      }
+    ],
+    "instruction_occurrences": 16415,
+    "unique_instructions_within_modes": 16224,
+    "repeated_instruction_occurrences_within_modes": 191,
+    "guest_byte_occurrences": 63295,
+    "unique_guest_bytes_within_modes": 62642,
+    "cross_mode_instruction_copies": 0,
+    "repeated_guest_byte_occurrences_within_modes": 653,
+    "entries_already_in_prior_source_coverage": 0,
+    "units_entirely_covered_by_prior_units": 0,
+    "exact_repeated_source_slice_occurrences": 0,
+    "source_blocks_in_successful_function_units": 3433
+  },
+  "successful_function_only_coverage": {
+    "per_mode": [
+      {
+        "fp_mode": 0,
+        "instruction_occurrences": 16337,
+        "unique_instructions": 16146,
+        "repeated_instruction_occurrences": 191,
+        "guest_byte_occurrences": 63033,
+        "unique_guest_bytes": 62380
+      }
+    ],
+    "instruction_occurrences": 16337,
+    "unique_instructions_within_modes": 16146,
+    "repeated_instruction_occurrences_within_modes": 191,
+    "guest_byte_occurrences": 63033,
+    "unique_guest_bytes_within_modes": 62380,
+    "cross_mode_instruction_copies": 0
+  },
+  "failed_attempts": [
+    {
+      "seq": 70,
+      "root_pc": 2529791,
+      "root_hex": "0x2699ff",
+      "root_symbol": "__cpu_indicator_init",
+      "fp_mode": 0,
+      "stage": "frontend_emission",
+      "formation_error": 0,
+      "front_error": 4,
+      "ir_error": 0,
+      "error_pc": 2529997,
+      "error_hex": "0x269acd",
+      "error_instruction": {
+        "pc": 2529997,
+        "pc_hex": "0x269acd",
+        "mnemonic": "xgetbv",
+        "operands": "",
+        "bytes": "0f01d0",
+        "size": 3,
+        "symbol": "__cpu_indicator_init"
+      },
+      "source_block": {
+        "function_audit": "block",
+        "pc": 2529995,
+        "end": 2530011,
+        "count": 6
+      },
+      "error_at_source_block_start": false,
+      "error_at_request_root": false,
+      "formation_instructions": 108,
+      "formation_bytes": 346,
+      "formation_decode_calls": 108,
+      "formation_splits": 0,
+      "emitted_prefix_instructions": 67,
+      "emitted_prefix_bytes": 206,
+      "born_prefix_nodes": 87,
+      "born_prefix_words": null,
+      "distorm_opcode": 1787,
+      "fallback_seq": 71,
+      "fallback_instructions": 10
+    },
+    {
+      "seq": 72,
+      "root_pc": 2529833,
+      "root_hex": "0x269a29",
+      "root_symbol": "__cpu_indicator_init",
+      "fp_mode": 0,
+      "stage": "frontend_emission",
+      "formation_error": 0,
+      "front_error": 4,
+      "ir_error": 0,
+      "error_pc": 2529997,
+      "error_hex": "0x269acd",
+      "error_instruction": {
+        "pc": 2529997,
+        "pc_hex": "0x269acd",
+        "mnemonic": "xgetbv",
+        "operands": "",
+        "bytes": "0f01d0",
+        "size": 3,
+        "symbol": "__cpu_indicator_init"
+      },
+      "source_block": {
+        "function_audit": "block",
+        "pc": 2529995,
+        "end": 2530011,
+        "count": 6
+      },
+      "error_at_source_block_start": false,
+      "error_at_request_root": false,
+      "formation_instructions": 92,
+      "formation_bytes": 304,
+      "formation_decode_calls": 92,
+      "formation_splits": 0,
+      "emitted_prefix_instructions": 51,
+      "emitted_prefix_bytes": 164,
+      "born_prefix_nodes": 59,
+      "born_prefix_words": null,
+      "distorm_opcode": 1787,
+      "fallback_seq": 73,
+      "fallback_instructions": 50
+    },
+    {
+      "seq": 74,
+      "root_pc": 2530011,
+      "root_hex": "0x269adb",
+      "root_symbol": "__cpu_indicator_init",
+      "fp_mode": 0,
+      "stage": "frontend_emission",
+      "formation_error": 0,
+      "front_error": 4,
+      "ir_error": 0,
+      "error_pc": 2530049,
+      "error_hex": "0x269b01",
+      "error_instruction": {
+        "pc": 2530049,
+        "pc_hex": "0x269b01",
+        "mnemonic": "xgetbv",
+        "operands": "",
+        "bytes": "0f01d0",
+        "size": 3,
+        "symbol": "__cpu_indicator_init"
+      },
+      "source_block": {
+        "function_audit": "block",
+        "pc": 2530047,
+        "end": 2530052,
+        "count": 2
+      },
+      "error_at_source_block_start": false,
+      "error_at_request_root": false,
+      "formation_instructions": 36,
+      "formation_bytes": 126,
+      "formation_decode_calls": 36,
+      "formation_splits": 0,
+      "emitted_prefix_instructions": 11,
+      "emitted_prefix_bytes": 38,
+      "born_prefix_nodes": 27,
+      "born_prefix_words": null,
+      "distorm_opcode": 1787,
+      "fallback_seq": 75,
+      "fallback_instructions": 10
+    },
+    {
+      "seq": 626,
+      "root_pc": 2487219,
+      "root_hex": "0x25f3b3",
+      "root_symbol": "__dtoa",
+      "fp_mode": 0,
+      "stage": "frontend_emission",
+      "formation_error": 0,
+      "front_error": 4,
+      "ir_error": 0,
+      "error_pc": 2487423,
+      "error_hex": "0x25f47f",
+      "error_instruction": {
+        "pc": 2487423,
+        "pc_hex": "0x25f47f",
+        "mnemonic": "shrd",
+        "operands": "eax, r13d, cl",
+        "bytes": "440fade8",
+        "size": 4,
+        "symbol": "__dtoa"
+      },
+      "source_block": {
+        "function_audit": "block",
+        "pc": 2487415,
+        "end": 2487429,
+        "count": 4
+      },
+      "error_at_source_block_start": false,
+      "error_at_request_root": false,
+      "formation_instructions": 125,
+      "formation_bytes": 534,
+      "formation_decode_calls": 125,
+      "formation_splits": 0,
+      "emitted_prefix_instructions": 21,
+      "emitted_prefix_bytes": 106,
+      "born_prefix_nodes": 48,
+      "born_prefix_words": null,
+      "distorm_opcode": 892,
+      "fallback_seq": 627,
+      "fallback_instructions": 2
+    },
+    {
+      "seq": 628,
+      "root_pc": 2487228,
+      "root_hex": "0x25f3bc",
+      "root_symbol": "__dtoa",
+      "fp_mode": 0,
+      "stage": "frontend_emission",
+      "formation_error": 0,
+      "front_error": 4,
+      "ir_error": 0,
+      "error_pc": 2487423,
+      "error_hex": "0x25f47f",
+      "error_instruction": {
+        "pc": 2487423,
+        "pc_hex": "0x25f47f",
+        "mnemonic": "shrd",
+        "operands": "eax, r13d, cl",
+        "bytes": "440fade8",
+        "size": 4,
+        "symbol": "__dtoa"
+      },
+      "source_block": {
+        "function_audit": "block",
+        "pc": 2487415,
+        "end": 2487429,
+        "count": 4
+      },
+      "error_at_source_block_start": false,
+      "error_at_request_root": false,
+      "formation_instructions": 111,
+      "formation_bytes": 486,
+      "formation_decode_calls": 111,
+      "formation_splits": 0,
+      "emitted_prefix_instructions": 19,
+      "emitted_prefix_bytes": 97,
+      "born_prefix_nodes": 44,
+      "born_prefix_words": null,
+      "distorm_opcode": 892,
+      "fallback_seq": 629,
+      "fallback_instructions": 6
+    }
+  ],
+  "work_boundaries": {
+    "accepted_front_program_nodes": 50591,
+    "rejected_prefix_nodes": 265,
+    "all_actual_born_nodes": 50856,
+    "accepted_front_operand_words": 84624,
+    "rejected_prefix_operand_words": null,
+    "emitted_prefix_instructions_in_runtime_aggregate": 169,
+    "successful_unit_instruction_occurrences": 16415,
+    "decoded_source_instructions_in_failed_front_attempts": 472,
+    "decoded_bytes_in_failed_front_attempts": 1796,
+    "byte_decoder_calls": 16887
+  },
+  "entry_registration": {
+    "published_native_owners": 681,
+    "root_entries": 681,
+    "offered_extra_entries": 2757,
+    "offers_accepted_here": 2757,
+    "offers_retaining_prior_ready_entry": 0,
+    "unique_ready_entries": 3438,
+    "extra_entries_first_ready_here": 2757,
+    "per_mode": [
+      {
+        "fp_mode": 0,
+        "root": 681,
+        "extra": 2757
+      }
+    ],
+    "first_ready_contract_validated": true,
+    "native_owner_ranges_validated": true,
+    "all_extra_entries_match_nonempty_source_block_starts": true,
+    "empty_source_blocks_registered": 0,
+    "non_source_exit_stub_entries_registered": 0,
+    "max_entries_sharing_one_native_owner": 233,
+    "top_native_owners_by_ready_entries": [
+      {
+        "seq": 218,
+        "fp_mode": 0,
+        "root_pc": 2466831,
+        "native_bytes": 15492,
+        "root_hex": "0x25a40f",
+        "symbol": "__vfprintf",
+        "ready_entries": 233
+      },
+      {
+        "seq": 533,
+        "fp_mode": 0,
+        "root_pc": 2201344,
+        "native_bytes": 4000,
+        "root_hex": "0x219700",
+        "symbol": "core_bench_list",
+        "ready_entries": 91
+      },
+      {
+        "seq": 637,
+        "fp_mode": 0,
+        "root_pc": 2487893,
+        "native_bytes": 6480,
+        "root_hex": "0x25f655",
+        "symbol": "__dtoa",
+        "ready_entries": 88
+      },
+      {
+        "seq": 472,
+        "fp_mode": 0,
+        "root_pc": 2254896,
+        "native_bytes": 7576,
+        "root_hex": "0x226830",
+        "symbol": "_ZN5scudo20SizeClassAllocator64INS_13PrimaryConfigINS_19AndroidNormalConfigEEEE14pushBlocksImplEPNS_28SizeClassAllocatorLocalCacheIS4_EEmPNS4_10RegionInfoEPjjb",
+        "ready_entries": 79
+      },
+      {
+        "seq": 94,
+        "fp_mode": 0,
+        "root_pc": 2391008,
+        "native_bytes": 4412,
+        "root_hex": "0x247be0",
+        "symbol": "memcpy",
+        "ready_entries": 61
+      },
+      {
+        "seq": 540,
+        "fp_mode": 0,
+        "root_pc": 2206512,
+        "native_bytes": 3252,
+        "root_hex": "0x21ab30",
+        "symbol": "matrix_test",
+        "ready_entries": 51
+      },
+      {
+        "seq": 170,
+        "fp_mode": 0,
+        "root_pc": 2311328,
+        "native_bytes": 3524,
+        "root_hex": "0x2344a0",
+        "symbol": "pthread_rwlock_rdlock",
+        "ready_entries": 49
+      },
+      {
+        "seq": 221,
+        "fp_mode": 0,
+        "root_pc": 2458432,
+        "native_bytes": 5584,
+        "root_hex": "0x258340",
+        "symbol": "__sfvwrite",
+        "ready_entries": 47
+      }
+    ]
+  },
+  "stop_ready": {
+    "actual_positive_lookup_events": 186,
+    "unique_mode_pc": 136,
+    "attempts_with_positive_lookup": 124,
+    "lookups_of_extra_entries": 169,
+    "lookups_of_root_entries": 17,
+    "all_match_previously_ready_actual_entry_and_owner": true,
+    "top_pcs": [
+      {
+        "fp_mode": 0,
+        "pc": 2213072,
+        "pc_hex": "0x21c4d0",
+        "symbol": "core_state_transition",
+        "events": 10,
+        "first_ready_seq": 549,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2474654,
+        "pc_hex": "0x25c29e",
+        "symbol": "__vfprintf",
+        "events": 4,
+        "first_ready_seq": 218,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2201174,
+        "pc_hex": "0x219656",
+        "symbol": "calc_func",
+        "events": 4,
+        "first_ready_seq": 534,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2213124,
+        "pc_hex": "0x21c504",
+        "symbol": "core_state_transition",
+        "events": 4,
+        "first_ready_seq": 553,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2481468,
+        "pc_hex": "0x25dd3c",
+        "symbol": "__vfprintf",
+        "events": 3,
+        "first_ready_seq": 218,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2491106,
+        "pc_hex": "0x2602e2",
+        "symbol": "__dtoa",
+        "events": 3,
+        "first_ready_seq": 622,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2298166,
+        "pc_hex": "0x231136",
+        "symbol": "_Z26__allocate_temp_bionic_tlsv",
+        "events": 2,
+        "first_ready_seq": 16,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2315298,
+        "pc_hex": "0x235422",
+        "symbol": "_Z26__libc_safe_arc4random_bufPvm",
+        "events": 2,
+        "first_ready_seq": 41,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2523296,
+        "pc_hex": "0x2680a0",
+        "symbol": "__getpid",
+        "events": 2,
+        "first_ready_seq": 11,
+        "entry_kind": "root"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2453959,
+        "pc_hex": "0x2571c7",
+        "symbol": "arc4random_buf",
+        "events": 2,
+        "first_ready_seq": 90,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2453877,
+        "pc_hex": "0x257175",
+        "symbol": "arc4random_buf",
+        "events": 2,
+        "first_ready_seq": 90,
+        "entry_kind": "extra"
+      },
+      {
+        "fp_mode": 0,
+        "pc": 2238716,
+        "pc_hex": "0x2228fc",
+        "symbol": "_Z21__libc_init_AT_SECUREPPc",
+        "events": 2,
+        "first_ready_seq": 138,
+        "entry_kind": "extra"
+      }
+    ],
+    "note": "Positive lookup events are actual callback invocations, not unique pruned descendants or saved instruction counts."
+  },
+  "retained_capacity_bytes": {
+    "ir_reuse_reserved_bytes": 153712,
+    "word_capacity_bytes": 22368,
+    "link_capacity_bytes": 1024,
+    "entry_capacity_bytes": 4096,
+    "max_combined_retained_bytes": 181200,
+    "last_publish": {
+      "ir_reuse_reserved_bytes": 52336,
+      "word_capacity_bytes": 22368,
+      "link_capacity_bytes": 1024,
+      "entry_capacity_bytes": 4096
+    },
+    "post_registration_last_entries_capacity_bytes": 4096,
+    "high_water_sequences": {
+      "ir_reuse_reserved_bytes": 218,
+      "word_capacity_bytes": 218,
+      "link_capacity_bytes": 218,
+      "entry_capacity_bytes": 218
+    }
+  },
+  "baseline_comparison": {
+    "instruction_occurrences": {
+      "baseline": 31990,
+      "a3": 16415,
+      "delta": -15575
+    },
+    "unique_instructions_within_modes": {
+      "baseline": 16101,
+      "a3": 16224,
+      "delta": 123
+    },
+    "repeated_instruction_occurrences_within_modes": {
+      "baseline": 15889,
+      "a3": 191,
+      "delta": -15698
+    },
+    "guest_byte_occurrences": {
+      "baseline": 135659,
+      "a3": 63295,
+      "delta": -72364
+    },
+    "unique_guest_bytes_within_modes": {
+      "baseline": 62142,
+      "a3": 62642,
+      "delta": 500
+    },
+    "repeated_guest_byte_occurrences_within_modes": {
+      "baseline": 73517,
+      "a3": 653,
+      "delta": -72864
+    },
+    "attempts": {
+      "baseline": 705,
+      "a3": 686,
+      "delta": -19
+    },
+    "published_units": {
+      "baseline": 700,
+      "a3": 681,
+      "delta": -19
+    },
+    "failed_prefix_nodes": {
+      "baseline": 251,
+      "a3": 265
+    },
+    "all_actual_born_nodes": {
+      "baseline": 87846,
+      "a3": 50856,
+      "delta": -36990
+    }
+  },
+  "largest_remaining_repeated_units": [
+    {
+      "seq": 404,
+      "root_pc": 2249977,
+      "root_hex": "0x2254f9",
+      "symbol": "_ZN5scudo20SizeClassAllocator64INS_13PrimaryConfigINS_19AndroidNormalConfigEEEE4initEi",
+      "scope": "function",
+      "fp_mode": 0,
+      "source_blocks": 3,
+      "nonempty_source_blocks": 3,
+      "guest_instructions": 35,
+      "guest_bytes": 116,
+      "new_instructions": 15,
+      "repeated_instructions": 20,
+      "entry_previously_in_source_coverage": false,
+      "prior_source_owner_seq": null,
+      "all_coverage_previously_present": false,
+      "nodes": 104,
+      "words": 181,
+      "native_bytes": 1240,
+      "owner_base": 491920128176,
+      "offered_extra_entries": 2,
+      "stop_ready_events": 0
+    },
+    {
+      "seq": 57,
+      "root_pc": 2457152,
+      "root_hex": "0x257e40",
+      "symbol": "getentropy",
+      "scope": "function",
+      "fp_mode": 0,
+      "source_blocks": 6,
+      "nonempty_source_blocks": 6,
+      "guest_instructions": 29,
+      "guest_bytes": 100,
+      "new_instructions": 16,
+      "repeated_instructions": 13,
+      "entry_previously_in_source_coverage": false,
+      "prior_source_owner_seq": null,
+      "all_coverage_previously_present": false,
+      "nodes": 103,
+      "words": 164,
+      "native_bytes": 976,
+      "owner_base": 491919910080,
+      "offered_extra_entries": 5,
+      "stop_ready_events": 1
+    },
+    {
+      "seq": 578,
+      "root_pc": 2202768,
+      "root_hex": "0x219c90",
+      "symbol": "core_bench_list",
+      "scope": "function",
+      "fp_mode": 0,
+      "source_blocks": 4,
+      "nonempty_source_blocks": 4,
+      "guest_instructions": 16,
+      "guest_bytes": 41,
+      "new_instructions": 4,
+      "repeated_instructions": 12,
+      "entry_previously_in_source_coverage": false,
+      "prior_source_owner_seq": null,
+      "all_coverage_previously_present": false,
+      "nodes": 65,
+      "words": 100,
+      "native_bytes": 756,
+      "owner_base": 491920222032,
+      "offered_extra_entries": 3,
+      "stop_ready_events": 0
+    },
+    {
+      "seq": 613,
+      "root_pc": 2468354,
+      "root_hex": "0x25aa02",
+      "symbol": "__vfprintf",
+      "scope": "function",
+      "fp_mode": 0,
+      "source_blocks": 2,
+      "nonempty_source_blocks": 2,
+      "guest_instructions": 21,
+      "guest_bytes": 91,
+      "new_instructions": 9,
+      "repeated_instructions": 12,
+      "entry_previously_in_source_coverage": false,
+      "prior_source_owner_seq": null,
+      "all_coverage_previously_present": false,
+      "nodes": 50,
+      "words": 95,
+      "native_bytes": 316,
+      "owner_base": 491920236896,
+      "offered_extra_entries": 1,
+      "stop_ready_events": 2
+    },
+    {
+      "seq": 291,
+      "root_pc": 2339525,
+      "root_hex": "0x23b2c5",
+      "symbol": "_ZN9prop_area4findEPKc",
+      "scope": "function",
+      "fp_mode": 0,
+      "source_blocks": 7,
+      "nonempty_source_blocks": 7,
+      "guest_instructions": 29,
+      "guest_bytes": 91,
+      "new_instructions": 18,
+      "repeated_instructions": 11,
+      "entry_previously_in_source_coverage": false,
+      "prior_source_owner_seq": null,
+      "all_coverage_previously_present": false,
+      "nodes": 98,
+      "words": 157,
+      "native_bytes": 996,
+      "owner_base": 491920081824,
+      "offered_extra_entries": 6,
+      "stop_ready_events": 3
+    },
+    {
+      "seq": 605,
+      "root_pc": 2459326,
+      "root_hex": "0x2586be",
+      "symbol": "__sfvwrite",
+      "scope": "function",
+      "fp_mode": 0,
+      "source_blocks": 2,
+      "nonempty_source_blocks": 2,
+      "guest_instructions": 13,
+      "guest_bytes": 48,
+      "new_instructions": 2,
+      "repeated_instructions": 11,
+      "entry_previously_in_source_coverage": false,
+      "prior_source_owner_seq": null,
+      "all_coverage_previously_present": false,
+      "nodes": 42,
+      "words": 72,
+      "native_bytes": 288,
+      "owner_base": 491920231552,
+      "offered_extra_entries": 1,
+      "stop_ready_events": 2
+    },
+    {
+      "seq": 160,
+      "root_pc": 2299345,
+      "root_hex": "0x2315d1",
+      "symbol": "_Z25__allocate_thread_mappingmm",
+      "scope": "function",
+      "fp_mode": 0,
+      "source_blocks": 4,
+      "nonempty_source_blocks": 4,
+      "guest_instructions": 31,
+      "guest_bytes": 114,
+      "new_instructions": 22,
+      "repeated_instructions": 9,
+      "entry_previously_in_source_coverage": false,
+      "prior_source_owner_seq": null,
+      "all_coverage_previously_present": false,
+      "nodes": 97,
+      "words": 165,
+      "native_bytes": 952,
+      "owner_base": 491919977072,
+      "offered_extra_entries": 3,
+      "stop_ready_events": 0
+    },
+    {
+      "seq": 656,
+      "root_pc": 2468131,
+      "root_hex": "0x25a923",
+      "symbol": "__vfprintf",
+      "scope": "function",
+      "fp_mode": 0,
+      "source_blocks": 8,
+      "nonempty_source_blocks": 8,
+      "guest_instructions": 42,
+      "guest_bytes": 218,
+      "new_instructions": 33,
+      "repeated_instructions": 9,
+      "entry_previously_in_source_coverage": false,
+      "prior_source_owner_seq": null,
+      "all_coverage_previously_present": false,
+      "nodes": 110,
+      "words": 198,
+      "native_bytes": 644,
+      "owner_base": 491920264368,
+      "offered_extra_entries": 7,
+      "stop_ready_events": 5
+    }
+  ],
+  "limitations": [
+    "Compilation coverage and registration counts are not dynamic retired instruction counts or QoR timing.",
+    "All FP modes are compared separately; cross-mode copies are not treated as removable duplication.",
+    "A3 ordinary run and this one diagnostic run have slightly different printf-path formation; only this trace's aggregates are combined.",
+    "Source bytes and instruction counts are validated against immutable ELF; no captured RX equality is claimed.",
+    "Failed-prefix operand words are unavailable; no CountWork or additional IR scan was introduced.",
+    "A3 source-B entries and stop-ready remain enabled; speculative CALL continuations and the FC_INT exception are absent."
+  ]
+}

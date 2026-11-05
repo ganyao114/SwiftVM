@@ -1,0 +1,235 @@
+{
+  "base_commit": "13ffa48f1d984cd7d600b5c93601301462b13570",
+  "source_digest": "842e4748e3263f6f50a28c53e1b8bdbb410bde70ae754940610ce43ed7eaed9b",
+  "source_files": 118,
+  "source_changes": [
+    "source/runtime/backend/arm64/compile.cpp",
+    "source/runtime/backend/arm64/compile.h",
+    "source/runtime/execution/native_code.cpp",
+    "source/runtime/execution/native_code.h",
+    "source/runtime/execution/runtime.cpp",
+    "source/runtime/frontend/x86/build_ir.cpp",
+    "source/runtime/frontend/x86/build_ir.h",
+    "source/runtime/ir/builder.cpp",
+    "source/runtime/ir/builder.h",
+    "source/tests/rebuild/arm64_compile_test.cpp",
+    "source/tests/rebuild/ir_construction_test.cpp"
+  ],
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 8910648,
+    "sha256": "f7a345a603b1a9c16fd059504a09aeeb76df96f2da676828f723a734323ee548"
+  },
+  "runtime_observations": 72,
+  "compile_observations": 72,
+  "acceptance": {
+    "limits": {
+      "seconds": 1.1,
+      "cycles": 1.1,
+      "compile": 2.0
+    },
+    "passed": true,
+    "failures": [],
+    "n": 3,
+    "runtime_valid": 72,
+    "compile_valid": 72,
+    "time_kind": "CoreMark guest loop; others whole-child elapsed, no cross-workload average"
+  },
+  "ordinary_raw_directory": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-owner-optimization-20261105/buffers-publish",
+  "diagnostic_directory": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-owner-optimization-20261105/function-audit",
+  "diagnostic_runner_sha256": "3c29e58ba491299e9f72bc647157e0cd245cea10d0ca7e5ff8e73441540e124a",
+  "diagnostic_trace_sha256": "e71e0cd1e7a839bc44a88a9ae529413ff42ccd26e313c254f3bf82293271260a",
+  "diagnostic_excluded_from_qor": true,
+  "files": [
+    {
+      "path": "backend-test.stdout",
+      "bytes": 103,
+      "sha256": "edd0e0f47f482b0763a8fb8d832247fca01e1e8ea8e89ccf361b9000735fea2e"
+    },
+    {
+      "path": "build-function-audit.py",
+      "bytes": 11478,
+      "sha256": "363232fc59d1a1ce1a0dfff1437ed990cef8ae3377760bfd2e6dd28c087ca5c7"
+    },
+    {
+      "path": "cases.json",
+      "bytes": 1130,
+      "sha256": "e9485bc5fc5721e47258d169d593e6b9d3d186f6124640841350bf80dddc0f9b"
+    },
+    {
+      "path": "changes-from-fp-optimization.patch",
+      "bytes": 30028,
+      "sha256": "3449e4ecfc909dfe7fad559c6c8f2f9a6af70092512d73fca5324a7d310a7d30"
+    },
+    {
+      "path": "commands.json",
+      "bytes": 137789,
+      "sha256": "4e43f48a277b4ae0a921c81931db85c9fa9ceaa5f8e65aed45e6e48b0c3ecbd3"
+    },
+    {
+      "path": "comparison.json",
+      "bytes": 2910,
+      "sha256": "86c1374633840215097a0075c0c2bafea6a4c2210744f65c306c5d48de5455bf"
+    },
+    {
+      "path": "compile-breakdown.json",
+      "bytes": 10711,
+      "sha256": "74f8c265762485af86fb810ef5468a6d060682b85889d451997ae50ef94f39b8"
+    },
+    {
+      "path": "compile-policy-after.stdout",
+      "bytes": 27,
+      "sha256": "e9ef9484f2cabfa794982cb6cea842b13d6358c057b1f4b9be10af37c585bce2"
+    },
+    {
+      "path": "compile-policy-before.stdout",
+      "bytes": 27,
+      "sha256": "e9ef9484f2cabfa794982cb6cea842b13d6358c057b1f4b9be10af37c585bce2"
+    },
+    {
+      "path": "compile-records.json",
+      "bytes": 267402,
+      "sha256": "ac51c4e50fc61f36b502cc51ee543738551a9b49be25043751548e1bdcf5f673"
+    },
+    {
+      "path": "device-identity.stdout",
+      "bytes": 372,
+      "sha256": "1f33f5ea4a5ec3190efa9b9ae5ea62fb5cd67d98d6bace5ab6727f036855aab9"
+    },
+    {
+      "path": "environment.json",
+      "bytes": 774,
+      "sha256": "c533e16e1be398061c8a46d7a18f260129ec020451b806c846e25c3981516c07"
+    },
+    {
+      "path": "function-audit-build-receipt.json",
+      "bytes": 2978,
+      "sha256": "9a0fdfc3120c0443869a9ee62e5f971e626f127c540d5e0ee1258de9c3d7493b"
+    },
+    {
+      "path": "function-audit-execution.json",
+      "bytes": 787,
+      "sha256": "747cdcfe54602b64ff80d48be66920a129bc370079cbd0b3e314837396a54168"
+    },
+    {
+      "path": "function-audit-remote-sha.stdout",
+      "bytes": 128,
+      "sha256": "314fa82a4c27abcace6feb1c5726ca24368f9f3d5efb962ddcfecbd969d0cb2e"
+    },
+    {
+      "path": "function-audit-trace.stderr.gz",
+      "bytes": 82430,
+      "sha256": "9c8a1e868a9c0321a5c4893eec7d50f628a4015e63d6e1f86333a7a09445ff22"
+    },
+    {
+      "path": "function-audit.json",
+      "bytes": 29303,
+      "sha256": "c3068407f0d9d7fbb43be926840563ac611a8281473bb0009613f456306eae4d"
+    },
+    {
+      "path": "function-audit.md",
+      "bytes": 5170,
+      "sha256": "b18c0f46cac267283ff3f06566ffdb989ae2aa5b150a8db650475d1cd5e8df0d"
+    },
+    {
+      "path": "function-audit.stdout",
+      "bytes": 666,
+      "sha256": "780ba39ec9a7a53f9b78b2e4d7b41719586e77113163431e526321817eb41ffb"
+    },
+    {
+      "path": "host-ctest.log",
+      "bytes": 694,
+      "sha256": "fbc89711ba8bb834f9c779b9f3597b9ddd20b9d408337e6c2fbe69d92b30799d"
+    },
+    {
+      "path": "identity.json",
+      "bytes": 567,
+      "sha256": "c86976213fbca3bf50a0bb61b2c88180571c9095f9b4c2e2bd6f7f8b01ad8417"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 3366,
+      "sha256": "da58efebc7b1ca870e54a0350946e71c00b9f334edfdb54967793756c25ddcf5"
+    },
+    {
+      "path": "mode-probe-summary.json",
+      "bytes": 5575,
+      "sha256": "6df7758cb961963e5b2a4ce919e31f387c72e89b07be90c3e133b57d503a3af9"
+    },
+    {
+      "path": "phone-cleanup-receipt.json",
+      "bytes": 280,
+      "sha256": "ad5d5d5dd7fe5502fa599c463a17b48fe7727d7673f8f0efc817fa2220e8eb17"
+    },
+    {
+      "path": "pipeline-test.stdout",
+      "bytes": 88,
+      "sha256": "d8d8ac61ef7162c238adf29ee182165f8aa847043bc4d0ad5667c4b97ec12109"
+    },
+    {
+      "path": "raw-output.jsonl",
+      "bytes": 1141935,
+      "sha256": "14c4c3d8f4a416730d97d8e2ed02efd0a3e4b940fc220fe6a4dff9e4ec275289"
+    },
+    {
+      "path": "remote-identities-after.stdout",
+      "bytes": 1758,
+      "sha256": "e315c745468834251e86ba85339b649613f9aea5cc66a0fe6f77ea7471e26404"
+    },
+    {
+      "path": "remote-identities-before.stdout",
+      "bytes": 1758,
+      "sha256": "e315c745468834251e86ba85339b649613f9aea5cc66a0fe6f77ea7471e26404"
+    },
+    {
+      "path": "runtime-policy-after.stdout",
+      "bytes": 27,
+      "sha256": "05252afa4d2e01bf4435143abae82f29dcb38811fcf66a7a5f9c7ae8a7d193b6"
+    },
+    {
+      "path": "runtime-policy-before.stdout",
+      "bytes": 27,
+      "sha256": "e9ef9484f2cabfa794982cb6cea842b13d6358c057b1f4b9be10af37c585bce2"
+    },
+    {
+      "path": "runtime-records.json",
+      "bytes": 92710,
+      "sha256": "f14057812567bb37bcce428e9dcd157c5fb6c3a9eeb56f6995f1e86b038868d4"
+    },
+    {
+      "path": "smoke-summary.json",
+      "bytes": 2104,
+      "sha256": "f9cb92f501e8193f196947b54effffd133e5cb5f947c375dd55aa06a6b828442"
+    },
+    {
+      "path": "source-manifest.json",
+      "bytes": 21510,
+      "sha256": "a4e7d1459b47c68dd24e83aca66cc4728066493ef239ad09b359cbefcbd12431"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 36455,
+      "sha256": "2cdcdb8a614049e2ad87d027f1d5212238ecaca89e8ec56576d91a4c6ed34f19"
+    }
+  ],
+  "scripts": [
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-owner-optimization-20261105/buffers-publish/run.py",
+      "sha256": "2ce9430234295bf18f7731cde15f612c2c33e0d2953136d940b562e94da6b1e2"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-owner-optimization-20261105/analyze.py",
+      "sha256": "dfb6455f63e48a2a9f6107424564a9568e43610b8917c9622f00f05c6169b428"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-owner-optimization-20261105/augment-analysis.py",
+      "sha256": "bcdaa1890e84ca8477828034534a7acef5229406fbe79fc7a8eaa5293aaf17f1"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-owner-optimization-20261105/function-audit/build-diagnostic.py",
+      "sha256": "363232fc59d1a1ce1a0dfff1437ed990cef8ae3377760bfd2e6dd28c087ca5c7"
+    }
+  ],
+  "committed": false,
+  "pushed": false
+}

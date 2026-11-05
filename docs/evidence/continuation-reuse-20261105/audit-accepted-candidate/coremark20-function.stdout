@@ -1,0 +1,17 @@
+2K performance run parameters for coremark.
+CoreMark Size    : 666
+Total ticks      : 60
+Total time (secs): 0.060000
+Iterations/Sec   : 333.333333
+ERROR! Must execute for at least 10 secs for a valid result!
+Iterations       : 20
+Compiler version : Android (13989888, based on r563880c) Clang 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 5e96669f06077099aa41290cdb4c5e6fa0f59349)
+Compiler flags   : -O2
+Memory location  : Please put data memory location here
+			(e.g. code in flash, data on heap etc)
+seedcrc          : 0xe9f5
+[0]crclist       : 0xe714
+[0]crcmatrix     : 0x1fd7
+[0]crcstate      : 0x8e3a
+[0]crcfinal      : 0x4983
+Errors detected

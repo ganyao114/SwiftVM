@@ -1,0 +1,1 @@
+arm64 scalar contracts: checks=264823 native_execution=true; subset only, no full-VM/FEX qualification

@@ -1,0 +1,47 @@
+400ff0: mulpd    xmm7, xmm6
+400ff4: movapd   xmm10, xmmword ptr [rip + 0x6e3]
+400ffd: addpd    xmm7, xmm10
+401002: movapd   xmm11, xmm8
+401007: cmpltpd  xmm11, xmm7
+40100d: movapd   xmm12, xmm9
+401012: andpd    xmm12, xmm11
+401017: andnpd   xmm11, xmm7
+40101c: movapd   xmm7, xmm11
+401021: orpd     xmm7, xmm12
+401026: mulpd    xmm5, xmm4
+40102a: addpd    xmm5, xmm10
+40102f: movapd   xmm11, xmm8
+401034: cmpltpd  xmm11, xmm5
+40103a: movapd   xmm12, xmm9
+40103f: andpd    xmm12, xmm11
+401044: andnpd   xmm11, xmm5
+401049: movapd   xmm5, xmm11
+40104e: orpd     xmm5, xmm12
+401053: mulps    xmm3, xmm2
+401056: addps    xmm3, xmm13
+40105a: movaps   xmm11, xmm15
+40105e: cmpltps  xmm11, xmm3
+401063: movaps   xmm12, xmm13
+401067: andps    xmm12, xmm11
+40106b: andnps   xmm11, xmm3
+40106f: movaps   xmm3, xmm11
+401073: orps     xmm3, xmm12
+401077: mulps    xmm1, xmm0
+40107a: addps    xmm1, xmm13
+40107e: movaps   xmm11, xmm15
+401082: cmpltps  xmm11, xmm1
+401087: movaps   xmm12, xmm13
+40108b: andps    xmm12, xmm11
+40108f: andnps   xmm11, xmm1
+401093: movaps   xmm1, xmm11
+401097: orps     xmm1, xmm12
+40109b: movapd   xmm10, xmmword ptr [rip + 0x64c]
+4010a4: mulpd    xmm6, xmm10
+4010a9: movapd   xmm11, xmmword ptr [rip + 0x64e]
+4010b2: addpd    xmm6, xmm11
+4010b7: mulpd    xmm4, xmm10
+4010bc: addpd    xmm4, xmm11
+4010c1: mulps    xmm2, xmm14
+4010c5: mulps    xmm0, xmm14
+4010c9: dec      rdi
+4010cc: jne      0x400ff0

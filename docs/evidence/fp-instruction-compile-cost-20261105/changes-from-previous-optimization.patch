@@ -1,0 +1,186 @@
+--- a/source/runtime/backend/arm64/allocate.cpp
++++ b/source/runtime/backend/arm64/allocate.cpp
+@@ -19,6 +19,10 @@
+             case OpCode::VecAdd: case OpCode::VecSub: case OpCode::VecMul:
+             case OpCode::VecCmpEq: case OpCode::VecCmpGt:
+             case OpCode::VecSignedMulWidenLow:
++            case OpCode::VecFAdd: case OpCode::VecFSub: case OpCode::VecFMul: case OpCode::VecFDiv:
++            case OpCode::VecFAddScalar64: case OpCode::VecFSubScalar64:
++            case OpCode::VecFMulScalar64: case OpCode::VecFDivScalar64:
++            case OpCode::VecFCmpMask:
+                 return true;
+             default: return false;
+         }
+@@ -118,7 +122,7 @@
+     const auto block_start = [&](u32 b) { return scope == Scope::Block ? 0u : starts[b]; };
+     const auto pc_tail_check = [&](u32 b) -> NodeId {
+         const auto& body = blocks[b];
+-        if (scope != Scope::Block || !options || !options->dispatcher || !options->exit_handler ||
++        if (!options || !options->dispatcher || !options->exit_handler ||
+             !body.node_count || body.terminal.kind != TerminalKind::Dispatch) return {};
+         const auto tail = body.first_node + body.node_count - 1;
+         if (operations[tail].opcode != OpCode::StoreUniformSelectImm ||
+--- a/source/runtime/backend/arm64/compile.h
++++ b/source/runtime/backend/arm64/compile.h
+@@ -95,7 +95,9 @@
+     // its saved host environment and return to guest_fpcr with clear FPSR.
+     bool native_fp_environment{};
+     // Actual raw32 MXCSR field when independent input/output flush controls
+-    // are unavailable in hardware. Default callers request no software flush.
++    // are unavailable in hardware. It is separate from private pinned Uniform
++    // fields; these real control reads use its memory value. Default callers
++    // request no software flush.
+     std::uint32_t mxcsr_flush_offset{UINT32_MAX};
+     // Process-wide linked/private ABI with synchronous fault-PC recovery.
+     // Resolved static edges and final dynamic tails defer PC publication.
+--- a/source/runtime/frontend/x86/build_ir.cpp
++++ b/source/runtime/frontend/x86/build_ir.cpp
+@@ -2167,6 +2167,9 @@
+             return found != blocks.end() && found->pc == address
+                     ? BlockId{static_cast<u32>(found - blocks.begin())} : BlockId{};
+         };
++        const auto external_choice = [&](u64 taken, u64 next) {
++            return target.Has(TargetFeature::ConditionalUniformStore) && !internal(taken) && !internal(next);
++        };
+         std::vector<u64> exits;
+         if (scope == Scope::Function) {
+             // Only real conditional outgoing edges need extra IR bodies. This
+@@ -2175,9 +2178,13 @@
+                 if (!block.instruction_count) continue;
+                 const auto& last = instructions[std::size_t{block.first_instruction} + block.instruction_count - 1];
+                 if (!Conditional(last.opcode) || !Direct(last)) continue;
+-                const u64 next = last.addr + last.size;
+-                for (const auto destination : {next + last.imm.addr, next})
+-                    if (!internal(destination)) exits.push_back(destination);
++                const u64 next = last.addr + last.size, taken = next + last.imm.addr;
++                const bool taken_internal = bool(internal(taken)), next_internal = bool(internal(next));
++                // Two outgoing PCs already fit one existing conditional
++                // Uniform store. Keep CFG bodies only for real internal edges.
++                if (target.Has(TargetFeature::ConditionalUniformStore) && !taken_internal && !next_internal) continue;
++                if (!taken_internal) exits.push_back(taken);
++                if (!next_internal) exits.push_back(next);
+             }
+             std::sort(exits.begin(), exits.end());
+             exits.erase(std::unique(exits.begin(), exits.end()), exits.end());
+@@ -2247,7 +2254,7 @@
+                     builder.PublishRegisters();
+                     const auto condition = BranchCondition(builder, instruction.opcode);
+                     const u64 taken = next_pc + instruction.imm.addr;
+-                    if (scope == Scope::Block) {
++                    if (scope == Scope::Block || external_choice(taken, next_pc)) {
+                         if (target.Has(TargetFeature::ConditionalUniformStore)) {
+                             Require(builder.Emit<OpCode::StoreUniformSelectImm>(Type::Void,
+                                     {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(condition),
+--- a/source/runtime/ir/opcodes.inc
++++ b/source/runtime/ir/opcodes.inc
+@@ -335,28 +335,32 @@
+ // selection; ARM64 follows FEX here. Finite/zero/infinity results retain
+ // their opcode semantics. This policy does not relax MIN/MAX selection,
+ // comparison masks, conversion sentinels or preservation of unwritten lanes.
+-INST(VecFAddScalar32, Value, Arg0, (Effect::Unknown), Value, Value)
+-INST(VecFSubScalar32, Value, Arg0, (Effect::Unknown), Value, Value)
+-INST(VecFMulScalar32, Value, Arg0, (Effect::Unknown), Value, Value)
+-INST(VecFDivScalar32, Value, Arg0, (Effect::Unknown), Value, Value)
+-INST(VecFAddScalar64, Value, Arg0, (Effect::Unknown), Value, Value)
+-INST(VecFSubScalar64, Value, Arg0, (Effect::Unknown), Value, Value)
+-INST(VecFMulScalar64, Value, Arg0, (Effect::Unknown), Value, Value)
+-INST(VecFDivScalar64, Value, Arg0, (Effect::Unknown), Value, Value)
++// Numerical FP reads the caller's active FP environment. These operations
++// neither observe arbitrary Uniform state/guest flags nor publish sticky
++// exceptions or traps. Environment changes remain at their actual ordered
++// writers; ReadHostState does not make FP arithmetic a constant/pure opcode.
++INST(VecFAddScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
++INST(VecFSubScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
++INST(VecFMulScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
++INST(VecFDivScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
++INST(VecFAddScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
++INST(VecFSubScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
++INST(VecFMulScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
++INST(VecFDivScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
+ 
+ // Packed IEEE floating-point operations. Imm is the lane width (32 or 64).
+-INST(VecFAdd, Value, Arg0, (Effect::Unknown), Value, Value, Imm)
+-INST(VecFSub, Value, Arg0, (Effect::Unknown), Value, Value, Imm)
+-INST(VecFMul, Value, Arg0, (Effect::Unknown), Value, Value, Imm)
+-INST(VecFDiv, Value, Arg0, (Effect::Unknown), Value, Value, Imm)
+-INST(VecFMinMax, Value, Arg0, (Effect::Unknown), Value, Value, Imm, Imm, Imm)
++INST(VecFAdd, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
++INST(VecFSub, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
++INST(VecFMul, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
++INST(VecFDiv, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
++INST(VecFMinMax, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
+ // kind: 0=sqrt, 1=reciprocal estimate, 2=reciprocal-sqrt estimate.
+-INST(VecFUnary, Value, Arg0, (Effect::Unknown), Value, Value, Imm, Imm, Imm)
++INST(VecFUnary, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
+ 
+ // Scalar compare: low FP lanes of the two vectors, with lane width in bits.
+ // U32 result: bit0 CF / bit1 PF / bit2 ZF. Greater=0, less=1, equal=4,
+ // unordered=7. Quiet/signaling exception-state differences are not modeled.
+-INST(VecFCmp, U32, IntegerFixed, (Effect::Unknown), Value, Value, Imm)
++INST(VecFCmp, U32, IntegerFixed, (Effect::ReadHostState), Value, Value, Imm)
+ // Lane-wise compare to an all-ones / all-zeros mask.  The predicate (second
+ // Imm) is a RELATION SET, not an ISA's compare encoding: an IEEE 754 compare
+ // of two lanes has exactly four mutually exclusive outcomes, and the predicate
+@@ -370,7 +374,7 @@
+ // MXCSR exception-flag distinction only, measured on hardware, and SwiftVM
+ // models no FP exception state).
+ // Final Imm is scalar (preserve upper lanes) when non-zero.
+-INST(VecFCmpMask, Value, Arg0, (Effect::Unknown), Value, Value, Imm, Imm, Imm)
++INST(VecFCmpMask, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
+ 
+ // Scalar conversions. The result is the raw IEEE/integer bit pattern in a
+ // scalar container; widths are supplied as immediates in bits. IntToFloat
+@@ -378,12 +382,12 @@
+ // float width, integer width, and a truncate-to-zero selector; invalid signed
+ // conversions return that integer width's minInt. No MXCSR sticky/trap state
+ // is produced by these numerical operations.
+-INST(VecFCvtIntToFloat, Value, Explicit, (Effect::Unknown), Value, Imm, Imm)
+-INST(VecFCvtFloatToInt, Value, Explicit, (Effect::Unknown), Value, Imm, Imm, Imm)
+-INST(VecFCvtScalar, Value, Explicit, (Effect::Unknown), Value, Imm)
++INST(VecFCvtIntToFloat, Value, Explicit, (Effect::ReadHostState), Value, Imm, Imm)
++INST(VecFCvtFloatToInt, Value, Explicit, (Effect::ReadHostState), Value, Imm, Imm, Imm)
++INST(VecFCvtScalar, Value, Explicit, (Effect::ReadHostState), Value, Imm)
+ // 0=dq2ps, 1=dq2pd, 2=ps2dq, 3=ttps2dq, 4=pd2dq, 5=ttpd2dq,
+ // 6=ps2pd, 7=pd2ps.
+-INST(VecFCvtPacked, Value, Explicit, (Effect::Unknown), Value, Imm)
++INST(VecFCvtPacked, Value, Explicit, (Effect::ReadHostState), Value, Imm)
+ 
+ // De-interleave: the exact dual of VecZip, and the primitive every pairwise /
+ // horizontal operation is built from.  The concatenation {a, b} is viewed as
+--- a/source/tests/rebuild/x86_construction_test.cpp
++++ b/source/tests/rebuild/x86_construction_test.cpp
+@@ -554,6 +554,20 @@
+                 CHECK(input.Payload()==static_cast<unsigned>(conditions[cc]));
+             }
+         }
++        const auto capability=static_cast<std::uint64_t>(TargetFeature::ConditionalUniformStore);
++        for (const auto mode : {TargetMode::Known,TargetMode::Unknown,TargetMode::EarlyOff}) {
++            const auto outgoing=BuildIR({&window,1},Scope::Function,layout,{mode,0xa64,capability});
++            CHECK(outgoing && outgoing.program.ScopeKind()==Scope::Function);
++            const auto& p=outgoing.program;
++            if (mode==TargetMode::Known) {
++                CHECK(p.Blocks().size()==1 && p.Blocks()[0].terminal.kind==TerminalKind::Dispatch);
++                const auto tail=NodeId{static_cast<std::uint32_t>(p.Operations().size()-1)};
++                CHECK(p.Operations()[tail.value].opcode==OpCode::StoreUniformSelectImm);
++                const auto args=p.Operands(tail);
++                CHECK(args.front().Payload()==layout.pc_offset && CellAt(args,2).Payload()==0x6022 &&
++                        CellAt(args,3).Payload()==0x6002);
++            } else CHECK(p.Blocks().size()==3 && p.Blocks()[0].terminal.kind==TerminalKind::Branch);
++        }
+     }
+     const std::uint8_t head[]{0x74,0x1e},fallthrough[]{0x90},taken[]{0x90};
+     const std::array<BlockWindow,3> internal{{{0x6000,head},{0x6002,fallthrough},{0x6020,taken}}};
+@@ -561,6 +575,13 @@
+     CHECK(built && built.program.Blocks().size()==3);
+     CHECK(built.program.Blocks()[0].terminal.kind==TerminalKind::Branch);
+     CHECK(built.program.Blocks()[0].terminal.first.value==2 && built.program.Blocks()[0].terminal.second.value==1);
++    const TargetInfo known{TargetMode::Known,0xa64,static_cast<std::uint64_t>(TargetFeature::ConditionalUniformStore)};
++    const auto mixed=BuildIR(std::span{internal}.first(2),Scope::Function,layout,known);
++    CHECK(mixed && mixed.program.Blocks().size()==3 &&
++            mixed.program.Blocks()[0].terminal.kind==TerminalKind::Branch);
++    const auto external=BuildIR(internal,Scope::Function,layout,known,nullptr,nullptr,true);
++    CHECK(external && external.program.Blocks().size()==3 &&
++            external.program.Blocks()[0].terminal.kind==TerminalKind::Dispatch);
+ }
+ 
+ void ActualDecodedBufferAndRejectedFrontier() {

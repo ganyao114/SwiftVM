@@ -1,0 +1,19 @@
+{
+  "utc": "2026-11-05T11:42:36.960636+00:00",
+  "status": "rejected_for_performance_regression",
+  "source_digest": "8806171c19c9bbce1c60459d50dcfea80d6e262a21af4f7d710d3c34056a0ee8",
+  "candidate_sha256": "79ccf232b02a4383a24ffa91c8f49ea02816aed71c860c7e0c4e9fe2ee4e10b6",
+  "archive_sha256": "b94c49d7989abeb6ba44779dea7d9b77a2ae28d2b162f32ed95fcb43257c29a3",
+  "retained_records": {
+    "compile": 72,
+    "runtime": 72,
+    "all_output_oracles_valid": true
+  },
+  "blocking_gate": "func_tests Function user cycles / same-round FEX = 1.367144..., limit 1.10",
+  "identified_causes": [
+    "CALL continuation discovery broadens speculative reachable graph",
+    "30 formation OverlappingTarget failures at legitimate LOCK/shared-opcode-tail targets",
+    "18 frontend Unsupported failures, including 12 XEND and 4 RDTSC; all recompile full prefix before Block fallback"
+  ],
+  "next_change": "Keep real already-formed nonempty source-block external entries and ready-frontier cuts. Keep CALL a real region exit; form its continuation when first actually requested. Do not introduce a new ISA pre-scan or overlapping-stream IR/rollback framework for this reuse task."
+}

@@ -1,0 +1,153 @@
+{
+  "utc": "2026-11-05T08:19:25.070318+00:00",
+  "base_commit": "13ffa48f1d984cd7d600b5c93601301462b13570",
+  "working_tree_modified": true,
+  "source_digest": "9890a5f60446f0c57aadb34bbeea2d14088ffe9e87e613774ceeb9db5e11c8cc",
+  "source_files": 118,
+  "deployed_inputs_unchanged": true,
+  "runtime_observations": 72,
+  "compile_observations": 72,
+  "acceptance": {
+    "limits": {
+      "runtime_ratio": 1.1,
+      "user_cycle_ratio": 1.1,
+      "compile_excluding_byte_ratio": 2.0
+    },
+    "failures": [],
+    "passed": true,
+    "all_runtime_checks_passed": true,
+    "all_compile_checks_passed": true,
+    "n": 3,
+    "coremark_time_kind": "guest loop; other workloads whole child elapsed"
+  },
+  "raw_directory": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/parity-gap-optimization-20261105/attempt8",
+  "frozen_source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/parity-gap-optimization-20261105/attempt8/source",
+  "candidate_compressed": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/parity-gap-optimization-20261105/attempt8/candidate.gz",
+  "committed": false,
+  "pushed": false,
+  "files": [
+    {
+      "path": "backend-test.stdout",
+      "bytes": 103,
+      "sha256": "a1a42371e893144553741b132ac228949f9f394b4e321ab512f48923189cd73b"
+    },
+    {
+      "path": "cases.json",
+      "bytes": 1130,
+      "sha256": "e9485bc5fc5721e47258d169d593e6b9d3d186f6124640841350bf80dddc0f9b"
+    },
+    {
+      "path": "commands.json",
+      "bytes": 138128,
+      "sha256": "f62cab5e3e1260b2e8fc62826817be88a32ed345b7b140803c897870ef172299"
+    },
+    {
+      "path": "compile-records.json",
+      "bytes": 267416,
+      "sha256": "56372790a78f88ab819f6b46a00e6da9d23f3adb3cad2db5a851496ad2686454"
+    },
+    {
+      "path": "device-capabilities.json",
+      "bytes": 854,
+      "sha256": "7b5f367c6ab056d2ebe424184a61c73bfccbe141b2468eae2b6d5f5b8ff20950"
+    },
+    {
+      "path": "disk-cleanup-receipt.json",
+      "bytes": 17810,
+      "sha256": "bffc98a4c3133293343de40f857d425a671ba67ccf326c35e45c772ff9de2af6"
+    },
+    {
+      "path": "disk-interruption-receipt.json",
+      "bytes": 502,
+      "sha256": "b36e37aa5790475544d8adc5b8b27273450be457ae5484a5067cccee8712cdf6"
+    },
+    {
+      "path": "environment.json",
+      "bytes": 759,
+      "sha256": "85132cbb1934757af95d8e37ac87522edf45f9e9cd422f9a5eabac3d90d0ac26"
+    },
+    {
+      "path": "fp-mode-roundtrip.S",
+      "bytes": 1248,
+      "sha256": "af8438f9583c643b5fc314d718879e0823c19c8ec6f3e2bc84801425980bb94a"
+    },
+    {
+      "path": "host-ctest.log",
+      "bytes": 694,
+      "sha256": "27783423a3a63b1f9f2db379f5b0854ea3a7376cb3b4dce5bba616f4b2ed039c"
+    },
+    {
+      "path": "identity.json",
+      "bytes": 567,
+      "sha256": "940fef9c27fc6d87b89d7647380963325f084b9eba69defbaf59f62c1f0f6f1d"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 3356,
+      "sha256": "623c574f726ae9f8d5bfe6006292b746f4d0a2c0d427e5fedbc6a0ba6400d226"
+    },
+    {
+      "path": "mode-probe-summary.json",
+      "bytes": 5575,
+      "sha256": "08b55207d81c5cfa55d7fa34fe769cdbb30c18da146687a1221c06a6ac190906"
+    },
+    {
+      "path": "phone-cleanup-receipt.json",
+      "bytes": 277,
+      "sha256": "4852f1fcfd45b5e524700fb4c343922b6dfb92c63554304fae27dd64312d75cf"
+    },
+    {
+      "path": "pipeline-test.stdout",
+      "bytes": 88,
+      "sha256": "d8d8ac61ef7162c238adf29ee182165f8aa847043bc4d0ad5667c4b97ec12109"
+    },
+    {
+      "path": "raw-output.jsonl",
+      "bytes": 1174638,
+      "sha256": "26bd15285c7f634db7d7649c93b0a61ea16e344063ada059702289cc72ce40f6"
+    },
+    {
+      "path": "remote-identities-after.stdout",
+      "bytes": 1716,
+      "sha256": "35f043e8401863b25e7139d69faf515218f32b7b30f034faf1c5d2bc45e6fbd6"
+    },
+    {
+      "path": "remote-identities-before.stdout",
+      "bytes": 1716,
+      "sha256": "35f043e8401863b25e7139d69faf515218f32b7b30f034faf1c5d2bc45e6fbd6"
+    },
+    {
+      "path": "runtime-records-before-disk-resume.json",
+      "bytes": 62390,
+      "sha256": "f1c2920ee992d5f5c8137c31bc75d80e895c6cd0068c7ae5005d8ddd007b2fd1"
+    },
+    {
+      "path": "runtime-records.json",
+      "bytes": 91057,
+      "sha256": "bc7263bcc72d0e71f043f2fcecfe2941c2092684510629716f03cd3ef04ad249"
+    },
+    {
+      "path": "smoke-summary.json",
+      "bytes": 2104,
+      "sha256": "f9cb92f501e8193f196947b54effffd133e5cb5f947c375dd55aa06a6b828442"
+    },
+    {
+      "path": "source-manifest.json",
+      "bytes": 21430,
+      "sha256": "8fddcc64f47dc8e81378fad86601c80c45bd29455d467f8f947ca57f1576c3b7"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 37795,
+      "sha256": "aa35f055ffe09486f2c636bfb5a3291195ac2c8891a0de1d40aee6ae25545762"
+    }
+  ],
+  "runner": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/parity-gap-optimization-20261105/attempt8/run.py",
+    "sha256": "236613327dca02b3827dc56d4dd46300c0a47aadef1a3e68e8651ca317ccf3bf"
+  },
+  "analysis": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/parity-gap-optimization-20261105/analyze.py",
+    "sha256": "dfb6455f63e48a2a9f6107424564a9568e43610b8917c9622f00f05c6169b428"
+  }
+}

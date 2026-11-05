@@ -1,0 +1,6 @@
+NX729J
+nubia/NX729J/NX729J:14/UKQ1.230917.001/20240508.031843:user/release-keys
+Linux localhost 5.15.104-android13-8-00002-g1f083f1cee62-ab10640417 #1 SMP PREEMPT Thu Aug 10 14:19:34 UTC 2023 aarch64 Toybox
+10ea42f0-5592-4d3b-ba76-6b672423ad7a
+Filesystem       1K-blocks      Used Available Use% Mounted on
+/dev/block/dm-52 476244812 470206660   5907080  99% /data/user/0

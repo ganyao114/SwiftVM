@@ -1,0 +1,333 @@
+{
+  "method": "Each arm/case uses observation whose total is median. FEX remaining_ticks are exclusive and close exactly; SVM other is measured residual. Native owner release differs from FEX logical working-buffer release.",
+  "cases": {
+    "coremark": {
+      "block": {
+        "round": 1,
+        "prefix": "compile-coremark-block-1",
+        "total_ms": 44.535325,
+        "exclusive_ms": {
+          "formation_and_ir": 11.407836,
+          "ir_optimization": 9.031221,
+          "allocation_and_encoding": 14.533774,
+          "transfer_and_publication": 7.600464,
+          "native_owner_release": 0.419687,
+          "other": 1.5423430000000025
+        }
+      },
+      "function": {
+        "round": 0,
+        "prefix": "compile-coremark-function-0",
+        "total_ms": 81.981761,
+        "exclusive_ms": {
+          "formation_and_ir": 28.603763,
+          "ir_optimization": 19.576054,
+          "allocation_and_encoding": 28.55444,
+          "transfer_and_publication": 4.215056,
+          "native_owner_release": 0.435677,
+          "other": 0.5967710000000039
+        }
+      },
+      "fex": {
+        "round": 2,
+        "prefix": "compile-coremark-fex-2",
+        "total_ms": 47.7496875,
+        "exclusive_ms": {
+          "formation_and_ir": 23.195989583333333,
+          "ir_optimization": 6.427864583333333,
+          "allocation_and_encoding": 13.8528125,
+          "transfer_and_publication": 3.2339583333333333,
+          "logical_work_buffer_release": 0.32276041666666666,
+          "other": 0.7163020833333333
+        }
+      }
+    },
+    "int": {
+      "block": {
+        "round": 1,
+        "prefix": "compile-int-block-1",
+        "total_ms": 1.843482,
+        "exclusive_ms": {
+          "formation_and_ir": 0.622129,
+          "ir_optimization": 0.246097,
+          "allocation_and_encoding": 0.47953,
+          "transfer_and_publication": 0.395986,
+          "native_owner_release": 0.054896,
+          "other": 0.044844000000000106
+        }
+      },
+      "function": {
+        "round": 2,
+        "prefix": "compile-int-function-2",
+        "total_ms": 1.759633,
+        "exclusive_ms": {
+          "formation_and_ir": 0.588276,
+          "ir_optimization": 0.269999,
+          "allocation_and_encoding": 0.429113,
+          "transfer_and_publication": 0.373801,
+          "native_owner_release": 0.054584,
+          "other": 0.04386000000000001
+        }
+      },
+      "fex": {
+        "round": 0,
+        "prefix": "compile-int-fex-0",
+        "total_ms": 1.489375,
+        "exclusive_ms": {
+          "formation_and_ir": 0.7866145833333333,
+          "ir_optimization": 0.17994791666666668,
+          "allocation_and_encoding": 0.4378125,
+          "transfer_and_publication": 0.06880208333333333,
+          "logical_work_buffer_release": 0.0046875,
+          "other": 0.011510416666666667
+        }
+      }
+    },
+    "fp": {
+      "block": {
+        "round": 1,
+        "prefix": "compile-fp-block-1",
+        "total_ms": 2.443271,
+        "exclusive_ms": {
+          "formation_and_ir": 0.866446,
+          "ir_optimization": 0.403287,
+          "allocation_and_encoding": 0.609638,
+          "transfer_and_publication": 0.473594,
+          "native_owner_release": 0.042708,
+          "other": 0.04759800000000025
+        }
+      },
+      "function": {
+        "round": 1,
+        "prefix": "compile-fp-function-1",
+        "total_ms": 2.430731,
+        "exclusive_ms": {
+          "formation_and_ir": 0.840671,
+          "ir_optimization": 0.454531,
+          "allocation_and_encoding": 0.615101,
+          "transfer_and_publication": 0.414112,
+          "native_owner_release": 0.058594,
+          "other": 0.047722000000000264
+        }
+      },
+      "fex": {
+        "round": 0,
+        "prefix": "compile-fp-fex-0",
+        "total_ms": 1.6821354166666667,
+        "exclusive_ms": {
+          "formation_and_ir": 0.8749479166666667,
+          "ir_optimization": 0.20276041666666667,
+          "allocation_and_encoding": 0.5053645833333333,
+          "transfer_and_publication": 0.08260416666666667,
+          "logical_work_buffer_release": 0.005520833333333333,
+          "other": 0.0109375
+        }
+      }
+    },
+    "mem": {
+      "block": {
+        "round": 0,
+        "prefix": "compile-mem-block-0",
+        "total_ms": 2.144583,
+        "exclusive_ms": {
+          "formation_and_ir": 0.680681,
+          "ir_optimization": 0.322756,
+          "allocation_and_encoding": 0.526773,
+          "transfer_and_publication": 0.43474,
+          "native_owner_release": 0.123802,
+          "other": 0.055830999999999964
+        }
+      },
+      "function": {
+        "round": 0,
+        "prefix": "compile-mem-function-0",
+        "total_ms": 2.2077,
+        "exclusive_ms": {
+          "formation_and_ir": 0.693426,
+          "ir_optimization": 0.343487,
+          "allocation_and_encoding": 0.572557,
+          "transfer_and_publication": 0.403435,
+          "native_owner_release": 0.138593,
+          "other": 0.05620199999999986
+        }
+      },
+      "fex": {
+        "round": 2,
+        "prefix": "compile-mem-fex-2",
+        "total_ms": 1.6372395833333333,
+        "exclusive_ms": {
+          "formation_and_ir": 0.8866145833333333,
+          "ir_optimization": 0.19338541666666667,
+          "allocation_and_encoding": 0.46015625,
+          "transfer_and_publication": 0.078125,
+          "logical_work_buffer_release": 0.00609375,
+          "other": 0.012864583333333334
+        }
+      }
+    },
+    "branch": {
+      "block": {
+        "round": 0,
+        "prefix": "compile-branch-block-0",
+        "total_ms": 1.918283,
+        "exclusive_ms": {
+          "formation_and_ir": 0.610785,
+          "ir_optimization": 0.335106,
+          "allocation_and_encoding": 0.453384,
+          "transfer_and_publication": 0.420104,
+          "native_owner_release": 0.053542,
+          "other": 0.0453619999999999
+        }
+      },
+      "function": {
+        "round": 1,
+        "prefix": "compile-branch-function-1",
+        "total_ms": 1.767874,
+        "exclusive_ms": {
+          "formation_and_ir": 0.600631,
+          "ir_optimization": 0.299221,
+          "allocation_and_encoding": 0.400574,
+          "transfer_and_publication": 0.367187,
+          "native_owner_release": 0.055573,
+          "other": 0.04468799999999984
+        }
+      },
+      "fex": {
+        "round": 0,
+        "prefix": "compile-branch-fex-0",
+        "total_ms": 1.6731770833333333,
+        "exclusive_ms": {
+          "formation_and_ir": 0.91921875,
+          "ir_optimization": 0.19041666666666668,
+          "allocation_and_encoding": 0.46401041666666665,
+          "transfer_and_publication": 0.08328125,
+          "logical_work_buffer_release": 0.005416666666666667,
+          "other": 0.010833333333333334
+        }
+      }
+    },
+    "call": {
+      "block": {
+        "round": 1,
+        "prefix": "compile-call-block-1",
+        "total_ms": 2.056503,
+        "exclusive_ms": {
+          "formation_and_ir": 0.779626,
+          "ir_optimization": 0.2826,
+          "allocation_and_encoding": 0.439527,
+          "transfer_and_publication": 0.438741,
+          "native_owner_release": 0.064687,
+          "other": 0.05132200000000031
+        }
+      },
+      "function": {
+        "round": 0,
+        "prefix": "compile-call-function-0",
+        "total_ms": 1.855675,
+        "exclusive_ms": {
+          "formation_and_ir": 0.584685,
+          "ir_optimization": 0.283287,
+          "allocation_and_encoding": 0.467293,
+          "transfer_and_publication": 0.403486,
+          "native_owner_release": 0.06375,
+          "other": 0.05317399999999983
+        }
+      },
+      "fex": {
+        "round": 0,
+        "prefix": "compile-call-fex-0",
+        "total_ms": 1.6111458333333333,
+        "exclusive_ms": {
+          "formation_and_ir": 0.8075,
+          "ir_optimization": 0.1978125,
+          "allocation_and_encoding": 0.4825520833333333,
+          "transfer_and_publication": 0.09453125,
+          "logical_work_buffer_release": 0.009322916666666667,
+          "other": 0.019427083333333334
+        }
+      }
+    },
+    "func_tests": {
+      "block": {
+        "round": 0,
+        "prefix": "compile-func_tests-block-0",
+        "total_ms": 22.36998,
+        "exclusive_ms": {
+          "formation_and_ir": 5.661817,
+          "ir_optimization": 4.228615,
+          "allocation_and_encoding": 6.924119,
+          "transfer_and_publication": 4.380756,
+          "native_owner_release": 0.240729,
+          "other": 0.9339440000000003
+        }
+      },
+      "function": {
+        "round": 1,
+        "prefix": "compile-func_tests-function-1",
+        "total_ms": 38.516977,
+        "exclusive_ms": {
+          "formation_and_ir": 14.296924,
+          "ir_optimization": 8.829852,
+          "allocation_and_encoding": 12.417818,
+          "transfer_and_publication": 2.354531,
+          "native_owner_release": 0.249844,
+          "other": 0.3680079999999961
+        }
+      },
+      "fex": {
+        "round": 2,
+        "prefix": "compile-func_tests-fex-2",
+        "total_ms": 30.35427083333333,
+        "exclusive_ms": {
+          "formation_and_ir": 13.632395833333334,
+          "ir_optimization": 4.4496875,
+          "allocation_and_encoding": 9.486822916666666,
+          "transfer_and_publication": 2.0945833333333335,
+          "logical_work_buffer_release": 0.21963541666666667,
+          "other": 0.4711458333333333
+        }
+      }
+    },
+    "x87_bench": {
+      "block": {
+        "round": 2,
+        "prefix": "compile-x87_bench-block-2",
+        "total_ms": 0.567186,
+        "exclusive_ms": {
+          "formation_and_ir": 0.170831,
+          "ir_optimization": 0.07026,
+          "allocation_and_encoding": 0.10427,
+          "transfer_and_publication": 0.106511,
+          "native_owner_release": 0.099063,
+          "other": 0.016251000000000015
+        }
+      },
+      "function": {
+        "round": 2,
+        "prefix": "compile-x87_bench-function-2",
+        "total_ms": 0.529117,
+        "exclusive_ms": {
+          "formation_and_ir": 0.195992,
+          "ir_optimization": 0.033594,
+          "allocation_and_encoding": 0.074896,
+          "transfer_and_publication": 0.06026,
+          "native_owner_release": 0.145156,
+          "other": 0.019218999999999986
+        }
+      },
+      "fex": {
+        "round": 0,
+        "prefix": "compile-x87_bench-fex-0",
+        "total_ms": 0.29760416666666667,
+        "exclusive_ms": {
+          "formation_and_ir": 0.11109375,
+          "ir_optimization": 0.04109375,
+          "allocation_and_encoding": 0.1171875,
+          "transfer_and_publication": 0.0215625,
+          "logical_work_buffer_release": 0.002447916666666667,
+          "other": 0.00421875
+        }
+      }
+    }
+  }
+}

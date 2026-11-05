@@ -1,0 +1,139 @@
+{
+  "utc": "2026-11-05T05:30:39.051978+00:00",
+  "status": "all original seven incomplete workloads now pass both SVM scopes; full comparison qualified",
+  "base_commit": "13ffa48f1d984cd7d600b5c93601301462b13570",
+  "working_tree_modified": true,
+  "source_digest": "e1b33899baf9b85e104bc5703eccc389e89cf415f902df9552476c4cdcee769a",
+  "source_files": 118,
+  "source_changed_during_measurement": false,
+  "deployed_inputs_unchanged": true,
+  "runtime_observations": 72,
+  "compile_observations": 72,
+  "all_observations_valid": true,
+  "host_contracts": 5,
+  "android_backend_checks": 264721,
+  "original_worktree_frozen": true,
+  "final_candidate_compressed_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt8/candidate.gz",
+  "raw_directory": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt8",
+  "earlier_attempts_directory": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105",
+  "source_snapshot": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt8/source",
+  "files": [
+    {
+      "path": "backend-test.stdout",
+      "bytes": 103,
+      "sha256": "816679d8c337ac3930549d6bbd5a27cd27b46726f871800b93dd41e93a4bedeb"
+    },
+    {
+      "path": "cases.json",
+      "bytes": 1130,
+      "sha256": "e9485bc5fc5721e47258d169d593e6b9d3d186f6124640841350bf80dddc0f9b"
+    },
+    {
+      "path": "commands.json",
+      "bytes": 142973,
+      "sha256": "29448417245c1f128a585bd6a9bdc309a3232f9ee7c05f8d945d86404355b972"
+    },
+    {
+      "path": "compile-records.json",
+      "bytes": 266658,
+      "sha256": "403e09a83a11b2c784c20b455ff6150bfd08979d21bc8d00b521a0edf300ba49"
+    },
+    {
+      "path": "device-capabilities.json",
+      "bytes": 662,
+      "sha256": "75fc088d5a1f323fadaa0587b83caee12af0681cda0f9a733c09c1c3e51b7966"
+    },
+    {
+      "path": "environment.json",
+      "bytes": 809,
+      "sha256": "4097bbacd5f8b42a472bed7318b155eb6524e7df14a2e713bc908fcafaaf55bb"
+    },
+    {
+      "path": "host-artifact-cleanup-receipt.json",
+      "bytes": 2313,
+      "sha256": "7592d451ecb4f330a526aa044cd8e97cd181b82193197e7cd62d6ef1219cca0d"
+    },
+    {
+      "path": "host-ctest.log",
+      "bytes": 694,
+      "sha256": "f5d060a2752b0d4f507f803ce2eb822835f4d45dcb02ff4434223f776b4d2828"
+    },
+    {
+      "path": "identity.json",
+      "bytes": 567,
+      "sha256": "9ac091c8af710d1145a6297f8039fa348bf053b778c35a00bbcfc4ad3c73c1d9"
+    },
+    {
+      "path": "inputs.json",
+      "bytes": 3076,
+      "sha256": "e8c63877ec45a9ff0510700c46dc4a46e2da3c665282f5a470886bef5ecdd6cd"
+    },
+    {
+      "path": "native-golden-func-tests.txt",
+      "bytes": 177,
+      "sha256": "3ccbe1fc6cbcf98802e5c39f25004b591afce41038a78f89e3c23ce083c4395b"
+    },
+    {
+      "path": "native-golden-suite.txt",
+      "bytes": 300,
+      "sha256": "e1156b278da1bfbcc82c5e1bce7f75dad2e9a4a96714d79bc01e455f827e9bf0"
+    },
+    {
+      "path": "phone-cleanup-receipt.json",
+      "bytes": 287,
+      "sha256": "05917902b53f601ba4f261cf9d9adc97493c662eb898722c2a600607ff9dc363"
+    },
+    {
+      "path": "pipeline-test.stdout",
+      "bytes": 88,
+      "sha256": "d8d8ac61ef7162c238adf29ee182165f8aa847043bc4d0ad5667c4b97ec12109"
+    },
+    {
+      "path": "raw-output.jsonl",
+      "bytes": 1168066,
+      "sha256": "ed69d56d0f671080fbf78d922af4b9cab3857eebf94da5caea455968bbf420c6"
+    },
+    {
+      "path": "remote-identities-after.stdout",
+      "bytes": 1718,
+      "sha256": "ca2b97d1de8221b4055797d859935c20a56038e7839b52e3f62dd01e1187ffc2"
+    },
+    {
+      "path": "remote-identities-before.stdout",
+      "bytes": 1718,
+      "sha256": "ca2b97d1de8221b4055797d859935c20a56038e7839b52e3f62dd01e1187ffc2"
+    },
+    {
+      "path": "runtime-records.json",
+      "bytes": 96577,
+      "sha256": "f4c087a385bfa675cde0da93c21c0e46cf08d5c4a50a09213f68ae51a5037b32"
+    },
+    {
+      "path": "smoke-summary.json",
+      "bytes": 2104,
+      "sha256": "f9cb92f501e8193f196947b54effffd133e5cb5f947c375dd55aa06a6b828442"
+    },
+    {
+      "path": "source-manifest.json",
+      "bytes": 21429,
+      "sha256": "b276580f386802b6822f49c5951c59f2fe102fa41a7ad321b0e6f7d369ac1784"
+    },
+    {
+      "path": "summary.json",
+      "bytes": 36383,
+      "sha256": "28f09f006f36b2e1112b3f588a8cb5c2124c72c67fecbb14e23710b8abeeb348"
+    }
+  ],
+  "runner": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/attempt8/run.py",
+    "sha256": "973fad4a5ae8a77aa8ed8da0758076cc15fb4d7b1a5bfc2673958a5b071174bf"
+  },
+  "analysis": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/analyze.py",
+    "sha256": "dfb6455f63e48a2a9f6107424564a9568e43610b8917c9622f00f05c6169b428"
+  },
+  "seal": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/benchmark-completion-20261105/seal_candidate.py",
+    "sha256": "8fcbd597fe9b588212911f077f77a74ad111c49fbaa77f5239d1d8b1a450dfff"
+  }
+}

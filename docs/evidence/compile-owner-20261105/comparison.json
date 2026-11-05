@@ -1,0 +1,114 @@
+{
+  "coremark": {
+    "block": {
+      "before_compile_ms": 47.124646,
+      "after_compile_ms": 44.535325,
+      "change_fraction": -0.05494621646600806,
+      "work_unchanged": true
+    },
+    "function": {
+      "before_compile_ms": 83.861813,
+      "after_compile_ms": 81.981761,
+      "change_fraction": -0.022418451649739435,
+      "work_unchanged": true
+    }
+  },
+  "int": {
+    "block": {
+      "before_compile_ms": 1.790108,
+      "after_compile_ms": 1.843482,
+      "change_fraction": 0.02981607813606768,
+      "work_unchanged": true
+    },
+    "function": {
+      "before_compile_ms": 1.879538,
+      "after_compile_ms": 1.759633,
+      "change_fraction": -0.06379493258449676,
+      "work_unchanged": true
+    }
+  },
+  "fp": {
+    "block": {
+      "before_compile_ms": 2.467856,
+      "after_compile_ms": 2.443271,
+      "change_fraction": -0.009962088549736903,
+      "work_unchanged": true
+    },
+    "function": {
+      "before_compile_ms": 2.468025,
+      "after_compile_ms": 2.430731,
+      "change_fraction": -0.015110868001742217,
+      "work_unchanged": true
+    }
+  },
+  "mem": {
+    "block": {
+      "before_compile_ms": 2.267236,
+      "after_compile_ms": 2.144583,
+      "change_fraction": -0.05409802949494458,
+      "work_unchanged": true
+    },
+    "function": {
+      "before_compile_ms": 2.302386,
+      "after_compile_ms": 2.2077,
+      "change_fraction": -0.041125163200262604,
+      "work_unchanged": true
+    }
+  },
+  "branch": {
+    "block": {
+      "before_compile_ms": 1.911407,
+      "after_compile_ms": 1.918283,
+      "change_fraction": 0.003597350014936662,
+      "work_unchanged": true
+    },
+    "function": {
+      "before_compile_ms": 1.788594,
+      "after_compile_ms": 1.767874,
+      "change_fraction": -0.011584518342340422,
+      "work_unchanged": true
+    }
+  },
+  "call": {
+    "block": {
+      "before_compile_ms": 1.914161,
+      "after_compile_ms": 2.056503,
+      "change_fraction": 0.07436260586230747,
+      "work_unchanged": true
+    },
+    "function": {
+      "before_compile_ms": 1.827291,
+      "after_compile_ms": 1.855675,
+      "change_fraction": 0.015533377004538496,
+      "work_unchanged": true
+    }
+  },
+  "func_tests": {
+    "block": {
+      "before_compile_ms": 23.975872,
+      "after_compile_ms": 22.36998,
+      "change_fraction": -0.06697950339407877,
+      "work_unchanged": true
+    },
+    "function": {
+      "before_compile_ms": 39.716056,
+      "after_compile_ms": 38.516977,
+      "change_fraction": -0.03019129089756556,
+      "work_unchanged": true
+    }
+  },
+  "x87_bench": {
+    "block": {
+      "before_compile_ms": 0.552914,
+      "after_compile_ms": 0.567186,
+      "change_fraction": 0.02581233247846848,
+      "work_unchanged": true
+    },
+    "function": {
+      "before_compile_ms": 0.477394,
+      "after_compile_ms": 0.529117,
+      "change_fraction": 0.10834447018605164,
+      "work_unchanged": true
+    }
+  }
+}
