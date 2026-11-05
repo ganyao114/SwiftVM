@@ -14,6 +14,8 @@ inline constexpr std::uint64_t PackedDynamicFlags = 0xf40000ff;
 inline constexpr unsigned DispatchSlotShift = 5, DispatchOccupiedOffset = 24, DispatchHashShift = 13;
 inline constexpr unsigned ContextSlotsOffset = 24, ContextDispatchesOffset = 56,
         ContextHitsOffset = 64, ContextProbesOffset = 144;
+// Per actual dynamic tail: sixteen (PC,entry) pairs plus one writable base alias.
+inline constexpr unsigned DynamicCacheEntries = 16, DynamicCacheWords = DynamicCacheEntries * 4 + 2;
 
 // The runtime's pinned Uniform ABI. Callers admit only the actual 8/12/16
 // layouts; this one mapping is consumed by allocation and machine emission.

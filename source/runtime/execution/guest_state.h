@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "runtime/ir/x87.h"
+
 namespace swift::runtime::execution {
 
 // distorm/x86-64 order. This is the new runner's actual ABI, independent of
@@ -15,10 +17,11 @@ struct GuestState {
     // Preserve the complete guest word, including explicitly written status
     // bits. Numeric operations do not accumulate MXCSR exception state.
     std::uint32_t mxcsr{0x1f80};
+    ir::X87State x87;
 };
 static_assert(offsetof(GuestState, pc) == 128 && offsetof(GuestState, packed_flags) == 136);
 static_assert(offsetof(GuestState, fs_base) == 144 && offsetof(GuestState, gs_base) == 152);
 static_assert(offsetof(GuestState, xmm) == 160 && offsetof(GuestState, mxcsr) == 416);
-static_assert(sizeof(GuestState) == 432);
+static_assert(offsetof(GuestState, x87) == 432 && sizeof(GuestState) == 576);
 
 } // namespace swift::runtime::execution

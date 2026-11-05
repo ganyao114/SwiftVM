@@ -335,28 +335,32 @@ INST(VecSha256Rnds2, Value, Arg0, (Effect::None), Value, Value, Value)
 // selection; ARM64 follows FEX here. Finite/zero/infinity results retain
 // their opcode semantics. This policy does not relax MIN/MAX selection,
 // comparison masks, conversion sentinels or preservation of unwritten lanes.
-INST(VecFAddScalar32, Value, Arg0, (Effect::Unknown), Value, Value)
-INST(VecFSubScalar32, Value, Arg0, (Effect::Unknown), Value, Value)
-INST(VecFMulScalar32, Value, Arg0, (Effect::Unknown), Value, Value)
-INST(VecFDivScalar32, Value, Arg0, (Effect::Unknown), Value, Value)
-INST(VecFAddScalar64, Value, Arg0, (Effect::Unknown), Value, Value)
-INST(VecFSubScalar64, Value, Arg0, (Effect::Unknown), Value, Value)
-INST(VecFMulScalar64, Value, Arg0, (Effect::Unknown), Value, Value)
-INST(VecFDivScalar64, Value, Arg0, (Effect::Unknown), Value, Value)
+// Numerical FP reads the caller's active FP environment. These operations
+// neither observe arbitrary Uniform state/guest flags nor publish sticky
+// exceptions or traps. Environment changes remain at their actual ordered
+// writers; ReadHostState does not make FP arithmetic a constant/pure opcode.
+INST(VecFAddScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
+INST(VecFSubScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
+INST(VecFMulScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
+INST(VecFDivScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
+INST(VecFAddScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
+INST(VecFSubScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
+INST(VecFMulScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
+INST(VecFDivScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
 
 // Packed IEEE floating-point operations. Imm is the lane width (32 or 64).
-INST(VecFAdd, Value, Arg0, (Effect::Unknown), Value, Value, Imm)
-INST(VecFSub, Value, Arg0, (Effect::Unknown), Value, Value, Imm)
-INST(VecFMul, Value, Arg0, (Effect::Unknown), Value, Value, Imm)
-INST(VecFDiv, Value, Arg0, (Effect::Unknown), Value, Value, Imm)
-INST(VecFMinMax, Value, Arg0, (Effect::Unknown), Value, Value, Imm, Imm, Imm)
+INST(VecFAdd, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
+INST(VecFSub, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
+INST(VecFMul, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
+INST(VecFDiv, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
+INST(VecFMinMax, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
 // kind: 0=sqrt, 1=reciprocal estimate, 2=reciprocal-sqrt estimate.
-INST(VecFUnary, Value, Arg0, (Effect::Unknown), Value, Value, Imm, Imm, Imm)
+INST(VecFUnary, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
 
 // Scalar compare: low FP lanes of the two vectors, with lane width in bits.
 // U32 result: bit0 CF / bit1 PF / bit2 ZF. Greater=0, less=1, equal=4,
 // unordered=7. Quiet/signaling exception-state differences are not modeled.
-INST(VecFCmp, U32, IntegerFixed, (Effect::Unknown), Value, Value, Imm)
+INST(VecFCmp, U32, IntegerFixed, (Effect::ReadHostState), Value, Value, Imm)
 // Lane-wise compare to an all-ones / all-zeros mask.  The predicate (second
 // Imm) is a RELATION SET, not an ISA's compare encoding: an IEEE 754 compare
 // of two lanes has exactly four mutually exclusive outcomes, and the predicate
@@ -370,7 +374,7 @@ INST(VecFCmp, U32, IntegerFixed, (Effect::Unknown), Value, Value, Imm)
 // MXCSR exception-flag distinction only, measured on hardware, and SwiftVM
 // models no FP exception state).
 // Final Imm is scalar (preserve upper lanes) when non-zero.
-INST(VecFCmpMask, Value, Arg0, (Effect::Unknown), Value, Value, Imm, Imm, Imm)
+INST(VecFCmpMask, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
 
 // Scalar conversions. The result is the raw IEEE/integer bit pattern in a
 // scalar container; widths are supplied as immediates in bits. IntToFloat
@@ -378,12 +382,12 @@ INST(VecFCmpMask, Value, Arg0, (Effect::Unknown), Value, Value, Imm, Imm, Imm)
 // float width, integer width, and a truncate-to-zero selector; invalid signed
 // conversions return that integer width's minInt. No MXCSR sticky/trap state
 // is produced by these numerical operations.
-INST(VecFCvtIntToFloat, Value, Explicit, (Effect::Unknown), Value, Imm, Imm)
-INST(VecFCvtFloatToInt, Value, Explicit, (Effect::Unknown), Value, Imm, Imm, Imm)
-INST(VecFCvtScalar, Value, Explicit, (Effect::Unknown), Value, Imm)
+INST(VecFCvtIntToFloat, Value, Explicit, (Effect::ReadHostState), Value, Imm, Imm)
+INST(VecFCvtFloatToInt, Value, Explicit, (Effect::ReadHostState), Value, Imm, Imm, Imm)
+INST(VecFCvtScalar, Value, Explicit, (Effect::ReadHostState), Value, Imm)
 // 0=dq2ps, 1=dq2pd, 2=ps2dq, 3=ttps2dq, 4=pd2dq, 5=ttpd2dq,
 // 6=ps2pd, 7=pd2ps.
-INST(VecFCvtPacked, Value, Explicit, (Effect::Unknown), Value, Imm)
+INST(VecFCvtPacked, Value, Explicit, (Effect::ReadHostState), Value, Imm)
 
 // De-interleave: the exact dual of VecZip, and the primitive every pairwise /
 // horizontal operation is built from.  The concatenation {a, b} is viewed as
@@ -539,6 +543,11 @@ INST(RestoreFlags, Void, Void, (Effect::WriteFlags), Value, Flags)
 // runtime must resolve the native fault PC; the successful path performs no
 // guest-state write. This is actual exception metadata, not a validation pass.
 INST(FaultLocation, Void, Void, (Effect::Location), Imm)
+// A complete external entry at this Function block's first node. The key is
+// a U64 guest PC, not a physical label. Each declared entry is an SSA root:
+// definitions must dominate uses from every actual external entry. Internal
+// edges keep their ordinary body entry; the backend owns its external prologue.
+INST(EntryPoint, Void, Void, (Effect::Location), Imm)
 
 // Write one complete U64 uniform field. Any nonzero bit in the condition's
 // logical integer view selects the first U64 literal; zero selects the second.

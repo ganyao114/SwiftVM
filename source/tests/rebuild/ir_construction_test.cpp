@@ -277,6 +277,31 @@ void FunctionConstructionAndIncompleteSubmit() {
     CHECK(program.Contains(sum.GetValue()));
 }
 
+void ReusedCapacityHasFreshIdentity() {
+    Builder first{Scope::Block};
+    CHECK(first.Reserve(32, 64, 8) == Error::None);
+    const auto old_block = first.CreateBlock(); CHECK(old_block);
+    CHECK(first.BeginBlock(old_block.block) == Error::None);
+    const auto old_value = Literal(first, 7).GetValue();
+    CHECK(first.EndBlock(Terminal::Return(old_value)) == Error::None);
+    auto submitted = first.Submit(); CHECK(submitted);
+    auto owner = std::move(submitted.program);
+    const auto capacity = owner.ReservedBytes();
+    const TargetInfo known{TargetMode::Known, 0xa64, 0};
+    Builder next{Scope::Function, known, std::move(owner)};
+    CHECK(!owner && next.UnitId() != old_value.unit && next.Operations().empty() && next.Blocks().empty());
+    const auto block = next.CreateBlock(); CHECK(block);
+    CHECK(next.BeginBlock(old_block.block) == Error::ForeignUnit);
+    CHECK(next.BeginBlock(block.block) == Error::None);
+    CHECK(next.Emit<OpCode::BitCast>(Type::U64, {Operand::ValueOf(old_value)}).error == Error::ForeignUnit);
+    const auto value = Literal(next, 11).GetValue();
+    CHECK(value.node == old_value.node && next.EndBlock(Terminal::Return(value)) == Error::None);
+    submitted = next.Submit(); CHECK(submitted);
+    CHECK(submitted.program.ScopeKind() == Scope::Function && submitted.program.Target() == known &&
+            submitted.program.ReservedBytes() == capacity && submitted.program.Contains(value) &&
+            !submitted.program.Contains(old_value));
+}
+
 void RejectedInputIsAtomic() {
     Value stale_value;
     BlockRef stale_block;
@@ -1224,6 +1249,7 @@ int main() {
         BlockConstructionRoundtrip();
         FunctionConstructionAndIncompleteSubmit();
         RejectedInputIsAtomic();
+        ReusedCapacityHasFreshIdentity();
         WidePayloadsAndCompoundBoundaries();
         AllocationFailureIsAtomic();
         MoveAndSubmittedOwnerLifetime();

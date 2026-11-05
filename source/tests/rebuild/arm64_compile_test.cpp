@@ -339,6 +339,16 @@ void ConstantsAndViews() {
             {Operand::Expression(OperandOp::Sub, 2), Operand::ValueOf(source), Operand::Immediate(0xffffffff, Type::U32)})));
     Need(builder.EndBlock(Terminal::Return(shifted, Type::U64)));
     auto program = Submit(builder); auto code = Compile(program, {104});
+    const auto expected_words = code.words;
+    const auto capacity = code.words.capacity();
+    Program empty;
+    arm64::Compile(empty, {104}, code);
+    Check(!code && code.words.empty() && code.faults.empty() && code.links.empty() &&
+            !code.frame_bytes && !code.spill_slots && code.words.capacity() == capacity,
+            "reused output rejects an empty owner without exposing stale code or discarding capacity");
+    arm64::Compile(program, {104}, code);
+    Check(bool(code) && code.words == expected_words && code.words.capacity() == capacity,
+            "success after a rejected request resets the actual output and reuses its buffer");
     for (const auto word : code.words) Check(word != 0xd503201f, "Nop must not emit a machine instruction");
     std::array<std::uint8_t, 136> state{};
     Execute(code, state.data(), 0xffffffc0ULL);
@@ -389,19 +399,26 @@ void Spills() {
     Builder builder{Scope::Block}; Need(builder.BeginBlock(Create(builder)));
     std::array<Value, 48> values{}; u64 expected{};
     for (std::size_t i = 0; i < values.size(); ++i) { values[i] = Constant(builder, 0x1234000000000000ULL + i); expected += 0x1234000000000000ULL + i; }
+    const auto skip = Need(builder.Emit<OpCode::Goto>(Type::U64, {Operand::ValueOf(values[0])}));
+    Store(builder, 65521, Constant(builder, 999));
+    Need(builder.Emit<OpCode::BindLabel>(Type::Void, {Operand::ValueOf(skip)}));
     auto total = values[1];
     for (std::size_t i = 2; i < values.size(); ++i)
         total = Need(builder.Emit<OpCode::Add>(Type::U64, {Operand::ValueOf(total), Operand::ValueOf(values[i])}));
     total = Need(builder.Emit<OpCode::Add>(Type::U64, {Operand::ValueOf(total), Operand::ValueOf(values[0])}));
     Store(builder, 65537, values[0]); // Non-scaled address plus a real spilled input.
+    Store(builder, 65529, skip); // The Goto's numeric result must exist before either edge.
     Need(builder.EndBlock(Terminal::Return(total)));
     auto program = Submit(builder); const auto allocation = arm64::AllocateBlock(program);
     Check(bool(allocation) && allocation.homes[values[0].node.value].spilled, "long-lived value actually spills");
+    Check(allocation.homes[skip.node.value].spilled, "the forward branch's real numeric result spills under the existing pressure");
     auto code = Compile(program); Check(code.spill_slots > 0, "high-pressure frame missing");
     std::vector<std::uint8_t> state(65552);
     Execute(code, state.data(), expected);
 #if defined(__aarch64__) && defined(__ANDROID__)
     Check(Read64(state.data() + 65537) == 0x1234000000000000ULL, "large unaligned uniform spill store");
+    Check(Read64(state.data() + 65521) == 0 && Read64(state.data() + 65529) == 0x1234000000000000ULL,
+            "Goto skips the body and saves its complete spilled numeric result before the taken edge");
 #endif
 }
 
@@ -916,11 +933,34 @@ void DeferredPCLinks() {
     execution::CodeArena arena;
     for (const auto* layout : {&code, &odd}) {
         const auto published = arena.Publish(layout->words, {}, layout->links);
-        if (!published.writable) continue;
         const auto& site = layout->links.front();
         const auto back_words = site.pointer_word - site.branch_word;
-        auto* write = reinterpret_cast<std::uintptr_t*>(published.writable + site.pointer_word * 4);
         const auto entry = reinterpret_cast<std::uintptr_t>(published.entry);
+        struct Ready { u64 pc; std::uintptr_t entry; unsigned calls{}; } ready{site.target_pc, entry};
+        const auto lookup = [](void* opaque, u64 pc) noexcept -> std::uintptr_t {
+            auto& target = *static_cast<Ready*>(opaque); ++target.calls;
+            return pc == target.pc ? target.entry : 0;
+        };
+        const auto prelinked = arena.Publish(layout->words, {}, layout->links, lookup, &ready);
+        const auto linked_entry = reinterpret_cast<std::uintptr_t>(prelinked.entry);
+        const auto linked_delta = static_cast<std::int64_t>(entry - (linked_entry + site.branch_word * 4));
+        const auto* linked_words = reinterpret_cast<const std::uint32_t*>(prelinked.entry);
+        Check(linked_words[site.branch_word] == (prelinked.writable ?
+                    0x14000000u | (static_cast<std::uint32_t>(linked_delta / 4) & 0x03ffffffu) :
+                    0x58000010u | (back_words << 5)) &&
+                Read64(linked_words + site.pointer_word) == (prelinked.writable ? entry :
+                    linked_entry + (site.pointer_word + 2) * 4),
+                "ready links publish patched with an unlinkable alias; single mappings retain their cold owner");
+        ready.entry = entry + (std::uintptr_t{1} << 28);
+        const auto prelinked_far = arena.Publish(layout->words, {}, layout->links, lookup, &ready);
+        const auto* far_words = reinterpret_cast<const std::uint32_t*>(prelinked_far.entry);
+        Check(ready.calls == (prelinked.writable ? 2u : 0u) &&
+                far_words[site.branch_word] == (0x58000010u | (back_words << 5)) &&
+                Read64(far_words + site.pointer_word) == (prelinked_far.writable ? ready.entry :
+                    reinterpret_cast<std::uintptr_t>(prelinked_far.entry) + (site.pointer_word + 2) * 4),
+                "far ready links keep LDR/BR; a single mapping never creates a link it cannot later unlink");
+        if (!published.writable) continue;
+        auto* write = reinterpret_cast<std::uintptr_t*>(published.writable + site.pointer_word * 4);
         const auto* execute = reinterpret_cast<const std::uintptr_t*>(entry + site.pointer_word * 4);
         const auto* branch = reinterpret_cast<const std::uint32_t*>(entry) + site.branch_word;
         const auto load = 0x58000010u | (back_words << 5);
@@ -953,6 +993,65 @@ void DeferredPCLinks() {
     const auto eager = arm64::AllocateBlock(program, &options);
     Check(bool(eager) && !eager.homes[target.value].terminal_only && bool(arm64::Compile(program, options)),
             "generic linked ABI retains eager PC publication and literal materialization");
+}
+
+void CompleteAdditionalEntries() {
+#if defined(__aarch64__) && defined(__ANDROID__)
+    namespace execution = swift::runtime::execution;
+    struct State { execution::GuestState cpu; std::array<u64,20> inputs; u64 seen_pc{}; };
+    constexpr u64 first_pc=0x4100,other_pc=0x4200,flags=0xa5a50000bc000085ULL;
+    for (const bool native_nzcv:{false,true}) {
+        if (native_nzcv && !(getauxval(AT_HWCAP)&HWCAP_FLAGM)) continue;
+        Builder builder{Scope::Function}; const auto first=Create(builder),other=Create(builder);
+        Need(builder.BeginBlock(first));
+        Store(builder,offsetof(execution::GuestState,gprs)+execution::RDX*8,Constant(builder,123));
+        Need(builder.EndBlock(Terminal::Jump(other)));
+        Need(builder.BeginBlock(other));
+        Need(builder.Emit<OpCode::EntryPoint>(Type::Void,{Operand::Immediate(other_pc,Type::U64)}));
+        std::array<Value,20> values;
+        for (unsigned i=0;i<values.size();++i) values[i]=Load(builder,offsetof(State,inputs)+i*8);
+        auto sum=values.front();
+        for (unsigned i=1;i<values.size();++i)
+            sum=Need(builder.Emit<OpCode::Add>(Type::U64,{Operand::ValueOf(sum),Operand::ValueOf(values[i])}));
+        Store(builder,offsetof(execution::GuestState,gprs)+execution::R8*8,sum);
+        Store(builder,offsetof(State,seen_pc),Load(builder,offsetof(execution::GuestState,pc)));
+        Need(builder.EndBlock(Terminal::Return(Constant(builder,42))));
+        auto program=Submit(builder);
+        arm64::CompileOptions options{offsetof(execution::GuestState,packed_flags)};
+        options.dispatcher=reinterpret_cast<std::uintptr_t>(native_nzcv?&execution::SvmNativeDispatchNZCV:&execution::SvmNativeDispatch);
+        options.exit_handler=reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
+        options.pc_offset=offsetof(execution::GuestState,pc);
+        options.pinned_uniform_offset=offsetof(execution::GuestState,gprs);options.pinned_uniform_slots=16;
+        options.private_uniforms=options.fault_locations=options.deferred_pc=true;
+        options.native_nzcv=native_nzcv;options.entry_pc=first_pc;
+        const auto compiled=arm64::Compile(program,options);
+        Check(bool(compiled)&&compiled.entries.size()==1&&compiled.entries[0].pc==other_pc&&compiled.frame_bytes>0,
+                "additional entry owns the same actual nonzero frame as its original unit");
+        execution::CodeArena arena;
+        const auto unit=arena.Publish(compiled.words,compiled.faults,compiled.links);
+        const auto alternate=reinterpret_cast<execution::NativeCode::Function>(
+                reinterpret_cast<std::uintptr_t>(unit.entry)+std::uintptr_t{compiled.entries[0].word}*4);
+        struct Resolver { execution::NativeCode::Function entry; unsigned calls{}; } resolver{};
+        State state;std::atomic<const execution::NativeCode*> active{};
+        execution::NativeRunContext context;
+        context.state=&state.cpu;context.opaque=&resolver;
+        context.resolve=[](void* p,execution::NativeRunContext*) noexcept -> std::uintptr_t {
+            auto& value=*static_cast<Resolver*>(p);++value.calls;return reinterpret_cast<std::uintptr_t>(value.entry);
+        };
+        context.active=&active;context.anchor=&unit;
+        context.pinned_uniform_offset=options.pinned_uniform_offset;context.pinned_uniform_slots=16;
+        context.flags_offset=options.flags_offset;context.pc_offset=options.pc_offset;context.native_nzcv=native_nzcv;
+        for (const bool secondary:{false,true}) {
+            state={};state.cpu.pc=secondary?other_pc:first_pc;state.cpu.packed_flags=flags;
+            for (unsigned i=0;i<state.inputs.size();++i)state.inputs[i]=i+1;
+            resolver.entry=secondary?alternate:unit.entry;resolver.calls=0;
+            Check(execution::SvmRunNative(&state.cpu,&context)==42&&resolver.calls==1&&
+                    state.cpu.gprs[execution::R8]==210&&state.seen_pc==(secondary?other_pc:first_pc)&&
+                    state.cpu.gprs[execution::RDX]==(secondary?0:123)&&state.cpu.packed_flags==flags,
+                    "external prologue and internal body edge preserve SP, own PC, values and complete flags");
+        }
+    }
+#endif
 }
 
 void LinkedDynamicPC() {
@@ -1049,6 +1148,62 @@ void LinkedDynamicPC() {
             Check(state.pc == next_pc && state.gprs[execution::RCX] == next_pc && state.packed_flags == initial,
                     "cold and ready dynamic edges preserve whole packed flags and expose the target PC");
         }
+        Builder local{Scope::Block}; Need(local.BeginBlock(Create(local)));
+        const auto count = Load(local, options.pinned_uniform_offset + execution::RDX * sizeof(u64));
+        Store(local, options.pc_offset, Constant(local, next_pc));
+        const auto skip = Need(local.Emit<OpCode::NotGoto>(Type::U64, {Operand::ValueOf(count)}));
+        const auto address = Load(local, options.pinned_uniform_offset + execution::R8 * sizeof(u64));
+        Need(local.Emit<OpCode::StoreMemoryTSO>(Type::Void,
+                {Operand::ValueOf(address), Operand::ValueOf(Constant(local, 0x55))}));
+        Store(local, options.pinned_uniform_offset + execution::RCX * sizeof(u64), Constant(local, 0x55));
+        Store(local, options.pc_offset, Constant(local, 0x3000));
+        Need(local.Emit<OpCode::BindLabel>(Type::Void, {Operand::ValueOf(skip)}));
+        Store(local, options.pinned_uniform_offset + execution::R11 * sizeof(u64), skip);
+        Need(local.EndBlock(Terminal::Dispatch())); auto local_program = Submit(local);
+        auto local_options = options; local_options.entry_pc = entry_pc;
+        const auto local_code = arm64::Compile(local_program, local_options);
+        Check(bool(local_code) && local_code.links.empty(),
+                "a forward control join reloads the actual PC rather than using the body's constant target");
+        Builder local_target{Scope::Block}; Need(local_target.BeginBlock(Create(local_target)));
+        Need(local_target.EndBlock(Terminal::Return(Constant(local_target, 42))));
+        auto local_target_program = Submit(local_target);
+        // This one Return body is shared by two real PCs. Keep the PC
+        // already published by cold dispatch instead of assigning both
+        // entries the source unit's deferred entry_pc.
+        auto local_target_options = local_options; local_target_options.deferred_pc = false;
+        const auto local_target_code = arm64::Compile(local_target_program, local_target_options);
+        Check(bool(local_target_code), "forward-control target uses the original Return ABI");
+        const auto local_entry = arena.Publish(local_code.words, {}, local_code.links);
+        const auto local_destination = arena.Publish(local_target_code.words, {}, local_target_code.links);
+        execution::DispatchSlot local_slot;
+        resolver.first = &local_entry; resolver.second = &local_destination; resolver.ready = &local_slot;
+        for (const u64 count_value : {u64{0}, u64{0x100}}) {
+            u64 memory = 0x77;
+            const auto selected_pc = count_value ? 0x3000 : next_pc;
+            state = {}; state.pc = entry_pc; state.packed_flags = initial;
+            state.gprs[execution::RDX] = count_value; state.gprs[execution::RCX] = 0x11;
+            state.gprs[execution::R8] = count_value ? reinterpret_cast<std::uintptr_t>(&memory) : 0;
+            resolver.calls = 0; resolver.observed = {}; resolver.target_pc = selected_pc;
+            context.slots = nullptr; context.mask = 0;
+            const auto returned = execution::SvmRunNative(&state, &context);
+            const bool okay = returned == 42 && resolver.calls == 2 &&
+                    resolver.observed[0] == entry_pc && resolver.observed[1] == selected_pc &&
+                    state.pc == selected_pc && state.packed_flags == initial &&
+                    state.gprs[execution::RCX] == (count_value ? 0x55 : 0x11) &&
+                    state.gprs[execution::R11] == count_value && memory == (count_value ? 0x55 : 0x77);
+            if (!okay) std::fprintf(stderr,
+                    "forward-local native=%u count=%llx ret=%llx calls=%u observed=%llx/%llx pc=%llx flags=%llx rcx=%llx r11=%llx memory=%llx\n",
+                    static_cast<unsigned>(native_nzcv), static_cast<unsigned long long>(count_value),
+                    static_cast<unsigned long long>(returned), resolver.calls,
+                    static_cast<unsigned long long>(resolver.observed[0]), static_cast<unsigned long long>(resolver.observed[1]),
+                    static_cast<unsigned long long>(state.pc), static_cast<unsigned long long>(state.packed_flags),
+                    static_cast<unsigned long long>(state.gprs[execution::RCX]), static_cast<unsigned long long>(state.gprs[execution::R11]),
+                    static_cast<unsigned long long>(memory));
+            Check(okay,
+                    "zero skips even a null memory operand; nonzero commits body state and both paths retain flags, PC and branch value");
+        }
+        resolver.first = &entry; resolver.second = &destination; resolver.ready = &ready; resolver.target_pc = next_pc;
+        context.slots = slots.data(); context.mask = slots.size() - 1;
         if (native_nzcv) {
             constexpr u64 other_pc = 0x3000;
             const auto predicate_source = [&](Condition condition) {
@@ -1087,13 +1242,15 @@ void LinkedDynamicPC() {
             auto at = (other_pc ^ (other_pc >> arm64::abi::DispatchHashShift)) & (slots.size() - 1);
             while (slots[at].occupied) at = (at + 1) & (slots.size() - 1);
             slots[at].pc = other_pc; slots[at].entry = other_destination.entry; slots[at].occupied = true;
-            const auto predicate_entry = arena.Publish(predicate_code.words, {}, predicate_code.links);
-            if (predicate_entry.writable) for (const auto& link : predicate_code.links) {
-                auto* write = reinterpret_cast<std::uintptr_t*>(predicate_entry.writable + link.pointer_word * 4);
-                const auto* execute = reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(predicate_entry.entry) + link.pointer_word * 4);
-                execution::PatchNativeLink(write, execute, reinterpret_cast<std::uintptr_t>(
-                        link.target_pc == next_pc ? destination.entry : other_destination.entry), link.pointer_word - link.branch_word);
-            }
+            struct ReadyTargets { std::uintptr_t no, yes; unsigned calls{}; } targets{
+                reinterpret_cast<std::uintptr_t>(destination.entry), reinterpret_cast<std::uintptr_t>(other_destination.entry)};
+            const auto predicate_entry = arena.Publish(predicate_code.words, {}, predicate_code.links,
+                    [](void* opaque, u64 pc) noexcept -> std::uintptr_t {
+                        auto& ready = *static_cast<ReadyTargets*>(opaque); ++ready.calls;
+                        return pc == next_pc ? ready.no : pc == other_pc ? ready.yes : 0;
+                    }, &targets);
+            Check(targets.calls == (predicate_entry.writable ? 2u : 0u),
+                    "only unlinkable conditional edges resolve during unpublished initialization");
             resolver.first = &predicate_entry;
             const auto run_predicate = [&](bool zero) {
                 const auto flags = zero ? initial | (u64{1} << 30) : initial & ~(u64{1} << 30);
@@ -1158,6 +1315,103 @@ void LinkedDynamicPC() {
         };
         run_callable(false);
         if (native_nzcv) run_callable(true);
+
+        auto cached_options = options;
+        cached_options.entry_pc = entry_pc; cached_options.local_dispatch_cache = true;
+        cached_options.dispatch_mode = arm64::DispatchMode::InlineCounted;
+        cached_options.dispatcher = reinterpret_cast<std::uintptr_t>(native_nzcv
+                ? &execution::SvmNativeDispatchNZCVCounted : &execution::SvmNativeDispatchCounted);
+        const auto cached_code = arm64::Compile(source_program, cached_options);
+        Check(bool(cached_code) && cached_code.links.size() == 1 && cached_code.links[0].branch_word == UINT32_MAX,
+                "one real dynamic site owns one fixed array relocation in the existing link collection");
+        const auto cached_entry = arena.Publish(cached_code.words, {}, cached_code.links);
+        const auto tuple_offset = cached_code.links[0].pointer_word * 4u;
+        const auto* tuple = reinterpret_cast<const std::uint8_t*>(cached_entry.entry) + tuple_offset;
+        const auto cache_fallback = reinterpret_cast<std::uintptr_t>(cached_entry.entry) + cached_code.links[0].target_pc * 4;
+        const auto pair_offset = [](u64 pc) { return ((pc >> 2) & (arm64::abi::DynamicCacheEntries - 1)) * 16u; };
+        bool callable_entries = true;
+        for (unsigned i = 0; i < arm64::abi::DynamicCacheEntries; ++i)
+            callable_entries &= Read64(tuple + i * 16 + 8) == cache_fallback;
+        Check(callable_entries && Read64(tuple + arm64::abi::DynamicCacheEntries * 16) == (cached_entry.writable
+                    ? reinterpret_cast<std::uintptr_t>(cached_entry.writable + tuple_offset) : 0),
+                "publication starts with sixteen callable site fallbacks and the actual writable DATA base alias");
+        execution::DispatchSlot cached_slot;
+        cached_slot.pc = callable_pc; cached_slot.entry = cold; cached_slot.occupied = true;
+        // Both counted variants use the counted pending thunk; it removes
+        // only the preceding directory tag-match hit, never a local hit.
+        cached_slot.entry = reinterpret_cast<execution::NativeCode::Function>(&execution::SvmNativePendingCounted);
+        resolver.first = &cached_entry; resolver.second = &callable_target;
+        resolver.ready = &cached_slot; resolver.target_pc = callable_pc;
+        const auto run_cached = [&](unsigned calls, u64 probes, u64 hits, u64 target_pc) {
+            state = {}; state.pc = entry_pc; state.packed_flags = initial;
+            state.gprs[execution::RAX] = target_pc;
+            resolver.calls = 0; resolver.observed = {}; resolver.target_pc = target_pc;
+            context.dispatcher_entries = context.probe_steps = context.cache_hits = 0;
+            Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == calls &&
+                    state.pc == target_pc && state.gprs[execution::RCX] == target_pc && state.packed_flags == initial &&
+                    context.dispatcher_entries == 1 && context.probe_steps == probes && context.cache_hits == hits,
+                    "local and directory hits preserve PC/Return/whole flags and count one dispatch with only real directory probes");
+        };
+        context.slots = &cached_slot; context.mask = 0;
+        run_cached(2, 1, 0, callable_pc);
+        const auto first_offset = pair_offset(callable_pc);
+        Check(Read64(tuple + first_offset + 8) == cache_fallback,
+                "a callable pending payload leaves the local site fallback intact, including PC zero");
+        run_cached(1, 1, 1, callable_pc);
+        if (cached_entry.writable) {
+            Check(Read64(tuple + first_offset) == callable_pc &&
+                    Read64(tuple + first_offset + 8) == reinterpret_cast<std::uintptr_t>(callable_target.entry),
+                    "only the ready code_id directory result warms this actual site's selected pair");
+            context.slots = nullptr; // A real local hit does not consult even the nullable public directory.
+            run_cached(1, 0, 1, callable_pc);
+            for (unsigned i = 0; i < arm64::abi::DynamicCacheEntries; ++i)
+                __atomic_store_n(reinterpret_cast<std::uintptr_t*>(cached_entry.writable + tuple_offset + i * 16 + 8),
+                                 cache_fallback, __ATOMIC_RELEASE);
+            context.slots = &cached_slot;
+            run_cached(1, 1, 1, callable_pc);
+            const auto changed_pc = callable_pc + 4;
+            auto changed_options = callable_target_options; changed_options.entry_pc = changed_pc;
+            const auto changed_code = arm64::Compile(target_program, changed_options);
+            Check(bool(changed_code), "the different-index ready target preserves its actual PC observer");
+            const auto changed_target = arena.Publish(changed_code.words, {}, changed_code.links);
+            cached_slot.pc = changed_pc; cached_slot.entry = changed_target.entry; cached_slot.code_id = 1;
+            resolver.second = &changed_target;
+            run_cached(1, 1, 1, changed_pc);
+            const auto second_offset = pair_offset(changed_pc);
+            Check(first_offset != second_offset && Read64(tuple + first_offset) == callable_pc &&
+                    Read64(tuple + second_offset) == changed_pc &&
+                    Read64(tuple + second_offset + 8) == reinterpret_cast<std::uintptr_t>(changed_target.entry),
+                    "different indices retain both full-PC ready targets");
+            context.slots = nullptr;
+            run_cached(1, 0, 1, callable_pc);
+            run_cached(1, 0, 1, changed_pc);
+
+            const auto collision_pc = callable_pc + arm64::abi::DynamicCacheEntries * 4;
+            auto collision_options = callable_target_options; collision_options.entry_pc = collision_pc;
+            const auto collision_code = arm64::Compile(target_program, collision_options);
+            Check(bool(collision_code), "the same-index replacement preserves its actual PC observer");
+            const auto collision_target = arena.Publish(collision_code.words, {}, collision_code.links);
+            context.slots = &cached_slot;
+            cached_slot.pc = collision_pc; cached_slot.entry = collision_target.entry; cached_slot.code_id = 2;
+            resolver.second = &collision_target;
+            run_cached(1, 1, 1, collision_pc);
+            Check(pair_offset(collision_pc) == first_offset && Read64(tuple + first_offset) == collision_pc &&
+                    Read64(tuple + first_offset + 8) == reinterpret_cast<std::uintptr_t>(collision_target.entry) &&
+                    Read64(tuple + second_offset) == changed_pc,
+                    "a full-PC collision probes the directory and replaces only its selected pair");
+            context.slots = nullptr;
+            run_cached(1, 0, 1, collision_pc);
+            run_cached(1, 0, 1, changed_pc);
+            context.slots = &cached_slot;
+            cached_slot.pc = callable_pc; cached_slot.entry = callable_target.entry; cached_slot.code_id = 0;
+            resolver.second = &callable_target;
+            run_cached(1, 1, 1, callable_pc);
+            context.slots = nullptr;
+            run_cached(1, 0, 1, callable_pc);
+            Check(Read64(tuple + second_offset) == changed_pc,
+                    "returning to an evicted target can refill without disabling the other index");
+        } else Check(Read64(tuple + first_offset + 8) == cache_fallback,
+                "single-mapping publication retains its callable fallback and uses the directory");
     }
 #endif
 }
@@ -1364,6 +1618,197 @@ void VectorSignedWidenMultiply() {
                 Read64(state.data() + i * 32 + 8) == cases[i].expected[1],
                 "signed low lanes widen exactly, ignore upper noise, and retain the complete product");
 #endif
+}
+
+void PackedFloatingArithmetic() {
+    using Vector = std::array<u64, 2>;
+    const auto singles = [](std::uint32_t a, std::uint32_t b, std::uint32_t c, std::uint32_t d) {
+        return Vector{u64{a} | (u64{b} << 32), u64{c} | (u64{d} << 32)};
+    };
+    struct State {
+        u64 flags;
+        std::uint32_t mxcsr, padding{};
+        std::array<Vector, 4> inputs;
+        std::array<Vector, 8> outputs{};
+        std::array<Vector, 4> denormals;
+        std::array<Vector, 4> flushed{};
+        std::array<Vector, 2> comparison_inputs;
+        std::array<Vector, 5> comparison_outputs{};
+        std::array<Vector, 2> pack_inputs;
+        Vector minimum{};
+    } state{};
+    constexpr u64 initial = 0xa5a50000bc00003cULL;
+    state.flags = initial; state.mxcsr = 0x1f81; // Raw sticky bit is software-owned and preserved.
+    state.inputs = {singles(0x3fc00000, 0xc0000000, 0, 0x41000000),
+                    singles(0x3f000000, 0x40800000, 0x40000000, 0x40000000),
+                    Vector{0x4010000000000000ULL, 0xc020000000000000ULL},
+                    Vector{0x4000000000000000ULL, 0x3fe0000000000000ULL}};
+    [[maybe_unused]] const std::array expected{
+        singles(0x40000000, 0x40000000, 0x40000000, 0x41200000),
+        singles(0x3f800000, 0xc0c00000, 0xc0000000, 0x40c00000),
+        singles(0x3f400000, 0xc1000000, 0, 0x41800000),
+        singles(0x40400000, 0xbf000000, 0, 0x40800000),
+        Vector{0x4018000000000000ULL, 0xc01e000000000000ULL},
+        Vector{0x4000000000000000ULL, 0xc021000000000000ULL},
+        Vector{0x4020000000000000ULL, 0xc010000000000000ULL},
+        Vector{0x4000000000000000ULL, 0xc030000000000000ULL},
+    };
+    state.denormals = {singles(1, 0x80000001, 0x00800000, 0x80800000),
+                       singles(0x7e800000, 0x7e800000, 0x3f000000, 0x3f000000),
+                       Vector{1, 0x8010000000000000ULL},
+                       Vector{0x7fd0000000000000ULL, 0x3fe0000000000000ULL}};
+    [[maybe_unused]] const std::array flush_expected{
+        singles(0, 0x80000000, 0x00400000, 0x80400000),
+        Vector{0, 0x8008000000000000ULL},
+        singles(0x34000000, 0xb4000000, 0, 0x80000000),
+        Vector{0x3cb0000000000000ULL, 0x8000000000000000ULL},
+    };
+    state.comparison_inputs = {singles(0xbf800000, 0, 0x40000000, 0x7fc01234),
+                               singles(0, 0x80000000, 0x3f800000, 0x3f800000)};
+    [[maybe_unused]] const std::array comparison_expected{
+        singles(0xffffffff, 0, 0, 0),
+        singles(0, 0xffffffff, 0, 0),
+        singles(0xffffffff, 0, 0xffffffff, 0xffffffff),
+        singles(0xffffffff, 0xffffffff, 0xffffffff, 0),
+        singles(0xffffffff, 0xffffffff, 0, 0),
+    };
+    state.pack_inputs = {Vector{0x00010000ffff8000ULL, 0x7fff010000ff00feULL},
+                         Vector{0x0080007f0002fffeULL, 0x0400fed4012c00ffULL}};
+    const std::array ops{OpCode::VecFAdd, OpCode::VecFSub, OpCode::VecFMul, OpCode::VecFDiv};
+    Builder builder{Scope::Block}; Need(builder.BeginBlock(Create(builder)));
+    const auto load_vector = [&](std::uint32_t offset) {
+        return Need(builder.Emit<OpCode::LoadUniform>(Type::V128, {Operand::Uniform(offset, Type::V128)}));
+    };
+    const auto store_vector = [&](std::uint32_t offset, Value value) {
+        Need(builder.Emit<OpCode::StoreUniform>(Type::Void,
+                {Operand::Uniform(offset, Type::V128), Operand::ValueOf(value)}));
+    };
+    for (unsigned type = 0; type < 2; ++type) {
+        const auto left = load_vector(offsetof(State, inputs) + type * 32);
+        const auto right = load_vector(offsetof(State, inputs) + type * 32 + 16);
+        for (unsigned op = 0; op < ops.size(); ++op) {
+            const auto result = Need(builder.Append(ops[op], Type::V128,
+                    {Operand::ValueOf(left), Operand::ValueOf(right), Operand::Immediate(type ? 64 : 32, Type::U8)}));
+            store_vector(offsetof(State, outputs) + (type * 4 + op) * 16, result);
+        }
+    }
+    const auto compare_left = load_vector(offsetof(State, comparison_inputs));
+    const auto compare_right = load_vector(offsetof(State, comparison_inputs) + 16);
+    constexpr std::array relations{1u, 2u, 13u, 7u}; // LT, EQ, NEQ_UQ and ORD.
+    for (unsigned i = 0; i < relations.size(); ++i)
+        store_vector(offsetof(State, comparison_outputs) + i * 16,
+                Need(builder.Emit<OpCode::VecFCmpMask>(Type::V128,
+                        {Operand::ValueOf(compare_left), Operand::ValueOf(compare_right), Operand::Immediate(32, Type::U8),
+                         Operand::Immediate(relations[i], Type::U8), Operand::Immediate(0, Type::U8)})));
+    const auto denormal32 = load_vector(offsetof(State, denormals)), factor32 = load_vector(offsetof(State, denormals) + 16);
+    const auto denormal64 = load_vector(offsetof(State, denormals) + 32), factor64 = load_vector(offsetof(State, denormals) + 48);
+    const auto zeros = Need(builder.Emit<OpCode::VecSharedZero>(Type::V128, {}));
+    for (unsigned output_flush = 0; output_flush < 2; ++output_flush) {
+        Need(builder.Emit<OpCode::StoreUniform>(Type::Void,
+                {Operand::Uniform(offsetof(State, mxcsr), Type::U32),
+                 Operand::ValueOf(Constant(builder, output_flush ? 0x9f81 : 0x1fc1), Type::U32)}));
+        store_vector(offsetof(State, flushed) + output_flush * 32,
+                Need(builder.Emit<OpCode::VecFMul>(Type::V128,
+                        {Operand::ValueOf(denormal32), Operand::ValueOf(factor32), Operand::Immediate(32, Type::U8)})));
+        store_vector(offsetof(State, flushed) + output_flush * 32 + 16,
+                Need(builder.Emit<OpCode::VecFMul>(Type::V128,
+                        {Operand::ValueOf(denormal64), Operand::ValueOf(factor64), Operand::Immediate(64, Type::U8)})));
+        if (!output_flush)
+            store_vector(offsetof(State, comparison_outputs) + 4 * 16,
+                    Need(builder.Emit<OpCode::VecFCmpMask>(Type::V128,
+                            {Operand::ValueOf(denormal32), Operand::ValueOf(zeros), Operand::Immediate(32, Type::U8),
+                             Operand::Immediate(2, Type::U8), Operand::Immediate(0, Type::U8)})));
+    }
+    const auto pack_left = load_vector(offsetof(State, pack_inputs));
+    const auto pack_right = load_vector(offsetof(State, pack_inputs) + 16);
+    store_vector(offsetof(State, pack_inputs) + 16, Need(builder.Emit<OpCode::VecPack>(Type::V128,
+            {Operand::ValueOf(pack_left), Operand::ValueOf(pack_right),
+             Operand::Immediate(16, Type::U8), Operand::Immediate(1, Type::U8)})));
+    const auto minimum_left = Need(builder.Emit<OpCode::VecLoadConst>(Type::V128,
+            {Operand::Immediate(0x0080ff1020304050ULL, Type::U64), Operand::Immediate(0xff80017f00fe0203ULL, Type::U64)}));
+    const auto minimum_right = Need(builder.Emit<OpCode::VecLoadConst>(Type::V128,
+            {Operand::Immediate(0x0181fe2020108060ULL, Type::U64), Operand::Immediate(0x7fff027f01ff0104ULL, Type::U64)}));
+    store_vector(offsetof(State, minimum), Need(builder.Emit<OpCode::VecMin>(Type::V128,
+            {Operand::ValueOf(minimum_left), Operand::ValueOf(minimum_right),
+             Operand::Immediate(8, Type::U8), Operand::Immediate(0, Type::U8)})));
+    Need(builder.EndBlock(Terminal::Return(Constant(builder, 42)))); auto program = Submit(builder);
+    arm64::CompileOptions options{offsetof(State, flags)}; options.mxcsr_flush_offset = offsetof(State, mxcsr);
+    const auto code = ::Compile(program, options);
+    for (const auto opcode : {0x4e20d400u, 0x4ea0d400u, 0x6e20dc00u, 0x6e20fc00u,
+                             0x4e60d400u, 0x4ee0d400u, 0x6e60dc00u, 0x6e60fc00u})
+        Check(std::any_of(code.words.begin(), code.words.end(), [&](std::uint32_t word) {
+                    return (word & 0xffe0fc00u) == opcode;
+                }), "packed IEEE arithmetic uses the actual 4S/2D operation");
+    Check(std::any_of(code.words.begin(), code.words.end(), [](std::uint32_t word) {
+                return (word & 0xfffffc00u) == 0x2e212800u;
+            }) && std::any_of(code.words.begin(), code.words.end(), [](std::uint32_t word) {
+                return (word & 0xfffffc00u) == 0x6e212800u;
+            }), "signed16 to unsigned8 packing uses saturating SQXTUN and SQXTUN2");
+#if defined(__aarch64__) && defined(__ANDROID__)
+    // Standalone compiled units borrow their caller's FP environment. Set
+    // it explicitly; the separate runtime Root owns its guest/host switches.
+    struct RestoreFP {
+        u64 fpcr{}, fpsr{};
+        ~RestoreFP() { asm volatile("msr fpcr,%0\nmsr fpsr,%1" :: "r"(fpcr), "r"(fpsr) : "memory"); }
+    } restore;
+    asm volatile("mrs %0,fpcr\nmrs %1,fpsr" : "=r"(restore.fpcr), "=r"(restore.fpsr));
+    asm volatile("msr fpcr,xzr\nmsr fpsr,xzr" ::: "memory");
+#endif
+    Execute(code, reinterpret_cast<std::uint8_t*>(&state), 42);
+#if defined(__aarch64__) && defined(__ANDROID__)
+    Check(state.outputs == expected && state.flushed == flush_expected,
+            "packed arithmetic computes every lane and independently applies DAZ inputs or FTZ outputs with signed zeros");
+    Check(state.comparison_outputs == comparison_expected,
+            "four-lane IEEE compare masks distinguish LT/EQ/GT/unordered and apply the actual DAZ control");
+    Check(state.pack_inputs[0] == Vector{0x00010000ffff8000ULL, 0x7fff010000ff00feULL} &&
+            state.pack_inputs[1] == Vector{0xfffffffe01000000ULL, 0xff00ffff807f0200ULL},
+            "packing clamps signed negatives and overflow to 0..255 while publishing over the original right field");
+    Check(state.minimum == Vector{0x0080fe1020104050ULL, 0x7f80017f00fe0103ULL},
+            "unsigned byte minimum compares all sixteen complete lanes including values above signed-byte range");
+    Check(state.flags == initial && state.mxcsr == 0x9f81,
+            "packed arithmetic preserves whole guest flags and the raw software-owned MXCSR status/control word");
+#endif
+    // This separate finite-only unit never changes its software flush mode.
+    // The preceding mixed-control unit deliberately retains the unknown API.
+    Builder finite{Scope::Block}; Need(finite.BeginBlock(Create(finite)));
+    for (unsigned type = 0; type < 2; ++type) {
+        const auto left = Need(finite.Emit<OpCode::LoadUniform>(Type::V128,
+                {Operand::Uniform(offsetof(State, inputs) + type * 32, Type::V128)}));
+        const auto right = Need(finite.Emit<OpCode::LoadUniform>(Type::V128,
+                {Operand::Uniform(offsetof(State, inputs) + type * 32 + 16, Type::V128)}));
+        for (unsigned op = 0; op < ops.size(); ++op) {
+            const auto result = Need(finite.Append(ops[op], Type::V128,
+                    {Operand::ValueOf(left), Operand::ValueOf(right), Operand::Immediate(type ? 64 : 32, Type::U8)}));
+            Need(finite.Emit<OpCode::StoreUniform>(Type::Void,
+                    {Operand::Uniform(offsetof(State, outputs) + (type * 4 + op) * 16, Type::V128), Operand::ValueOf(result)}));
+        }
+    }
+    Need(finite.EndBlock(Terminal::Return(Constant(finite, 42)))); auto finite_program = Submit(finite);
+    auto known_options = options; known_options.mxcsr_flush_mode = 0;
+    const auto known_default = ::Compile(finite_program, known_options);
+    auto direct_options = options; direct_options.mxcsr_flush_offset = UINT32_MAX;
+    const auto direct = ::Compile(finite_program, direct_options);
+    Check(known_default.words == direct.words,
+            "known default software controls emit exactly the direct packed arithmetic path without copies, loads or control branches");
+    state.mxcsr = 0x1f81; state.outputs = {};
+    Execute(known_default, reinterpret_cast<std::uint8_t*>(&state), 42);
+#if defined(__aarch64__) && defined(__ANDROID__)
+    Check(state.outputs == expected && state.flags == initial && state.mxcsr == 0x1f81,
+            "known default packed arithmetic preserves every finite lane, whole flags and raw status");
+#endif
+    state.inputs = state.denormals;
+    for (const std::uint8_t mode : {std::uint8_t{1}, std::uint8_t{2}}) {
+        known_options.mxcsr_flush_mode = mode;
+        const auto known = ::Compile(finite_program, known_options);
+        state.mxcsr = mode == 1 ? 0x1fc1 : 0x9f81; state.outputs = {};
+        Execute(known, reinterpret_cast<std::uint8_t*>(&state), 42);
+#if defined(__aarch64__) && defined(__ANDROID__)
+        const auto output = mode == 1 ? 0u : 2u;
+        Check(state.outputs[2] == flush_expected[output] && state.outputs[6] == flush_expected[output + 1] &&
+                state.flags == initial && state.mxcsr == (mode == 1 ? 0x1fc1u : 0x9f81u),
+                "known DAZ-only and FTZ-only modes retain their independent signed subnormal semantics without raw control reads");
+#endif
+    }
 }
 
 void VectorLaneMasks() {
@@ -2737,11 +3182,12 @@ int main() {
         ConstantsAndViews(); StateAndMemory(); Spills(); CrossingLoops(); EmptyHeaderCollision(); ReorderedBodies(); EntryAndTerminals(); Unsupported();
         ArithmeticFlags(); FlagsQueriesAndAliases(); FlagsWithSpilledResult(); LegacyFlags();
         ExplicitEntry(); PureIntegers(); PureIntegerSpills(); InvalidIntegerShapes();
-        DirectTerminalCondition(); DistantForwardEmission(); TerminalReadBoundaries(); PCTailPredicates(); DeferredPCLinks(); LinkedDynamicPC();
+        DirectTerminalCondition(); DistantForwardEmission(); TerminalReadBoundaries(); PCTailPredicates(); DeferredPCLinks();
+        CompleteAdditionalEntries(); LinkedDynamicPC();
         FaultMetadataAndRecovery(); FaultLocationBoundaries();
         ScalarAtomicSequence();
         CpuQueryPairLifetime();
-        VectorLaneMasks(); VectorSignedWidenMultiply(); NarrowLogicalImmediates();
+        VectorLaneMasks(); VectorSignedWidenMultiply(); PackedFloatingArithmetic(); NarrowLogicalImmediates();
         LinkedPinnedUniforms(); LinkedExitAndCrossSlot();
         LinkedRawAuxiliaryCarry();
         FunctionDeferredTestFaults();

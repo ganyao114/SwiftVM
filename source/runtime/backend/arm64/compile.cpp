@@ -1,8 +1,10 @@
 #include "emit.h"
+#include "runtime/ir/x87.h"
 
 namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned bits, bool sign) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
+std::uintptr_t X87Helper() noexcept;
 namespace detail {
 
 bool Writer::Run() {
@@ -76,6 +78,19 @@ bool Writer::Run() {
         for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
             node = NodeId{i};
             const auto& operation = source.Operations()[i];
+            if (operation.opcode == OpCode::EntryPoint) {
+                if (source.ScopeKind() != Scope::Function || !Linked())
+                    Reject(CompileError::UnsupportedControlFlow);
+                if (i != body.first_node || operation.Metadata() != OperationMetadata{})
+                    Reject(CompileError::InvalidProgram);
+                const auto inputs = source.Operands(node);
+                Cursor cursor{inputs.begin(), inputs.end(), *this};
+                const auto pc = cursor.Take();
+                if (pc.TypeView() != Type::U64) Reject(CompileError::UnsupportedOperand);
+                output.entries.push_back({IntegerImmediate(pc), labels[b]});
+                cursor.Done();
+                continue; // A declaration must not disturb the local TEST prefix.
+            }
             if ((operation.opcode == OpCode::Nop || operation.opcode == OpCode::FaultLocation) &&
                     operation.Metadata() == OperationMetadata{}) {
                 if (operation.opcode == OpCode::Nop) continue;
@@ -99,6 +114,7 @@ bool Writer::Run() {
             }
         }
         if (pending_save) Reject(CompileError::UnsupportedFlags);
+        if (!local_fixups.empty()) Reject(CompileError::InvalidProgram);
         const auto next = order + 1 < allocation.block_order.size() ? BlockId{allocation.block_order[order + 1]} : BlockId{};
         node = {}; if (!dispatch_emitted) Terminal(body.terminal, next);
     }
@@ -116,6 +132,20 @@ bool Writer::Run() {
             }
             instruction = (instruction & ~(0x7ffffu << 5)) | ((static_cast<u32>(distance) & 0x7ffffu) << 5);
         }
+    }
+    // Keep entry prologues outside the body schedule: even an internal
+    // fallthrough must skip the frame allocation. Reuse the actual output
+    // resources to turn their temporary body words into callable stub words.
+    for (auto& entry : output.entries) {
+        const auto body_word = entry.word;
+        entry.word = static_cast<u32>(output.words.size());
+        StackAdjust(true);
+        if (allocation.publish_entry_pc) { Immediate(0, entry.pc); PCMemory(false); }
+        const auto distance = static_cast<std::int64_t>(body_word) -
+                static_cast<std::int64_t>(output.words.size());
+        if (distance < -(INT64_C(1) << 25) || distance >= (INT64_C(1) << 25))
+            Reject(CompileError::CodeTooLarge);
+        Put(0x14000000u | (static_cast<u32>(distance) & 0x03ffffffu));
     }
     // Close only the actual recoverable sites, after every hot block and link
     // stub. A SIGBUS patches the one fast instruction to this cold sequence.
@@ -1008,6 +1038,49 @@ void Writer::Emit(const Operation& operation, Effect effects) {
             RestoreNZCV();
             break;
         }
+        case OpCode::GetUniformAddress: {
+            const auto offset = IntegerImmediate(cursor.Take());
+            if (operation.type != Type::U64 || offset > UINT32_MAX) Reject(CompileError::UnsupportedOperand);
+            if (offset <= 4095) Put(0x91000000u | (static_cast<u32>(offset) << 10) | (19u << 5) | destination);
+            else { Immediate(destination, offset); Put(0x8b000000u | (destination << 16) | (19u << 5) | destination); }
+            break;
+        }
+        case OpCode::X87Op: {
+            const auto state = cursor.Take();
+            const auto command = IntegerImmediate(cursor.Take());
+            const auto raw = cursor.Take();
+            if (operation.type != Type::U64 || Width(View(state)) != 64 || Width(View(raw)) != 64)
+                Reject(CompileError::UnsupportedOperand);
+            if (command == X87Encode(X87Command::Init) && state.Kind() == OperandKind::Value &&
+                    source.Operations()[state.Payload()].opcode == OpCode::GetUniformAddress) {
+                // FNINIT changes only the private control/status/tag tail.
+                // Other address producers retain the ordinary helper contract.
+                const auto address = Read(state, 17);
+                Immediate(16, UINT64_C(0x0000ffff0000037f));
+                Memory(false, 64, 16, address, offsetof(X87State, control) / 8);
+                Memory(false, 64, 31, address, offsetof(X87State, result) / 8);
+                Move(destination, 31);
+                break;
+            }
+            Shadow(false);
+#if !SVM_X87_GPR_ONLY
+            PublishPinned(); HelperFPEnvironment(false);
+#endif
+            Move(0, Read(state, 0)); Immediate(16, command); Move(17, Read(raw, 17));
+            Immediate(30, X87Helper()); Put(0xd63f03c0u);
+#if !SVM_X87_GPR_ONLY
+            HelperFPEnvironment(true); nzcv_matches = 0; RestoreHelperNZCV();
+#endif
+            const auto success = static_cast<u32>(output.words.size());
+            Put(0xb4000000u); // CBZ x0,success; the helper returns a status, not FP bits.
+            if (has_fault_location && options.pc_offset != UINT32_MAX) {
+                Immediate(0, fault_location); PCMemory(false);
+            }
+            Immediate(0, 4); Epilogue(); // Unsupported/unmasked x87 is an explicit service failure.
+            output.words[success] |= (static_cast<u32>(output.words.size()) - success) << 5;
+            Move(destination, 0);
+            break;
+        }
         case OpCode::Div128: {
             const auto high = cursor.Take(), low = cursor.Take(), divisor = cursor.Take();
             const auto sign = IntegerImmediate(cursor.Take()); const auto bits = Width(View(high));
@@ -1235,6 +1308,40 @@ void Writer::Emit(const Operation& operation, Effect effects) {
             if (width != 32) Narrow(destination, destination, width);
             break;
         }
+        case OpCode::Goto: case OpCode::NotGoto: {
+            const auto input = cursor.Take();
+            auto check = Read(input, 0);
+            // The returned numeric value is available on both paths. Keep
+            // the full input predicate even if a narrower result aliases it.
+            if (destination == check && width < Width(View(input))) { Move(0, check); check = 0; }
+            Narrow(destination, check, width);
+            save_result();
+            local_fixups.push_back({node.value, static_cast<u32>(output.words.size())});
+            Put((operation.opcode == OpCode::Goto ? 0xb5000000u : 0xb4000000u) | check);
+            break;
+        }
+        case OpCode::BindLabel: {
+            const auto owner = cursor.Take();
+            if (owner.Kind() != OperandKind::Value || owner.Payload() >= node.value)
+                Reject(CompileError::UnsupportedOperand);
+            const auto found = std::find_if(local_fixups.begin(), local_fixups.end(),
+                    [&](const LocalFixup& edge) { return edge.node == owner.Payload(); });
+            if (found == local_fixups.end()) Reject(CompileError::InvalidProgram);
+            const auto distance = static_cast<u32>(output.words.size()) - found->word;
+            if (distance >= (1u << 18)) Reject(CompileError::CodeTooLarge);
+            output.words[found->word] |= distance << 5;
+            local_fixups.erase(found);
+            // CompleteLocalFlags above belongs to the body path. Taken
+            // edges land after it with their already-complete flags intact.
+            // The skipped body did not necessarily establish any linear
+            // PC/flags/location fact; subsequent observers read real state.
+            static_pc_valid = alternate_pc_valid = false;
+            terminal_condition = 18;
+            nzcv_matches = 0; packed_current = false; shadow_dirty = Enabled();
+            has_fault_location = false;
+            deferred_test = {};
+            break;
+        }
         case OpCode::Select: {
             SnapshotCompareNZCV();
             const auto check = Read(cursor.Take(), 0);
@@ -1372,13 +1479,34 @@ void Writer::DynamicDispatch() {
     // The source frame is already retired and x0 holds the complete target.
     // Each dynamic site gets its own indirect BR while sharing the original
     // table, probe rules and cold resolver. No flags or pinned state change.
-    const auto count = [&](unsigned offset) {
+    const auto count = [&](unsigned offset, bool decrement = false) {
         if (options.dispatch_mode != DispatchMode::InlineCounted) return;
         Memory(true, 64, 4, 28, offset / 8);
-        Put(0x91000484u); // ADD x4,x4,#1, preserving guest NZCV.
+        Put(decrement ? 0xd1000484u : 0x91000484u); // SUB/ADD x4,x4,#1, non-S.
         Memory(false, 64, 4, 28, offset / 8);
     };
     count(abi::ContextDispatchesOffset);
+    u32 cache_pointer = UINT32_MAX;
+    if (options.local_dispatch_cache) {
+        const auto address = static_cast<u32>(output.words.size()); Put(0x10000002u); // ADR x2,local array.
+        Extract(5, 0, 2, std::countr_zero(abi::DynamicCacheEntries));
+        Put(0x8b051042u); // ADD x2,x2,x5,LSL #4: one sixteen-byte pair.
+        Put(0xa9404044u); // LDP x4,x16,[x2]: tag,entry.
+        Put(0xcb000084u); // SUB x4,tag,x0, non-S.
+        const auto mismatch = static_cast<u32>(output.words.size()); Put(0xb5000004u);
+        count(abi::ContextHitsOffset);
+        Put(0xd61f0200u);
+        if (output.words.size() & 1) Put(0xd503201fu); // Unreachable DATA alignment.
+        cache_pointer = static_cast<u32>(output.words.size());
+        for (unsigned i = 0; i < abi::DynamicCacheWords; ++i) Put(0);
+        const auto fallback = static_cast<u32>(output.words.size());
+        // Empty/reset entries call this site's directory. A tag-match
+        // fallback undoes only the preceding local hit before probing.
+        count(abi::ContextHitsOffset, true);
+        output.links.push_back({cache_pointer, UINT32_MAX, fallback});
+        output.words[address] |= (cache_pointer - address) << 5;
+        output.words[mismatch] |= (static_cast<u32>(output.words.size()) - mismatch) << 5;
+    }
     Put(0xa9400000u | ((abi::ContextSlotsOffset / 8) << 15) | (6u << 10) | (28u << 5) | 2u);
     u32 no_slots = UINT32_MAX;
     if (!options.callable_directory) { no_slots = static_cast<u32>(output.words.size()); Put(0xb4000002u); }
@@ -1393,6 +1521,20 @@ void Writer::DynamicDispatch() {
     u32 pending = UINT32_MAX;
     if (!options.callable_directory) { pending = static_cast<u32>(output.words.size()); Put(0xb4000010u); }
     count(abi::ContextHitsOffset);
+    u32 not_ready = UINT32_MAX, no_alias = UINT32_MAX;
+    if (cache_pointer != UINT32_MAX) {
+        Put(0xb9401064u); // LDR w4,[x3,#16]: actual ready code_id, not callable pending payload.
+        Put(0x11000484u); // ADD w4,w4,#1, non-S: UINT32_MAX becomes zero.
+        not_ready = static_cast<u32>(output.words.size()); Put(0x34000004u);
+        const auto alias = static_cast<u32>(output.words.size());
+        Put(0x58000002u | (((cache_pointer + abi::DynamicCacheWords - 2 - alias) & 0x7ffffu) << 5)); // LDR x2,RW-base.
+        no_alias = static_cast<u32>(output.words.size()); Put(0xb4000002u);
+        Extract(5, 0, 2, std::countr_zero(abi::DynamicCacheEntries));
+        Put(0x8b051042u); // ADD x2,x2,x5,LSL #4.
+        Put(0xa9004040u); // STP x0,x16,[x2]: replace only this ready target's selected pair.
+    }
+    for (const auto edge : {not_ready, no_alias})
+        if (edge != UINT32_MAX) output.words[edge] |= (static_cast<u32>(output.words.size()) - edge) << 5;
     Put(0xd61f0200u); // This source site's BR x16.
     output.words[mismatch] |= (static_cast<u32>(output.words.size()) - mismatch) << 5;
     Put(0x39400000u | (abi::DispatchOccupiedOffset << 10) | (3u << 5) | 4u);
@@ -1574,29 +1716,38 @@ void Writer::Terminal(const StoredTerminal& terminal, BlockId next) {
 
 } // namespace detail
 
-CompileResult Compile(const ir::Program& program, CompileOptions options) {
+void Compile(const ir::Program& program, CompileOptions options, CompileResult& result) {
+    result.error = CompileError::None; result.node = {}; result.block = {};
+    result.frame_bytes = result.spill_slots = 0;
+    result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
     auto allocation = program.ScopeKind() == ir::Scope::Block ? AllocateBlock(program, &options) :
             AllocateFunction(program, &options);
-    CompileResult result;
     if (!allocation) {
-        result.error = allocation.error; result.node = allocation.node; result.block = allocation.block; return result;
+        result.error = allocation.error; result.node = allocation.node; result.block = allocation.block; return;
     }
     result.frame_bytes = (options.dispatcher || options.exit_handler ? 0 : 16) + ((allocation.spill_bytes + 15) & ~15u);
     result.spill_slots = allocation.spill_bytes / 8;
-    result.words.reserve(program.Operations().size() * 2 + 32); // Hint only; emission still grows and checks actual size.
+    // A small unit still has real entry/exit, fault and link words. One KiB
+    // avoids repeated growth for those fixed costs; large units keep the hint.
+    result.words.reserve(std::max(std::size_t{256}, program.Operations().size() * 2 + 32));
     try {
         if (!detail::Writer(program, allocation, result, options).Run()) {
             // No slice has been published. Keep the actual output capacity
             // and Allocation; fresh Writer state rebuilds every word-based
             // branch, fault and link location exactly once in the old form.
-            result.words.clear(); result.faults.clear(); result.links.clear();
+            result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
             (void)detail::Writer(program, allocation, result, options, true).Run();
         }
     }
     catch (const detail::Rejected& failure) {
         result.error = failure.error; result.node = failure.node; result.block = failure.block;
-        result.words.clear(); result.faults.clear(); result.links.clear();
+        result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
     }
+}
+
+CompileResult Compile(const ir::Program& program, CompileOptions options) {
+    CompileResult result;
+    Compile(program, options, result);
     return result;
 }
 

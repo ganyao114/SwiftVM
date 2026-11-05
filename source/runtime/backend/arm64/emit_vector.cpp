@@ -3,6 +3,7 @@
 namespace swift::runtime::backend::arm64::detail {
 
 void Writer::LoadMxcsrFlushControl() {
+    if (options.mxcsr_flush_mode != UINT8_MAX) return;
     const auto offset = options.mxcsr_flush_offset;
     if (!(offset & 3) && offset / 4 <= 4095) Memory(true, 32, 0, 19, offset / 4);
     else {
@@ -11,20 +12,31 @@ void Writer::LoadMxcsrFlushControl() {
     }
 }
 
-void Writer::FlushScalarDenormal(unsigned value, unsigned control_bit, unsigned lane) {
-    // x0 holds the actual MXCSR controls. Neither branch changes NZCV.
-    const auto disabled = static_cast<u32>(output.words.size());
-    Put(0x36000000u | (control_bit << 19)); // TBZ w0,control_bit,done.
-    Put(0x4e083c00u | (lane << 20) | (value << 5) | 16u); // UMOV x16,Vvalue.d[lane].
-    Extract(17, 16, 52, 11);
-    const auto normal = static_cast<u32>(output.words.size());
-    Put(0xb5000011u); // CBNZ x17,done: zero exponent includes existing zeros.
-    u32 fields{}; LogicalImmediate(u64{1} << 63, 64, fields);
-    Put(0x92000000u | fields | (16u << 5) | 16u); // Keep only the IEEE sign bit.
-    Put(0x4e081c00u | (lane << 20) | (16u << 5) | value); // INS preserves the other D lane.
+void Writer::FlushScalarDenormal(unsigned value, unsigned control_bit, unsigned lane,
+                                 unsigned lane_bits, unsigned lane_count) {
+    // Known software controls belong to this whole native unit. Otherwise
+    // x0 holds the actual raw MXCSR controls. Neither branch changes NZCV.
+    u32 disabled = UINT32_MAX;
+    if (options.mxcsr_flush_mode != UINT8_MAX) {
+        if (!(options.mxcsr_flush_mode & (control_bit == 6 ? 1u : 2u))) return;
+    } else {
+        disabled = static_cast<u32>(output.words.size());
+        Put(0x36000000u | (control_bit << 19)); // TBZ w0,control_bit,done.
+    }
+    for (unsigned i = lane; i < lane + lane_count; ++i) {
+        const bool single = lane_bits == 32;
+        const auto index = i << (single ? 19 : 20);
+        Put((single ? 0x0e043c00u : 0x4e083c00u) | index | (value << 5) | 16u); // UMOV W/X16,lane.
+        Extract(17, 16, single ? 23 : 52, single ? 8 : 11);
+        const auto normal = static_cast<u32>(output.words.size());
+        Put(0xb5000011u); // CBNZ x17,next: zero exponent includes existing zeros.
+        u32 fields{}; LogicalImmediate(u64{1} << (lane_bits - 1), 64, fields);
+        Put(0x92000000u | fields | (16u << 5) | 16u); // Keep only the IEEE sign bit.
+        Put((single ? 0x4e041c00u : 0x4e081c00u) | index | (16u << 5) | value); // INS preserves other lanes.
+        output.words[normal] |= (static_cast<u32>(output.words.size()) - normal) << 5;
+    }
     const auto done = static_cast<u32>(output.words.size());
-    output.words[disabled] |= (done - disabled) << 5;
-    output.words[normal] |= (done - normal) << 5;
+    if (disabled != UINT32_MAX) output.words[disabled] |= (done - disabled) << 5;
 }
 
 void Writer::TruncateDoubleToInteger(unsigned destination, unsigned raw, unsigned bits) {
@@ -146,6 +158,27 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
             TruncateDoubleToInteger(destination, value, static_cast<unsigned>(integer_bits));
             break;
         }
+        case OpCode::VecFAdd: case OpCode::VecFSub: case OpCode::VecFMul: case OpCode::VecFDiv: {
+            if (!vector) Reject(CompileError::UnsupportedType);
+            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+            const auto bits = IntegerImmediate(cursor.Take());
+            if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
+            const auto opcode = (operation.opcode == OpCode::VecFAdd ? 0x4e20d400u :
+                    operation.opcode == OpCode::VecFSub ? 0x4ea0d400u :
+                    operation.opcode == OpCode::VecFMul ? 0x6e20dc00u : 0x6e20fc00u) |
+                    (bits == 64 ? 1u << 22 : 0u);
+            if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
+                VectorMove(first_temp, left); VectorMove(second_temp, right);
+                LoadMxcsrFlushControl();
+                const auto lanes = static_cast<unsigned>(128 / bits);
+                FlushScalarDenormal(first_temp, 6, 0, static_cast<unsigned>(bits), lanes);
+                FlushScalarDenormal(second_temp, 6, 0, static_cast<unsigned>(bits), lanes);
+                Put(opcode | (second_temp << 16) | (first_temp << 5) | first_temp);
+                FlushScalarDenormal(first_temp, 15, 0, static_cast<unsigned>(bits), lanes);
+                VectorMove(destination, first_temp);
+            } else Put(opcode | (right << 16) | (left << 5) | destination);
+            break;
+        }
         case OpCode::VecFAddScalar64: case OpCode::VecFSubScalar64:
         case OpCode::VecFMulScalar64: case OpCode::VecFDivScalar64: {
             if (!vector) Reject(CompileError::UnsupportedType);
@@ -153,7 +186,7 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
             const auto opcode = operation.opcode == OpCode::VecFAddScalar64 ? 0x1e602800u :
                     operation.opcode == OpCode::VecFSubScalar64 ? 0x1e603800u :
                     operation.opcode == OpCode::VecFMulScalar64 ? 0x1e600800u : 0x1e601800u;
-            if (options.mxcsr_flush_offset != UINT32_MAX) {
+            if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
                 VectorMove(first_temp, left); VectorMove(second_temp, right);
                 LoadMxcsrFlushControl();
                 FlushScalarDenormal(first_temp, 6); FlushScalarDenormal(second_temp, 6);
@@ -170,7 +203,8 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
             const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
             if (IntegerImmediate(cursor.Take()) != 64) Reject(CompileError::UnsupportedOperand);
             unsigned a = left, b = right;
-            if (options.mxcsr_flush_offset != UINT32_MAX) {
+            if (options.mxcsr_flush_offset != UINT32_MAX &&
+                    (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
                 VectorMove(first_temp, left); VectorMove(second_temp, right);
                 LoadMxcsrFlushControl();
                 FlushScalarDenormal(first_temp, 6); FlushScalarDenormal(second_temp, 6);
@@ -210,7 +244,8 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
             const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
             const auto bits = IntegerImmediate(cursor.Take()), relations = IntegerImmediate(cursor.Take());
             const auto scalar = IntegerImmediate(cursor.Take());
-            if (bits != 64 || relations > 15 || scalar != 0) Reject(CompileError::UnsupportedOperand);
+            if ((bits != 32 && bits != 64) || relations > 15 || scalar != 0) Reject(CompileError::UnsupportedOperand);
+            const auto size = bits == 64 ? 1u << 22 : 0u;
             const bool invert = relations & 8;
             const auto ordered = static_cast<unsigned>(invert ? ~relations & 7 : relations);
             if (!ordered) {
@@ -220,28 +255,53 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
                 break;
             }
             unsigned a = left, b = right, temporary = first_temp;
-            if (options.mxcsr_flush_offset != UINT32_MAX) {
+            if (options.mxcsr_flush_offset != UINT32_MAX &&
+                    (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
                 VectorMove(first_temp, left); VectorMove(second_temp, right);
                 LoadMxcsrFlushControl();
-                for (unsigned lane = 0; lane < 2; ++lane) {
-                    FlushScalarDenormal(first_temp, 6, lane); FlushScalarDenormal(second_temp, 6, lane);
+                if (bits == 64) {
+                    for (unsigned lane = 0; lane < 2; ++lane) {
+                        FlushScalarDenormal(first_temp, 6, lane); FlushScalarDenormal(second_temp, 6, lane);
+                    }
+                } else {
+                    FlushScalarDenormal(first_temp, 6, 0, 32, 4);
+                    FlushScalarDenormal(second_temp, 6, 0, 32, 4);
                 }
                 a = first_temp; b = second_temp; temporary = 0;
             }
             // When UN is selected, invert the complementary ordered set.
             // Each IEEE lane has exactly one LT/EQ/GT/UN outcome.
             if (ordered == 5 || ordered == 7) {
-                Put((ordered == 5 ? 0x6ee0e400u : 0x6e60e400u) |
+                Put((ordered == 5 ? 0x6ea0e400u : 0x6e20e400u) | size |
                         (b << 16) | (a << 5) | temporary);
-                Put(0x6ee0e400u | (a << 16) | (b << 5) | destination);
+                Put(0x6ea0e400u | size | (a << 16) | (b << 5) | destination);
                 Put(0x4ea01c00u | (destination << 16) | (temporary << 5) | destination);
             } else {
-                const auto opcode = ordered == 2 ? 0x4e60e400u :
-                        (ordered == 3 || ordered == 6) ? 0x6e60e400u : 0x6ee0e400u;
+                const auto opcode = (ordered == 2 ? 0x4e20e400u :
+                        (ordered == 3 || ordered == 6) ? 0x6e20e400u : 0x6ea0e400u) | size;
                 if (ordered == 1 || ordered == 3) std::swap(a, b);
                 Put(opcode | (b << 16) | (a << 5) | destination);
             }
             if (invert) Put(0x6e205800u | (destination << 5) | destination); // NOT Vd.16b,Vd.16b.
+            break;
+        }
+        case OpCode::VecMin: {
+            if (!vector) Reject(CompileError::UnsupportedType);
+            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+            if (IntegerImmediate(cursor.Take()) != 8 || IntegerImmediate(cursor.Take()) != 0)
+                Reject(CompileError::UnsupportedOperand);
+            Put(0x6e206c00u | (right << 16) | (left << 5) | destination); // UMIN Vd.16b,Vleft.16b,Vright.16b.
+            break;
+        }
+        case OpCode::VecPack: {
+            if (!vector) Reject(CompileError::UnsupportedType);
+            const auto left = VectorValue(cursor.Take(), 0);
+            auto right = VectorValue(cursor.Take(), 1);
+            if (IntegerImmediate(cursor.Take()) != 16 || IntegerImmediate(cursor.Take()) != 1)
+                Reject(CompileError::UnsupportedOperand);
+            if (right == destination) { VectorMove(first_temp, right); right = first_temp; }
+            Put(0x2e212800u | (left << 5) | destination); // SQXTUN Vd.8b,Vleft.8h.
+            Put(0x6e212800u | (right << 5) | destination); // SQXTUN2 Vd.16b,Vright.8h.
             break;
         }
         case OpCode::VecExtract64: case OpCode::VecExtract16: {

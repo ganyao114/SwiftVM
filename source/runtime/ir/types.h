@@ -79,6 +79,9 @@ enum class TargetFeature : std::uint64_t {
     // Signed widening products of consecutive low vector lanes are accepted
     // directly. This describes neutral arithmetic, not physical registers.
     VectorSignedMulWidenLow = UINT64_C(1) << 5,
+    // The execution owner accepts complete external entries into nonempty
+    // source blocks, sharing one native unit and its lifetime.
+    ExternalEntries = UINT64_C(1) << 6,
 };
 // Immutable target capabilities, consumed by the frontend without a host-ISA
 // dependency. Unknown/EarlyOff preserve the bits but do not enable a feature.

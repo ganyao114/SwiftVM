@@ -36,12 +36,18 @@ void UnlinkNativeLink(std::uintptr_t* writable, const std::uintptr_t* executable
 // returns to the dispatcher. Cache items borrow entries; slabs own mappings.
 class CodeArena {
 public:
+    using ReadyTargetResolver = std::uintptr_t(*)(void*, std::uint64_t) noexcept;
     CodeArena() = default;
     ~CodeArena();
     CodeArena(const CodeArena&) = delete;
     CodeArena& operator=(const CodeArena&) = delete;
+    // The optional resolver only borrows already-ready entries; it must not
+    // publish or invalidate code. Zero keeps this static link's cold stub.
+    // With a writable alias, ready static links are patched before final sync.
+    // Single-mapping slices keep cold links so retirement never needs RX writes.
     NativeCode Publish(std::span<const std::uint32_t>, std::vector<backend::arm64::FaultSite> faults = {},
-                       std::span<const backend::arm64::LinkSite> links = {});
+                       std::span<const backend::arm64::LinkSite> links = {},
+                       ReadyTargetResolver ready = nullptr, void* opaque = nullptr);
     void Clear() noexcept;
     std::size_t Slabs() const noexcept { return slabs.size(); }
     std::size_t DualSlabs() const noexcept;

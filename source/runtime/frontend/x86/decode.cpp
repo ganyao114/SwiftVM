@@ -40,8 +40,26 @@ struct Slice {
 };
 }  // namespace
 
+// Shared by the two byte-decoding entries and the emitter's prefix gate.
+// The runtime advertises neither IBT nor a CET shadow-stack environment.
+std::uint8_t DisabledCetHintSize(std::span<const std::uint8_t> bytes) noexcept {
+    if (bytes.size() < 4 || bytes[0] != 0xf3) return 0;
+    std::size_t opcode = 1;
+    if (bytes[1] >= 0x40 && bytes[1] <= 0x4f) {
+        if (bytes[1] & 4) return 0; // REX.R must not turn the /1 extension into /9.
+        opcode = 2;
+    }
+    if (bytes.size() < opcode + 3 || bytes[opcode] != 0x0f || bytes[opcode + 1] != 0x1e) return 0;
+    const auto modrm = bytes[opcode + 2];
+    if (opcode == 1 && (modrm == 0xfa || modrm == 0xfb)) return 4; // Exact ENDBR64/32.
+    // RDSSPD/Q: /1, mod11, REX.W selects width and REX.B the high register.
+    // Disabled shadow stacks make this a NOP: even a 32-bit form preserves
+    // the complete destination carrier, rather than writing/zeroing EAX.
+    return (modrm & 0xf8) == 0xc8 ? static_cast<std::uint8_t>(opcode + 3) : 0;
+}
+
 DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_pc, DecodeLimits limits,
-                                DecodeTiming* timing) {
+                                DecodeTiming* timing, ReadyEntryLookup ready) {
     DecodedFunction out;
     if (!Valid(readable, limits) || ReadableAt(readable, entry_pc) == readable.end()) {
         out.error = DecodeError::InvalidInput; out.error_pc = entry_pc; return out;
@@ -55,6 +73,7 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
     };
     const auto queue = [&](u64 target) {
         if (ReadableAt(readable, target) == readable.end()) return true;
+        if (target != entry_pc && ready.Contains(target)) return true;
         auto next = directory.lower_bound(target);
         if (next != directory.end() && next->first == target) return true;
         if (next != directory.begin()) {
@@ -102,6 +121,7 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
             // Another admitted entry owns that stream from here onward.
             if (has_next && pc == next_start) break;
             if (out.instructions.size() == limits.max_instructions) { ++out.budget_exits; break; }
+            if (pc != entry_pc && ready.Contains(pc)) break;
             // A readable-span boundary is a real exit frontier. Do not fetch
             // across separate spans, even if their guest addresses touch.
             if (window == readable.end() || pc - window->pc >= window->bytes.size()) break;
@@ -121,6 +141,13 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
                 timing->nanoseconds += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count());
                 ++timing->calls;
             } else parsed = distorm_decompose(&code, &instruction, 1, &used);
+            if (bytes[0] == 0xf3) {
+                if (const auto hint_size = DisabledCetHintSize(bytes)) {
+                    instruction = {};
+                    instruction.addr = pc; instruction.size = hint_size; instruction.opcode = I_NOP;
+                    used = 1;
+                }
+            }
             if (!used) {
                 fail(parsed == DECRES_INPUTERR ? DecodeError::InvalidEncoding : DecodeError::Truncated, pc);
                 return out;
@@ -131,18 +158,15 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
             if (instruction.size > bytes.size()) { fail(DecodeError::Truncated, pc); return out; }
             const u64 after = pc + instruction.size;
             if (has_next && after > next_start) { fail(DecodeError::OverlappingTarget, next_start); return out; }
+            const auto flow = META_GET_FC(instruction.meta);
             out.instructions.push_back(instruction);
             ++slice.count; slice.end = after;
             out.decoded_bytes += instruction.size;
             // CPUID serializes the stream; LDMXCSR returns to the runtime to
-            // install the new FP environment. Neither admits an internal
-            // sequential edge before that actual service boundary.
-            if (instruction.opcode == I_CPUID || instruction.opcode == I_LDMXCSR) break;
-            const auto flow = META_GET_FC(instruction.meta);
+            // install the new FP environment. REP STOS dispatches after one
+            // restartable iteration. These frontiers admit no sequential edge.
+            if (instruction.opcode == I_CPUID || instruction.opcode == I_LDMXCSR || instruction.opcode == I_STOS) break;
             if (flow != FC_NONE && flow != FC_CMOV) {
-                // Flow classification comes from this actual decoder record,
-                // not another supported-ISA table. Calls/indirects stop here;
-                // the emitter implements their dispatch or rejects the form.
                 if ((flow == FC_CND_BRANCH || flow == FC_UNC_BRANCH) && instruction.ops[0].type == O_PC) {
                     if (!queue(after + instruction.imm.addr)) return out;
                     if (flow == FC_CND_BRANCH && !queue(after)) return out;

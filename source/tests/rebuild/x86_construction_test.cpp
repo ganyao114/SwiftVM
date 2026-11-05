@@ -1,6 +1,7 @@
 #include "x86_fixtures.h"
 #include "runtime/externals/distorm/distorm.h"
 #include "runtime/externals/distorm/mnemonics.h"
+#include "runtime/ir/x87.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -307,6 +308,49 @@ void KnownTargetEmitsOneShiftedAddress() {
     const auto without=BuildIR({&window,1},Scope::Block,layout,{TargetMode::Known,0xa64,0});
     CHECK(without && without.program.Operations().size()==generic_nodes);
 
+    const std::uint8_t addr32_lea[]{
+        0x67,0x8d,0x51,0xff,                // lea edx,[ecx-1]: actual glibc entry.
+        0x67,0x4f,0x8d,0x44,0x8a,0x10,      // lea r8,[r10d+r9d*4+16].
+        0x66,0x67,0x8d,0x41,0x01,           // lea ax,[ecx+1]: retain RAX's high bits.
+        0x64,0x67,0x48,0x8d,0x05,0xff,0xff,0xff,0xff}; // FS ignored; EIP-relative wraps.
+    const BlockWindow addr32_source{0x100003100ULL,addr32_lea};
+    const auto addr32=BuildIR({&addr32_source,1},Scope::Block,layout,{TargetMode::Known,0xa64,feature});
+    CHECK(addr32 && addr32.instruction_count==4 && addr32.decoded_bytes==sizeof(addr32_lea));
+    std::vector<std::uint64_t> addr32_reads;
+    std::size_t widened{},partial{},full32{},scaled32{};
+    for (const auto& op : addr32.program.Operations()) {
+        const auto cells=addr32.program.Operands(op);
+        CHECK(op.Metadata()==OperationMetadata{});
+        CHECK(op.opcode!=OpCode::LoadMemoryTSO && op.opcode!=OpCode::FaultLocation);
+        if (op.opcode==OpCode::LoadUniform) {
+            CHECK(op.type==Type::U32);
+            addr32_reads.push_back(cells.front().Payload());
+        }
+        if (op.opcode==OpCode::Add) {
+            CHECK(op.type==Type::U32 && cells.front().TypeView()==Type::U32);
+        }
+        if (op.opcode==OpCode::GetOperand) {
+            CHECK(op.type==Type::U32 && cells.front().ExpressionOp()==OperandOp::AddShift);
+            CHECK(CellAt(cells,1).TypeView()==Type::U32 && CellAt(cells,2).TypeView()==Type::U32);
+            ++scaled32;
+        }
+        if (op.opcode==OpCode::ZeroExtend64) {
+            CHECK(op.type==Type::U64 && cells.front().TypeView()==Type::U32);
+            ++widened;
+        }
+        if (op.opcode==OpCode::StoreUniform && cells.front().Payload()==layout.gprs_offset &&
+            cells.front().TypeView()==Type::U16) ++partial;
+        if (op.opcode==OpCode::StoreUniform && cells.front().Payload()==layout.gprs_offset+16) {
+            CHECK(cells.front().TypeView()==Type::U64 && CellAt(cells,1).TypeView()==Type::U32);
+            ++full32;
+        }
+    }
+    CHECK(addr32_reads==std::vector<std::uint64_t>({layout.gprs_offset+8,layout.gprs_offset+80,
+                                                 layout.gprs_offset+72,layout.gprs_offset+8}));
+    CHECK(widened==2 && partial==1 && full32==1 && scaled32==1);
+    CHECK(HasImmediate(addr32.program,0xffffffffu));
+    CHECK(HasImmediate(addr32.program,static_cast<std::uint32_t>(addr32_source.pc+sizeof(addr32_lea)-1)));
+
     // One actual address SSA can feed distinct faulting accesses; a changed
     // shift, index version or block still needs its own definition.
     const std::uint8_t accesses[]{
@@ -459,6 +503,62 @@ std::uint64_t BlockPC(const Program& p, const BlockRecord& block) {
     throw std::runtime_error("block has no constant PC store");
 }
 
+void ExternalEntriesAndReadyFrontiers() {
+    // Entry reuse does not expand the region through a CALL. Its continuation
+    // is decoded only when actually requested, even with the entry capability.
+    const std::uint8_t bytes[]{0xe8,0xfb,0x0f,0x00,0x00,0x48,0x83,0xc0,0x01,0xc3};
+    const BlockWindow window{0x1000,bytes};
+    const auto capability=static_cast<std::uint64_t>(TargetFeature::ExternalEntries);
+    const TargetInfo known{TargetMode::Known,0xa64,capability};
+    const auto count_entries=[](const Program& p) {
+        std::vector<std::uint64_t> pcs;
+        for (const auto& op:p.Operations()) if (op.opcode==OpCode::EntryPoint) {
+            CHECK(op.Metadata()==OperationMetadata{});
+            pcs.push_back(p.Operands(op).front().Payload());
+        }
+        return pcs;
+    };
+    const auto built=swift::x86::BuildFunctionIR({&window,1},window.pc,layout,{},known);
+    CHECK(built && built.instruction_count==1 && built.program.Blocks().size()==1);
+    CHECK(count_entries(built.program).empty());
+    const auto continuation=swift::x86::BuildFunctionIR({&window,1},0x1005,layout,{},known);
+    CHECK(continuation && continuation.instruction_count==2 && count_entries(continuation.program).empty());
+    for (auto mode:{TargetMode::Unknown,TargetMode::EarlyOff}) {
+        const auto old=swift::x86::BuildFunctionIR({&window,1},window.pc,layout,{}, {mode,0xa64,capability});
+        CHECK(old && old.instruction_count==1 && count_entries(old.program).empty());
+    }
+    const std::uint8_t branch[]{0x75,0x02,0x90,0xc3,0xc3};
+    const BlockWindow frontier{0x2000,branch};
+    const auto formed=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{},known);
+    CHECK(formed && formed.instruction_count==4);
+    CHECK(count_entries(formed.program)==std::vector<std::uint64_t>({0x2002,0x2004}));
+    std::uint64_t ready_pc=0x2004;
+    const swift::x86::ReadyEntryLookup ready{&ready_pc,[](void* p,std::uint64_t pc) noexcept {
+        return pc==*static_cast<std::uint64_t*>(p);
+    }};
+    const auto stopped=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{},known,nullptr,nullptr,nullptr,ready);
+    CHECK(stopped && stopped.instruction_count==3 &&
+            count_entries(stopped.program)==std::vector<std::uint64_t>{0x2002});
+    ready_pc=0x2003;
+    const auto sequential=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{},known,nullptr,nullptr,nullptr,ready);
+    CHECK(sequential && sequential.instruction_count==3 &&
+            count_entries(sequential.program)==std::vector<std::uint64_t>({0x2002,0x2004}));
+    for (auto mode:{TargetMode::Unknown,TargetMode::EarlyOff}) {
+        const auto old=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{},
+                {mode,0xa64,capability},nullptr,nullptr,nullptr,ready);
+        CHECK(old && old.instruction_count==4 && count_entries(old.program).empty());
+    }
+    const auto bounded=swift::x86::BuildFunctionIR({&frontier,1},frontier.pc,layout,{2,8},known);
+    CHECK(bounded && bounded.instruction_count==2);
+    const auto entries=count_entries(bounded.program);
+    CHECK(std::find(entries.begin(),entries.end(),0x2004)==entries.end()); // Empty budget frontier cannot call itself.
+    const std::uint8_t noreturn[]{0xe8,0xfb,0x0f,0x00,0x00,0xcc};
+    const BlockWindow padded{0x3000,noreturn};
+    const auto before_trap=swift::x86::BuildFunctionIR({&padded,1},padded.pc,layout,{},known);
+    CHECK(before_trap && before_trap.instruction_count==1 && count_entries(before_trap.program).empty());
+    CHECK(swift::x86::BuildFunctionIR({&padded,1},0x3005,layout,{},known).error==swift::x86::BuildError::Unsupported);
+}
+
 void EveryConditionalBranchAndRealExits() {
     constexpr Condition conditions[]{Condition::VS,Condition::VC,Condition::CS,Condition::CC,
             Condition::EQ,Condition::NE,Condition::AL,Condition::AL,Condition::MI,Condition::PL,
@@ -510,6 +610,20 @@ void EveryConditionalBranchAndRealExits() {
                 CHECK(input.Payload()==static_cast<unsigned>(conditions[cc]));
             }
         }
+        const auto capability=static_cast<std::uint64_t>(TargetFeature::ConditionalUniformStore);
+        for (const auto mode : {TargetMode::Known,TargetMode::Unknown,TargetMode::EarlyOff}) {
+            const auto outgoing=BuildIR({&window,1},Scope::Function,layout,{mode,0xa64,capability});
+            CHECK(outgoing && outgoing.program.ScopeKind()==Scope::Function);
+            const auto& p=outgoing.program;
+            if (mode==TargetMode::Known) {
+                CHECK(p.Blocks().size()==1 && p.Blocks()[0].terminal.kind==TerminalKind::Dispatch);
+                const auto tail=NodeId{static_cast<std::uint32_t>(p.Operations().size()-1)};
+                CHECK(p.Operations()[tail.value].opcode==OpCode::StoreUniformSelectImm);
+                const auto args=p.Operands(tail);
+                CHECK(args.front().Payload()==layout.pc_offset && CellAt(args,2).Payload()==0x6022 &&
+                        CellAt(args,3).Payload()==0x6002);
+            } else CHECK(p.Blocks().size()==3 && p.Blocks()[0].terminal.kind==TerminalKind::Branch);
+        }
     }
     const std::uint8_t head[]{0x74,0x1e},fallthrough[]{0x90},taken[]{0x90};
     const std::array<BlockWindow,3> internal{{{0x6000,head},{0x6002,fallthrough},{0x6020,taken}}};
@@ -517,6 +631,13 @@ void EveryConditionalBranchAndRealExits() {
     CHECK(built && built.program.Blocks().size()==3);
     CHECK(built.program.Blocks()[0].terminal.kind==TerminalKind::Branch);
     CHECK(built.program.Blocks()[0].terminal.first.value==2 && built.program.Blocks()[0].terminal.second.value==1);
+    const TargetInfo known{TargetMode::Known,0xa64,static_cast<std::uint64_t>(TargetFeature::ConditionalUniformStore)};
+    const auto mixed=BuildIR(std::span{internal}.first(2),Scope::Function,layout,known);
+    CHECK(mixed && mixed.program.Blocks().size()==3 &&
+            mixed.program.Blocks()[0].terminal.kind==TerminalKind::Branch);
+    const auto external=BuildIR(internal,Scope::Function,layout,known,nullptr,nullptr,true);
+    CHECK(external && external.program.Blocks().size()==3 &&
+            external.program.Blocks()[0].terminal.kind==TerminalKind::Dispatch);
 }
 
 void ActualDecodedBufferAndRejectedFrontier() {
@@ -959,6 +1080,298 @@ void PendingPartialWritesKeepWholeParents() {
         CHECK(p.Operands(NodeId{static_cast<std::uint32_t>(low.Payload())}).front().Payload()==merges[4].value);
     }
 }
+void PackedSseAndLandingHints() {
+    const std::array<std::uint8_t,84> bytes{
+        0xf3,0x0f,0x1e,0xfa, 0xf3,0x0f,0x1e,0xfb, // ENDBR64/32, no guest IBT.
+        0xf3,0x0f,0x1e,0xc8,                       // RDSSPD eax, preserves the full RAX.
+        0xf3,0x48,0x0f,0x1e,0xc8,                  // Actual glibc RDSSPQ rax.
+        0xf3,0x41,0x0f,0x1e,0xc8,                  // RDSSPD r8d.
+        0xf3,0x49,0x0f,0x1e,0xcf,                  // RDSSPQ r15.
+        0x66,0x0f,0x6c,0xc1, 0x66,0x0f,0x6d,0xc1, // PUNPCKLQDQ/HQDQ xmm0,xmm1.
+        0x0f,0x58,0xc1, 0x66,0x0f,0x58,0x00,       // ADDPS reg, ADDPD full m128.
+        0x0f,0x5c,0xc1, 0x66,0x0f,0x5c,0xc1,
+        0x0f,0x59,0xc1, 0x66,0x0f,0x59,0xc1,
+        0x0f,0x5e,0xc1, 0x66,0x0f,0x5e,0xc1,
+        0x66,0x0f,0x68,0xc1, 0x66,0x0f,0x69,0xc1, // PUNPCKHBW/HWD.
+        0x66,0x0f,0x6a,0x08,                       // PUNPCKHDQ xmm1,full m128.
+        0x66,0x0f,0xda,0xec,                       // PMINUB xmm5,xmm4.
+        0xe9,0x00,0x00,0x00,0x00};
+    auto vector_layout = layout; vector_layout.fprs_offset = 0x400;
+    const BlockWindow source{0x6000,bytes};
+    const auto inspect = [&](const swift::x86::BuildResult& built) {
+        CHECK(built && built.instruction_count == 21 && built.decoded_bytes == bytes.size());
+        const auto& p = built.program;
+        std::size_t zip{}, fp{}, hints{}, memory{}, minimum{};
+        bool fault_pc{};
+        constexpr std::array<OpCode,8> arithmetic{
+            OpCode::VecFAdd,OpCode::VecFAdd,OpCode::VecFSub,OpCode::VecFSub,
+            OpCode::VecFMul,OpCode::VecFMul,OpCode::VecFDiv,OpCode::VecFDiv};
+        constexpr std::array<unsigned,5> zip_bits{64,64,8,16,32},zip_halves{0,1,1,1,1};
+        for (std::size_t i=0;i<p.Operations().size();++i) {
+            const auto& op=p.Operations()[i]; const auto args=p.Operands(NodeId{static_cast<std::uint32_t>(i)});
+            if (op.opcode==OpCode::Nop) ++hints;
+            if (op.opcode==OpCode::VecZip) {
+                CHECK(zip<zip_bits.size() && op.type==Type::V128 && CellCount(args)==4);
+                CHECK(CellAt(args,2).Payload()==zip_bits[zip] && CellAt(args,3).Payload()==zip_halves[zip]);
+                ++zip;
+            }
+            if (op.opcode==OpCode::VecMin) {
+                CHECK(op.type==Type::V128 && CellCount(args)==4 && op.Metadata()==OperationMetadata{});
+                CHECK(CellAt(args,2).Payload()==8 && CellAt(args,3).Payload()==0);++minimum;
+            }
+            if (op.opcode==OpCode::VecFAdd || op.opcode==OpCode::VecFSub ||
+                op.opcode==OpCode::VecFMul || op.opcode==OpCode::VecFDiv) {
+                CHECK(fp<arithmetic.size() && op.opcode==arithmetic[fp] && op.type==Type::V128);
+                CHECK(op.Metadata()==OperationMetadata{} && CellCount(args)==3);
+                CHECK(CellAt(args,2).Payload()==(fp%2 ? 64u : 32u));
+                ++fp;
+            }
+            if (op.opcode==OpCode::StoreUniform) {
+                CHECK(args.front().Payload()!=layout.gprs_offset); // RDSSPD/Q did not rewrite/zero RAX.
+                if (args.front().Payload()==layout.pc_offset) fault_pc=true;
+            }
+            if (op.opcode==OpCode::LoadMemoryTSO) {
+                CHECK(fault_pc && op.type==Type::V128); ++memory;
+            }
+        }
+        CHECK(hints==6 && zip==5 && fp==8 && memory==2 && minimum==1);
+        CHECK(StoresImmediate(p,layout.pc_offset,source.pc+38));
+        CHECK(StoresImmediate(p,layout.pc_offset,source.pc+71));
+    };
+    swift::x86::DecodeTiming direct_timing;
+    const auto direct=BuildIR({&source,1},Scope::Block,vector_layout,{},nullptr,&direct_timing);
+    inspect(direct); CHECK(direct_timing.calls==21);
+    swift::x86::DecodeTiming function_timing;
+    const auto function=swift::x86::BuildFunctionIR({&source,1},source.pc,vector_layout,{}, {},nullptr,&function_timing);
+    inspect(function); CHECK(function_timing.calls==21);
+    // Recognition does not swallow another instruction's failure or a partial hint.
+    const std::array<std::uint8_t,6> bad{0xf3,0x0f,0x1e,0xfa,0x0f,0x0b};
+    const BlockWindow unsupported{0x7000,bad};
+    CHECK(!BuildIR({&unsupported,1},Scope::Block,vector_layout).program);
+    const BlockWindow truncated{0x7100,std::span{bad}.first(3)};
+    CHECK(!BuildIR({&truncated,1},Scope::Block,vector_layout).program);
+    const std::array<std::uint8_t,5> bad_extension{0xf3,0x4c,0x0f,0x1e,0xc8};
+    const BlockWindow extension{0x7200,bad_extension};
+    CHECK(!BuildIR({&extension,1},Scope::Block,vector_layout).program);
+    const std::array<std::uint8_t,5> other_group{0xf3,0x48,0x0f,0x1e,0xd0};
+    const BlockWindow other{0x7300,other_group};
+    CHECK(!BuildIR({&other,1},Scope::Block,vector_layout).program);
+    const BlockWindow partial{0x7400,std::span{other_group}.first(4)};
+    CHECK(!BuildIR({&partial,1},Scope::Block,vector_layout).program);
+}
+void PackedByteAndComparisonsAndRelativeCall() {
+    std::vector<std::uint8_t> bytes{0x66,0x41,0x0f,0x67,0xe8}; // PACKUSWB xmm5,xmm8.
+    for (std::uint8_t condition=0;condition<8;++condition)
+        bytes.insert(bytes.end(),{0x44,0x0f,0xc2,0xdb,condition}); // CMPPS xmm11,xmm3,imm8.
+    bytes.insert(bytes.end(),{0x66,0x0f,0xc2,0xc1,0x01, // Existing CMPLTPD path.
+                             0x66,0x0f,0x67,0x00,      // PACKUSWB xmm0,full m128.
+                             0xe9,0x00,0x00,0x00,0x00});
+    auto vector_layout=layout; vector_layout.fprs_offset=0x400;
+    const BlockWindow source{0x8000,bytes};
+    const auto built=BuildIR({&source,1},Scope::Block,vector_layout); CHECK(built);
+    CHECK(built.instruction_count==12 && built.decoded_bytes==bytes.size());
+    constexpr std::array<std::uint64_t,8> relations{2,1,3,8,13,14,12,7};
+    std::size_t packs{},compares{};
+    for (const auto& op:built.program.Operations()) {
+        const auto args=built.program.Operands(op);
+        CHECK(op.opcode!=OpCode::PublishFCmpFlags);
+        if (op.opcode==OpCode::VecPack) {
+            CHECK(op.type==Type::V128 && CellCount(args)==4);
+            CHECK(CellAt(args,2).Payload()==16 && CellAt(args,3).Payload()==1);
+            ++packs;
+        }
+        if (op.opcode==OpCode::VecFCmpMask) {
+            CHECK(compares<9 && op.type==Type::V128 && CellCount(args)==5);
+            CHECK(CellAt(args,2).Payload()==(compares<8 ? 32u : 64u));
+            CHECK(CellAt(args,3).Payload()==(compares<8 ? relations[compares] : 1));
+            CHECK(CellAt(args,4).Payload()==0 && op.Metadata()==OperationMetadata{});
+            ++compares;
+        }
+    }
+    CHECK(packs==2 && compares==9);
+
+    const std::array<std::uint8_t,6> call_bytes{0x67,0xe8,0xe0,0xff,0xff,0xff};
+    const BlockWindow call{UINT64_C(0x100004000),call_bytes};
+    const auto called=BuildIR({&call,1},Scope::Block,layout); CHECK(called);
+    CHECK(called.instruction_count==1 && called.decoded_bytes==call_bytes.size());
+    CHECK(StoresImmediate(called.program,layout.pc_offset,call.pc+call_bytes.size()-32));
+    bool return_pc{};
+    for (const auto& op:called.program.Operations()) {
+        if (op.opcode!=OpCode::StoreMemoryTSO) continue;
+        const auto value=CellAt(called.program.Operands(op),1);
+        CHECK(value.TypeView()==Type::U64 && value.Kind()==OperandKind::Value);
+        const auto& producer=called.program.Operations()[value.Payload()];
+        return_pc=producer.opcode==OpCode::LoadImm && called.program.Operands(producer).front().Payload()==call.pc+6;
+    }
+    CHECK(return_pc);
+    const std::array<std::uint8_t,4> addr32_memory{0x67,0x48,0x8b,0x00};
+    const BlockWindow rejected{0x9000,addr32_memory};
+    CHECK(!BuildIR({&rejected,1},Scope::Block,layout).program);
+    const std::array<std::uint8_t,3> addr32_indirect{0x67,0xff,0x10};
+    const BlockWindow indirect{0x9100,addr32_indirect};
+    CHECK(!BuildIR({&indirect,1},Scope::Block,layout).program);
+}
+void RepeatStoreHasAZeroBypassAndARealFrontier() {
+    const std::array<std::uint8_t,4> bytes{0xf3,0x48,0xab,0x90}; // REP STOSQ; next guest instruction.
+    const BlockWindow source{0xa000,bytes};
+    const auto features=static_cast<std::uint64_t>(TargetFeature::FaultLocations) |
+                        static_cast<std::uint64_t>(TargetFeature::PrivateGPRState);
+    const TargetInfo target{TargetMode::Known,0xa64,features};
+    const auto inspect=[&](const swift::x86::BuildResult& built,Scope scope) {
+        CHECK(built && built.instruction_count==1 && built.decoded_bytes==3);
+        const auto& p=built.program;
+        CHECK(p.ScopeKind()==scope && p.Blocks().size()==1 && p.Blocks()[0].terminal.kind==TerminalKind::Dispatch);
+        std::size_t guard=p.Operations().size(),store=guard,bind=guard,di=guard,count=guard,df=guard;
+        for (std::size_t i=0;i<p.Operations().size();++i) {
+            const auto& op=p.Operations()[i]; const auto args=p.Operands(NodeId{static_cast<std::uint32_t>(i)});
+            if (op.opcode==OpCode::NotGoto) guard=i;
+            if (op.opcode==OpCode::StoreMemoryTSO) { CHECK(store==p.Operations().size()); store=i; }
+            if (op.opcode==OpCode::BindLabel) bind=i;
+            if (op.opcode==OpCode::BitExtract && CellCount(args)==3 && CellAt(args,1).Payload()==10) df=i;
+            if (op.opcode==OpCode::StoreUniform) {
+                if (args.front().Payload()==layout.gprs_offset+7*layout.stride) di=i;
+                if (args.front().Payload()==layout.gprs_offset+layout.stride) count=i;
+            }
+            CHECK(op.Metadata()==OperationMetadata{});
+        }
+        CHECK(guard<df && df<store && store<di && store<count && di<bind && count<bind);
+        CHECK(bind+1==p.Operations().size()); // No conditional-body SSA is read after the join.
+        const auto count_input=p.Operands(NodeId{static_cast<std::uint32_t>(guard)}).front();
+        CHECK(p.Operations()[count_input.Payload()].opcode==OpCode::LoadUniform);
+        CHECK(p.Operands(NodeId{static_cast<std::uint32_t>(count_input.Payload())}).front().Payload()==
+              layout.gprs_offset+layout.stride);
+        CHECK(p.Operands(NodeId{static_cast<std::uint32_t>(bind)}).front().Payload()==guard);
+        const auto raw_flags=p.Operands(NodeId{static_cast<std::uint32_t>(df)}).front();
+        CHECK(p.Operations()[raw_flags.Payload()].opcode==OpCode::GetFlags);
+        CHECK(StoresImmediate(p,layout.pc_offset,source.pc+3));
+        CHECK(HasImmediate(p,8) && HasImmediate(p,std::uint64_t{}-8));
+    };
+    inspect(BuildIR({&source,1},Scope::Block,layout,target),Scope::Block);
+    inspect(swift::x86::BuildFunctionIR({&source,1},source.pc,layout,{},target),Scope::Function);
+    _CodeInfo code{};code.codeOffset=source.pc;code.code=bytes.data();code.codeLen=bytes.size();code.dt=Decode64Bits;
+    std::array<_DInst,2> decoded{};unsigned used{};
+    distorm_decompose(&code,decoded.data(),decoded.size(),&used);CHECK(used==2);
+    const swift::x86::DecodedBlock oversized{source.pc,0,2};
+    CHECK(!swift::x86::BuildDecodedIR(decoded,{&oversized,1},{&source,1},Scope::Block,layout,target).program);
+    const std::array<std::uint8_t,3> addr32{0xf3,0x67,0xab};
+    const BlockWindow rejected{0xa100,addr32};
+    CHECK(!BuildIR({&rejected,1},Scope::Block,layout,target).program);
+}
+void HalfPackedSingleMemoryKeepsTheOtherHalf() {
+    const std::array<std::uint8_t,27> bytes{
+        0x0f,0x28,0xc1,                 // MOVAPS xmm0,xmm1: pending full value.
+        0x0f,0x16,0x00,                 // MOVHPS xmm0,[rax].
+        0x0f,0x11,0x40,0x10,            // MOVUPS [rax+16],xmm0: reload merged state.
+        0x0f,0x12,0x48,0x08,            // MOVLPS xmm1,[rax+8].
+        0x0f,0x17,0x40,0x10,            // MOVHPS [rax+16],xmm0.
+        0x0f,0x13,0x48,0x18,            // MOVLPS [rax+24],xmm1.
+        0xe9,0x00,0x00,0x00,0x00};
+    auto vector_layout=layout;vector_layout.fprs_offset=0x400;
+    const TargetInfo target{TargetMode::Known,0xa64,static_cast<std::uint64_t>(TargetFeature::PrivateVectorState)};
+    const BlockWindow source{0xb000,bytes};
+    const auto built=BuildIR({&source,1},Scope::Block,vector_layout,target);CHECK(built);
+    CHECK(built.instruction_count==7 && built.decoded_bytes==bytes.size());
+    const auto& p=built.program;
+    std::size_t full_publication=p.Operations().size(),high_publication=full_publication,low_publication=full_publication;
+    std::size_t loads{},stores{},merged{};
+    for (std::size_t i=0;i<p.Operations().size();++i) {
+        const auto& op=p.Operations()[i];const auto args=p.Operands(NodeId{static_cast<std::uint32_t>(i)});
+        if (op.opcode==OpCode::StoreUniform && args.front().TypeView()==Type::V128 && args.front().Payload()==0x400)
+            full_publication=i;
+        if (op.opcode==OpCode::StoreUniform && args.front().TypeView()==Type::U64) {
+            if (args.front().Payload()==0x408) high_publication=i;
+            if (args.front().Payload()==0x410) low_publication=i;
+        }
+        if (op.opcode==OpCode::LoadMemoryTSO) {CHECK(op.type==Type::U64);++loads;}
+        if (op.opcode!=OpCode::StoreMemoryTSO) continue;
+        ++stores;
+        const auto value=CellAt(args,CellCount(args)-1);
+        const auto& producer=p.Operations()[value.Payload()];
+        CHECK(producer.opcode==OpCode::LoadUniform);
+        const auto field=p.Operands(producer).front();
+        if (field.TypeView()==Type::V128) {
+            CHECK(field.Payload()==0x400 && value.Payload()>high_publication);++merged;
+        } else CHECK(field.TypeView()==Type::U64 && (field.Payload()==0x408 || field.Payload()==0x410));
+    }
+    CHECK(full_publication<high_publication && high_publication<low_publication);
+    CHECK(loads==2 && stores==3 && merged==1);
+    const std::array<std::uint8_t,3> register_high{0x0f,0x16,0xc1},register_low{0x0f,0x12,0xc1};
+    const BlockWindow high{0xb100,register_high},low{0xb200,register_low};
+    const auto register_half=[&](const BlockWindow& window,bool high_to_low) {
+        const auto result=BuildIR({&window,1},Scope::Block,vector_layout,target);CHECK(result);
+        std::size_t copies{};
+        for (const auto& op:result.program.Operations()) {
+            CHECK(op.opcode!=OpCode::LoadMemoryTSO && op.opcode!=OpCode::StoreMemoryTSO);
+            if (op.opcode!=OpCode::VecZip) continue;
+            const auto args=result.program.Operands(op);
+            CHECK(op.type==Type::V128 && CellCount(args)==4 && CellAt(args,2).Payload()==64);
+            CHECK(CellAt(args,3).Payload()==high_to_low);
+            const auto first=CellAt(args,0),second=CellAt(args,1);
+            const auto& left=result.program.Operations()[first.Payload()];
+            const auto& right=result.program.Operations()[second.Payload()];
+            CHECK(left.opcode==OpCode::LoadUniform && right.opcode==OpCode::LoadUniform);
+            CHECK(result.program.Operands(left).front().Payload()==(high_to_low ? 0x410u : 0x400u));
+            CHECK(result.program.Operands(right).front().Payload()==(high_to_low ? 0x400u : 0x410u));
+            ++copies;
+        }
+        CHECK(copies==1);
+    };
+    register_half(high,false); // MOVLHPS xmm0,xmm1.
+    register_half(low,true);   // MOVHLPS xmm0,xmm1.
+}
+
+void X87WindowsKeepTheirFirstServicePC() {
+    const std::array<std::uint8_t,15> bytes{
+        0xd9,0xc9,0xd9,0xc9,       // FXCH ST1 twice.
+        0xd9,0xe8,0xd9,0xfa,0xdd,0xd8, // FLD1; FSQRT; FSTP ST0.
+        0xd9,0xc9,0x90,0xd9,0xc9}; // A gap retains both ordinary exchanges.
+    const BlockWindow source{0xb000,bytes};
+    auto x87_layout=layout; x87_layout.x87_offset=0x600;
+    const TargetInfo target{TargetMode::Known,0xa64,
+        static_cast<std::uint64_t>(TargetFeature::FaultLocations)};
+    const std::vector<std::uint64_t> expected{
+        X87Encode(X87Command::ExchangeTwice,1), X87Encode(X87Command::PushOnePop),
+        X87Encode(X87Command::Exchange,1), X87Encode(X87Command::Exchange,1)};
+    for (const auto scope : {Scope::Block,Scope::Function}) {
+        const auto built=BuildIR({&source,1},scope,x87_layout,target);
+        CHECK(built && built.instruction_count==8 && built.decoded_bytes==bytes.size());
+        CHECK(built.program.ScopeKind()==scope && built.program.Blocks().size()==1);
+        std::vector<std::uint64_t> commands,locations;
+        NodeId state_node,zero_node;
+        for (const auto& op : built.program.Operations()) {
+            const auto cells=built.program.Operands(op);
+            if (op.opcode==OpCode::FaultLocation) locations.push_back(cells.front().Payload());
+            if (op.opcode!=OpCode::X87Op) continue;
+            CHECK(CellCount(cells)==3 && CellAt(cells,1).Kind()==OperandKind::Immediate);
+            commands.push_back(CellAt(cells,1).Payload());
+            if (state_node) {
+                CHECK(CellAt(cells,0).Payload()==state_node.value && CellAt(cells,2).Payload()==zero_node.value);
+            } else {
+                state_node={static_cast<std::uint32_t>(CellAt(cells,0).Payload())};
+                zero_node={static_cast<std::uint32_t>(CellAt(cells,2).Payload())};
+            }
+            const auto& raw=built.program.Operations()[CellAt(cells,2).Payload()];
+            CHECK(raw.opcode==OpCode::LoadImm && built.program.Operands(raw).front().Payload()==0);
+        }
+        CHECK(commands==expected);
+        CHECK(locations==std::vector<std::uint64_t>({0xb000,0xb004,0xb00a,0xb00d}));
+    }
+    const std::array<BlockWindow,2> split{{{0xb000,std::span{bytes}.first(2)},
+                                        {0xb002,std::span{bytes}.subspan(2,2)}}};
+    const auto separated=BuildIR(split,Scope::Function,x87_layout,target);
+    CHECK(separated && separated.instruction_count==2 && separated.program.Blocks().size()==2);
+    std::size_t ordinary{};
+    NodeId previous_state,previous_zero;
+    for (const auto& op : separated.program.Operations()) if (op.opcode==OpCode::X87Op) {
+        const auto cells=separated.program.Operands(op);
+        CHECK(CellAt(cells,1).Payload()==X87Encode(X87Command::Exchange,1));
+        CHECK(CellAt(cells,0).Payload()!=previous_state.value && CellAt(cells,2).Payload()!=previous_zero.value);
+        previous_state={static_cast<std::uint32_t>(CellAt(cells,0).Payload())};
+        previous_zero={static_cast<std::uint32_t>(CellAt(cells,2).Payload())};
+        ++ordinary;
+    }
+    CHECK(ordinary==2);
+}
 } // namespace
 
 int main() {
@@ -970,12 +1383,18 @@ int main() {
         KnownTargetEmitsOneShiftedAddress();
         IntegerAluAndDeferredFlags();
         EveryConditionalBranchAndRealExits();
+        ExternalEntriesAndReadyFrontiers();
         ActualDecodedBufferAndRejectedFrontier();
         AutomaticFunctionDiscoveryAndEntry();
         AutomaticFunctionFailuresAndFrontiers();
         NarrowMovesAndStackControlAreConstructible();
         MixedGPRViewsKeepParentCoverage();
         PendingPartialWritesKeepWholeParents();
+        PackedSseAndLandingHints();
+        PackedByteAndComparisonsAndRelativeCall();
+        RepeatStoreHasAZeroBypassAndARealFrontier();
+        HalfPackedSingleMemoryKeepsTheOtherHalf();
+        X87WindowsKeepTheirFirstServicePC();
         std::puts("Real x86 decode/build/submit subset contracts passed");
         return 0;
     } catch (const std::exception& error) {

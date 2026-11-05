@@ -1,6 +1,7 @@
 #include "runtime.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -76,11 +77,17 @@ class CodeCache {
 public:
     explicit CodeCache(bool counted) noexcept
             : empty{.entry = reinterpret_cast<NativeCode::Function>(counted ? &SvmNativePendingCounted : &SvmNativePending)} {}
-    NativeCode Find(u64 pc) const noexcept {
+    NativeCode::Function Find(u64 pc, NativeCode* unit = nullptr) const noexcept {
         if (slots.empty()) return {};
         auto at = Index(pc, slots.size() - 1);
         while (slots[at].occupied) {
-            if (slots[at].pc == pc) return slots[at].code_id != UINT32_MAX ? codes[slots[at].code_id] : NativeCode{};
+            if (slots[at].pc == pc) {
+                if (slots[at].code_id == UINT32_MAX) return {};
+                // The callable entry may be inside this one unit. Faults,
+                // writable offsets and anchor ranges always retain its base.
+                if (unit) *unit = codes[slots[at].code_id];
+                return slots[at].entry;
+            }
             at = (at + 1) & (slots.size() - 1);
         }
         return {};
@@ -94,42 +101,33 @@ public:
         }
         return nullptr;
     }
-    void InsertReady(u64 pc, NativeCode code) {
+    void InsertReady(u64 pc, NativeCode code, std::span<const arm64::EntryPoint> extra) {
         if (!code.entry) throw std::runtime_error("cannot cache an empty native entry");
-        auto& slot = Reserve(pc);
-        if (slot.code_id == UINT32_MAX) {
-            if (codes.size() >= UINT32_MAX) throw std::length_error("native code metadata capacity overflow");
-            const auto capacity = codes.capacity();
-            codes.push_back(code);
-            if (codes.capacity() != capacity) ++allocations;
-            // A failed allocation leaves only an ordinary pending PC slot;
-            // publish the numeric borrow and ready entry after it succeeds.
-            slot.code_id = static_cast<std::uint32_t>(codes.size() - 1);
-            ++entries;
-        } else codes[slot.code_id] = code;
-        slot.entry = code.entry;
-        auto head = slot.pending_head;
-        slot.pending_head = UINT32_MAX;
-        if (head != UINT32_MAX) --pending_targets;
-        while (head != UINT32_MAX) {
-            const auto& link = links[head];
-            Patch(link, code.entry);
-            --pending_count;
-            head = link.next;
+        if (codes.size() >= UINT32_MAX) throw std::length_error("native code metadata capacity overflow");
+        const auto capacity = codes.capacity();
+        const auto id = static_cast<std::uint32_t>(codes.size());
+        codes.push_back(code);
+        if (codes.capacity() != capacity) ++allocations;
+        // One actual range/fault-table borrow per native unit. Root is a
+        // resolver miss; continuation PCs can already belong to older units.
+        BindReady(pc, id, code.entry);
+        for (const auto& entry : extra) {
+            if (entry.word >= code.bytes / sizeof(std::uint32_t))
+                throw std::runtime_error("native entry lies outside its owning unit");
+            const auto address = reinterpret_cast<std::uintptr_t>(code.entry) + std::uintptr_t{entry.word} * 4;
+            BindReady(entry.pc, id, reinterpret_cast<NativeCode::Function>(address));
         }
-        // Cold resolver only: no native reader or retained slot reference.
-        // Both probe paths remain occupied after the swap; only a pending
-        // target moves deeper, with its original waiter head intact.
-        const auto home = Index(pc, slots.size() - 1);
-        if (&slot != &slots[home] && slots[home].occupied && slots[home].code_id == UINT32_MAX)
-            std::swap(slot, slots[home]);
     }
     void AddLink(u64 target, std::uintptr_t* pointer, const std::uintptr_t* executable, std::uint32_t back_words) {
         auto& slot = Reserve(target);
         if (links.size() >= UINT32_MAX) throw std::length_error("native link-relocation capacity overflow");
         if (slot.code_id != UINT32_MAX) {
             links.push_back({pointer, executable, UINT32_MAX, back_words});
-            Patch(links.back(), slot.entry); return;
+            // Publish already patched ready outgoing links before its one
+            // final sync. This row still owns their later unlink lifetime.
+            if (__atomic_load_n(pointer, __ATOMIC_RELAXED) == reinterpret_cast<std::uintptr_t>(slot.entry)) ++patched;
+            else Patch(links.back(), slot.entry);
+            return;
         }
         // Publish membership only after the actual row has been allocated.
         // No scan of any other target's waiters is needed on insertion.
@@ -138,11 +136,21 @@ public:
         slot.pending_head = static_cast<std::uint32_t>(links.size() - 1);
         ++pending_count;
     }
+    void AddDynamicLink(std::uintptr_t* tuple, const std::uintptr_t* fallback) {
+        // The same actual lifetime row owns this array and its always-callable
+        // directory fallback. Zero back_words distinguishes DATA from code.
+        links.push_back({tuple, fallback, UINT32_MAX, 0});
+    }
     void ResetLinks() noexcept {
         // Keep all original code/range metadata alive until the next cold
         // resolver. Undo each actual branch before any target can be retired.
-        for (const auto& link : links)
-            UnlinkNativeLink(link.writable_pointer, link.executable_pointer, link.back_words);
+        for (const auto& link : links) {
+            if (!link.back_words) {
+                for (unsigned i = 0; i < arm64::abi::DynamicCacheEntries; ++i)
+                    __atomic_store_n(link.writable_pointer + i * 2 + 1,
+                            reinterpret_cast<std::uintptr_t>(link.executable_pointer), __ATOMIC_RELEASE);
+            } else UnlinkNativeLink(link.writable_pointer, link.executable_pointer, link.back_words);
+        }
     }
     void Clear() noexcept {
         for (auto& slot : slots) slot = empty;
@@ -190,6 +198,30 @@ private:
     std::vector<LinkRelocation> links;
     std::size_t entries{}, occupied{}, pending_count{}, pending_targets{};
     u64 allocations{}, patched{};
+    void BindReady(u64 pc, std::uint32_t id, NativeCode::Function entry) {
+        auto& slot = Reserve(pc);
+        // First ready entry wins. Never replace a shared unit descriptor
+        // through one of its aliases or redirect its existing incoming links.
+        if (slot.code_id != UINT32_MAX) return;
+        slot.code_id = id;
+        slot.entry = entry;
+        ++entries;
+        auto head = slot.pending_head;
+        slot.pending_head = UINT32_MAX;
+        if (head != UINT32_MAX) --pending_targets;
+        while (head != UINT32_MAX) {
+            const auto& link = links[head];
+            Patch(link, entry);
+            --pending_count;
+            head = link.next;
+        }
+        // Cold resolver only: no native reader or retained slot reference.
+        // Both probe paths remain occupied after the swap; only a pending
+        // target moves deeper, with its original waiter head intact.
+        const auto home = Index(pc, slots.size() - 1);
+        if (&slot != &slots[home] && slots[home].occupied && slots[home].code_id == UINT32_MAX)
+            std::swap(slot, slots[home]);
+    }
     static std::size_t Index(u64 pc, std::size_t mask) noexcept {
         return static_cast<std::size_t>(pc ^ (pc >> arm64::abi::DispatchHashShift)) & mask;
     }
@@ -216,7 +248,7 @@ private:
     }
     void Grow() {
         if (slots.size() > slots.max_size() / 2) throw std::length_error("native PC cache capacity overflow");
-        std::vector<DispatchSlot> next(slots.empty() ? 256 : slots.size() * 2, empty);
+        std::vector<DispatchSlot> next(slots.empty() ? 32 : slots.size() * 2, empty);
         for (const auto& slot : slots) if (slot.occupied) {
             const auto at = EmptyOrMatching(next, slot.pc);
             next[at] = slot;
@@ -232,7 +264,8 @@ private:
 
 class Process {
 public:
-    Process(RuntimeOptions options, RuntimeStats& stats) : options(options), stats(stats), cache(options.decode_timing) {
+    Process(RuntimeOptions options, RuntimeStats& stats) : options(options), stats(stats), caches{CodeCache{options.decode_timing}, CodeCache{options.decode_timing},
+                CodeCache{options.decode_timing}, CodeCache{options.decode_timing}} {
         native.state = &state; native.opaque = this; native.resolve = ResolveBridge;
         native.active = &faults.active; native.anchor = &anchor;
         native.pinned_uniform_offset = offsetof(GuestState, gprs);
@@ -268,11 +301,15 @@ public:
         stats.smc_write_faults = faults.smc_write_faults.load(std::memory_order_relaxed);
         stats.dispatches = native.dispatcher_entries; stats.cache_hits = native.cache_hits;
         stats.directory_probe_steps = native.probe_steps;
-        stats.patched_links = cache.Patched(); stats.pending_links = cache.Pending();
-        stats.pending_targets = cache.PendingTargets(); stats.link_relocation_rows = cache.LinkRows();
-        stats.link_relocation_capacity = cache.LinkCapacity();
+        for (const auto& cache : caches) {
+            stats.patched_links += cache.Patched(); stats.pending_links += cache.Pending();
+            stats.pending_targets += cache.PendingTargets(); stats.link_relocation_rows += cache.LinkRows();
+            stats.link_relocation_capacity += cache.LinkCapacity();
+        }
         Timer total{stats.compile_request_ns}, release{stats.code_release_ns};
-        cache.Release(); arena.Clear();
+        for (auto& cache : caches) cache.Release();
+        arena.Clear();
+        ir_reuse = {}; compile_output = {}; // Actual retained capacities stay inside the charged lifetime.
     }
     int Run(const std::string& path, std::span<const std::string> argv, std::span<const std::string> environment) {
 #if !defined(__aarch64__)
@@ -312,6 +349,7 @@ public:
                 if (reason == 1) ServiceSyscall();
                 else if (reason == 2) throw std::runtime_error(resolver_error ? resolver_error : diagnostic);
                 else if (reason == 3) UpdateFPEnvironment(); // LDMXCSR takes a real root exit/reentry.
+                else if (reason == 4) throw std::runtime_error("x87 unsupported command or unmasked exception");
                 else if (reason != 0) throw std::runtime_error("unknown native dispatch exit reason");
             }
         }
@@ -324,9 +362,15 @@ private:
     RuntimeStats& stats;
     GuestMemory memory;
     CodeArena arena;
+    ir::Program ir_reuse;
+    arm64::CompileResult compile_output;
     GuestState state;
     FaultContext faults;
-    CodeCache cache;
+    // Each used software DAZ/FTZ mode owns its actual directory and links.
+    // Native dispatch still borrows just one tuple; unused modes allocate nothing.
+    std::array<CodeCache, 4> caches;
+    std::uint8_t fp_mode{};
+    CodeCache& Cache() noexcept { return caches[fp_mode]; }
     NativeCode anchor;
     NativeRunContext native;
     std::string diagnostic;
@@ -343,18 +387,22 @@ private:
         // disabled: scalar consumers apply the independent raw DAZ/FTZ bits.
         native.guest_fpcr = ((mxcsr >> 13) & 1) << 23 | ((mxcsr >> 14) & 1) << 22;
         if (afp) native.guest_fpcr |= 6 | daz | ftz << 24; // AH | NEP | FIZ | FZ.
+        fp_mode = afp ? 0 : static_cast<std::uint8_t>(daz | (ftz << 1));
+        RefreshNative(native); // LDMXCSR has returned through the real root boundary.
     }
 
     static const NativeCode* LookupNative(void* opaque, std::uintptr_t host_pc) noexcept {
-        return static_cast<Process*>(opaque)->cache.FindHost(host_pc);
+        for (const auto& cache : static_cast<Process*>(opaque)->caches)
+            if (const auto* code = cache.FindHost(host_pc)) return code;
+        return nullptr;
     }
     static bool RecoverCodeWrite(void* opaque, std::uintptr_t address) noexcept {
         auto& process = *static_cast<Process*>(opaque);
         if (!process.memory.RecoverCodeWrite(address)) return false;
         process.faults.smc_pending = 1;
         __atomic_store_n(&process.native.mask, u64{0}, __ATOMIC_RELAXED);
-        __atomic_store_n(&process.native.slots, process.cache.EmptyData(), __ATOMIC_RELEASE);
-        process.cache.ResetLinks();
+        __atomic_store_n(&process.native.slots, process.Cache().EmptyData(), __ATOMIC_RELEASE);
+        for (auto& cache : process.caches) cache.ResetLinks();
         return true;
     }
     std::uintptr_t Dispatcher() const noexcept {
@@ -364,15 +412,20 @@ private:
         return reinterpret_cast<std::uintptr_t>(dispatcher);
     }
     void RefreshNative(NativeRunContext& context) noexcept {
-        context.mask = faults.smc_pending ? 0 : cache.Mask();
-        context.slots = faults.smc_pending ? cache.EmptyData() : cache.Data();
+        context.mask = faults.smc_pending ? 0 : Cache().Mask();
+        context.slots = faults.smc_pending ? Cache().EmptyData() : Cache().Data();
         context.anchor = &anchor;
     }
     void ObserveCache() noexcept {
-        stats.peak_cache_entries = std::max(stats.peak_cache_entries, static_cast<u64>(cache.Entries()));
-        stats.peak_cache_occupied = std::max(stats.peak_cache_occupied, static_cast<u64>(cache.Occupied()));
-        stats.peak_cache_slots = std::max(stats.peak_cache_slots, static_cast<u64>(cache.Slots()));
-        stats.cache_table_allocations = cache.Allocations();
+        u64 entries{}, occupied{}, slots{}, allocations{};
+        for (const auto& cache : caches) {
+            entries += cache.Entries(); occupied += cache.Occupied();
+            slots += cache.Slots(); allocations += cache.Allocations();
+        }
+        stats.peak_cache_entries = std::max(stats.peak_cache_entries, entries);
+        stats.peak_cache_occupied = std::max(stats.peak_cache_occupied, occupied);
+        stats.peak_cache_slots = std::max(stats.peak_cache_slots, slots);
+        stats.cache_table_allocations = allocations;
     }
     static std::uintptr_t ResolveBridge(void* opaque, NativeRunContext* context) noexcept {
         auto& process = *static_cast<Process*>(opaque);
@@ -390,28 +443,38 @@ private:
         // Native dispatch cleared active before calling us. All prior code,
         // fault ranges and relocation pointers were retained until this exit.
         if (faults.smc_pending) Invalidate();
-        auto code = cache.Find(state.pc);
-        if (!code.entry) {
+        NativeCode code;
+        auto entry = Cache().Find(state.pc, &code);
+        if (!entry) {
             Timer total{stats.compile_request_ns};
             if (options.scope == ir::Scope::Function) {
                 code = CompileUnit(ir::Scope::Function);
                 if (!code.entry) { ++stats.fallbacks; code = CompileUnit(ir::Scope::Block); }
             } else code = CompileUnit(ir::Scope::Block);
             if (!code.entry) { ObserveCache(); RefreshNative(context); return 0; }
-            { Timer publish{stats.publication_ns}; cache.InsertReady(state.pc, code); }
+            {
+                Timer publish{stats.publication_ns};
+                Cache().InsertReady(state.pc, code, compile_output.entries);
+                // Extra entry records are borrowed only during registration;
+                // retain ordinary output capacity, not an oversized peak.
+                if (compile_output.entries.capacity() > 4096)
+                    std::vector<arm64::EntryPoint>{}.swap(compile_output.entries);
+            }
+            entry = code.entry; // The root remains at unit offset zero.
             ObserveCache();
         }
         anchor = code;
         resolver_error = nullptr;
         RefreshNative(context);
-        return reinterpret_cast<std::uintptr_t>(code.entry);
+        return reinterpret_cast<std::uintptr_t>(entry);
     }
 
     void Invalidate() {
         Timer total{stats.compile_request_ns}, release{stats.code_release_ns};
         memory.ClearCodeWrites();
         faults.smc_pending = 0;
-        cache.Clear(); anchor = {}; RefreshNative(native); arena.Clear(); ++stats.cache_invalidations;
+        for (auto& cache : caches) cache.Clear();
+        anchor = {}; RefreshNative(native); arena.Clear(); ++stats.cache_invalidations;
     }
     NativeCode CompileUnit(ir::Scope scope) {
         ++stats.compile_attempts;
@@ -420,6 +483,7 @@ private:
         layout.gprs_offset = offsetof(GuestState, gprs); layout.pc_offset = offsetof(GuestState, pc); layout.stride = 8;
         layout.fprs_offset = offsetof(GuestState, xmm);
         layout.mxcsr_offset = offsetof(GuestState, mxcsr);
+        layout.x87_offset = offsetof(GuestState, x87);
         layout.fs_base_offset = offsetof(GuestState, fs_base); layout.gs_base_offset = offsetof(GuestState, gs_base);
         layout.cpu_query = reinterpret_cast<std::uintptr_t>(&QueryGuestCpu);
         const bool private_guest_state = faults.registered && native.pinned_uniform_offset != UINT32_MAX;
@@ -433,6 +497,12 @@ private:
         {
             Timer front{stats.frontend_ns};
             if (scope == ir::Scope::Function && !mutable_function) {
+                if (private_guest_state)
+                    target.features |= static_cast<u64>(ir::TargetFeature::ExternalEntries);
+                const auto ready = private_guest_state ? x86::ReadyEntryLookup{
+                        &Cache(), [](void* cache, u64 pc) noexcept {
+                            return bool(static_cast<CodeCache*>(cache)->Find(pc));
+                        }} : x86::ReadyEntryLookup{};
                 std::vector<x86::BlockWindow> windows;
                 for (const auto& region : memory.Regions())
                     if ((region.protection & (PROT_READ | PROT_EXEC)) == (PROT_READ | PROT_EXEC) &&
@@ -441,12 +511,12 @@ private:
                         if (!bytes.empty()) windows.push_back({region.address, bytes});
                     }
                 built = x86::BuildFunctionIR(windows, state.pc, layout, options.function_limits, target,
-                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr);
+                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr, &ir_reuse, ready);
             } else {
                 if (mutable_function) ++stats.smc_function_single_block_attempts;
                 const x86::BlockWindow window{state.pc, memory.CodeAt(state.pc)};
                 built = x86::BuildIR({&window, 1}, scope, layout, target,
-                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr, mutable_entry);
+                        nullptr, options.decode_timing ? &stats.compile_decode : nullptr, mutable_entry, &ir_reuse);
             }
         }
         stats.emitted_instructions += built.instruction_count; stats.emitted_guest_bytes += built.decoded_bytes;
@@ -474,13 +544,14 @@ private:
             built.program = std::move(optimized.program);
             if (!optimized) { diagnostic = "IR optimization failed at the current compilation request"; return {}; }
         }
-        arm64::CompileResult compiled;
+        auto& compiled = compile_output;
         arm64::CompileOptions policy{offsetof(GuestState, packed_flags)};
         policy.rcpc_loads = rcpc_loads;
         policy.rcpc_imm9 = rcpc_imm9;
         policy.fault_locations = policy.recover_unaligned = faults.registered;
         policy.dispatcher = Dispatcher();
         policy.dispatch_mode = options.decode_timing ? arm64::DispatchMode::InlineCounted : arm64::DispatchMode::Inline;
+        policy.local_dispatch_cache = true;
         policy.callable_directory = true; // This Process borrows only its own callable CodeCache tuple.
         policy.exit_handler = reinterpret_cast<std::uintptr_t>(&SvmNativeExit);
         policy.pc_offset = offsetof(GuestState, pc); policy.pinned_uniform_offset = offsetof(GuestState, gprs);
@@ -489,13 +560,16 @@ private:
         policy.lse_atomics = lse_atomics;
         policy.crc32c = crc32c;
         policy.native_fp_environment = true;
-        if (!afp) policy.mxcsr_flush_offset = offsetof(GuestState, mxcsr);
+        if (!afp) {
+            policy.mxcsr_flush_offset = offsetof(GuestState, mxcsr);
+            policy.mxcsr_flush_mode = fp_mode;
+        }
         policy.private_uniforms = private_guest_state;
         policy.local_flags = private_guest_state && faults.registered && native_nzcv;
         policy.pinned_vector_offset = private_guest_state ? offsetof(GuestState, xmm) : UINT32_MAX;
         policy.deferred_pc = private_guest_state && faults.registered;
         policy.entry_pc = state.pc;
-        { Timer backend{stats.backend_ns}; compiled = arm64::Compile(built.program, policy); }
+        { Timer backend{stats.backend_ns}; arm64::Compile(built.program, policy, compiled); }
         if (options.decode_timing) {
             stats.spill_slots += compiled.spill_slots;
             stats.max_frame_bytes = std::max(stats.max_frame_bytes, static_cast<u64>(compiled.frame_bytes));
@@ -512,8 +586,13 @@ private:
         NativeCode code;
         {
             Timer publish{stats.publication_ns};
-            code = arena.Publish(compiled.words, std::move(compiled.faults), compiled.links);
-            ++stats.code_units_published; stats.static_links += compiled.links.size();
+            code = arena.Publish(compiled.words, std::move(compiled.faults), compiled.links,
+                    [](void* cache, u64 pc) noexcept -> std::uintptr_t {
+                        return reinterpret_cast<std::uintptr_t>(static_cast<CodeCache*>(cache)->Find(pc));
+                    }, &Cache());
+            ++stats.code_units_published;
+            stats.static_links += std::count_if(compiled.links.begin(), compiled.links.end(),
+                    [](const auto& link) { return link.branch_word != UINT32_MAX; });
             if (options.decode_timing) stats.fault_sites += code.faults.size();
             stats.native_bytes += code.bytes;
             stats.peak_code_bytes = std::max(stats.peak_code_bytes, static_cast<u64>(arena.ReservedBytes()));
@@ -522,9 +601,12 @@ private:
             stats.code_wx_fallback |= arena.Slabs() != arena.DualSlabs();
             if (code.writable) for (const auto& link : compiled.links) {
                 const auto offset = static_cast<u64>(link.pointer_word) * 4;
-                cache.AddLink(link.target_pc, reinterpret_cast<std::uintptr_t*>(code.writable + offset),
-                        reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(code.entry) + offset),
-                        link.pointer_word - link.branch_word);
+                if (link.branch_word == UINT32_MAX)
+                    Cache().AddDynamicLink(reinterpret_cast<std::uintptr_t*>(code.writable + offset),
+                            reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(code.entry) + link.target_pc * 4));
+                else Cache().AddLink(link.target_pc, reinterpret_cast<std::uintptr_t*>(code.writable + offset),
+                            reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(code.entry) + offset),
+                            link.pointer_word - link.branch_word);
             }
             // Function formation excludes mutable source regions, including RX
             // mappings with shared writers. Entry requests keep Function RA but
@@ -532,6 +614,11 @@ private:
             if (mutable_entry)
                 memory.ArmCodeWrites(state.pc, built.decoded_bytes);
         }
+        // Keep only the actual working buffers; no native metadata borrows
+        // these. Oversized units finish normally without retaining their peak.
+        if (built.program.ReservedBytes() <= 8u * 1024 * 1024) ir_reuse = std::move(built.program);
+        if (compiled.words.capacity() > 1024u * 1024) std::vector<std::uint32_t>{}.swap(compiled.words);
+        if (compiled.links.capacity() > 4096) std::vector<arm64::LinkSite>{}.swap(compiled.links);
         return code;
     }
     bool ReadString(u64 address, std::string& value) const {
@@ -790,7 +877,7 @@ private:
         state.gprs[RCX] = state.pc;
         const auto flags = state.packed_flags;
         const auto byte = static_cast<unsigned>(flags & 255);
-        state.gprs[R11] = 0x202 | ((flags >> 29) & 1) | (u64{(std::popcount(byte) & 1) == 0} << 2) |
+        state.gprs[R11] = 0x202 | (flags & 0x400) | ((flags >> 29) & 1) | (u64{(std::popcount(byte) & 1) == 0} << 2) |
                 (((flags >> 26) & 1) << 4) | (((flags >> 30) & 1) << 6) | (((flags >> 31) & 1) << 7) | (((flags >> 28) & 1) << 11);
         state.gprs[RAX] = static_cast<u64>(Syscall(state.gprs[RAX], arguments));
     }

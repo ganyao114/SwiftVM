@@ -21,6 +21,8 @@ struct StateLayout {
     std::uintptr_t cpu_query{};
     // Optional raw MXCSR word. Only actual LDMXCSR/STMXCSR require it.
     std::uint32_t mxcsr_offset{UINT32_MAX};
+    // Optional architectural extended-precision state, described by ir/x87.h.
+    std::uint32_t x87_offset{UINT32_MAX};
 };
 // Native units return zero for ordinary dispatch, one for SYSCALL and three
 // after LDMXCSR for the runtime to reload the guest FP environment. The runtime
@@ -56,13 +58,16 @@ struct BuildResult {
 // decoder calls only; nullptr reads no such clock.
 // external_edges makes every control transfer dispatch, including self edges,
 // while preserving the requested IR scope and allocation path.
+// Optional reusable is consumed only when IR construction starts. Its old
+// borrows end, capacity transfers, and the new Program gets a fresh full ID.
 [[nodiscard]] BuildResult BuildIR(std::span<const BlockWindow> windows,
                                   runtime::ir::Scope scope,
                                   StateLayout layout,
                                   runtime::ir::TargetInfo target = {},
                                   runtime::ir::WorkCounts* collected = nullptr,
                                   DecodeTiming* timing = nullptr,
-                                  bool external_edges = false);
+                                  bool external_edges = false,
+                                  runtime::ir::Program* reusable = nullptr);
 
 // The actual trusted-decoder records, with no second operand representation or
 // re-decoding. Blocks select independently bounded slices in any physical
@@ -76,6 +81,8 @@ struct BuildResult {
 // decoded_bytes/instruction_count count successfully emitted instructions, not
 // every record supplied or its buffer materialization. A rejected operation may
 // already have born a prefix; collected reports that actual abandoned work.
+// Exact contiguous x87 register windows may share one semantic helper at their
+// first PC; all original records retain validation and instruction/byte counts.
 [[nodiscard]] BuildResult BuildDecodedIR(std::span<const _DInst> instructions,
                                          std::span<const DecodedBlock> blocks,
                                          std::span<const BlockWindow> source_bytes,
@@ -83,7 +90,8 @@ struct BuildResult {
                                          StateLayout layout,
                                          runtime::ir::TargetInfo target = {},
                                          runtime::ir::WorkCounts* collected = nullptr,
-                                         std::uint32_t entry_block = 0);
+                                         std::uint32_t entry_block = 0,
+                                         runtime::ir::Program* reusable = nullptr);
 
 // Formation completes before any IR birth. Decode failures report zero emitted
 // instruction/byte/work counts; DecodeFunction exposes their actual decode work.
@@ -93,6 +101,8 @@ struct BuildResult {
                                           DecodeLimits limits = {},
                                           runtime::ir::TargetInfo target = {},
                                           runtime::ir::WorkCounts* collected = nullptr,
-                                          DecodeTiming* timing = nullptr);
+                                          DecodeTiming* timing = nullptr,
+                                          runtime::ir::Program* reusable = nullptr,
+                                          ReadyEntryLookup ready = {});
 
 }  // namespace swift::x86

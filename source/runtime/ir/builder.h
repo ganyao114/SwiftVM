@@ -11,6 +11,9 @@ namespace swift::runtime::ir {
 class Builder {
 public:
     explicit Builder(Scope, TargetInfo = {});
+    // Start a fresh request using only the consumed owner's vector capacity.
+    // All old borrows end; immutable metadata and the full unit ID are new.
+    Builder(Scope, TargetInfo, Program reusable);
     ~Builder();
     Builder(Builder&&) noexcept;
     Builder& operator=(Builder&&) noexcept;

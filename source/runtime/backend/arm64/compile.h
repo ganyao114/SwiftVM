@@ -34,10 +34,20 @@ static_assert(sizeof(FaultSite) == 32);
 
 struct LinkSite {
     std::uint32_t pointer_word{}; // Eight-byte aligned native DATA relocation.
-    std::uint32_t branch_word{}; // Actual patchable transfer head; cold stub is pointer_word + 2.
-    std::uint64_t target_pc{};
+    // UINT32_MAX instead marks the actual DynamicCacheWords DATA array at
+    // pointer_word. Otherwise this is the static patchable transfer head.
+    std::uint32_t branch_word{}; // Static cold stub is pointer_word + 2.
+    std::uint64_t target_pc{}; // Dynamic sentinel instead stores this site's fallback word.
 };
 static_assert(sizeof(LinkSite) == 16);
+
+// Additional external entry into this same published range. Its stub owns
+// the unit frame; internal edges continue to use the original body label.
+struct EntryPoint {
+    std::uint64_t pc{};
+    std::uint32_t word{};
+};
+static_assert(sizeof(EntryPoint) == 16);
 
 struct CompileResult {
     CompileError error{CompileError::None};
@@ -48,6 +58,7 @@ struct CompileResult {
     explicit operator bool() const noexcept { return error == CompileError::None; }
     std::vector<FaultSite> faults;
     std::vector<LinkSite> links;
+    std::vector<EntryPoint> entries; // Extra entries only; the original root is word zero.
 };
 
 enum class DispatchMode : std::uint8_t { Callback, Inline, InlineCounted };
@@ -93,7 +104,9 @@ struct CompileOptions {
     // its saved host environment and return to guest_fpcr with clear FPSR.
     bool native_fp_environment{};
     // Actual raw32 MXCSR field when independent input/output flush controls
-    // are unavailable in hardware. Default callers request no software flush.
+    // are unavailable in hardware. It is separate from private pinned Uniform
+    // fields; these real control reads use its memory value. Default callers
+    // request no software flush.
     std::uint32_t mxcsr_flush_offset{UINT32_MAX};
     // Process-wide linked/private ABI with synchronous fault-PC recovery.
     // Resolved static edges and final dynamic tails defer PC publication.
@@ -115,6 +128,13 @@ struct CompileOptions {
     // when empty, and a callable native/cold payload in every slot. Public
     // nullable contexts retain their guards unless this fact is supplied.
     bool callable_directory{};
+    // Optional invariant software flush mode for this entire native unit:
+    // bit0=DAZ, bit1=FTZ. The caller owns cache separation and must exit the
+    // unit before changing these controls. Unknown retains raw MXCSR reads.
+    std::uint8_t mxcsr_flush_mode{UINT8_MAX};
+    // Inline dynamic sites borrow the same directory owner and its reset
+    // lifetime for one fixed local native-DATA array. Callback mode stays unchanged.
+    bool local_dispatch_cache{};
 };
 
 // Produces native words only; the caller owns W^X publication and cache flush.
@@ -124,5 +144,8 @@ struct CompileOptions {
 // The optional fault table borrows no Program data. The caller supplies the
 // actual signal recovery/publication service; this writer installs no handler.
 CompileResult Compile(const ir::Program&, CompileOptions options = {});
+// Reuse this actual output's capacity. Fault tables transferred to a publisher
+// remain there; no Program or previous result contents are borrowed on entry.
+void Compile(const ir::Program&, CompileOptions, CompileResult& output);
 
 } // namespace swift::runtime::backend::arm64

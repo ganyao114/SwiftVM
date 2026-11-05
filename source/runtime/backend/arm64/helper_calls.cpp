@@ -2,6 +2,8 @@
 #include <cstdint>
 #include <cstdlib>
 
+extern "C" std::uint64_t SvmX87Execute(void*, std::uint64_t, std::uint64_t) noexcept;
+
 namespace {
 using u64 = std::uint64_t;
 using u128 = unsigned __int128;
@@ -102,11 +104,46 @@ __attribute__((naked)) static void QueryCpuid() {
         "mov x1,x16\n" "mov x16,x17\n" "blr x16\n" "mov x16,x1\n"
         SVM_HELPER_RESTORE_BANK);
 }
+
+// x0=state, x16=command, x17=raw64. The semantic helper accesses only
+// its x87 subobject. The integer-only closure retains all vector homes and
+// the FP environment; this bridge owns GPRs and NZCV.
+__attribute__((naked)) static void ExecuteX87() {
+    __asm__ volatile(
+#if SVM_X87_GPR_ONLY
+        "sub sp,sp,#144\n"
+        "stp x1,x2,[sp,#0]\n" "stp x3,x4,[sp,#16]\n"
+        "stp x5,x6,[sp,#32]\n" "stp x7,x8,[sp,#48]\n"
+        "stp x9,x10,[sp,#64]\n" "stp x11,x12,[sp,#80]\n"
+        "stp x13,x14,[sp,#96]\n" "stp x15,x30,[sp,#112]\n"
+        "mrs x3,nzcv\n" "str x3,[sp,#128]\n"
+#else
+        SVM_HELPER_SAVE_BANK
+#endif
+        "mov x1,x16\n" "mov x2,x17\n"
+#if defined(__APPLE__)
+        "bl _SvmX87Execute\n"
+#else
+        "bl SvmX87Execute\n"
+#endif
+#if SVM_X87_GPR_ONLY
+        "ldr x3,[sp,#128]\n" "msr nzcv,x3\n"
+        "ldp x1,x2,[sp,#0]\n" "ldp x3,x4,[sp,#16]\n"
+        "ldp x5,x6,[sp,#32]\n" "ldp x7,x8,[sp,#48]\n"
+        "ldp x9,x10,[sp,#64]\n" "ldp x11,x12,[sp,#80]\n"
+        "ldp x13,x14,[sp,#96]\n" "ldp x15,x30,[sp,#112]\n"
+        "add sp,sp,#144\n" "ret\n"
+#else
+        SVM_HELPER_RESTORE_BANK
+#endif
+        );
+}
 #undef SVM_HELPER_SAVE_BANK
 #undef SVM_HELPER_RESTORE_BANK
 #else
 // Cross-host word-generation targets cannot execute this private ARM ABI.
 static void QueryCpuid() { std::abort(); }
+static void ExecuteX87() { std::abort(); }
 #endif
 
 namespace swift::runtime::backend::arm64 {
@@ -123,5 +160,8 @@ std::uintptr_t DivisionHelper(unsigned bits, bool sign) noexcept {
 }
 std::uintptr_t CpuidHelper() noexcept {
     return reinterpret_cast<std::uintptr_t>(&QueryCpuid);
+}
+std::uintptr_t X87Helper() noexcept {
+    return reinterpret_cast<std::uintptr_t>(&ExecuteX87);
 }
 }

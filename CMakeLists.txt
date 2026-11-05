@@ -11,13 +11,27 @@ target_compile_features(svm_ir PUBLIC cxx_std_20)
 add_library(svm_compile STATIC source/runtime/compile/optimize.cpp)
 target_link_libraries(svm_compile PUBLIC svm_ir)
 
+add_subdirectory(source/runtime/externals/SoftFloat-3e)
+add_library(svm_x87 STATIC source/runtime/execution/x87.cpp)
+target_include_directories(svm_x87 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/source")
+target_compile_features(svm_x87 PUBLIC cxx_std_20)
+target_link_libraries(svm_x87 PRIVATE svm_softfloat_ext80)
+
 add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/allocate.cpp
     source/runtime/backend/arm64/helper_calls.cpp
     source/runtime/backend/arm64/emit_state.cpp
     source/runtime/backend/arm64/emit_vector.cpp
     source/runtime/backend/arm64/compile.cpp)
-target_link_libraries(svm_arm64 PUBLIC svm_ir)
+target_link_libraries(svm_arm64 PUBLIC svm_ir PRIVATE svm_x87)
+
+# This private helper closure performs only integer arithmetic. Its bridge
+# preserves NZCV/GPRs; vector registers and the FP environment stay untouched.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    target_compile_options(svm_x87 PRIVATE -mgeneral-regs-only -fno-sanitize=all)
+    target_compile_options(svm_softfloat_ext80 PRIVATE -mgeneral-regs-only -fno-sanitize=all)
+    target_compile_definitions(svm_arm64 PRIVATE SVM_X87_GPR_ONLY=1)
+endif()
 
 # Reuse only the byte decoder. No legacy frontend or middle-pipeline target.
 add_subdirectory(source/runtime/externals/distorm)

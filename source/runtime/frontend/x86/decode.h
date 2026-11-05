@@ -22,6 +22,13 @@ static_assert(sizeof(DecodedBlock) == 16);
 struct DecodeLimits {
     std::uint32_t max_instructions{4096}, max_blocks{256};
 };
+// A cold, read-only borrow of actual callable entries in the current execution
+// domain. Pending keys are not ready. No directory or code owner is copied.
+struct ReadyEntryLookup {
+    void* opaque{};
+    bool (*ready)(void*, std::uint64_t) noexcept{};
+    bool Contains(std::uint64_t pc) const noexcept { return ready && ready(opaque, pc); }
+};
 // Optional diagnostic accumulator over actual distorm_decompose calls only,
 // including unsuccessful attempts. The caller owns/resets this accumulator;
 // formation, allocation, buffer writes and validation remain outside it.
@@ -60,9 +67,14 @@ struct DecodedFunction {
 // Failure retains diagnostic decode work but has no usable block set or IR.
 // The decoder can report a truncated byte sequence as InvalidEncoding.
 // Allocation failures propagate. All traversal is iterative.
+// Ready entries are real exit frontiers; the request's own entry is always
+// decoded. CALL remains a region exit: its continuation is formed when first
+// requested, rather than expanding the speculative graph for entry reuse.
+// Without a ready lookup, discovery retains the original bounded region.
 [[nodiscard]] DecodedFunction DecodeFunction(std::span<const BlockWindow> readable,
                                               std::uint64_t entry_pc,
                                               DecodeLimits limits = {},
-                                              DecodeTiming* timing = nullptr);
+                                              DecodeTiming* timing = nullptr,
+                                              ReadyEntryLookup ready = {});
 
 }  // namespace swift::x86

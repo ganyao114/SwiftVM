@@ -68,6 +68,7 @@ private:
         void Done() { if (at != end) writer.Reject(CompileError::UnsupportedOperand); }
     };
     struct Fixup { u32 word, target; };
+    struct LocalFixup { u32 node, word; };
     const Program& source;
     const Allocation& allocation;
     CompileResult& output;
@@ -75,6 +76,7 @@ private:
     bool long_forward_branches{};
     std::vector<u32> labels;
     std::vector<Fixup> fixups;
+    std::vector<LocalFixup> local_fixups; // Only actual forward Goto/NotGoto edges, consumed by BindLabel.
     NodeId node{};
     BlockId block{};
     NodeId pending_save{}; // At most the adjacent legacy publication, never a node table.
@@ -221,7 +223,8 @@ private:
         if (to != from) Put(0x4ea01c00u | (from << 16) | (from << 5) | to);
     }
     void LoadMxcsrFlushControl();
-    void FlushScalarDenormal(unsigned value, unsigned control_bit, unsigned lane = 0);
+    void FlushScalarDenormal(unsigned value, unsigned control_bit, unsigned lane = 0,
+                             unsigned lane_bits = 64, unsigned lane_count = 1);
     void TruncateDoubleToInteger(unsigned destination, unsigned raw, unsigned bits);
     unsigned VectorValue(CellView cell, unsigned scratch);
     void VectorUniform(bool load, CellView uniform, unsigned value);

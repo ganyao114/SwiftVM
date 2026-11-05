@@ -19,6 +19,13 @@ Builder::Builder(Scope scope, TargetInfo target) {
         throw std::invalid_argument("invalid IR request metadata");
     storage = std::make_unique<Program::Storage>(scope, target);
 }
+Builder::Builder(Scope scope, TargetInfo target, Program reusable) : Builder(scope, target) {
+    if (!reusable.storage) return;
+    storage->operations = std::move(reusable.storage->operations);
+    storage->operands = std::move(reusable.storage->operands);
+    storage->blocks = std::move(reusable.storage->blocks);
+    storage->operations.clear(); storage->operands.clear(); storage->blocks.clear();
+}
 Builder::~Builder() = default;
 Builder::Builder(Builder&&) noexcept = default;
 Builder& Builder::operator=(Builder&&) noexcept = default;

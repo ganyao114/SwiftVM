@@ -10,8 +10,11 @@
 
 #include "distorm.h"
 #include "mnemonics.h"
+#include "runtime/ir/x87.h"
 
 namespace swift::x86 {
+// Internal byte-decoder helper defined in decode.cpp; not a new IR API.
+std::uint8_t DisabledCetHintSize(std::span<const std::uint8_t> bytes) noexcept;
 namespace {
 using namespace runtime::ir;
 using u64 = std::uint64_t;
@@ -23,13 +26,14 @@ void VWrite(Emitter&, StateLayout, const _DInst&, const _Operand&, Value, u64, u
 
 class Emitter final : public Builder {
 public:
-    Emitter(Scope scope, TargetInfo target, StateLayout layout)
-            : Builder(scope, target), layout(layout), private_gprs(target.Has(TargetFeature::PrivateGPRState)),
+    Emitter(Scope scope, TargetInfo target, StateLayout layout, Program reusable)
+            : Builder(scope, target, std::move(reusable)), layout(layout), private_gprs(target.Has(TargetFeature::PrivateGPRState)),
               private_vectors(target.Has(TargetFeature::PrivateVectorState)) {}
     Error BeginBlock(BlockRef block) {
         const auto error = Builder::BeginBlock(block);
         if (error == Error::None) {
             valid_gprs = 0; whole_gprs = 0; pending_gprs = 0; valid_vectors = 0; last_address = {};
+            x87_state = {}; x87_zero = {};
         }
         return error;
     }
@@ -50,7 +54,7 @@ private:
     // Whole-parent coverage is independent of dirty: a U32 read lacks high32,
     // whereas an EAX write defines the full zero-high parent after publication.
     std::uint16_t valid_gprs{}, dirty_gprs{}, whole_gprs{}, pending_gprs{};
-    NodeId last_address;
+    NodeId last_address, x87_state, x87_zero;
     std::array<NodeId, 16> vectors;
     std::uint16_t valid_vectors{}, dirty_vectors{};
     const StateLayout layout;
@@ -62,6 +66,8 @@ private:
     template<OpCode op>
     friend void VWrite(Emitter&, StateLayout, const _DInst&, const _Operand&, Value, u64, u64, TargetInfo, bool);
     friend bool Vector(Emitter&, StateLayout, const _DInst&, u64, u64, TargetInfo);
+    friend unsigned X87(Emitter&, StateLayout, const _DInst&, std::span<const std::uint8_t>, u64, u64,
+                        TargetInfo, std::span<const _DInst>, std::span<const std::uint8_t>);
 };
 
 bool Vector(Emitter&, StateLayout, const _DInst&, u64 pc, u64 next_pc, TargetInfo);
@@ -318,6 +324,7 @@ Value Address(Emitter& builder, StateLayout layout, const _DInst& instruction,
               u64* final_disp = nullptr, Type result_type = Type::U64) {
     if (final_disp) *final_disp = 0;
     const bool narrow = result_type == Type::U32;
+    const bool address32 = instruction.opcode == I_LEA && FLAG_GET_ADDRSIZE(instruction.flags) == Decode32Bits;
     const auto use = [&](Value value) { return Operand::ValueOf(value, narrow ? Type::U32 : Type::Void); };
     const auto literal = [&](u64 bits) { return Constant(builder, narrow ? static_cast<u32>(bits) : bits, result_type); };
     const auto add = [&](Value left, Operand right) {
@@ -327,7 +334,7 @@ Value Address(Emitter& builder, StateLayout layout, const _DInst& instruction,
         if (reg == R_RSP && stack_override) return stack_override;
         if (!narrow) return ReadRegister(builder, layout, reg, 64);
         unsigned slot{};
-        (void)RegisterOffset(layout, reg, 64, slot);
+        (void)RegisterOffset(layout, reg, address32 ? 32 : 64, slot);
         // A captured U32 parent already supplies low32, even when it came
         // from a mere read rather than a whole-parent architectural write.
         // Borrow either cached width with an explicit numeric U32 use;
@@ -419,6 +426,98 @@ void StoreMemory(Emitter& builder, Value address, Value value, unsigned bits, u6
     else
         Require(builder.Emit<op>(Type::Void,
                 {Operand::ValueOf(address), Operand::ValueOf(value, type)}));
+}
+
+unsigned X87(Emitter& builder, StateLayout layout, const _DInst& instruction,
+             std::span<const std::uint8_t> bytes, u64 pc, u64 next_pc, TargetInfo target,
+             std::span<const _DInst> following, std::span<const std::uint8_t> available) {
+    if (layout.x87_offset == UINT32_MAX) Unsupported();
+    X87Command command{};
+    unsigned index{};
+    const auto& first = instruction.ops[0];
+    const auto& second = instruction.ops[1];
+    const auto stack_index = [](const _Operand& operand) {
+        if (operand.type != O_REG || operand.index < R_ST0 || operand.index > R_ST7) Unsupported();
+        return static_cast<unsigned>(operand.index - R_ST0);
+    };
+    const auto no_operands = [&] {
+        for (const auto& operand : instruction.ops) if (operand.type != O_NONE) Unsupported();
+    };
+    switch (instruction.opcode) {
+        case I_FNINIT: command = X87Command::Init; no_operands(); break;
+        case I_FLD1: command = X87Command::PushOne; no_operands(); break;
+        case I_FLD:
+            if (!Memory(first) || first.size != 64 || second.type != O_NONE) Unsupported();
+            command = X87Command::PushF64; break;
+        case I_FXCH:
+            command = X87Command::Exchange;
+            if (first.type == O_NONE) {
+                // diStorm omits the implicit ST0/ST1 operands of D9 C9.
+                if (bytes.size() != 2 || bytes[0] != 0xd9 || (bytes[1] & 0xf8) != 0xc8) Unsupported();
+                index = bytes[1] & 7;
+            } else { index = stack_index(first); if (second.type != O_NONE) Unsupported(); }
+            break;
+        case I_FADD: case I_FMUL: case I_FDIV:
+            if (stack_index(first) != 0 || instruction.ops[2].type != O_NONE) Unsupported();
+            index = stack_index(second);
+            command = instruction.opcode == I_FADD ? X87Command::Add :
+                    instruction.opcode == I_FMUL ? X87Command::Mul : X87Command::Div;
+            break;
+        case I_FSQRT: command = X87Command::Sqrt; no_operands(); break;
+        case I_FSTP:
+            command = X87Command::StoreRegPop; index = stack_index(first);
+            if (second.type != O_NONE) Unsupported();
+            break;
+        default: Unsupported();
+    }
+    // Only these contiguous register windows have no independent failure after
+    // the first operation succeeds. Keep their real stack effects in one helper,
+    // including masked overflow/underflow, rather than treating them as NOPs.
+    unsigned consumed = 1;
+    const auto exact = [&](unsigned at, unsigned opcode, std::uint8_t low, std::uint8_t high) {
+        return at < following.size() && available.size() >= (at + 1) * 2 &&
+                following[at].addr == pc + at * 2 && following[at].size == 2 &&
+                following[at].opcode == opcode && available[at * 2] == low && available[at * 2 + 1] == high;
+    };
+    const auto empty_after = [](const _DInst& decoded, unsigned first_operand) {
+        for (unsigned i = first_operand; i < OPERANDS_NO; ++i)
+            if (decoded.ops[i].type != O_NONE) return false;
+        return true;
+    };
+    if (command == X87Command::Exchange && exact(0, I_FXCH, 0xd9, 0xc8 + index) &&
+        exact(1, I_FXCH, 0xd9, 0xc8 + index)) {
+        const auto& other = following[1];
+        if (empty_after(other, 1) && (other.ops[0].type == O_NONE ||
+            (other.ops[0].type == O_REG && other.ops[0].index == R_ST0 + index))) {
+            command = X87Command::ExchangeTwice;
+            consumed = 2;
+        }
+    } else if (command == X87Command::PushOne && exact(0, I_FLD1, 0xd9, 0xe8) &&
+               exact(1, I_FSQRT, 0xd9, 0xfa) && exact(2, I_FSTP, 0xdd, 0xd8) &&
+               empty_after(following[1], 0) && empty_after(following[2], 1) &&
+               following[2].ops[0].type == O_REG && following[2].ops[0].index == R_ST0) {
+        command = X87Command::PushOnePop;
+        consumed = 3;
+    }
+    // Faulting memory reads complete before the helper changes TOP/tags.
+    PrepareFaultPC(builder, layout, pc, target);
+    Value raw;
+    if (command == X87Command::PushF64)
+        raw = ReadData(builder, layout, instruction, first, next_pc, target);
+    else {
+        if (!builder.x87_zero) builder.x87_zero = Constant(builder, 0).node;
+        raw = {builder.UnitId(), builder.x87_zero};
+    }
+    // The pointer and literal stay immutable when commands change stack data.
+    // Their actual SSA lifetimes and homes remain the allocator's responsibility.
+    if (!builder.x87_state)
+        builder.x87_state = Require(builder.Emit<OpCode::GetUniformAddress>(Type::U64,
+                {Operand::Immediate(layout.x87_offset, Type::U32)})).node;
+    const Value state{builder.UnitId(), builder.x87_state};
+    Require(builder.Emit<OpCode::X87Op>(Type::U64,
+            {Operand::ValueOf(state), Operand::Immediate(X87Encode(command, index), Type::U64),
+             Operand::ValueOf(raw)}));
+    return consumed;
 }
 
 void Move(Emitter& builder, StateLayout layout, const _DInst& instruction, u64 pc, u64 next_pc,
@@ -542,22 +641,30 @@ bool LockedMemoryForm(const _DInst& instruction) {
     }
 }
 bool AllowedPrefixes(const _DInst& instruction, std::span<const std::uint8_t> bytes) {
-    const bool mandatory_f3 = instruction.opcode == I_MOVDQU || instruction.opcode == I_MOVQ ||
+    if (instruction.opcode == I_NOP && bytes[0] == 0xf3 && instruction.size == DisabledCetHintSize(bytes))
+        return true; // Only exact CET NOPs in the disabled-CET guest contract.
+    const bool mandatory_f3 = instruction.opcode == I_MOVDQU || instruction.opcode == I_MOVQ || instruction.opcode == I_STOS ||
             instruction.opcode == I_POPCNT || instruction.opcode == I_TZCNT || instruction.opcode == I_CVTDQ2PD;
     const bool mandatory_f2 = instruction.opcode == I_PSHUFLW || instruction.opcode == I_CRC32 ||
             instruction.opcode == I_MOVSD || instruction.opcode == I_CVTSI2SD ||
             instruction.opcode == I_ADDSD || instruction.opcode == I_SUBSD || instruction.opcode == I_MULSD ||
             instruction.opcode == I_DIVSD || instruction.opcode == I_CVTTSD2SI;
+    // In 64-bit mode E8 rel32 uses the complete next RIP; 67 does not
+    // change its target or its eight-byte stack push. LEA alone also supports
+    // addr32 effective-address arithmetic; real addr32 memory remains rejected.
+    const bool relative_call = instruction.opcode == I_CALL && instruction.ops[0].type == O_PC &&
+            instruction.ops[0].size == 32;
+    const bool address32_lea = instruction.opcode == I_LEA && FLAG_GET_ADDRSIZE(instruction.flags) == Decode32Bits;
     if (((instruction.flags & FLAG_LOCK) && !LockedMemoryForm(instruction)) || ((instruction.flags & FLAG_REP) && !mandatory_f3) ||
         ((instruction.flags & FLAG_REPNZ) && !mandatory_f2) ||
-        FLAG_GET_ADDRSIZE(instruction.flags) != Decode64Bits)
+        (FLAG_GET_ADDRSIZE(instruction.flags) != Decode64Bits && !relative_call && !address32_lea))
         return false;
     for (const auto byte : bytes.first(instruction.size)) {
         if ((byte == 0xf0 && !LockedMemoryForm(instruction)) || (byte == 0xf2 && !mandatory_f2) || (byte == 0xf3 && !mandatory_f3) ||
-            byte == 0x67)
+            (byte == 0x67 && !relative_call && !address32_lea))
             return false;
         if (byte == 0x26 || byte == 0x2e || byte == 0x36 || byte == 0x3e || byte == 0x64 || byte == 0x65 ||
-            byte == 0x66 || byte == 0xf0 || byte == 0xf2 || byte == 0xf3 ||
+            byte == 0x66 || byte == 0x67 || byte == 0xf0 || byte == 0xf2 || byte == 0xf3 ||
             (byte >= 0x40 && byte <= 0x4f)) continue;
         return byte != 0xc4 && byte != 0xc5 && byte != 0x62;
     }
@@ -609,6 +716,50 @@ _Operand Gpr(unsigned slot, unsigned bits) {
     const auto base = bits == 64 ? REGS64_BASE : bits == 32 ? REGS32_BASE : bits == 16 ? REGS16_BASE : REGS8_BASE;
     const auto reg = bits == 8 && slot >= 4 && slot < 8 ? REGS8_REX_BASE + slot - 4 : base + slot;
     return {O_REG, static_cast<std::uint8_t>(reg), static_cast<std::uint16_t>(bits)};
+}
+void RepeatStore(Emitter& builder, StateLayout layout, const _DInst& instruction,
+                 u64 pc, u64 next_pc, TargetInfo target) {
+    const auto& destination = instruction.ops[0];
+    const auto& accumulator = instruction.ops[1];
+    const unsigned bits = destination.size;
+    if (!(instruction.flags & FLAG_REP) || FLAG_GET_ADDRSIZE(instruction.flags) != Decode64Bits ||
+        destination.type != O_SMEM || destination.index != R_RDI ||
+        (bits != 8 && bits != 16 && bits != 32 && bits != 64) ||
+        accumulator.type != O_REG || accumulator.size != bits || accumulator.index != Gpr(0, bits).index ||
+        instruction.ops[2].type != O_NONE || instruction.ops[3].type != O_NONE) Unsupported();
+
+    // The zero-count edge publishes only its actual next PC. Everything
+    // below the forward branch, including the guest store, is skipped.
+    StorePC(builder, layout, Constant(builder, next_pc));
+    const auto count = ReadRegister(builder, layout, R_RCX, 64);
+    const auto done = Require(builder.Emit<OpCode::NotGoto>(Type::U64, {Operand::ValueOf(count)}));
+    PrepareFaultPC(builder, layout, pc, target);
+    const auto address = ReadRegister(builder, layout, R_RDI, 64);
+    const auto value = ReadRegister(builder, layout, accumulator.index, bits);
+    // GetFlags is a whole opaque word; DF is architectural bit10, outside
+    // the ALU flag mask and independent of the backend's NZCV carrier.
+    const auto flags = Require(builder.Emit<OpCode::GetFlags>(Type::U64,
+            {Operand::ValueOf(count), Operand::Flags(Flag::All)}));
+    const auto direction = Require(builder.Emit<OpCode::BitExtract>(Type::U64,
+            {Operand::ValueOf(flags), Operand::Immediate(10, Type::U8), Operand::Immediate(1, Type::U8)}));
+    const auto forward = Constant(builder, bits / 8), backward = Constant(builder, u64{} - bits / 8);
+    const auto step = Require(builder.Emit<OpCode::Select>(Type::U64,
+            {Operand::ValueOf(direction), Operand::ValueOf(backward), Operand::ValueOf(forward)}));
+    StoreMemory(builder, address, value, bits);
+    // A fault leaves both architectural progress registers unchanged.
+    const auto changed = Add(builder, address, Operand::ValueOf(step));
+    const auto remaining = Require(builder.Emit<OpCode::Sub>(Type::U64,
+            {Operand::ValueOf(count), Operand::Immediate(1, Type::U64)}));
+    WriteRegister(builder, layout, Gpr(7, 64), changed);
+    WriteRegister(builder, layout, Gpr(1, 64), remaining);
+    const auto repeat_pc = Constant(builder, pc), after_pc = Constant(builder, next_pc);
+    const auto destination_pc = Require(builder.Emit<OpCode::Select>(Type::U64,
+            {Operand::ValueOf(remaining), Operand::ValueOf(repeat_pc), Operand::ValueOf(after_pc)}));
+    // StorePC also publishes/clears all dirty register births before Bind.
+    // The zero edge must not read a Value born inside the skipped body.
+    StorePC(builder, layout, destination_pc);
+    Require(builder.Emit<OpCode::BindLabel>(Type::Void, {Operand::ValueOf(done)}));
+    EndDispatch(builder);
 }
 std::array<_Operand, 2> SynchronizationOperands(StateLayout layout, const _DInst& instruction,
                                               std::span<const std::uint8_t> bytes) {
@@ -1536,11 +1687,12 @@ void ScalarDouble(Emitter& builder, StateLayout layout, const _DInst& instructio
 }
 bool Vector(Emitter& builder, StateLayout layout, const _DInst& instruction,
             u64 pc, u64 next_pc, TargetInfo target) {
-    unsigned source_bits{}, destination_bits{}, shift_bits{}, relation{UINT32_MAX};
+    unsigned source_bits{}, destination_bits{}, shift_bits{}, relation{UINT32_MAX}, relation_bits{64};
     bool sign{}, shift_left{}, shift_arithmetic{};
     switch (instruction.opcode) {
         case I_MOVUPS: case I_MOVAPS: case I_MOVUPD: case I_MOVAPD: case I_MOVDQU: case I_MOVDQA:
-        case I_MOVD: case I_MOVQ: case I_MOVLPD: case I_MOVHPD:
+        case I_MOVD: case I_MOVQ: case I_MOVLPD: case I_MOVHPD: case I_MOVLPS: case I_MOVHPS:
+        case I_MOVHLPS: case I_MOVLHPS:
         case I_PXOR: case I_XORPS: case I_XORPD:
         case I_PAND: case I_ANDPD: case I_ANDPS:
         case I_PANDN: case I_ANDNPD: case I_ANDNPS:
@@ -1551,20 +1703,34 @@ bool Vector(Emitter& builder, StateLayout layout, const _DInst& instruction,
         case I_PSHUFD: case I_PSHUFLW: case I_SHUFPS:
         case I_PALIGNR: case I_PSLLDQ: case I_PSRLDQ:
         case I_PUNPCKLBW: case I_PUNPCKLWD: case I_PUNPCKLDQ:
+        case I_PUNPCKHBW: case I_PUNPCKHWD: case I_PUNPCKHDQ:
+        case I_PUNPCKLQDQ: case I_PUNPCKHQDQ:
+        case I_PACKUSWB:
+        case I_ADDPS: case I_ADDPD: case I_SUBPS: case I_SUBPD:
+        case I_MULPS: case I_MULPD: case I_DIVPS: case I_DIVPD:
         case I_PMULUDQ: case I_PMULLW: case I_PMULLD: case I_PMADDWD:
+        case I_PMINUB:
         case I_PCMPEQB: case I_PCMPEQW: case I_PCMPEQD:
         case I_PCMPGTB: case I_PCMPGTW: case I_PCMPGTD:
         case I_PMOVMSKB: case I_MOVMSKPS: case I_MOVMSKPD: break;
         // Distorm consumed the hidden imm8 and selected these legacy aliases.
         // The neutral relation bits are less/equal/greater/unordered, not the
         // x86 comparison encoding or a host condition code.
+        case I_CMPEQPS: relation_bits = 32; [[fallthrough]];
         case I_CMPEQPD: relation = 2; break;
+        case I_CMPLTPS: relation_bits = 32; [[fallthrough]];
         case I_CMPLTPD: relation = 1; break;
+        case I_CMPLEPS: relation_bits = 32; [[fallthrough]];
         case I_CMPLEPD: relation = 3; break;
+        case I_CMPUNORDPS: relation_bits = 32; [[fallthrough]];
         case I_CMPUNORDPD: relation = 8; break;
+        case I_CMPNEQPS: relation_bits = 32; [[fallthrough]];
         case I_CMPNEQPD: relation = 13; break;
+        case I_CMPNLTPS: relation_bits = 32; [[fallthrough]];
         case I_CMPNLTPD: relation = 14; break;
+        case I_CMPNLEPS: relation_bits = 32; [[fallthrough]];
         case I_CMPNLEPD: relation = 12; break;
+        case I_CMPORDPS: relation_bits = 32; [[fallthrough]];
         case I_CMPORDPD: relation = 7; break;
         case I_PSLLW: shift_left = true; [[fallthrough]];
         case I_PSRLW: shift_bits = 16; break;
@@ -1590,13 +1756,28 @@ bool Vector(Emitter& builder, StateLayout layout, const _DInst& instruction,
     if (layout.fprs_offset == UINT32_MAX || instruction.ops[3].type != O_NONE) Unsupported();
     const auto& destination = instruction.ops[0];
     const auto& source = instruction.ops[1];
-    if (instruction.opcode == I_MOVLPD || instruction.opcode == I_MOVHPD) {
+    if (instruction.opcode == I_MOVHLPS || instruction.opcode == I_MOVLHPS) {
+        if (!VRegister(destination) || !VRegister(source) || instruction.ops[2].type != O_NONE) Unsupported();
+        const auto previous = VRead(builder, layout, instruction, destination, pc, next_pc, target);
+        const auto input = VRead(builder, layout, instruction, source, pc, next_pc, target);
+        const bool high_to_low = instruction.opcode == I_MOVHLPS;
+        // ZIP2(src,dst) gives {src.high,dst.high}; ZIP1(dst,src) gives
+        // {dst.low,src.low}. Both inputs are complete snapshots before VWrite.
+        const auto result = Require(builder.Emit<OpCode::VecZip>(Type::V128,
+                {Operand::ValueOf(high_to_low ? input : previous), Operand::ValueOf(high_to_low ? previous : input),
+                 Operand::Immediate(64, Type::U8), Operand::Immediate(high_to_low, Type::U8)}));
+        VWrite(builder, layout, instruction, destination, result, pc, next_pc, target);
+        return true;
+    }
+    if (instruction.opcode == I_MOVLPD || instruction.opcode == I_MOVHPD ||
+        instruction.opcode == I_MOVLPS || instruction.opcode == I_MOVHPS) {
         if (instruction.ops[2].type != O_NONE) Unsupported();
         const bool load = VRegister(destination);
         const auto& reg = load ? destination : source;
         const auto& memory = load ? source : destination;
         if (!VRegister(reg) || !Memory(memory) || memory.size != 64) Unsupported();
-        const auto offset = VOffset(layout, reg) + (instruction.opcode == I_MOVHPD ? 8 : 0);
+        const auto offset = VOffset(layout, reg) +
+                (instruction.opcode == I_MOVHPD || instruction.opcode == I_MOVHPS ? 8 : 0);
         if (load) {
             PrepareFaultPC(builder, layout, pc, target);
             const auto value = ReadData(builder, layout, instruction, memory, next_pc, target);
@@ -1661,7 +1842,7 @@ bool Vector(Emitter& builder, StateLayout layout, const _DInst& instruction,
         const auto left = VRead(builder, layout, instruction, destination, pc, next_pc, target);
         const auto right = VRead(builder, layout, instruction, source, pc, next_pc, target, true);
         const auto result = Require(builder.Emit<OpCode::VecFCmpMask>(Type::V128,
-                {Operand::ValueOf(left), Operand::ValueOf(right), Operand::Immediate(64, Type::U8),
+                {Operand::ValueOf(left), Operand::ValueOf(right), Operand::Immediate(relation_bits, Type::U8),
                  Operand::Immediate(relation, Type::U8), Operand::Immediate(0, Type::U8)}));
         VWrite(builder, layout, instruction, destination, result, pc, next_pc, target);
         return true;
@@ -1838,11 +2019,40 @@ bool Vector(Emitter& builder, StateLayout layout, const _DInst& instruction,
                         {Operand::ValueOf(left), Operand::ValueOf(right), Operand::Immediate(32, Type::U8), Operand::Immediate(0, Type::U8)})); break;
             case I_PMADDWD:
                 result = Require(builder.Emit<OpCode::VecMadd16>(Type::V128, {Operand::ValueOf(left), Operand::ValueOf(right)})); break;
+            case I_PMINUB:
+                result = Require(builder.Emit<OpCode::VecMin>(Type::V128,
+                        {Operand::ValueOf(left), Operand::ValueOf(right),
+                         Operand::Immediate(8, Type::U8), Operand::Immediate(0, Type::U8)})); break;
+            case I_PACKUSWB:
+                result = Require(builder.Emit<OpCode::VecPack>(Type::V128,
+                        {Operand::ValueOf(left), Operand::ValueOf(right),
+                         Operand::Immediate(16, Type::U8), Operand::Immediate(1, Type::U8)})); break;
             case I_PUNPCKLBW: case I_PUNPCKLWD: case I_PUNPCKLDQ:
+            case I_PUNPCKHBW: case I_PUNPCKHWD: case I_PUNPCKHDQ:
+            case I_PUNPCKLQDQ: case I_PUNPCKHQDQ:
                 result = Require(builder.Emit<OpCode::VecZip>(Type::V128,
                         {Operand::ValueOf(left), Operand::ValueOf(right),
-                         Operand::Immediate(instruction.opcode == I_PUNPCKLBW ? 8 : instruction.opcode == I_PUNPCKLWD ? 16 : 32, Type::U8),
-                         Operand::Immediate(0, Type::U8)})); break;
+                         Operand::Immediate(instruction.opcode == I_PUNPCKLBW || instruction.opcode == I_PUNPCKHBW ? 8 :
+                                 instruction.opcode == I_PUNPCKLWD || instruction.opcode == I_PUNPCKHWD ? 16 :
+                                 instruction.opcode == I_PUNPCKLDQ || instruction.opcode == I_PUNPCKHDQ ? 32 : 64, Type::U8),
+                         Operand::Immediate(instruction.opcode == I_PUNPCKHBW || instruction.opcode == I_PUNPCKHWD ||
+                                 instruction.opcode == I_PUNPCKHDQ || instruction.opcode == I_PUNPCKHQDQ ? 1 : 0, Type::U8)})); break;
+            case I_ADDPS: case I_ADDPD:
+                result = Require(builder.Emit<OpCode::VecFAdd>(Type::V128,
+                        {Operand::ValueOf(left), Operand::ValueOf(right),
+                         Operand::Immediate(instruction.opcode == I_ADDPS ? 32 : 64, Type::U8)})); break;
+            case I_SUBPS: case I_SUBPD:
+                result = Require(builder.Emit<OpCode::VecFSub>(Type::V128,
+                        {Operand::ValueOf(left), Operand::ValueOf(right),
+                         Operand::Immediate(instruction.opcode == I_SUBPS ? 32 : 64, Type::U8)})); break;
+            case I_MULPS: case I_MULPD:
+                result = Require(builder.Emit<OpCode::VecFMul>(Type::V128,
+                        {Operand::ValueOf(left), Operand::ValueOf(right),
+                         Operand::Immediate(instruction.opcode == I_MULPS ? 32 : 64, Type::U8)})); break;
+            case I_DIVPS: case I_DIVPD:
+                result = Require(builder.Emit<OpCode::VecFDiv>(Type::V128,
+                        {Operand::ValueOf(left), Operand::ValueOf(right),
+                         Operand::Immediate(instruction.opcode == I_DIVPS ? 32 : 64, Type::U8)})); break;
             default: Unsupported();
         }
     }
@@ -1934,7 +2144,7 @@ struct DecodeFailure {
 BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const DecodedBlock> blocks,
                         std::span<const BlockWindow> sources, Scope scope, StateLayout layout,
                         TargetInfo target, WorkCounts* collected, DecodeFailure failure = {}, u32 entry_block = 0,
-                        bool external_edges = false) {
+                        bool external_edges = false, Program* reusable = nullptr) {
     if (collected) *collected = {};
     if (!ValidRequest(blocks.size(), scope, layout, target) || !ValidSources(sources) || entry_block >= blocks.size())
         return {BuildError::InvalidInput, 0, 0, 0, Error::None, {}};
@@ -1948,7 +2158,7 @@ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const De
     }
     std::size_t decoded{}, instruction_count{};
     u64 pc = blocks.front().pc;
-    Emitter builder{scope, target, layout};
+    Emitter builder{scope, target, layout, reusable ? std::move(*reusable) : Program{}};
     try {
         const auto internal = [&](u64 address) {
             if (external_edges) return BlockId{};
@@ -1956,6 +2166,9 @@ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const De
                     [](const DecodedBlock& block, u64 value) { return block.pc < value; });
             return found != blocks.end() && found->pc == address
                     ? BlockId{static_cast<u32>(found - blocks.begin())} : BlockId{};
+        };
+        const auto external_choice = [&](u64 taken, u64 next) {
+            return target.Has(TargetFeature::ConditionalUniformStore) && !internal(taken) && !internal(next);
         };
         std::vector<u64> exits;
         if (scope == Scope::Function) {
@@ -1965,9 +2178,13 @@ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const De
                 if (!block.instruction_count) continue;
                 const auto& last = instructions[std::size_t{block.first_instruction} + block.instruction_count - 1];
                 if (!Conditional(last.opcode) || !Direct(last)) continue;
-                const u64 next = last.addr + last.size;
-                for (const auto destination : {next + last.imm.addr, next})
-                    if (!internal(destination)) exits.push_back(destination);
+                const u64 next = last.addr + last.size, taken = next + last.imm.addr;
+                const bool taken_internal = bool(internal(taken)), next_internal = bool(internal(next));
+                // Two outgoing PCs already fit one existing conditional
+                // Uniform store. Keep CFG bodies only for real internal edges.
+                if (target.Has(TargetFeature::ConditionalUniformStore) && !taken_internal && !next_internal) continue;
+                if (!taken_internal) exits.push_back(taken);
+                if (!next_internal) exits.push_back(next);
             }
             std::sort(exits.begin(), exits.end());
             exits.erase(std::unique(exits.begin(), exits.end()), exits.end());
@@ -2006,7 +2223,14 @@ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const De
             const auto& slice = blocks[block];
             pc = slice.pc;
             Require(builder.BeginBlock({unit, BlockId{static_cast<u32>(block)}}));
+            // Empty budget frontiers dispatch to their own PC so a later
+            // request can decode it. They must never become cached self entries.
+            if (scope == Scope::Function && target.Has(TargetFeature::ExternalEntries) &&
+                    block != entry_block && slice.instruction_count)
+                Require(builder.Emit<OpCode::EntryPoint>(Type::Void,
+                        {Operand::Immediate(pc, Type::U64)}));
             bool ended{};
+            unsigned x87_following{};
             for (std::size_t i = 0; i < slice.instruction_count; ++i) {
                 const auto& instruction = instructions[slice.first_instruction + i];
                 if (instruction.addr != pc) throw Rejected{BuildError::InvalidInput};
@@ -2025,15 +2249,18 @@ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const De
                 const u64 next_pc = pc + instruction.size;
                 const auto flow = META_GET_FC(instruction.meta);
                 if (((flow != FC_NONE && flow != FC_CMOV) || instruction.opcode == I_CPUID ||
-                     instruction.opcode == I_LDMXCSR) &&
+                     instruction.opcode == I_LDMXCSR || instruction.opcode == I_STOS) &&
                     i + 1 != slice.instruction_count) throw Rejected{BuildError::InvalidInput};
-                if (Conditional(instruction.opcode)) {
+                // Combined x87 windows still pass every original record through
+                // the same byte/range/prefix validation and instruction counts.
+                if (x87_following) --x87_following;
+                else if (Conditional(instruction.opcode)) {
                     if (!Direct(instruction)) Unsupported();
                     pending.Flush(builder);
                     builder.PublishRegisters();
                     const auto condition = BranchCondition(builder, instruction.opcode);
                     const u64 taken = next_pc + instruction.imm.addr;
-                    if (scope == Scope::Block) {
+                    if (scope == Scope::Block || external_choice(taken, next_pc)) {
                         if (target.Has(TargetFeature::ConditionalUniformStore)) {
                             Require(builder.Emit<OpCode::StoreUniformSelectImm>(Type::Void,
                                     {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(condition),
@@ -2051,6 +2278,18 @@ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const De
                     ended = true;
                 } else
                 switch (instruction.opcode) {
+                    case I_FNINIT: case I_FLD1: case I_FLD: case I_FXCH:
+                    case I_FADD: case I_FMUL: case I_FDIV: case I_FSQRT: case I_FSTP:
+                        pending.Flush(builder);
+                        x87_following = X87(builder, layout, instruction, bytes, pc, next_pc, target,
+                                instructions.subspan(slice.first_instruction + i, slice.instruction_count - i),
+                                window.bytes.subspan(static_cast<std::size_t>(pc - window.pc))) - 1;
+                        break;
+                    case I_STOS:
+                        pending.Flush(builder);
+                        RepeatStore(builder, layout, instruction, pc, next_pc, target);
+                        ended = true;
+                        break;
                     case I_ADD: Alu<OpCode::Add>(builder, layout, instruction, pending, pc, next_pc, target); break;
                     case I_SUB: Alu<OpCode::Sub>(builder, layout, instruction, pending, pc, next_pc, target); break;
                     case I_ADC: Alu<OpCode::Adc>(builder, layout, instruction, pending, pc, next_pc, target); break;
@@ -2137,15 +2376,22 @@ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const De
                         else pending.Observe(builder, instruction);
                         ConditionalMove(builder, layout, instruction, pc, next_pc, target);
                         break;
-                    case I_LEA:
+                    case I_LEA: {
                         if (instruction.ops[0].type != O_REG ||
                             (instruction.ops[0].size != 16 && instruction.ops[0].size != 32 && instruction.ops[0].size != 64) ||
                             !Memory(instruction.ops[1]) || instruction.ops[2].type != O_NONE ||
                             instruction.ops[3].type != O_NONE) Unsupported();
-                        WriteRegister(builder, layout, instruction.ops[0],
-                                Address(builder, layout, instruction, instruction.ops[1], next_pc, target, {}, nullptr,
-                                        instruction.ops[0].size == 32 ? Type::U32 : Type::U64));
+                        const bool address32 = FLAG_GET_ADDRSIZE(instruction.flags) == Decode32Bits;
+                        auto address = Address(builder, layout, instruction, instruction.ops[1], next_pc, target, {}, nullptr,
+                                address32 || instruction.ops[0].size == 32 ? Type::U32 : Type::U64);
+                        // Addr32 wraps before a 64-bit destination receives its
+                        // zero-extended result; 16-bit writes retain the parent.
+                        if (address32 && instruction.ops[0].size == 64)
+                            address = Require(builder.Emit<OpCode::ZeroExtend64>(Type::U64,
+                                    {Operand::ValueOf(address, Type::U32)}));
+                        WriteRegister(builder, layout, instruction.ops[0], address);
                         break;
+                    }
                     case I_NOP: Require(builder.Emit<OpCode::Nop>(Type::Void, {})); break;
                     case I_PREFETCHT0: case I_PREFETCHT1: case I_PREFETCHT2: case I_PREFETCHNTA:
                         OneOperand(instruction);
@@ -2318,16 +2564,19 @@ BuildResult EmitDecoded(std::span<const _DInst> instructions, std::span<const De
 
 BuildResult BuildDecodedIR(std::span<const _DInst> instructions, std::span<const DecodedBlock> blocks,
                            std::span<const BlockWindow> source_bytes, Scope scope, StateLayout layout,
-                           TargetInfo target, WorkCounts* collected, u32 entry_block) {
-    return EmitDecoded(instructions, blocks, source_bytes, scope, layout, target, collected, {}, entry_block);
+                           TargetInfo target, WorkCounts* collected, u32 entry_block, Program* reusable) {
+    return EmitDecoded(instructions, blocks, source_bytes, scope, layout, target, collected, {}, entry_block, false, reusable);
 }
 
 BuildResult BuildFunctionIR(std::span<const BlockWindow> readable, u64 entry_pc, StateLayout layout,
-                            DecodeLimits limits, TargetInfo target, WorkCounts* collected, DecodeTiming* timing) {
+                            DecodeLimits limits, TargetInfo target, WorkCounts* collected, DecodeTiming* timing,
+                            Program* reusable, ReadyEntryLookup ready) {
     if (collected) *collected = {};
     if (!ValidRequest(1, Scope::Function, layout, target))
         return {BuildError::InvalidInput, entry_pc, 0, 0, Error::None, {}};
-    const auto decoded = DecodeFunction(readable, entry_pc, limits, timing);
+    const bool entries = target.Has(TargetFeature::ExternalEntries);
+    const auto decoded = DecodeFunction(readable, entry_pc, limits, timing,
+                                         entries ? ready : ReadyEntryLookup{});
     if (!decoded) {
         const auto error = decoded.error == DecodeError::InvalidInput ? BuildError::InvalidInput :
                 decoded.error == DecodeError::Truncated ? BuildError::Truncated :
@@ -2335,15 +2584,17 @@ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable, u64 entry_pc,
         return {error, decoded.error_pc, 0, 0, Error::None, {}};
     }
     return BuildDecodedIR(decoded.instructions, decoded.blocks, readable, Scope::Function, layout,
-                          target, collected, decoded.entry_block);
+                          target, collected, decoded.entry_block, reusable);
 }
 
 BuildResult BuildIR(std::span<const BlockWindow> windows, Scope scope, StateLayout layout,
-                    TargetInfo target, WorkCounts* collected, DecodeTiming* timing, bool external_edges) {
+                    TargetInfo target, WorkCounts* collected, DecodeTiming* timing, bool external_edges,
+                    Program* reusable) {
     if (collected) *collected = {};
     if (!ValidRequest(windows.size(), scope, layout, target) || !ValidSources(windows))
         return {BuildError::InvalidInput, 0, 0, 0, Error::None, {}};
     std::vector<_DInst> instructions;
+    instructions.reserve(16); // Short blocks need one actual record buffer allocation.
     std::vector<DecodedBlock> blocks;
     blocks.reserve(windows.size());
     DecodeFailure failure;
@@ -2370,6 +2621,15 @@ BuildResult BuildIR(std::span<const BlockWindow> windows, Scope scope, StateLayo
                 timing->nanoseconds += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - begin).count());
                 ++timing->calls;
             } else parsed = distorm_decompose(&code, &instruction, 1, &used);
+            // Keep the actual byte-parser call/timing above. Recognition is
+            // shared with Function discovery and never accepts a partial hint.
+            if (bytes[0] == 0xf3) {
+                if (const auto hint_size = DisabledCetHintSize(bytes)) {
+                    instruction = {};
+                    instruction.addr = pc; instruction.size = hint_size; instruction.opcode = I_NOP;
+                    used = 1;
+                }
+            }
             BuildError error{BuildError::None};
             if (!used) error = parsed == DECRES_INPUTERR ? BuildError::InvalidEncoding : BuildError::Truncated;
             else if (used != 1 || instruction.flags == FLAG_NOT_DECODABLE || !instruction.size ||
@@ -2385,10 +2645,10 @@ BuildResult BuildIR(std::span<const BlockWindow> windows, Scope scope, StateLayo
             bytes = bytes.subspan(instruction.size);
             const auto flow = META_GET_FC(instruction.meta);
             if ((flow != FC_NONE && flow != FC_CMOV) || instruction.opcode == I_CPUID ||
-                instruction.opcode == I_LDMXCSR) break;
+                instruction.opcode == I_LDMXCSR || instruction.opcode == I_STOS) break;
         }
     }
-    return EmitDecoded(instructions, blocks, windows, scope, layout, target, collected, failure, 0, external_edges);
+    return EmitDecoded(instructions, blocks, windows, scope, layout, target, collected, failure, 0, external_edges, reusable);
 }
 
 }  // namespace swift::x86

@@ -19,6 +19,10 @@ constexpr bool ReadsBeforeWrite(OpCode opcode, bool vector = false) {
             case OpCode::VecAdd: case OpCode::VecSub: case OpCode::VecMul:
             case OpCode::VecCmpEq: case OpCode::VecCmpGt:
             case OpCode::VecSignedMulWidenLow:
+            case OpCode::VecFAdd: case OpCode::VecFSub: case OpCode::VecFMul: case OpCode::VecFDiv:
+            case OpCode::VecFAddScalar64: case OpCode::VecFSubScalar64:
+            case OpCode::VecFMulScalar64: case OpCode::VecFDivScalar64:
+            case OpCode::VecFCmpMask:
                 return true;
             default: return false;
         }
@@ -118,7 +122,7 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
     const auto block_start = [&](u32 b) { return scope == Scope::Block ? 0u : starts[b]; };
     const auto pc_tail_check = [&](u32 b) -> NodeId {
         const auto& body = blocks[b];
-        if (scope != Scope::Block || !options || !options->dispatcher || !options->exit_handler ||
+        if (!options || !options->dispatcher || !options->exit_handler ||
             !body.node_count || body.terminal.kind != TerminalKind::Dispatch) return {};
         const auto tail = body.first_node + body.node_count - 1;
         if (operations[tail].opcode != OpCode::StoreUniformSelectImm ||

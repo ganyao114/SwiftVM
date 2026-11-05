@@ -1,6 +1,7 @@
 #include "runtime/backend/arm64/compile.h"
 #include "runtime/compile/optimize.h"
 #include "runtime/frontend/x86/build_ir.h"
+#include "runtime/execution/guest_state.h"
 #include "function_fixture.h"
 
 #include <array>
@@ -382,6 +383,111 @@ void AutomaticFunctions() {
     CHECK(Execute(code,state.data())==0);
     if constexpr(executes_native) CHECK(state[0]==8 && state[1]==0 && state[16]==0x602a);
 }
+void RepeatStorePipeline() {
+    const std::uint8_t bytes[]{0xf3, 0x48, 0xab}; // REP STOSQ.
+    const swift::x86::BlockWindow window{0x9000, bytes};
+    constexpr u64 pattern = 0xfedcba9876543210ULL;
+    for (const auto scope : {ir::Scope::Block, ir::Scope::Function}) {
+        auto built = swift::x86::BuildIR({&window, 1}, scope, {0, 128, 8}, a64::KnownTargetInfo());
+        auto code = Compile(built, true, true);
+        if constexpr (executes_native) {
+            execution::GuestState empty;
+            empty.gprs[execution::RDI] = 1; // Unmapped and unaligned: count0 must not touch it.
+            empty.packed_flags = 0xa5a50000bc00003cULL;
+            CHECK(Execute(code, reinterpret_cast<u64*>(&empty)) == 0 && empty.pc == 0x9003 &&
+                    empty.gprs[execution::RDI] == 1 && !empty.gprs[execution::RCX] &&
+                    empty.packed_flags == 0xa5a50000bc00003cULL);
+            for (const bool reverse : {false, true}) {
+                alignas(16) std::array<u64, 3> memory{};
+                execution::GuestState state;
+                state.gprs[execution::RAX] = pattern; state.gprs[execution::RCX] = 3;
+                const auto start = reinterpret_cast<std::uintptr_t>(memory.data() + (reverse ? 2 : 0));
+                state.gprs[execution::RDI] = start;
+                const auto flags = (u64{0xa5a50000bc00003cULL} & ~u64{0x400}) | (reverse ? 0x400 : 0);
+                state.packed_flags = flags;
+                for (unsigned iteration = 0; iteration < 3; ++iteration) {
+                    CHECK(Execute(code, reinterpret_cast<u64*>(&state)) == 0);
+                    CHECK(state.gprs[execution::RCX] == 2 - iteration &&
+                            state.pc == (iteration == 2 ? 0x9003 : 0x9000));
+                }
+                CHECK(memory[0] == pattern && memory[1] == pattern && memory[2] == pattern &&
+                        state.gprs[execution::RDI] == (reverse ? start - 24 : start + 24) &&
+                        state.packed_flags == flags);
+            }
+        }
+    }
+}
+
+void ExtendedPrecisionPipeline() {
+    using ir::X87Command;
+    ir::X87State value;
+    const auto step = [&](X87Command command, unsigned index = 0, u64 raw = 0) {
+        return SvmX87Execute(&value, ir::X87Encode(command, index), raw);
+    };
+    CHECK(step(X87Command::Init) == 0 && value.control == 0x037f && value.tags == 0xffff);
+    CHECK(step(X87Command::PushOne) == 0);
+    CHECK(step(X87Command::PushF64, 0, 0x3ff0000000000001ULL) == 0);
+    CHECK(step(X87Command::Exchange, 1) == 0 && step(X87Command::Add, 1) == 0);
+    CHECK(value.registers[6].sign_exp == 0x4000 &&
+            value.registers[6].significand == 0x8000000000000400ULL && value.tags == 0x0fff);
+    // Precision control is real: the same half-ULP result rounds at 53 bits.
+    CHECK(step(X87Command::Init) == 0 && step(X87Command::SetControlWord, 0, 0x027f) == 0);
+    CHECK(step(X87Command::PushOne) == 0 &&
+            step(X87Command::PushF64, 0, 0x3ff0000000000001ULL) == 0 &&
+            step(X87Command::Exchange, 1) == 0 && step(X87Command::Add, 1) == 0);
+    CHECK(value.registers[6].significand == 0x8000000000000000ULL && (value.status & 0x220) == 0x20);
+    CHECK(step(X87Command::Init) == 0 && step(X87Command::SetControlWord, 0, 0x0a7f) == 0);
+    CHECK(step(X87Command::PushOne) == 0 &&
+            step(X87Command::PushF64, 0, 0x3ff0000000000001ULL) == 0 &&
+            step(X87Command::Exchange, 1) == 0 && step(X87Command::Add, 1) == 0);
+    CHECK(value.registers[6].significand == 0x8000000000000800ULL && (value.status & 0x220) == 0x220);
+    // Compare complete state, including physical payload and padding, against
+    // the original instruction sequence for normal, masked and unmasked cases.
+    for (unsigned scenario = 0; scenario < 6; ++scenario) {
+        ir::X87State original;
+        original.tags = scenario == 3 ? 0xffff : 0;
+        original.control = (scenario == 2 || scenario == 5) ? 0x037e : 0x037f;
+        original.status = 0x0200;
+        for (auto& reg : original.registers) reg = {0x8000000000000000ULL, 0x3fff, {1,2,3,4,5,6}};
+        if (scenario == 1 || scenario == 2) original.tags |= 3u << 2;
+        auto combined = original;
+        const bool exchange = scenario < 3;
+        const auto grouped = exchange ? X87Command::ExchangeTwice : X87Command::PushOnePop;
+        const auto index = exchange ? 1u : 0u;
+        auto expected = SvmX87Execute(&original, ir::X87Encode(
+                exchange ? X87Command::Exchange : X87Command::PushOne, index), 0);
+        if (!expected && !exchange) expected = SvmX87Execute(&original, ir::X87Encode(X87Command::Sqrt), 0);
+        if (!expected) expected = SvmX87Execute(&original, ir::X87Encode(
+                exchange ? X87Command::Exchange : X87Command::StoreRegPop, index), 0);
+        CHECK(SvmX87Execute(&combined, ir::X87Encode(grouped, index), 0) == expected);
+        CHECK(std::memcmp(&original, &combined, sizeof original) == 0);
+    }
+    CHECK(step(X87Command::Init) == 0 && step(X87Command::SetControlWord, 0, 0x037e) == 0);
+    CHECK(step(X87Command::Pop) == static_cast<u64>(ir::X87Result::UnmaskedPending) &&
+            value.tags == 0xffff && (value.status & 0x8081) == 0x8081);
+
+    alignas(8) const u64 factor = 0x3ff0000000000001ULL;
+    for (const auto scope : {ir::Scope::Block, ir::Scope::Function}) {
+        std::vector<std::uint8_t> bytes{0x48, 0xb8}; // movabs rax,&factor
+        const auto address = reinterpret_cast<std::uintptr_t>(&factor);
+        for (unsigned i = 0; i < 8; ++i) bytes.push_back(static_cast<std::uint8_t>(address >> (8 * i)));
+        const std::uint8_t body[]{0xdb,0xe3,0xd9,0xe8,0xdd,0x00,0xd9,0xc9,0xd8,0xc1,0x0f,0x05};
+        bytes.insert(bytes.end(), std::begin(body), std::end(body));
+        const swift::x86::BlockWindow window{0x8000, bytes};
+        swift::x86::StateLayout layout{0, 128, 8};
+        layout.x87_offset = offsetof(execution::GuestState, x87);
+        auto built = swift::x86::BuildIR({&window, 1}, scope, layout, a64::KnownTargetInfo());
+        auto code = Compile(built, true, false);
+        execution::GuestState state;
+        const auto reason = Execute(code, reinterpret_cast<u64*>(&state));
+        if constexpr (executes_native) {
+            CHECK(reason == 1 && state.gprs[execution::RAX] == address);
+            CHECK(state.x87.control == 0x037f && state.x87.tags == 0x0fff &&
+                    state.x87.registers[6].sign_exp == 0x4000 &&
+                    state.x87.registers[6].significand == 0x8000000000000400ULL);
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -393,6 +499,8 @@ int main() {
         DeferredFlagsAndMemoryObservation();
         MultiplyObservation();
         AutomaticFunctions();
+        ExtendedPrecisionPipeline();
+        RepeatStorePipeline();
 #if defined(__aarch64__) && !defined(__APPLE__)
         std::printf("12 base paths and %zu integer/flags/Jcc native pipeline paths passed; native_nzcv=%s\n",
                 flag_paths,native_flags_available?"true":"false");
