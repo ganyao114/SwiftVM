@@ -4,16 +4,19 @@
 #include <span>
 #include <string>
 
-#include "guest_state.h"
-#include "runtime/frontend/x86/decode.h"
+#include "runtime/arch/x86/state.h"
+#include "runtime/frontend/x86/region.h"
 #include "runtime/ir/types.h"
 
 namespace swift::runtime::execution {
 
+enum class ExecutionMode : std::uint8_t { JitOnly, InterpretOnly, Mixed };
+
 struct RuntimeOptions {
+    ExecutionMode mode{ExecutionMode::JitOnly};
     ir::Scope scope{ir::Scope::Block};
     bool optimize{true};
-    x86::DecodeLimits function_limits{};
+    ::swift::x86::DecodeLimits function_limits{};
     bool decode_timing{};
 };
 struct RuntimeStats {
@@ -25,7 +28,7 @@ struct RuntimeStats {
     std::uint64_t syscalls{}, compile_attempts{}, function_attempts{}, block_attempts{}, fallbacks{};
     std::uint64_t compile_request_ns{}, frontend_ns{}, optimize_ns{}, backend_ns{}, publication_ns{};
     std::uint64_t code_release_ns{}, fault_service_ns{};
-    x86::DecodeTiming compile_decode; // Opt-in diagnostic; ordinary runs read no per-instruction clocks.
+    ::swift::x86::DecodeTiming compile_decode; // Opt-in diagnostic; ordinary runs read no per-instruction clocks.
     std::uint64_t compile_without_byte_decode_ns{};
     // O(1) existing-result observations, enabled with decode_timing. IR sizes
     // cover returned owners, not a rejected frontend's already-freed prefix.

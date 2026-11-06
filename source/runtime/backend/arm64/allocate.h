@@ -4,15 +4,13 @@
 #include <vector>
 
 #include "runtime/ir/program.h"
+#include "runtime/backend/code.h"
 
 namespace swift::runtime::backend::arm64 {
 
 struct CompileOptions;
 
-enum class CompileError : std::uint8_t {
-    None, InvalidProgram, UnsupportedOpcode, UnsupportedType, UnsupportedOperand,
-    UnsupportedFlags, UnsupportedControlFlow, FrameTooLarge, CodeTooLarge,
-};
+using backend::CompileError;
 
 // The one actual lifetime/location decision for each source node. A register
 // home stays fixed throughout the unit; spills are stored at the definition.
@@ -45,5 +43,9 @@ struct Allocation {
 // supported by the code writer.
 Allocation AllocateBlock(const ir::Program&, const CompileOptions* options = nullptr);
 Allocation AllocateFunction(const ir::Program&, const CompileOptions* options = nullptr);
+// Reuse only this actual allocation owner's capacity. Every request resets
+// homes/order and scalar decisions; no Program or Writer borrow is retained.
+void AllocateBlock(const ir::Program&, Allocation&, const CompileOptions* options = nullptr);
+void AllocateFunction(const ir::Program&, Allocation&, const CompileOptions* options = nullptr);
 
 } // namespace swift::runtime::backend::arm64

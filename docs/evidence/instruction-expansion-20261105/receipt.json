@@ -1,0 +1,78 @@
+{
+  "utc": "2026-11-06T07:20:31.102931+00:00",
+  "repository": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "base_commit": "74ac9bc9b6bb160c2d7d10bf9a37000f5ec0407a",
+  "working_tree_modified": true,
+  "committed": false,
+  "pushed": false,
+  "source_digest": "57db153a47dd80a107839598abc2a2dfc0f9137481ebc53e77b05fbef5eb7a66",
+  "source_manifest_scope": "282 actual host/Android dependency files, plus licenses in source archive",
+  "candidate_sha256": "4e440cceaffe199b1d42fbc38d34715d3b211c9c5ed6bd68115c763634ca0783",
+  "source_archive_sha256": "22a618ce604583aafdfb2950f75e661e3b6c9cfce1200cc7bba6d33817bb2148",
+  "test_gates": {
+    "smoke-summary.json": {
+      "passed": 39,
+      "total": 39
+    },
+    "instruction-test-summary.json": {
+      "passed": 3,
+      "total": 3
+    },
+    "state-images-summary.json": {
+      "passed": 3,
+      "total": 3
+    }
+  },
+  "host_ctest": [
+    9,
+    9
+  ],
+  "asan_ubsan_ctest": [
+    9,
+    9
+  ],
+  "vex_finite_admission": [
+    2169,
+    2169
+  ],
+  "compile_samples": [
+    200,
+    200
+  ],
+  "compile_metric": "Actual byte decoder only excluded; formation/adaptation/IR/opt/alloc/emit/publication/release included. Ratio of medians of all five fixed rotated rounds.",
+  "compile_target_at_most_two_times_fex_met": false,
+  "remaining_compile_budget_misses": [
+    {
+      "case": "x87_bench",
+      "scope": "block",
+      "compile_ms": 0.687975,
+      "baseline_compile_ms": 0.582292,
+      "fex_compile_ms": 0.2870833333333333,
+      "compile_vs_baseline": 1.181494851380407,
+      "compile_vs_fex": 2.3964296081277214
+    }
+  ],
+  "instruction_scope": "Old genuinely implemented x86-64 user-mode plus baseline/SSE/x87; finite forms tested, not exhaustive ISA proof",
+  "user_deferred": [
+    "EVEX/AVX-512",
+    "Full PKU and pkey memory permissions; no feature advertisement"
+  ],
+  "other_runtime_limits": [
+    "Full guest trap/signal/TF/AC/ID delivery",
+    "Compatibility and privileged mode; old RETF ignoring CS was not a correct far-return implementation",
+    "ENTER nonmutating final-stack permission probe"
+  ],
+  "runtime_pmu_new_results": false,
+  "phone_cleanup": {
+    "utc": "2026-11-06T07:15:55.577323+00:00",
+    "namespace": "/data/local/tmp/swiftvm-instruction-expansion-20261105",
+    "allocated_bytes_removed": 177665024,
+    "df_actual_free_delta_bytes": 177758208,
+    "remaining_bytes": 0,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "evidence_root": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/instruction-expansion-20261105",
+  "historical_partial_manifest_correction": "source-manifest-correction.json"
+}

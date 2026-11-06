@@ -2,7 +2,7 @@
 
 These decoder sources were retained from SwiftVM's vendored diStorm tree.
 Their public header identifies version 3.4.0; this integration does not claim
-they are a pristine upstream release. The measured source files are unchanged.
+they are a pristine upstream release.
 
 The missing `COPYING` is restored byte-for-byte from upstream tag `v3.4.1`,
 commit `39de02a118f95e254550a944843ee69f721c79d9`:
@@ -19,3 +19,12 @@ https://www.gnu.org/licenses/gpl-3.0.txt. No source was relicensed.
 
 Only the byte decoder is built; no legacy SwiftVM frontend or middle pipeline
 is linked through this directory.
+
+The 2026-11-05 decoder adapter adds opt-in `DF_REPORT_INCOMPLETE` and an
+appended `DECRES_INCOMPLETE` result. It preserves actual opcode/operand byte
+underflow and an exhausted prefix stream instead of expanding those errors
+to undecodable-byte records. Existing callers without that feature retain
+their historical results. The 3DNow trailing-opcode reader now preserves the
+same underflow fact. This is one parser call, with no padded retry or guessed
+instruction length. A 15-byte exhausted instruction remains invalid in SVM.
+No additional AVX support or general instruction-length oracle is claimed.

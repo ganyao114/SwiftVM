@@ -595,22 +595,32 @@ OptimizeResult Finish(Builder& editor, Error error, OptimizeStats stats, bool al
 
 OptimizeResult Optimize(ir::Program&& input, std::size_t max_operand_words,
                         UniformPolicy policy) {
+    std::vector<u64> rows;
+    return Optimize(std::move(input), rows, max_operand_words, policy);
+}
+
+OptimizeResult Optimize(ir::Program&& input, std::vector<u64>& rows,
+                        std::size_t max_operand_words, UniformPolicy policy) {
     if (!input) return {Error::Consumed, std::move(input), {}};
     OptimizeStats stats;
     stats.nodes = input.Operations().size();
     stats.words_before = input.OperandArena().size();
-    std::vector<u64> rows(stats.nodes); // The only per-node allocation; input is still owned by caller.
+    rows.assign(stats.nodes, 0); // One actual per-node table; caller still owns input.
     stats.dense_bytes = rows.size() * sizeof(u64);
     constexpr auto max_size = std::numeric_limits<std::size_t>::max();
     const auto hard_limit = stats.nodes > (max_size - stats.words_before) / 2
             ? max_size : stats.words_before + 2 * stats.nodes;
-    const bool function = input.ScopeKind() == Scope::Function;
+    const bool function_scope = input.ScopeKind() == Scope::Function;
     const bool signed_mul_widen_low = input.Target().Has(TargetFeature::VectorSignedMulWidenLow);
     auto editor = Builder::Edit(std::move(input), std::min(hard_limit, max_operand_words));
     try {
         const auto operations = editor.Operations();
         const auto blocks = editor.Blocks();
         const auto unit = editor.UnitId();
+        // A single external exit has the same All-flags boundary as a Block.
+        // Keep its Function scope; only the unused CFG summaries are omitted.
+        const bool function = function_scope && (blocks.size() != 1 ||
+                blocks.front().terminal.kind == TerminalKind::Jump || blocks.front().terminal.kind == TerminalKind::Branch);
         std::vector<FlagBlock> flags;
         std::vector<std::size_t> predecessor_offsets, pending;
         std::vector<BlockId> predecessors;

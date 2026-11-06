@@ -13,53 +13,11 @@ constexpr ir::TargetInfo KnownTargetInfo() noexcept {
             static_cast<std::uint64_t>(ir::TargetFeature::VectorSignedMulWidenLow)};
 }
 
-struct FaultSite {
-    std::uint32_t first_word{}, last_word{}; // Actual native operation range, end exclusive.
-    std::uint64_t guest_pc{};
-    // Only an alignment fault at the actual fast instruction is recoverable.
-    // Its cold fallback occupies [unaligned_fallback_word,+3): plain memory,
-    // the TSO half-barrier and a branch back after the actual fast instruction.
-    // Store fallbacks put the barrier before the plain store. This same site
-    // supplies the guest-PC/TEST recipe for both its hot and cold ranges.
-    std::uint32_t unaligned_word{UINT32_MAX}, unaligned_fallback_word{UINT32_MAX};
-    // A single admitted Function loop may defer full TEST flags. When the
-    // raw-AF tag is set, this actual register contains its entry snapshot.
-    std::uint8_t test_bits{}, test_register{};
-    // Block-local raw flags at the actual memory instruction. Zero PF source
-    // means x1; otherwise it is an unchanged pinned result's low byte.
-    // carry_direct means PSTATE.C already equals guest CF, without inversion.
-    std::uint8_t parity_register{}, carry_direct{};
-};
-static_assert(sizeof(FaultSite) == 32);
-
-struct LinkSite {
-    std::uint32_t pointer_word{}; // Eight-byte aligned native DATA relocation.
-    // UINT32_MAX instead marks the actual DynamicCacheWords DATA array at
-    // pointer_word. Otherwise this is the static patchable transfer head.
-    std::uint32_t branch_word{}; // Static cold stub is pointer_word + 2.
-    std::uint64_t target_pc{}; // Dynamic sentinel instead stores this site's fallback word.
-};
-static_assert(sizeof(LinkSite) == 16);
-
-// Additional external entry into this same published range. Its stub owns
-// the unit frame; internal edges continue to use the original body label.
-struct EntryPoint {
-    std::uint64_t pc{};
-    std::uint32_t word{};
-};
-static_assert(sizeof(EntryPoint) == 16);
-
-struct CompileResult {
-    CompileError error{CompileError::None};
-    ir::NodeId node{};
-    ir::BlockId block{};
-    std::vector<std::uint32_t> words;
-    std::uint32_t frame_bytes{}, spill_slots{}; // Default ABI includes its 16-byte x19/x30 save.
-    explicit operator bool() const noexcept { return error == CompileError::None; }
-    std::vector<FaultSite> faults;
-    std::vector<LinkSite> links;
-    std::vector<EntryPoint> entries; // Extra entries only; the original root is word zero.
-};
+using backend::FaultSite;
+using backend::LinkKind;
+using backend::LinkSite;
+using backend::EntryPoint;
+using backend::CompileResult;
 
 enum class DispatchMode : std::uint8_t { Callback, Inline, InlineCounted };
 
@@ -135,6 +93,9 @@ struct CompileOptions {
     // Inline dynamic sites borrow the same directory owner and its reset
     // lifetime for one fixed local native-DATA array. Callback mode stays unchanged.
     bool local_dispatch_cache{};
+    // Actual host Crypto Extension capabilities; all neutral crypto forms
+    // retain their pure numerical helper fallback when the feature is absent.
+    bool aes{}, pmull{}, sha256{};
 };
 
 // Produces native words only; the caller owns W^X publication and cache flush.
@@ -147,5 +108,8 @@ CompileResult Compile(const ir::Program&, CompileOptions options = {});
 // Reuse this actual output's capacity. Fault tables transferred to a publisher
 // remain there; no Program or previous result contents are borrowed on entry.
 void Compile(const ir::Program&, CompileOptions, CompileResult& output);
+// The same output reuse, with the caller's actual lifetime/location owner.
+// The writer borrows it only for this call, including any branch re-emission.
+void Compile(const ir::Program&, CompileOptions, CompileResult& output, Allocation& allocation);
 
 } // namespace swift::runtime::backend::arm64

@@ -550,6 +550,22 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     CHECK(reduced.program.Operations()[invert.node.value].opcode == OpCode::InvertCarry);
     CHECK(reduced.program.Blocks()[empty.block.id.value].node_count == 0);
 
+    // Only a real external terminal can omit the Function graph. A single
+    // self edge must retain the CFG path even though it also has one block.
+    for (const bool self_loop : {false, true}) {
+        Builder single{Scope::Function}; const auto block = single.CreateBlock(); CHECK(block);
+        CHECK(single.BeginBlock(block.block) == Error::None);
+        const auto source = Emit(single, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+        const auto writer = Emit(single, OpCode::And, Type::U64,
+                {Operand::ValueOf(source), Operand::ValueOf(source)},
+                {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
+        CHECK(single.EndBlock(self_loop ? Terminal::Jump(block.block) : Terminal::Return(source)) == Error::None);
+        auto local = Optimize(Submit(single)); CHECK(local);
+        CHECK(local.program.ScopeKind() == Scope::Function);
+        CHECK((local.stats.block_flags_bytes != 0) == self_loop);
+        if (!self_loop) CHECK(local.program.Operations()[writer.node.value].flag_outputs == FlagBits(Flag::All));
+    }
+
     // The requested Z mask is already narrow: unchanged keep must still
     // acquire the literal permission when final successor demand is only Z.
     Builder permission{Scope::Function};
@@ -856,9 +872,31 @@ void OrderedLoadAddresses() {
     CHECK(result.program.Operations()[widened.node.value].opcode == OpCode::Add);
     CHECK(result.program.Operands(fifth.node).front().Payload() == widened.node.value);
 }
+void ReusedRowsKeepOnlyCurrentRequest() {
+    std::vector<std::uint64_t> rows(256, ~std::uint64_t{});
+    Program reusable;
+    for (unsigned dead_count : {12u, 1u, 17u}) {
+        const auto scope = dead_count == 1 ? Scope::Function : Scope::Block;
+        Builder builder{scope, {}, std::move(reusable)};
+        const auto block = builder.CreateBlock(); CHECK(block);
+        CHECK(builder.BeginBlock(block.block) == Error::None);
+        const auto dead = Literal(builder, 99);
+        for (unsigned i = 1; i < dead_count; ++i) Literal(builder, i);
+        const auto left = Literal(builder, 7), right = Literal(builder, 11);
+        const auto sum = Emit(builder, OpCode::Add, Type::U64,
+                {Operand::ValueOf(left), Operand::ValueOf(right)});
+        CHECK(builder.EndBlock(Terminal::Return(sum)) == Error::None);
+        auto result = Optimize(Submit(builder), rows); CHECK(result);
+        CHECK(result.program.ScopeKind() == scope);
+        CHECK(result.program.Operations()[dead.node.value].opcode == OpCode::Nop);
+        CHECK(Immediate(result.program, sum, Type::U64) == 18);
+        reusable = std::move(result.program);
+    }
+}
 }  // namespace
 
 int main() {
+    ReusedRowsKeepOnlyCurrentRequest();
     FoldAndDeadCascade(); LowByteMaskWriteback();
     CopyAndTerminalRoots();
     MetadataSensitiveAndObservable();

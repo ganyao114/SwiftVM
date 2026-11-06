@@ -1,0 +1,14 @@
+[
+  {
+    "engine": "jit",
+    "exit": 125,
+    "valid": true,
+    "prefix": "smc-eof-jit"
+  },
+  {
+    "engine": "interpreter",
+    "exit": 125,
+    "valid": true,
+    "prefix": "smc-eof-interpreter"
+  }
+]

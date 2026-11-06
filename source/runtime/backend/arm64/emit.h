@@ -4,6 +4,7 @@
 // output remain borrowed from Compile; no intermediate program is created.
 #include "compile.h"
 #include "abi.h"
+#include "assembler.h"
 
 #include <algorithm>
 #include <array>
@@ -14,44 +15,17 @@ namespace swift::runtime::backend::arm64::detail {
 using namespace ir;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
+template<OpCode Code> using Op = std::integral_constant<OpCode, Code>;
 struct Rejected { CompileError error; NodeId node; BlockId block; };
 
-// A logical immediate is one rotated run of ones in a repeated power-of-two
-// element. Return its actual N:immr:imms instruction fields, not an IR fact.
-inline bool LogicalImmediate(u64 value, unsigned width, u32& fields) {
-    const auto mask = width == 64 ? ~u64{} : UINT64_C(0xffffffff);
-    value &= mask;
-    if (!value || value == mask) return false;
-    auto size = width;
-    while (size > 2) {
-        const auto half = size / 2;
-        const auto part = (u64{1} << half) - 1;
-        if ((value & part) != ((value >> half) & part)) break;
-        size = half;
-    }
-    const auto part = ~u64{} >> (64 - size);
-    const auto pattern = value & part;
-    const auto ones = static_cast<unsigned>(std::popcount(pattern));
-    const auto first = static_cast<unsigned>(std::countr_zero(pattern));
-    unsigned rotation;
-    if ((pattern >> first) == (u64{1} << ones) - 1) rotation = (size - first) & (size - 1);
-    else {
-        const auto low = static_cast<unsigned>(std::countr_one(pattern));
-        const auto high = static_cast<unsigned>(std::countl_one(pattern << (64 - size)));
-        if (low + high != ones) return false;
-        rotation = high;
-    }
-    const auto imms = ((~(size - 1u) << 1) | (ones - 1u)) & 63u;
-    fields = (static_cast<u32>(size == 64) << 22) | (rotation << 16) | (imms << 10);
-    return true;
-}
+using namespace encoding;
 
 class Writer {
 public:
     Writer(const Program& source, const Allocation& allocation, CompileResult& output, CompileOptions options,
            bool long_forward_branches = false)
             : source(source), allocation(allocation), output(output), options(options),
-              long_forward_branches(long_forward_branches), labels(source.Blocks().size(), UINT32_MAX) {}
+              long_forward_branches(long_forward_branches), masm(output.words, source.Blocks().size()) {}
 
     // False requests one fresh long-forward emission before publication.
     // Ordinary errors, including B26 overflow, retain their typed rejection.
@@ -67,16 +41,311 @@ private:
         }
         void Done() { if (at != end) writer.Reject(CompileError::UnsupportedOperand); }
     };
-    struct Fixup { u32 word, target; };
-    struct LocalFixup { u32 node, word; };
+    struct OpContext {
+        const Operation& operation;
+        Cursor cursor;
+        const Home& home;
+        OperationMetadata metadata;
+        u64 legacy_mask, flag_mask;
+        unsigned destination, width;
+        bool produces, vector, test_prefix, saved{};
+    };
+    void SaveResult(OpContext& ctx) {
+        if (ctx.produces && ctx.home.spilled) {
+            if (ctx.vector) VectorMemory(false, ctx.destination, 31, ctx.home.stack_offset / 16);
+            else Memory(false, 64, ctx.destination, 31, ctx.home.stack_offset / 8);
+            ctx.saved = true;
+        }
+    }
+    void Dispatch(OpContext&);
+    void HandleStringFamily(OpContext&);
+    void HandleSse42FlagsFamily(OpContext&);
+    void Handle(Op<OpCode::Sse42Str>, OpContext& ctx) { HandleStringFamily(ctx); }
+    void Handle(Op<OpCode::Sse42StrExplicit>, OpContext& ctx) { HandleStringFamily(ctx); }
+    void Handle(Op<OpCode::PublishSse42StrFlags>, OpContext& ctx) { HandleSse42FlagsFamily(ctx); }
+    void HandleCryptoFamily(OpContext&);
+    void Handle(Op<OpCode::VecAesEnc>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesEncLast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesDec>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesDecLast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesEncFast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesEncLastFast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesDecFast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesDecLastFast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesImc>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecAesKeygenAssist>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecPclMul>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecSha256Msg1>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecSha256Msg2>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void Handle(Op<OpCode::VecSha256Rnds2>, OpContext& ctx) { HandleCryptoFamily(ctx); }
+    void HandleMemoryLoadFenceFamily(OpContext&);
+    void Handle(Op<OpCode::MemoryLoadFence>, OpContext& ctx) { HandleMemoryLoadFenceFamily(ctx); }
+    void Handle(Op<OpCode::CpuYield>, OpContext& ctx) { HandleMemoryLoadFenceFamily(ctx); }
+    void HandleParallelBitsFamily(OpContext&);
+    void Handle(Op<OpCode::ParallelBitDeposit>, OpContext& ctx) { HandleParallelBitsFamily(ctx); }
+    void Handle(Op<OpCode::ParallelBitExtract>, OpContext& ctx) { HandleParallelBitsFamily(ctx); }
+    void HandleReadSystemFamily(OpContext&);
+    void Handle(Op<OpCode::ReadSystem>, OpContext& ctx) { HandleReadSystemFamily(ctx); }
+    void Handle(Op<OpCode::ReadSystemPair>, OpContext& ctx) { HandleReadSystemFamily(ctx); }
+    void Handle(Op<OpCode::X87Execute>, OpContext& ctx) { HandleX87OpFamily(ctx); }
+    void Handle(Op<OpCode::X87CommitMetadata>, OpContext& ctx) { HandleX87CommitMetadataFamily(ctx); }
+    void ConvertFloatToInteger(unsigned destination, unsigned raw, unsigned float_bits, unsigned integer_bits, bool truncate);
+    void ConvertScalarFloat(unsigned destination, unsigned raw, unsigned source_bits);
+    void HandleVecFMulAddFamily(OpContext&);
+    void Handle(Op<OpCode::VecFMulAdd>, OpContext& ctx) { HandleVecFMulAddFamily(ctx); }
+    void HandleCompareAndSwap128Family(OpContext&);
+    void Handle(Op<OpCode::CompareAndSwap128>, OpContext& ctx) { HandleCompareAndSwap128Family(ctx); }
+    template<OpCode Code> void Handle(Op<Code>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+    void HandleZeroFamily(OpContext&);
+    void HandleLoadImmFamily(OpContext&);
+    void HandleLoadMemoryFamily(OpContext&);
+    void HandleStoreMemoryFamily(OpContext&);
+    void HandleCompareAndSwapFamily(OpContext&);
+    void HandleCheckMemoryAlignmentFamily(OpContext&);
+    void HandleMemoryBarrierTSOFamily(OpContext&);
+    void HandleMemoryStoreFenceFamily(OpContext&);
+    void HandleUniformBarrierFamily(OpContext&);
+    void HandleGetOperandFamily(OpContext&);
+    void HandleBitCastFamily(OpContext&);
+    void HandleZeroExtend32Family(OpContext&);
+    void HandleAddFamily(OpContext&);
+    void HandleNegFamily(OpContext&);
+    void HandleAdcFamily(OpContext&);
+    void HandleGetUniformAddressFamily(OpContext&);
+    void HandleX87OpFamily(OpContext&);
+    void HandleX87CommitMetadataFamily(OpContext&);
+    void WriteX87Metadata(CellView state, CellView dp, u64 metadata, u64 pc, bool known_pc);
+    void HandleDiv128Family(OpContext&);
+    void HandleDiv128RemainderFamily(OpContext&);
+    void HandleCpuidFamily(OpContext&);
+    void HandleCpuidUpperFamily(OpContext&);
+    void HandleMulFamily(OpContext&);
+    void HandleMulHighFamily(OpContext&);
+    void HandleBitExtractFamily(OpContext&);
+    void HandleBitInsertFamily(OpContext&);
+    void HandleCrc32cFamily(OpContext&);
+    void HandleByteSwapFamily(OpContext&);
+    void HandlePopCountFamily(OpContext&);
+    void HandleCountLeadingZeros32Family(OpContext&);
+    void HandleCondSetFamily(OpContext&);
+    void HandleCondSelectFamily(OpContext&);
+    void HandleGotoFamily(OpContext&);
+    void HandleBindLabelFamily(OpContext&);
+    void HandleSelectFamily(OpContext&);
+    void HandleNotFamily(OpContext&);
+    void HandleTestZeroFamily(OpContext&);
+    void HandleTestBitFamily(OpContext&);
+    void HandleLslImmFamily(OpContext&);
+    void HandleLoadUniformFamily(OpContext&);
+    void HandleStoreUniformFamily(OpContext&);
+    void HandleStoreUniformSelectImmFamily(OpContext&);
+    void HandleGetFlagsFamily(OpContext&);
+    void HandleRestoreFlagsFamily(OpContext&);
+    void HandleSaveFlagsFamily(OpContext&);
+    void HandleClearFlagsFamily(OpContext&);
+    void HandlePublishFCmpFlagsFamily(OpContext&);
+    void HandleTestFlagsFamily(OpContext&);
+    void HandleSetCarryFamily(OpContext&);
+    void HandleInvertCarryFamily(OpContext&);
+    void HandleLocalParitySetFamily(OpContext&);
+    void HandleVecSharedZeroFamily(OpContext&);
+    void HandleVecLoadConstFamily(OpContext&);
+    void HandleVecDup64Family(OpContext&);
+    void HandleVecFCvtIntToFloatFamily(OpContext&);
+    void HandleVecFCvtFloatToIntFamily(OpContext&);
+    void HandleVecFAddFamily(OpContext&);
+    void HandleVecFAddScalar64Family(OpContext&);
+    void HandleVecFCmpFamily(OpContext&);
+    void HandleVecFCvtPackedFamily(OpContext&);
+    void HandleVecFCmpMaskFamily(OpContext&);
+    void HandleVecMinFamily(OpContext&);
+    void HandleVecPackFamily(OpContext&);
+    void HandleVecExtract64Family(OpContext&);
+    void HandleVecMovMaskFamily(OpContext&);
+    void HandleVecExtendFamily(OpContext&);
+    void HandleVecXorFamily(OpContext&);
+    void HandleVecZipFamily(OpContext&);
+    void HandleVecSignedMulWidenLowFamily(OpContext&);
+    void HandleVecMulWidenFamily(OpContext&);
+    void HandleVecMadd16Family(OpContext&);
+    void HandleVecShuffle32TwoSrcFamily(OpContext&);
+    void HandleVecShuffle32Family(OpContext&);
+    void HandleVecShiftLeftImmFamily(OpContext&);
+    void HandleVecByteShiftFamily(OpContext&);
+    void Handle(Op<OpCode::Zero>, OpContext& ctx) { HandleZeroFamily(ctx); }
+    void Handle(Op<OpCode::LoadImm>, OpContext& ctx) { HandleLoadImmFamily(ctx); }
+    void Handle(Op<OpCode::LoadMemory>, OpContext& ctx) { HandleLoadMemoryFamily(ctx); }
+    void Handle(Op<OpCode::LoadMemoryTSO>, OpContext& ctx) { HandleLoadMemoryFamily(ctx); }
+    void Handle(Op<OpCode::StoreMemory>, OpContext& ctx) { HandleStoreMemoryFamily(ctx); }
+    void Handle(Op<OpCode::StoreMemoryTSO>, OpContext& ctx) { HandleStoreMemoryFamily(ctx); }
+    void Handle(Op<OpCode::CompareAndSwap>, OpContext& ctx) { HandleCompareAndSwapFamily(ctx); }
+    void Handle(Op<OpCode::AtomicExchange>, OpContext& ctx) { HandleCompareAndSwapFamily(ctx); }
+    void Handle(Op<OpCode::AtomicFetchAdd>, OpContext& ctx) { HandleCompareAndSwapFamily(ctx); }
+    void Handle(Op<OpCode::AtomicRMW>, OpContext& ctx) { HandleCompareAndSwapFamily(ctx); }
+    void Handle(Op<OpCode::CheckMemoryAlignment>, OpContext& ctx) { HandleCheckMemoryAlignmentFamily(ctx); }
+    void Handle(Op<OpCode::MemoryBarrierTSO>, OpContext& ctx) { HandleMemoryBarrierTSOFamily(ctx); }
+    void Handle(Op<OpCode::MemoryStoreFence>, OpContext& ctx) { HandleMemoryStoreFenceFamily(ctx); }
+    void Handle(Op<OpCode::UniformBarrier>, OpContext& ctx) { HandleUniformBarrierFamily(ctx); }
+    void Handle(Op<OpCode::GetOperand>, OpContext& ctx) { HandleGetOperandFamily(ctx); }
+    void Handle(Op<OpCode::BitCast>, OpContext& ctx) { HandleBitCastFamily(ctx); }
+    void Handle(Op<OpCode::ZeroExtend32>, OpContext& ctx) { HandleZeroExtend32Family(ctx); }
+    void Handle(Op<OpCode::ZeroExtend32To64>, OpContext& ctx) { HandleZeroExtend32Family(ctx); }
+    void Handle(Op<OpCode::ZeroExtend64>, OpContext& ctx) { HandleZeroExtend32Family(ctx); }
+    void Handle(Op<OpCode::SignExtend>, OpContext& ctx) { HandleZeroExtend32Family(ctx); }
+    void Handle(Op<OpCode::Add>, OpContext& ctx) { HandleAddFamily(ctx); }
+    void Handle(Op<OpCode::Sub>, OpContext& ctx) { HandleAddFamily(ctx); }
+    void Handle(Op<OpCode::And>, OpContext& ctx) { HandleAddFamily(ctx); }
+    void Handle(Op<OpCode::Or>, OpContext& ctx) { HandleAddFamily(ctx); }
+    void Handle(Op<OpCode::Xor>, OpContext& ctx) { HandleAddFamily(ctx); }
+    void Handle(Op<OpCode::AndNot>, OpContext& ctx) { HandleAddFamily(ctx); }
+    void Handle(Op<OpCode::Neg>, OpContext& ctx) { HandleNegFamily(ctx); }
+    void Handle(Op<OpCode::Adc>, OpContext& ctx) { HandleAdcFamily(ctx); }
+    void Handle(Op<OpCode::Sbb>, OpContext& ctx) { HandleAdcFamily(ctx); }
+    void Handle(Op<OpCode::GetUniformAddress>, OpContext& ctx) { HandleGetUniformAddressFamily(ctx); }
+    void Handle(Op<OpCode::X87Op>, OpContext& ctx) { HandleX87OpFamily(ctx); }
+    void Handle(Op<OpCode::Div128>, OpContext& ctx) { HandleDiv128Family(ctx); }
+    void Handle(Op<OpCode::Div128Remainder>, OpContext& ctx) { HandleDiv128RemainderFamily(ctx); }
+    void Handle(Op<OpCode::Cpuid>, OpContext& ctx) { HandleCpuidFamily(ctx); }
+    void Handle(Op<OpCode::CpuidUpper>, OpContext& ctx) { HandleCpuidUpperFamily(ctx); }
+    void Handle(Op<OpCode::Mul>, OpContext& ctx) { HandleMulFamily(ctx); }
+    void Handle(Op<OpCode::MulHigh>, OpContext& ctx) { HandleMulHighFamily(ctx); }
+    void Handle(Op<OpCode::BitExtract>, OpContext& ctx) { HandleBitExtractFamily(ctx); }
+    void Handle(Op<OpCode::BitClear>, OpContext& ctx) { HandleBitExtractFamily(ctx); }
+    void Handle(Op<OpCode::BitInsert>, OpContext& ctx) { HandleBitInsertFamily(ctx); }
+    void Handle(Op<OpCode::Crc32c>, OpContext& ctx) { HandleCrc32cFamily(ctx); }
+    void Handle(Op<OpCode::ByteSwap>, OpContext& ctx) { HandleByteSwapFamily(ctx); }
+    void Handle(Op<OpCode::PopCount>, OpContext& ctx) { HandlePopCountFamily(ctx); }
+    void Handle(Op<OpCode::CountLeadingZeros32>, OpContext& ctx) { HandleCountLeadingZeros32Family(ctx); }
+    void Handle(Op<OpCode::CountLeadingZeros64>, OpContext& ctx) { HandleCountLeadingZeros32Family(ctx); }
+    void Handle(Op<OpCode::CountTrailingZeros32>, OpContext& ctx) { HandleCountLeadingZeros32Family(ctx); }
+    void Handle(Op<OpCode::CountTrailingZeros64>, OpContext& ctx) { HandleCountLeadingZeros32Family(ctx); }
+    void Handle(Op<OpCode::CondSet>, OpContext& ctx) { HandleCondSetFamily(ctx); }
+    void Handle(Op<OpCode::LocalCondSet>, OpContext& ctx) { HandleCondSetFamily(ctx); }
+    void Handle(Op<OpCode::CondSelect>, OpContext& ctx) { HandleCondSelectFamily(ctx); }
+    void Handle(Op<OpCode::Goto>, OpContext& ctx) { HandleGotoFamily(ctx); }
+    void Handle(Op<OpCode::NotGoto>, OpContext& ctx) { HandleGotoFamily(ctx); }
+    void Handle(Op<OpCode::BindLabel>, OpContext& ctx) { HandleBindLabelFamily(ctx); }
+    void Handle(Op<OpCode::Select>, OpContext& ctx) { HandleSelectFamily(ctx); }
+    void Handle(Op<OpCode::Not>, OpContext& ctx) { HandleNotFamily(ctx); }
+    void Handle(Op<OpCode::TestZero>, OpContext& ctx) { HandleTestZeroFamily(ctx); }
+    void Handle(Op<OpCode::TestNotZero>, OpContext& ctx) { HandleTestZeroFamily(ctx); }
+    void Handle(Op<OpCode::TestBit>, OpContext& ctx) { HandleTestBitFamily(ctx); }
+    void Handle(Op<OpCode::LslImm>, OpContext& ctx) { HandleLslImmFamily(ctx); }
+    void Handle(Op<OpCode::LslValue>, OpContext& ctx) { HandleLslImmFamily(ctx); }
+    void Handle(Op<OpCode::LsrImm>, OpContext& ctx) { HandleLslImmFamily(ctx); }
+    void Handle(Op<OpCode::LsrValue>, OpContext& ctx) { HandleLslImmFamily(ctx); }
+    void Handle(Op<OpCode::AsrImm>, OpContext& ctx) { HandleLslImmFamily(ctx); }
+    void Handle(Op<OpCode::AsrValue>, OpContext& ctx) { HandleLslImmFamily(ctx); }
+    void Handle(Op<OpCode::RorImm>, OpContext& ctx) { HandleLslImmFamily(ctx); }
+    void Handle(Op<OpCode::RorValue>, OpContext& ctx) { HandleLslImmFamily(ctx); }
+    void Handle(Op<OpCode::LoadUniform>, OpContext& ctx) { HandleLoadUniformFamily(ctx); }
+    void Handle(Op<OpCode::StoreUniform>, OpContext& ctx) { HandleStoreUniformFamily(ctx); }
+    void Handle(Op<OpCode::StoreUniformSelectImm>, OpContext& ctx) { HandleStoreUniformSelectImmFamily(ctx); }
+    void Handle(Op<OpCode::GetFlags>, OpContext& ctx) { HandleGetFlagsFamily(ctx); }
+    void Handle(Op<OpCode::RestoreFlags>, OpContext& ctx) { HandleRestoreFlagsFamily(ctx); }
+    void Handle(Op<OpCode::SaveFlags>, OpContext& ctx) { HandleSaveFlagsFamily(ctx); }
+    void Handle(Op<OpCode::ClearFlags>, OpContext& ctx) { HandleClearFlagsFamily(ctx); }
+    void Handle(Op<OpCode::PublishFCmpFlags>, OpContext& ctx) { HandlePublishFCmpFlagsFamily(ctx); }
+    void Handle(Op<OpCode::TestFlags>, OpContext& ctx) { HandleTestFlagsFamily(ctx); }
+    void Handle(Op<OpCode::TestNotFlags>, OpContext& ctx) { HandleTestFlagsFamily(ctx); }
+    void Handle(Op<OpCode::SetCarry>, OpContext& ctx) { HandleSetCarryFamily(ctx); }
+    void Handle(Op<OpCode::SetOverflow>, OpContext& ctx) { HandleSetCarryFamily(ctx); }
+    void Handle(Op<OpCode::InvertCarry>, OpContext& ctx) { HandleInvertCarryFamily(ctx); }
+    void Handle(Op<OpCode::LocalParitySet>, OpContext& ctx) { HandleLocalParitySetFamily(ctx); }
+    void Handle(Op<OpCode::VecSharedZero>, OpContext& ctx) { HandleVecSharedZeroFamily(ctx); }
+    void Handle(Op<OpCode::VecLoadConst>, OpContext& ctx) { HandleVecLoadConstFamily(ctx); }
+    void Handle(Op<OpCode::VecDup64>, OpContext& ctx) { HandleVecDup64Family(ctx); }
+    void Handle(Op<OpCode::VecFCvtIntToFloat>, OpContext& ctx) { HandleVecFCvtIntToFloatFamily(ctx); }
+    void Handle(Op<OpCode::VecFCvtFloatToInt>, OpContext& ctx) { HandleVecFCvtFloatToIntFamily(ctx); }
+    void Handle(Op<OpCode::VecFAdd>, OpContext& ctx) { HandleVecFAddFamily(ctx); }
+    void Handle(Op<OpCode::VecFSub>, OpContext& ctx) { HandleVecFAddFamily(ctx); }
+    void Handle(Op<OpCode::VecFMul>, OpContext& ctx) { HandleVecFAddFamily(ctx); }
+    void Handle(Op<OpCode::VecFDiv>, OpContext& ctx) { HandleVecFAddFamily(ctx); }
+    void Handle(Op<OpCode::VecFAddScalar64>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
+    void Handle(Op<OpCode::VecFSubScalar64>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
+    void Handle(Op<OpCode::VecFMulScalar64>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
+    void Handle(Op<OpCode::VecFDivScalar64>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
+    void Handle(Op<OpCode::VecFCmp>, OpContext& ctx) { HandleVecFCmpFamily(ctx); }
+    void Handle(Op<OpCode::VecFCvtPacked>, OpContext& ctx) { HandleVecFCvtPackedFamily(ctx); }
+    void Handle(Op<OpCode::VecFCmpMask>, OpContext& ctx) { HandleVecFCmpMaskFamily(ctx); }
+    void Handle(Op<OpCode::VecMin>, OpContext& ctx) { HandleVecMinFamily(ctx); }
+    void Handle(Op<OpCode::VecPack>, OpContext& ctx) { HandleVecPackFamily(ctx); }
+    void Handle(Op<OpCode::VecExtract64>, OpContext& ctx) { HandleVecExtract64Family(ctx); }
+    void Handle(Op<OpCode::VecExtract16>, OpContext& ctx) { HandleVecExtract64Family(ctx); }
+    void Handle(Op<OpCode::VecMovMask>, OpContext& ctx) { HandleVecMovMaskFamily(ctx); }
+    void Handle(Op<OpCode::VecExtend>, OpContext& ctx) { HandleVecExtendFamily(ctx); }
+    void Handle(Op<OpCode::VecXor>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecAnd>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecOr>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecAndNot>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecAdd>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecSub>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecMul>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecCmpEq>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecCmpGt>, OpContext& ctx) { HandleVecXorFamily(ctx); }
+    void Handle(Op<OpCode::VecZip>, OpContext& ctx) { HandleVecZipFamily(ctx); }
+    void Handle(Op<OpCode::VecUnzip>, OpContext& ctx) { HandleVecZipFamily(ctx); }
+    void Handle(Op<OpCode::VecSignedMulWidenLow>, OpContext& ctx) { HandleVecSignedMulWidenLowFamily(ctx); }
+    void Handle(Op<OpCode::VecMulWiden>, OpContext& ctx) { HandleVecMulWidenFamily(ctx); }
+    void Handle(Op<OpCode::VecMadd16>, OpContext& ctx) { HandleVecMadd16Family(ctx); }
+    void Handle(Op<OpCode::VecShuffle32TwoSrc>, OpContext& ctx) { HandleVecShuffle32TwoSrcFamily(ctx); }
+    void Handle(Op<OpCode::VecShuffle32>, OpContext& ctx) { HandleVecShuffle32Family(ctx); }
+    void Handle(Op<OpCode::VecShuffle16>, OpContext& ctx) { HandleVecShuffle32Family(ctx); }
+    void Handle(Op<OpCode::VecShiftLeftImm>, OpContext& ctx) { HandleVecShiftLeftImmFamily(ctx); }
+    void Handle(Op<OpCode::VecShiftRightImm>, OpContext& ctx) { HandleVecShiftLeftImmFamily(ctx); }
+    void Handle(Op<OpCode::VecShiftRightArithmeticImm>, OpContext& ctx) { HandleVecShiftLeftImmFamily(ctx); }
+    void Handle(Op<OpCode::VecByteShift>, OpContext& ctx) { HandleVecByteShiftFamily(ctx); }
+    void Handle(Op<OpCode::VecExtractBytes>, OpContext& ctx) { HandleVecByteShiftFamily(ctx); }
+    void HandleVecAvgFamily(OpContext&);
+    void Handle(Op<OpCode::VecAvg>, OpContext& ctx) { HandleVecAvgFamily(ctx); }
+
+    void HandleVecMaxFamily(OpContext&);
+    void Handle(Op<OpCode::VecMax>, OpContext& ctx) { HandleVecMaxFamily(ctx); }
+
+    void HandleVecSatAddFamily(OpContext&);
+    void Handle(Op<OpCode::VecSatAdd>, OpContext& ctx) { HandleVecSatAddFamily(ctx); }
+    void Handle(Op<OpCode::VecSatSub>, OpContext& ctx) { HandleVecSatAddFamily(ctx); }
+
+    void HandleVecMulHigh16Family(OpContext&);
+    void Handle(Op<OpCode::VecMulHigh16>, OpContext& ctx) { HandleVecMulHigh16Family(ctx); }
+
+    void HandleVecAbsDiffSum8Family(OpContext&);
+    void Handle(Op<OpCode::VecAbsDiffSum8>, OpContext& ctx) { HandleVecAbsDiffSum8Family(ctx); }
+
+    void HandleVecShiftLeftFamily(OpContext&);
+    void Handle(Op<OpCode::VecShiftLeft>, OpContext& ctx) { HandleVecShiftLeftFamily(ctx); }
+    void Handle(Op<OpCode::VecShiftRight>, OpContext& ctx) { HandleVecShiftLeftFamily(ctx); }
+    void Handle(Op<OpCode::VecShiftRightArithmetic>, OpContext& ctx) { HandleVecShiftLeftFamily(ctx); }
+
+    void HandleVecDupPairs32Family(OpContext&);
+    void Handle(Op<OpCode::VecDupPairs32>, OpContext& ctx) { HandleVecDupPairs32Family(ctx); }
+
+    void HandleVecInsert16Family(OpContext&);
+    void Handle(Op<OpCode::VecInsert16>, OpContext& ctx) { HandleVecInsert16Family(ctx); }
+
+    void HandleVecTableLookup8Family(OpContext&);
+    void Handle(Op<OpCode::VecTableLookup8>, OpContext& ctx) { HandleVecTableLookup8Family(ctx); }
+
+    void HandleVecFMinMaxFamily(OpContext&);
+    void Handle(Op<OpCode::VecFMinMax>, OpContext& ctx) { HandleVecFMinMaxFamily(ctx); }
+    void HandleVecFUnaryFamily(OpContext&);
+    void Handle(Op<OpCode::VecFUnary>, OpContext& ctx) { HandleVecFUnaryFamily(ctx); }
+    void HandleVecFCvtScalarFamily(OpContext&);
+    void Handle(Op<OpCode::VecFCvtScalar>, OpContext& ctx) { HandleVecFCvtScalarFamily(ctx); }
+    void HandleVecFRoundIntFamily(OpContext&);
+    void Handle(Op<OpCode::VecFRoundInt>, OpContext& ctx) { HandleVecFRoundIntFamily(ctx); }
+    void Handle(Op<OpCode::VecFAddScalar32>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
+    void Handle(Op<OpCode::VecFSubScalar32>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
+    void Handle(Op<OpCode::VecFMulScalar32>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
+    void Handle(Op<OpCode::VecFDivScalar32>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
+
     const Program& source;
     const Allocation& allocation;
     CompileResult& output;
     CompileOptions options;
     bool long_forward_branches{};
-    std::vector<u32> labels;
-    std::vector<Fixup> fixups;
-    std::vector<LocalFixup> local_fixups; // Only actual forward Goto/NotGoto edges, consumed by BindLabel.
+    Assembler masm;
+    using LocalFixup = Assembler::LocalFixup;
     NodeId node{};
     BlockId block{};
     NodeId pending_save{}; // At most the adjacent legacy publication, never a node table.
@@ -136,7 +405,7 @@ private:
     }
     void CompleteCarry() {
         if (direct_carry) {
-            Put(0xd500401fu); direct_carry = false; packed_current = false;
+            masm.exact.cfinv(); direct_carry = false; packed_current = false;
         }
     }
     void CompleteLocalFlags() { CompleteParity(); CompleteCarry(); }
@@ -154,10 +423,6 @@ private:
     void RequireFlags() const { if (!Enabled()) Reject(CompileError::UnsupportedFlags); }
 
     [[noreturn]] void Reject(CompileError error) const { throw Rejected{error, node, block}; }
-    void Put(u32 word) {
-        if (output.words.size() >= std::numeric_limits<u32>::max()) Reject(CompileError::CodeTooLarge);
-        output.words.push_back(word);
-    }
     static unsigned Bits(Type type) {
         return IntegerType(type) ? TypeBits(type) : 0;
     }
@@ -167,7 +432,7 @@ private:
         return bits;
     }
     void Move(unsigned to, unsigned from) {
-        if (to != from) Put(0xaa0003e0u | (from << 16) | to);
+        if (to != from) masm.exact.orr(X(to), v::xzr, Operand(X(from)));
     }
     void Immediate(unsigned reg, u64 bits) {
         const auto parts = bits <= UINT32_MAX ? 2u : 4u;
@@ -179,48 +444,48 @@ private:
         const bool invert = full > zero;
         const auto seed = invert ? ~bits : bits;
         const auto first = std::min(parts - 1, static_cast<unsigned>(std::countr_zero(seed)) / 16);
-        const auto wide = parts == 4 ? 1u << 31 : 0u;
-        Put((invert ? 0x12800000u : 0x52800000u) | wide | (first << 21) |
-                (static_cast<u32>(seed >> (first * 16)) & 0xffffu) << 5 | reg);
+        const auto target = R(reg, parts == 4 ? 64 : 32);
+        if (invert) masm.exact.movn(target, (seed >> (first * 16)) & 0xffffu, first * 16);
+        else masm.exact.movz(target, (seed >> (first * 16)) & 0xffffu, first * 16);
         for (unsigned part = 0; part < parts; ++part) {
             const auto word = static_cast<u32>((bits >> (part * 16)) & 0xffff);
             if (part != first && word != (invert ? 0xffffu : 0u))
-                Put(0x72800000u | wide | (part << 21) | (word << 5) | reg);
+                masm.exact.movk(target, word, part * 16);
         }
     }
     void Narrow(unsigned to, unsigned from, unsigned bits, bool sign = false) {
         if (bits == 64) { Move(to, from); return; }
-        if (bits == 32 && !sign) { Put(0x2a0003e0u | (from << 16) | to); return; }
-        Put((sign ? 0x93400000u : 0xd3400000u) | ((bits - 1) << 10) | (from << 5) | to);
+        if (bits == 32 && !sign) { masm.exact.orr(W(to), v::wzr, Operand(W(from))); return; }
+        if (sign) masm.exact.sbfx(X(to), X(from), 0, bits);
+        else masm.exact.ubfx(X(to), X(from), 0, bits);
     }
     void Extract(unsigned to, unsigned from, unsigned first, unsigned count) {
-        Put(0xd3400000u | (first << 16) | ((first + count - 1) << 10) | (from << 5) | to);
+        masm.exact.ubfx(X(to), X(from), first, count);
     }
     void Insert(unsigned to, unsigned from, unsigned first, unsigned count, unsigned native_width = 64) {
-        Put((native_width == 32 ? 0x33000000u : 0xb3400000u) |
-                (((native_width - first) & (native_width - 1)) << 16) |
-                ((count - 1) << 10) | (from << 5) | to);
+        masm.exact.bfi(R(to, native_width), R(from, native_width), first, count);
     }
     void ShiftLeft(unsigned to, unsigned from, unsigned amount) {
         if (!amount) { Move(to, from); return; }
-        Put(0xd3400000u | ((64 - amount) << 16) | ((63 - amount) << 10) | (from << 5) | to);
+        masm.exact.lsl(X(to), X(from), amount);
     }
     void StackAdjust(bool subtract);
     void Memory(bool load, unsigned bits, unsigned value, unsigned address, u32 scaled = 0) {
-        const auto opcode = bits == 64 ? (load ? 0xf9400000u : 0xf9000000u)
-                : bits == 32 ? (load ? 0xb9400000u : 0xb9000000u)
-                : bits == 16 ? (load ? 0x79400000u : 0x79000000u)
-                : bits == 8 ? (load ? 0x39400000u : 0x39000000u) : 0;
-        if (!opcode || scaled > 4095) Reject(CompileError::UnsupportedType);
-        Put(opcode | (scaled << 10) | (address << 5) | value);
+        if (scaled > 4095) Reject(CompileError::UnsupportedOperand);
+        const MemOperand memory{Base(address), static_cast<std::int64_t>(scaled) * (bits / 8)};
+        if (bits == 8) { if (load) masm.exact.ldrb(W(value), memory); else masm.exact.strb(W(value), memory); }
+        else if (bits == 16) { if (load) masm.exact.ldrh(W(value), memory); else masm.exact.strh(W(value), memory); }
+        else if (bits == 32 || bits == 64) { if (load) masm.exact.ldr(R(value, bits), memory); else masm.exact.str(R(value, bits), memory); }
+        else Reject(CompileError::UnsupportedType);
     }
     void PCMemory(bool load);
     void VectorMemory(bool load, unsigned value, unsigned address, u32 scaled = 0) {
-        Put((load ? 0x3dc00000u : 0x3d800000u) | (scaled << 10) | (address << 5) | value);
+        if (load) masm.exact.ldr(Q(value), MemOperand(Base(address), scaled * 16));
+        else masm.exact.str(Q(value), MemOperand(Base(address), scaled * 16));
     }
     void OrderedMemory(bool load, unsigned bits, unsigned value, unsigned address, std::int32_t offset = 0);
     void VectorMove(unsigned to, unsigned from) {
-        if (to != from) Put(0x4ea01c00u | (from << 16) | (from << 5) | to);
+        if (to != from) masm.exact.orr(Lanes(to, 8), Lanes(from, 8), Lanes(from, 8));
     }
     void LoadMxcsrFlushControl();
     void FlushScalarDenormal(unsigned value, unsigned control_bit, unsigned lane = 0,
@@ -339,22 +604,24 @@ private:
     void RestoreNZCV();
     void RestoreHelperNZCV();
     void SnapshotCompareNZCV() {
-        if (RawAF()) Put(0xd53b421eu); // MRS x30,NZCV before reading scratch operands.
+        if (RawAF()) masm.exact.mrs(v::x30, v::NZCV); // MRS x30,NZCV before reading scratch operands.
         else PackNZCV();
     }
     void RestoreCompareNZCV() {
-        if (RawAF()) { Put(0xd51b421eu); packed_current = false; }
+        if (RawAF()) { masm.exact.msr(v::NZCV, v::x30); packed_current = false; }
         else RestoreNZCV();
     }
     void Rmif(unsigned value, unsigned rotation, u32 mask) {
-        Put(0xba000400u | (rotation << 15) | (value << 5) | mask);
+        // The local mask is the instruction's four-bit NZCV nibble; VIXL's
+        // StatusFlags instead names the architectural PSTATE bit positions.
+        masm.exact.rmif(X(value), rotation, static_cast<v::StatusFlags>(mask << v::Flags_offset));
     }
     void PrepareNZCV(u64 mask) {
         const auto clobber = RawAF() ? allocation.homes[node.value].nzcv_clobber : 0u;
         const auto preserved = nzcv_flags & ~mask & ~clobber;
         if (NativeNZCV() && (mask & nzcv_flags) && preserved) {
             if (preserved & carry) CompleteCarry();
-            Put(0xd53b421eu); // MRS x30,NZCV: preserve the unwritten fields.
+            masm.exact.mrs(v::x30, v::NZCV); // MRS x30,NZCV: preserve the unwritten fields.
         }
     }
     void FinishNZCV(u64 mask, bool invert_carry) {
@@ -362,7 +629,7 @@ private:
         const auto clobber = RawAF() ? allocation.homes[node.value].nzcv_clobber : 0u;
         if (mask & carry) {
             direct_carry = invert_carry && CanDeferFlags();
-            if (invert_carry && !direct_carry) Put(0xd500401fu); // CFINV.
+            if (invert_carry && !direct_carry) masm.exact.cfinv(); // CFINV.
         } else if (clobber & carry) direct_carry = false;
         if (const auto preserved = HostMask(nzcv_flags & ~mask & ~clobber) >> 28) Rmif(30, 28, preserved);
         packed_current = false;
@@ -374,14 +641,14 @@ private:
     void Test(u64 mask, unsigned destination, bool inverse);
     void Predicate(unsigned destination, unsigned value, bool zero) {
         if (NativeNZCV()) {
-            Put(0xdac01000u | (value << 5) | destination); // CLZ Xd,Xn, including 64 for zero.
+            masm.exact.clz(X(destination), X(value)); // CLZ Xd,Xn, including 64 for zero.
             Extract(destination, destination, 6, 1);
-            if (!zero) Put(0xd2400000u | (destination << 5) | destination); // EOR Xd,Xd,#1.
+            if (!zero) masm.exact.eor(X(destination), X(destination), Operand(1)); // EOR Xd,Xd,#1.
             return;
         }
         nzcv_matches = 0;
-        Put(0xf100001fu | (value << 5)); // CMP Xn,#0
-        Put((zero ? 0x9a9f17e0u : 0x9a9f07e0u) | destination); // CSET EQ/NE
+        masm.exact.cmp(X(value), Operand(0)); // CMP Xn,#0
+        masm.exact.cset(X(destination), zero ? v::eq : v::ne); // CSET EQ/NE
         RestoreNZCV();
     }
     static bool Logical(OpCode op) {
@@ -406,10 +673,9 @@ private:
         if (bits == 64 && allow64) return 3;
         Reject(CompileError::UnsupportedOperand);
     }
-    bool EmitVector(const Operation& operation, Cursor& cursor, unsigned destination);
     void Emit(const Operation& operation, Effect effects);
     void Branch(BlockId target);
-    bool ShortBranch(u32 opcode, BlockId target);
+    bool ShortBranch(Branch19 instruction, BlockId target);
     void TailJump(std::uintptr_t destination, bool link = false, u64 target_pc = 0, u32 conditional_head = UINT32_MAX);
     void DynamicDispatch();
     void PublishPCAndJump(u64 target_pc);
@@ -419,7 +685,11 @@ private:
     void ConditionPC(unsigned condition, u64 taken, u64 fallthrough);
     void ConditionEdges(unsigned condition, const StoredTerminal& terminal, BlockId next);
     void Terminal(const StoredTerminal& terminal, BlockId next);
-    void EmitState(const Operation&, Cursor&, unsigned destination, const Home&, bool test_prefix);
+    void HandleReturn(const StoredTerminal& terminal);
+    void HandleDispatch();
+    void HandleJump(const StoredTerminal& terminal, BlockId next);
+    void HandleBranch(const StoredTerminal& terminal, BlockId next);
+    void HandleUnreachable();
 };
 
 } // namespace swift::runtime::backend::arm64::detail

@@ -1,0 +1,12 @@
+{
+  "smc-file-alias": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-direct-emit-20261103/device-append-alias/smc-file-alias",
+    "bytes": 2824,
+    "sha256": "4d11ce342708b1ed9d947f9deff96a0510437f6e5d40a17a45ea89e53398b0e2"
+  },
+  "smc-file-alias-eof": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-direct-emit-20261103/device-append-alias/smc-file-alias-eof",
+    "bytes": 2864,
+    "sha256": "9a5bcd592ab873dd63a4f4ba44da3a28e384cd3fa6232a23be32414cd95cfd93"
+  }
+}

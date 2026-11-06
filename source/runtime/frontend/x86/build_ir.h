@@ -5,7 +5,7 @@
 #include <span>
 
 #include "runtime/ir/builder.h"
-#include "decode.h"
+#include "region.h"
 
 namespace swift::x86 {
 
@@ -19,17 +19,21 @@ struct StateLayout {
     // Pure guest CPU query: {u64 lower,upper}(u64 leaf,u64 subleaf) noexcept.
     // Zero rejects actual CPUID; no host-CPU feature fallback is implied.
     std::uintptr_t cpu_query{};
+    std::uintptr_t system_query{};
+    bool runtime_state_services{};
     // Optional raw MXCSR word. Only actual LDMXCSR/STMXCSR require it.
     std::uint32_t mxcsr_offset{UINT32_MAX};
-    // Optional architectural extended-precision state, described by ir/x87.h.
+    // Optional architectural extended-precision state, described by arch/x86/x87.h.
     std::uint32_t x87_offset{UINT32_MAX};
+    std::uint32_t x87_ip_offset{UINT32_MAX}, x87_dp_offset{UINT32_MAX}, x87_opcode_offset{UINT32_MAX};
+    std::uint32_t ymm_high_offset{UINT32_MAX};
 };
 // Native units return zero for ordinary dispatch, one for SYSCALL and three
 // after LDMXCSR for the runtime to reload the guest FP environment. The runtime
 // owns syscall execution and architectural RCX/R11 updates; no extra guest-state
 // reason slot or per-dispatch state reset is needed.
 enum class BuildError : std::uint8_t {
-    None, InvalidInput, InvalidEncoding, Truncated, Unsupported, IRRejected,
+    None, InvalidInput, InvalidEncoding, Truncated, Unsupported, IRRejected, FormationRejected,
 };
 struct BuildResult {
     BuildError error{BuildError::None};
@@ -67,7 +71,8 @@ struct BuildResult {
                                   runtime::ir::WorkCounts* collected = nullptr,
                                   DecodeTiming* timing = nullptr,
                                   bool external_edges = false,
-                                  runtime::ir::Program* reusable = nullptr);
+                                  runtime::ir::Program* reusable = nullptr,
+                                  runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
 
 // The actual trusted-decoder records, with no second operand representation or
 // re-decoding. Blocks select independently bounded slices in any physical
@@ -83,7 +88,7 @@ struct BuildResult {
 // already have born a prefix; collected reports that actual abandoned work.
 // Exact contiguous x87 register windows may share one semantic helper at their
 // first PC; all original records retain validation and instruction/byte counts.
-[[nodiscard]] BuildResult BuildDecodedIR(std::span<const _DInst> instructions,
+[[nodiscard]] BuildResult BuildDecodedIR(InstructionRange instructions,
                                          std::span<const DecodedBlock> blocks,
                                          std::span<const BlockWindow> source_bytes,
                                          runtime::ir::Scope scope,
@@ -103,6 +108,7 @@ struct BuildResult {
                                           runtime::ir::WorkCounts* collected = nullptr,
                                           DecodeTiming* timing = nullptr,
                                           runtime::ir::Program* reusable = nullptr,
-                                          ReadyEntryLookup ready = {});
+                                          ReadyEntryLookup ready = {},
+                                          runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
 
 }  // namespace swift::x86

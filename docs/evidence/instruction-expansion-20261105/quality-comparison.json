@@ -1,0 +1,2700 @@
+[
+  {
+    "case": "coremark",
+    "scope": "block",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          2043
+        ],
+        "candidate": [
+          2043
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          2043
+        ],
+        "candidate": [
+          2043
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          12407
+        ],
+        "candidate": [
+          12407
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          46689
+        ],
+        "candidate": [
+          46689
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          36651
+        ],
+        "candidate": [
+          36659
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          65841
+        ],
+        "candidate": [
+          65860
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          725
+        ],
+        "candidate": [
+          730
+        ],
+        "equal": false
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          113
+        ],
+        "candidate": [
+          113
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          142
+        ],
+        "candidate": [
+          143
+        ],
+        "equal": false
+      },
+      "spill_slots": {
+        "baseline": [
+          25
+        ],
+        "candidate": [
+          25
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          48
+        ],
+        "candidate": [
+          48
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          389876
+        ],
+        "candidate": [
+          389900
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          2043
+        ],
+        "candidate": [
+          2043
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          2043
+        ],
+        "candidate": [
+          2043
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          2882
+        ],
+        "candidate": [
+          2882
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          5075
+        ],
+        "candidate": [
+          5075
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "coremark",
+    "scope": "function",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          686
+        ],
+        "candidate": [
+          676
+        ],
+        "equal": false
+      },
+      "function_attempts": {
+        "baseline": [
+          681
+        ],
+        "candidate": [
+          676
+        ],
+        "equal": false
+      },
+      "block_attempts": {
+        "baseline": [
+          5
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": false
+      },
+      "fallbacks": {
+        "baseline": [
+          5
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": false
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          16584
+        ],
+        "candidate": [
+          16449
+        ],
+        "equal": false
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          63906
+        ],
+        "candidate": [
+          63409
+        ],
+        "equal": false
+      },
+      "ir_nodes": {
+        "baseline": [
+          50591
+        ],
+        "candidate": [
+          50739
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          84624
+        ],
+        "candidate": [
+          84868
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          894
+        ],
+        "candidate": [
+          903
+        ],
+        "equal": false
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          122
+        ],
+        "candidate": [
+          123
+        ],
+        "equal": false
+      },
+      "optimized_folded": {
+        "baseline": [
+          184
+        ],
+        "candidate": [
+          185
+        ],
+        "equal": false
+      },
+      "spill_slots": {
+        "baseline": [
+          31
+        ],
+        "candidate": [
+          33
+        ],
+        "equal": false
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          64
+        ],
+        "candidate": [
+          64
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          393248
+        ],
+        "candidate": [
+          394016
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          681
+        ],
+        "candidate": [
+          676
+        ],
+        "equal": false
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          3438
+        ],
+        "candidate": [
+          3447
+        ],
+        "equal": false
+      },
+      "static_links": {
+        "baseline": [
+          953
+        ],
+        "candidate": [
+          944
+        ],
+        "equal": false
+      },
+      "fault_sites": {
+        "baseline": [
+          6762
+        ],
+        "candidate": [
+          6768
+        ],
+        "equal": false
+      }
+    }
+  },
+  {
+    "case": "int",
+    "scope": "block",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          295
+        ],
+        "candidate": [
+          295
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          1148
+        ],
+        "candidate": [
+          1148
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          601
+        ],
+        "candidate": [
+          615
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          1099
+        ],
+        "candidate": [
+          1127
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          29
+        ],
+        "candidate": [
+          29
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          26
+        ],
+        "candidate": [
+          26
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          5632
+        ],
+        "candidate": [
+          5600
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          64
+        ],
+        "candidate": [
+          64
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          33
+        ],
+        "candidate": [
+          33
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "int",
+    "scope": "function",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          295
+        ],
+        "candidate": [
+          295
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          1148
+        ],
+        "candidate": [
+          1148
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          601
+        ],
+        "candidate": [
+          615
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          1099
+        ],
+        "candidate": [
+          1127
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          29
+        ],
+        "candidate": [
+          29
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          26
+        ],
+        "candidate": [
+          26
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          5632
+        ],
+        "candidate": [
+          5600
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          64
+        ],
+        "candidate": [
+          64
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          33
+        ],
+        "candidate": [
+          33
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "fp",
+    "scope": "block",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          42
+        ],
+        "candidate": [
+          42
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          42
+        ],
+        "candidate": [
+          42
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          591
+        ],
+        "candidate": [
+          591
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          2531
+        ],
+        "candidate": [
+          2531
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          1419
+        ],
+        "candidate": [
+          1433
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          2705
+        ],
+        "candidate": [
+          2733
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          90
+        ],
+        "candidate": [
+          90
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          43
+        ],
+        "candidate": [
+          43
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          13
+        ],
+        "candidate": [
+          13
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          8240
+        ],
+        "candidate": [
+          8208
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          42
+        ],
+        "candidate": [
+          42
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          42
+        ],
+        "candidate": [
+          42
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          72
+        ],
+        "candidate": [
+          72
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          188
+        ],
+        "candidate": [
+          188
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          42
+        ],
+        "candidate": [
+          42
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          42
+        ],
+        "candidate": [
+          42
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          591
+        ],
+        "candidate": [
+          591
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          2531
+        ],
+        "candidate": [
+          2531
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          1419
+        ],
+        "candidate": [
+          1433
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          2705
+        ],
+        "candidate": [
+          2733
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          90
+        ],
+        "candidate": [
+          90
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          43
+        ],
+        "candidate": [
+          43
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          13
+        ],
+        "candidate": [
+          13
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          8240
+        ],
+        "candidate": [
+          8208
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          42
+        ],
+        "candidate": [
+          42
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          42
+        ],
+        "candidate": [
+          42
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          72
+        ],
+        "candidate": [
+          72
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          188
+        ],
+        "candidate": [
+          188
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "mem",
+    "scope": "block",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          376
+        ],
+        "candidate": [
+          376
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          1609
+        ],
+        "candidate": [
+          1609
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          804
+        ],
+        "candidate": [
+          818
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          1493
+        ],
+        "candidate": [
+          1521
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          24
+        ],
+        "candidate": [
+          24
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          15
+        ],
+        "candidate": [
+          15
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          7260
+        ],
+        "candidate": [
+          7228
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          77
+        ],
+        "candidate": [
+          77
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          63
+        ],
+        "candidate": [
+          63
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "mem",
+    "scope": "function",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          376
+        ],
+        "candidate": [
+          376
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          1609
+        ],
+        "candidate": [
+          1609
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          804
+        ],
+        "candidate": [
+          818
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          1493
+        ],
+        "candidate": [
+          1521
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          24
+        ],
+        "candidate": [
+          24
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          15
+        ],
+        "candidate": [
+          15
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          7260
+        ],
+        "candidate": [
+          7228
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          77
+        ],
+        "candidate": [
+          77
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          63
+        ],
+        "candidate": [
+          63
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "branch",
+    "scope": "block",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          314
+        ],
+        "candidate": [
+          314
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          1203
+        ],
+        "candidate": [
+          1203
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          601
+        ],
+        "candidate": [
+          615
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          1124
+        ],
+        "candidate": [
+          1152
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          16
+        ],
+        "candidate": [
+          16
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          5
+        ],
+        "candidate": [
+          5
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          9
+        ],
+        "candidate": [
+          9
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          5688
+        ],
+        "candidate": [
+          5656
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          64
+        ],
+        "candidate": [
+          64
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          29
+        ],
+        "candidate": [
+          29
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "branch",
+    "scope": "function",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          314
+        ],
+        "candidate": [
+          314
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          1203
+        ],
+        "candidate": [
+          1203
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          601
+        ],
+        "candidate": [
+          615
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          1124
+        ],
+        "candidate": [
+          1152
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          16
+        ],
+        "candidate": [
+          16
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          5
+        ],
+        "candidate": [
+          5
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          9
+        ],
+        "candidate": [
+          9
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          5688
+        ],
+        "candidate": [
+          5656
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          38
+        ],
+        "candidate": [
+          38
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          64
+        ],
+        "candidate": [
+          64
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          29
+        ],
+        "candidate": [
+          29
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "call",
+    "scope": "block",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          268
+        ],
+        "candidate": [
+          268
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          1011
+        ],
+        "candidate": [
+          1011
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          659
+        ],
+        "candidate": [
+          673
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          1173
+        ],
+        "candidate": [
+          1201
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          12
+        ],
+        "candidate": [
+          12
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          9
+        ],
+        "candidate": [
+          9
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          7856
+        ],
+        "candidate": [
+          7824
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          65
+        ],
+        "candidate": [
+          65
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          48
+        ],
+        "candidate": [
+          48
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "call",
+    "scope": "function",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          268
+        ],
+        "candidate": [
+          268
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          1011
+        ],
+        "candidate": [
+          1011
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          659
+        ],
+        "candidate": [
+          673
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          1173
+        ],
+        "candidate": [
+          1201
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          12
+        ],
+        "candidate": [
+          12
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          9
+        ],
+        "candidate": [
+          9
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          7856
+        ],
+        "candidate": [
+          7824
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          45
+        ],
+        "candidate": [
+          45
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          65
+        ],
+        "candidate": [
+          65
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          48
+        ],
+        "candidate": [
+          48
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "func_tests",
+    "scope": "block",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          1126
+        ],
+        "candidate": [
+          1126,
+          1127
+        ],
+        "equal": false
+      },
+      "function_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          1126
+        ],
+        "candidate": [
+          1126,
+          1127
+        ],
+        "equal": false
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          5723
+        ],
+        "candidate": [
+          5723,
+          5736
+        ],
+        "equal": false
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          22820
+        ],
+        "candidate": [
+          22820,
+          22861
+        ],
+        "equal": false
+      },
+      "ir_nodes": {
+        "baseline": [
+          16902
+        ],
+        "candidate": [
+          16906,
+          16929
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          28902
+        ],
+        "candidate": [
+          28906,
+          28949
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          341
+        ],
+        "candidate": [
+          341
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          44
+        ],
+        "candidate": [
+          44
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          79
+        ],
+        "candidate": [
+          81
+        ],
+        "equal": false
+      },
+      "spill_slots": {
+        "baseline": [
+          14
+        ],
+        "candidate": [
+          14
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          16
+        ],
+        "candidate": [
+          16
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          220756
+        ],
+        "candidate": [
+          220764,
+          220984
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          1126
+        ],
+        "candidate": [
+          1126,
+          1127
+        ],
+        "equal": false
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          1126
+        ],
+        "candidate": [
+          1126,
+          1127
+        ],
+        "equal": false
+      },
+      "static_links": {
+        "baseline": [
+          1592
+        ],
+        "candidate": [
+          1592,
+          1594
+        ],
+        "equal": false
+      },
+      "fault_sites": {
+        "baseline": [
+          2144
+        ],
+        "candidate": [
+          2144
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "func_tests",
+    "scope": "function",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          399
+        ],
+        "candidate": [
+          397
+        ],
+        "equal": false
+      },
+      "function_attempts": {
+        "baseline": [
+          383
+        ],
+        "candidate": [
+          382
+        ],
+        "equal": false
+      },
+      "block_attempts": {
+        "baseline": [
+          16
+        ],
+        "candidate": [
+          15
+        ],
+        "equal": false
+      },
+      "fallbacks": {
+        "baseline": [
+          16
+        ],
+        "candidate": [
+          15
+        ],
+        "equal": false
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          10626
+        ],
+        "candidate": [
+          10636
+        ],
+        "equal": false
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          43409
+        ],
+        "candidate": [
+          43445
+        ],
+        "equal": false
+      },
+      "ir_nodes": {
+        "baseline": [
+          29176
+        ],
+        "candidate": [
+          29419
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          46216
+        ],
+        "candidate": [
+          46599
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          528
+        ],
+        "candidate": [
+          538
+        ],
+        "equal": false
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          64
+        ],
+        "candidate": [
+          64
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          119
+        ],
+        "candidate": [
+          121
+        ],
+        "equal": false
+      },
+      "spill_slots": {
+        "baseline": [
+          24
+        ],
+        "candidate": [
+          25
+        ],
+        "equal": false
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          32
+        ],
+        "candidate": [
+          32
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          287644
+        ],
+        "candidate": [
+          289940
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          383
+        ],
+        "candidate": [
+          382
+        ],
+        "equal": false
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          2343
+        ],
+        "candidate": [
+          2357
+        ],
+        "equal": false
+      },
+      "static_links": {
+        "baseline": [
+          533
+        ],
+        "candidate": [
+          532
+        ],
+        "equal": false
+      },
+      "fault_sites": {
+        "baseline": [
+          3540
+        ],
+        "candidate": [
+          3575
+        ],
+        "equal": false
+      }
+    }
+  },
+  {
+    "case": "x87_bench",
+    "scope": "block",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          30
+        ],
+        "candidate": [
+          30
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          70
+        ],
+        "candidate": [
+          70
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          59
+        ],
+        "candidate": [
+          65
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          106
+        ],
+        "candidate": [
+          182
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          2364
+        ],
+        "candidate": [
+          2532
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          4
+        ],
+        "candidate": [
+          4
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          17
+        ],
+        "candidate": [
+          1
+        ],
+        "equal": false
+      }
+    }
+  },
+  {
+    "case": "x87_bench",
+    "scope": "function",
+    "fields": {
+      "compile_attempts": {
+        "baseline": [
+          1
+        ],
+        "candidate": [
+          1
+        ],
+        "equal": true
+      },
+      "function_attempts": {
+        "baseline": [
+          1
+        ],
+        "candidate": [
+          1
+        ],
+        "equal": true
+      },
+      "block_attempts": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "fallbacks": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "emitted_guest_instructions": {
+        "baseline": [
+          20
+        ],
+        "candidate": [
+          20
+        ],
+        "equal": true
+      },
+      "emitted_guest_bytes": {
+        "baseline": [
+          50
+        ],
+        "candidate": [
+          50
+        ],
+        "equal": true
+      },
+      "ir_nodes": {
+        "baseline": [
+          46
+        ],
+        "candidate": [
+          50
+        ],
+        "equal": false
+      },
+      "operand_words": {
+        "baseline": [
+          75
+        ],
+        "candidate": [
+          126
+        ],
+        "equal": false
+      },
+      "optimized_erased": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "optimized_uniform_forwarded": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "optimized_folded": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "baseline": [
+          1532
+        ],
+        "candidate": [
+          1732
+        ],
+        "equal": false
+      },
+      "code_units_published": {
+        "baseline": [
+          1
+        ],
+        "candidate": [
+          1
+        ],
+        "equal": true
+      },
+      "peak_cache_entries": {
+        "baseline": [
+          3
+        ],
+        "candidate": [
+          3
+        ],
+        "equal": true
+      },
+      "static_links": {
+        "baseline": [
+          0
+        ],
+        "candidate": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "baseline": [
+          12
+        ],
+        "candidate": [
+          1
+        ],
+        "equal": false
+      }
+    }
+  }
+]

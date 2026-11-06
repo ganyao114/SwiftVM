@@ -1,0 +1,15 @@
+{
+  "builds": {
+    "host": "AppleClang Release; supported IPO enabled",
+    "android": "NDK29 arm64-v8a/android28 Release O3 NDEBUG ThinLTO, static libc++",
+    "sanitize": "Debug ASan+UBSan; IPO off"
+  },
+  "ipo_exclusions": [
+    "distorm byte parser",
+    "svm_x87",
+    "SoftFloat ext80 closure"
+  ],
+  "native_helper_retention": "SvmArm64WideDivide has used/noinline; symbol is actually referenced by native assembly stubs",
+  "candidate_sha256": "a3e43279d82022507a3fd54e0499158f50bfa96e287d039c6246cd2c29d37c38",
+  "candidate_bytes": 16627920
+}

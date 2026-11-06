@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
             const std::string_view option{argv[argument]};
             if (option == "--") { ++argument; break; }
             if (option == "--help") {
-                std::puts("svm_rebuild_linux [--scope block|function] [--no-opt] [--decode-timing] [--] guest [args...]\n"
+                std::puts("svm_rebuild_linux [--scope block|function] [--engine jit|interpreter|mixed] [--no-opt] [--decode-timing] [--] guest [args...]\n"
                           "Static x86-64 ELF, direct guest==host memory, one guest thread.\n"
                           "PT_INTERP and unknown instructions are rejected. Unimplemented syscalls return ENOSYS.\n"
                           "--decode-timing adds perturbed diagnostic clocks around the byte decoder only.");
@@ -30,6 +30,13 @@ int main(int argc, char** argv) {
                 const std::string_view scope{argv[argument]};
                 if (scope != "block" && scope != "function") throw std::runtime_error("invalid --scope");
                 options.scope = scope == "function" ? swift::runtime::ir::Scope::Function : swift::runtime::ir::Scope::Block;
+            } else if (option == "--engine") {
+                if (++argument >= argc) throw std::runtime_error("--engine requires jit, interpreter or mixed");
+                const std::string_view engine{argv[argument]};
+                if (engine == "jit") options.mode = ExecutionMode::JitOnly;
+                else if (engine == "interpreter") options.mode = ExecutionMode::InterpretOnly;
+                else if (engine == "mixed") options.mode = ExecutionMode::Mixed;
+                else throw std::runtime_error("invalid --engine");
             } else if (option == "--no-opt") options.optimize = false;
             else if (option == "--decode-timing") options.decode_timing = true;
             else if (option.starts_with('-')) throw std::runtime_error("unknown runner option");

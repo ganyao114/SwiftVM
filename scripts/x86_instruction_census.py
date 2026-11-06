@@ -1,17 +1,15 @@
 #!/usr/bin/env python3
-"""Audit distorm mnemonics against SwiftVM's x86 decoder.
+"""Inventory current owned x86 names, selected VEX encodings and semantic entries.
 
-The report is intentionally generated from the checked-out distorm enum and
-the decoder switch cases.  The classification sets below are policy: they say
-which currently-unhandled instructions belong to the advertised SSE2 baseline,
-which are ordinary user-mode instructions, and which are deliberately outside
-the current guest contract.
+This is a source inventory, not an ISA/form coverage test or a CPUID proof.
+The optional ELF census counts static disassembly, never executed instructions.
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import pathlib
 import re
 import shutil
@@ -20,392 +18,267 @@ import sys
 
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
-MNEMONICS = REPO / "source/runtime/externals/distorm/mnemonics.h"
 FRONTEND = REPO / "source/runtime/frontend/x86"
+BACKEND = REPO / "source/runtime/backend/arm64"
+MNEMONICS = REPO / "source/runtime/externals/distorm/mnemonics.h"
+VOCABULARY = FRONTEND / "opcodes.inc"
+VEX_TABLE = FRONTEND / "detail/vex_opcodes.inc"
+IR_SCHEMA = REPO / "source/runtime/ir/opcodes.inc"
+DEFAULT_FIXTURES = ("real_hello_x86_64", "real_hello_musl_x86_64", "real_busy_x86_64", "real_busy_musl_x86_64")
 
-DEFAULT_FIXTURES = (
-    "real_hello_x86_64",
-    "real_hello_musl_x86_64",
-    "real_busy_x86_64",
-    "real_busy_musl_x86_64",
-)
-
-# Legal user-mode instructions, but architecturally unavailable in 64-bit mode
-# (or useful only to the unsupported 32-bit compatibility frontend).
-LEGACY32 = {
-    "I_AAA", "I_AAD", "I_AAM", "I_AAS", "I_ARPL", "I_BOUND", "I_CALL_FAR",
-    "I_DAA", "I_DAS", "I_INTO", "I_JMP_FAR", "I_LDS", "I_LES", "I_SALC",
-    "I_SYSENTER", "I_SYSEXIT",
-}
-
-# Ordinary user-mode/base-ISA holes.  These are implementation candidates even
-# when a particular opcode is handled as a deliberate #UD.
-USERLAND_BASIC = {
-    "I_CLC", "I_CLD", "I_CMC", "I_INT", "I_INT1", "I_MOVBE", "I_POPF",
-    "I_PREFETCHW", "I_PUSHF", "I_RCL", "I_RCR", "I_RDRAND", "I_RDTSC",
-    "I_RDTSCP", "I_SHLD", "I_SHRD", "I_STC", "I_STD", "I_UD2", "I_XGETBV",
-    "I_XLAT",
-} | LEGACY32
-
-# Missing SSE/SSE2 instructions while CPUID advertises SSE+SSE2.
-# Predicate-specific CMP* names are real distorm opcodes, not presentation
-# aliases, so every one must reach the decoder.
-SSE2_BASELINE = {
-    "I_ADDSD", "I_COMISD", "I_COMISS", "I_CVTDQ2PD", "I_CVTDQ2PS",
-    "I_CVTPD2DQ", "I_CVTPD2PS", "I_CVTPS2DQ", "I_CVTPS2PD",
-    "I_CVTSD2SI", "I_CVTSS2SI", "I_CVTTPD2DQ", "I_CVTTPS2DQ", "I_DIVSD",
-    "I_MASKMOVDQU", "I_MAXPD", "I_MAXPS", "I_MAXSD", "I_MAXSS", "I_MINPD",
-    "I_MINPS", "I_MINSD", "I_MINSS", "I_MOVAPD", "I_MOVNTI", "I_MOVNTPD",
-    "I_MOVUPD", "I_MULSD", "I_PACKSSDW", "I_PACKSSWB", "I_PACKUSWB",
-    "I_PADDSB", "I_PADDSW", "I_PADDUSB", "I_PADDUSW", "I_PMULHUW",
-    "I_PMULHW", "I_PSUBSB", "I_PSUBSW", "I_PSUBUSB", "I_PSUBUSW",
-    "I_RCPPS", "I_RCPSS", "I_RSQRTPS", "I_RSQRTSS", "I_SQRTPD",
-    "I_SQRTPS", "I_SQRTSD", "I_SQRTSS", "I_SUBSD", "I_UNPCKHPD",
-    "I_UNPCKHPS", "I_UNPCKLPD", "I_UNPCKLPS",
-}
-for kind in ("EQ", "LT", "LE", "UNORD", "NEQ", "NLT", "NLE", "ORD"):
-    for shape in ("PD", "PS", "SD", "SS"):
-        SSE2_BASELINE.add(f"I_CMP{kind}{shape}")
-
-# These forms specifically read/write MMX registers.  SwiftVM does not expose
-# CPUID MMX after this audit, so they are legal user-mode instructions but
-# outside the advertised guest contract.  Their XMM counterparts remain in
-# SSE2_BASELINE above.
-MMX_ONLY = {
-    "I_CVTPD2PI", "I_CVTPI2PD", "I_CVTPI2PS", "I_CVTPS2PI",
-    "I_CVTTPD2PI", "I_CVTTPS2PI", "I_MASKMOVQ", "I_MOVDQ2Q",
-    "I_MOVNTQ", "I_MOVQ2DQ", "I_PSHUFW",
-}
-
-# Instructions which require CPL0 (or a kernel-managed execution environment)
-# in the guest model.  SGDT/SIDT/SLDT/SMSW/STR are included here because UMIP
-# may make them privileged and SwiftVM exposes no descriptor-table model.
-PRIVILEGED = {
-    "I_CLGI", "I_CLI", "I_CLTS", "I_GETSEC", "I_IN", "I_INVD", "I_INVEPT",
-    "I_INVLPG", "I_INVLPGA", "I_INVPCID", "I_INVVPID", "I_IRET", "I_LGDT",
-    "I_LIDT", "I_LLDT", "I_LMSW", "I_LTR", "I_MONITOR", "I_MWAIT", "I_OUT",
-    "I_OUTS", "I_RDMSR", "I_RDPMC", "I_RSM", "I_SGDT", "I_SIDT", "I_SKINIT",
-    "I_SLDT", "I_SMSW", "I_STGI", "I_STI", "I_STR", "I_SWAPGS", "I_SYSRET",
-    "I_WBINVD", "I_WRMSR", "I_XSETBV",
-    "I_VMCALL", "I_VMCLEAR", "I_VMFUNC", "I_VMLAUNCH", "I_VMLOAD",
-    "I_VMMCALL", "I_VMPTRLD", "I_VMPTRST", "I_VMREAD", "I_VMRESUME",
-    "I_VMRUN", "I_VMSAVE", "I_VMWRITE", "I_VMXOFF", "I_VMXON",
-}
-
-X87_SCOPE = {
-    "I_FBLD", "I_FBSTP", "I_FCMOVB", "I_FCMOVBE", "I_FCMOVE", "I_FCMOVNB",
-    "I_FCMOVNBE", "I_FCMOVNE", "I_FCMOVNU", "I_FCMOVU", "I_FEDISI",
-    "I_FEMMS", "I_FENI", "I_FNSAVE", "I_FRSTOR", "I_FSAVE", "I_FSETPM",
-}
-
-XSAVE_SCOPE = {
-    "I_XRSTOR", "I_XRSTOR64", "I_XSAVE", "I_XSAVE64", "I_XSAVEOPT",
-    "I_XSAVEOPT64",
-}
-
-CONCURRENT_SCOPE = {"I_CMPXCHG16B"}
-
-# Instructions accepted by SwiftVM's bounded raw-byte predecoder even though
-# this distorm capture has no corresponding mnemonic enum.
-RAW_HANDLED = {"adcx", "adox", "rdpkru", "wrpkru"}
+# Classify absent entries by execution scope, never by a hidden CPUID bit.
+LEGACY32 = set("AAA AAD AAM AAS ARPL BOUND CALL_FAR DAA DAS INTO JMP_FAR LDS LES SALC SYSENTER SYSEXIT".split())
+TRAPS = set("UD2 INT INT1 INT3 ICEBP".split())
+PRIVILEGED = set("""CLGI CLI CLTS GETSEC IN INVD INVEPT INVLPG INVLPGA INVPCID INVVPID IRET
+LGDT LIDT LLDT LMSW LTR MONITOR MWAIT OUT OUTS RDMSR RDPMC RSM SGDT SIDT SKINIT SLDT SMSW
+STGI STI STR SWAPGS SYSRET WBINVD WRMSR XSETBV HLT VMCALL VMCLEAR VMFUNC VMLAUNCH VMLOAD
+VMMCALL VMPTRLD VMPTRST VMREAD VMRESUME VMRUN VMSAVE VMWRITE VMXOFF VMXON""".split())
+MMX_NAMES = set("EMMS CVTPD2PI CVTPI2PD CVTPI2PS CVTPS2PI CVTTPD2PI CVTTPS2PI MASKMOVQ MOVDQ2Q MOVNTQ MOVQ2DQ PSHUFW".split())
+SSE2_BASELINE = set("""ADDSD COMISD COMISS CVTDQ2PD CVTDQ2PS CVTPD2DQ CVTPD2PS CVTPS2DQ CVTPS2PD
+CVTSD2SI CVTSS2SI CVTTPD2DQ CVTTPS2DQ DIVSD MASKMOVDQU MAXPD MAXPS MAXSD MAXSS MINPD MINPS
+MINSD MINSS MOVAPD MOVNTI MOVNTPD MOVUPD MULSD PACKSSDW PACKSSWB PACKUSWB PADDSB PADDSW
+PADDUSB PADDUSW PMULHUW PMULHW PSUBSB PSUBSW PSUBUSB PSUBUSW RCPPS RCPSS RSQRTPS RSQRTSS
+SQRTPD SQRTPS SQRTSD SQRTSS SUBSD UNPCKHPD UNPCKHPS UNPCKLPD UNPCKLPS""".split())
+SSE2_BASELINE |= {f"CMP{relation}{shape}" for relation in ("EQ", "LT", "LE", "UNORD", "NEQ", "NLT", "NLE", "ORD") for shape in ("PD", "PS", "SD", "SS")}
 
 
-def enum_mnemonics() -> set[str]:
-    return set(re.findall(r"\b(I_[A-Z0-9_]+)\s*=", MNEMONICS.read_text()))
+def source_label(path: pathlib.Path) -> str:
+    return path.relative_to(REPO).as_posix()
 
 
-def handled_cases() -> set[str]:
-    result: set[str] = set()
-    for source in FRONTEND.glob("*.cc"):
-        result.update(re.findall(r"\bcase\s+(I_[A-Z0-9_]+)\s*:", source.read_text()))
-    return result
+def uncomment(text: str) -> str:
+    # Leave line breaks intact so source locations remain useful.
+    return re.sub(r"/\*.*?\*/|//[^\n]*", lambda m: "\n" * m[0].count("\n"), text, flags=re.S)
 
 
-def classify(name: str, handled: set[str]) -> tuple[str, str]:
-    if name in handled:
-        return "handled", "keep"
-    if name in PRIVILEGED:
-        return "privileged/ring0", "skip: no guest kernel/system-state model"
-    if name in MMX_ONLY:
-        return "userland-exotic", "skip: MMX CPUID bit is hidden; XMM form is covered"
-    if name in SSE2_BASELINE:
-        return "SSE2-baseline-adjacent", "implement: advertised baseline"
-    if name in USERLAND_BASIC:
-        if name in LEGACY32:
-            return "userland-basic", "N/A: invalid/compat-only; all callers decode 64-bit"
-        return "userland-basic", "implement (or architecturally coherent #UD)"
-    if name in CONCURRENT_SCOPE:
-        return "userland-basic", "cross-branch TODO: do not touch here"
-    if name in XSAVE_SCOPE:
-        return "userland-exotic", "skip: CPUID hides XSAVE/OSXSAVE; state format is large"
-    if name in X87_SCOPE:
-        return "userland-exotic", "skip here: concurrent x87 scope"
-    if name in {"I_RDFSBASE", "I_RDGSBASE", "I_WRFSBASE", "I_WRGSBASE"}:
-        return "userland-exotic", "skip: CPUID hides FSGSBASE"
-    if name in {"I_XABORT", "I_XBEGIN", "I_XEND"}:
-        return "userland-exotic", "skip: CPUID hides TSX"
-    if name in {"I_LAR", "I_LFS", "I_LGS", "I_LSL", "I_LSS", "I_VERR", "I_VERW"}:
-        return "userland-exotic", "skip: obsolete segmentation/protection query"
-    if name == "I_UNDEFINED":
-        return "userland-exotic", "skip: distorm sentinel, not an instruction"
-    if name.startswith("I_V"):
-        return "userland-exotic", "skip: AVX/VEX state is outside SSE2 baseline"
-    if name.startswith(("I_AES", "I_PCLMUL")):
-        return "userland-exotic", "skip: CPUID hides AES/PCLMUL"
-    if name.startswith(("I_PF", "I_PI2", "I__3DNOW", "I_PSWAP")):
-        return "userland-exotic", "skip: 3DNow! vendor extension is not advertised"
-    return "userland-exotic", "skip: post-SSE2 or vendor extension not advertised"
+def expand_semantic_macros(text: str) -> str:
+    """Expand this tree's function-like case macros, including FMA token paste.
+
+    This deliberately does not evaluate C++ or preprocessor conditions. The
+    report describes source entries, including guarded ones, not availability.
+    """
+    text = uncomment(re.sub(r"\\\r?\n", " ", text))
+    definitions = {}
+    for match in re.finditer(r"^[ \t]*#define\s+(\w+)\(([^)\n]*)\)[ \t]*(.*)$", text, re.M):
+        definitions[match[1]] = ([p.strip() for p in match[2].split(",")], match[3])
+    text = re.sub(r"^[ \t]*#.*$", "", text, flags=re.M)
+    if not definitions:
+        return text
+    pattern = re.compile(r"\b(" + "|".join(map(re.escape, definitions)) + r")\s*\(")
+    for _ in range(10000):
+        match = pattern.search(text)
+        if not match:
+            return text
+        start = match.end()
+        depth, end, part = 1, start, start
+        arguments = []
+        while end < len(text) and depth:
+            char = text[end]
+            if char == "(": depth += 1
+            elif char == ")": depth -= 1
+            elif char == "," and depth == 1:
+                arguments.append(text[part:end].strip()); part = end + 1
+            end += 1
+        if depth:
+            raise ValueError(f"unterminated semantic macro {match[1]}")
+        arguments.append(text[part:end - 1].strip())
+        parameters, body = definitions[match[1]]
+        if len(parameters) != len(arguments):
+            raise ValueError(f"semantic macro argument mismatch: {match[1]}")
+        values = dict(zip(parameters, arguments))
+        body = re.sub(r"\b(?:" + "|".join(map(re.escape, parameters)) + r")\b", lambda m: values[m[0]], body)
+        body = re.sub(r"\s*##\s*", "", body)
+        text = text[:match.start()] + body + text[end:]
+    raise ValueError("semantic macro expansion did not terminate")
+
+
+def inventory() -> dict:
+    paths = [MNEMONICS, VOCABULARY, VEX_TABLE, IR_SCHEMA, BACKEND / "emit.h"]
+    paths += sorted(FRONTEND.glob("semantics*.inc"))
+    paths += sorted(BACKEND.glob("emit*.cpp"))
+    raw_sources = {path: path.read_bytes() for path in paths}
+    sources = {path: value.decode() for path, value in raw_sources.items()}
+    vendor = {name[2:] for name in re.findall(r"\b(I_[A-Z0-9_]+)\s*=", sources[MNEMONICS])}
+    owned = {name: kind for kind, name in re.findall(r"^\s*(X86_OP|X86_EXTRA_OP)\(([A-Z0-9_]+)\)", sources[VOCABULARY], re.M)}
+    entries: dict[str, set[str]] = collections.defaultdict(set)
+    emitted_ir: set[str] = set()
+    ir_names = set(re.findall(r"^\s*INST\((\w+)\s*,", sources[IR_SCHEMA], re.M))
+    for path, original in sources.items():
+        if not path.name.startswith("semantics") or path.name == "semantics_operands.inc":
+            continue  # Prefix admission/operand policy alone is not a semantic entry.
+        expanded = expand_semantic_macros(original)
+        for name in re.findall(r"\bOp::([A-Z][A-Z0-9_]*)\b", expanded):
+            entries[name].add(source_label(path))
+        emitted_ir.update(set(re.findall(r"\bbuilder(?:\.template)?\.(\w+)\s*\(", expanded)) & ir_names)
+        emitted_ir.update(set(re.findall(r"\bOpCode::(\w+)\b", expanded)) & ir_names)
+    descriptors = []
+    for line, value in enumerate(sources[VEX_TABLE].splitlines(), 1):
+        match = re.match(r"\s*VEX\((.*)\)\s*(?://.*)?$", value)
+        if not match: continue
+        fields = [part.strip() for part in match[1].split(",")]
+        if len(fields) != 8: raise ValueError(f"unexpected VEX descriptor at line {line}")
+        descriptors.append((line, fields))
+    selected = {name for _, fields in descriptors for name in fields[3:5] if name != "Unsupported"}
+    handle_header = sources[BACKEND / "emit.h"]
+    handlers = set(re.findall(r"\bHandle\s*\(\s*Op\s*<\s*OpCode::(\w+)\s*>", handle_header))
+    structural = set(re.findall(r"\boperation\.opcode\s*==\s*OpCode::(\w+)", sources[BACKEND / "emit.cpp"])) & {"Nop", "FaultLocation", "EntryPoint"}
+    delegates = dict(re.findall(
+        r"\bHandle\s*\(\s*Op\s*<\s*OpCode::(\w+)\s*>[^{};]*\{\s*(Handle\w+)\s*\(",
+        handle_header))
+    definitions = collections.defaultdict(set)
+    for path, text in sources.items():
+        if path.parent != BACKEND: continue
+        for function in re.findall(r"\bvoid\s+Writer::(Handle\w+)\s*\(", text):
+            definitions[function].add(source_label(path))
+    return dict(vendor=vendor, owned=owned, entries=entries, descriptors=descriptors, selected=selected,
+                ir_names=ir_names, emitted_ir=emitted_ir, handlers=handlers, structural=structural,
+                delegates=delegates, definitions=definitions,
+                hashes={source_label(p): hashlib.sha256(value).hexdigest() for p, value in raw_sources.items()})
+
+
+def classify(name: str, entries: dict) -> tuple[str, str]:
+    if name in LEGACY32: return "legacy32/compat", "outside the current 64-bit guest entry contract"
+    if name in PRIVILEGED: return "privileged/system-model", "requires its real privilege/system-state policy; a name is not support"
+    if name in TRAPS: return "trap/unsupported-stop", "architectural trap or explicit rejection; never count as ordinary completion"
+    if name in entries: return "handled", "has semantic entry/selector; operand forms and runtime services remain conditional"
+    if name == "UNDEFINED": return "parser-sentinel", "not an executable instruction"
+    if name.startswith("K") or name.startswith(("VPTERNLOG", "VPCOMPRESS", "VPEXPAND", "VPMOVM2")):
+        return "AVX512/opmask", "separate EVEX/AVX512 scope; VEX inventory does not cover it"
+    if name in MMX_NAMES: return "userland-MMX", "no semantic entry found; hidden CPUID is not a waiver"
+    if name.startswith("F"): return "userland-x87", "no semantic entry found; inspect the actual x87 form"
+    if name in SSE2_BASELINE: return "SSE/SSE2-name-gap", "no semantic entry found; inspect actual baseline forms"
+    if name.startswith("V"): return "VEX/vendor-name-gap", "not found in current semantics; distinguish VEX form from EVEX or vendor encoding"
+    return "userland/extension-name-gap", "no semantic entry found; no CPUID or runtime-reachability conclusion"
 
 
 def objdump_path() -> str | None:
-    candidates = (
-        shutil.which("objdump"),
-        shutil.which("llvm-objdump"),
-        "/opt/homebrew/opt/binutils/bin/objdump",
-    )
-    return next((p for p in candidates if p and pathlib.Path(p).exists()), None)
+    candidates = (shutil.which("objdump"), shutil.which("llvm-objdump"), "/opt/homebrew/opt/binutils/bin/objdump")
+    return next((str(p) for p in candidates if p and pathlib.Path(p).exists()), None)
 
 
-def disassembly_counts(fixtures: list[pathlib.Path]) -> collections.Counter[str]:
+def disassembly_counts(fixtures: list[pathlib.Path]) -> tuple[collections.Counter, list[str]]:
+    counts = collections.Counter()
+    if not fixtures: return counts, ["No ELF fixtures selected; this report contains source inventory only."]
     tool = objdump_path()
-    if not tool:
-        return collections.Counter()
-    result: collections.Counter[str] = collections.Counter()
-    prefixes = {
-        "addr32", "bnd", "cs", "data16", "ds", "es", "fs", "gs", "lock",
-        "notrack", "rep", "repe", "repne", "repnz", "repz", "ss",
-    }
+    if not tool: return counts, ["objdump unavailable; requested ELF names were not inventoried."]
+    prefixes = set("addr32 bnd cs data16 ds es fs gs lock notrack rep repe repne repnz repz ss".split())
+    notes = [f"Disassembler: `{tool}`."]
     for fixture in fixtures:
-        text = subprocess.run(
-            [tool, "-d", str(fixture)], check=True, text=True, capture_output=True
-        ).stdout
-        for line in text.splitlines():
-            # GNU objdump prints address, bytes, and assembly in tab-separated
-            # columns.  Long encodings have byte-only continuation lines;
-            # requiring the third column avoids treating a trailing byte as a
-            # mnemonic.
+        result = subprocess.run([tool, "-d", str(fixture)], text=True, capture_output=True)
+        if result.returncode:
+            notes.append(f"Disassembly failed for `{fixture}` (exit {result.returncode}): {result.stderr.strip()[:300]}")
+            continue
+        for line in result.stdout.splitlines():
+            # GNU/LLVM: address, byte group, assembly. Ignore byte-only lines.
             columns = line.split("\t")
-            if len(columns) < 3 or not re.match(r"^\s*[0-9a-f]+:", columns[0]):
-                continue
-            words = columns[2].strip().split()
-            if not words:
-                continue
-            mnemonic = words[0].lower()
-            index = 1
-            while mnemonic in prefixes and index < len(words):
-                mnemonic = words[index].lower()
-                index += 1
-            result[mnemonic] += 1
-    return result
+            if len(columns) < 3 or not re.match(r"^\s*[0-9a-fA-F]+:", columns[0]): continue
+            words = " ".join(columns[2:]).strip().split()
+            if not words: continue
+            while len(words) > 1 and words[0].lower() in prefixes: words.pop(0)
+            counts[words[0].lower()] += 1
+    return counts, notes
 
 
-def adjust_objdump(mnemonic: str) -> str | None:
-    aliases = {
-        "cltd": "I_CDQ", "cltq": "I_CDQE", "cqto": "I_CQO", "movabs": "I_MOV",
-        "endbr64": None, "endbr32": None, "incsspq": None, "incsspd": None,
-        "rdsspq": None, "rdsspd": None,
-        "je": "I_JZ", "jne": "I_JNZ", "cmove": "I_CMOVZ",
-        "cmovne": "I_CMOVNZ", "sete": "I_SETZ", "setne": "I_SETNZ",
-        "fildll": "I_FILD", "fistpll": "I_FISTP", "flds": "I_FLD",
-        "fldt": "I_FLD", "fmuls": "I_FMUL", "fstpt": "I_FSTP",
-        "fwait": "I_WAIT",
-    }
-    if mnemonic in aliases:
-        return aliases[mnemonic]
-    if mnemonic.startswith("nop"):
-        return "I_NOP"
-    if mnemonic.startswith("ret"):
-        return "I_RET"
-    if mnemonic.startswith("call"):
-        return "I_CALL"
-    if mnemonic in {"movsb", "movsw", "movsl", "movsq"}:
-        return "I_MOVS"
-    if re.fullmatch(r"mov[sz][bwlq]{2}", mnemonic):
-        return "I_MOVSX" if mnemonic[3] == "s" else "I_MOVZX"
-    if mnemonic == "movslq":
-        return "I_MOVSXD"
-    # AT&T size suffixes on ordinary integer instructions are not part of the
-    # distorm mnemonic.
-    if mnemonic[-1:] in "bwlq":
-        base = mnemonic[:-1].upper()
-        if f"I_{base}" in enum_mnemonics():
-            return f"I_{base}"
-    return f"I_{mnemonic.upper()}"
+def adjust_objdump(mnemonic: str, names: set[str]) -> str | None:
+    aliases = {"cltd": "CDQ", "cltq": "CDQE", "cqto": "CQO", "movabs": "MOV",
+               "je": "JZ", "jne": "JNZ", "cmove": "CMOVZ", "cmovne": "CMOVNZ", "sete": "SETZ", "setne": "SETNZ",
+               "fildll": "FILD", "fistpll": "FISTP", "flds": "FLD", "fldl": "FLD", "fldt": "FLD",
+               "fsts": "FST", "fstl": "FST", "fstps": "FSTP", "fstpl": "FSTP", "fstpt": "FSTP", "fwait": "WAIT"}
+    if mnemonic in aliases: return aliases[mnemonic]
+    upper = mnemonic.upper()
+    if upper in names: return upper
+    if mnemonic.startswith("nop"): return "NOP"
+    if mnemonic.startswith("ret"): return "RET"
+    if mnemonic.startswith("call"): return "CALL"
+    if mnemonic in {"movsb", "movsw", "movsl", "movsq"}: return "MOVS"
+    if re.fullmatch(r"mov[sz][bwlq]{2}", mnemonic): return "MOVSX" if mnemonic[3] == "s" else "MOVZX"
+    if mnemonic == "movslq": return "MOVSXD"
+    if mnemonic[-1:] in "bwlq" and mnemonic[:-1].upper() in names: return mnemonic[:-1].upper()
+    return upper
 
 
-def write_report(path: pathlib.Path, fixtures: list[pathlib.Path]) -> None:
-    all_names = enum_mnemonics()
-    handled = handled_cases()
-    counts = collections.Counter(classify(name, handled)[0] for name in all_names)
-    disasm = disassembly_counts(fixtures)
-    observed_missing: list[tuple[str, int, str]] = []
-    decoder_blind: list[tuple[str, int]] = []
+def write_report(path: pathlib.Path, fixtures: list[pathlib.Path], missing_defaults: list[pathlib.Path]) -> None:
+    data = inventory()
+    vendor, owned, entries = data["vendor"], data["owned"], data["entries"]
+    all_names = vendor | owned.keys()
+    counts = collections.Counter(classify(name, entries)[0] for name in all_names)
+    selected = data["selected"]
+    lines = ["# x86 instruction source inventory", "", "Generated by `scripts/x86_instruction_census.py` from the current checked-out sources.", "",
+        "## Meaning and limits", "",
+        "`handled` means a current shared Semantics entry/selector exists, including expanded case macros. It does **not** mean every operand width, prefix, memory form, CPU model, service or backend shape is supported. Prefix admission alone is excluded.", "",
+        "Owned vocabulary, parser names, selected VEX descriptors, Semantics entries and ARM64 typed IR handlers are reported independently. No enum/table count proves execution coverage, CPUID coherence or native/Direct equivalence. Static conditional source is not evaluated.", "",
+        "EVEX/AVX512 is a separate scope. A VEX.128/.256 name such as VADDPS does not imply the same mnemonic's EVEX/masked/512-bit forms. Privileged/system-model, legacy32 and deliberate trap/rejection paths remain separate.", "",
+        "## Summary", "",
+        f"- distorm mnemonic names: {len(vendor)}",
+        f"- owned X86_OP / X86_EXTRA_OP names: {len(owned)} ({sum(k == 'X86_OP' for k in owned.values())} / {sum(k == 'X86_EXTRA_OP' for k in owned.values())})",
+        f"- owned names with a shared semantic entry/selector: {len(owned.keys() & entries.keys())}",
+        f"- owned names without a found semantic entry: {len(owned.keys() - entries.keys())}",
+        f"- selected VEX descriptor rows / endpoint names: {len(data['descriptors'])} / {len(selected)}",
+        f"- selected VEX endpoints absent from owned vocabulary / semantics: {len(selected - owned.keys())} / {len(selected - entries.keys())}",
+        f"- ARM64 explicit typed IR Handle registrations: {len(data['handlers'])}",
+        f"- frontend-mentioned neutral IR names / without typed-or-structural ARM entry: {len(data['emitted_ir'])} / {len(data['emitted_ir'] - data['handlers'] - data['structural'])}", ""]
+    for category, count in sorted(counts.items()): lines.append(f"- {category}: {count}")
+    lines += ["", "## Name gaps requiring inspection", "", "These are static lookup gaps, not automatically missing executable forms. MMX/x87/XSAVE/crypto are no longer waived merely because an older CPU model hid a feature.", "",
+        "| set | names |", "|---|---|"]
+    for title, values in (("Owned without semantic entry", owned.keys() - entries.keys()),
+                          ("VEX endpoint without owned name", selected - owned.keys()),
+                          ("VEX endpoint without semantic entry", selected - entries.keys()),
+                          ("Frontend IR without typed/structural ARM entry", data["emitted_ir"] - data["handlers"] - data["structural"])):
+        lines.append(f"| {title} | {', '.join(f'`{n}`' for n in sorted(values)) or 'none found'} |")
+    lines += ["", "## Selected VEX encoding descriptors", "", "Each row is the actual adapter selection, including W-selected endpoints and form/length guards. Further adapter normalization (for example shift groups) and shared semantics still validate operands. A row is not a full-form coverage claim.", "",
+        "| line | map | pp | opcode | W0/narrow | W1/wide | form | lane bits | guards |", "|---:|---:|---:|---|---|---|---|---:|---|"]
+    for line, fields in data["descriptors"]: lines.append(f"| {line} | " + " | ".join(f"`{f}`" for f in fields) + " |")
+    lines += ["", "## Shared semantics / ARM64 typed IR inventory", "", "These are neutral IR registration names, not guest instructions. A typed family may reject shapes at runtime; its source presence is not a proof for every argument. Structural nodes are consumed by Writer::Run rather than typed Handle.", "",
+        "| frontend-mentioned IR | ARM entry | implementation source |", "|---|---|---|"]
+    for name in sorted(data["emitted_ir"]):
+        family = data["delegates"].get(name, "")
+        files = data["definitions"].get(family, set())
+        status = "typed Handle" if name in data["handlers"] else "Writer::Run structural" if name in data["structural"] else "not found"
+        lines.append(f"| `{name}` | {status} | {', '.join(f'`{n}`' for n in sorted(files)) or '`source/runtime/backend/arm64/emit.h`'} |")
+    disasm, notes = disassembly_counts(fixtures)
+    lines += ["", "## Optional ELF static disassembly", "", "Whole-binary disassembly includes cold libraries and alternate paths. Counts are static instruction locations, not runtime frequencies. Objdump aliases and names alone do not identify all operand forms.", ""]
+    lines.extend(f"- {note}" for note in notes)
+    lines.extend(f"- Retired default fixture absent (not scanned): `{fixture}`" for fixture in missing_defaults)
+    lines += ["", "| objdump name | static count | normalized name | semantic entry | classification |", "|---|---:|---|---|---|"]
     for mnemonic, count in sorted(disasm.items()):
-        if mnemonic in RAW_HANDLED:
-            continue
-        adjusted = adjust_objdump(mnemonic)
-        if adjusted is None:
-            continue
-        if adjusted not in all_names:
-            decoder_blind.append((mnemonic, count))
-        elif adjusted not in handled:
-            observed_missing.append((mnemonic, count, adjusted))
-
-    lines = [
-        "# x86 distorm instruction coverage census",
-        "",
-        "Generated by `scripts/x86_instruction_census.py` from the current worktree.",
-        "",
-        "## Summary",
-        "",
-        f"- distorm enum entries: {len(all_names)}",
-        f"- decoder switch cases: {len(handled)}",
-        f"- unhandled enum entries: {len(all_names - handled)}",
-        f"- raw-predecoded instructions absent from distorm: {len(RAW_HANDLED)} "
-        f"({', '.join(sorted(RAW_HANDLED))})",
-    ]
-    for category in (
-        "handled", "userland-basic", "SSE2-baseline-adjacent",
-        "privileged/ring0", "userland-exotic",
-    ):
-        lines.append(f"- {category}: {counts[category]}")
-
-    lines += [
-        "",
-        "The repository has a 32-bit ABI descriptor and mode-aware decoder code, but every",
-        "constructor call in tests and translators passes `is_64bit=true`; legacy-only",
-        "instructions are therefore marked N/A rather than implemented.",
-        "",
-        "A direct check of the checked-in distorm confirms that AAA/AAD/AAM/AAS,",
-        "BOUND, DAA/DAS, INTO, and SALC decode as `I_UNDEFINED` in 64-bit mode;",
-        "opcode 63 decodes as MOVSXD rather than ARPL.  SYSENTER/SYSEXIT still decode",
-        "in long mode, but SwiftVM has no 32-bit Linux guest entry path or compat vDSO.",
-        "",
-        "## CPUID coherence audit (before implementation)",
-        "",
-        "| advertised feature | current decoder state | finding |",
-        "|---|---|---|",
-        "| FPU (leaf 1 EDX.0) | core x87 is handled, 16 enum opcodes remain | "
-        "landmine, but excluded here by the concurrent x87 scope |",
-        "| CMOV (leaf 1 EDX.15) | handled | coherent |",
-        "| MMX (leaf 1 EDX.23) | several pack/saturating/move opcodes missing | "
-        "landmine; included in SSE2-baseline-adjacent |",
-        "| FXSR (leaf 1 EDX.24) | FXSAVE/FXRSTOR handled | coherent |",
-        "| SSE (leaf 1 EDX.25) | scalar compare/conversion/min/max/sqrt gaps | "
-        "landmine; included in SSE2-baseline-adjacent |",
-        "| SSE2 (leaf 1 EDX.26) | 97 combined MMX/SSE/SSE2 enum gaps | "
-        "landmine; implement |",
-        "| TSC (leaf 1 EDX.4) | not advertised; RDTSC missing | hidden coherently, "
-        "but real fixtures contain RDTSC |",
-        "| CX8 (leaf 1 EDX.8) | not advertised; CMPXCHG8B handled | safe "
-        "under-advertising |",
-        "| SEP (leaf 1 EDX.11) | not advertised; SYSENTER/SYSEXIT missing | "
-        "coherent; 32-bit compat is not wired |",
-        "| CX16 (leaf 1 ECX.13) | not advertised; CMPXCHG16B missing | "
-        "cross-branch TODO only |",
-        "| MOVBE (leaf 1 ECX.22) | not advertised; decoder missing | hidden "
-        "coherently; implementation candidate |",
-        "| XSAVE/OSXSAVE (leaf 1 ECX.26/.27) | not advertised; XGETBV and "
-        "XSAVE family missing | coherent; keep hidden and make XGETBV #UD |",
-        "| RDRAND (leaf 1 ECX.30) | not advertised; decoder missing | hidden "
-        "coherently; advertise only after implementation |",
-        "| SYSCALL (leaf 0x80000001 EDX.11) | not advertised; SYSCALL handled | "
-        "safe under-advertising |",
-        "| RDTSCP (leaf 0x80000001 EDX.27) | not advertised; decoder missing | "
-        "hidden coherently; advertise only after implementation |",
-        "",
-        "`RDSEED` is not present in this distorm capture at all: `0F C7 /7` is",
-        "returned as `I_UNDEFINED` of size 1 in both 32- and 64-bit decode.  Supporting",
-        "it requires a raw-byte predecode (as used for CET) or a distorm update.",
-        "",
-        "## CPUID coherence audit (current worktree)",
-        "",
-        "| advertised feature | decoder/runtime state | result |",
-        "|---|---|---|",
-        "| TSC + RDTSCP | RDTSC/RDTSCP use one monotonic virtual 1 GHz counter; "
-        "CPUID.15H reports 1 GHz and TSC_AUX is fixed at 0 | coherent |",
-        "| CX8 | CMPXCHG8B already handled | coherent |",
-        "| CMOV | handled | coherent |",
-        "| FXSR | FXSAVE/FXRSTOR host helpers already handled | coherent |",
-        "| SSE + SSE2 | all non-MMX entries classified as baseline-adjacent are "
-        "handled | coherent within the declared baseline |",
-        "| MOVBE | load/store decode through ByteSwap IR | coherent |",
-        "| RDRAND + RDSEED | both decode; RDSEED has a raw-byte predecoder for "
-        "the old distorm capture | coherent |",
-        "| SYSCALL + NX + LM | SYSCALL/user-mode long-mode execution is handled; "
-        "SYSRET remains guest-kernel-only | coherent for userland |",
-        "| MMX | not advertised; MMX-register-only leftovers are explicitly "
-        "out of scope | coherent |",
-        "| XSAVE/OSXSAVE | gated by SVM_XSAVE; XGETBV/XSAVE/XRSTOR wired to "
-        "emitters in decoder_xsave.cc | coherent |",
-        "| AVX/AVX2/FMA | gated by SVM_AVX+SVM_XSAVE; self-contained raw VEX "
-        "decoder (vex_decoder.cc) bypasses distorm | coherent |",
-        "| SSE3/SSSE3/SSE4.1/SSE4.2 | gated by SVM_SSE4/SVM_SSE42STR; "
-        "decoder_sse4.cc + decoder_sse42str.cc | coherent |",
-        "| BMI1/BMI2 | gated by SVM_BMI; decoder_bmi.cc | coherent |",
-        "| FSGSBASE | gated by SVM_FSGSBASE; distorm mnemonic dispatch plus "
-        "operand fixup | coherent |",
-        "| ADX | gated by SVM_ADX; raw legacy-ModRM decode with independent "
-        "CF/OF lowering | coherent |",
-        "| PKRU | raw RDPKRU/WRPKRU architectural register only; CPUID.PKU is "
-        "clear because access enforcement is absent | coherent under-advertising |",
-        "| SEP | not advertised; no 32-bit compat frontend | coherent |",
-        "| CX16 | advertised (leaf 1 ECX.13); CMPXCHG16B via CompareAndSwap128 IR "
-        "+ LDAXP/STLXP | coherent |",
-        "",
-        "## Test-fixture disassembly: mnemonics not handled by the decoder",
-        "",
-        "| objdump mnemonic | count | distorm enum |",
-        "|---|---:|---|",
-    ]
-    lines.extend(f"| `{m}` | {n} | `{e}` |" for m, n, e in observed_missing)
-    lines += [
-        "",
-        "This is a static whole-binary census, so AVX/TSX/XSAVE counts include",
-        "glibc ifunc alternatives that current CPUID leaves make unreachable.",
-        "",
-        "## Test-fixture disassembly: decoder-version blind spots",
-        "",
-        "These mnemonics are emitted by the system objdump but have no enum in this old",
-        "distorm capture (some are already recognized by SwiftVM's raw-byte predecoder).",
-        "",
-        "| objdump mnemonic | count |",
-        "|---|---:|",
-    ]
-    lines.extend(f"| `{m}` | {n} |" for m, n in decoder_blind)
-    lines += [
-        "",
-        "## Full enum census",
-        "",
-        "| mnemonic | decoder | classification | action |",
-        "|---|---|---|---|",
-    ]
+        name = adjust_objdump(mnemonic, all_names)
+        category = classify(name, entries)[0] if name in all_names else "not in parser/owned name inventory"
+        lines.append(f"| `{mnemonic}` | {count} | `{name}` | {'present' if name in entries else 'not found'} | {category} |")
+    lines += ["", "## Execution coverage is separate", "", "This tool did not build or execute guest/native tests and does not read a source file as a passing test result. Central host/Android run receipts and numerical or fault assertions are the execution evidence. Relevant current test source files are listed only as pointers:", ""]
+    for test in sorted((REPO / "source/tests/rebuild").glob("*_test.cpp")):
+        if test.name.startswith(("x86_", "x87_", "arm64_", "compile_pipeline")):
+            lines.append(f"- `{source_label(test)}` (source existence only)")
+    lines += ["", "## Full name inventory", "", "| name | parser | owned vocabulary | shared semantic entry source | classification | action/limit |", "|---|---|---|---|---|---|"]
     for name in sorted(all_names):
-        category, action = classify(name, handled)
-        lines.append(
-            f"| `{name[2:]}` | {'handled' if name in handled else 'missing'} | "
-            f"{category} | {action} |"
-        )
+        category, action = classify(name, entries)
+        source = ", ".join(f"`{value}`" for value in sorted(entries.get(name, set()))) or "not found"
+        lines.append(f"| `{name}` | {'distorm' if name in vendor else 'extra/adapter'} | {owned.get(name, 'absent')} | {source} | {category} | {action} |")
+    lines += ["", "## Source identities", "", "Source contents read for this inventory (not a whole-build identity or passing-test receipt):", "", "| source | SHA256 |", "|---|---|"]
+    lines.extend(f"| `{name}` | `{digest}` |" for name, digest in sorted(data["hashes"].items()))
+    lines.append(f"| `scripts/x86_instruction_census.py` | `{hashlib.sha256(pathlib.Path(__file__).read_bytes()).hexdigest()}` |")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--report", type=pathlib.Path,
-        default=REPO / "docs/x86-instruction-census.md",
-    )
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report", type=pathlib.Path, default=REPO / "docs/x86-instruction-census.md")
     parser.add_argument("fixtures", nargs="*", type=pathlib.Path)
     args = parser.parse_args()
-    fixtures = args.fixtures or [
-        REPO / "source/translator/linux/tests" / name for name in DEFAULT_FIXTURES
-    ]
-    missing = [path for path in fixtures if not path.exists()]
-    if missing:
-        print("missing fixture(s): " + ", ".join(map(str, missing)), file=sys.stderr)
-        return 2
-    write_report(args.report, fixtures)
+    missing_defaults = []
+    if args.fixtures:
+        missing = [path for path in args.fixtures if not path.is_file()]
+        if missing:
+            print("missing fixture(s): " + ", ".join(map(str, missing)), file=sys.stderr); return 2
+        fixtures = args.fixtures
+    else:
+        defaults = [REPO / "source/translator/linux/tests" / name for name in DEFAULT_FIXTURES]
+        fixtures = [path for path in defaults if path.is_file()]
+        missing_defaults = [path for path in defaults if not path.is_file()]
+    try:
+        write_report(args.report, fixtures, missing_defaults)
+    except (OSError, ValueError) as error:
+        print(f"census: {error}", file=sys.stderr); return 2
     print(args.report)
     return 0
 

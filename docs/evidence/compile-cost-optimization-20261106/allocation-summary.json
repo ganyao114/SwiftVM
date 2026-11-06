@@ -1,0 +1,30 @@
+{
+  "scope": "Host IR construction/Optimize/ARM64 emission after warmup; not x86 decode or all platform mallocs",
+  "same_process_output_and_failure_recovery_verified": true,
+  "measurements": [
+    {
+      "scope": "block",
+      "requests": 1000,
+      "before_operator_new_calls": 5000,
+      "after_operator_new_calls": 0,
+      "before_allocated_bytes": 936000,
+      "after_allocated_bytes": 0,
+      "native_words_before_after": [
+        39,
+        39
+      ]
+    },
+    {
+      "scope": "function",
+      "requests": 1000,
+      "before_operator_new_calls": 11000,
+      "after_operator_new_calls": 0,
+      "before_allocated_bytes": 1008000,
+      "after_allocated_bytes": 0,
+      "native_words_before_after": [
+        39,
+        39
+      ]
+    }
+  ]
+}

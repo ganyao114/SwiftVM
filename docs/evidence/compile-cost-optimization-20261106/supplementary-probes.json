@@ -1,0 +1,51 @@
+{
+  "files": {
+    "allocation_probe.cpp": {
+      "bytes": 4128,
+      "sha256": "2466696976015aeeb9f171846666cb67f4583d48af6be4c1985413ec56bfde4b"
+    },
+    "allocation-probe-before": {
+      "bytes": 508232,
+      "sha256": "4e0bf1083131a246c82b11b7e17f4e794488b4dbaa7b7348333975dc72c9797e"
+    },
+    "allocation-probe-after": {
+      "bytes": 508904,
+      "sha256": "783cbe4720a9c170fd5df479808e45573f8084eeb790e9c7b3e485106131b31a"
+    },
+    "cache_sync_probe.cpp": {
+      "bytes": 1710,
+      "sha256": "7faefec0f5d11528cd3a7dc4d956429e274e15e946cb81ae824f1e99297d0827"
+    },
+    "cache-sync-probe": {
+      "bytes": 2531856,
+      "sha256": "9d1d5b3f9d274f8213927efd14a830fa38c00ffa7a5c354a6a36e3a5f4624093"
+    },
+    "mapping_probe.cpp": {
+      "bytes": 1290,
+      "sha256": "1719801cc66956ec28c56ed2d0d62643d9921f22b894340e32a6ea8c1a8c2f15"
+    },
+    "mapping-probe": {
+      "bytes": 2572160,
+      "sha256": "04162e20b9b97ae693190c37a3480e42044a8cbf228f16c91568d3828faa796e"
+    },
+    "block_overlap_probe.cpp": {
+      "bytes": 1351,
+      "sha256": "5d225db9a6b6ced86aecf3ff93083d880f8be9760a745663e82bdcb7c7d51775"
+    },
+    "block-overlap-probe": {
+      "bytes": 659152,
+      "sha256": "baa17fd57cba6dde35391bb5b32d81b49439a258b5a19b91debdf028d90cf6e5"
+    },
+    "allocation_probe_before_source.cpp": {
+      "bytes": 3729,
+      "sha256": "087ca345bc1aa4339e0d4e2a6fa947f10fcf4f56f73384d882b46d88919004ae"
+    }
+  },
+  "allocation": "Host AppleClang O3; C++ operator-new only. 8 warmups then1000 real IR requests with32 adds. Before binary links pre-change host libraries and uses original scratch APIs in both requested arms; after uses new APIs for reused_scratch=true and checks full word vectors equal for changing sizes in same process. After additionally verifies invalid-Program rejection then successful reuse with full emitted-word equality.",
+  "cache_sync": "Android NDK29 ARM64, taskset10, same dual mapping,5rotated rounds\u00d72048 copy/sync calls per arm and size; executes final code and checks2047.",
+  "mapping": "Android NDK29 ARM64, taskset10,20rotated rounds each64KiB/1MiB via production MemMap; copies2532B code, syncs, executes42 and explicitly releases both views.",
+  "block_overlap": "Host calls actual BuildIR for three real x87-bench entry PCs; no guest or generated code executed.",
+  "device_serial": "bf1359ff",
+  "android_namespace": "/data/local/tmp/swiftvm-compile-cost-20261105",
+  "probe_processes_exit": 0
+}

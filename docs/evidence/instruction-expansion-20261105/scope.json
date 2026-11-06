@@ -1,0 +1,21 @@
+{
+  "included": "Old implemented user-mode plus baseline/SSE/x87 coverage; VEX AVX/AVX2 included.",
+  "excluded": [
+    "EVEX/AVX-512 by user scope selection",
+    "PKU including actual pkey access enforcement deferred by explicit user selection; not advertised",
+    "guest kernel and compatibility mode"
+  ],
+  "old_partial_implementations": {
+    "PKRU": "Old register-only state was not actual pkey protection; not copied.",
+    "XSAVEC": "Old standard-layout approximation replaced with actual compacted header in current XCR0=7 model."
+  },
+  "reference": {
+    "title": "Intel SDM Volume 1, 2024-12",
+    "url": "https://cdrdv2-public.intel.com/843827/253665-sdm-vol-1-dec-24.pdf",
+    "sections": [
+      "13.8.1",
+      "13.8.2",
+      "13.10"
+    ]
+  }
+}

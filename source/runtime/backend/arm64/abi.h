@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include "abi_layout.inc"
 
 namespace swift::runtime::backend::arm64::abi {
 
@@ -11,9 +12,9 @@ inline constexpr std::uint64_t PackedDynamicFlags = 0xf40000ff;
 
 // The cold directory and retired native tails share one PC mix and layout.
 // These are backend/runtime facts, never frontend or public IR facts.
-inline constexpr unsigned DispatchSlotShift = 5, DispatchOccupiedOffset = 24, DispatchHashShift = 13;
-inline constexpr unsigned ContextSlotsOffset = 24, ContextDispatchesOffset = 56,
-        ContextHitsOffset = 64, ContextProbesOffset = 144;
+inline constexpr unsigned DispatchSlotShift = SVM_A64_SLOT_SHIFT, DispatchOccupiedOffset = SVM_A64_OCCUPIED_OFFSET, DispatchHashShift = SVM_A64_DISPATCH_HASH_SHIFT;
+inline constexpr unsigned ContextSlotsOffset = SVM_A64_CTX_SLOTS, ContextDispatchesOffset = SVM_A64_CTX_DISPATCHES,
+        ContextHitsOffset = SVM_A64_CTX_HITS, ContextProbesOffset = SVM_A64_CTX_PROBES;
 // Per actual dynamic tail: sixteen (PC,entry) pairs plus one writable base alias.
 inline constexpr unsigned DynamicCacheEntries = 16, DynamicCacheWords = DynamicCacheEntries * 4 + 2;
 

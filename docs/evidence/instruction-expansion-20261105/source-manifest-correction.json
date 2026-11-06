@@ -1,0 +1,7 @@
+{
+  "prior_host_only_digest": "7ce1c33dfafcff4c7cfc963c6eee0a3247b67f7a608062629c5b9358359fd708",
+  "corrected_union_digest": "57db153a47dd80a107839598abc2a2dfc0f9137481ebc53e77b05fbef5eb7a66",
+  "files": 282,
+  "correction": "Prior run digests used host dependencies only and omitted Android-only execution/launcher sources. The union manifest now covers the actual Android runtime and host dependencies. No product source or measured binary changed for this metadata correction. Historical partial manifests retained as such; final source archive uses this complete union.",
+  "source_or_binary_change": false
+}

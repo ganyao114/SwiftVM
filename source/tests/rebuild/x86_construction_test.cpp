@@ -1,7 +1,8 @@
+#include "runtime/frontend/x86/detail/decoded.h"
 #include "x86_fixtures.h"
 #include "runtime/externals/distorm/distorm.h"
 #include "runtime/externals/distorm/mnemonics.h"
-#include "runtime/ir/x87.h"
+#include "runtime/arch/x86/x87.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -11,6 +12,8 @@
 #include <vector>
 
 namespace {
+using swift::runtime::x86::X87Command;
+using swift::runtime::x86::X87Encode;
 using namespace swift::runtime::ir;
 using namespace swift::tests::x86_ir;
 using swift::x86::BuildIR;
@@ -153,8 +156,10 @@ void RejectedBytesCannotPublishAProgram() {
     const std::uint8_t fs[]{0x64,0x48,0x8b,0x00};
     const std::uint8_t lock[]{0xf0,0x48,0x89,0x00};
     const std::uint8_t far_ret[]{0xca,0x08,0x00}; // Far return is still outside this runtime.
-    for (const auto bytes : {std::span{truncated},std::span{unsupported},std::span{address32}}) reject(bytes);
+    for (const auto bytes : {std::span{truncated},std::span{unsupported}}) reject(bytes);
     reject(fs);reject(lock);reject(far_ret);
+    const BlockWindow wrapping{0x1000,address32};
+    CHECK(BuildIR({&wrapping,1},Scope::Block,layout).program);
     CHECK(!BuildIR(windows,Scope::Block,layout).program);
     const std::array<BlockWindow,2> unsorted{{windows[1],windows[0]}};
     CHECK(!BuildIR(unsorted,Scope::Function,layout).program);
@@ -183,11 +188,11 @@ void QualificationCountsTheActualAbandonedPrefix() {
     const auto partial=reject(prefix);
     CHECK(partial.instruction_count==1 && partial.decoded_bytes==10 && partial.error_pc==0x400a);
     CHECK(collected.nodes==2 && collected.value_uses==1 && collected.operand_words==4 && collected.blocks==1);
-    const std::uint8_t privileged[]{0x0f,0x22,0xc0}; // MOV CR0,RAX rejects after its GPR read.
+    const std::uint8_t privileged[]{0x0f,0x22,0xc0}; // MOV CR0,RAX is rejected before operand access.
     const auto born_before_rejection=reject(privileged);
     CHECK(born_before_rejection.instruction_count==0 && born_before_rejection.decoded_bytes==0);
     CHECK(born_before_rejection.error_pc==0x4000);
-    CHECK(collected.nodes==1 && collected.value_uses==0 && collected.operand_words==1 && collected.blocks==1);
+    CHECK(collected.nodes==0 && collected.value_uses==0 && collected.operand_words==0 && collected.blocks==1);
 
     const auto complete=BuildIR(windows,Scope::Function,layout,{},&collected);
     CHECK(complete);
@@ -650,7 +655,7 @@ void ActualDecodedBufferAndRejectedFrontier() {
     (void)distorm_decompose(&code,decoded.data(),decoded.size(),&used);
     CHECK(used==decoded.size());
     swift::x86::DecodedBlock block{source.pc,0,used};
-    const auto direct=swift::x86::BuildDecodedIR(decoded,{&block,1},{&source,1},Scope::Block,layout);
+    const auto direct=swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(decoded),{&block,1},{&source,1},Scope::Block,layout);
     const auto byte_path=BuildIR({&source,1},Scope::Block,layout);
     CHECK(direct && byte_path && direct.instruction_count==3 && direct.decoded_bytes==sizeof(bytes));
     CHECK(direct.program.Operations().size()==byte_path.program.Operations().size());
@@ -668,34 +673,34 @@ void ActualDecodedBufferAndRejectedFrontier() {
     }
     auto invalid=decoded;
     ++invalid[0].addr;
-    CHECK(swift::x86::BuildDecodedIR(invalid,{&block,1},{&source,1},Scope::Block,layout).error==swift::x86::BuildError::InvalidInput);
+    CHECK(swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(invalid),{&block,1},{&source,1},Scope::Block,layout).error==swift::x86::BuildError::InvalidInput);
     auto bad_slice=block; bad_slice.first_instruction=1;
-    CHECK(swift::x86::BuildDecodedIR(decoded,{&bad_slice,1},{&source,1},Scope::Block,layout).error==swift::x86::BuildError::InvalidInput);
+    CHECK(swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(decoded),{&bad_slice,1},{&source,1},Scope::Block,layout).error==swift::x86::BuildError::InvalidInput);
 
     // Discovery may append the higher-PC body first and split into slices
     // later. Neither emission nor a Block request may reorder/copy that owner.
     const std::array<_DInst,3> discovered{{decoded[1],decoded[2],decoded[0]}};
     const std::array<swift::x86::DecodedBlock,2> slices{{{0x7000,2,1},{0x7004,0,2}}};
-    const auto reordered=swift::x86::BuildDecodedIR(discovered,slices,{&source,1},Scope::Function,layout);
+    const auto reordered=swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(discovered),slices,{&source,1},Scope::Function,layout);
     CHECK(reordered && reordered.instruction_count==3 && reordered.decoded_bytes==sizeof(bytes));
     CHECK(reordered.program.Operations()[0].opcode==OpCode::LoadUniform);
     CHECK(reordered.program.Blocks()[0].terminal.kind==TerminalKind::Jump &&
           reordered.program.Blocks()[0].terminal.first.value==1);
     CHECK(reordered.program.Blocks()[1].terminal.kind==TerminalKind::Branch);
     WorkCounts selected_counts;
-    const auto selected=swift::x86::BuildDecodedIR(discovered,std::span{slices}.subspan(1),{&source,1},
+    const auto selected=swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(discovered),std::span{slices}.subspan(1),{&source,1},
                                                    Scope::Block,layout,{},&selected_counts);
     CHECK(selected && selected.instruction_count==2 && selected.decoded_bytes==5);
     CHECK(selected.program.Blocks().size()==1 && selected_counts.blocks==1);
     CHECK(std::none_of(selected.program.Operations().begin(),selected.program.Operations().end(),
                        [](const auto& op) { return op.opcode==OpCode::Add; }));
     const auto tail=swift::x86::DecodedBlock{0x7007,1,1};
-    const auto selected_tail=swift::x86::BuildDecodedIR(discovered,{&tail,1},{&source,1},Scope::Block,layout);
+    const auto selected_tail=swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(discovered),{&tail,1},{&source,1},Scope::Block,layout);
     CHECK(selected_tail && selected_tail.instruction_count==1 && selected_tail.decoded_bytes==2);
     auto overlapping=slices;overlapping[1].pc=0x7002;
-    CHECK(swift::x86::BuildDecodedIR(discovered,overlapping,{&source,1},Scope::Function,layout).error==swift::x86::BuildError::InvalidInput);
+    CHECK(swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(discovered),overlapping,{&source,1},Scope::Function,layout).error==swift::x86::BuildError::InvalidInput);
     auto reused=slices;reused[1].first_instruction=2;reused[1].instruction_count=1;
-    const auto duplicate=swift::x86::BuildDecodedIR(discovered,reused,{&source,1},Scope::Function,layout);
+    const auto duplicate=swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(discovered),reused,{&source,1},Scope::Function,layout);
     CHECK(duplicate.error==swift::x86::BuildError::InvalidInput && duplicate.instruction_count==1);
 
     // An invalid encoding discovered later must retain the actual preceding
@@ -718,9 +723,9 @@ void AutomaticFunctionDiscoveryAndEntry() {
     const auto decoded=DecodeFunction({&source,1},source.pc);
     CHECK(decoded && decoded.blocks.size()==4 && decoded.instructions.size()==6);
     CHECK(decoded.decode_calls==6 && decoded.decoded_bytes==8 && decoded.entry_block==0);
-    CHECK(decoded.instructions[3].addr==0x8008 && decoded.instructions[4].addr==0x8006);
+    CHECK(decoded.instructions[3].View().PC()==0x8008 && decoded.instructions[4].View().PC()==0x8006);
     CHECK(std::none_of(decoded.instructions.begin(),decoded.instructions.end(),
-                       [](const auto& instruction) { return instruction.addr==0x8005; }));
+                       [](const auto& instruction) { return instruction.View().PC()==0x8005; }));
     const auto built=BuildFunctionIR({&source,1},source.pc,layout);
     CHECK(built && built.instruction_count==6 && built.decoded_bytes==8);
     CHECK(built.program.Blocks().size()==4 && built.program.EntryBlock().value==0);
@@ -734,7 +739,7 @@ void AutomaticFunctionDiscoveryAndEntry() {
     const auto nonlowest=DecodeFunction({&reversed,1},0x9004);
     CHECK(nonlowest && nonlowest.entry_block==1 && nonlowest.instructions.size()==4);
     CHECK(nonlowest.blocks[0].pc==0x9000 && nonlowest.blocks[1].pc==0x9004);
-    CHECK(nonlowest.instructions[0].addr==0x9004 && nonlowest.blocks[1].first_instruction==0);
+    CHECK(nonlowest.instructions[0].View().PC()==0x9004 && nonlowest.blocks[1].first_instruction==0);
     const auto entry=BuildFunctionIR({&reversed,1},0x9004,layout);
     CHECK(entry && entry.program.EntryBlock().value==1);
     CHECK(entry.program.Blocks()[1].terminal.kind==TerminalKind::Jump && entry.program.Blocks()[1].terminal.first.value==0);
@@ -830,7 +835,7 @@ void AutomaticFunctionFailuresAndFrontiers() {
     const std::uint8_t call[]{0xe8,0,0,0,0,0x06};
     const BlockWindow helper{0xf000,call};
     const auto unknown=DecodeFunction({&helper,1},helper.pc);
-    CHECK(unknown && unknown.instructions.size()==1 && unknown.instructions[0].opcode==I_CALL);
+    CHECK(unknown && unknown.instructions.size()==1 && unknown.instructions[0].View().Opcode()==swift::x86::Op::CALL);
     const auto emitted=BuildFunctionIR({&helper,1},helper.pc,layout);
     CHECK(emitted && emitted.instruction_count==1 && emitted.decoded_bytes==5);
     CHECK(emitted.program.Blocks()[0].terminal.kind==TerminalKind::Dispatch);
@@ -1205,11 +1210,11 @@ void PackedByteAndComparisonsAndRelativeCall() {
     }
     CHECK(return_pc);
     const std::array<std::uint8_t,4> addr32_memory{0x67,0x48,0x8b,0x00};
-    const BlockWindow rejected{0x9000,addr32_memory};
-    CHECK(!BuildIR({&rejected,1},Scope::Block,layout).program);
+    const BlockWindow wrapping_memory{0x9000,addr32_memory};
+    CHECK(BuildIR({&wrapping_memory,1},Scope::Block,layout).program);
     const std::array<std::uint8_t,3> addr32_indirect{0x67,0xff,0x10};
     const BlockWindow indirect{0x9100,addr32_indirect};
-    CHECK(!BuildIR({&indirect,1},Scope::Block,layout).program);
+    CHECK(BuildIR({&indirect,1},Scope::Block,layout).program);
 }
 void RepeatStoreHasAZeroBypassAndARealFrontier() {
     const std::array<std::uint8_t,4> bytes{0xf3,0x48,0xab,0x90}; // REP STOSQ; next guest instruction.
@@ -1252,10 +1257,10 @@ void RepeatStoreHasAZeroBypassAndARealFrontier() {
     std::array<_DInst,2> decoded{};unsigned used{};
     distorm_decompose(&code,decoded.data(),decoded.size(),&used);CHECK(used==2);
     const swift::x86::DecodedBlock oversized{source.pc,0,2};
-    CHECK(!swift::x86::BuildDecodedIR(decoded,{&oversized,1},{&source,1},Scope::Block,layout,target).program);
+    CHECK(!swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(decoded),{&oversized,1},{&source,1},Scope::Block,layout,target).program);
     const std::array<std::uint8_t,3> addr32{0xf3,0x67,0xab};
-    const BlockWindow rejected{0xa100,addr32};
-    CHECK(!BuildIR({&rejected,1},Scope::Block,layout,target).program);
+    const BlockWindow wrapping_store{0xa100,addr32};
+    CHECK(BuildIR({&wrapping_store,1},Scope::Block,layout,target).program);
 }
 void HalfPackedSingleMemoryKeepsTheOtherHalf() {
     const std::array<std::uint8_t,27> bytes{

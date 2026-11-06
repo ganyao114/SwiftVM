@@ -587,7 +587,7 @@ _InstInfo* inst_lookup_3dnow(_CodeInfo* ci)
 	int index;
 
 	/* Make sure we can read a byte off the stream. */
-	if (ci->codeLen < 1) return NULL;
+	if (ci->codeLen < 1) { ci->codeLen = -1; return NULL; }
 
 	index = *ci->code;
 

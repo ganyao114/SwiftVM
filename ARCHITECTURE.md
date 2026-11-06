@@ -13,11 +13,13 @@ x86 bytes -> decode / region formation -> neutral Uniform IR
 | Location | Responsibility |
 | --- | --- |
 | `source/runtime/ir/` | Sole Program/Builder owner, stable node IDs, 24B operations, 24B blocks and 8B operand words; O(1) Submit |
-| `source/runtime/frontend/x86/` | Decode buffer, bounded region formation and neutral IR emission; Known-target selection with Unknown/EarlyOff paths |
+| `source/runtime/frontend/x86/` | Owned decoded instructions, bounded region formation and shared Semantics for IR emission or direct interpretation; Known-target selection with Unknown/EarlyOff paths |
 | `source/runtime/compile/` | Three walks over the same IR, flags demand, bounded rewrites, Uniform forwarding and DCE; one temporary u64/node table |
 | `source/runtime/backend/arm64/allocate.*` | Distinct Block/Function lifetimes, pin affinity, real registers/spills and one 16B Home/node |
-| `source/runtime/backend/arm64/compile.*`, `emit*`, `helper_calls.cpp` | Direct selection/encoding, raw PF/AF/native NZCV, helper ABI and actual fault/link metadata |
-| `source/runtime/execution/` | Guest state/mappings, static ELF, code publication, directory/links, fault recovery, syscalls and retirement |
+| `source/runtime/backend/arm64/` | Typed Handle selection, exact controlled VIXL encoding, explicit scratch allocation, patching, helper ABI and actual fault/link metadata |
+| `source/runtime/arch/x86/` | Sole guest state/flags definition, CPU model and portable x87/vector numerical semantics |
+| `source/runtime/execution/` | VM/thread ownership, engine dispatch, compile service, guest memory, native mappings, slabs, directory/links, SMC and retirement |
+| `source/runtime/platform/` | ELF loading, Linux syscalls/signals/safe access and host ARM64 bridge |
 | `source/launcher/linux/` | Runner CLI and coarse diagnostics |
 | `source/tests/rebuild/` | Construction, optimizer, allocation/encoding and native pipeline contracts |
 | `benchmarks/` | Fixed construction/compile workloads, budget diagnostics and guest input recipes |
@@ -26,6 +28,14 @@ GPR/XMM architecture accesses retain neutral LoadUniform/StoreUniform semantics.
 The frontend owns logical versions; the backend owns pins and physical choices.
 Block remains a lightweight allocation path. Function computes real RPO and
 cross-block/loop lifetimes; failures and retries remain charged.
+
+The frontend's 64B Instruction is independent of the legacy parser. One
+Semantics<Sink> implements instruction ordering for both IrSink and DirectSink;
+the interpreter creates no Program. VEX YMM operations use two V128 values and
+Uniform accesses to their low and high halves. Backend dispatch selects typed
+Handle methods whose implementations are grouped by responsibility. Its sole
+Assembler borrows the output words and uses a controlled VIXL subset without
+implicit scratch registers, literal pools, veneers or automatic extra code.
 
 Packed SSE operations reuse the existing vector IR and direct encoders.
 Restartable REP STOS emits a count guard, one TSO store and progress publication
@@ -42,9 +52,13 @@ all entries to that site's callable directory fallback before retirement;
 all mode variants participate in SMC invalidation. RW/RX aliases occupy one
 reserved range and retire with one unmap.
 
-Process reuses the previous Program's three vector capacities and one actual
-CompileResult output. New IR requests still mint full unit identities and
-immutable metadata; native fault/link owners borrow neither scratch buffer.
+CompileService consumes and resets the previous Program::Storage, retaining its
+three vector capacities and the optimizer's one u64/node work array. Arm64Runtime
+retains the actual Allocation homes/order and one CompileResult output. A
+single-block Function with only an external exit can omit CFG construction;
+internal edges and self-loops retain the Function graph algorithm. New IR
+requests still mint full unit identities and immutable public metadata; native
+fault/link owners borrow neither scratch buffer.
 Successful retention is bounded and final release remains charged. Publish
 can resolve ready static targets before its final cache sync, while the same
 relocation rows retain unlink ownership. Single mappings keep cold transfers.
@@ -73,18 +87,20 @@ exit, with its continuation formed on the first actual request. Unknown targets,
 Block scope and mutable-code boundaries retain their existing paths. Empty
 budget frontiers and synthetic exits never become callable self-dispatch entries.
 
-The implemented x87 subset uses the existing opaque `X87Op` contract, a tail
-state in `GuestState` and `execution/x87.cpp`. The helper retains true 80-bit
-values, TOP/tags, control and status; its small vendored SoftFloat subset uses
-an explicit local environment, including rounding direction from the actual
-roundPack. On ARM64 this private helper closure is built with general-regs-only
-and without instrumentation callouts. Its 144B bridge owns GPR/NZCV preservation;
-vector registers and FP state stay untouched. Same-block exact command windows
-and two immutable builder cursors reduce calls without a second stack model.
-Guest-memory accesses stay in ordinary IR so
-loads can fault before the x87 stack changes. Unmasked x87 exceptions stop at
-the runtime service boundary; full guest exception delivery and transactional
-x87 memory stores are outside this subset.
+The x87 implementation lives in `arch/x86/x87*.cpp`, with true 80-bit values,
+TOP/tags, control/status and FIP/FDP/FOP in the sole 864B GuestState. The selected
+SoftFloat and Cephes dependencies use explicit local arithmetic state, including
+rounding direction from the actual roundPack. On ARM64 this numerical closure is
+built with general-regs-only and without instrumentation callouts. Its 144B
+bridge owns GPR/NZCV preservation; vector registers and FP state stay untouched.
+Same-block exact command windows and two immutable builder cursors reduce calls
+without a second stack model. X87Execute distinguishes prior pending exceptions
+from newly raised exceptions; metadata commits at the actual instruction's
+successful boundary. Guest-memory accesses stay in ordinary IR; x87 memory
+stores prepare their result and commit FSW/TOP/tags only after the store succeeds.
+Unmasked exceptions stop at the runtime service boundary; full guest exception
+delivery remains outside this checkpoint. FX/XSAVE state images use the shared
+execution state service, including compacted XSAVEC and checked XRSTOR commits.
 
 Batch37's adjacent consumer selections retain the original IR/Home and use one
 elided-consumer ID. Signed loads, sole byte publications and unflagged U32
@@ -92,7 +108,12 @@ multiply/add have bounded eligibility and ordinary fallbacks. They add no IR,
 node table or pass.
 
 The current static-ELF subset does not cover every feature of the retired VM.
-See the [post-push benchmark anchor](docs/post-push-benchmark-2026-11-05.md),
+EVEX/AVX-512, complete PKU and guest kernel/compatibility modes remain deferred.
+See the [runtime architecture](docs/runtime-architecture-plan-2026-11-05.md),
+[runtime implementation](docs/runtime-architecture-implementation-2026-11-05.md),
+[instruction coverage](docs/instruction-coverage-implementation-2026-11-05.md),
+[latest compile results](docs/compile-cost-optimization-2026-11-06.md),
+[historical post-push benchmark anchor](docs/post-push-benchmark-2026-11-05.md),
 [Function entry reuse results](docs/function-entry-reuse-2026-11-05.md),
 [owner/publication results](docs/compile-owner-and-publication-optimization-2026-11-05.md),
 [FP and compile analysis](docs/fp-instruction-and-compile-cost-2026-11-05.md),

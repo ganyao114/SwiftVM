@@ -121,7 +121,7 @@ enum class AtomicRMWOp : std::uint8_t {
 // bits; All names the currently defined architectural subset, not a filter.
 enum class Flag : std::uint64_t {
     None = 0, Carry = 1, Overflow = 2, Zero = 4, Negate = 8,
-    Parity = 16, AuxiliaryCarry = 64, NZCV = 15, All = 95,
+    Parity = 16, AuxiliaryCarry = 64, Direction = 128, NZCV = 15, All = 95,
 };
 constexpr std::uint64_t FlagBits(Flag flags) noexcept {
     return static_cast<std::uint64_t>(flags);

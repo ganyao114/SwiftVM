@@ -1,6 +1,50 @@
-# Exact ext80/F64 dependency subset of the preserved SoftFloat-3e tree.
+# Exact ext80, F32/F64 conversion and binary128 dependency subset.
 add_library(svm_softfloat_ext80 STATIC
+    src/i32_to_f128.c
     src/extF80_add.c
+    src/extF80_to_f128.c
+    src/f128_add.c
+    src/f128_div.c
+    src/f128_eq.c
+    src/f128_le.c
+    src/f128_lt.c
+    src/f128_mul.c
+    src/f128_sub.c
+    src/f128_to_extF80.c
+    src/f128_to_i32.c
+    src/s_add128.c
+    src/s_addMagsF128.c
+    src/s_commonNaNToF128UI.c
+    src/s_countLeadingZeros64.c
+    src/s_f128UIToCommonNaN.c
+    src/s_le128.c
+    src/s_lt128.c
+    src/s_normRoundPackToF128.c
+    src/s_normSubnormalF128Sig.c
+    src/s_propagateNaNF128UI.c
+    src/s_roundPackToF128.c
+    src/s_shiftRightJam128Extra.c
+    src/s_shiftRightJam64.c
+    src/s_shiftRightJam64Extra.c
+    src/s_shortShiftLeft128.c
+    src/s_shortShiftRight128.c
+    src/s_sub128.c
+    src/s_subMagsF128.c
+    src/extF80_sub.c
+    src/extF80_to_f32.c
+    src/f32_to_extF80.c
+    src/extF80_to_i32.c
+    src/extF80_to_i64.c
+    src/extF80_roundToInt.c
+    src/extF80_rem.c
+    src/s_roundToI32.c
+    src/s_roundToI64.c
+    src/s_roundPackToF32.c
+    src/s_normSubnormalF32Sig.c
+    src/s_f32UIToCommonNaN.c
+    src/s_commonNaNToF32UI.c
+    src/s_approxRecip32_1.c
+    src/s_approxRecip_1Ks.c
     src/extF80_mul.c
     src/extF80_div.c
     src/extF80_sqrt.c

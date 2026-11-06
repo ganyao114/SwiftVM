@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <stdexcept>
-#include <type_traits>
 #include <utility>
 
 namespace swift::runtime::ir {
@@ -13,18 +12,14 @@ bool Empty(Value value) noexcept { return !value.unit && !value.node; }
 bool Empty(BlockRef block) noexcept { return !block.unit && !block.id; }
 }  // namespace
 
-Builder::Builder(Scope scope, TargetInfo target) {
+Builder::Builder(Scope scope, TargetInfo target) : Builder(scope, target, Program{}) {}
+Builder::Builder(Scope scope, TargetInfo target, Program reusable)
+        : storage(std::move(reusable.storage)) {
     if ((scope != Scope::Block && scope != Scope::Function) ||
         static_cast<unsigned>(target.mode) > static_cast<unsigned>(TargetMode::Unknown))
         throw std::invalid_argument("invalid IR request metadata");
-    storage = std::make_unique<Program::Storage>(scope, target);
-}
-Builder::Builder(Scope scope, TargetInfo target, Program reusable) : Builder(scope, target) {
-    if (!reusable.storage) return;
-    storage->operations = std::move(reusable.storage->operations);
-    storage->operands = std::move(reusable.storage->operands);
-    storage->blocks = std::move(reusable.storage->blocks);
-    storage->operations.clear(); storage->operands.clear(); storage->blocks.clear();
+    if (storage) storage->Reset(scope, target);
+    else storage = std::make_unique<Program::Storage>(scope, target);
 }
 Builder::~Builder() = default;
 Builder::Builder(Builder&&) noexcept = default;

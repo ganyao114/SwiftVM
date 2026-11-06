@@ -1,5 +1,6 @@
 #include "runtime/backend/arm64/compile.h"
 #include "runtime/backend/arm64/abi.h"
+#include "runtime/backend/arm64/patch.h"
 #include "runtime/ir/builder.h"
 
 #include <algorithm>
@@ -15,6 +16,8 @@
 #if defined(__aarch64__) && defined(__ANDROID__)
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
+#include "runtime/execution/code_heap.h"
+#include "runtime/platform/linux/arm64_runtime.h"
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
@@ -25,6 +28,27 @@ namespace {
 using namespace swift::runtime::ir;
 namespace arm64 = swift::runtime::backend::arm64;
 using u64 = std::uint64_t;
+constexpr std::uint32_t WordOffset(swift::runtime::backend::NativeOffset offset) noexcept {
+    return offset == swift::runtime::backend::NoNativeOffset ? UINT32_MAX : offset / 4;
+}
+#if defined(__aarch64__) && defined(__ANDROID__)
+const swift::runtime::execution::HostBackendOps& TestBackendOps() {
+    static swift::runtime::platform::Arm64Runtime binding{false};
+    static const auto operations = binding.Bind();
+    return operations;
+}
+void BindFaultCallbacks(swift::runtime::execution::FaultContext& context) {
+    context.patch_ordered = TestBackendOps().patch_fault;
+    context.recover_native = TestBackendOps().recover_native;
+}
+void PatchLinkWords(std::uintptr_t* write, const std::uintptr_t* execute, std::uintptr_t target, std::uint32_t back) {
+    arm64::PatchNativeLink(write, execute, target, back * 4);
+}
+void UnlinkWords(std::uintptr_t* write, const std::uintptr_t* execute, std::uint32_t back) {
+    arm64::UnlinkNativeLink(write, execute, back * 4);
+}
+#endif
+
 std::size_t checks{};
 void Check(bool okay, const char* message) {
     ++checks;
@@ -799,10 +823,10 @@ void DistantForwardEmission() {
     const auto code = arm64::Compile(program, options);
     Check(bool(code) && code.words.size() > (1u << 18), "distant forward edge retains the old long-branch support");
     Check(code.faults.size() == 1 && code.faults[0].guest_pc == 0x7070 &&
-            code.faults[0].unaligned_fallback_word != UINT32_MAX &&
+            WordOffset(code.faults[0].fallback_offset) != UINT32_MAX &&
             code.links.size() == 1 && code.links[0].target_pc == 0x8080 &&
-            code.links[0].pointer_word - code.links[0].branch_word == 2 + (code.links[0].branch_word & 1) &&
-            code.links[0].pointer_word + 2 < code.words.size(),
+            WordOffset(code.links[0].data_offset) - WordOffset(code.links[0].branch_offset) == 2 + (WordOffset(code.links[0].branch_offset) & 1) &&
+            WordOffset(code.links[0].data_offset) + 2 < code.words.size(),
             "fresh long emission replaces first-attempt fault/link positions without duplicate records");
     const auto branches = std::find_if(code.words.begin(), code.words.end(), [](std::uint32_t word) {
         return (word & 0x7e000000u) == 0x34000000u;
@@ -918,23 +942,23 @@ void DeferredPCLinks() {
     Check(bool(allocation) && !allocation.publish_entry_pc && allocation.homes[target.value].terminal_only &&
             bool(code) && code.words.front() == 0x58000050u && code.links.size() == 1,
             "pure static edge has no hot PC literal or state publication");
-    Check(sizeof(arm64::LinkSite) == 16 && code.links.front().branch_word == 0 &&
-            code.links.front().pointer_word == 2 && code.links.front().pointer_word + 2 < code.words.size(),
+    Check(sizeof(arm64::LinkSite) == 24 && WordOffset(code.links.front().branch_offset) == 0 &&
+            WordOffset(code.links.front().data_offset) == 2 && WordOffset(code.links.front().data_offset) + 2 < code.words.size(),
             "cold PC stub follows the original aligned DATA without a second relocation");
     auto [odd_program, odd_target] = source(false, false, true);
     (void)odd_target;
     const auto odd = arm64::Compile(odd_program, options);
-    Check(bool(odd) && odd.links.size() == 1 && odd.links.front().branch_word == 1 &&
-            odd.links.front().pointer_word == 4 && odd.words[1] == 0x58000070u &&
+    Check(bool(odd) && odd.links.size() == 1 && WordOffset(odd.links.front().branch_offset) == 1 &&
+            WordOffset(odd.links.front().data_offset) == 4 && odd.words[1] == 0x58000070u &&
             odd.words[2] == 0xd61f0200u && odd.words[3] == 0xd503201fu,
             "odd tail jumps directly through LDR/BR while padding remains unreachable before aligned DATA");
 #if defined(__aarch64__) && defined(__ANDROID__)
     namespace execution = swift::runtime::execution;
-    execution::CodeArena arena;
+    execution::CodeHeap arena{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
     for (const auto* layout : {&code, &odd}) {
         const auto published = arena.Publish(layout->words, {}, layout->links);
         const auto& site = layout->links.front();
-        const auto back_words = site.pointer_word - site.branch_word;
+        const auto back_words = WordOffset(site.data_offset) - WordOffset(site.branch_offset);
         const auto entry = reinterpret_cast<std::uintptr_t>(published.entry);
         struct Ready { u64 pc; std::uintptr_t entry; unsigned calls{}; } ready{site.target_pc, entry};
         const auto lookup = [](void* opaque, u64 pc) noexcept -> std::uintptr_t {
@@ -943,37 +967,37 @@ void DeferredPCLinks() {
         };
         const auto prelinked = arena.Publish(layout->words, {}, layout->links, lookup, &ready);
         const auto linked_entry = reinterpret_cast<std::uintptr_t>(prelinked.entry);
-        const auto linked_delta = static_cast<std::int64_t>(entry - (linked_entry + site.branch_word * 4));
+        const auto linked_delta = static_cast<std::int64_t>(entry - (linked_entry + WordOffset(site.branch_offset) * 4));
         const auto* linked_words = reinterpret_cast<const std::uint32_t*>(prelinked.entry);
-        Check(linked_words[site.branch_word] == (prelinked.writable ?
+        Check(linked_words[WordOffset(site.branch_offset)] == (prelinked.writable ?
                     0x14000000u | (static_cast<std::uint32_t>(linked_delta / 4) & 0x03ffffffu) :
                     0x58000010u | (back_words << 5)) &&
-                Read64(linked_words + site.pointer_word) == (prelinked.writable ? entry :
-                    linked_entry + (site.pointer_word + 2) * 4),
+                Read64(linked_words + WordOffset(site.data_offset)) == (prelinked.writable ? entry :
+                    linked_entry + (WordOffset(site.data_offset) + 2) * 4),
                 "ready links publish patched with an unlinkable alias; single mappings retain their cold owner");
         ready.entry = entry + (std::uintptr_t{1} << 28);
         const auto prelinked_far = arena.Publish(layout->words, {}, layout->links, lookup, &ready);
         const auto* far_words = reinterpret_cast<const std::uint32_t*>(prelinked_far.entry);
         Check(ready.calls == (prelinked.writable ? 2u : 0u) &&
-                far_words[site.branch_word] == (0x58000010u | (back_words << 5)) &&
-                Read64(far_words + site.pointer_word) == (prelinked_far.writable ? ready.entry :
-                    reinterpret_cast<std::uintptr_t>(prelinked_far.entry) + (site.pointer_word + 2) * 4),
+                far_words[WordOffset(site.branch_offset)] == (0x58000010u | (back_words << 5)) &&
+                Read64(far_words + WordOffset(site.data_offset)) == (prelinked_far.writable ? ready.entry :
+                    reinterpret_cast<std::uintptr_t>(prelinked_far.entry) + (WordOffset(site.data_offset) + 2) * 4),
                 "far ready links keep LDR/BR; a single mapping never creates a link it cannot later unlink");
         if (!published.writable) continue;
-        auto* write = reinterpret_cast<std::uintptr_t*>(published.writable + site.pointer_word * 4);
-        const auto* execute = reinterpret_cast<const std::uintptr_t*>(entry + site.pointer_word * 4);
-        const auto* branch = reinterpret_cast<const std::uint32_t*>(entry) + site.branch_word;
+        auto* write = reinterpret_cast<std::uintptr_t*>(published.writable + WordOffset(site.data_offset) * 4);
+        const auto* execute = reinterpret_cast<const std::uintptr_t*>(entry + WordOffset(site.data_offset) * 4);
+        const auto* branch = reinterpret_cast<const std::uint32_t*>(entry) + WordOffset(site.branch_offset);
         const auto load = 0x58000010u | (back_words << 5);
-        const auto near = 0x14000000u | ((0u - site.branch_word) & 0x03ffffffu);
-        execution::PatchNativeLink(write, execute, entry, back_words);
+        const auto near = 0x14000000u | ((0u - WordOffset(site.branch_offset)) & 0x03ffffffu);
+        PatchLinkWords(write, execute, entry, back_words);
         Check(*branch == near && Read64(execute) == entry,
                 "even and odd links patch B from their actual branch instruction");
         const auto far = entry + (std::uintptr_t{1} << 28);
-        execution::PatchNativeLink(write, execute, far, back_words);
+        PatchLinkWords(write, execute, far, back_words);
         Check(*branch == load && branch[1] == 0xd61f0200u && Read64(execute) == far,
                 "far relink restores the explicit DATA displacement without executing alignment padding");
-        execution::PatchNativeLink(write, execute, entry, back_words);
-        execution::UnlinkNativeLink(write, execute, back_words);
+        PatchLinkWords(write, execute, entry, back_words);
+        UnlinkWords(write, execute, back_words);
         Check(*branch == load && Read64(execute) == reinterpret_cast<std::uintptr_t>(execute + 1),
                 "even and odd unlink restore the original load and this edge's RX cold stub");
     }
@@ -998,13 +1022,13 @@ void DeferredPCLinks() {
 void CompleteAdditionalEntries() {
 #if defined(__aarch64__) && defined(__ANDROID__)
     namespace execution = swift::runtime::execution;
-    struct State { execution::GuestState cpu; std::array<u64,20> inputs; u64 seen_pc{}; };
+    struct State { swift::runtime::x86::GuestState cpu; std::array<u64,20> inputs; u64 seen_pc{}; };
     constexpr u64 first_pc=0x4100,other_pc=0x4200,flags=0xa5a50000bc000085ULL;
     for (const bool native_nzcv:{false,true}) {
         if (native_nzcv && !(getauxval(AT_HWCAP)&HWCAP_FLAGM)) continue;
         Builder builder{Scope::Function}; const auto first=Create(builder),other=Create(builder);
         Need(builder.BeginBlock(first));
-        Store(builder,offsetof(execution::GuestState,gprs)+execution::RDX*8,Constant(builder,123));
+        Store(builder,offsetof(swift::runtime::x86::GuestState,gprs)+swift::runtime::x86::RDX*8,Constant(builder,123));
         Need(builder.EndBlock(Terminal::Jump(other)));
         Need(builder.BeginBlock(other));
         Need(builder.Emit<OpCode::EntryPoint>(Type::Void,{Operand::Immediate(other_pc,Type::U64)}));
@@ -1013,24 +1037,24 @@ void CompleteAdditionalEntries() {
         auto sum=values.front();
         for (unsigned i=1;i<values.size();++i)
             sum=Need(builder.Emit<OpCode::Add>(Type::U64,{Operand::ValueOf(sum),Operand::ValueOf(values[i])}));
-        Store(builder,offsetof(execution::GuestState,gprs)+execution::R8*8,sum);
-        Store(builder,offsetof(State,seen_pc),Load(builder,offsetof(execution::GuestState,pc)));
+        Store(builder,offsetof(swift::runtime::x86::GuestState,gprs)+swift::runtime::x86::R8*8,sum);
+        Store(builder,offsetof(State,seen_pc),Load(builder,offsetof(swift::runtime::x86::GuestState,pc)));
         Need(builder.EndBlock(Terminal::Return(Constant(builder,42))));
         auto program=Submit(builder);
-        arm64::CompileOptions options{offsetof(execution::GuestState,packed_flags)};
+        arm64::CompileOptions options{offsetof(swift::runtime::x86::GuestState,packed_flags)};
         options.dispatcher=reinterpret_cast<std::uintptr_t>(native_nzcv?&execution::SvmNativeDispatchNZCV:&execution::SvmNativeDispatch);
         options.exit_handler=reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
-        options.pc_offset=offsetof(execution::GuestState,pc);
-        options.pinned_uniform_offset=offsetof(execution::GuestState,gprs);options.pinned_uniform_slots=16;
+        options.pc_offset=offsetof(swift::runtime::x86::GuestState,pc);
+        options.pinned_uniform_offset=offsetof(swift::runtime::x86::GuestState,gprs);options.pinned_uniform_slots=16;
         options.private_uniforms=options.fault_locations=options.deferred_pc=true;
         options.native_nzcv=native_nzcv;options.entry_pc=first_pc;
         const auto compiled=arm64::Compile(program,options);
         Check(bool(compiled)&&compiled.entries.size()==1&&compiled.entries[0].pc==other_pc&&compiled.frame_bytes>0,
                 "additional entry owns the same actual nonzero frame as its original unit");
-        execution::CodeArena arena;
+        execution::CodeHeap arena{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
         const auto unit=arena.Publish(compiled.words,compiled.faults,compiled.links);
         const auto alternate=reinterpret_cast<execution::NativeCode::Function>(
-                reinterpret_cast<std::uintptr_t>(unit.entry)+std::uintptr_t{compiled.entries[0].word}*4);
+                reinterpret_cast<std::uintptr_t>(unit.entry)+std::uintptr_t{WordOffset(compiled.entries[0].offset)}*4);
         struct Resolver { execution::NativeCode::Function entry; unsigned calls{}; } resolver{};
         State state;std::atomic<const execution::NativeCode*> active{};
         execution::NativeRunContext context;
@@ -1046,8 +1070,8 @@ void CompleteAdditionalEntries() {
             for (unsigned i=0;i<state.inputs.size();++i)state.inputs[i]=i+1;
             resolver.entry=secondary?alternate:unit.entry;resolver.calls=0;
             Check(execution::SvmRunNative(&state.cpu,&context)==42&&resolver.calls==1&&
-                    state.cpu.gprs[execution::R8]==210&&state.seen_pc==(secondary?other_pc:first_pc)&&
-                    state.cpu.gprs[execution::RDX]==(secondary?0:123)&&state.cpu.packed_flags==flags,
+                    state.cpu.gprs[swift::runtime::x86::R8]==210&&state.seen_pc==(secondary?other_pc:first_pc)&&
+                    state.cpu.gprs[swift::runtime::x86::RDX]==(secondary?0:123)&&state.cpu.packed_flags==flags,
                     "external prologue and internal body edge preserve SP, own PC, values and complete flags");
         }
     }
@@ -1061,9 +1085,9 @@ void LinkedDynamicPC() {
     for (const bool native_nzcv : {false, true}) {
         if (native_nzcv && !(getauxval(AT_HWCAP) & HWCAP_FLAGM)) continue;
         arm64::CompileOptions options;
-        options.flags_offset = offsetof(execution::GuestState, packed_flags);
-        options.pc_offset = offsetof(execution::GuestState, pc);
-        options.pinned_uniform_offset = offsetof(execution::GuestState, gprs);
+        options.flags_offset = offsetof(swift::runtime::x86::GuestState, packed_flags);
+        options.pc_offset = offsetof(swift::runtime::x86::GuestState, pc);
+        options.pinned_uniform_offset = offsetof(swift::runtime::x86::GuestState, gprs);
         options.pinned_uniform_slots = 16;
         options.private_uniforms = options.fault_locations = options.deferred_pc = true;
         options.native_nzcv = native_nzcv; options.entry_pc = entry_pc;
@@ -1074,7 +1098,7 @@ void LinkedDynamicPC() {
         options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
 
         Builder source{Scope::Block}; Need(source.BeginBlock(Create(source)));
-        Store(source, options.pc_offset, Load(source, options.pinned_uniform_offset + execution::RAX * sizeof(u64)));
+        Store(source, options.pc_offset, Load(source, options.pinned_uniform_offset + swift::runtime::x86::RAX * sizeof(u64)));
         Need(source.EndBlock(Terminal::Dispatch()));
         auto source_program = Submit(source);
         const auto source_allocation = arm64::AllocateBlock(source_program, &options);
@@ -1083,7 +1107,7 @@ void LinkedDynamicPC() {
                 "GPR-sourced PC tail remains dynamic without a static target relocation");
 
         Builder target{Scope::Block}; Need(target.BeginBlock(Create(target)));
-        Store(target, options.pinned_uniform_offset + execution::RCX * sizeof(u64), Load(target, options.pc_offset));
+        Store(target, options.pinned_uniform_offset + swift::runtime::x86::RCX * sizeof(u64), Load(target, options.pc_offset));
         Need(target.EndBlock(Terminal::Return(Constant(target, 42))));
         auto target_program = Submit(target); options.entry_pc = next_pc;
         const auto target_allocation = arm64::AllocateBlock(target_program, &options);
@@ -1091,7 +1115,7 @@ void LinkedDynamicPC() {
         Check(bool(target_allocation) && target_allocation.publish_entry_pc && bool(target_code),
                 "dynamic target's actual PC observer requires entry publication");
 
-        execution::CodeArena arena;
+        execution::CodeHeap arena{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
         const auto entry = arena.Publish(source_code.words, {}, source_code.links);
         const auto destination = arena.Publish(target_code.words, {}, target_code.links);
         std::array<execution::DispatchSlot, 4> slots{};
@@ -1108,7 +1132,7 @@ void LinkedDynamicPC() {
             u64 target_pc{};
         } resolver{&entry, &destination, entry, &ready};
         resolver.target_pc = next_pc;
-        execution::GuestState state;
+        swift::runtime::x86::GuestState state;
         std::atomic<const execution::NativeCode*> active{};
         execution::NativeRunContext context;
         context.opaque = &resolver;
@@ -1138,27 +1162,27 @@ void LinkedDynamicPC() {
         for (const bool warm : {false, true}) {
             context.slots = warm ? slots.data() : nullptr; // Public nullable context keeps the original cold guard.
             state = {}; state.pc = entry_pc; state.packed_flags = initial;
-            state.gprs[execution::RAX] = next_pc;
+            state.gprs[swift::runtime::x86::RAX] = next_pc;
             resolver.calls = 0; resolver.observed = {};
             Check(execution::SvmRunNative(&state, &context) == 42,
                     "dynamic Dispatch keeps its PC distinct from the target's Return reason");
             Check(resolver.observed[0] == entry_pc && resolver.calls == (warm ? 1u : 2u) &&
                     (warm || resolver.observed[1] == next_pc),
                     "root resolves its original PC; only a dynamic cold miss resolves the true next PC");
-            Check(state.pc == next_pc && state.gprs[execution::RCX] == next_pc && state.packed_flags == initial,
+            Check(state.pc == next_pc && state.gprs[swift::runtime::x86::RCX] == next_pc && state.packed_flags == initial,
                     "cold and ready dynamic edges preserve whole packed flags and expose the target PC");
         }
         Builder local{Scope::Block}; Need(local.BeginBlock(Create(local)));
-        const auto count = Load(local, options.pinned_uniform_offset + execution::RDX * sizeof(u64));
+        const auto count = Load(local, options.pinned_uniform_offset + swift::runtime::x86::RDX * sizeof(u64));
         Store(local, options.pc_offset, Constant(local, next_pc));
         const auto skip = Need(local.Emit<OpCode::NotGoto>(Type::U64, {Operand::ValueOf(count)}));
-        const auto address = Load(local, options.pinned_uniform_offset + execution::R8 * sizeof(u64));
+        const auto address = Load(local, options.pinned_uniform_offset + swift::runtime::x86::R8 * sizeof(u64));
         Need(local.Emit<OpCode::StoreMemoryTSO>(Type::Void,
                 {Operand::ValueOf(address), Operand::ValueOf(Constant(local, 0x55))}));
-        Store(local, options.pinned_uniform_offset + execution::RCX * sizeof(u64), Constant(local, 0x55));
+        Store(local, options.pinned_uniform_offset + swift::runtime::x86::RCX * sizeof(u64), Constant(local, 0x55));
         Store(local, options.pc_offset, Constant(local, 0x3000));
         Need(local.Emit<OpCode::BindLabel>(Type::Void, {Operand::ValueOf(skip)}));
-        Store(local, options.pinned_uniform_offset + execution::R11 * sizeof(u64), skip);
+        Store(local, options.pinned_uniform_offset + swift::runtime::x86::R11 * sizeof(u64), skip);
         Need(local.EndBlock(Terminal::Dispatch())); auto local_program = Submit(local);
         auto local_options = options; local_options.entry_pc = entry_pc;
         const auto local_code = arm64::Compile(local_program, local_options);
@@ -1181,23 +1205,23 @@ void LinkedDynamicPC() {
             u64 memory = 0x77;
             const auto selected_pc = count_value ? 0x3000 : next_pc;
             state = {}; state.pc = entry_pc; state.packed_flags = initial;
-            state.gprs[execution::RDX] = count_value; state.gprs[execution::RCX] = 0x11;
-            state.gprs[execution::R8] = count_value ? reinterpret_cast<std::uintptr_t>(&memory) : 0;
+            state.gprs[swift::runtime::x86::RDX] = count_value; state.gprs[swift::runtime::x86::RCX] = 0x11;
+            state.gprs[swift::runtime::x86::R8] = count_value ? reinterpret_cast<std::uintptr_t>(&memory) : 0;
             resolver.calls = 0; resolver.observed = {}; resolver.target_pc = selected_pc;
             context.slots = nullptr; context.mask = 0;
             const auto returned = execution::SvmRunNative(&state, &context);
             const bool okay = returned == 42 && resolver.calls == 2 &&
                     resolver.observed[0] == entry_pc && resolver.observed[1] == selected_pc &&
                     state.pc == selected_pc && state.packed_flags == initial &&
-                    state.gprs[execution::RCX] == (count_value ? 0x55 : 0x11) &&
-                    state.gprs[execution::R11] == count_value && memory == (count_value ? 0x55 : 0x77);
+                    state.gprs[swift::runtime::x86::RCX] == (count_value ? 0x55 : 0x11) &&
+                    state.gprs[swift::runtime::x86::R11] == count_value && memory == (count_value ? 0x55 : 0x77);
             if (!okay) std::fprintf(stderr,
                     "forward-local native=%u count=%llx ret=%llx calls=%u observed=%llx/%llx pc=%llx flags=%llx rcx=%llx r11=%llx memory=%llx\n",
                     static_cast<unsigned>(native_nzcv), static_cast<unsigned long long>(count_value),
                     static_cast<unsigned long long>(returned), resolver.calls,
                     static_cast<unsigned long long>(resolver.observed[0]), static_cast<unsigned long long>(resolver.observed[1]),
                     static_cast<unsigned long long>(state.pc), static_cast<unsigned long long>(state.packed_flags),
-                    static_cast<unsigned long long>(state.gprs[execution::RCX]), static_cast<unsigned long long>(state.gprs[execution::R11]),
+                    static_cast<unsigned long long>(state.gprs[swift::runtime::x86::RCX]), static_cast<unsigned long long>(state.gprs[swift::runtime::x86::R11]),
                     static_cast<unsigned long long>(memory));
             Check(okay,
                     "zero skips even a null memory operand; nonzero commits body state and both paths retain flags, PC and branch value");
@@ -1221,18 +1245,18 @@ void LinkedDynamicPC() {
             const auto primary = std::find_if(predicate_code.links.begin(), predicate_code.links.end(),
                     [](const arm64::LinkSite& link) { return link.target_pc == next_pc; });
             Check(primary != predicate_code.links.end() &&
-                    (predicate_code.words[primary->branch_word] & 0xff00001fu) == 0x54000001u,
+                    (predicate_code.words[WordOffset(primary->branch_offset)] & 0xff00001fu) == 0x54000001u,
                     "two forward targets choose predicate-false as a patchable B.NE head");
             auto backward_options = predicate_options; backward_options.entry_pc = 0x4000;
             const auto backward = arm64::Compile(predicate_program, backward_options);
             Check(bool(backward) && std::any_of(backward.links.begin(), backward.links.end(), [&](const arm64::LinkSite& link) {
-                        return link.target_pc == other_pc && (backward.words[link.branch_word] & 0xff00001fu) == 0x54000000u;
+                        return link.target_pc == other_pc && (backward.words[WordOffset(link.branch_offset)] & 0xff00001fu) == 0x54000000u;
                     }), "a backward yes target has priority over the default no layout");
             auto flip_program = predicate_source(Condition::HI);
             const auto flip = arm64::Compile(flip_program, predicate_options);
             Check(bool(flip) && std::count(flip.words.begin(), flip.words.end(), 0xd500401fu) == 3 &&
                     std::all_of(flip.links.begin(), flip.links.end(), [&](const arm64::LinkSite& link) {
-                        return (flip.words[link.branch_word] & 0xff00001fu) == 0x58000010u;
+                        return (flip.words[WordOffset(link.branch_offset)] & 0xff00001fu) == 0x58000010u;
                     }), "temporary carry inversion retains the old per-edge restoration and ordinary links");
 
             auto other_options = options; other_options.entry_pc = other_pc;
@@ -1257,22 +1281,22 @@ void LinkedDynamicPC() {
                 state = {}; state.pc = entry_pc; state.packed_flags = flags; resolver.calls = 0; resolver.observed = {};
                 const auto selected_pc = zero ? other_pc : next_pc;
                 Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == 1 &&
-                        state.pc == selected_pc && state.gprs[execution::RCX] == selected_pc && state.packed_flags == flags,
+                        state.pc == selected_pc && state.gprs[swift::runtime::x86::RCX] == selected_pc && state.packed_flags == flags,
                         "both predicate outcomes preserve whole flags/reserved and observe the true target PC before Return42");
             };
             run_predicate(false); run_predicate(true);
             if (predicate_entry.writable) {
-                auto* write = reinterpret_cast<std::uintptr_t*>(predicate_entry.writable + primary->pointer_word * 4);
-                const auto* execute = reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(predicate_entry.entry) + primary->pointer_word * 4);
-                const auto back = primary->pointer_word - primary->branch_word;
+                auto* write = reinterpret_cast<std::uintptr_t*>(predicate_entry.writable + WordOffset(primary->data_offset) * 4);
+                const auto* execute = reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(predicate_entry.entry) + WordOffset(primary->data_offset) * 4);
+                const auto back = WordOffset(primary->data_offset) - WordOffset(primary->branch_offset);
                 const auto* words = reinterpret_cast<const std::uint32_t*>(predicate_entry.entry);
-                execution::PatchNativeLink(write, execute, reinterpret_cast<std::uintptr_t>(predicate_entry.entry) + (std::uintptr_t{1} << 21), back);
-                Check(words[primary->branch_word] == predicate_code.words[primary->branch_word] &&
-                        (words[primary->pointer_word - 2] & 0xfc000000u) == 0x14000000u,
+                PatchLinkWords(write, execute, reinterpret_cast<std::uintptr_t>(predicate_entry.entry) + (std::uintptr_t{1} << 21), back);
+                Check(words[WordOffset(primary->branch_offset)] == predicate_code.words[WordOffset(primary->branch_offset)] &&
+                        (words[WordOffset(primary->data_offset) - 2] & 0xfc000000u) == 0x14000000u,
                         "far B.cond target preserves its condition and falls back through the real B26 gate");
-                execution::UnlinkNativeLink(write, execute, back);
-                Check(words[primary->branch_word] == predicate_code.words[primary->branch_word] &&
-                        words[primary->pointer_word - 2] == 0x58000050u && Read64(execute) == reinterpret_cast<std::uintptr_t>(execute + 1),
+                UnlinkWords(write, execute, back);
+                Check(words[WordOffset(primary->branch_offset)] == predicate_code.words[WordOffset(primary->branch_offset)] &&
+                        words[WordOffset(primary->data_offset) - 2] == 0x58000050u && Read64(execute) == reinterpret_cast<std::uintptr_t>(execute + 1),
                         "B.cond unlink restores the owned cold stub without changing its predicate");
                 run_predicate(false);
             }
@@ -1302,12 +1326,12 @@ void LinkedDynamicPC() {
             seed = {}; seed.entry = cold;
             if (pending) { seed.pc = callable_pc; seed.occupied = true; }
             state = {}; state.pc = entry_pc; state.packed_flags = initial;
-            state.gprs[execution::RAX] = callable_pc;
+            state.gprs[swift::runtime::x86::RAX] = callable_pc;
             resolver.calls = 0; resolver.observed = {};
             context.dispatcher_entries = context.probe_steps = 0; context.cache_hits = 37;
             Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == 2 &&
                     resolver.observed[0] == entry_pc && resolver.observed[1] == callable_pc &&
-                    state.pc == callable_pc && state.gprs[execution::RCX] == callable_pc && state.packed_flags == initial,
+                    state.pc == callable_pc && state.gprs[swift::runtime::x86::RCX] == callable_pc && state.packed_flags == initial,
                     "callable empty/pending paths commit the actual PC and preserve complete flags/reserved");
             Check(context.cache_hits == 37 && (!native_nzcv ||
                     (context.dispatcher_entries == (pending ? 1u : 2u) && context.probe_steps == (pending ? 1u : 2u))),
@@ -1322,12 +1346,12 @@ void LinkedDynamicPC() {
         cached_options.dispatcher = reinterpret_cast<std::uintptr_t>(native_nzcv
                 ? &execution::SvmNativeDispatchNZCVCounted : &execution::SvmNativeDispatchCounted);
         const auto cached_code = arm64::Compile(source_program, cached_options);
-        Check(bool(cached_code) && cached_code.links.size() == 1 && cached_code.links[0].branch_word == UINT32_MAX,
+        Check(bool(cached_code) && cached_code.links.size() == 1 && cached_code.links[0].kind == arm64::LinkKind::Dynamic,
                 "one real dynamic site owns one fixed array relocation in the existing link collection");
         const auto cached_entry = arena.Publish(cached_code.words, {}, cached_code.links);
-        const auto tuple_offset = cached_code.links[0].pointer_word * 4u;
+        const auto tuple_offset = WordOffset(cached_code.links[0].data_offset) * 4u;
         const auto* tuple = reinterpret_cast<const std::uint8_t*>(cached_entry.entry) + tuple_offset;
-        const auto cache_fallback = reinterpret_cast<std::uintptr_t>(cached_entry.entry) + cached_code.links[0].target_pc * 4;
+        const auto cache_fallback = reinterpret_cast<std::uintptr_t>(cached_entry.entry) + cached_code.links[0].fallback_offset;
         const auto pair_offset = [](u64 pc) { return ((pc >> 2) & (arm64::abi::DynamicCacheEntries - 1)) * 16u; };
         bool callable_entries = true;
         for (unsigned i = 0; i < arm64::abi::DynamicCacheEntries; ++i)
@@ -1344,11 +1368,11 @@ void LinkedDynamicPC() {
         resolver.ready = &cached_slot; resolver.target_pc = callable_pc;
         const auto run_cached = [&](unsigned calls, u64 probes, u64 hits, u64 target_pc) {
             state = {}; state.pc = entry_pc; state.packed_flags = initial;
-            state.gprs[execution::RAX] = target_pc;
+            state.gprs[swift::runtime::x86::RAX] = target_pc;
             resolver.calls = 0; resolver.observed = {}; resolver.target_pc = target_pc;
             context.dispatcher_entries = context.probe_steps = context.cache_hits = 0;
             Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == calls &&
-                    state.pc == target_pc && state.gprs[execution::RCX] == target_pc && state.packed_flags == initial &&
+                    state.pc == target_pc && state.gprs[swift::runtime::x86::RCX] == target_pc && state.packed_flags == initial &&
                     context.dispatcher_entries == 1 && context.probe_steps == probes && context.cache_hits == hits,
                     "local and directory hits preserve PC/Return/whole flags and count one dispatch with only real directory probes");
         };
@@ -1433,29 +1457,29 @@ void FaultMetadataAndRecovery() {
     Check(code.faults.size() == 4 && sizeof(arm64::FaultSite) == 32, "one real fault range per marked scalar/vector access");
     for (std::size_t i = 0; i < code.faults.size(); ++i) {
         const auto& site = code.faults[i];
-        Check(site.guest_pc == 0x1000 + i * 16 && site.first_word < site.last_word && site.last_word <= code.words.size(),
+        Check(site.guest_pc == 0x1000 + i * 16 && WordOffset(site.first_offset) < WordOffset(site.last_offset) && WordOffset(site.last_offset) <= code.words.size(),
                 "fault range maps actual native words to the consumed guest PC");
     }
     const auto& load = code.faults[0]; const auto& store = code.faults[1];
-    Check(load.first_word <= load.unaligned_word && load.unaligned_word + 1 == load.last_word &&
-            (code.words[load.unaligned_word] & 0xfffffc00u) == 0xf8bfc000u &&
-            (code.words[load.unaligned_fallback_word] & 0xfffffc00u) == 0xf9400000u &&
-            code.words[load.unaligned_fallback_word + 1] == 0xd50339bfu &&
-            code.words[load.unaligned_fallback_word + 2] == (0x14000000u |
-                ((load.unaligned_word + 1 - (load.unaligned_fallback_word + 2)) & 0x03ffffffu)),
+    Check(WordOffset(load.first_offset) <= WordOffset(load.unaligned_offset) && WordOffset(load.unaligned_offset) + 1 == WordOffset(load.last_offset) &&
+            (code.words[WordOffset(load.unaligned_offset)] & 0xfffffc00u) == 0xf8bfc000u &&
+            (code.words[WordOffset(load.fallback_offset)] & 0xfffffc00u) == 0xf9400000u &&
+            code.words[WordOffset(load.fallback_offset) + 1] == 0xd50339bfu &&
+            code.words[WordOffset(load.fallback_offset) + 2] == (0x14000000u |
+                ((WordOffset(load.unaligned_offset) + 1 - (WordOffset(load.fallback_offset) + 2)) & 0x03ffffffu)),
             "recoverable LDAPR has one hot access and a cold load/barrier returning to its next word");
-    Check(store.first_word <= store.unaligned_word && store.unaligned_word + 1 == store.last_word &&
-            (code.words[store.unaligned_word] & 0xfffffc00u) == 0xc89ffc00u &&
-            code.words[store.unaligned_fallback_word] == 0xd5033bbfu &&
-            (code.words[store.unaligned_fallback_word + 1] & 0xfffffc00u) == 0xf9000000u &&
-            code.words[store.unaligned_fallback_word + 2] == (0x14000000u |
-                ((store.unaligned_word + 1 - (store.unaligned_fallback_word + 2)) & 0x03ffffffu)),
+    Check(WordOffset(store.first_offset) <= WordOffset(store.unaligned_offset) && WordOffset(store.unaligned_offset) + 1 == WordOffset(store.last_offset) &&
+            (code.words[WordOffset(store.unaligned_offset)] & 0xfffffc00u) == 0xc89ffc00u &&
+            code.words[WordOffset(store.fallback_offset)] == 0xd5033bbfu &&
+            (code.words[WordOffset(store.fallback_offset) + 1] & 0xfffffc00u) == 0xf9000000u &&
+            code.words[WordOffset(store.fallback_offset) + 2] == (0x14000000u |
+                ((WordOffset(store.unaligned_offset) + 1 - (WordOffset(store.fallback_offset) + 2)) & 0x03ffffffu)),
             "recoverable STLR's cold store follows its barrier without a hot placeholder");
     const auto& byte = code.faults[2]; const auto& vector = code.faults[3];
-    Check(byte.unaligned_word == UINT32_MAX && byte.unaligned_fallback_word == UINT32_MAX &&
-            (code.words[byte.first_word] & 0xfffffc00u) == 0x38bfc000u &&
-            vector.unaligned_word == UINT32_MAX && vector.unaligned_fallback_word == UINT32_MAX &&
-            code.words[vector.last_word - 1] == 0xd50339bfu,
+    Check(WordOffset(byte.unaligned_offset) == UINT32_MAX && WordOffset(byte.fallback_offset) == UINT32_MAX &&
+            (code.words[WordOffset(byte.first_offset)] & 0xfffffc00u) == 0x38bfc000u &&
+            WordOffset(vector.unaligned_offset) == UINT32_MAX && WordOffset(vector.fallback_offset) == UINT32_MAX &&
+            code.words[WordOffset(vector.last_offset) - 1] == 0xd50339bfu,
             "byte accesses need no alignment rescue and V128 retains its half barrier");
 
     Builder halfwords{Scope::Block}; Need(halfwords.BeginBlock(Create(halfwords)));
@@ -1478,24 +1502,24 @@ void FaultMetadataAndRecovery() {
     const auto signed_code = ::Compile(half_program, options);
     Check(signed_code.faults.size() == 3, "both actual signed-load widths retain their original fault records");
     const auto& signed_site = signed_code.faults[0]; const auto& shared_site = signed_code.faults[1];
-    Check((signed_code.words[signed_site.unaligned_word] & 0xfffffc00u) == 0x59c00000u &&
-            signed_code.words[signed_site.unaligned_fallback_word] ==
-                    (signed_code.words[signed_site.unaligned_word] ^ 0x21000000u) &&
-            signed_code.words[signed_site.unaligned_fallback_word + 1] == 0xd50339bfu &&
-            signed_code.words[signed_site.unaligned_fallback_word + 2] == (0x14000000u |
-                ((signed_site.unaligned_word + 1 - (signed_site.unaligned_fallback_word + 2)) & 0x03ffffffu)) &&
-            (signed_code.words[shared_site.unaligned_word] & 0xfffffc00u) == 0x59400000u,
+    Check((signed_code.words[WordOffset(signed_site.unaligned_offset)] & 0xfffffc00u) == 0x59c00000u &&
+            signed_code.words[WordOffset(signed_site.fallback_offset)] ==
+                    (signed_code.words[WordOffset(signed_site.unaligned_offset)] ^ 0x21000000u) &&
+            signed_code.words[WordOffset(signed_site.fallback_offset) + 1] == 0xd50339bfu &&
+            signed_code.words[WordOffset(signed_site.fallback_offset) + 2] == (0x14000000u |
+                ((WordOffset(signed_site.unaligned_offset) + 1 - (WordOffset(signed_site.fallback_offset) + 2)) & 0x03ffffffu)) &&
+            (signed_code.words[WordOffset(shared_site.unaligned_offset)] & 0xfffffc00u) == 0x59400000u,
             "sole-use adjacent SXTH uses a signed hot/cold load; a shared unsigned result retains its original load");
     const auto& signed_word = signed_code.faults[2];
-    Check((signed_code.words[signed_word.unaligned_word] & 0xfffffc00u) == 0x99800000u &&
-            signed_code.words[signed_word.unaligned_fallback_word] ==
-                    (signed_code.words[signed_word.unaligned_word] ^ 0x21000000u) &&
-            signed_code.words[signed_word.unaligned_fallback_word + 1] == 0xd50339bfu,
+    Check((signed_code.words[WordOffset(signed_word.unaligned_offset)] & 0xfffffc00u) == 0x99800000u &&
+            signed_code.words[WordOffset(signed_word.fallback_offset)] ==
+                    (signed_code.words[WordOffset(signed_word.unaligned_offset)] ^ 0x21000000u) &&
+            signed_code.words[WordOffset(signed_word.fallback_offset) + 1] == 0xd50339bfu,
             "adjacent SXTW uses LDAPURSW and its matching LDURSW acquire fallback");
     options.rcpc_imm9 = false;
     const auto unsigned_code = ::Compile(half_program, options);
-    Check((unsigned_code.words[unsigned_code.faults[0].unaligned_word] & 0xfffffc00u) == 0x78bfc000u &&
-            (unsigned_code.words[unsigned_code.faults[0].last_word] & 0xfffffc00u) == 0x13003c00u,
+    Check((unsigned_code.words[WordOffset(unsigned_code.faults[0].unaligned_offset)] & 0xfffffc00u) == 0x78bfc000u &&
+            (unsigned_code.words[WordOffset(unsigned_code.faults[0].last_offset)] & 0xfffffc00u) == 0x13003c00u,
             "without RCpc imm9 the original unsigned ordered load and SXTH remain separate");
 }
 
@@ -1847,7 +1871,7 @@ void VectorLaneMasks() {
                 return (word & 0xffc00000u) == 0x3d800000u && ((word >> 10) & 4095u) == 1;
             }) && code.faults.size() == 2 &&
             std::all_of(code.faults.begin(), code.faults.end(), [](const arm64::FaultSite& site) {
-                return site.unaligned_word == UINT32_MAX;
+                return WordOffset(site.unaligned_offset) == UINT32_MAX;
             }), "V128 TSO store uses STR Q scaled16 without RCpc and retains ordinary fault sites");
     constexpr u64 initial = 0xa5a50000bc00003cULL;
     Write64(state.data() + 48, initial);
@@ -1888,6 +1912,11 @@ void CpuQueryPairLifetime() {
     Store(builder, 40, Snapshot(builder, second));
     const auto carry = Need(builder.Emit<OpCode::TestFlags>(Type::Bool, {Operand::Flags(Flag::Carry)}));
     Need(builder.EndBlock(Terminal::Return(carry))); auto program = Submit(builder);
+    const auto allocation = arm64::AllocateFunction(program);
+    Check(program.ScopeKind() == Scope::Function && bool(allocation) &&
+                  allocation.block_order.size() == 1 && allocation.block_order.front() == 0 &&
+                  allocation.homes[first.node.value].extra_slot && allocation.homes[second.node.value].extra_slot,
+          "single external Function retains its scope, real homes and both helper result slots");
     arm64::CompileOptions options{48};
 #if defined(__aarch64__) && defined(__ANDROID__)
     options.native_nzcv = (getauxval(AT_HWCAP) & HWCAP_FLAGM) != 0;
@@ -2005,8 +2034,8 @@ void LinkedPinnedUniforms() {
         Check(std::count(code.words.begin(), code.words.end(), 0xf9000000u | (i << 10) | (19u << 5) | (20u + i)) == 1,
                 "UniformBarrier publishes each actual pinned slot once");
     Check(code.links.size() == 1 && code.links[0].target_pc == 0x1234567890ULL, "only the real local full-width PC store creates a direct link");
-    const auto pointer = code.links[0].pointer_word;
-    const auto branch = code.links[0].branch_word;
+    const auto pointer = WordOffset(code.links[0].data_offset);
+    const auto branch = WordOffset(code.links[0].branch_offset);
     Check(!(pointer & 1) && branch < pointer && pointer + 1 < code.words.size() &&
             pointer - branch == 2 + (branch & 1) &&
             code.words[branch] == (0x58000010u | ((pointer - branch) << 5)) &&
@@ -2054,7 +2083,7 @@ void LinkedRawAuxiliaryCarry() {
     if (!(getauxval(AT_HWCAP) & HWCAP_FLAGM)) return;
     namespace execution = swift::runtime::execution;
     struct ObservedState {
-        execution::GuestState state;
+        swift::runtime::x86::GuestState state;
         std::array<u64, 15> comparisons{};
     };
     constexpr auto comparisons = offsetof(ObservedState, comparisons);
@@ -2062,9 +2091,9 @@ void LinkedRawAuxiliaryCarry() {
     constexpr u64 byte_carrier = 0x7fedcba987654380ULL, word_carrier = 0x12345678abcde100ULL;
     const OperationMetadata metadata{FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry, false};
     arm64::CompileOptions options;
-    options.flags_offset = offsetof(execution::GuestState, packed_flags);
-    options.pc_offset = offsetof(execution::GuestState, pc);
-    options.pinned_uniform_offset = offsetof(execution::GuestState, gprs);
+    options.flags_offset = offsetof(swift::runtime::x86::GuestState, packed_flags);
+    options.pc_offset = offsetof(swift::runtime::x86::GuestState, pc);
+    options.pinned_uniform_offset = offsetof(swift::runtime::x86::GuestState, gprs);
     options.pinned_uniform_slots = 16;
     options.private_uniforms = options.native_nzcv = true;
     options.fault_locations = options.deferred_pc = true;
@@ -2100,40 +2129,40 @@ void LinkedRawAuxiliaryCarry() {
     Check(bool(first_code) && !first_code.words.empty(), "RawAF linked producer compilation");
 
     Builder second{Scope::Block}; Need(second.BeginBlock(Create(second)));
-    Store(second, offsetof(execution::GuestState, gprs) + 13 * sizeof(u64), Load(second, options.pc_offset));
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + 13 * sizeof(u64), Load(second, options.pc_offset));
     const auto before = Need(second.Emit<OpCode::TestFlags>(Type::Bool, {Operand::Flags(Flag::AuxiliaryCarry)}));
-    Store(second, offsetof(execution::GuestState, gprs), before);
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs), before);
     const auto clear = Constant(second, 0);
     Need(second.Emit<OpCode::RestoreFlags>(Type::Void,
             {Operand::ValueOf(clear), Operand::Flags(Flag::AuxiliaryCarry)}));
     const auto after = Need(second.Emit<OpCode::TestFlags>(Type::Bool, {Operand::Flags(Flag::AuxiliaryCarry)}));
-    Store(second, offsetof(execution::GuestState, gprs) + sizeof(u64), after);
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + sizeof(u64), after);
     (void)Need(second.Emit<OpCode::Xor>(Type::U64,
             {Operand::ValueOf(clear), Operand::ValueOf(clear)},
             {FlagBits(Flag::Parity), FlagProfile::LogicalZeroCVA, false}));
     const auto kept_af = Need(second.Emit<OpCode::TestFlags>(Type::Bool, {Operand::Flags(Flag::AuxiliaryCarry)}));
-    Store(second, offsetof(execution::GuestState, gprs) + 2 * sizeof(u64), kept_af);
-    Store(second, offsetof(execution::GuestState, gprs) + 3 * sizeof(u64), Snapshot(second, clear));
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + 2 * sizeof(u64), kept_af);
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + 3 * sizeof(u64), Snapshot(second, clear));
     const auto adc_left = Constant(second, 15);
     (void)Need(second.Emit<OpCode::Add>(Type::U64,
             {Operand::ValueOf(adc_left), Operand::Immediate(1, Type::U64)},
             {FlagBits(Flag::AuxiliaryCarry), FlagProfile::ArithmeticCanonicalCarry, false}));
     const auto new_af = Need(second.Emit<OpCode::TestFlags>(Type::Bool, {Operand::Flags(Flag::AuxiliaryCarry)}));
-    Store(second, offsetof(execution::GuestState, gprs) + 4 * sizeof(u64), new_af);
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + 4 * sizeof(u64), new_af);
     Need(second.Emit<OpCode::SetCarry>(Type::Void, {Operand::ValueOf(Constant(second, 1))}));
     const auto narrow = Need(second.Emit<OpCode::Adc>(Type::U8,
             {Operand::ValueOf(Constant(second, 0x7f), Type::U8), Operand::Immediate(0, Type::U8)}, metadata));
-    Store(second, offsetof(execution::GuestState, gprs) + 5 * sizeof(u64), narrow);
-    Store(second, offsetof(execution::GuestState, gprs) + 6 * sizeof(u64), Snapshot(second, narrow));
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + 5 * sizeof(u64), narrow);
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + 6 * sizeof(u64), Snapshot(second, narrow));
     const auto result = Need(second.Emit<OpCode::Adc>(Type::U64,
             {Operand::ValueOf(adc_left), Operand::Immediate(1, Type::U64)}, metadata));
     const auto result_flags = Snapshot(second, result);
     Need(second.Emit<OpCode::SetCarry>(Type::Void, {Operand::ValueOf(Constant(second, 1))}));
     const auto sub32 = Need(second.Emit<OpCode::Sbb>(Type::U32,
             {Operand::ValueOf(Constant(second, 0x80000000), Type::U32), Operand::Immediate(0, Type::U32)}, metadata));
-    Store(second, offsetof(execution::GuestState, gprs) + 7 * sizeof(u64), sub32);
-    Store(second, offsetof(execution::GuestState, gprs) + 12 * sizeof(u64), Snapshot(second, sub32));
-    constexpr auto observations = offsetof(execution::GuestState, xmm);
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + 7 * sizeof(u64), sub32);
+    Store(second, offsetof(swift::runtime::x86::GuestState, gprs) + 12 * sizeof(u64), Snapshot(second, sub32));
+    constexpr auto observations = offsetof(swift::runtime::x86::GuestState, xmm);
     Need(second.Emit<OpCode::RestoreFlags>(Type::Void,
             {Operand::ValueOf(Constant(second, 0x940000a5ULL)), Operand::Flags(Flag::All)}));
     const auto raw_source = Constant(second, 0x1122334400000100ULL);
@@ -2155,7 +2184,7 @@ void LinkedRawAuxiliaryCarry() {
     Store(second, observations + 32, Need(second.Emit<OpCode::Xor>(Type::U16,
             {Operand::ValueOf(raw_alias, Type::U16), Operand::Expression(OperandOp::Add, 2),
              Operand::Immediate(0x10000, Type::U64), Operand::Immediate(0x35, Type::U64)})));
-    constexpr auto pin14 = static_cast<std::uint32_t>(offsetof(execution::GuestState, gprs) + 14 * sizeof(u64));
+    constexpr auto pin14 = static_cast<std::uint32_t>(offsetof(swift::runtime::x86::GuestState, gprs) + 14 * sizeof(u64));
     constexpr auto pin15 = pin14 + 8u;
     const auto byte_snapshot = Need(second.Emit<OpCode::LoadUniform>(Type::U8, {Operand::Uniform(pin14, Type::U8)}));
     const auto pin_word_snapshot = Need(second.Emit<OpCode::LoadUniform>(Type::U16, {Operand::Uniform(pin15, Type::U16)}));
@@ -2338,7 +2367,7 @@ void LinkedRawAuxiliaryCarry() {
             std::find(second_code.words.begin(), second_code.words.end(), flagged_mul_word) != second_code.words.end(),
             "the unflagged adjacent U32 pair uses MADD while the flags-producing Add retains its separate multiply");
 
-    execution::CodeArena arena;
+    execution::CodeHeap arena{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
     const auto entry = arena.Publish(first_code.words, {}, first_code.links);
     std::array<execution::DispatchSlot, 2> slots{};
     auto& ready = slots[(next_pc ^ (next_pc >> arm64::abi::DispatchHashShift)) & (slots.size() - 1)];
@@ -2346,12 +2375,12 @@ void LinkedRawAuxiliaryCarry() {
     const auto selected = std::find_if(first_code.links.begin(), first_code.links.end(),
             [](const arm64::LinkSite& link) { return link.target_pc == next_pc; });
     Check(selected != first_code.links.end(), "selected static edge has a real relocation");
-    const auto* executable = reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(entry.entry) + selected->pointer_word * 4);
-    Check(Read64(executable) == reinterpret_cast<std::uintptr_t>(entry.entry) + (selected->pointer_word + 2) * 4,
+    const auto* executable = reinterpret_cast<const std::uintptr_t*>(reinterpret_cast<const std::uint8_t*>(entry.entry) + WordOffset(selected->data_offset) * 4);
+    Check(Read64(executable) == reinterpret_cast<std::uintptr_t>(entry.entry) + (WordOffset(selected->data_offset) + 2) * 4,
             "initial relocation addresses the RX cold stub before the mapping becomes executable");
-    auto* writable = entry.writable ? reinterpret_cast<std::uintptr_t*>(entry.writable + selected->pointer_word * 4) : nullptr;
-    const auto back_words = selected->pointer_word - selected->branch_word;
-    if (writable) execution::PatchNativeLink(writable, executable, reinterpret_cast<std::uintptr_t>(ready.entry), back_words);
+    auto* writable = entry.writable ? reinterpret_cast<std::uintptr_t*>(entry.writable + WordOffset(selected->data_offset) * 4) : nullptr;
+    const auto back_words = WordOffset(selected->data_offset) - WordOffset(selected->branch_offset);
+    if (writable) PatchLinkWords(writable, executable, reinterpret_cast<std::uintptr_t>(ready.entry), back_words);
     ObservedState observed_state;
     auto& state = observed_state.state;
     state.pc = entry_pc; state.packed_flags = initial;
@@ -2452,7 +2481,7 @@ void LinkedRawAuxiliaryCarry() {
             "borrowed reads and full publications preserve snapshots; later partial XOR writes keep the parent high bits");
     Check((state.packed_flags & ~written) == (initial & ~written), "RawAF preserves packed reserved bits");
     if (writable) {
-        execution::UnlinkNativeLink(writable, executable, back_words);
+        UnlinkWords(writable, executable, back_words);
         Check(Read64(executable) == reinterpret_cast<std::uintptr_t>(executable + 1) &&
                 *(reinterpret_cast<const std::uint32_t*>(executable) - back_words) == (0x58000010u | (back_words << 5)),
                 "unlink restores this actual cold stub and the original LDR");
@@ -2472,11 +2501,11 @@ void FunctionDeferredTestFaults() {
     namespace execution = swift::runtime::execution;
     constexpr u64 entry_pc = 0x4000, load_pc = 0x4010, store_pc = 0x4020;
     constexpr u64 initial = 0xa5a50000bc00003cULL, dynamic = 0xf40000ff;
-    const auto field = [](unsigned reg) { return static_cast<std::uint32_t>(offsetof(execution::GuestState, gprs) + reg * sizeof(u64)); };
+    const auto field = [](unsigned reg) { return static_cast<std::uint32_t>(offsetof(swift::runtime::x86::GuestState, gprs) + reg * sizeof(u64)); };
     arm64::CompileOptions options;
-    options.flags_offset = offsetof(execution::GuestState, packed_flags);
-    options.pc_offset = offsetof(execution::GuestState, pc);
-    options.pinned_uniform_offset = offsetof(execution::GuestState, gprs);
+    options.flags_offset = offsetof(swift::runtime::x86::GuestState, packed_flags);
+    options.pc_offset = offsetof(swift::runtime::x86::GuestState, pc);
+    options.pinned_uniform_offset = offsetof(swift::runtime::x86::GuestState, gprs);
     options.pinned_uniform_slots = 16;
     options.private_uniforms = options.native_nzcv = true;
     options.fault_locations = options.recover_unaligned = true;
@@ -2491,19 +2520,19 @@ void FunctionDeferredTestFaults() {
     const auto zero_value = Constant(builder, 0);
     const auto complete = Need(builder.Emit<OpCode::Xor>(Type::U64,
             {Operand::ValueOf(zero_value), Operand::ValueOf(zero_value)}, logical));
-    Store(builder, field(execution::R11), complete);
+    Store(builder, field(swift::runtime::x86::R11), complete);
     Need(builder.EndBlock(Terminal::Jump(loop)));
     Need(builder.BeginBlock(loop));
-    const auto incoming = Load(builder, field(execution::R10));
-    Store(builder, field(execution::R12), incoming);
+    const auto incoming = Load(builder, field(swift::runtime::x86::R10));
+    Store(builder, field(swift::runtime::x86::R12), incoming);
     Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(load_pc, Type::U64)}));
     const auto next = Need(builder.Emit<OpCode::LoadMemoryTSO>(Type::U64, {Operand::ValueOf(incoming)}));
-    Store(builder, field(execution::R10), next);
+    Store(builder, field(swift::runtime::x86::R10), next);
     Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(store_pc, Type::U64)}));
-    const auto previous = Load(builder, field(execution::R11));
+    const auto previous = Load(builder, field(swift::runtime::x86::R11));
     Need(builder.Emit<OpCode::StoreMemoryTSO>(Type::Void, {Operand::ValueOf(incoming), Operand::ValueOf(previous)}));
     (void)Need(builder.Emit<OpCode::And>(Type::U64, {Operand::ValueOf(next), Operand::ValueOf(next)}, logical));
-    Store(builder, field(execution::R11), incoming);
+    Store(builder, field(swift::runtime::x86::R11), incoming);
     const auto nonzero = Need(builder.Emit<OpCode::CondSet>(Type::Bool, {Operand::Condition(Condition::NE)}));
     Need(builder.EndBlock(Terminal::Branch(nonzero, loop, exit)));
     Need(builder.BeginBlock(exit)); Need(builder.EndBlock(Terminal::Return()));
@@ -2511,9 +2540,9 @@ void FunctionDeferredTestFaults() {
     const auto compiled = arm64::Compile(program, options);
     Check(bool(compiled) && compiled.faults.size() == 2 &&
             std::all_of(compiled.faults.begin(), compiled.faults.end(), [](const arm64::FaultSite& site) {
-                return site.test_bits == 64 && site.test_register == 12;
+                return arm64::DecodeFaultRecovery(site).test_bits == 64 && arm64::DecodeFaultRecovery(site).test_register == 12;
             }), "the real fault operations carry the admitted TEST recipe");
-    execution::CodeArena arena;
+    execution::CodeHeap arena{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
     const auto code = arena.Publish(compiled.words, compiled.faults, compiled.links);
 
     const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
@@ -2530,7 +2559,7 @@ void FunctionDeferredTestFaults() {
     // State mutated by native code or siglongjmp lives outside its automatic
     // frame, just as the runtime's Process-owned contexts do.
     struct Scene {
-        execution::GuestState state;
+        swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
         execution::NativeRunContext native;
         const execution::NativeCode* code{};
@@ -2556,10 +2585,11 @@ void FunctionDeferredTestFaults() {
         return (initial & ~dynamic) | (value & 255) | (u64{value == 0} << 30) | ((value >> 63) << 31);
     };
     {
+        BindFaultCallbacks(scene->faults);
         execution::FaultScope scope(scene->faults, scene->state);
         const auto run = [&](u64 input, u64 expected_pc, u64 expected_flags) {
             scene->state = {}; scene->state.pc = entry_pc; scene->state.packed_flags = initial;
-            scene->state.gprs[execution::R10] = input; scene->resolves = 0; scene->faults.signal_number = 0;
+            scene->state.gprs[swift::runtime::x86::R10] = input; scene->resolves = 0; scene->faults.signal_number = 0;
             if (sigsetjmp(scene->faults.jump, 1) == 0) {
                 Check(execution::SvmRunNative(&scene->state, &scene->native) == 0 && !expected_pc,
                         "zero TEST exit returns through the real native ABI");
@@ -2573,12 +2603,12 @@ void FunctionDeferredTestFaults() {
         run(head, load_pc, test_flags(missing));
         Write64(memory, readonly);
         run(head, store_pc, test_flags(readonly));
-        Check(scene->state.gprs[execution::R10] == loaded_before_store_fault &&
-                scene->state.gprs[execution::R12] == readonly,
+        Check(scene->state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault &&
+                scene->state.gprs[swift::runtime::x86::R12] == readonly,
                 "store fault uses the entry snapshot after the load overwrote the current pin");
         Write64(memory, 0);
         run(head, 0, test_flags(0));
-        Check(scene->state.gprs[execution::R10] == 0 && scene->state.gprs[execution::R11] == head,
+        Check(scene->state.gprs[swift::runtime::x86::R10] == 0 && scene->state.gprs[swift::runtime::x86::R11] == head,
                 "zero exit completes the current TEST rather than its old nonzero snapshot");
         // Patch both accesses at one writable unaligned node, then exercise
         // the same real recipes on faults from the resulting cold accesses.
@@ -2590,13 +2620,13 @@ void FunctionDeferredTestFaults() {
         Write64(memory, missing);
         run(head, load_pc, test_flags(missing));
         Check(scene->faults.host_pc == reinterpret_cast<std::uintptr_t>(code.entry) +
-                compiled.faults[0].unaligned_fallback_word * 4,
+                WordOffset(compiled.faults[0].fallback_offset) * 4,
                 "cold load faults retain the original guest PC and TEST snapshot");
         Write64(memory, readonly);
         run(head, store_pc, test_flags(readonly));
         Check(scene->faults.host_pc == reinterpret_cast<std::uintptr_t>(code.entry) +
-                (compiled.faults[1].unaligned_fallback_word + 1) * 4 &&
-                scene->state.gprs[execution::R10] == loaded_before_store_fault && scene->state.gprs[execution::R12] == readonly,
+                (WordOffset(compiled.faults[1].fallback_offset) + 1) * 4 &&
+                scene->state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault && scene->state.gprs[swift::runtime::x86::R12] == readonly,
                 "cold store faults use the entry snapshot after the load overwrites its destination pin");
     }
     Check(munmap(memory, page * 3) == 0, "TEST fault scene release");
@@ -2609,11 +2639,11 @@ void BlockDeferredTestBoundaries() {
     namespace execution = swift::runtime::execution;
     constexpr u64 entry_pc = 0x7000, exit_pc = 0x7100, load_pc = 0x7010, store_pc = 0x7020;
     constexpr u64 initial = 0xa5a50000bc00003cULL, dynamic = 0xf40000ff;
-    const auto field = [](unsigned reg) { return static_cast<std::uint32_t>(offsetof(execution::GuestState, gprs) + reg * sizeof(u64)); };
+    const auto field = [](unsigned reg) { return static_cast<std::uint32_t>(offsetof(swift::runtime::x86::GuestState, gprs) + reg * sizeof(u64)); };
     arm64::CompileOptions options;
-    options.flags_offset = offsetof(execution::GuestState, packed_flags);
-    options.pc_offset = offsetof(execution::GuestState, pc);
-    options.pinned_uniform_offset = offsetof(execution::GuestState, gprs);
+    options.flags_offset = offsetof(swift::runtime::x86::GuestState, packed_flags);
+    options.pc_offset = offsetof(swift::runtime::x86::GuestState, pc);
+    options.pinned_uniform_offset = offsetof(swift::runtime::x86::GuestState, gprs);
     options.pinned_uniform_slots = 16;
     options.private_uniforms = options.native_nzcv = true;
     options.fault_locations = options.recover_unaligned = options.deferred_pc = true;
@@ -2623,16 +2653,16 @@ void BlockDeferredTestBoundaries() {
     const OperationMetadata logical{FlagBits(Flag::All), FlagProfile::LogicalZeroCVA, false};
 
     Builder builder{Scope::Block}; Need(builder.BeginBlock(Create(builder)));
-    const auto snapshot = Load(builder, field(execution::R10));
-    Store(builder, field(execution::R12), snapshot);
+    const auto snapshot = Load(builder, field(swift::runtime::x86::R10));
+    Store(builder, field(swift::runtime::x86::R12), snapshot);
     Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(load_pc, Type::U64)}));
     const auto next = Need(builder.Emit<OpCode::LoadMemoryTSO>(Type::U64, {Operand::ValueOf(snapshot)}));
-    Store(builder, field(execution::R10), next);
+    Store(builder, field(swift::runtime::x86::R10), next);
     Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(store_pc, Type::U64)}));
-    const auto previous = Load(builder, field(execution::R11));
+    const auto previous = Load(builder, field(swift::runtime::x86::R11));
     Need(builder.Emit<OpCode::StoreMemoryTSO>(Type::Void, {Operand::ValueOf(snapshot), Operand::ValueOf(previous)}));
     (void)Need(builder.Emit<OpCode::And>(Type::U64, {Operand::ValueOf(next), Operand::ValueOf(next)}, logical));
-    Store(builder, field(execution::R11), snapshot);
+    Store(builder, field(swift::runtime::x86::R11), snapshot);
     const auto condition = Need(builder.Emit<OpCode::CondSet>(Type::Bool, {Operand::Condition(Condition::NE)}));
     Need(builder.Emit<OpCode::StoreUniformSelectImm>(Type::Void,
             {Operand::Uniform(options.pc_offset, Type::U64), Operand::ValueOf(condition),
@@ -2644,16 +2674,16 @@ void BlockDeferredTestBoundaries() {
     Check(program.Operations().size() == 12 && bool(allocation) && !allocation.publish_entry_pc &&
             bool(compiled) && compiled.frame_bytes == 0 && compiled.spill_slots == 0 && compiled.faults.size() == 2 &&
             std::all_of(compiled.faults.begin(), compiled.faults.end(), [](const arm64::FaultSite& site) {
-                return site.test_bits == 64 && site.test_register == 12;
+                return arm64::DecodeFaultRecovery(site).test_bits == 64 && arm64::DecodeFaultRecovery(site).test_register == 12;
             }), "the actual 12-IR Block admits a frame-free TEST recipe without publishing entry PC");
     const auto self_link = std::find_if(compiled.links.begin(), compiled.links.end(),
             [](const arm64::LinkSite& link) { return link.target_pc == entry_pc; });
     const auto exit_link = std::find_if(compiled.links.begin(), compiled.links.end(),
             [](const arm64::LinkSite& link) { return link.target_pc == exit_pc; });
     Check(self_link != compiled.links.end() && exit_link != compiled.links.end(), "Block has actual self and zero-exit relocations");
-    const auto self_gate = self_link->pointer_word - 2;
-    Check(self_link->branch_word < self_gate && !(self_gate & 1) &&
-            compiled.words[self_link->branch_word] == (0xb500000au | ((self_gate - self_link->branch_word) << 5)) &&
+    const auto self_gate = WordOffset(self_link->data_offset) - 2;
+    Check(WordOffset(self_link->branch_offset) < self_gate && !(self_gate & 1) &&
+            compiled.words[WordOffset(self_link->branch_offset)] == (0xb500000au | ((self_gate - WordOffset(self_link->branch_offset)) << 5)) &&
             compiled.words[self_gate] == 0x58000050u && compiled.words[self_gate + 1] == 0xd61f0200u,
             "qualified Block has a real CBNZ head and an aligned patchable cold self gate");
 
@@ -2662,11 +2692,11 @@ void BlockDeferredTestBoundaries() {
     auto exit_options = options; exit_options.entry_pc = exit_pc;
     const auto exit_compiled = arm64::Compile(exit_program, exit_options);
     Check(bool(exit_compiled), "Block zero-exit native target compiles");
-    execution::CodeArena arena;
+    execution::CodeHeap arena{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
     const auto code = arena.Publish(compiled.words, compiled.faults, compiled.links);
     const auto exit_code = arena.Publish(exit_compiled.words, exit_compiled.faults, exit_compiled.links);
     const auto* words = reinterpret_cast<const std::uint32_t*>(code.entry);
-    const auto cold = self_link->pointer_word + 2;
+    const auto cold = WordOffset(self_link->data_offset) + 2;
     Check(words[cold] == (0xaa0003e1u | (10u << 16)) && words[cold + 1] == 0x2a0103fdu &&
             words[cold + 2] == (0xf100001fu | (10u << 5)),
             "unlinked Block self tail completes the actual next TEST and clears the physical tag before dispatch");
@@ -2682,7 +2712,7 @@ void BlockDeferredTestBoundaries() {
     Check(mprotect(memory + page, page, PROT_READ) == 0 && mprotect(memory + page * 2, page, PROT_NONE) == 0,
             "Block TEST boundary permissions");
     struct Scene {
-        execution::GuestState state;
+        swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
         execution::NativeRunContext native;
         std::array<execution::DispatchSlot, 2> slots{};
@@ -2702,7 +2732,7 @@ void BlockDeferredTestBoundaries() {
         }
         bool UnlinkSelf() const noexcept {
             if (!ProtectCode(true)) return false;
-            execution::UnlinkNativeLink(self_write, self_execute, self_back_words);
+            UnlinkWords(self_write, self_execute, self_back_words);
             return ProtectCode(false);
         }
     };
@@ -2712,38 +2742,38 @@ void BlockDeferredTestBoundaries() {
     const auto end = reinterpret_cast<std::uintptr_t>(exit_code.entry) + exit_code.bytes;
     scene->code_page = begin - begin % page;
     scene->code_pages = ((end + page - 1) / page) * page - scene->code_page;
-    scene->self_execute = reinterpret_cast<const std::uintptr_t*>(begin + self_link->pointer_word * 4);
-    scene->self_back_words = self_link->pointer_word - self_link->branch_word;
+    scene->self_execute = reinterpret_cast<const std::uintptr_t*>(begin + WordOffset(self_link->data_offset) * 4);
+    scene->self_back_words = WordOffset(self_link->data_offset) - WordOffset(self_link->branch_offset);
     auto* write_base = code.writable ? code.writable : reinterpret_cast<std::uint8_t*>(begin);
-    scene->self_write = reinterpret_cast<std::uintptr_t*>(write_base + self_link->pointer_word * 4);
-    const auto* exit_execute = reinterpret_cast<const std::uintptr_t*>(begin + exit_link->pointer_word * 4);
-    auto* exit_write = reinterpret_cast<std::uintptr_t*>(write_base + exit_link->pointer_word * 4);
+    scene->self_write = reinterpret_cast<std::uintptr_t*>(write_base + WordOffset(self_link->data_offset) * 4);
+    const auto* exit_execute = reinterpret_cast<const std::uintptr_t*>(begin + WordOffset(exit_link->data_offset) * 4);
+    auto* exit_write = reinterpret_cast<std::uintptr_t*>(write_base + WordOffset(exit_link->data_offset) * 4);
     Check(scene->ProtectCode(true), "Block conditional far-link write access");
-    execution::PatchNativeLink(scene->self_write, scene->self_execute, begin + (std::uintptr_t{1} << 21), scene->self_back_words);
-    Check(words[self_link->branch_word] == compiled.words[self_link->branch_word] &&
+    PatchLinkWords(scene->self_write, scene->self_execute, begin + (std::uintptr_t{1} << 21), scene->self_back_words);
+    Check(words[WordOffset(self_link->branch_offset)] == compiled.words[WordOffset(self_link->branch_offset)] &&
             words[self_gate] == (0x14000000u | (((1u << 19) - self_gate) & 0x03ffffffu)),
             "imm19 range miss keeps CBNZ on its actual B26 gate");
-    execution::PatchNativeLink(scene->self_write, scene->self_execute, begin + (std::uintptr_t{1} << 28), scene->self_back_words);
-    Check(words[self_link->branch_word] == compiled.words[self_link->branch_word] &&
+    PatchLinkWords(scene->self_write, scene->self_execute, begin + (std::uintptr_t{1} << 28), scene->self_back_words);
+    Check(words[WordOffset(self_link->branch_offset)] == compiled.words[WordOffset(self_link->branch_offset)] &&
             words[self_gate] == 0x58000050u && Read64(scene->self_execute) == begin + (std::uintptr_t{1} << 28),
             "far gate preserves the original LDR/BR DATA transfer without narrowing link support");
-    execution::UnlinkNativeLink(scene->self_write, scene->self_execute, scene->self_back_words);
-    Check(words[self_link->branch_word] == compiled.words[self_link->branch_word] &&
+    UnlinkWords(scene->self_write, scene->self_execute, scene->self_back_words);
+    Check(words[WordOffset(self_link->branch_offset)] == compiled.words[WordOffset(self_link->branch_offset)] &&
             words[self_gate] == 0x58000050u && Read64(scene->self_execute) == reinterpret_cast<std::uintptr_t>(scene->self_execute + 1) &&
             scene->ProtectCode(false), "conditional unlink restores its cold gate and own complete-flags stub");
     const auto ready_self = [&] {
         Check(scene->ProtectCode(true), "Block self-link write access");
-        execution::PatchNativeLink(scene->self_write, scene->self_execute, begin, scene->self_back_words);
+        PatchLinkWords(scene->self_write, scene->self_execute, begin, scene->self_back_words);
         Check(scene->ProtectCode(false) &&
-                words[self_link->branch_word] == (0xb500000au | (((0u - self_link->branch_word) & 0x7ffffu) << 5)) &&
+                words[WordOffset(self_link->branch_offset)] == (0xb500000au | (((0u - WordOffset(self_link->branch_offset)) & 0x7ffffu) << 5)) &&
                 words[self_gate] == (0x14000000u | ((0u - self_gate) & 0x03ffffffu)),
                 "Block ready self links its actual CBNZ directly to native entry while retaining the fallback gate");
     };
     ready_self();
     Check(scene->ProtectCode(true), "Block exit-link write access");
-    execution::PatchNativeLink(exit_write, exit_execute, reinterpret_cast<std::uintptr_t>(exit_code.entry),
-            exit_link->pointer_word - exit_link->branch_word);
-    Check(scene->ProtectCode(false) && (words[exit_link->branch_word] & 0xfc000000u) == 0x14000000u,
+    PatchLinkWords(exit_write, exit_execute, reinterpret_cast<std::uintptr_t>(exit_code.entry),
+            WordOffset(exit_link->data_offset) - WordOffset(exit_link->branch_offset));
+    Check(scene->ProtectCode(false) && (words[WordOffset(exit_link->branch_offset)] & 0xfc000000u) == 0x14000000u,
             "Block zero exit is an actual near ready branch");
     for (const auto& item : {std::pair{entry_pc, code.entry}, std::pair{exit_pc, exit_code.entry}}) {
         auto at = (item.first ^ (item.first >> arm64::abi::DispatchHashShift)) & (scene->slots.size() - 1);
@@ -2782,10 +2812,11 @@ void BlockDeferredTestBoundaries() {
         return (initial & ~dynamic) | (value & 255) | (u64{value == 0} << 30) | ((value >> 63) << 31);
     };
     {
+        BindFaultCallbacks(scene->faults);
         execution::FaultScope scope(scene->faults, scene->state);
         const auto run = [&](u64 input, u64 fault_pc, u64 flags, bool cold_stop = false, bool smc = false) {
             scene->state = {}; scene->state.pc = entry_pc; scene->state.packed_flags = initial;
-            scene->state.gprs[execution::R10] = input;
+            scene->state.gprs[swift::runtime::x86::R10] = input;
             scene->expected_flags = flags; scene->resolves = 0; scene->cold_published = false;
             scene->expect_cold = cold_stop || smc; scene->smc_enabled = smc; scene->smc_recovered = 0;
             scene->faults.signal_number = 0; scene->faults.smc_pending = 0;
@@ -2803,10 +2834,10 @@ void BlockDeferredTestBoundaries() {
         run(missing, load_pc, initial); // No TEST has executed at the first entry.
         Write64(memory, missing); run(head, load_pc, test_flags(missing));
         Write64(memory, readonly); run(head, store_pc, test_flags(readonly));
-        Check(scene->state.gprs[execution::R10] == loaded_before_store_fault && scene->state.gprs[execution::R12] == readonly,
+        Check(scene->state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault && scene->state.gprs[swift::runtime::x86::R12] == readonly,
                 "Block tagged store fault reads R12 after the load has already replaced R10");
         Write64(memory, 0); run(head, 0, test_flags(0));
-        Check(scene->state.gprs[execution::R10] == 0 && scene->state.gprs[execution::R11] == head,
+        Check(scene->state.gprs[swift::runtime::x86::R10] == 0 && scene->state.gprs[swift::runtime::x86::R11] == head,
                 "Block zero edge completes the current zero TEST");
         Write64(memory + 15, 0); run(head + 15, 0, test_flags(0));
         Check(scene->faults.unaligned_patches == 2, "Block's real load/store each reuse the cold alignment fallback once");
@@ -2820,8 +2851,8 @@ void BlockDeferredTestBoundaries() {
         run(head, 0, test_flags(loaded_before_store_fault), false, true);
         Check(scene->smc_recovered && scene->faults.smc_write_faults == smc_before + 1 &&
                 !scene->native.slots && scene->native.dispatcher_entries == 1 && scene->native.cache_hits == 0 &&
-                Read64(memory + page) == head && scene->state.gprs[execution::R10] == loaded_before_store_fault &&
-                scene->state.gprs[execution::R12] == readonly,
+                Read64(memory + page) == head && scene->state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault &&
+                scene->state.gprs[swift::runtime::x86::R12] == readonly,
                 "protected tagged store retries, retires the ready self edge and stops in the real cold resolver");
     }
     Check(munmap(memory, page * 3) == 0, "Block TEST boundary release");
@@ -2835,11 +2866,11 @@ void LocalFlagsFaults() {
     constexpr u64 entry_pc = 0x5000, first_pc = 0x5010, second_pc = 0x5020, third_pc = 0x5030;
     constexpr u64 initial = 0xa5a50000bc00003cULL;
     const OperationMetadata metadata{FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry, false};
-    const auto field = [](unsigned reg) { return static_cast<std::uint32_t>(offsetof(execution::GuestState, gprs) + reg * sizeof(u64)); };
+    const auto field = [](unsigned reg) { return static_cast<std::uint32_t>(offsetof(swift::runtime::x86::GuestState, gprs) + reg * sizeof(u64)); };
     arm64::CompileOptions options;
-    options.flags_offset = offsetof(execution::GuestState, packed_flags);
-    options.pc_offset = offsetof(execution::GuestState, pc);
-    options.pinned_uniform_offset = offsetof(execution::GuestState, gprs);
+    options.flags_offset = offsetof(swift::runtime::x86::GuestState, packed_flags);
+    options.pc_offset = offsetof(swift::runtime::x86::GuestState, pc);
+    options.pinned_uniform_offset = offsetof(swift::runtime::x86::GuestState, gprs);
     options.pinned_uniform_slots = 16;
     options.private_uniforms = options.native_nzcv = options.fault_locations = options.local_flags = true;
     options.rcpc_imm9 = (getauxval(AT_HWCAP) & HWCAP_ILRCPC) != 0;
@@ -2849,24 +2880,24 @@ void LocalFlagsFaults() {
     options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
 
     Builder builder{Scope::Block}; Need(builder.BeginBlock(Create(builder)));
-    const auto incoming = Load(builder, field(execution::RAX));
+    const auto incoming = Load(builder, field(swift::runtime::x86::RAX));
     const auto result = Need(builder.Emit<OpCode::Add>(Type::U64,
             {Operand::ValueOf(incoming), Operand::Immediate(1, Type::U64)}, metadata));
-    Store(builder, field(execution::RAX), result);
+    Store(builder, field(swift::runtime::x86::RAX), result);
     Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(first_pc, Type::U64)}));
     (void)Need(builder.Emit<OpCode::LoadMemoryTSO>(Type::U64,
-            {Operand::ValueOf(Load(builder, field(execution::R8)))}));
-    Store(builder, field(execution::RAX), Constant(builder, 0x55));
+            {Operand::ValueOf(Load(builder, field(swift::runtime::x86::R8)))}));
+    Store(builder, field(swift::runtime::x86::RAX), Constant(builder, 0x55));
     Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(second_pc, Type::U64)}));
     const auto half = Need(builder.Emit<OpCode::LoadMemoryTSO>(Type::U16,
-            {Operand::ValueOf(Load(builder, field(execution::R9)))}));
+            {Operand::ValueOf(Load(builder, field(swift::runtime::x86::R9)))}));
     const auto extended = Need(builder.Emit<OpCode::SignExtend>(Type::U32, {Operand::ValueOf(half, Type::U16)}));
-    Store(builder, field(execution::RDX), extended);
+    Store(builder, field(swift::runtime::x86::RDX), extended);
     Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(third_pc, Type::U64)}));
     const auto word = Need(builder.Emit<OpCode::LoadMemoryTSO>(Type::U32,
-            {Operand::ValueOf(Load(builder, field(execution::R11)))}));
+            {Operand::ValueOf(Load(builder, field(swift::runtime::x86::R11)))}));
     const auto extended_word = Need(builder.Emit<OpCode::SignExtend>(Type::U64, {Operand::ValueOf(word, Type::U32)}));
-    Store(builder, field(execution::RCX), extended_word);
+    Store(builder, field(swift::runtime::x86::RCX), extended_word);
     Need(builder.EndBlock(Terminal::Return(Constant(builder, 42))));
     auto program = Submit(builder);
     const auto allocation = arm64::AllocateBlock(program, &options);
@@ -2880,18 +2911,18 @@ void LocalFlagsFaults() {
             "the adjacent signed loads write their actual published RDX/RCX homes");
     const auto compiled = arm64::Compile(program, options);
     Check(bool(compiled) && compiled.faults.size() == 3 &&
-            compiled.faults[0].guest_pc == first_pc && compiled.faults[0].parity_register == 20 &&
-            compiled.faults[0].carry_direct == 1 && !compiled.faults[0].test_bits &&
-            compiled.faults[1].guest_pc == second_pc && !compiled.faults[1].parity_register &&
-            compiled.faults[1].carry_direct == 1 && !compiled.faults[1].test_bits &&
-            compiled.faults[2].guest_pc == third_pc && !compiled.faults[2].parity_register &&
-            compiled.faults[2].carry_direct == 1 && !compiled.faults[2].test_bits,
+            compiled.faults[0].guest_pc == first_pc && arm64::DecodeFaultRecovery(compiled.faults[0]).parity_register == 20 &&
+            arm64::DecodeFaultRecovery(compiled.faults[0]).carry_direct == 1 && !arm64::DecodeFaultRecovery(compiled.faults[0]).test_bits &&
+            compiled.faults[1].guest_pc == second_pc && !arm64::DecodeFaultRecovery(compiled.faults[1]).parity_register &&
+            arm64::DecodeFaultRecovery(compiled.faults[1]).carry_direct == 1 && !arm64::DecodeFaultRecovery(compiled.faults[1]).test_bits &&
+            compiled.faults[2].guest_pc == third_pc && !arm64::DecodeFaultRecovery(compiled.faults[2]).parity_register &&
+            arm64::DecodeFaultRecovery(compiled.faults[2]).carry_direct == 1 && !arm64::DecodeFaultRecovery(compiled.faults[2]).test_bits,
             "actual memory sites retain direct carry and materialize PF before its source pin is overwritten");
     if (options.rcpc_imm9)
-        Check((compiled.words[compiled.faults[1].unaligned_word] & 0xfffffc1fu) == 0x59c00016u &&
-                (compiled.words[compiled.faults[2].unaligned_word] & 0xfffffc1fu) == 0x99800015u,
+        Check((compiled.words[WordOffset(compiled.faults[1].unaligned_offset)] & 0xfffffc1fu) == 0x59c00016u &&
+                (compiled.words[WordOffset(compiled.faults[2].unaligned_offset)] & 0xfffffc1fu) == 0x99800015u,
                 "both real recoverable signed loads target their pins without an intermediate unsigned result");
-    execution::CodeArena arena;
+    execution::CodeHeap arena{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
     const auto code = arena.Publish(compiled.words, compiled.faults, compiled.links);
     const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
     auto* memory = static_cast<std::uint8_t*>(mmap(nullptr, page * 2, PROT_READ | PROT_WRITE,
@@ -2902,7 +2933,7 @@ void LocalFlagsFaults() {
     Write64(memory, 0x8001); Write64(memory + 15, 0x8001);
     Write64(memory + 32, 0x80010001); Write64(memory + 47, 0x80010001);
     struct Scene {
-        execution::GuestState state;
+        swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
         execution::NativeRunContext native;
         const execution::NativeCode* code{};
@@ -2928,14 +2959,15 @@ void LocalFlagsFaults() {
     const auto expected_flags = ReferenceArithmetic(OpCode::Add, ~u64{}, 1, 64,
             metadata.profile, metadata.flag_outputs, initial);
     {
+        BindFaultCallbacks(scene->faults);
         execution::FaultScope scope(scene->faults, scene->state);
         const auto run = [&](u64 first_address, u64 second_address, u64 third_address, u64 fault_pc, u64 expected_rax) {
             scene->state = {}; scene->state.pc = entry_pc; scene->state.packed_flags = initial;
-            scene->state.gprs[execution::RAX] = ~u64{};
-            scene->state.gprs[execution::RDX] = 0x1234567887654321ULL;
-            scene->state.gprs[execution::RCX] = 0xabcdef0011223344ULL;
-            scene->state.gprs[execution::R8] = first_address; scene->state.gprs[execution::R9] = second_address;
-            scene->state.gprs[execution::R11] = third_address;
+            scene->state.gprs[swift::runtime::x86::RAX] = ~u64{};
+            scene->state.gprs[swift::runtime::x86::RDX] = 0x1234567887654321ULL;
+            scene->state.gprs[swift::runtime::x86::RCX] = 0xabcdef0011223344ULL;
+            scene->state.gprs[swift::runtime::x86::R8] = first_address; scene->state.gprs[swift::runtime::x86::R9] = second_address;
+            scene->state.gprs[swift::runtime::x86::R11] = third_address;
             scene->resolves = 0; scene->faults.signal_number = 0;
             if (sigsetjmp(scene->faults.jump, 1) == 0) {
                 const auto returned = execution::SvmRunNative(&scene->state, &scene->native);
@@ -2943,10 +2975,10 @@ void LocalFlagsFaults() {
             } else Check(fault_pc && scene->faults.signal_number == SIGSEGV,
                     "local PF/carry faults use the registered signal owner");
             Check(scene->resolves == 1 && scene->state.pc == (fault_pc ? fault_pc : entry_pc) &&
-                    scene->state.gprs[execution::RAX] == expected_rax && scene->state.packed_flags == expected_flags &&
-                    scene->state.gprs[execution::RDX] == ((fault_pc == first_pc || fault_pc == second_pc)
+                    scene->state.gprs[swift::runtime::x86::RAX] == expected_rax && scene->state.packed_flags == expected_flags &&
+                    scene->state.gprs[swift::runtime::x86::RDX] == ((fault_pc == first_pc || fault_pc == second_pc)
                             ? 0x1234567887654321ULL : 0xffff8001ULL) &&
-                    scene->state.gprs[execution::RCX] == (fault_pc ? 0xabcdef0011223344ULL : 0xffffffff80010001ULL),
+                    scene->state.gprs[swift::runtime::x86::RCX] == (fault_pc ? 0xabcdef0011223344ULL : 0xffffffff80010001ULL),
                     "local flags fault/exit preserves exact PC, current RAX, whole packed flags and reserved bits");
         };
         run(missing, valid, valid + 32, first_pc, 0);
@@ -2958,11 +2990,11 @@ void LocalFlagsFaults() {
                     "signed ordered loads patch only their real fast instructions to LDURSH/LDURSW plus DMB");
             run(valid, missing, valid + 32, second_pc, 0x55);
             Check(scene->faults.host_pc == reinterpret_cast<std::uintptr_t>(code.entry) +
-                    compiled.faults[1].unaligned_fallback_word * 4,
+                    WordOffset(compiled.faults[1].fallback_offset) * 4,
                     "the signed cold load retains precise flags, old destination pin and original guest PC on SIGSEGV");
             run(valid, valid, missing, third_pc, 0x55);
             Check(scene->faults.host_pc == reinterpret_cast<std::uintptr_t>(code.entry) +
-                    compiled.faults[2].unaligned_fallback_word * 4,
+                    WordOffset(compiled.faults[2].fallback_offset) * 4,
                     "the cold signed word fault preserves its old full pin after the earlier signed halfword committed");
         }
     }
@@ -2994,12 +3026,12 @@ void VectorPinBoundaries() {
     std::array<Vector, 8> live_bits{};
     for (unsigned i = 0; i < live_bits.size(); ++i)
         live_bits[i] = {0x1020304050607080ULL + i, 0x8877665544332200ULL + i};
-    const auto field = [](unsigned reg) { return static_cast<std::uint32_t>(offsetof(execution::GuestState, gprs) + reg * sizeof(u64)); };
-    const auto xmm = [](unsigned slot) { return static_cast<std::uint32_t>(offsetof(execution::GuestState, xmm) + slot * 16); };
+    const auto field = [](unsigned reg) { return static_cast<std::uint32_t>(offsetof(swift::runtime::x86::GuestState, gprs) + reg * sizeof(u64)); };
+    const auto xmm = [](unsigned slot) { return static_cast<std::uint32_t>(offsetof(swift::runtime::x86::GuestState, xmm) + slot * 16); };
     arm64::CompileOptions options;
-    options.flags_offset = offsetof(execution::GuestState, packed_flags);
-    options.pc_offset = offsetof(execution::GuestState, pc);
-    options.pinned_uniform_offset = offsetof(execution::GuestState, gprs);
+    options.flags_offset = offsetof(swift::runtime::x86::GuestState, packed_flags);
+    options.pc_offset = offsetof(swift::runtime::x86::GuestState, pc);
+    options.pinned_uniform_offset = offsetof(swift::runtime::x86::GuestState, gprs);
     options.pinned_uniform_slots = 16; options.pinned_vector_offset = xmm(0);
     options.private_uniforms = options.native_nzcv = options.fault_locations = options.deferred_pc = true;
     options.entry_pc = entry_pc;
@@ -3051,15 +3083,15 @@ void VectorPinBoundaries() {
     (void)Need(builder.Emit<OpCode::Cpuid>(Type::U64,
             {Operand::ValueOf(Constant(builder, 3)), Operand::ValueOf(Constant(builder, 5)),
              Operand::Immediate(reinterpret_cast<std::uintptr_t>(callback), Type::U64)}));
-    const auto scratch = Load(builder, field(execution::RDI));
+    const auto scratch = Load(builder, field(swift::runtime::x86::RDI));
     for (unsigned i = 0; i < live.size(); ++i)
         Need(builder.Emit<OpCode::StoreMemory>(Type::Void,
                 {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(scratch),
                  Operand::Immediate(i * 16, Type::U64), Operand::ValueOf(live[i])}));
     Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(fault_pc, Type::U64)}));
     (void)Need(builder.Emit<OpCode::LoadMemory>(Type::U64,
-            {Operand::ValueOf(Load(builder, field(execution::R8)))}));
-    Store(builder, options.pc_offset, Load(builder, field(execution::RAX)));
+            {Operand::ValueOf(Load(builder, field(swift::runtime::x86::R8)))}));
+    Store(builder, options.pc_offset, Load(builder, field(swift::runtime::x86::RAX)));
     Need(builder.EndBlock(Terminal::Dispatch()));
     auto program = Submit(builder);
     const auto allocation = arm64::AllocateFunction(program, &options);
@@ -3075,7 +3107,7 @@ void VectorPinBoundaries() {
     auto target_program = Submit(target); options.entry_pc = next_pc;
     const auto target_code = arm64::Compile(target_program, options);
     Check(bool(target_code), "linked vector target compilation");
-    execution::CodeArena arena;
+    execution::CodeHeap arena{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
     const auto code = arena.Publish(compiled.words, compiled.faults, compiled.links);
     const auto target_entry = arena.Publish(target_code.words, target_code.faults, target_code.links);
     const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
@@ -3083,7 +3115,7 @@ void VectorPinBoundaries() {
             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     Check(memory != MAP_FAILED && mprotect(memory + page, page, PROT_NONE) == 0, "vector boundary fault scene mapping");
     struct Scene {
-        execution::GuestState state;
+        swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
         execution::NativeRunContext native;
         execution::DispatchSlot slot;
@@ -3126,13 +3158,14 @@ void VectorPinBoundaries() {
     scene->native.flags_offset = options.flags_offset; scene->native.pc_offset = options.pc_offset;
     scene->native.native_nzcv = true;
     {
+        BindFaultCallbacks(scene->faults);
         execution::FaultScope scope(scene->faults, scene->state);
         for (unsigned mode = 0; mode < 3; ++mode) {
             scene->state = {}; scene->state.pc = entry_pc; scene->state.packed_flags = flags;
             std::memcpy(scene->state.xmm, initial.data(), sizeof(scene->state.xmm));
-            scene->state.gprs[execution::RAX] = next_pc;
-            scene->state.gprs[execution::RDI] = reinterpret_cast<std::uintptr_t>(scene->observed.data());
-            scene->state.gprs[execution::R8] = reinterpret_cast<std::uintptr_t>(memory + (mode ? 0 : page));
+            scene->state.gprs[swift::runtime::x86::RAX] = next_pc;
+            scene->state.gprs[swift::runtime::x86::RDI] = reinterpret_cast<std::uintptr_t>(scene->observed.data());
+            scene->state.gprs[swift::runtime::x86::R8] = reinterpret_cast<std::uintptr_t>(memory + (mode ? 0 : page));
             scene->expected = expected; scene->observed = {}; scene->resolves = 0;
             scene->fail_next = mode == 2; scene->root_published = scene->cold_published = false;
             scene->faults.signal_number = 0;

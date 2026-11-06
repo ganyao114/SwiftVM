@@ -1,0 +1,17 @@
+{
+  "utc": "2026-11-06T07:40:30.809195+00:00",
+  "baseline_candidate": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/instruction-expansion-20261105/final-svm",
+  "baseline_sha256": "4e440cceaffe199b1d42fbc38d34715d3b211c9c5ed6bd68115c763634ca0783",
+  "baseline_source_digest": "57db153a47dd80a107839598abc2a2dfc0f9137481ebc53e77b05fbef5eb7a66",
+  "product_tree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "old_reference_read_only": "/Volumes/Data2/SwiftVM",
+  "measurement": "Same 8 workloads, rotated 5 arms \u00d75 rounds, 200 launches. Actual byte-parser only excluded; retain previous SVM binding/physical-release versus FEX logical-release asymmetry, show it separately. No sample replacement.",
+  "change_scope": [
+    "Omit actual CFG setup for single externally terminating Function; retain scope and self-loop graph algorithm",
+    "Reuse existing Allocation and optimizer rows in existing owners; clear all decisions per request, no second N table",
+    "Combine actual dual-alias cache maintenance; preserve mprotect fallback and immediate fault-patch visibility"
+  ],
+  "phone": "NX729J bf1359ff CPU4 existing policy 614400..1171200kHz",
+  "device_namespace": "/data/local/tmp/swiftvm-compile-cost-20261105",
+  "runtime_pmu_planned": false
+}

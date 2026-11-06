@@ -5,11 +5,18 @@
 #include <cstdint>
 #include <type_traits>
 
-#include "guest_state.h"
-#include "native_code.h"
-#include "runtime/backend/arm64/abi.h"
+#include "runtime/arch/x86/state.h"
+#include "runtime/backend/code.h"
+#include "runtime/backend/dispatch_layout.inc"
 
 namespace swift::runtime::execution {
+using x86::GuestState;
+using NativeCode = backend::NativeCode;
+
+constexpr std::size_t DirectoryIndex(std::uint64_t pc, std::size_t mask) noexcept {
+    return (pc ^ (pc >> SVM_DISPATCH_HASH_SHIFT)) & mask;
+}
+
 
 // The runtime's sole PC directory, shared directly with native dispatch.
 // Public pending slots may have null entry. The Process-owned callable
@@ -27,8 +34,8 @@ static_assert(offsetof(DispatchSlot, pc) == 0 && offsetof(DispatchSlot, entry) =
 static_assert(offsetof(NativeCode, entry) == 0 && sizeof(NativeCode::Function) == 8);
 static_assert(offsetof(DispatchSlot, code_id) == 16 && offsetof(DispatchSlot, pending_head) == 20 &&
         offsetof(DispatchSlot, occupied) == 24);
-static_assert(sizeof(DispatchSlot) == (1u << backend::arm64::abi::DispatchSlotShift) &&
-              offsetof(DispatchSlot, occupied) == backend::arm64::abi::DispatchOccupiedOffset);
+static_assert(sizeof(DispatchSlot) == (1u << SVM_DISPATCH_SLOT_SHIFT) &&
+              offsetof(DispatchSlot, occupied) == SVM_DISPATCH_OCCUPIED_OFFSET);
 
 // One native run borrows this stable Process-owned context. The resolver is a
 // normal ABI function: it catches every exception, refreshes slots/mask after
@@ -73,10 +80,7 @@ static_assert(offsetof(NativeRunContext, host_fpcr) == 112 && offsetof(NativeRun
 static_assert(offsetof(NativeRunContext, guest_fpcr) == 128 && offsetof(NativeRunContext, fp_environment) == 136);
 static_assert(offsetof(NativeRunContext, probe_steps) == 144);
 static_assert(offsetof(NativeRunContext, pinned_vector_offset) == 152);
-static_assert(offsetof(NativeRunContext, slots) == backend::arm64::abi::ContextSlotsOffset &&
-              offsetof(NativeRunContext, dispatcher_entries) == backend::arm64::abi::ContextDispatchesOffset &&
-              offsetof(NativeRunContext, cache_hits) == backend::arm64::abi::ContextHitsOffset &&
-              offsetof(NativeRunContext, probe_steps) == backend::arm64::abi::ContextProbesOffset);
+
 
 // Linked units enter/leave through these thunks. Only SvmNativeExit returns to C++;
 // the root frame owns the one save of x19..x30 and host d8..d15 across all

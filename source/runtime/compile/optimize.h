@@ -1,8 +1,10 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <optional>
+#include <vector>
 #include "runtime/ir/program.h"
 
 namespace swift::runtime::compile {
@@ -46,6 +48,12 @@ struct OptimizeResult {
 // Allocation of the dense table occurs before ownership transfer and can
 // throw bad_alloc, leaving the caller's input unchanged.
 OptimizeResult Optimize(ir::Program&&,
+                        std::size_t max_operand_words = std::numeric_limits<std::size_t>::max(),
+                        UniformPolicy uniforms = {});
+
+// Borrow the same use/flag rows across requests. Their contents are reset
+// before taking Program ownership; no Program reference survives the call.
+OptimizeResult Optimize(ir::Program&&, std::vector<std::uint64_t>& rows,
                         std::size_t max_operand_words = std::numeric_limits<std::size_t>::max(),
                         UniformPolicy uniforms = {});
 

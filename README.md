@@ -13,8 +13,8 @@ checkpoint.
 ## Build
 
 Host contracts and code-generation tools require CMake 3.22+, a C++20 compiler
-and a C compiler. Ninja is used below; diStorm and the required SoftFloat
-ext80 subset are included.
+and a C compiler. Ninja is used below; diStorm, the controlled exact-encoding
+VIXL subset, SoftFloat and Cephes numerical dependencies are included.
 
 ```sh
 cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -27,7 +27,9 @@ depend on the host's ARM64/Linux facilities; host-only results do not replace
 Android runtime qualification.
 
 For Android, set `ANDROID_NDK` to the NDK installation. The measured build used
-NDK 29.0.13846066, API28, Release/O3, static libc++ and no LTO.
+NDK 29.0.13846066, API28, Release/O3, static libc++ and ThinLTO.
+`SVM_ENABLE_IPO` defaults to ON for supported Release/RelWithDebInfo builds;
+the x87/Cephes numerical closure keeps its separate GPR-only compilation contract.
 
 ```sh
 cmake -S . -B build/android -G Ninja \
@@ -43,56 +45,61 @@ Push the runner and a static guest ELF to the device, then select either scope:
 ```sh
 ./svm_rebuild_linux --scope block guest.elf [guest args...]
 ./svm_rebuild_linux --scope function guest.elf [guest args...]
+./svm_rebuild_linux --engine interpreter guest.elf [guest args...]
+./svm_rebuild_linux --engine mixed --scope function guest.elf [guest args...]
 ```
+
+The default engine is JIT. The interpreter shares decoded instructions and
+instruction semantics with the IR frontend and does not construct a Program.
 
 `--decode-timing` enables intrusive compile diagnostics and counted dispatch;
 leave it off for ordinary runtime measurements. Requested Function cost includes
 failed formation and actual Block retries.
 
-## Measured checkpoint
+## Current checkpoint
 
-The November 5 UTC optimization checkpoint runs all eight fixed workloads in
-both SVM scopes. The original Bionic/CoreMark ELF uses 100000 iterations on
-RedMagic NX729J CPU4 against fixed FEX `a156752f`. All CoreMark runs exceeded
-10 seconds and validated CRC `0xd340`; each table entry is a median of five.
+The runtime now separates guest architecture, execution ownership and platform
+services. It supports JIT, direct interpretation and mixed execution, shared
+x86 semantics, explicit code mappings/cache/link/SMC ownership, and expanded
+user-mode scalar, SSE, AVX/AVX2, MMX and x87 forms. EVEX/AVX-512 and complete PKU
+remain deferred. Source inventory is not full ISA/form coverage; see the
+[coverage implementation and boundaries](docs/instruction-coverage-implementation-2026-11-05.md).
 
-| Metric | Block | Requested Function | FEX |
-| --- | ---: | ---: | ---: |
-| Runtime | 16.119 s | 15.627 s | 15.047 s |
-| Runtime / FEX | 1.071x | 1.039x | 1x |
-| User cycles / FEX | 1.072x | 1.038x | 1x |
-| User instructions / FEX | 1.038x | 1.010x | 1x |
-| Cold compile excluding byte parser | 45.688 ms | 51.463 ms | 47.700 ms |
-| Compile / FEX | 0.958x | 1.079x | 1x |
+The latest compile measurement uses RedMagic NX729J CPU4 and fixed FEX
+`a156752f`, with five fresh launches per arm/input and 200 total observations.
+Only actual byte-parser calls are removed. Formation, IR construction,
+optimization, allocation, encoding, failures/retries, publication and release
+remain charged. Values below are medians in ms; ratios compare those medians.
 
-Compile includes formation, IR construction, optimization, allocation, encoding,
-failures/retries, publication and release; only byte-parser calls are removed.
-The post-push checkpoint measures committed subject `390cf73d` with five fresh
-launches per arm/input: 120 runtime and 120 compile observations. All 48 fixed
-input limits pass in this round (1.10x runtime/user-cycles and 2x compile);
-worst median ratios are 1.0712x, 1.0771x and 1.9078x respectively.
-The earlier three-round x87 Block result of 2.109x and its independent seven-round
-confirmation remain archived. Short compile cases are near the limit; this
-checkpoint does not establish an upper bound for other inputs or environments.
-The same-source entry audit reduced CoreMark repeated construction from 15,889
-to 191 instruction occurrences. Current Function compile is 51.463 ms versus
-81.982 ms before entry reuse; runtime is 15.627 s versus 15.282 s at that earlier
-checkpoint, so the change retains a runtime tradeoff.
-FP runtime is 0.939/0.950x FEX and FP instruction counts are 0.990/1.006x;
-x87 runtime is 0.645/0.641x. CoreMark spill
-slots are 25/31 and maximum frames 48/64 bytes for Block/Function.
-Instruction counts still differ. The x87 guest has an exit-only oracle, with
-separate finite precision/state contracts; this checkpoint covers these fixed
-inputs rather than the entire x86 ISA or general application performance.
+| Workload | Block | Requested Function | Block / FEX | Function / FEX |
+| --- | ---: | ---: | ---: | ---: |
+| CoreMark | 41.9926 | 51.1897 | 0.88x | 1.07x |
+| Integer | 1.8700 | 1.8465 | 1.20x | 1.18x |
+| FP | 2.4207 | 2.4667 | 1.45x | 1.48x |
+| Memory | 2.2868 | 2.2170 | 1.43x | 1.38x |
+| Branch | 1.9250 | 1.9314 | 1.27x | 1.28x |
+| Call | 1.8440 | 2.1307 | 1.13x | 1.30x |
+| Function tests | 21.1883 | 33.1372 | 0.71x | 1.11x |
+| x87 | 0.6425 | 0.5619 | 2.25x | 1.97x |
 
-See the [post-push five-round benchmark anchor](docs/post-push-benchmark-2026-11-05.md),
+The strict 2x compile goal is still open for x87 Block. The latest changes reduce
+CoreMark Block/Function compile by 9.4%/2.7% against the preceding coverage build;
+Call Function increases 5.5%. See the [complete results, identities and remaining
+costs](docs/compile-cost-optimization-2026-11-06.md). This round contains no new
+full runtime/PMU comparison; the historical results below retain their original
+source and binary identities and do not qualify the expanded instruction set.
+
+See the [runtime design](docs/runtime-architecture-plan-2026-11-05.md),
+[runtime implementation](docs/runtime-architecture-implementation-2026-11-05.md),
+[architecture](ARCHITECTURE.md),
+[historical post-push five-round benchmark anchor](docs/post-push-benchmark-2026-11-05.md),
 [Function entry reuse and construction audit](docs/function-entry-reuse-2026-11-05.md),
 [buffer reuse and publication](docs/compile-owner-and-publication-optimization-2026-11-05.md),
 [FP optimization and compile cost analysis](docs/fp-instruction-and-compile-cost-2026-11-05.md),
 [previous optimization results](docs/parity-gap-optimization-2026-11-05.md),
 [earlier coverage completion](docs/benchmark-completion-2026-11-05.md),
 [earlier Batch37 checkpoint](docs/codegen-parity-checkpoint-2026-11-04.md),
-[architecture](ARCHITECTURE.md), [design](docs/codegen-parity-plan-2026-11-03.md),
+[codegen design](docs/codegen-parity-plan-2026-11-03.md),
 [implementation history](docs/codegen-parity-progress-2026-11-03.md) and
 [benchmarks](benchmarks/README.md).
 

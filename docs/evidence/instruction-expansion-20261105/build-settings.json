@@ -1,0 +1,27 @@
+{
+  "source_digest": "57db153a47dd80a107839598abc2a2dfc0f9137481ebc53e77b05fbef5eb7a66",
+  "source_input_files": 282,
+  "host": "AppleClang /usr/bin/c++, Release, ARM64 macOS, ThinLTO",
+  "android": "NDK 29.0.13846066, arm64-v8a, API28, Release -O3, ThinLTO, c++_static",
+  "sanitize": "AppleClang Debug, address+undefined sanitizers, IPO OFF",
+  "numeric_closure": "svm_x87 and svm_cephes GPR-only, IPO excluded; SoftFloat numeric library; fixed helper ABI",
+  "cmake_flags_source": "CMakeLists.txt and CMakeCache files in fixed submit-host/submit-android/submit-sanitize caches",
+  "temporary_directory": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/tmp",
+  "device_serial": "bf1359ff",
+  "device_model": "NX729J",
+  "cpu": 4,
+  "frequency_policy_khz": [
+    614400,
+    1171200
+  ],
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 21858672,
+    "sha256": "4e440cceaffe199b1d42fbc38d34715d3b211c9c5ed6bd68115c763634ca0783"
+  },
+  "baseline": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/instruction-expansion-20261105/baseline-svm",
+    "bytes": 16627920,
+    "sha256": "a3e43279d82022507a3fd54e0499158f50bfa96e287d039c6246cd2c29d37c38"
+  }
+}

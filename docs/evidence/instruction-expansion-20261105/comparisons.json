@@ -1,0 +1,146 @@
+[
+  {
+    "case": "coremark",
+    "scope": "block",
+    "compile_ms": 46.345693,
+    "baseline_compile_ms": 45.098371,
+    "fex_compile_ms": 47.58713541666666,
+    "compile_vs_baseline": 1.0276578060879404,
+    "compile_vs_fex": 0.9739122263654503
+  },
+  {
+    "case": "coremark",
+    "scope": "function",
+    "compile_ms": 51.793722,
+    "baseline_compile_ms": 51.892809,
+    "fex_compile_ms": 47.58713541666666,
+    "compile_vs_baseline": 0.9980905446841393,
+    "compile_vs_fex": 1.0883975584262642
+  },
+  {
+    "case": "int",
+    "scope": "block",
+    "compile_ms": 1.898706,
+    "baseline_compile_ms": 1.995987,
+    "fex_compile_ms": 1.53015625,
+    "compile_vs_baseline": 0.9512617066143216,
+    "compile_vs_fex": 1.2408575921576634
+  },
+  {
+    "case": "int",
+    "scope": "function",
+    "compile_ms": 2.075054,
+    "baseline_compile_ms": 1.838959,
+    "fex_compile_ms": 1.53015625,
+    "compile_vs_baseline": 1.1283851352857786,
+    "compile_vs_fex": 1.3561059532319004
+  },
+  {
+    "case": "fp",
+    "scope": "block",
+    "compile_ms": 2.620828,
+    "baseline_compile_ms": 2.476138,
+    "fex_compile_ms": 1.71890625,
+    "compile_vs_baseline": 1.0584337383457625,
+    "compile_vs_fex": 1.524706772111626
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "compile_ms": 2.603809,
+    "baseline_compile_ms": 2.4186,
+    "fex_compile_ms": 1.71890625,
+    "compile_vs_baseline": 1.0765769453402796,
+    "compile_vs_fex": 1.514805708571948
+  },
+  {
+    "case": "mem",
+    "scope": "block",
+    "compile_ms": 2.370192,
+    "baseline_compile_ms": 2.162284,
+    "fex_compile_ms": 1.6169270833333333,
+    "compile_vs_baseline": 1.096152031833006,
+    "compile_vs_fex": 1.4658620196488967
+  },
+  {
+    "case": "mem",
+    "scope": "function",
+    "compile_ms": 2.437562,
+    "baseline_compile_ms": 2.134834,
+    "fex_compile_ms": 1.6169270833333333,
+    "compile_vs_baseline": 1.1418039997489264,
+    "compile_vs_fex": 1.507527473023031
+  },
+  {
+    "case": "branch",
+    "scope": "block",
+    "compile_ms": 2.097919,
+    "baseline_compile_ms": 1.829114,
+    "fex_compile_ms": 1.4823958333333334,
+    "compile_vs_baseline": 1.146959128845988,
+    "compile_vs_fex": 1.415221867753496
+  },
+  {
+    "case": "branch",
+    "scope": "function",
+    "compile_ms": 1.923348,
+    "baseline_compile_ms": 2.00739,
+    "fex_compile_ms": 1.4823958333333334,
+    "compile_vs_baseline": 0.9581336959933048,
+    "compile_vs_fex": 1.2974591244466307
+  },
+  {
+    "case": "call",
+    "scope": "block",
+    "compile_ms": 2.060271,
+    "baseline_compile_ms": 1.882145,
+    "fex_compile_ms": 1.6318229166666667,
+    "compile_vs_baseline": 1.094639892250597,
+    "compile_vs_fex": 1.262557952187929
+  },
+  {
+    "case": "call",
+    "scope": "function",
+    "compile_ms": 2.20374,
+    "baseline_compile_ms": 1.923695,
+    "fex_compile_ms": 1.6318229166666667,
+    "compile_vs_baseline": 1.145576611677007,
+    "compile_vs_fex": 1.350477418531167
+  },
+  {
+    "case": "func_tests",
+    "scope": "block",
+    "compile_ms": 23.365555,
+    "baseline_compile_ms": 22.685791,
+    "fex_compile_ms": 30.356614583333332,
+    "compile_vs_baseline": 1.0299643067327915,
+    "compile_vs_fex": 0.769702264916865
+  },
+  {
+    "case": "func_tests",
+    "scope": "function",
+    "compile_ms": 33.789633,
+    "baseline_compile_ms": 32.864757,
+    "fex_compile_ms": 30.356614583333332,
+    "compile_vs_baseline": 1.0281418785478926,
+    "compile_vs_fex": 1.113089633471563
+  },
+  {
+    "case": "x87_bench",
+    "scope": "block",
+    "compile_ms": 0.687975,
+    "baseline_compile_ms": 0.582292,
+    "fex_compile_ms": 0.2870833333333333,
+    "compile_vs_baseline": 1.181494851380407,
+    "compile_vs_fex": 2.3964296081277214
+  },
+  {
+    "case": "x87_bench",
+    "scope": "function",
+    "compile_ms": 0.557135,
+    "baseline_compile_ms": 0.476198,
+    "fex_compile_ms": 0.2870833333333333,
+    "compile_vs_baseline": 1.1699650145527702,
+    "compile_vs_fex": 1.9406734397677798
+  }
+]

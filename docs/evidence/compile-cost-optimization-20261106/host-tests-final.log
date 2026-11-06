@@ -1,0 +1,23 @@
+Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+    Start 1: instruction_coverage
+1/9 Test #1: instruction_coverage .............   Passed    0.49 sec
+    Start 2: avx_coverage
+2/9 Test #2: avx_coverage .....................   Passed    0.41 sec
+    Start 3: x87_coverage
+3/9 Test #3: x87_coverage .....................   Passed    0.25 sec
+    Start 4: ir_construction_contract
+4/9 Test #4: ir_construction_contract .........   Passed    0.01 sec
+    Start 5: x86_construction_contract
+5/9 Test #5: x86_construction_contract ........   Passed    0.01 sec
+    Start 6: ir_optimize_contract
+6/9 Test #6: ir_optimize_contract .............   Passed    0.01 sec
+    Start 7: arm64_compile_contract
+7/9 Test #7: arm64_compile_contract ...........   Passed    0.44 sec
+    Start 8: compile_pipeline_contract
+8/9 Test #8: compile_pipeline_contract ........   Passed    0.43 sec
+    Start 9: x86_interpreter_contract
+9/9 Test #9: x86_interpreter_contract .........   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 9
+
+Total Test time (real) =   2.06 sec

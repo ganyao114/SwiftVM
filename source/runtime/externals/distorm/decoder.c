@@ -480,6 +480,8 @@ _DecodeResult decode_internal(_CodeInfo* _ci, int supportOldIntr, _DInst result[
 			 */
 			codeLen -= prefixSize;
 			if ((codeLen == 0) || (prefixSize == INST_MAXIMUM_SIZE)) {
+				if (_ci->features & DF_REPORT_INCOMPLETE)
+					return prefixSize == INST_MAXIMUM_SIZE ? DECRES_INPUTERR : DECRES_INCOMPLETE;
 				if (~_ci->features & DF_RETURN_FC_ONLY) {
 					/* Make sure there is enough room. */
 					if (nextPos + (ps.last - code) > maxResultCount) return DECRES_MEMORYERR;
@@ -571,6 +573,8 @@ _DecodeResult decode_internal(_CodeInfo* _ci, int supportOldIntr, _DInst result[
 		/* Nobody uses codeOffset in the decoder itself, so spare it. */
 
 		decodeResult = decode_inst(&ci, &ps, pdi);
+		if ((_ci->features & DF_REPORT_INCOMPLETE) && decodeResult == DECRES_INPUTERR)
+			return ci.codeLen < 0 ? DECRES_INCOMPLETE : DECRES_INPUTERR;
 
 		/* See if we need to filter this instruction. */
 		if ((_ci->features & DF_RETURN_FC_ONLY) && (META_GET_FC(pdi->meta) == FC_NONE)) decodeResult = DECRES_FILTERED;

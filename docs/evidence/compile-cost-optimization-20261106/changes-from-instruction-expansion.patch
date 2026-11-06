@@ -1,0 +1,753 @@
+--- a/source/runtime/backend/arm64/allocate.cpp
++++ b/source/runtime/backend/arm64/allocate.cpp
+@@ -39,10 +39,14 @@
+     }
+ }
+ 
+-Allocation Allocate(const Program& program, Scope scope, const CompileOptions* options) {
+-    Allocation result;
++void Allocate(const Program& program, Scope scope, const CompileOptions* options, Allocation& result) try {
++    result.error = CompileError::None; result.node = {}; result.block = {};
++    result.spill_bytes = 0; result.publish_entry_pc = false;
++    result.homes.clear(); result.block_order.clear();
+     const auto reject = [&](CompileError error, NodeId node = {}, BlockId block = {}) {
+         result.error = error; result.node = node; result.block = block;
++        result.spill_bytes = 0; result.publish_entry_pc = false;
++        result.homes.clear(); result.block_order.clear();
+     };
+     const auto operations = program.Operations();
+     const auto blocks = program.Blocks();
+@@ -50,17 +54,17 @@
+     if (!program || program.ScopeKind() != scope || blocks.empty() ||
+         entry.value >= blocks.size() || (scope == Scope::Block && (blocks.size() != 1 || entry.value != 0)) ||
+         operations.size() >= NodeId::invalid) {
+-        reject(CompileError::InvalidProgram); return result;
++        reject(CompileError::InvalidProgram); return;
+     }
+     const bool pinned = options && options->pinned_uniform_offset != UINT32_MAX;
+     if (pinned && ((options->pinned_uniform_slots != 8 && options->pinned_uniform_slots != 12 &&
+             options->pinned_uniform_slots != 16) ||
+             options->pinned_uniform_offset > UINT32_MAX - (options->pinned_uniform_slots * 8u - 1))) {
+-        reject(CompileError::UnsupportedOperand); return result;
++        reject(CompileError::UnsupportedOperand); return;
+     }
+     const bool vector_pinned = options && options->pinned_vector_offset != UINT32_MAX;
+     if (vector_pinned && options->pinned_vector_offset > UINT32_MAX - 255u) {
+-        reject(CompileError::UnsupportedOperand); return result;
++        reject(CompileError::UnsupportedOperand); return;
+     }
+     const unsigned scalar_registers = pinned ? 14u - (options->pinned_uniform_slots - 8u) : 14u;
+     const bool borrow_pins = (pinned || vector_pinned) && options->private_uniforms;
+@@ -87,11 +91,14 @@
+     // closed terminals and in-unit targets before Submit. Consume that contract
+     // here instead of repeating a whole-program structural validation pass.
+ 
++    const bool graph = scope == Scope::Function && (blocks.size() != 1 ||
++            blocks.front().terminal.kind == TerminalKind::Jump || blocks.front().terminal.kind == TerminalKind::Branch);
+     // Schedule the actual CFG, never the incidental order in which bodies
+     // were constructed. The DFS reads terminals directly, without an edge
+-    // mirror. Its B-sized state is reused as the final block rank.
++    // mirror. A single external exit needs no graph, even in Function scope.
++    // The B-sized state is reused as the final block rank.
+     std::vector<u32> rank, starts;
+-    if (scope == Scope::Block) result.block_order.push_back(0);
++    if (!graph) result.block_order.push_back(0);
+     else {
+         rank.resize(blocks.size()); starts.resize(blocks.size());
+         struct Frame { u32 block, edge; };
+@@ -119,7 +126,7 @@
+         for (u32 b = 0; b < blocks.size(); ++b) if (!rank[b]) component(b);
+         for (u32 i = 0; i < result.block_order.size(); ++i) rank[result.block_order[i]] = i;
+     }
+-    const auto block_start = [&](u32 b) { return scope == Scope::Block ? 0u : starts[b]; };
++    const auto block_start = [&](u32 b) { return graph ? starts[b] : 0u; };
+     const auto pc_tail_check = [&](u32 b) -> NodeId {
+         const auto& body = blocks[b];
+         if (!options || !options->dispatcher || !options->exit_handler ||
+@@ -145,10 +152,10 @@
+             result.publish_entry_pc = true;
+         const auto pc_check = pc_tail_check(b);
+         const auto terminal_value = body.terminal.kind == TerminalKind::Branch ? body.terminal.value : pc_check;
+-        if (scope == Scope::Function) starts[b] = position;
++        if (graph) starts[b] = position;
+         for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i, ++position) {
+             if (operations[i].type != Type::Void && !IntegerType(operations[i].type) && operations[i].type != Type::V128) {
+-                reject(CompileError::UnsupportedType, NodeId{i}, BlockId{b}); return result;
++                reject(CompileError::UnsupportedType, NodeId{i}, BlockId{b}); return;
+             }
+             result.homes[i].definition_position = position; result.homes[i].last_use = position;
+             if (i == terminal_value.value && operations[i].Metadata() == OperationMetadata{}) {
+@@ -171,12 +178,12 @@
+                     result.homes[terminal_value.value].terminal_only = false;
+             }
+             if (operations[i].opcode == OpCode::Div128 || operations[i].opcode == OpCode::Cpuid) {
+-                if (result.spill_bytes == 32768) { reject(CompileError::FrameTooLarge, NodeId{i}); return result; }
++                if (result.spill_bytes == 32768) { reject(CompileError::FrameTooLarge, NodeId{i}); return; }
+                 result.homes[i].extra_slot = static_cast<std::uint16_t>(result.spill_bytes / 8 + 1);
+                 result.spill_bytes += 8;
+             }
+         }
+-        if (scope == Scope::Function) {
++        if (graph) {
+             const auto edge = [&](BlockId target) { backedge |= rank[target.value] <= rank[b]; };
+             if (body.terminal.kind == TerminalKind::Jump) edge(body.terminal.first);
+             if (body.terminal.kind == TerminalKind::Branch) { edge(body.terminal.first); edge(body.terminal.second); }
+@@ -260,7 +267,7 @@
+         const auto block_end = block_start(b) + body.node_count;
+         std::uint64_t needed_nzcv = FlagBits(Flag::NZCV);
+         if (body.terminal.HasValue() && !use(body.terminal.value.value, block_end)) {
+-            reject(CompileError::InvalidProgram, {}, BlockId{b}); return result;
++            reject(CompileError::InvalidProgram, {}, BlockId{b}); return;
+         }
+         if (body.terminal.HasValue() && operations[body.terminal.value.value].block.value != b)
+             result.homes[body.terminal.value.value].terminal_only = false;
+@@ -356,7 +363,7 @@
+                     const bool sole_pc_literal = pc_literal && cell.Payload() == pc_literal.value &&
+                             result.homes[cell.Payload()].last_use == result.homes[cell.Payload()].definition_position;
+                     if (cell.Payload() >= NodeId::invalid || !use(static_cast<u32>(cell.Payload()), at, b)) {
+-                        reject(CompileError::InvalidProgram, NodeId{i}, BlockId{b}); return result;
++                        reject(CompileError::InvalidProgram, NodeId{i}, BlockId{b}); return;
+                     }
+                     // Keep the real lifetime use. Only the final PC consumer
+                     // may consume this predicate/literal without a scalar home.
+@@ -541,8 +548,8 @@
+                 for (std::size_t other = 1; other < resident.size(); ++other)
+                     if (result.homes[resident[other]].last_use > result.homes[resident[slot]].last_use) slot = other;
+                 if (result.homes[resident[slot]].last_use > result.homes[i].last_use) {
+-                    if (!spill(resident[slot])) return result;
+-                } else { if (!spill(i)) return result; continue; }
++                    if (!spill(resident[slot])) return;
++                } else { if (!spill(i)) return; continue; }
+             }
+             // The explicit vector ABI reserves v16..v31 and v0/v1/v8/v9;
+             // its dynamic bank is v2..v7,v10..v15. The default keeps its old
+@@ -554,15 +561,30 @@
+     }
+     // Dedicated slots keep every value's home invariant across all edges.
+     // The initial writer uses the baseline scaled 12-bit SP load/store form.
++    return;
++} catch (...) {
++    result.error = CompileError::InvalidProgram; result.node = {}; result.block = {};
++    result.spill_bytes = 0; result.publish_entry_pc = false;
++    result.homes.clear(); result.block_order.clear();
++    throw;
++}
++} // namespace
++
++void AllocateBlock(const ir::Program& program, Allocation& allocation, const CompileOptions* options) {
++    Allocate(program, ir::Scope::Block, options, allocation);
++}
++void AllocateFunction(const ir::Program& program, Allocation& allocation, const CompileOptions* options) {
++    Allocate(program, ir::Scope::Function, options, allocation);
++}
++Allocation AllocateBlock(const ir::Program& program, const CompileOptions* options) {
++    Allocation result;
++    AllocateBlock(program, result, options);
+     return result;
+ }
+-} // namespace
+-
+-Allocation AllocateBlock(const ir::Program& program, const CompileOptions* options) {
+-    return Allocate(program, ir::Scope::Block, options);
++Allocation AllocateFunction(const ir::Program& program, const CompileOptions* options) {
++    Allocation result;
++    AllocateFunction(program, result, options);
++    return result;
+ }
+-Allocation AllocateFunction(const ir::Program& program, const CompileOptions* options) {
+-    return Allocate(program, ir::Scope::Function, options);
+-}
+ 
+ } // namespace swift::runtime::backend::arm64
+--- a/source/runtime/backend/arm64/allocate.h
++++ b/source/runtime/backend/arm64/allocate.h
+@@ -43,5 +43,9 @@
+ // supported by the code writer.
+ Allocation AllocateBlock(const ir::Program&, const CompileOptions* options = nullptr);
+ Allocation AllocateFunction(const ir::Program&, const CompileOptions* options = nullptr);
++// Reuse only this actual allocation owner's capacity. Every request resets
++// homes/order and scalar decisions; no Program or Writer borrow is retained.
++void AllocateBlock(const ir::Program&, Allocation&, const CompileOptions* options = nullptr);
++void AllocateFunction(const ir::Program&, Allocation&, const CompileOptions* options = nullptr);
+ 
+ } // namespace swift::runtime::backend::arm64
+--- a/source/runtime/backend/arm64/assembler.h
++++ b/source/runtime/backend/arm64/assembler.h
+@@ -1,6 +1,7 @@
+ #pragma once
+ 
+ #include "encoding.h"
++#include <span>
+ #include <vector>
+ 
+ namespace swift::runtime::backend::arm64::detail {
+@@ -9,18 +10,25 @@
+ // One code sink and one label/fixup owner. The exact encoder writes directly
+ // into the borrowed words; only actual branch uses grow these fixup vectors.
+ class Assembler {
++private:
++    WordOffset single_label{UINT32_MAX};
++    std::vector<WordOffset> label_storage;
+ public:
+     struct Fixup { WordOffset word; std::uint32_t target; };
+     struct LocalFixup { std::uint32_t node; WordOffset word; };
+     Assembler(std::vector<std::uint32_t>& words, std::size_t blocks)
+-            : exact(words), labels(blocks, UINT32_MAX), words(words) {}
++            : label_storage(blocks == 1 ? 0 : blocks, UINT32_MAX), exact(words),
++              labels(blocks == 1 ? std::span<WordOffset>{&single_label, 1} : std::span<WordOffset>{label_storage}),
++              words(words) {}
++    Assembler(const Assembler&) = delete;
++    Assembler& operator=(const Assembler&) = delete;
+     WordOffset Here() const { return static_cast<WordOffset>(words.size()); }
+     void Data32(std::uint32_t value) { exact.dc32(value); }
+     void Data64(std::uint64_t value) { exact.dc64(value); }
+     void Patch(WordOffset from, WordOffset to);
+     void Align8() { if (Here() & 1) exact.nop(); }
+     vixl::aarch64::Assembler exact;
+-    std::vector<WordOffset> labels;
++    std::span<WordOffset> labels;
+     std::vector<Fixup> fixups;
+     std::vector<LocalFixup> local_fixups;
+ private:
+--- a/source/runtime/backend/arm64/compile.cpp
++++ b/source/runtime/backend/arm64/compile.cpp
+@@ -1,21 +1,21 @@
+ #include "emit.h"
+ 
+ namespace swift::runtime::backend::arm64 {
+-void Compile(const ir::Program& program, CompileOptions options, CompileResult& result) {
++void Compile(const ir::Program& program, CompileOptions options, CompileResult& result, Allocation& allocation) {
+     result.error = CompileError::None; result.node = {}; result.block = {};
+     result.frame_bytes = result.spill_slots = 0;
+     result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
+-    auto allocation = program.ScopeKind() == ir::Scope::Block ? AllocateBlock(program, &options) :
+-            AllocateFunction(program, &options);
+-    if (!allocation) {
+-        result.error = allocation.error; result.node = allocation.node; result.block = allocation.block; return;
+-    }
+-    result.frame_bytes = (options.dispatcher || options.exit_handler ? 0 : 16) + ((allocation.spill_bytes + 15) & ~15u);
+-    result.spill_slots = allocation.spill_bytes / 8;
+-    // A small unit still has real entry/exit, fault and link words. One KiB
+-    // avoids repeated growth for those fixed costs; large units keep the hint.
+-    result.words.reserve(std::max(std::size_t{256}, program.Operations().size() * 2 + 32));
+     try {
++        if (program.ScopeKind() == ir::Scope::Block) AllocateBlock(program, allocation, &options);
++        else AllocateFunction(program, allocation, &options);
++        if (!allocation) {
++            result.error = allocation.error; result.node = allocation.node; result.block = allocation.block; return;
++        }
++        result.frame_bytes = (options.dispatcher || options.exit_handler ? 0 : 16) + ((allocation.spill_bytes + 15) & ~15u);
++        result.spill_slots = allocation.spill_bytes / 8;
++        // A small unit still has real entry/exit, fault and link words. One KiB
++        // avoids repeated growth for those fixed costs; large units keep the hint.
++        result.words.reserve(std::max(std::size_t{256}, program.Operations().size() * 2 + 32));
+         if (!detail::Writer(program, allocation, result, options).Run()) {
+             // No slice has been published. Keep the actual output capacity
+             // and Allocation; fresh Writer state rebuilds every word-based
+@@ -28,6 +28,20 @@
+         result.error = failure.error; result.node = failure.node; result.block = failure.block;
+         result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
+     }
++    catch (...) {
++        result.error = CompileError::InvalidProgram; result.node = {}; result.block = {};
++        result.frame_bytes = result.spill_slots = 0;
++        result.words.clear(); result.faults.clear(); result.links.clear(); result.entries.clear();
++        allocation.error = CompileError::InvalidProgram; allocation.node = {}; allocation.block = {};
++        allocation.spill_bytes = 0; allocation.publish_entry_pc = false;
++        allocation.homes.clear(); allocation.block_order.clear();
++        throw;
++    }
++}
++
++void Compile(const ir::Program& program, CompileOptions options, CompileResult& result) {
++    Allocation allocation;
++    Compile(program, options, result, allocation);
+ }
+ 
+ CompileResult Compile(const ir::Program& program, CompileOptions options) {
+--- a/source/runtime/backend/arm64/compile.h
++++ b/source/runtime/backend/arm64/compile.h
+@@ -108,5 +108,8 @@
+ // Reuse this actual output's capacity. Fault tables transferred to a publisher
+ // remain there; no Program or previous result contents are borrowed on entry.
+ void Compile(const ir::Program&, CompileOptions, CompileResult& output);
++// The same output reuse, with the caller's actual lifetime/location owner.
++// The writer borrows it only for this call, including any branch re-emission.
++void Compile(const ir::Program&, CompileOptions, CompileResult& output, Allocation& allocation);
+ 
+ } // namespace swift::runtime::backend::arm64
+--- a/source/runtime/backend/arm64/patch.cpp
++++ b/source/runtime/backend/arm64/patch.cpp
+@@ -1,27 +1,63 @@
+ #include "patch.h"
+ #include "abi.h"
+ #include "encoding.h"
++#include <algorithm>
+ #include <cstring>
+ #include <sys/mman.h>
+ #include <sys/syscall.h>
+ #include <unistd.h>
+ namespace swift::runtime::backend::arm64 {
++
++void SynchronizeCode(std::uint8_t* writable, const std::uint8_t* executable, std::size_t bytes) noexcept {
++    if (!bytes) return;
++#if defined(__linux__) && defined(__aarch64__)
++    // Arm's PoU sequence, with LLVM compiler-rt's CTR_EL0 IDC/DIC and line
++    // sizes. Clean the alias actually written; invalidate the alias fetched.
++    std::uint64_t ctr;
++    asm volatile("mrs %0, ctr_el0" : "=r"(ctr));
++    if (!(ctr & (std::uint64_t{1} << 28))) {
++        const auto line = std::uint64_t{4} << ((ctr >> 16) & 15);
++        const auto begin = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(writable));
++        const auto end = begin + bytes;
++        for (auto at = begin & ~(line - 1); at < end; at += line)
++            asm volatile("dc cvau, %0" : : "r"(at) : "memory");
++    }
++    asm volatile("dsb ish" : : : "memory");
++    if (!(ctr & (std::uint64_t{1} << 29))) {
++        const auto line = std::uint64_t{4} << (ctr & 15);
++        const auto begin = static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(executable));
++        const auto end = begin + bytes;
++        for (auto at = begin & ~(line - 1); at < end; at += line)
++            asm volatile("ic ivau, %0" : : "r"(at) : "memory");
++        asm volatile("dsb ish" : : : "memory");
++    }
++    asm volatile("isb" : : : "memory");
++#else
++    __builtin___clear_cache(reinterpret_cast<char*>(writable), reinterpret_cast<char*>(writable + bytes));
++    if (writable != executable)
++        __builtin___clear_cache(reinterpret_cast<char*>(const_cast<std::uint8_t*>(executable)),
++                                reinterpret_cast<char*>(const_cast<std::uint8_t*>(executable + bytes)));
++#endif
++}
++
+ namespace {
+ bool Imm19Link(std::uint32_t instruction) noexcept {
+     return encoding::Imm19(instruction);
+ }
+ 
+-void WriteLinkInstruction(std::uintptr_t* writable, const std::uintptr_t* executable,
+-                          std::uint32_t back_words, std::uint32_t instruction, bool synchronize = true) noexcept {
++bool WriteLinkInstruction(std::uintptr_t* writable, std::uint32_t back_words, std::uint32_t instruction) noexcept {
+     auto* write = reinterpret_cast<std::uint32_t*>(writable) - back_words;
+-    auto* execute = reinterpret_cast<const std::uint32_t*>(executable) - back_words;
+-    if (__atomic_load_n(write, __ATOMIC_RELAXED) == instruction) return;
++    if (__atomic_load_n(write, __ATOMIC_RELAXED) == instruction) return false;
+     __atomic_store_n(write, instruction, __ATOMIC_RELEASE);
+-    if (!synchronize) return;
+-    __builtin___clear_cache(reinterpret_cast<char*>(write), reinterpret_cast<char*>(write + 1));
+-    if (write != execute)
+-        __builtin___clear_cache(reinterpret_cast<char*>(const_cast<std::uint32_t*>(execute)),
+-                                reinterpret_cast<char*>(const_cast<std::uint32_t*>(execute + 1)));
++    return true;
++}
++void SynchronizeLink(std::uintptr_t* writable, const std::uintptr_t* executable,
++                     std::uint32_t gate_back, std::uint32_t head_back, bool gate_changed, bool head_changed) noexcept {
++    if (!gate_changed && !head_changed) return;
++    const auto first = std::max(gate_changed ? gate_back : 0, head_changed ? head_back : 0);
++    const auto last = std::min(gate_changed ? gate_back : UINT32_MAX, head_changed ? head_back : UINT32_MAX);
++    SynchronizeCode(reinterpret_cast<std::uint8_t*>(writable) - first * 4,
++                    reinterpret_cast<const std::uint8_t*>(executable) - first * 4, (first - last + 1) * 4);
+ }
+ 
+ void PatchLink(std::uintptr_t* writable, const std::uintptr_t* executable,
+@@ -35,15 +71,19 @@
+     const auto delta = static_cast<std::int64_t>(target - from);
+     const auto instruction = !(delta & 3) && delta >= -(INT64_C(1) << 27) && delta < (INT64_C(1) << 27)
+             ? encoding::Branch(delta / 4) : encoding::LoadLiteral16(gate_back);
+-    WriteLinkInstruction(writable, executable, gate_back, instruction, synchronize);
++    const bool gate_changed = WriteLinkInstruction(writable, gate_back, instruction);
++    bool head_changed{};
+     if (conditional) {
+         const auto head_from = reinterpret_cast<std::uintptr_t>(executable) - back_words * sizeof(std::uint32_t);
+         const auto distance = static_cast<std::int64_t>(target - head_from);
+         const auto words = !(distance & 3) && distance >= -(INT64_C(1) << 20) && distance < (INT64_C(1) << 20)
+                 ? static_cast<std::uint32_t>(distance / 4) : back_words - 2;
+-        WriteLinkInstruction(writable, executable, back_words,
+-                encoding::Retarget19(head, static_cast<std::int32_t>(words)), synchronize);
++        head_changed = WriteLinkInstruction(writable, back_words,
++                encoding::Retarget19(head, static_cast<std::int32_t>(words)));
+     }
++    // This mutation runs while native execution is stopped. Keep the target,
++    // gate, head store order, then synchronize the actual changed range once.
++    if (synchronize) SynchronizeLink(writable, executable, gate_back, back_words, gate_changed, head_changed);
+ }
+ }
+ 
+@@ -59,10 +99,12 @@
+     const auto head = __atomic_load_n(reinterpret_cast<std::uint32_t*>(writable) - back_words, __ATOMIC_RELAXED);
+     const bool conditional = Imm19Link(head);
+     const auto gate_back = conditional ? 2u : back_words;
+-    WriteLinkInstruction(writable, executable, gate_back, encoding::LoadLiteral16(gate_back));
++    const bool gate_changed = WriteLinkInstruction(writable, gate_back, encoding::LoadLiteral16(gate_back));
++    bool head_changed{};
+     if (conditional)
+-        WriteLinkInstruction(writable, executable, back_words,
++        head_changed = WriteLinkInstruction(writable, back_words,
+                 encoding::Retarget19(head, back_words - 2));
++    SynchronizeLink(writable, executable, gate_back, back_words, gate_changed, head_changed);
+ }
+ 
+ 
+@@ -130,10 +172,14 @@
+     // The complete half-barrier stub was published with this same code owner.
+     // Only the actual fast instruction changes, in one aligned atomic write.
+     __atomic_store_n(reinterpret_cast<std::uint32_t*>(write), branch, __ATOMIC_RELEASE);
++    if (code.writable) {
++        SynchronizeCode(write, execute, 4);
++        return true;
++    }
++    // Single-RX fallback retains its full synchronization before mprotect.
+     __builtin___clear_cache(reinterpret_cast<char*>(write), reinterpret_cast<char*>(write + 4));
+-    if (!code.writable && protect(PROT_READ | PROT_EXEC))
++    if (protect(PROT_READ | PROT_EXEC))
+         return false;
+-    if (execute != write) __builtin___clear_cache(reinterpret_cast<char*>(execute), reinterpret_cast<char*>(execute + 4));
+     return true;
+ }
+ } // namespace swift::runtime::backend::arm64
+--- a/source/runtime/backend/arm64/patch.h
++++ b/source/runtime/backend/arm64/patch.h
+@@ -3,6 +3,10 @@
+ #include "runtime/backend/code.h"
+ 
+ namespace swift::runtime::backend::arm64 {
++
++// The same bytes through writable and executable aliases. Call only after
++// the final stores, before publishing/resuming execution of this range.
++void SynchronizeCode(std::uint8_t* writable, const std::uint8_t* executable, std::size_t bytes) noexcept;
+ 
+ struct FaultRecovery {
+     std::uint8_t test_bits{}, test_register{}, parity_register{}, carry_direct{};
+--- a/source/runtime/compile/optimize.cpp
++++ b/source/runtime/compile/optimize.cpp
+@@ -595,22 +595,32 @@
+ 
+ OptimizeResult Optimize(ir::Program&& input, std::size_t max_operand_words,
+                         UniformPolicy policy) {
++    std::vector<u64> rows;
++    return Optimize(std::move(input), rows, max_operand_words, policy);
++}
++
++OptimizeResult Optimize(ir::Program&& input, std::vector<u64>& rows,
++                        std::size_t max_operand_words, UniformPolicy policy) {
+     if (!input) return {Error::Consumed, std::move(input), {}};
+     OptimizeStats stats;
+     stats.nodes = input.Operations().size();
+     stats.words_before = input.OperandArena().size();
+-    std::vector<u64> rows(stats.nodes); // The only per-node allocation; input is still owned by caller.
++    rows.assign(stats.nodes, 0); // One actual per-node table; caller still owns input.
+     stats.dense_bytes = rows.size() * sizeof(u64);
+     constexpr auto max_size = std::numeric_limits<std::size_t>::max();
+     const auto hard_limit = stats.nodes > (max_size - stats.words_before) / 2
+             ? max_size : stats.words_before + 2 * stats.nodes;
+-    const bool function = input.ScopeKind() == Scope::Function;
++    const bool function_scope = input.ScopeKind() == Scope::Function;
+     const bool signed_mul_widen_low = input.Target().Has(TargetFeature::VectorSignedMulWidenLow);
+     auto editor = Builder::Edit(std::move(input), std::min(hard_limit, max_operand_words));
+     try {
+         const auto operations = editor.Operations();
+         const auto blocks = editor.Blocks();
+         const auto unit = editor.UnitId();
++        // A single external exit has the same All-flags boundary as a Block.
++        // Keep its Function scope; only the unused CFG summaries are omitted.
++        const bool function = function_scope && (blocks.size() != 1 ||
++                blocks.front().terminal.kind == TerminalKind::Jump || blocks.front().terminal.kind == TerminalKind::Branch);
+         std::vector<FlagBlock> flags;
+         std::vector<std::size_t> predecessor_offsets, pending;
+         std::vector<BlockId> predecessors;
+--- a/source/runtime/compile/optimize.h
++++ b/source/runtime/compile/optimize.h
+@@ -1,8 +1,10 @@
+ #pragma once
+ 
+ #include <cstddef>
++#include <cstdint>
+ #include <limits>
+ #include <optional>
++#include <vector>
+ #include "runtime/ir/program.h"
+ 
+ namespace swift::runtime::compile {
+@@ -49,4 +51,10 @@
+                         std::size_t max_operand_words = std::numeric_limits<std::size_t>::max(),
+                         UniformPolicy uniforms = {});
+ 
++// Borrow the same use/flag rows across requests. Their contents are reset
++// before taking Program ownership; no Program reference survives the call.
++OptimizeResult Optimize(ir::Program&&, std::vector<std::uint64_t>& rows,
++                        std::size_t max_operand_words = std::numeric_limits<std::size_t>::max(),
++                        UniformPolicy uniforms = {});
++
+ }  // namespace swift::runtime::compile
+--- a/source/runtime/execution/code_heap.cpp
++++ b/source/runtime/execution/code_heap.cpp
+@@ -79,9 +79,11 @@
+             throw std::runtime_error("invalid native link relocation");
+         }
+     }
+-    __builtin___clear_cache(reinterpret_cast<char*>(write), reinterpret_cast<char*>(write + bytes));
++    const bool synchronized_aliases = slab.mapping.Dual() && backend.synchronize_code;
++    if (synchronized_aliases) backend.synchronize_code(write, execute, bytes);
++    else __builtin___clear_cache(reinterpret_cast<char*>(write), reinterpret_cast<char*>(write + bytes));
+     if (!slab.mapping.SetExecutable()) Failed("native slab executable");
+-    if (write != execute)
++    if (write != execute && !synchronized_aliases)
+         __builtin___clear_cache(reinterpret_cast<char*>(execute), reinterpret_cast<char*>(execute + bytes));
+     slab.used = offset + bytes;
+     return {reinterpret_cast<NativeCode::Function>(execute), bytes, slab.mapping.Dual() ? write : nullptr, sites};
+--- a/source/runtime/execution/compile_service.cpp
++++ b/source/runtime/execution/compile_service.cpp
+@@ -101,7 +101,7 @@
+     }
+     if (options.optimize) {
+         RuntimeTimer optimize{stats.optimize_ns};
+-        auto optimized = compile::Optimize(std::move(built.program), std::numeric_limits<std::size_t>::max(),
++        auto optimized = compile::Optimize(std::move(built.program), optimizer_rows, std::numeric_limits<std::size_t>::max(),
+                 compile::UniformPolicy{.flags = compile::UniformRange{offsetof(GuestState, packed_flags), sizeof(state.packed_flags)},
+                                        .guest_memory_disjoint = private_guest_state});
+         if (options.decode_timing) {
+@@ -110,6 +110,8 @@
+             stats.optimized_folded += optimized.stats.folded;
+         }
+         built.program = std::move(optimized.program);
++        if (optimizer_rows.capacity() > 8u * 1024 * 1024 / sizeof(std::uint64_t))
++            std::vector<std::uint64_t>{}.swap(optimizer_rows);
+         if (!optimized) { diagnostic = "IR optimization failed at the current compilation request"; failure = CompileFailure::InvalidInput; return {}; }
+     }
+     backend::CompileResult* output;
+@@ -167,6 +169,7 @@
+ }
+ void CompileService::Release() noexcept {
+     reusable = {}; last = nullptr;
++    std::vector<std::uint64_t>{}.swap(optimizer_rows);
+     if (vm.backend.release) vm.backend.release(vm.backend.context);
+ }
+ } // namespace swift::runtime::execution
+--- a/source/runtime/execution/compile_service.h
++++ b/source/runtime/execution/compile_service.h
+@@ -19,6 +19,7 @@
+ private:
+     VM& vm;
+     ir::Program reusable;
++    std::vector<std::uint64_t> optimizer_rows;
+     backend::CompileResult* last{};
+     CompileFailure failure{};
+ };
+--- a/source/runtime/execution/host_backend.h
++++ b/source/runtime/execution/host_backend.h
+@@ -28,6 +28,7 @@
+     void (*release)(void*) noexcept {};
+     bool (*initialize_link)(void*, std::span<std::uint8_t>, std::uintptr_t, bool,
+                             const backend::LinkSite&, std::uintptr_t) noexcept {};
++    void (*synchronize_code)(std::uint8_t*, const std::uint8_t*, std::size_t) noexcept {};
+     void (*patch_link)(std::uintptr_t*, const std::uintptr_t*, std::uintptr_t, std::uint32_t) noexcept {};
+     void (*unlink)(std::uintptr_t*, const std::uintptr_t*, std::uint32_t) noexcept {};
+     void (*reset_indirect)(std::uintptr_t*, const std::uintptr_t*) noexcept {};
+--- a/source/runtime/ir/builder.cpp
++++ b/source/runtime/ir/builder.cpp
+@@ -13,18 +13,14 @@
+ bool Empty(BlockRef block) noexcept { return !block.unit && !block.id; }
+ }  // namespace
+ 
+-Builder::Builder(Scope scope, TargetInfo target) {
++Builder::Builder(Scope scope, TargetInfo target) : Builder(scope, target, Program{}) {}
++Builder::Builder(Scope scope, TargetInfo target, Program reusable)
++        : storage(std::move(reusable.storage)) {
+     if ((scope != Scope::Block && scope != Scope::Function) ||
+         static_cast<unsigned>(target.mode) > static_cast<unsigned>(TargetMode::Unknown))
+         throw std::invalid_argument("invalid IR request metadata");
+-    storage = std::make_unique<Program::Storage>(scope, target);
+-}
+-Builder::Builder(Scope scope, TargetInfo target, Program reusable) : Builder(scope, target) {
+-    if (!reusable.storage) return;
+-    storage->operations = std::move(reusable.storage->operations);
+-    storage->operands = std::move(reusable.storage->operands);
+-    storage->blocks = std::move(reusable.storage->blocks);
+-    storage->operations.clear(); storage->operands.clear(); storage->blocks.clear();
++    if (storage) storage->Reset(scope, target);
++    else storage = std::make_unique<Program::Storage>(scope, target);
+ }
+ Builder::~Builder() = default;
+ Builder::Builder(Builder&&) noexcept = default;
+--- a/source/runtime/ir/builder.h
++++ b/source/runtime/ir/builder.h
+@@ -11,8 +11,8 @@
+ class Builder {
+ public:
+     explicit Builder(Scope, TargetInfo = {});
+-    // Start a fresh request using only the consumed owner's vector capacity.
+-    // All old borrows end; immutable metadata and the full unit ID are new.
++    // Start a fresh request in the consumed storage, retaining its capacity.
++    // All old borrows end; request metadata and the full unit ID are new.
+     Builder(Scope, TargetInfo, Program reusable);
+     ~Builder();
+     Builder(Builder&&) noexcept;
+--- a/source/runtime/ir/program.cpp
++++ b/source/runtime/ir/program.cpp
+@@ -22,6 +22,13 @@
+ 
+ Program::Storage::Storage(Scope scope, TargetInfo target)
+         : unit(NewUnitId()), scope(scope), target(target) {}
++
++void Program::Storage::Reset(Scope next_scope, TargetInfo next_target) {
++    const auto next_unit = NewUnitId();
++    operations.clear(); operands.clear(); blocks.clear();
++    unit = next_unit; scope = next_scope; target = next_target;
++    entry = {}; active = {}; unfinished = 0;
++}
+ 
+ Error Program::Storage::CheckBlock(BlockRef ref) const noexcept {
+     if (!ref.unit || !ref.id) return Error::InvalidBlock;
+--- a/source/runtime/ir/program.h
++++ b/source/runtime/ir/program.h
+@@ -93,6 +93,7 @@
+ private:
+     struct Storage {
+         Storage(Scope, TargetInfo);
++        void Reset(Scope, TargetInfo);
+         Error ReadType(Value value, Type view, Type& result) const noexcept {
+             if (!value.unit || !value.node) return Error::InvalidValue;
+             if (value.unit != unit) return Error::ForeignUnit;
+@@ -114,10 +115,12 @@
+             return CellRange{words.subspan(op.first_operand, op.operand_count)};
+         }
+         WorkCounts CountWork() const noexcept;
+-        const std::uint64_t unit;
+-        const Scope scope;
++        // Replaced only when a consumed owner begins a fresh request. The
++        // Program interface keeps request identity and metadata read-only.
++        std::uint64_t unit;
++        Scope scope;
+         BlockId entry{};
+-        const TargetInfo target;
++        TargetInfo target;
+         std::vector<Operation> operations;
+         std::vector<Cell> operands;
+         std::vector<BlockRecord> blocks;
+--- a/source/runtime/platform/linux/arm64_runtime.cpp
++++ b/source/runtime/platform/linux/arm64_runtime.cpp
+@@ -180,21 +180,29 @@
+         policy.deferred_pc = request.private_state && request.fault_locations;
+         policy.pinned_vector_offset = request.private_state ? offsetof(x86::GuestState, xmm) : UINT32_MAX;
+         if (!self.capabilities.afp) policy.mxcsr_flush_mode = request.fp_mode;
+-        backend::arm64::Compile(program, policy, self.output);
++        backend::arm64::Compile(program, policy, self.output, self.allocation);
+         return self.output;
+     };
+     ops.trim = [](void* raw) noexcept {
+-        auto& out = static_cast<Arm64Runtime*>(raw)->output;
++        auto& self = *static_cast<Arm64Runtime*>(raw);
++        auto& out = self.output;
+         if (out.words.capacity() > 1024u * 1024) std::vector<std::uint32_t>{}.swap(out.words);
+         if (out.links.capacity() > 4096) std::vector<backend::LinkSite>{}.swap(out.links);
+         if (out.entries.capacity() > 4096) std::vector<backend::EntryPoint>{}.swap(out.entries);
+-    };
+-    ops.release = [](void* raw) noexcept { static_cast<Arm64Runtime*>(raw)->output = {}; };
++        if (self.allocation.homes.capacity() > 8u * 1024 * 1024 / sizeof(backend::arm64::Home))
++            std::vector<backend::arm64::Home>{}.swap(self.allocation.homes);
++        if (self.allocation.block_order.capacity() > 4096) std::vector<std::uint32_t>{}.swap(self.allocation.block_order);
++    };
++    ops.release = [](void* raw) noexcept {
++        auto& self = *static_cast<Arm64Runtime*>(raw);
++        self.output = {}; self.allocation = {};
++    };
+     ops.initialize_link = [](void*, std::span<std::uint8_t> write, std::uintptr_t execute, bool dual,
+                              const backend::LinkSite& site, std::uintptr_t ready) noexcept {
+         return backend::arm64::InitializeNativeLink(write, execute, site, ready,
+                 dual ? reinterpret_cast<std::uintptr_t>(write.data()) : 0);
+     };
++    ops.synchronize_code = backend::arm64::SynchronizeCode;
+     ops.patch_link = backend::arm64::PatchNativeLink;
+     ops.unlink = backend::arm64::UnlinkNativeLink;
+     ops.reset_indirect = backend::arm64::ResetIndirectSite;
+--- a/source/runtime/platform/linux/arm64_runtime.h
++++ b/source/runtime/platform/linux/arm64_runtime.h
+@@ -6,7 +6,7 @@
+ namespace swift::runtime::platform {
+ 
+ // Concrete host binding. The VM borrows its operations; this object owns the
+-// single reusable backend output and dies after the VM has stopped/closed.
++// reusable backend output/allocation and dies after the VM has stopped/closed.
+ class Arm64Runtime {
+ public:
+     explicit Arm64Runtime(bool diagnostic) noexcept;
+@@ -16,6 +16,7 @@
+     execution::HostCapabilities capabilities;
+     backend::arm64::CompileOptions options;
+     backend::CompileResult output;
++    backend::arm64::Allocation allocation;
+ };
+ 
+ } // namespace swift::runtime::platform
+--- a/source/tests/rebuild/arm64_compile_test.cpp
++++ b/source/tests/rebuild/arm64_compile_test.cpp
+@@ -1912,6 +1912,11 @@
+     Store(builder, 40, Snapshot(builder, second));
+     const auto carry = Need(builder.Emit<OpCode::TestFlags>(Type::Bool, {Operand::Flags(Flag::Carry)}));
+     Need(builder.EndBlock(Terminal::Return(carry))); auto program = Submit(builder);
++    const auto allocation = arm64::AllocateFunction(program);
++    Check(program.ScopeKind() == Scope::Function && bool(allocation) &&
++                  allocation.block_order.size() == 1 && allocation.block_order.front() == 0 &&
++                  allocation.homes[first.node.value].extra_slot && allocation.homes[second.node.value].extra_slot,
++          "single external Function retains its scope, real homes and both helper result slots");
+     arm64::CompileOptions options{48};
+ #if defined(__aarch64__) && defined(__ANDROID__)
+     options.native_nzcv = (getauxval(AT_HWCAP) & HWCAP_FLAGM) != 0;
+--- a/source/tests/rebuild/ir_optimize_test.cpp
++++ b/source/tests/rebuild/ir_optimize_test.cpp
+@@ -549,6 +549,22 @@
+     CHECK(reduced.program.Operations()[adc.node.value].opcode == OpCode::Adc);
+     CHECK(reduced.program.Operations()[invert.node.value].opcode == OpCode::InvertCarry);
+     CHECK(reduced.program.Blocks()[empty.block.id.value].node_count == 0);
++
++    // Only a real external terminal can omit the Function graph. A single
++    // self edge must retain the CFG path even though it also has one block.
++    for (const bool self_loop : {false, true}) {
++        Builder single{Scope::Function}; const auto block = single.CreateBlock(); CHECK(block);
++        CHECK(single.BeginBlock(block.block) == Error::None);
++        const auto source = Emit(single, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
++        const auto writer = Emit(single, OpCode::And, Type::U64,
++                {Operand::ValueOf(source), Operand::ValueOf(source)},
++                {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
++        CHECK(single.EndBlock(self_loop ? Terminal::Jump(block.block) : Terminal::Return(source)) == Error::None);
++        auto local = Optimize(Submit(single)); CHECK(local);
++        CHECK(local.program.ScopeKind() == Scope::Function);
++        CHECK((local.stats.block_flags_bytes != 0) == self_loop);
++        if (!self_loop) CHECK(local.program.Operations()[writer.node.value].flag_outputs == FlagBits(Flag::All));
++    }
+ 
+     // The requested Z mask is already narrow: unchanged keep must still
+     // acquire the literal permission when final successor demand is only Z.
+@@ -856,9 +872,31 @@
+     CHECK(result.program.Operations()[widened.node.value].opcode == OpCode::Add);
+     CHECK(result.program.Operands(fifth.node).front().Payload() == widened.node.value);
+ }
++void ReusedRowsKeepOnlyCurrentRequest() {
++    std::vector<std::uint64_t> rows(256, ~std::uint64_t{});
++    Program reusable;
++    for (unsigned dead_count : {12u, 1u, 17u}) {
++        const auto scope = dead_count == 1 ? Scope::Function : Scope::Block;
++        Builder builder{scope, {}, std::move(reusable)};
++        const auto block = builder.CreateBlock(); CHECK(block);
++        CHECK(builder.BeginBlock(block.block) == Error::None);
++        const auto dead = Literal(builder, 99);
++        for (unsigned i = 1; i < dead_count; ++i) Literal(builder, i);
++        const auto left = Literal(builder, 7), right = Literal(builder, 11);
++        const auto sum = Emit(builder, OpCode::Add, Type::U64,
++                {Operand::ValueOf(left), Operand::ValueOf(right)});
++        CHECK(builder.EndBlock(Terminal::Return(sum)) == Error::None);
++        auto result = Optimize(Submit(builder), rows); CHECK(result);
++        CHECK(result.program.ScopeKind() == scope);
++        CHECK(result.program.Operations()[dead.node.value].opcode == OpCode::Nop);
++        CHECK(Immediate(result.program, sum, Type::U64) == 18);
++        reusable = std::move(result.program);
++    }
++}
+ }  // namespace
+ 
+ int main() {
++    ReusedRowsKeepOnlyCurrentRequest();
+     FoldAndDeadCascade(); LowByteMaskWriteback();
+     CopyAndTerminalRoots();
+     MetadataSensitiveAndObservable();

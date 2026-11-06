@@ -1,7 +1,8 @@
+#include "runtime/frontend/x86/detail/decoded.h"
 #include "runtime/backend/arm64/compile.h"
 #include "runtime/compile/optimize.h"
 #include "runtime/frontend/x86/build_ir.h"
-#include "runtime/execution/guest_state.h"
+#include "runtime/arch/x86/state.h"
 #include "function_fixture.h"
 
 #include <array>
@@ -80,7 +81,7 @@ swift::x86::BuildResult Build(std::span<const swift::x86::BlockWindow> windows,
         }
         blocks[index]={window.pc,first,static_cast<std::uint32_t>(instructions.size())-first};
     }
-    return swift::x86::BuildDecodedIR(instructions,blocks,windows,scope,{0,128,8},target);
+    return swift::x86::BuildDecodedIR(swift::x86::detail::FixtureNormalize(instructions),blocks,windows,scope,{0,128,8},target);
 }
 
 a64::CompileResult Compile(swift::x86::BuildResult& built,bool optimize,bool flags) {
@@ -391,27 +392,27 @@ void RepeatStorePipeline() {
         auto built = swift::x86::BuildIR({&window, 1}, scope, {0, 128, 8}, a64::KnownTargetInfo());
         auto code = Compile(built, true, true);
         if constexpr (executes_native) {
-            execution::GuestState empty;
-            empty.gprs[execution::RDI] = 1; // Unmapped and unaligned: count0 must not touch it.
+            swift::runtime::x86::GuestState empty;
+            empty.gprs[swift::runtime::x86::RDI] = 1; // Unmapped and unaligned: count0 must not touch it.
             empty.packed_flags = 0xa5a50000bc00003cULL;
             CHECK(Execute(code, reinterpret_cast<u64*>(&empty)) == 0 && empty.pc == 0x9003 &&
-                    empty.gprs[execution::RDI] == 1 && !empty.gprs[execution::RCX] &&
+                    empty.gprs[swift::runtime::x86::RDI] == 1 && !empty.gprs[swift::runtime::x86::RCX] &&
                     empty.packed_flags == 0xa5a50000bc00003cULL);
             for (const bool reverse : {false, true}) {
                 alignas(16) std::array<u64, 3> memory{};
-                execution::GuestState state;
-                state.gprs[execution::RAX] = pattern; state.gprs[execution::RCX] = 3;
+                swift::runtime::x86::GuestState state;
+                state.gprs[swift::runtime::x86::RAX] = pattern; state.gprs[swift::runtime::x86::RCX] = 3;
                 const auto start = reinterpret_cast<std::uintptr_t>(memory.data() + (reverse ? 2 : 0));
-                state.gprs[execution::RDI] = start;
+                state.gprs[swift::runtime::x86::RDI] = start;
                 const auto flags = (u64{0xa5a50000bc00003cULL} & ~u64{0x400}) | (reverse ? 0x400 : 0);
                 state.packed_flags = flags;
                 for (unsigned iteration = 0; iteration < 3; ++iteration) {
                     CHECK(Execute(code, reinterpret_cast<u64*>(&state)) == 0);
-                    CHECK(state.gprs[execution::RCX] == 2 - iteration &&
+                    CHECK(state.gprs[swift::runtime::x86::RCX] == 2 - iteration &&
                             state.pc == (iteration == 2 ? 0x9003 : 0x9000));
                 }
                 CHECK(memory[0] == pattern && memory[1] == pattern && memory[2] == pattern &&
-                        state.gprs[execution::RDI] == (reverse ? start - 24 : start + 24) &&
+                        state.gprs[swift::runtime::x86::RDI] == (reverse ? start - 24 : start + 24) &&
                         state.packed_flags == flags);
             }
         }
@@ -419,10 +420,10 @@ void RepeatStorePipeline() {
 }
 
 void ExtendedPrecisionPipeline() {
-    using ir::X87Command;
-    ir::X87State value;
+    using swift::runtime::x86::X87Command;
+    swift::runtime::x86::X87State value;
     const auto step = [&](X87Command command, unsigned index = 0, u64 raw = 0) {
-        return SvmX87Execute(&value, ir::X87Encode(command, index), raw);
+        return SvmX87Execute(&value, swift::runtime::x86::X87Encode(command, index), raw);
     };
     CHECK(step(X87Command::Init) == 0 && value.control == 0x037f && value.tags == 0xffff);
     CHECK(step(X87Command::PushOne) == 0);
@@ -444,7 +445,7 @@ void ExtendedPrecisionPipeline() {
     // Compare complete state, including physical payload and padding, against
     // the original instruction sequence for normal, masked and unmasked cases.
     for (unsigned scenario = 0; scenario < 6; ++scenario) {
-        ir::X87State original;
+        swift::runtime::x86::X87State original;
         original.tags = scenario == 3 ? 0xffff : 0;
         original.control = (scenario == 2 || scenario == 5) ? 0x037e : 0x037f;
         original.status = 0x0200;
@@ -454,16 +455,16 @@ void ExtendedPrecisionPipeline() {
         const bool exchange = scenario < 3;
         const auto grouped = exchange ? X87Command::ExchangeTwice : X87Command::PushOnePop;
         const auto index = exchange ? 1u : 0u;
-        auto expected = SvmX87Execute(&original, ir::X87Encode(
+        auto expected = SvmX87Execute(&original, swift::runtime::x86::X87Encode(
                 exchange ? X87Command::Exchange : X87Command::PushOne, index), 0);
-        if (!expected && !exchange) expected = SvmX87Execute(&original, ir::X87Encode(X87Command::Sqrt), 0);
-        if (!expected) expected = SvmX87Execute(&original, ir::X87Encode(
+        if (!expected && !exchange) expected = SvmX87Execute(&original, swift::runtime::x86::X87Encode(X87Command::Sqrt), 0);
+        if (!expected) expected = SvmX87Execute(&original, swift::runtime::x86::X87Encode(
                 exchange ? X87Command::Exchange : X87Command::StoreRegPop, index), 0);
-        CHECK(SvmX87Execute(&combined, ir::X87Encode(grouped, index), 0) == expected);
+        CHECK(SvmX87Execute(&combined, swift::runtime::x86::X87Encode(grouped, index), 0) == expected);
         CHECK(std::memcmp(&original, &combined, sizeof original) == 0);
     }
     CHECK(step(X87Command::Init) == 0 && step(X87Command::SetControlWord, 0, 0x037e) == 0);
-    CHECK(step(X87Command::Pop) == static_cast<u64>(ir::X87Result::UnmaskedPending) &&
+    CHECK(step(X87Command::Pop) == static_cast<u64>(swift::runtime::x86::X87Result::RaisedException) &&
             value.tags == 0xffff && (value.status & 0x8081) == 0x8081);
 
     alignas(8) const u64 factor = 0x3ff0000000000001ULL;
@@ -475,13 +476,13 @@ void ExtendedPrecisionPipeline() {
         bytes.insert(bytes.end(), std::begin(body), std::end(body));
         const swift::x86::BlockWindow window{0x8000, bytes};
         swift::x86::StateLayout layout{0, 128, 8};
-        layout.x87_offset = offsetof(execution::GuestState, x87);
+        layout.x87_offset = offsetof(swift::runtime::x86::GuestState, x87);
         auto built = swift::x86::BuildIR({&window, 1}, scope, layout, a64::KnownTargetInfo());
         auto code = Compile(built, true, false);
-        execution::GuestState state;
+        swift::runtime::x86::GuestState state;
         const auto reason = Execute(code, reinterpret_cast<u64*>(&state));
         if constexpr (executes_native) {
-            CHECK(reason == 1 && state.gprs[execution::RAX] == address);
+            CHECK(reason == 1 && state.gprs[swift::runtime::x86::RAX] == address);
             CHECK(state.x87.control == 0x037f && state.x87.tags == 0x0fff &&
                     state.x87.registers[6].sign_exp == 0x4000 &&
                     state.x87.registers[6].significand == 0x8000000000000400ULL);

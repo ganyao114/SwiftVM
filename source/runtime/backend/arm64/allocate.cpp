@@ -39,10 +39,14 @@ constexpr bool ReadsBeforeWrite(OpCode opcode, bool vector = false) {
     }
 }
 
-Allocation Allocate(const Program& program, Scope scope, const CompileOptions* options) {
-    Allocation result;
+void Allocate(const Program& program, Scope scope, const CompileOptions* options, Allocation& result) try {
+    result.error = CompileError::None; result.node = {}; result.block = {};
+    result.spill_bytes = 0; result.publish_entry_pc = false;
+    result.homes.clear(); result.block_order.clear();
     const auto reject = [&](CompileError error, NodeId node = {}, BlockId block = {}) {
         result.error = error; result.node = node; result.block = block;
+        result.spill_bytes = 0; result.publish_entry_pc = false;
+        result.homes.clear(); result.block_order.clear();
     };
     const auto operations = program.Operations();
     const auto blocks = program.Blocks();
@@ -50,17 +54,17 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
     if (!program || program.ScopeKind() != scope || blocks.empty() ||
         entry.value >= blocks.size() || (scope == Scope::Block && (blocks.size() != 1 || entry.value != 0)) ||
         operations.size() >= NodeId::invalid) {
-        reject(CompileError::InvalidProgram); return result;
+        reject(CompileError::InvalidProgram); return;
     }
     const bool pinned = options && options->pinned_uniform_offset != UINT32_MAX;
     if (pinned && ((options->pinned_uniform_slots != 8 && options->pinned_uniform_slots != 12 &&
             options->pinned_uniform_slots != 16) ||
             options->pinned_uniform_offset > UINT32_MAX - (options->pinned_uniform_slots * 8u - 1))) {
-        reject(CompileError::UnsupportedOperand); return result;
+        reject(CompileError::UnsupportedOperand); return;
     }
     const bool vector_pinned = options && options->pinned_vector_offset != UINT32_MAX;
     if (vector_pinned && options->pinned_vector_offset > UINT32_MAX - 255u) {
-        reject(CompileError::UnsupportedOperand); return result;
+        reject(CompileError::UnsupportedOperand); return;
     }
     const unsigned scalar_registers = pinned ? 14u - (options->pinned_uniform_slots - 8u) : 14u;
     const bool borrow_pins = (pinned || vector_pinned) && options->private_uniforms;
@@ -87,11 +91,14 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
     // closed terminals and in-unit targets before Submit. Consume that contract
     // here instead of repeating a whole-program structural validation pass.
 
+    const bool graph = scope == Scope::Function && (blocks.size() != 1 ||
+            blocks.front().terminal.kind == TerminalKind::Jump || blocks.front().terminal.kind == TerminalKind::Branch);
     // Schedule the actual CFG, never the incidental order in which bodies
     // were constructed. The DFS reads terminals directly, without an edge
-    // mirror. Its B-sized state is reused as the final block rank.
+    // mirror. A single external exit needs no graph, even in Function scope.
+    // The B-sized state is reused as the final block rank.
     std::vector<u32> rank, starts;
-    if (scope == Scope::Block) result.block_order.push_back(0);
+    if (!graph) result.block_order.push_back(0);
     else {
         rank.resize(blocks.size()); starts.resize(blocks.size());
         struct Frame { u32 block, edge; };
@@ -119,7 +126,7 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
         for (u32 b = 0; b < blocks.size(); ++b) if (!rank[b]) component(b);
         for (u32 i = 0; i < result.block_order.size(); ++i) rank[result.block_order[i]] = i;
     }
-    const auto block_start = [&](u32 b) { return scope == Scope::Block ? 0u : starts[b]; };
+    const auto block_start = [&](u32 b) { return graph ? starts[b] : 0u; };
     const auto pc_tail_check = [&](u32 b) -> NodeId {
         const auto& body = blocks[b];
         if (!options || !options->dispatcher || !options->exit_handler ||
@@ -145,10 +152,10 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
             result.publish_entry_pc = true;
         const auto pc_check = pc_tail_check(b);
         const auto terminal_value = body.terminal.kind == TerminalKind::Branch ? body.terminal.value : pc_check;
-        if (scope == Scope::Function) starts[b] = position;
+        if (graph) starts[b] = position;
         for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i, ++position) {
             if (operations[i].type != Type::Void && !IntegerType(operations[i].type) && operations[i].type != Type::V128) {
-                reject(CompileError::UnsupportedType, NodeId{i}, BlockId{b}); return result;
+                reject(CompileError::UnsupportedType, NodeId{i}, BlockId{b}); return;
             }
             result.homes[i].definition_position = position; result.homes[i].last_use = position;
             if (i == terminal_value.value && operations[i].Metadata() == OperationMetadata{}) {
@@ -171,12 +178,12 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
                     result.homes[terminal_value.value].terminal_only = false;
             }
             if (operations[i].opcode == OpCode::Div128 || operations[i].opcode == OpCode::Cpuid) {
-                if (result.spill_bytes == 32768) { reject(CompileError::FrameTooLarge, NodeId{i}); return result; }
+                if (result.spill_bytes == 32768) { reject(CompileError::FrameTooLarge, NodeId{i}); return; }
                 result.homes[i].extra_slot = static_cast<std::uint16_t>(result.spill_bytes / 8 + 1);
                 result.spill_bytes += 8;
             }
         }
-        if (scope == Scope::Function) {
+        if (graph) {
             const auto edge = [&](BlockId target) { backedge |= rank[target.value] <= rank[b]; };
             if (body.terminal.kind == TerminalKind::Jump) edge(body.terminal.first);
             if (body.terminal.kind == TerminalKind::Branch) { edge(body.terminal.first); edge(body.terminal.second); }
@@ -260,7 +267,7 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
         const auto block_end = block_start(b) + body.node_count;
         std::uint64_t needed_nzcv = FlagBits(Flag::NZCV);
         if (body.terminal.HasValue() && !use(body.terminal.value.value, block_end)) {
-            reject(CompileError::InvalidProgram, {}, BlockId{b}); return result;
+            reject(CompileError::InvalidProgram, {}, BlockId{b}); return;
         }
         if (body.terminal.HasValue() && operations[body.terminal.value.value].block.value != b)
             result.homes[body.terminal.value.value].terminal_only = false;
@@ -356,7 +363,7 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
                     const bool sole_pc_literal = pc_literal && cell.Payload() == pc_literal.value &&
                             result.homes[cell.Payload()].last_use == result.homes[cell.Payload()].definition_position;
                     if (cell.Payload() >= NodeId::invalid || !use(static_cast<u32>(cell.Payload()), at, b)) {
-                        reject(CompileError::InvalidProgram, NodeId{i}, BlockId{b}); return result;
+                        reject(CompileError::InvalidProgram, NodeId{i}, BlockId{b}); return;
                     }
                     // Keep the real lifetime use. Only the final PC consumer
                     // may consume this predicate/literal without a scalar home.
@@ -541,8 +548,8 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
                 for (std::size_t other = 1; other < resident.size(); ++other)
                     if (result.homes[resident[other]].last_use > result.homes[resident[slot]].last_use) slot = other;
                 if (result.homes[resident[slot]].last_use > result.homes[i].last_use) {
-                    if (!spill(resident[slot])) return result;
-                } else { if (!spill(i)) return result; continue; }
+                    if (!spill(resident[slot])) return;
+                } else { if (!spill(i)) return; continue; }
             }
             // The explicit vector ABI reserves v16..v31 and v0/v1/v8/v9;
             // its dynamic bank is v2..v7,v10..v15. The default keeps its old
@@ -554,15 +561,30 @@ Allocation Allocate(const Program& program, Scope scope, const CompileOptions* o
     }
     // Dedicated slots keep every value's home invariant across all edges.
     // The initial writer uses the baseline scaled 12-bit SP load/store form.
-    return result;
+    return;
+} catch (...) {
+    result.error = CompileError::InvalidProgram; result.node = {}; result.block = {};
+    result.spill_bytes = 0; result.publish_entry_pc = false;
+    result.homes.clear(); result.block_order.clear();
+    throw;
 }
 } // namespace
 
+void AllocateBlock(const ir::Program& program, Allocation& allocation, const CompileOptions* options) {
+    Allocate(program, ir::Scope::Block, options, allocation);
+}
+void AllocateFunction(const ir::Program& program, Allocation& allocation, const CompileOptions* options) {
+    Allocate(program, ir::Scope::Function, options, allocation);
+}
 Allocation AllocateBlock(const ir::Program& program, const CompileOptions* options) {
-    return Allocate(program, ir::Scope::Block, options);
+    Allocation result;
+    AllocateBlock(program, result, options);
+    return result;
 }
 Allocation AllocateFunction(const ir::Program& program, const CompileOptions* options) {
-    return Allocate(program, ir::Scope::Function, options);
+    Allocation result;
+    AllocateFunction(program, result, options);
+    return result;
 }
 
 } // namespace swift::runtime::backend::arm64

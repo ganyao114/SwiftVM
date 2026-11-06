@@ -1,0 +1,121 @@
+#include "smc.h"
+#include "vm.h"
+#include "timing.h"
+
+#include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <stdexcept>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+namespace swift::runtime::execution {
+namespace {
+using u64 = std::uint64_t;
+[[noreturn]] void SystemError(const char* op) { throw std::runtime_error(std::string(op)+": "+std::strerror(errno)); }
+u64 Add(u64 a,u64 b) { if(b>UINT64_MAX-a) throw std::length_error("source range overflow"); return a+b; }
+bool IsFile(const MemoryRegion& r) noexcept { return r.backing==BackingKind::FilePrivate||r.backing==BackingKind::FileShared; }
+bool FileOverlap(const MemoryRegion& a,const MemoryRegion& b,u64 first,u64 last) noexcept {
+ return IsFile(a)&&IsFile(b)&&a.device==b.device&&a.inode==b.inode&&first<b.file_offset+b.size&&b.file_offset<last;
+}
+template<typename Visit>
+void CodeWriteRanges(std::span<const MemoryRegion> regions, u64 address, u64 end, Visit visit) {
+    for (const auto& source : regions) {
+        const auto begin = std::max(address, source.address), tail = std::min(end, source.address + source.size);
+        if (begin >= tail || !(source.protection & PROT_EXEC)) continue;
+        if (source.protection & PROT_WRITE) visit(begin, tail);
+        if (!IsFile(source)) continue;
+        const auto first = source.file_offset + (begin - source.address), last = source.file_offset + (tail - source.address);
+        for (const auto& peer : regions) {
+            if (&source == &peer || peer.backing != BackingKind::FileShared || !(peer.protection & PROT_WRITE) ||
+                !FileOverlap(source, peer, first, last)) continue;
+            visit(peer.address + (std::max(first, peer.file_offset) - peer.file_offset),
+                  peer.address + (std::min(last, peer.file_offset + peer.size) - peer.file_offset));
+        }
+    }
+}
+
+}
+
+void Smc::Arm(u64 address, std::size_t length) {
+    const auto page_size = vm.memory.PageSize();
+    if (!length) return;
+    const auto end = Add(address, length);
+    std::size_t candidate_pages{};
+    CodeWriteRanges(vm.memory.Regions(), address, end, [&](u64 begin, u64 tail) {
+        const auto count = ((tail - 1) / page_size) - (begin / page_size) + 1;
+        if (count > pages.max_size() - pages.size() - candidate_pages)
+            throw std::length_error("guest code-write page capacity overflow");
+        candidate_pages += static_cast<std::size_t>(count);
+    });
+    if (!candidate_pages) return;
+    pages.reserve(pages.size() + candidate_pages);
+    CodeWriteRanges(vm.memory.Regions(), address, end, [&](u64 begin, u64 tail) {
+        const auto last = (tail - 1) & ~(u64{page_size} - 1);
+        for (auto page = begin & ~(u64{page_size} - 1);; page += page_size) {
+            pages.push_back({page, false});
+            if (page == last) break;
+        }
+    });
+    std::sort(pages.begin(), pages.end(),
+            [](const Page& left, const Page& right) { return left.address < right.address; });
+    std::size_t kept{};
+    for (const auto page : pages) {
+        if (kept && pages[kept - 1].address == page.address)
+            pages[kept - 1].armed |= page.armed;
+        else pages[kept++] = page;
+    }
+    pages.resize(kept);
+    // All records and allocations precede protection, including non-EXEC
+    // MAP_SHARED writers of these source pages. Keep existing armed records.
+    for (auto& page : pages) {
+        const auto protection = vm.memory.PageProtection(page.address);
+        if (page.armed || protection < 0 || !(protection & PROT_WRITE)) continue;
+        if (mprotect(reinterpret_cast<void*>(page.address), page_size, protection & ~PROT_WRITE)) SystemError("protect guest code source/alias");
+        page.armed = true;
+    }
+}
+bool Smc::Recover(std::uintptr_t address) noexcept {
+    const auto page_size = vm.memory.PageSize();
+    const auto page = address & ~(u64{page_size} - 1);
+    const auto found = std::lower_bound(pages.begin(), pages.end(), page,
+            [](const Page& row, u64 value) { return row.address < value; });
+    if (found == pages.end() || found->address != page || !found->armed) return false;
+    const auto protection = vm.memory.PageProtection(page);
+    if (protection < 0 || !(protection & PROT_WRITE)) return false;
+    if (syscall(SYS_mprotect, reinterpret_cast<void*>(page), page_size, protection)) return false;
+    found->armed = false;
+    vm.thread.faults.smc_pending = 1;
+    __atomic_store_n(&vm.thread.native.mask, u64{0}, __ATOMIC_RELAXED);
+    __atomic_store_n(&vm.thread.native.slots, vm.Cache().EmptyData(), __ATOMIC_RELEASE);
+    for (auto& cache : vm.caches) cache.ResetLinks();
+    return true;
+}
+void Smc::Clear() {
+    const auto page_size = vm.memory.PageSize();
+    for (auto& page : pages) if (page.armed) {
+        const auto protection = vm.memory.PageProtection(page.address);
+        // Mapping/protection syscalls may already have replaced or unmapped
+        // this page. Never restore the earlier mapping's permissions.
+        if (protection >= 0 && mprotect(reinterpret_cast<void*>(page.address), page_size, protection))
+            SystemError("restore guest code source");
+        page.armed = false;
+    }
+    pages.clear(); // Retain actual page-record capacity.
+}
+void Smc::Invalidate() {
+    RuntimeTimer total{vm.stats.compile_request_ns}, release{vm.stats.code_release_ns};
+    Clear();
+    vm.thread.faults.smc_pending = 0;
+    // The signal path already restored links while old native code could run.
+    // A service-triggered invalidation is itself cold, so removing all domains
+    // also makes every old range unreachable without rewriting it a second time.
+    for (auto& cache : vm.caches) cache.Clear();
+    vm.thread.anchor = {};
+    vm.RefreshNative(vm.thread.native);
+    const auto released = vm.heap.Release();
+    if (!released.Complete()) throw std::runtime_error("cannot retire native code mapping");
+    ++vm.stats.cache_invalidations;
+}
+} // namespace swift::runtime::execution

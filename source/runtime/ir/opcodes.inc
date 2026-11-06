@@ -34,7 +34,7 @@ INST(GetUniformAddress, Value, Explicit, (Effect::ReadGuestState), Imm)
 // Stateful x87 operation. The dedicated opcode keeps x87 out of the generic
 // CallLambda classification so ARM64 can inline selected commands and
 // whole-function compilation can retain blocks containing x87.
-INST(X87Op, Value, Explicit, (Effect::Unknown), Value, Imm, Value)
+INST(X87Op, Value, Explicit, (Effect::ReadGuestState | Effect::WriteGuestState | Effect::External | Effect::Control), Value, Imm, Value)
 INST(LoadMemory, Value, Explicit, (Effect::ReadMemory | Effect::MayFault), Operand)
 // Exact scalar access width and extension semantics live in the descriptor
 // (load_extend.h); ReturnType describes the final 32/64-bit integer result.
@@ -82,7 +82,7 @@ INST(CallLambda, Value, Call, (Effect::Unknown), Lambda, OptionalData, OptionalD
 // compile-time immediate; the result packs IntRes2, index and ZF/SF/CF/OF.
 // PCMPESTRI/M retain their helper path because their explicit lengths are
 // dynamic and are not the W58 hot path.
-INST(Sse42Str, Value, Explicit, (Effect::Unknown), Value, Value, Imm)
+INST(Sse42Str, Value, Explicit, (Effect::None), Value, Value, Imm)
 INST(CallLocation, Value, Call, (Effect::Unknown), Lambda, Params)
 INST(CallDynamic, Value, Call, (Effect::Unknown), Lambda, Params)
 INST(AddPhi, Value, Explicit, (Effect::Control), Params)
@@ -271,6 +271,7 @@ INST(VecAbsDiffSum8, Value, Arg0, (Effect::None), Value, Value)
 INST(VecMadd16, Value, Arg0, (Effect::None), Value, Value)
 
 // Packed shifts. The scalar count is the raw x86 imm8 / low qword count.
+// Scalar counts apply to every lane; a V128 count supplies one count per lane.
 INST(VecShiftLeft, Value, Arg0, (Effect::None), Value, Value, Imm)
 INST(VecShiftRight, Value, Arg0, (Effect::None), Value, Value, Imm)
 INST(VecShiftRightArithmetic, Value, Arg0, (Effect::None), Value, Value, Imm)
@@ -354,6 +355,7 @@ INST(VecFSub, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
 INST(VecFMul, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
 INST(VecFDiv, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
 INST(VecFMinMax, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
+// Operands are (merge,input,lane_bits,kind,scalar).
 // kind: 0=sqrt, 1=reciprocal estimate, 2=reciprocal-sqrt estimate.
 INST(VecFUnary, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
 
@@ -384,6 +386,7 @@ INST(VecFCmpMask, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, 
 // is produced by these numerical operations.
 INST(VecFCvtIntToFloat, Value, Explicit, (Effect::ReadHostState), Value, Imm, Imm)
 INST(VecFCvtFloatToInt, Value, Explicit, (Effect::ReadHostState), Value, Imm, Imm, Imm)
+// Imm is source IEEE width (32 or 64); the result is the other width.
 INST(VecFCvtScalar, Value, Explicit, (Effect::ReadHostState), Value, Imm)
 // 0=dq2ps, 1=dq2pd, 2=ps2dq, 3=ttps2dq, 4=pd2dq, 5=ttpd2dq,
 // 6=ps2pd, 7=pd2ps.
@@ -425,11 +428,10 @@ INST(VecUnzip, Value, Arg0, (Effect::None), Value, Value, Imm, Imm)
 // unit can still implement it exactly with a double-double product, so the
 // opcode is implementable rather than merely expressible everywhere.
 //
-// SCALAR forms are deliberately absent.  x86's scalar FMA merges the
-// untouched lanes from the DESTINATION register, which is a different one of
-// the three operands for each of 132/213/231, so no "upper lanes come from
-// operand N" rule covers them; the front end computes the packed form and
-// merges lane 0 itself.
+// Bit2 selects scalar lane 0 and preserves upper lanes from arg0. The
+// frontend performs any additional encoding-specific destination merge.
+// Bit3 selects alternating signs; bit4 selects odd lanes for subtraction.
+// Effective addend negation is bit1 XOR (bit3 && (lane%2 == bit4)).
 INST(VecFMulAdd, Value, Arg0, (Effect::Unknown), Value, Value, Value, Imm, Imm)
 
 // Round each floating-point lane to an INTEGRAL VALUE, result still floating
@@ -571,3 +573,26 @@ INST(MemoryStoreFence, Void, Void, (Effect::Ordered))
 // 2*src_lane_bits product bits. Both inputs are complete V128 carriers;
 // higher source lanes are ignored and no flags are changed.
 INST(VecSignedMulWidenLow, Value, Explicit, (Effect::None), Value, Value, Imm)
+
+// A bound architectural system query. The kind is an immutable protocol
+// selector; the callback has Cpuid's pair-return C ABI. This node retains
+// only its first scalar result and has no hidden mutable state.
+INST(ReadSystem, U64, Fixed, (Effect::Unknown), Imm, Imm)
+
+// Explicit load ordering and scheduler hints.
+INST(MemoryLoadFence, Void, Void, (Effect::Ordered))
+INST(CpuYield, Void, Void, (Effect::Ordered))
+INST(VecAesImc, Value, Arg0, (Effect::None), Value)
+INST(ParallelBitDeposit, Value, Arg0, (Effect::None), Value, Value)
+INST(ParallelBitExtract, Value, Arg0, (Effect::None), Value, Value)
+
+// Explicit string lengths retain signed 32/64-bit raw values in a V128 pair.
+// Immediate bit8 selects 64-bit lengths; low8 is the string operation control.
+INST(Sse42StrExplicit, U64, Fixed, (Effect::None), Value, Value, Value, Imm)
+
+// Stateful x87 operation with explicit failure metadata (see x87.h).
+// DP is read on the raised-exception edge before the result home is written.
+INST(X87Execute, U64, Fixed, (Effect::ReadGuestState | Effect::WriteGuestState | Effect::External | Effect::Control), Value, Imm, Value, Value, Imm)
+INST(ReadSystemPair, Value, Explicit, (Effect::Unknown), Imm, Imm)
+// One architectural metadata commit, including legacy fused x87 windows.
+INST(X87CommitMetadata, Void, Void, (Effect::WriteGuestState), Value, Imm, Value, Imm)

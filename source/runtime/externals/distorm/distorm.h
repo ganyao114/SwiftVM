@@ -364,6 +364,11 @@ typedef struct {
 
 /* Features for decompose: */
 #define DF_NONE 0
+/* Opt-in single-instruction shortage reporting. Incomplete opcode/operand or
+ * prefix bytes return DECRES_INCOMPLETE, while real invalid encodings return
+ * DECRES_INPUTERR instead of being expanded to undecodable byte records.
+ * Without this feature all historical result behavior is retained. */
+#define DF_REPORT_INCOMPLETE 0x400
 /* The decoder will limit addresses to a maximum of 16 bits. */
 #define DF_MAXIMUM_ADDR16 1
 /* The decoder will limit addresses to a maximum of 32 bits. */
@@ -408,7 +413,7 @@ typedef struct {
 #define FC_CMOV 7
 
 /* Return code of the decoding function. */
-typedef enum { DECRES_NONE, DECRES_SUCCESS, DECRES_MEMORYERR, DECRES_INPUTERR, DECRES_FILTERED } _DecodeResult;
+typedef enum { DECRES_NONE, DECRES_SUCCESS, DECRES_MEMORYERR, DECRES_INPUTERR, DECRES_FILTERED, DECRES_INCOMPLETE } _DecodeResult;
 
 /* Define the following interface functions only for outer projects. */
 #if !(defined(DISTORM_STATIC) || defined(DISTORM_DYNAMIC))

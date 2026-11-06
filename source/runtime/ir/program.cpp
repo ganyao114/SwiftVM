@@ -23,6 +23,13 @@ std::uint64_t NewUnitId() {
 Program::Storage::Storage(Scope scope, TargetInfo target)
         : unit(NewUnitId()), scope(scope), target(target) {}
 
+void Program::Storage::Reset(Scope next_scope, TargetInfo next_target) {
+    const auto next_unit = NewUnitId();
+    operations.clear(); operands.clear(); blocks.clear();
+    unit = next_unit; scope = next_scope; target = next_target;
+    entry = {}; active = {}; unfinished = 0;
+}
+
 Error Program::Storage::CheckBlock(BlockRef ref) const noexcept {
     if (!ref.unit || !ref.id) return Error::InvalidBlock;
     if (ref.unit != unit) return Error::ForeignUnit;

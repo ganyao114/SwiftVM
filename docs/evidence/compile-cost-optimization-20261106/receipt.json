@@ -1,0 +1,93 @@
+{
+  "utc": "2026-11-06T08:39:20.744530+00:00",
+  "repository": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "base_commit": "74ac9bc9b6bb160c2d7d10bf9a37000f5ec0407a",
+  "working_tree_modified": true,
+  "committed": false,
+  "pushed": false,
+  "source_digest": "1bf041a1e0167d41247d8c0cc31428be4aff93e032a31bc1e129131853fba322",
+  "source_input_files": 282,
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 21902496,
+    "sha256": "3862136f25ab0dffcac1051b4d6b66bbef0b23a0099fda795edc5677e3cb7f20"
+  },
+  "baseline": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/instruction-expansion-20261105/final-svm",
+    "bytes": 21858672,
+    "sha256": "4e440cceaffe199b1d42fbc38d34715d3b211c9c5ed6bd68115c763634ca0783"
+  },
+  "source_archive_sha256": "ac079b89dd791dcff260628b05bf712f68c60dbb3d18de9230be69798b5fbf80",
+  "test_gates": {
+    "smoke-summary.json": {
+      "passed": 39,
+      "total": 39
+    },
+    "instruction-test-summary.json": {
+      "passed": 3,
+      "total": 3
+    },
+    "state-images-summary.json": {
+      "passed": 3,
+      "total": 3
+    }
+  },
+  "host_ctest": [
+    9,
+    9
+  ],
+  "asan_ubsan_ctest": [
+    9,
+    9
+  ],
+  "compile_samples": [
+    200,
+    200
+  ],
+  "metric": "Same whole compile window, only actual byte parser excluded. Includes SVM binding/physical native release versus FEX compile-root logical release asymmetry. No sample replacement.",
+  "production_scope": "Capacity/owner reuse, single external-exit Function graph omission, inline singleton label, alias-aware cache synchronization; no IR op/selector/RA policy change",
+  "new_production_files": 0,
+  "changed_source_files": 21,
+  "compile_target_at_most_two_times_fex_met": false,
+  "remaining_compile_budget_misses": [
+    {
+      "case": "x87_bench",
+      "scope": "block",
+      "compile_ms": 0.642501,
+      "baseline_compile_ms": 0.646305,
+      "fex_compile_ms": 0.285,
+      "compile_vs_baseline": 0.9941142339916912,
+      "compile_vs_fex": 2.2543894736842107
+    }
+  ],
+  "unimproved_total_cases": [
+    {
+      "case": "call",
+      "scope": "function",
+      "compile_ms": 2.130682,
+      "baseline_compile_ms": 2.019225,
+      "fex_compile_ms": 1.6355208333333333,
+      "compile_vs_baseline": 1.055197910089267,
+      "compile_vs_fex": 1.3027544232851411
+    }
+  ],
+  "diagnostics": [
+    "allocation-summary.json",
+    "cache-sync-summary.json",
+    "mapping-results.jsonl",
+    "block-overlap-results.jsonl",
+    "x87-phase-decomposition.json"
+  ],
+  "runtime_pmu_new_results": false,
+  "phone_cleanup": {
+    "utc": "2026-11-06T08:24:08.379811+00:00",
+    "namespace": "/data/local/tmp/swiftvm-compile-cost-20261105",
+    "allocated_bytes_removed": 188240896,
+    "df_actual_free_delta_bytes": 188342272,
+    "remaining_bytes": 0,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "evidence_root": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-cost-optimization-20261105"
+}

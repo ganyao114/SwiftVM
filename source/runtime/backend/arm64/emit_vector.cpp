@@ -1,319 +1,101 @@
 #include "emit.h"
 
-namespace swift::runtime::backend::arm64::detail {
-
-void Writer::LoadMxcsrFlushControl() {
-    if (options.mxcsr_flush_mode != UINT8_MAX) return;
-    const auto offset = options.mxcsr_flush_offset;
-    if (!(offset & 3) && offset / 4 <= 4095) Memory(true, 32, 0, 19, offset / 4);
-    else {
-        Immediate(17, offset); Put(0x8b000000u | (17u << 16) | (19u << 5) | 17u);
-        Memory(true, 32, 0, 17);
-    }
+namespace swift::runtime::backend::arm64 {
+std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
+std::uintptr_t CpuidHelper() noexcept;
+std::uintptr_t X87Helper() noexcept;
+namespace detail {
+void Writer::HandleVecSharedZeroFamily(OpContext& ctx) {
+    const auto destination = ctx.destination;
+    do {
+masm.exact.eor(Lanes(destination, 8), Lanes(destination, 8), Lanes(destination, 8)); break;
+    } while (false);
 }
 
-void Writer::FlushScalarDenormal(unsigned value, unsigned control_bit, unsigned lane,
-                                 unsigned lane_bits, unsigned lane_count) {
-    // Known software controls belong to this whole native unit. Otherwise
-    // x0 holds the actual raw MXCSR controls. Neither branch changes NZCV.
-    u32 disabled = UINT32_MAX;
-    if (options.mxcsr_flush_mode != UINT8_MAX) {
-        if (!(options.mxcsr_flush_mode & (control_bit == 6 ? 1u : 2u))) return;
-    } else {
-        disabled = static_cast<u32>(output.words.size());
-        Put(0x36000000u | (control_bit << 19)); // TBZ w0,control_bit,done.
-    }
-    for (unsigned i = lane; i < lane + lane_count; ++i) {
-        const bool single = lane_bits == 32;
-        const auto index = i << (single ? 19 : 20);
-        Put((single ? 0x0e043c00u : 0x4e083c00u) | index | (value << 5) | 16u); // UMOV W/X16,lane.
-        Extract(17, 16, single ? 23 : 52, single ? 8 : 11);
-        const auto normal = static_cast<u32>(output.words.size());
-        Put(0xb5000011u); // CBNZ x17,next: zero exponent includes existing zeros.
-        u32 fields{}; LogicalImmediate(u64{1} << (lane_bits - 1), 64, fields);
-        Put(0x92000000u | fields | (16u << 5) | 16u); // Keep only the IEEE sign bit.
-        Put((single ? 0x4e041c00u : 0x4e081c00u) | index | (16u << 5) | value); // INS preserves other lanes.
-        output.words[normal] |= (static_cast<u32>(output.words.size()) - normal) << 5;
-    }
-    const auto done = static_cast<u32>(output.words.size());
-    if (disabled != UINT32_MAX) output.words[disabled] |= (done - disabled) << 5;
-}
-
-void Writer::TruncateDoubleToInteger(unsigned destination, unsigned raw, unsigned bits) {
-    Put(0x9e670000u | (raw << 5)); // FMOV d0,Xraw: capture before any output overwrite.
-    Extract(17, raw, 52, 11);
-    Put(0xd1000000u | ((1023u + bits - 1) << 10) | (17u << 5) | 17u);
-    Put((bits == 32 ? 0x1e780000u : 0x9e780000u) | destination); // FCVTZS Wd/Xd,d0.
-    // exp >= bias+width-1 covers NaN/Inf/overflow. The valid negative
-    // boundary has the same minInt pattern. No guest NZCV is modified.
-    const auto valid = static_cast<u32>(output.words.size());
-    Put(0xb7f80011u); // TBNZ x17,#63,done.
-    Immediate(destination, u64{1} << (bits - 1));
-    output.words[valid] |= (static_cast<u32>(output.words.size()) - valid) << 5;
-}
-
-unsigned Writer::VectorValue(CellView cell, unsigned scratch) {
-    if (cell.Kind() != OperandKind::Value || cell.Payload() >= allocation.homes.size() ||
-        source.Operations()[cell.Payload()].type != Type::V128)
-        Reject(CompileError::UnsupportedType);
-    const auto& home = allocation.homes[cell.Payload()];
-    if (!home.spilled) return home.reg;
-    VectorMemory(true, scratch, 31, home.stack_offset / 16); return scratch;
-}
-
-int Writer::VectorPinnedSlot(u32 offset, unsigned bytes) const {
-    if (!VectorPinned() || bytes != 16 || (offset & 15) || offset < options.pinned_vector_offset ||
-            u64{offset} + bytes > u64{options.pinned_vector_offset} + 256 ||
-            ((offset - options.pinned_vector_offset) & 15)) return -1;
-    return static_cast<int>(abi::PinnedVectorRegister((offset - options.pinned_vector_offset) / 16));
-}
-
-void Writer::VectorAlias(bool reload, u32 offset, unsigned bytes) {
-    if (!VectorPinned() || !bytes) return;
-    const u64 begin = options.pinned_vector_offset, end = begin + 256;
-    if (offset >= end || begin >= u64{offset} + bytes) return;
-    const auto first = (std::max(u64{offset}, begin) - begin) / 16;
-    const auto last = (std::min(u64{offset} + bytes, end) - 1 - begin) / 16;
-    for (auto slot = first; slot <= last; ++slot) {
-        const auto field = begin + slot * 16;
-        const auto reg = abi::PinnedVectorRegister(static_cast<unsigned>(slot));
-        if (!(field & 15) && field / 16 <= 4095)
-            VectorMemory(reload, reg, 19, static_cast<u32>(field / 16));
-        else {
-            Immediate(17, field); Put(0x8b000000u | (17u << 16) | (19u << 5) | 17u);
-            VectorMemory(reload, reg, 17);
-        }
-    }
-}
-
-void Writer::VectorUniform(bool load, CellView uniform, unsigned value) {
-    if (uniform.Kind() != OperandKind::Uniform || uniform.Payload() > UINT32_MAX || uniform.TypeView() != Type::V128)
-        Reject(CompileError::UnsupportedOperand);
-    const auto offset = static_cast<u32>(uniform.Payload());
-    (void)PinnedSlot(offset, 16); // Cross-slot vector accesses are outside this explicit ABI.
-    if (const auto pinned = VectorPinnedSlot(offset, 16); pinned >= 0) {
-        if (load) VectorMove(value, static_cast<unsigned>(pinned));
-        else VectorMove(static_cast<unsigned>(pinned), value);
-        return;
-    }
-    VectorAlias(false, offset, 16);
-    if (!(offset & 15) && offset / 16 <= 4095) VectorMemory(load, value, 19, offset / 16);
-    else {
-        Immediate(17, offset); Put(0x8b000000u | (17u << 16) | (19u << 5) | 17u);
-        VectorMemory(load, value, 17);
-    }
-    if (!load) VectorAlias(true, offset, 16);
-}
-
-bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned destination) {
-    const bool vector = operation.type == Type::V128;
-    const auto first_temp = VectorTemporary(), second_temp = VectorTemporary(true);
-    switch (operation.opcode) {
-        case OpCode::LoadUniform: {
-            if (!vector) return false;
-            const auto uniform = cursor.Take();
-            if (OverlapsShadow(uniform)) Shadow(false);
-            VectorUniform(true, uniform, destination); break;
-        }
-        case OpCode::LoadMemory: case OpCode::LoadMemoryTSO: {
-            if (!vector) return false;
-            if (!options.private_uniforms) Shadow(false);
-            VectorMemory(true, destination, Expression(cursor, 16, 17));
-            if (operation.opcode == OpCode::LoadMemoryTSO) Put(0xd50339bf); // DMB ISHLD.
-            break;
-        }
-        case OpCode::BitCast:
-            if (!vector) return false;
-            VectorMove(destination, VectorValue(cursor.Take(), 0)); break;
-        case OpCode::VecSharedZero:
-            Put(0x6e201c00u | (destination << 16) | (destination << 5) | destination); break;
-        case OpCode::VecLoadConst: {
+void Writer::HandleVecLoadConstFamily(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             const auto low = IntegerImmediate(cursor.Take()), high = IntegerImmediate(cursor.Take());
-            Immediate(16, low); Put(0x9e670000u | (16u << 5) | destination);
-            Immediate(17, high); Put(0x4e181c00u | (17u << 5) | destination); break;
+            Immediate(16, low); masm.exact.fmov(D(destination), v::x16);
+            Immediate(17, high); masm.exact.ins(Lanes(destination, 64), 1, v::x17); break;
         }
-        case OpCode::VecDup64: {
+    } while (false);
+}
+
+void Writer::HandleVecDup64Family(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             const auto input = Read(cursor.Take(), 16);
-            Put(0x4e080c00u | (input << 5) | destination); break;
+            masm.exact.dup(Lanes(destination, 64), X(input)); break;
         }
-        case OpCode::VecFCvtIntToFloat: {
-            const auto input = cursor.Take();
-            const auto source_bits = IntegerImmediate(cursor.Take()), float_bits = IntegerImmediate(cursor.Take());
-            if ((source_bits != 32 && source_bits != 64) || float_bits != 64 ||
-                    Width(View(input)) != source_bits || operation.type != Type::U64)
-                Reject(CompileError::UnsupportedOperand);
-            const auto value = RawScalar(input, 16);
-            Put((source_bits == 32 ? 0x1e620000u : 0x9e620000u) | (value << 5)); // SCVTF d0,Wn/Xn.
-            Put(0x9e660000u | destination); // FMOV destination,d0: raw IEEE bits.
-            break;
-        }
-        case OpCode::VecFCvtFloatToInt: {
-            const auto input = cursor.Take();
-            const auto float_bits = IntegerImmediate(cursor.Take()), integer_bits = IntegerImmediate(cursor.Take());
-            const auto truncate = IntegerImmediate(cursor.Take());
-            if (float_bits != 64 || (integer_bits != 32 && integer_bits != 64) || truncate != 1 ||
-                    Width(View(input)) != 64 || operation.type != (integer_bits == 32 ? Type::U32 : Type::U64))
-                Reject(CompileError::UnsupportedOperand);
-            const auto value = RawScalar(input, 16);
-            TruncateDoubleToInteger(destination, value, static_cast<unsigned>(integer_bits));
-            break;
-        }
-        case OpCode::VecFAdd: case OpCode::VecFSub: case OpCode::VecFMul: case OpCode::VecFDiv: {
-            if (!vector) Reject(CompileError::UnsupportedType);
-            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            const auto bits = IntegerImmediate(cursor.Take());
-            if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
-            const auto opcode = (operation.opcode == OpCode::VecFAdd ? 0x4e20d400u :
-                    operation.opcode == OpCode::VecFSub ? 0x4ea0d400u :
-                    operation.opcode == OpCode::VecFMul ? 0x6e20dc00u : 0x6e20fc00u) |
-                    (bits == 64 ? 1u << 22 : 0u);
-            if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
-                VectorMove(first_temp, left); VectorMove(second_temp, right);
-                LoadMxcsrFlushControl();
-                const auto lanes = static_cast<unsigned>(128 / bits);
-                FlushScalarDenormal(first_temp, 6, 0, static_cast<unsigned>(bits), lanes);
-                FlushScalarDenormal(second_temp, 6, 0, static_cast<unsigned>(bits), lanes);
-                Put(opcode | (second_temp << 16) | (first_temp << 5) | first_temp);
-                FlushScalarDenormal(first_temp, 15, 0, static_cast<unsigned>(bits), lanes);
-                VectorMove(destination, first_temp);
-            } else Put(opcode | (right << 16) | (left << 5) | destination);
-            break;
-        }
-        case OpCode::VecFAddScalar64: case OpCode::VecFSubScalar64:
-        case OpCode::VecFMulScalar64: case OpCode::VecFDivScalar64: {
-            if (!vector) Reject(CompileError::UnsupportedType);
-            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            const auto opcode = operation.opcode == OpCode::VecFAddScalar64 ? 0x1e602800u :
-                    operation.opcode == OpCode::VecFSubScalar64 ? 0x1e603800u :
-                    operation.opcode == OpCode::VecFMulScalar64 ? 0x1e600800u : 0x1e601800u;
-            if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
-                VectorMove(first_temp, left); VectorMove(second_temp, right);
-                LoadMxcsrFlushControl();
-                FlushScalarDenormal(first_temp, 6); FlushScalarDenormal(second_temp, 6);
-                Put(opcode | (second_temp << 16) | (first_temp << 5) | first_temp);
-                FlushScalarDenormal(first_temp, 15);
-            } else Put(opcode | (right << 16) | (left << 5) | first_temp);
-            // Scalar FP arithmetic may clear its upper lane. Preserve the complete
-            // left operand explicitly rather than depend on FEAT_AFP.NEP.
-            VectorMove(destination, left);
-            Put(0x6e080400u | (first_temp << 5) | destination); // INS destination.d[0],temporary.d[0].
-            break;
-        }
-        case OpCode::VecFCmp: {
-            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            if (IntegerImmediate(cursor.Take()) != 64) Reject(CompileError::UnsupportedOperand);
-            unsigned a = left, b = right;
-            if (options.mxcsr_flush_offset != UINT32_MAX &&
-                    (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
-                VectorMove(first_temp, left); VectorMove(second_temp, right);
-                LoadMxcsrFlushControl();
-                FlushScalarDenormal(first_temp, 6); FlushScalarDenormal(second_temp, 6);
-                a = first_temp; b = second_temp;
-            }
-            Put(0xd53b421eu); // Preserve the actual guest/packed-mode host NZCV.
-            Put(0x1e602000u | (b << 16) | (a << 5)); // FCMP Da,Db.
-            Put(0x1a9f07e0u | (10u << 12) | destination); // CSET Wdestination,LT: less or unordered.
-            Put(0x1a9f07e0u | (7u << 12)); // CSET W0,VS: unordered (destination may be spill scratch16).
-            Put(0x1a9f07e0u | (1u << 12) | 17u); // CSET W17,EQ.
-            Put(0x2a000000u | (17u << 5) | 17u); // Equal or unordered.
-            Put(0x2a000000u | (1u << 10) | (destination << 5) | destination);
-            Put(0x2a000000u | (17u << 16) | (2u << 10) | (destination << 5) | destination);
-            Put(0xd51b421eu); // MSR NZCV,x30: publishing flags is a separate op.
-            break;
-        }
-        case OpCode::VecFCvtPacked: {
-            const auto input = VectorValue(cursor.Take(), 0);
-            const auto kind = IntegerImmediate(cursor.Take());
-            if (kind == 1) { // Signed low 2x32 -> exact 2x64 IEEE doubles.
-                Put(0x0f20a400u | (input << 5) | destination); // SXTL Vd.2d,Vn.2s.
-                Put(0x4e61d800u | (destination << 5) | destination); // SCVTF Vd.2d,Vd.2d.
-            } else if (kind == 5) { // Truncate 2x64 IEEE doubles -> signed low 2x32.
-                // A spilled input can be v0; scalar truncation uses d0.
-                // Keep both raw lanes before converting either one.
-                VectorMove(first_temp, input);
-                Put(0x6e201c00u | (destination << 16) | (destination << 5) | destination);
-                for (unsigned lane = 0; lane < 2; ++lane) {
-                    Put(0x4e083c00u | (lane << 20) | (first_temp << 5) | 16u);
-                    TruncateDoubleToInteger(0, 16, 32);
-                    Put(0x4e041c00u | (lane << 19) | destination); // INS Vd.s[lane],w0; high64 stays zero.
-                }
-            } else Reject(CompileError::UnsupportedOperand);
-            break;
-        }
-        case OpCode::VecFCmpMask: {
-            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            const auto bits = IntegerImmediate(cursor.Take()), relations = IntegerImmediate(cursor.Take());
-            const auto scalar = IntegerImmediate(cursor.Take());
-            if ((bits != 32 && bits != 64) || relations > 15 || scalar != 0) Reject(CompileError::UnsupportedOperand);
-            const auto size = bits == 64 ? 1u << 22 : 0u;
-            const bool invert = relations & 8;
-            const auto ordered = static_cast<unsigned>(invert ? ~relations & 7 : relations);
-            if (!ordered) {
-                // Integer self-comparison makes all ones without FP exceptions.
-                Put((invert ? 0x6ee08c00u : 0x6e201c00u) |
-                        (destination << 16) | (destination << 5) | destination);
-                break;
-            }
-            unsigned a = left, b = right, temporary = first_temp;
-            if (options.mxcsr_flush_offset != UINT32_MAX &&
-                    (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
-                VectorMove(first_temp, left); VectorMove(second_temp, right);
-                LoadMxcsrFlushControl();
-                if (bits == 64) {
-                    for (unsigned lane = 0; lane < 2; ++lane) {
-                        FlushScalarDenormal(first_temp, 6, lane); FlushScalarDenormal(second_temp, 6, lane);
-                    }
-                } else {
-                    FlushScalarDenormal(first_temp, 6, 0, 32, 4);
-                    FlushScalarDenormal(second_temp, 6, 0, 32, 4);
-                }
-                a = first_temp; b = second_temp; temporary = 0;
-            }
-            // When UN is selected, invert the complementary ordered set.
-            // Each IEEE lane has exactly one LT/EQ/GT/UN outcome.
-            if (ordered == 5 || ordered == 7) {
-                Put((ordered == 5 ? 0x6ea0e400u : 0x6e20e400u) | size |
-                        (b << 16) | (a << 5) | temporary);
-                Put(0x6ea0e400u | size | (a << 16) | (b << 5) | destination);
-                Put(0x4ea01c00u | (destination << 16) | (temporary << 5) | destination);
-            } else {
-                const auto opcode = (ordered == 2 ? 0x4e20e400u :
-                        (ordered == 3 || ordered == 6) ? 0x6e20e400u : 0x6ea0e400u) | size;
-                if (ordered == 1 || ordered == 3) std::swap(a, b);
-                Put(opcode | (b << 16) | (a << 5) | destination);
-            }
-            if (invert) Put(0x6e205800u | (destination << 5) | destination); // NOT Vd.16b,Vd.16b.
-            break;
-        }
-        case OpCode::VecMin: {
-            if (!vector) Reject(CompileError::UnsupportedType);
-            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            if (IntegerImmediate(cursor.Take()) != 8 || IntegerImmediate(cursor.Take()) != 0)
-                Reject(CompileError::UnsupportedOperand);
-            Put(0x6e206c00u | (right << 16) | (left << 5) | destination); // UMIN Vd.16b,Vleft.16b,Vright.16b.
-            break;
-        }
-        case OpCode::VecPack: {
-            if (!vector) Reject(CompileError::UnsupportedType);
-            const auto left = VectorValue(cursor.Take(), 0);
-            auto right = VectorValue(cursor.Take(), 1);
-            if (IntegerImmediate(cursor.Take()) != 16 || IntegerImmediate(cursor.Take()) != 1)
-                Reject(CompileError::UnsupportedOperand);
-            if (right == destination) { VectorMove(first_temp, right); right = first_temp; }
-            Put(0x2e212800u | (left << 5) | destination); // SQXTUN Vd.8b,Vleft.8h.
-            Put(0x6e212800u | (right << 5) | destination); // SQXTUN2 Vd.16b,Vright.8h.
-            break;
-        }
-        case OpCode::VecExtract64: case OpCode::VecExtract16: {
+    } while (false);
+}
+
+void Writer::HandleVecMinFamily(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    if (!ctx.vector) Reject(CompileError::UnsupportedType);
+    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+    const auto bits = IntegerImmediate(cursor.Take()), sign = IntegerImmediate(cursor.Take());
+    LaneSize(bits); if (sign > 1) Reject(CompileError::UnsupportedOperand);
+    const bool maximum = ctx.operation.opcode == OpCode::VecMax;
+    if (bits == 64) {
+        const auto temp = VectorTemporary();
+        const auto a = maximum ? left : right, b = maximum ? right : left;
+        if (sign) masm.exact.cmgt(Lanes(temp, 64), Lanes(a, 64), Lanes(b, 64));
+        else masm.exact.cmhi(Lanes(temp, 64), Lanes(a, 64), Lanes(b, 64));
+        masm.exact.bsl(Lanes(temp, 8), Lanes(left, 8), Lanes(right, 8));
+        VectorMove(ctx.destination, temp);
+    } else if (sign) {
+        if (maximum) masm.exact.smax(Lanes(ctx.destination, bits), Lanes(left, bits), Lanes(right, bits));
+        else masm.exact.smin(Lanes(ctx.destination, bits), Lanes(left, bits), Lanes(right, bits));
+    } else {
+        if (maximum) masm.exact.umax(Lanes(ctx.destination, bits), Lanes(left, bits), Lanes(right, bits));
+        else masm.exact.umin(Lanes(ctx.destination, bits), Lanes(left, bits), Lanes(right, bits));
+    }
+}
+void Writer::HandleVecMaxFamily(OpContext& ctx) { HandleVecMinFamily(ctx); }
+
+void Writer::HandleVecPackFamily(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    if (!ctx.vector) Reject(CompileError::UnsupportedType);
+    const auto left = VectorValue(cursor.Take(), 0); auto right = VectorValue(cursor.Take(), 1);
+    const auto bits = IntegerImmediate(cursor.Take()), unsigned_destination = IntegerImmediate(cursor.Take());
+    if ((bits != 16 && bits != 32) || unsigned_destination > 1) Reject(CompileError::UnsupportedOperand);
+    if (right == ctx.destination) { VectorMove(VectorTemporary(), right); right = VectorTemporary(); }
+    const auto low = Lanes(ctx.destination, bits / 2, 64), full = Lanes(ctx.destination, bits / 2);
+    if (unsigned_destination) {
+        masm.exact.sqxtun(low, Lanes(left, bits)); masm.exact.sqxtun2(full, Lanes(right, bits));
+    } else {
+        masm.exact.sqxtn(low, Lanes(left, bits)); masm.exact.sqxtn2(full, Lanes(right, bits));
+    }
+}
+
+void Writer::HandleVecExtract64Family(OpContext& ctx) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             const auto input = VectorValue(cursor.Take(), 0);
             const auto lane = IntegerImmediate(cursor.Take());
             const bool half = operation.opcode == OpCode::VecExtract16;
             if (lane >= (half ? 8u : 2u)) Reject(CompileError::UnsupportedOperand);
-            Put((half ? 0x0e023c00u : 0x4e083c00u) |
-                    (static_cast<u32>(lane) << (half ? 18 : 20)) | (input << 5) | destination);
+            masm.exact.umov(half ? W(destination) : X(destination), Lanes(input, half ? 16 : 64), lane);
             Narrow(destination, destination, Width(operation.type)); break;
         }
-        case OpCode::VecMovMask: {
+    } while (false);
+}
+
+void Writer::HandleVecMovMaskFamily(OpContext& ctx) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             if (operation.type != Type::U32 && operation.type != Type::U64)
                 Reject(CompileError::UnsupportedType);
             const auto input = VectorValue(cursor.Take(), 0);
@@ -322,17 +104,23 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
             // Normalize arbitrary input lanes to one sign bit before
             // accumulating pairs. Each 64-bit half's mask ends in its
             // low byte; higher intermediate bits are not observed.
-            Put(0x6f000400u | (static_cast<u32>(bits + 1) << 16) | (input << 5)); // USHR v0.
+            masm.exact.ushr(Lanes(0, bits), Lanes(input, bits), bits - 1); // USHR v0.
             for (unsigned lane = static_cast<unsigned>(bits) * 2, shift = static_cast<unsigned>(bits) - 1;
                  lane <= 64; lane *= 2, shift *= 2)
-                Put(0x6f001400u | ((2 * lane - shift) << 16)); // USRA v0,v0.
-            Put(0x0e013c00u | destination); // UMOV Wdestination,v0.b[0].
-            Put(0x0e113c00u | 17u);         // UMOV W17,v0.b[8].
-            Put(0x2a000000u | (17u << 16) | (static_cast<u32>(64 / bits) << 10) |
-                    (destination << 5) | destination); // ORR W; clears the complete upper result.
+                masm.exact.usra(Lanes(0, lane), Lanes(0, lane), shift); // USRA v0,v0.
+            masm.exact.umov(W(destination), Lanes(0, 8), 0); // UMOV Wdestination,v0.b[0].
+            masm.exact.umov(v::w17, Lanes(0, 8), 8);         // UMOV W17,v0.b[8].
+            masm.exact.orr(W(destination), W(destination), Operand(v::w17, v::LSL, 64 / bits)); // ORR W; clears the complete upper result.
             break;
         }
-        case OpCode::VecExtend: {
+    } while (false);
+}
+
+void Writer::HandleVecExtendFamily(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             auto input = VectorValue(cursor.Take(), 0);
             const auto source_bits = IntegerImmediate(cursor.Take()), destination_bits = IntegerImmediate(cursor.Take());
             const auto sign = IntegerImmediate(cursor.Take());
@@ -344,65 +132,120 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
             // complete destination. Repeating on that destination keeps
             // exactly the final output's low source lanes, including aliases.
             for (auto bits = source_bits; bits < destination_bits; bits *= 2) {
-                Put((sign ? 0x0f00a400u : 0x2f00a400u) | (static_cast<u32>(bits) << 16) |
-                        (input << 5) | destination);
+                if (sign) masm.exact.sshll(Lanes(destination, bits * 2), Lanes(input, bits, 64), 0);
+                else masm.exact.ushll(Lanes(destination, bits * 2), Lanes(input, bits, 64), 0);
                 input = destination;
             }
             break;
         }
-        case OpCode::VecXor: case OpCode::VecAnd: case OpCode::VecOr: case OpCode::VecAndNot:
-        case OpCode::VecAdd: case OpCode::VecSub: case OpCode::VecMul:
-        case OpCode::VecCmpEq: case OpCode::VecCmpGt: {
+    } while (false);
+}
+
+void Writer::HandleVecXorFamily(OpContext& ctx) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            auto opcode = operation.opcode == OpCode::VecXor ? 0x6e201c00u :
-                    operation.opcode == OpCode::VecAnd ? 0x4e201c00u :
-                    operation.opcode == OpCode::VecOr ? 0x4ea01c00u :
-                    operation.opcode == OpCode::VecAndNot ? 0x4e601c00u :
-                    operation.opcode == OpCode::VecAdd ? 0x4e208400u :
-                    operation.opcode == OpCode::VecSub ? 0x6e208400u :
-                    operation.opcode == OpCode::VecMul ? 0x4e209c00u :
-                    operation.opcode == OpCode::VecCmpEq ? 0x6e208c00u : 0x4e203400u;
-            if (operation.opcode != OpCode::VecXor && operation.opcode != OpCode::VecAnd &&
-                operation.opcode != OpCode::VecOr && operation.opcode != OpCode::VecAndNot)
-                opcode |= LaneSize(IntegerImmediate(cursor.Take()), operation.opcode != OpCode::VecMul) << 22;
-            Put(opcode | (right << 16) | (left << 5) | destination); break;
+            const bool logical = operation.opcode == OpCode::VecXor || operation.opcode == OpCode::VecAnd ||
+                    operation.opcode == OpCode::VecOr || operation.opcode == OpCode::VecAndNot;
+            const auto bits = logical ? 8u : 8u << LaneSize(IntegerImmediate(cursor.Take()), operation.opcode != OpCode::VecMul);
+            const auto vd = Lanes(destination, bits), vn = Lanes(left, bits), vm = Lanes(right, bits);
+            switch (operation.opcode) {
+                case OpCode::VecXor: masm.exact.eor(vd, vn, vm); break;
+                case OpCode::VecAnd: masm.exact.and_(vd, vn, vm); break;
+                case OpCode::VecOr: masm.exact.orr(vd, vn, vm); break;
+                case OpCode::VecAndNot: masm.exact.bic(vd, vn, vm); break;
+                case OpCode::VecAdd: masm.exact.add(vd, vn, vm); break;
+                case OpCode::VecSub: masm.exact.sub(vd, vn, vm); break;
+                case OpCode::VecMul: masm.exact.mul(vd, vn, vm); break;
+                case OpCode::VecCmpEq: masm.exact.cmeq(vd, vn, vm); break;
+                default: masm.exact.cmgt(vd, vn, vm); break;
+            } break;
         }
-        case OpCode::VecZip: case OpCode::VecUnzip: {
+    } while (false);
+}
+
+void Writer::HandleVecZipFamily(OpContext& ctx) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
             const auto size = LaneSize(IntegerImmediate(cursor.Take()));
             const auto high = IntegerImmediate(cursor.Take());
             if (high > 1) Reject(CompileError::UnsupportedOperand);
-            const auto opcode = operation.opcode == OpCode::VecZip ? (high ? 0x4e007800u : 0x4e003800u)
-                    : (high ? 0x4e005800u : 0x4e001800u);
-            Put(opcode | (size << 22) | (right << 16) | (left << 5) | destination); break;
+            const auto vd = Lanes(destination, 8u << size), vn = Lanes(left, 8u << size), vm = Lanes(right, 8u << size);
+            if (operation.opcode == OpCode::VecZip) {
+                if (high) masm.exact.zip2(vd, vn, vm); else masm.exact.zip1(vd, vn, vm);
+            } else {
+                if (high) masm.exact.uzp2(vd, vn, vm); else masm.exact.uzp1(vd, vn, vm);
+            } break;
         }
-        case OpCode::VecSignedMulWidenLow: {
+    } while (false);
+}
+
+void Writer::HandleVecSignedMulWidenLowFamily(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    const auto vector = ctx.vector;
+    do {
+{
             if (!vector) Reject(CompileError::UnsupportedType);
             const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
             const auto size = LaneSize(IntegerImmediate(cursor.Take()), false);
             // Read the low contiguous half of both inputs, then replace all
             // 128 result bits. Either input may share the destination home.
-            Put(0x0e20c000u | (size << 22) | (right << 16) | (left << 5) | destination);
+            masm.exact.smull(Lanes(destination, 16u << size), Lanes(left, 8u << size, 64), Lanes(right, 8u << size, 64));
             break;
         }
-        case OpCode::VecMulWiden: {
+    } while (false);
+}
+
+void Writer::HandleVecMulWidenFamily(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    const auto first_temp = VectorTemporary();
+    const auto second_temp = VectorTemporary(true);
+    do {
+{
             const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
             const auto size = LaneSize(IntegerImmediate(cursor.Take()), false);
             const auto sign = IntegerImmediate(cursor.Take());
             if (sign > 1) Reject(CompileError::UnsupportedOperand);
-            Put(0x4e001800u | (size << 22) | (left << 16) | (left << 5) | first_temp);
-            Put(0x4e001800u | (size << 22) | (right << 16) | (right << 5) | second_temp);
-            Put((sign ? 0x0e20c000u : 0x2e20c000u) | (size << 22) |
-                    (second_temp << 16) | (first_temp << 5) | destination);
+            masm.exact.uzp1(Lanes(first_temp, 8u << size), Lanes(left, 8u << size), Lanes(left, 8u << size));
+            masm.exact.uzp1(Lanes(second_temp, 8u << size), Lanes(right, 8u << size), Lanes(right, 8u << size));
+            if (sign) masm.exact.smull(Lanes(destination, 16u << size), Lanes(first_temp, 8u << size, 64), Lanes(second_temp, 8u << size, 64));
+            else masm.exact.umull(Lanes(destination, 16u << size), Lanes(first_temp, 8u << size, 64), Lanes(second_temp, 8u << size, 64));
             break;
         }
-        case OpCode::VecMadd16: {
+    } while (false);
+}
+
+void Writer::HandleVecMadd16Family(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    const auto first_temp = VectorTemporary();
+    const auto second_temp = VectorTemporary(true);
+    do {
+{
             const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            Put(0x0e60c000u | (right << 16) | (left << 5) | first_temp);
-            Put(0x4e60c000u | (right << 16) | (left << 5) | second_temp);
-            Put(0x4ea0bc00u | (second_temp << 16) | (first_temp << 5) | destination); break;
+            masm.exact.smull(Lanes(first_temp, 32), Lanes(left, 16, 64), Lanes(right, 16, 64));
+            masm.exact.smull2(Lanes(second_temp, 32), Lanes(left, 16), Lanes(right, 16));
+            masm.exact.addp(Lanes(destination, 32), Lanes(first_temp, 32), Lanes(second_temp, 32)); break;
         }
-        case OpCode::VecShuffle32TwoSrc: {
+    } while (false);
+}
+
+void Writer::HandleVecShuffle32TwoSrcFamily(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    const auto first_temp = VectorTemporary();
+    const auto second_temp = VectorTemporary(true);
+    do {
+{
             auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
             const auto control = IntegerImmediate(cursor.Take());
             if (control > 255) Reject(CompileError::UnsupportedOperand);
@@ -417,12 +260,20 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
             for (unsigned i = 0; i < 4; ++i) {
                 const auto selected = static_cast<u32>((control >> (i * 2)) & 3);
                 const auto input = i < 2 ? left : right;
-                const auto imm5 = 4u | (i << 3);
-                Put(0x6e000400u | (imm5 << 16) | (selected << 13) | (input << 5) | destination);
+                masm.exact.ins(Lanes(destination, 32), i, Lanes(input, 32), selected);
             }
             break;
         }
-        case OpCode::VecShuffle32: case OpCode::VecShuffle16: {
+    } while (false);
+}
+
+void Writer::HandleVecShuffle32Family(OpContext& ctx) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    const auto first_temp = VectorTemporary();
+    do {
+{
             auto input = VectorValue(cursor.Take(), 0);
             const auto control = IntegerImmediate(cursor.Take());
             if (control > 255) Reject(CompileError::UnsupportedOperand);
@@ -431,13 +282,16 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
             if (high > 1) Reject(CompileError::UnsupportedOperand);
             const unsigned base = high ? 4 : 0, size = half ? 1 : 2;
             if (!half && ((control & 3) * 0x55 == control)) {
-                Put(0x4e000400u | ((4u | (static_cast<u32>(control & 3) << 3)) << 16) | (input << 5) | destination);
+                masm.exact.dup(Lanes(destination, 32), Lanes(input, 32), control & 3);
             } else if (!half && (control == 0xa0 || control == 0xf5 || control == 0x50 || control == 0xfa ||
                                 control == 0x88 || control == 0xdd)) {
-                const auto opcode = control == 0xa0 ? 0x4e802800u : control == 0xf5 ? 0x4e806800u :
-                        control == 0x50 ? 0x4e803800u : control == 0xfa ? 0x4e807800u :
-                        control == 0x88 ? 0x4e801800u : 0x4e805800u;
-                Put(opcode | (input << 16) | (input << 5) | destination);
+                const auto vd = Lanes(destination, 32), vn = Lanes(input, 32);
+                if (control == 0xa0) masm.exact.trn1(vd, vn, vn);
+                else if (control == 0xf5) masm.exact.trn2(vd, vn, vn);
+                else if (control == 0x50) masm.exact.zip1(vd, vn, vn);
+                else if (control == 0xfa) masm.exact.zip2(vd, vn, vn);
+                else if (control == 0x88) masm.exact.uzp1(vd, vn, vn);
+                else masm.exact.uzp2(vd, vn, vn);
             } else if (!half && control == 0xe4) {
                 VectorMove(destination, input);
             } else {
@@ -445,28 +299,44 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
                 if (half) VectorMove(destination, input);
                 for (unsigned i = 0; i < 4; ++i) {
                     const auto selected = base + ((control >> (i * 2)) & 3);
-                    const auto imm5 = (1u << size) | ((base + i) << (size + 1));
-                    Put(0x6e000400u | (imm5 << 16) | (static_cast<u32>(selected) << (size + 11)) | (input << 5) | destination);
+                    masm.exact.ins(Lanes(destination, 8u << size), base + i, Lanes(input, 8u << size), selected);
                 }
             }
             break;
         }
-        case OpCode::VecShiftLeftImm: case OpCode::VecShiftRightImm: case OpCode::VecShiftRightArithmeticImm: {
+    } while (false);
+}
+
+void Writer::HandleVecShiftLeftImmFamily(OpContext& ctx) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             const auto input = VectorValue(cursor.Take(), 0);
             auto count = IntegerImmediate(cursor.Take()); const auto bits = IntegerImmediate(cursor.Take());
             LaneSize(bits);
             const bool arithmetic = operation.opcode == OpCode::VecShiftRightArithmeticImm;
             if (!count) { VectorMove(destination, input); break; }
             if (count >= bits && !arithmetic) {
-                Put(0x6e201c00u | (destination << 16) | (destination << 5) | destination); break;
+                masm.exact.eor(Lanes(destination, 8), Lanes(destination, 8), Lanes(destination, 8)); break;
             }
             count = std::min(count, bits);
             const bool left = operation.opcode == OpCode::VecShiftLeftImm;
-            Put((left ? 0x4f005400u : arithmetic ? 0x4f000400u : 0x6f000400u) |
-                    (static_cast<u32>(left ? bits + count : 2 * bits - count) << 16) | (input << 5) | destination);
+            if (left) masm.exact.shl(Lanes(destination, bits), Lanes(input, bits), count);
+            else if (arithmetic) masm.exact.sshr(Lanes(destination, bits), Lanes(input, bits), count);
+            else masm.exact.ushr(Lanes(destination, bits), Lanes(input, bits), count);
             break;
         }
-        case OpCode::VecByteShift: case OpCode::VecExtractBytes: {
+    } while (false);
+}
+
+void Writer::HandleVecByteShiftFamily(OpContext& ctx) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    do {
+{
             auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
             auto count = IntegerImmediate(cursor.Take());
             if (operation.opcode == OpCode::VecByteShift) {
@@ -474,11 +344,10 @@ bool Writer::EmitVector(const Operation& operation, Cursor& cursor, unsigned des
                 if (!count || count >= 16 || direction > 1) Reject(CompileError::UnsupportedOperand);
                 if (direction) { std::swap(left, right); count = 16 - count; }
             } else if (count >= 16) Reject(CompileError::UnsupportedOperand);
-            Put(0x6e000000u | (right << 16) | (static_cast<u32>(count) << 11) | (left << 5) | destination); break;
+            masm.exact.ext(Lanes(destination, 8), Lanes(left, 8), Lanes(right, 8), count); break;
         }
-        default: return false;
-    }
-    return true;
+    } while (false);
 }
 
-} // namespace swift::runtime::backend::arm64::detail
+} // namespace detail
+} // namespace swift::runtime::backend::arm64

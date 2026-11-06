@@ -1,0 +1,22 @@
+[
+  {
+    "bytes": 64,
+    "old_ns_per_sync": 666.78369140625,
+    "new_ns_per_sync": 345.12841796875
+  },
+  {
+    "bytes": 256,
+    "old_ns_per_sync": 754.267578125,
+    "new_ns_per_sync": 358.60693359375
+  },
+  {
+    "bytes": 1024,
+    "old_ns_per_sync": 1508.3310546875,
+    "new_ns_per_sync": 621.56689453125
+  },
+  {
+    "bytes": 4096,
+    "old_ns_per_sync": 1892.9794921875,
+    "new_ns_per_sync": 980.12255859375
+  }
+]

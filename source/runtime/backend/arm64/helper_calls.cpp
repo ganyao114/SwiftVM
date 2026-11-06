@@ -16,7 +16,7 @@ struct DivisionResult { u64 quotient, remainder; };
 
 // The private entry stubs below adapt the writer's fixed homes to the normal
 // host ABI once, rather than emitting a register-save sequence at each call.
-extern "C" __attribute__((noinline, visibility("hidden")))
+extern "C" __attribute__((used, noinline, visibility("hidden")))
 DivisionResult SvmArm64WideDivide(u64 high, u64 low, u64 divisor, unsigned config) {
     const auto bits = config & 255u;
     const bool sign = config & 256u;

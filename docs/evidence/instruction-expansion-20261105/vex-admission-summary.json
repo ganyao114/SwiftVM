@@ -1,0 +1,17 @@
+{
+  "scope": "finite descriptor-generated VEX wiring admission, not ISA/semantic proof",
+  "target": "Unknown; flags/PC offsets installed; no fault-location capability; no native execution",
+  "capstone_version": "5.0.7",
+  "descriptors_count": 316,
+  "generated_count": 2600,
+  "capstone_accepted_count": 2169,
+  "unique_probe_inputs": 2169,
+  "capstone_filtered_count": 431,
+  "failed_rows": 0,
+  "failed_by_stage": {},
+  "name_mismatch_rows": 0,
+  "descriptor_sha256": "8c20660ec6ebb17a68a48e77a1082ce52787bbac5a63c317df670b18d6c8432f",
+  "probe_sha256": "74cfe43f77064ace4e0f135cffbfe4e76a6565cf3bace42e834177ced73967bf",
+  "generator_sha256": "e5389519f4fb68a81f92d9ef14b244f26a5279359a806b5c3f61b8324dcd5081",
+  "source_digest": "57db153a47dd80a107839598abc2a2dfc0f9137481ebc53e77b05fbef5eb7a66"
+}

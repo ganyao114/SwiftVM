@@ -1,0 +1,53 @@
+{
+  "utc": "2026-11-05T19:53:34.654370+00:00",
+  "status": "implementation and testing complete; one strict FEX compile gate remains above threshold",
+  "working_tree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "base_commit": "74ac9bc9b6bb160c2d7d10bf9a37000f5ec0407a",
+  "source_digest": "eb0503feacb8c784b7091ded3e573673a92d596c15596ec0f8a6a95f329f1329",
+  "candidate_sha256": "a3e43279d82022507a3fd54e0499158f50bfa96e287d039c6246cd2c29d37c38",
+  "source_files": 186,
+  "host_contracts_passed": 6,
+  "sanitized_contracts_passed": 6,
+  "android_native_backend_checks": 264935,
+  "android_pipeline_integer_paths": 4170,
+  "formal_compile_samples": 200,
+  "formal_runtime_samples": 200,
+  "functional_smoke_samples": 36,
+  "direct_end_to_end_cases": 2,
+  "FEX_gates_passed": 47,
+  "FEX_gates_total": 48,
+  "failed_gates": [
+    {
+      "case": "x87_bench",
+      "scope": "block",
+      "compile_vs_fex": 2.0031056768558955,
+      "compile_ms": 0.573389
+    }
+  ],
+  "source_changes_since_freeze": [],
+  "phone_cleanup": {
+    "utc": "2026-11-05T19:51:52.319167+00:00",
+    "namespace": "/data/local/tmp/swiftvm-runtime-architecture-20261105",
+    "allocated_bytes_removed": 114619392,
+    "df_actual_free_delta_bytes": 118030336,
+    "remaining_bytes": 0,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "full_evidence": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/runtime-architecture-20261105",
+  "prior_compile_samples_retained_separately": 400,
+  "scope_limits": [
+    "single GuestThread",
+    "writable Function remains one source block",
+    "no DSO unload, concurrent retirement or complete guest signal qualification",
+    "volatile device RX unavailable on Android EACCES",
+    "x87 benchmark retains exit-only oracle"
+  ],
+  "reports_sha256": {
+    "runtime-architecture-plan-2026-11-05.md": "45ec67125e427a29dfd83fafee84ea4f29ec42708995c1309230a50889c0ef1e",
+    "runtime-architecture-implementation-2026-11-05.md": "70bbf9a90947a874143a2bb9dd82cf67b96151b74fd9fc0001431bd92340bb7a"
+  },
+  "git_diff_check": "passed",
+  "local_document_links": "passed"
+}

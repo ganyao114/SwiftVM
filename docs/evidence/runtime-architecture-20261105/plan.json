@@ -1,0 +1,62 @@
+{
+  "created_utc": "2026-11-05T19:37:00.726248+00:00",
+  "task": "runtime architecture implementation paired regression and FEX acceptance",
+  "base_commit": "74ac9bc9b6bb160c2d7d10bf9a37000f5ec0407a",
+  "working_tree_modified": true,
+  "source_digest": "eb0503feacb8c784b7091ded3e573673a92d596c15596ec0f8a6a95f329f1329",
+  "source_files": 186,
+  "device": "bf1359ff",
+  "cpu": 4,
+  "taskset": "10",
+  "min_khz": 614400,
+  "max_khz": 1171200,
+  "frequency_policy_changed": false,
+  "repetitions_per_case_arm": 5,
+  "arms": [
+    "baseline-block",
+    "baseline-function",
+    "block",
+    "function",
+    "fex"
+  ],
+  "workloads": [
+    "coremark",
+    "int",
+    "fp",
+    "mem",
+    "branch",
+    "call",
+    "func_tests",
+    "x87_bench"
+  ],
+  "runtime_samples": 200,
+  "compile_samples": 200,
+  "runtime_window": "CoreMark100000 guest loop CRCd340 >=10s; others whole-child PMU including startup/JIT",
+  "compile_window": "Separate diagnostic launches; actual parser interval only excluded, failed prefixes/fallbacks/publication/native release included. CoreMark20 CRC4983. Existing FEX native-arena final-destruction asymmetry retained.",
+  "limits": {
+    "FEX_time": 1.1,
+    "FEX_user_cycles": 1.1,
+    "FEX_compile": 2.0,
+    "large_case_compile_regression_investigation": 1.05
+  },
+  "short_compile_cases": "Report all fixed samples, median/range and paired baseline; do not selectively rerun to pass.",
+  "ordering": "Five fixed cyclic rotations of the five arms; reversed rotations for compile.",
+  "selection": "All planned samples retained; no threshold followups/replacements/pooling with historical data. Functional failures block qualification.",
+  "baseline_runner_sha256": "13411690d78fa72df6fc84c61004bfe7c36a2060cc3a9a16cb22dcbfca9d77eb",
+  "x87_oracle": "Inherited exit-only; no claim of full numerical oracle",
+  "known_scope": "Single guest thread; managed source/alias and service-write SMC. Writable Function remains single-source-block. No DSO/multi-thread/guest-signal claims.",
+  "prior_failed_functional_epoch": "functional-attempt-a3f641a148c1; no performance samples ran",
+  "prior_functional_epochs": [
+    "functional-attempt-a3f641a148c1 (native mask failure fixed)",
+    "functional-pre-owned-record-2d192706bdb7 (all functional checks pass; parser vocabulary still coupled)"
+  ],
+  "performance_samples_in_prior_epochs": 400,
+  "prior_compile_epoch": "compile-regression-ded140b16097 (200 valid compile samples; no runtime PMU; 6\u201310% large-case overhead triggered targeted hot-call fixes)",
+  "release_ipo": true,
+  "ipo_kind": "NDK Clang ThinLTO; root JIT/host execution targets only. distorm byte parser, svm_x87 and SoftFloat ext80 closure retain non-LTO compilation.",
+  "prior_compile_epochs": [
+    "compile-regression-ded140b16097 (200 valid compile samples)",
+    "compile-call-boundaries-2f1dee3562af (200 valid compile samples; hot inline still +7\u20138%)"
+  ],
+  "ipo_preflight": "Single CoreMark20 build-configuration experiment, excluded from all fixed formal samples."
+}

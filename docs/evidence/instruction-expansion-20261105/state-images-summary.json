@@ -1,0 +1,20 @@
+[
+  {
+    "case": "state-images",
+    "arm": "interpreter",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "state-images",
+    "arm": "block",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "state-images",
+    "arm": "function",
+    "exit": 0,
+    "valid": true
+  }
+]

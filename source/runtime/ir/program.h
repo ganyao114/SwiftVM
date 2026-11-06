@@ -93,6 +93,7 @@ public:
 private:
     struct Storage {
         Storage(Scope, TargetInfo);
+        void Reset(Scope, TargetInfo);
         Error ReadType(Value value, Type view, Type& result) const noexcept {
             if (!value.unit || !value.node) return Error::InvalidValue;
             if (value.unit != unit) return Error::ForeignUnit;
@@ -114,10 +115,12 @@ private:
             return CellRange{words.subspan(op.first_operand, op.operand_count)};
         }
         WorkCounts CountWork() const noexcept;
-        const std::uint64_t unit;
-        const Scope scope;
+        // Replaced only when a consumed owner begins a fresh request. The
+        // Program interface keeps request identity and metadata read-only.
+        std::uint64_t unit;
+        Scope scope;
         BlockId entry{};
-        const TargetInfo target;
+        TargetInfo target;
         std::vector<Operation> operations;
         std::vector<Cell> operands;
         std::vector<BlockRecord> blocks;
