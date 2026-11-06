@@ -1,0 +1,18 @@
+{
+  "baseline": {
+    "text_bytes": 1443088,
+    "word_writer_symbols": [
+      "000000000018deb4 00000000000000d8 t void swift::runtime::ir::detail::Grow<swift::runtime::ir::Cell>(std::__ndk1::vector<swift::runtime::ir::Cell, std::__ndk1::allocator<swift::runtime::ir::Cell>>&, unsigned long, unsigned long)",
+      "000000000008fe84 00000000000000f0 t void swift::runtime::ir::detail::Grow<swift::runtime::ir::Operation>(std::__ndk1::vector<swift::runtime::ir::Operation, std::__ndk1::allocator<swift::runtime::ir::Operation>>&, unsigned long, unsigned long)",
+      "00000000000900e0 00000000000002e4 t swift::runtime::ir::Error swift::runtime::ir::Builder::StoreOperand<false>(swift::runtime::ir::Operand const&, unsigned long&)"
+    ]
+  },
+  "candidate": {
+    "text_bytes": 1422376,
+    "word_writer_symbols": [
+      "00000000000905a4 00000000000000d4 t void swift::runtime::ir::detail::Grow<swift::runtime::ir::Cell>(std::__ndk1::vector<swift::runtime::ir::Cell, std::__ndk1::allocator<swift::runtime::ir::Cell>>&, unsigned long, unsigned long)",
+      "0000000000188240 00000000000000f0 t void swift::runtime::ir::detail::Grow<swift::runtime::ir::BlockRecord>(std::__ndk1::vector<swift::runtime::ir::BlockRecord, std::__ndk1::allocator<swift::runtime::ir::BlockRecord>>&, unsigned long, unsigned long)",
+      "00000000000900cc 00000000000000f0 t void swift::runtime::ir::detail::Grow<swift::runtime::ir::Operation>(std::__ndk1::vector<swift::runtime::ir::Operation, std::__ndk1::allocator<swift::runtime::ir::Operation>>&, unsigned long, unsigned long)"
+    ]
+  }
+}

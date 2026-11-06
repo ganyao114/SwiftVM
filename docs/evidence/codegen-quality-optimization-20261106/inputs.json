@@ -1,0 +1,62 @@
+{
+  "FEXLoader": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/pmu-inputs-fixed/FEXLoader-performance-a156",
+    "bytes": 4182680,
+    "sha256": "8632943c4736294ae8e76ab15c22a638e2f3db4959cdf5ca0e7c1d741024b175"
+  },
+  "FEXLoader-byte": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/application-runtime-20261103/fex-byte-decode/build-run/bin/FEXLoader",
+    "bytes": 4742976,
+    "sha256": "d2e4ce32b6c650bb9f7ce46a91aff8a098431ad3f5f52f52fd746d30b3500995"
+  },
+  "FEXServer": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/fex-android/build/Bin/FEXServer",
+    "bytes": 843688,
+    "sha256": "9fe58a9946e9105c49911518356fe29a4ed3143c1fe90803b57afe112c225e8c"
+  },
+  "simpleperf": {
+    "path": "/Users/swift/Library/Android/sdk/ndk/29.0.13846066/simpleperf/bin/android/arm64/simpleperf",
+    "bytes": 3745096,
+    "sha256": "30b6cd23fb8d819c835487f2fe6c3c416324488c7ac26c194ee7ba200f15b575"
+  },
+  "baseline": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/codegen-quality-optimization-20261106/baseline-svm",
+    "bytes": 21917072,
+    "sha256": "83e10c8fa6cb94dab777ce2c07c8882e2d9634bbc3393728a70641f3f7961946"
+  },
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 21944152,
+    "sha256": "2539a519d83743b3dde0c2aa10b14fec34792221de601b573b484876f231077d"
+  },
+  "coremark": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+    "bytes": 1921016,
+    "sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba"
+  },
+  "bench-suite": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/bench_suite_x86_64",
+    "bytes": 6272,
+    "sha256": "df60aa3f57d40ed3eb0b44d124f2cb8c9d15899f90021b6d20e94be179240a6d"
+  },
+  "func-tests": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/func_tests_x86_64",
+    "bytes": 799168,
+    "sha256": "4740aad183296f458756a6ebb5abf42a2affb17dddd3b74d115a8e2f3266ae60"
+  },
+  "x87-bench": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/x87_bench_x86_64",
+    "bytes": 184,
+    "sha256": "60350fb2a0828e63934a3c8e4890302448d028ce8875a17dfa96b141f91bfabb"
+  },
+  "fex-config/Config.json": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/qor-direct-emit-20261103/Config.json",
+    "bytes": 153,
+    "sha256": "275a50c60d9852ef3399bd9fd665d93cf46a06850a5dd15bd31dffe11e9cb6b0"
+  },
+  "launch.sh": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/codegen-quality-optimization-20261106/launch.sh",
+    "bytes": 263,
+    "sha256": "d40c9d3da3725904e37583e9665e64fd9595d4941621b9e2211df13665df39e5"
+  }
+}

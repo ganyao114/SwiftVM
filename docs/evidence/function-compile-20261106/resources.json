@@ -1,0 +1,1651 @@
+[
+  {
+    "case": "coremark",
+    "arms": {
+      "baseline-block": {
+        "compile_attempts": [
+          2053
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          2053
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          2053
+        ],
+        "emitted_guest_instructions": [
+          11761
+        ],
+        "emitted_guest_bytes": [
+          44396
+        ],
+        "ir_nodes": [
+          35383
+        ],
+        "operand_words": [
+          63345
+        ],
+        "native_bytes": [
+          382328
+        ],
+        "spill_slots": [
+          24
+        ],
+        "max_frame_bytes": [
+          48
+        ],
+        "fault_sites": [
+          4946
+        ],
+        "static_links": [
+          2863
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "baseline-function": {
+        "compile_attempts": [
+          676
+        ],
+        "function_attempts": [
+          676
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          676
+        ],
+        "emitted_guest_instructions": [
+          16449
+        ],
+        "emitted_guest_bytes": [
+          63409
+        ],
+        "ir_nodes": [
+          50739
+        ],
+        "operand_words": [
+          84868
+        ],
+        "native_bytes": [
+          392784
+        ],
+        "spill_slots": [
+          33
+        ],
+        "max_frame_bytes": [
+          64
+        ],
+        "fault_sites": [
+          6768
+        ],
+        "static_links": [
+          944
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "block": {
+        "compile_attempts": [
+          2053
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          2053
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          2053
+        ],
+        "emitted_guest_instructions": [
+          11761
+        ],
+        "emitted_guest_bytes": [
+          44396
+        ],
+        "ir_nodes": [
+          35383
+        ],
+        "operand_words": [
+          63345
+        ],
+        "native_bytes": [
+          382328
+        ],
+        "spill_slots": [
+          24
+        ],
+        "max_frame_bytes": [
+          48
+        ],
+        "fault_sites": [
+          4946
+        ],
+        "static_links": [
+          2863
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "function": {
+        "compile_attempts": [
+          676
+        ],
+        "function_attempts": [
+          676
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          676
+        ],
+        "emitted_guest_instructions": [
+          16449
+        ],
+        "emitted_guest_bytes": [
+          63409
+        ],
+        "ir_nodes": [
+          50739
+        ],
+        "operand_words": [
+          84868
+        ],
+        "native_bytes": [
+          392784
+        ],
+        "spill_slots": [
+          33
+        ],
+        "max_frame_bytes": [
+          64
+        ],
+        "fault_sites": [
+          6768
+        ],
+        "static_links": [
+          944
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      }
+    }
+  },
+  {
+    "case": "int",
+    "arms": {
+      "baseline-block": {
+        "compile_attempts": [
+          39
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          39
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          39
+        ],
+        "emitted_guest_instructions": [
+          269
+        ],
+        "emitted_guest_bytes": [
+          1060
+        ],
+        "ir_nodes": [
+          592
+        ],
+        "operand_words": [
+          1077
+        ],
+        "native_bytes": [
+          5524
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          33
+        ],
+        "static_links": [
+          64
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "baseline-function": {
+        "compile_attempts": [
+          38
+        ],
+        "function_attempts": [
+          38
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          38
+        ],
+        "emitted_guest_instructions": [
+          295
+        ],
+        "emitted_guest_bytes": [
+          1148
+        ],
+        "ir_nodes": [
+          615
+        ],
+        "operand_words": [
+          1127
+        ],
+        "native_bytes": [
+          5576
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          33
+        ],
+        "static_links": [
+          64
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "block": {
+        "compile_attempts": [
+          39
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          39
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          39
+        ],
+        "emitted_guest_instructions": [
+          269
+        ],
+        "emitted_guest_bytes": [
+          1060
+        ],
+        "ir_nodes": [
+          592
+        ],
+        "operand_words": [
+          1077
+        ],
+        "native_bytes": [
+          5524
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          33
+        ],
+        "static_links": [
+          64
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "function": {
+        "compile_attempts": [
+          38
+        ],
+        "function_attempts": [
+          38
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          38
+        ],
+        "emitted_guest_instructions": [
+          295
+        ],
+        "emitted_guest_bytes": [
+          1148
+        ],
+        "ir_nodes": [
+          615
+        ],
+        "operand_words": [
+          1127
+        ],
+        "native_bytes": [
+          5576
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          33
+        ],
+        "static_links": [
+          64
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      }
+    }
+  },
+  {
+    "case": "fp",
+    "arms": {
+      "baseline-block": {
+        "compile_attempts": [
+          43
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          43
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          43
+        ],
+        "emitted_guest_instructions": [
+          434
+        ],
+        "emitted_guest_bytes": [
+          1848
+        ],
+        "ir_nodes": [
+          1079
+        ],
+        "operand_words": [
+          1992
+        ],
+        "native_bytes": [
+          7188
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          137
+        ],
+        "static_links": [
+          70
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "baseline-function": {
+        "compile_attempts": [
+          42
+        ],
+        "function_attempts": [
+          42
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          42
+        ],
+        "emitted_guest_instructions": [
+          591
+        ],
+        "emitted_guest_bytes": [
+          2531
+        ],
+        "ir_nodes": [
+          1433
+        ],
+        "operand_words": [
+          2733
+        ],
+        "native_bytes": [
+          8088
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          188
+        ],
+        "static_links": [
+          72
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "block": {
+        "compile_attempts": [
+          43
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          43
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          43
+        ],
+        "emitted_guest_instructions": [
+          434
+        ],
+        "emitted_guest_bytes": [
+          1848
+        ],
+        "ir_nodes": [
+          1079
+        ],
+        "operand_words": [
+          1992
+        ],
+        "native_bytes": [
+          7188
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          137
+        ],
+        "static_links": [
+          70
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "function": {
+        "compile_attempts": [
+          42
+        ],
+        "function_attempts": [
+          42
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          42
+        ],
+        "emitted_guest_instructions": [
+          591
+        ],
+        "emitted_guest_bytes": [
+          2531
+        ],
+        "ir_nodes": [
+          1433
+        ],
+        "operand_words": [
+          2733
+        ],
+        "native_bytes": [
+          8088
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          188
+        ],
+        "static_links": [
+          72
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      }
+    }
+  },
+  {
+    "case": "mem",
+    "arms": {
+      "baseline-block": {
+        "compile_attempts": [
+          46
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          46
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          46
+        ],
+        "emitted_guest_instructions": [
+          323
+        ],
+        "emitted_guest_bytes": [
+          1354
+        ],
+        "ir_nodes": [
+          736
+        ],
+        "operand_words": [
+          1335
+        ],
+        "native_bytes": [
+          6688
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          51
+        ],
+        "static_links": [
+          75
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "baseline-function": {
+        "compile_attempts": [
+          45
+        ],
+        "function_attempts": [
+          45
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          45
+        ],
+        "emitted_guest_instructions": [
+          376
+        ],
+        "emitted_guest_bytes": [
+          1609
+        ],
+        "ir_nodes": [
+          818
+        ],
+        "operand_words": [
+          1521
+        ],
+        "native_bytes": [
+          7188
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          63
+        ],
+        "static_links": [
+          77
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "block": {
+        "compile_attempts": [
+          46
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          46
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          46
+        ],
+        "emitted_guest_instructions": [
+          323
+        ],
+        "emitted_guest_bytes": [
+          1354
+        ],
+        "ir_nodes": [
+          736
+        ],
+        "operand_words": [
+          1335
+        ],
+        "native_bytes": [
+          6688
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          51
+        ],
+        "static_links": [
+          75
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "function": {
+        "compile_attempts": [
+          45
+        ],
+        "function_attempts": [
+          45
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          45
+        ],
+        "emitted_guest_instructions": [
+          376
+        ],
+        "emitted_guest_bytes": [
+          1609
+        ],
+        "ir_nodes": [
+          818
+        ],
+        "operand_words": [
+          1521
+        ],
+        "native_bytes": [
+          7188
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          63
+        ],
+        "static_links": [
+          77
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      }
+    }
+  },
+  {
+    "case": "branch",
+    "arms": {
+      "baseline-block": {
+        "compile_attempts": [
+          39
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          39
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          39
+        ],
+        "emitted_guest_instructions": [
+          273
+        ],
+        "emitted_guest_bytes": [
+          1052
+        ],
+        "ir_nodes": [
+          570
+        ],
+        "operand_words": [
+          1053
+        ],
+        "native_bytes": [
+          5468
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          29
+        ],
+        "static_links": [
+          64
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "baseline-function": {
+        "compile_attempts": [
+          38
+        ],
+        "function_attempts": [
+          38
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          38
+        ],
+        "emitted_guest_instructions": [
+          314
+        ],
+        "emitted_guest_bytes": [
+          1203
+        ],
+        "ir_nodes": [
+          615
+        ],
+        "operand_words": [
+          1152
+        ],
+        "native_bytes": [
+          5624
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          29
+        ],
+        "static_links": [
+          64
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "block": {
+        "compile_attempts": [
+          39
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          39
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          39
+        ],
+        "emitted_guest_instructions": [
+          273
+        ],
+        "emitted_guest_bytes": [
+          1052
+        ],
+        "ir_nodes": [
+          570
+        ],
+        "operand_words": [
+          1053
+        ],
+        "native_bytes": [
+          5468
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          29
+        ],
+        "static_links": [
+          64
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "function": {
+        "compile_attempts": [
+          38
+        ],
+        "function_attempts": [
+          38
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          38
+        ],
+        "emitted_guest_instructions": [
+          314
+        ],
+        "emitted_guest_bytes": [
+          1203
+        ],
+        "ir_nodes": [
+          615
+        ],
+        "operand_words": [
+          1152
+        ],
+        "native_bytes": [
+          5624
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          29
+        ],
+        "static_links": [
+          64
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      }
+    }
+  },
+  {
+    "case": "call",
+    "arms": {
+      "baseline-block": {
+        "compile_attempts": [
+          46
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          46
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          46
+        ],
+        "emitted_guest_instructions": [
+          268
+        ],
+        "emitted_guest_bytes": [
+          1011
+        ],
+        "ir_nodes": [
+          677
+        ],
+        "operand_words": [
+          1207
+        ],
+        "native_bytes": [
+          7872
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          48
+        ],
+        "static_links": [
+          66
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "baseline-function": {
+        "compile_attempts": [
+          45
+        ],
+        "function_attempts": [
+          45
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          45
+        ],
+        "emitted_guest_instructions": [
+          268
+        ],
+        "emitted_guest_bytes": [
+          1011
+        ],
+        "ir_nodes": [
+          673
+        ],
+        "operand_words": [
+          1201
+        ],
+        "native_bytes": [
+          7808
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          48
+        ],
+        "static_links": [
+          65
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "block": {
+        "compile_attempts": [
+          46
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          46
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          46
+        ],
+        "emitted_guest_instructions": [
+          268
+        ],
+        "emitted_guest_bytes": [
+          1011
+        ],
+        "ir_nodes": [
+          677
+        ],
+        "operand_words": [
+          1207
+        ],
+        "native_bytes": [
+          7872
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          48
+        ],
+        "static_links": [
+          66
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "function": {
+        "compile_attempts": [
+          45
+        ],
+        "function_attempts": [
+          45
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          45
+        ],
+        "emitted_guest_instructions": [
+          268
+        ],
+        "emitted_guest_bytes": [
+          1011
+        ],
+        "ir_nodes": [
+          673
+        ],
+        "operand_words": [
+          1201
+        ],
+        "native_bytes": [
+          7808
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          48
+        ],
+        "static_links": [
+          65
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      }
+    }
+  },
+  {
+    "case": "func_tests",
+    "arms": {
+      "baseline-block": {
+        "compile_attempts": [
+          1131,
+          1132
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          1131,
+          1132
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          1131,
+          1132
+        ],
+        "emitted_guest_instructions": [
+          5679,
+          5692
+        ],
+        "emitted_guest_bytes": [
+          22658,
+          22699
+        ],
+        "ir_nodes": [
+          16836,
+          16859
+        ],
+        "operand_words": [
+          28754,
+          28797
+        ],
+        "native_bytes": [
+          220380,
+          220600
+        ],
+        "spill_slots": [
+          14
+        ],
+        "max_frame_bytes": [
+          16
+        ],
+        "fault_sites": [
+          2130
+        ],
+        "static_links": [
+          1593,
+          1595
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "baseline-function": {
+        "compile_attempts": [
+          397
+        ],
+        "function_attempts": [
+          382
+        ],
+        "block_attempts": [
+          15
+        ],
+        "fallbacks": [
+          15
+        ],
+        "code_units_published": [
+          382
+        ],
+        "emitted_guest_instructions": [
+          10636
+        ],
+        "emitted_guest_bytes": [
+          43445
+        ],
+        "ir_nodes": [
+          29419
+        ],
+        "operand_words": [
+          46599
+        ],
+        "native_bytes": [
+          289516
+        ],
+        "spill_slots": [
+          25
+        ],
+        "max_frame_bytes": [
+          32
+        ],
+        "fault_sites": [
+          3575
+        ],
+        "static_links": [
+          532
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "block": {
+        "compile_attempts": [
+          1131
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          1131
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          1131
+        ],
+        "emitted_guest_instructions": [
+          5679
+        ],
+        "emitted_guest_bytes": [
+          22658
+        ],
+        "ir_nodes": [
+          16836
+        ],
+        "operand_words": [
+          28754
+        ],
+        "native_bytes": [
+          220380
+        ],
+        "spill_slots": [
+          14
+        ],
+        "max_frame_bytes": [
+          16
+        ],
+        "fault_sites": [
+          2130
+        ],
+        "static_links": [
+          1593
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "function": {
+        "compile_attempts": [
+          397
+        ],
+        "function_attempts": [
+          382
+        ],
+        "block_attempts": [
+          15
+        ],
+        "fallbacks": [
+          15
+        ],
+        "code_units_published": [
+          382
+        ],
+        "emitted_guest_instructions": [
+          10636
+        ],
+        "emitted_guest_bytes": [
+          43445
+        ],
+        "ir_nodes": [
+          29419
+        ],
+        "operand_words": [
+          46599
+        ],
+        "native_bytes": [
+          289516
+        ],
+        "spill_slots": [
+          25
+        ],
+        "max_frame_bytes": [
+          32
+        ],
+        "fault_sites": [
+          3575
+        ],
+        "static_links": [
+          532
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      }
+    }
+  },
+  {
+    "case": "x87_bench",
+    "arms": {
+      "baseline-block": {
+        "compile_attempts": [
+          3
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          3
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          3
+        ],
+        "emitted_guest_instructions": [
+          20
+        ],
+        "emitted_guest_bytes": [
+          50
+        ],
+        "ir_nodes": [
+          51
+        ],
+        "operand_words": [
+          131
+        ],
+        "native_bytes": [
+          1864
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          1
+        ],
+        "static_links": [
+          3
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "baseline-function": {
+        "compile_attempts": [
+          1
+        ],
+        "function_attempts": [
+          1
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          1
+        ],
+        "emitted_guest_instructions": [
+          20
+        ],
+        "emitted_guest_bytes": [
+          50
+        ],
+        "ir_nodes": [
+          50
+        ],
+        "operand_words": [
+          126
+        ],
+        "native_bytes": [
+          1732
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          1
+        ],
+        "static_links": [
+          0
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "block": {
+        "compile_attempts": [
+          3
+        ],
+        "function_attempts": [
+          0
+        ],
+        "block_attempts": [
+          3
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          3
+        ],
+        "emitted_guest_instructions": [
+          20
+        ],
+        "emitted_guest_bytes": [
+          50
+        ],
+        "ir_nodes": [
+          51
+        ],
+        "operand_words": [
+          131
+        ],
+        "native_bytes": [
+          1864
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          1
+        ],
+        "static_links": [
+          3
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      },
+      "function": {
+        "compile_attempts": [
+          1
+        ],
+        "function_attempts": [
+          1
+        ],
+        "block_attempts": [
+          0
+        ],
+        "fallbacks": [
+          0
+        ],
+        "code_units_published": [
+          1
+        ],
+        "emitted_guest_instructions": [
+          20
+        ],
+        "emitted_guest_bytes": [
+          50
+        ],
+        "ir_nodes": [
+          50
+        ],
+        "operand_words": [
+          126
+        ],
+        "native_bytes": [
+          1732
+        ],
+        "spill_slots": [
+          0
+        ],
+        "max_frame_bytes": [
+          0
+        ],
+        "fault_sites": [
+          1
+        ],
+        "static_links": [
+          0
+        ],
+        "peak_slabs": [
+          1
+        ],
+        "peak_code_virtual_bytes": [
+          2097152
+        ]
+      }
+    }
+  }
+]

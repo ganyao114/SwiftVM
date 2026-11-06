@@ -1,0 +1,36 @@
+0000  uzp1       v8.4s, v23.4s, v23.4s
+0004  uzp1       v9.4s, v18.4s, v18.4s
+0008  umull      v2.2d, v8.2s, v9.2s
+000c  ushr       v3.2d, v23.2d, #0x20
+0010  uzp1       v8.4s, v3.4s, v3.4s
+0014  uzp1       v9.4s, v18.4s, v18.4s
+0018  umull      v25.2d, v8.2s, v9.2s
+001c  uzp1       v8.4s, v23.4s, v23.4s
+0020  uzp1       v9.4s, v19.4s, v19.4s
+0024  umull      v3.2d, v8.2s, v9.2s
+0028  add        v4.2d, v3.2d, v25.2d
+002c  shl        v3.2d, v4.2d, #0x20
+0030  add        v4.2d, v3.2d, v2.2d
+0034  add        v24.2d, v4.2d, v21.2d
+0038  add        v26.2d, v4.2d, v22.2d
+003c  add        x2, x22, #0x810, lsl #12
+0040  and        x0, x2, #0xf
+0044  cbz        x0, #0x4c
+0048  brk        #0
+004c  dmb        ish
+0050  str        q24, [x2]
+0054  add        x2, x22, #0x810, lsl #12
+0058  add        x2, x2, #0x10
+005c  and        x0, x2, #0xf
+0060  cbz        x0, #0x68
+0064  brk        #0
+0068  dmb        ish
+006c  str        q26, [x2]
+0070  add        v23.2d, v23.2d, v20.2d
+0074  mov        w29, w22
+0078  adds       x22, x22, #0x20
+007c  mov        x1, x22
+0080  cfinv      
+0084  b.ne       #0xb8
+0088  ldr        x16, #0x90
+008c  br         x16

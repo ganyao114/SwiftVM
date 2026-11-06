@@ -1,0 +1,598 @@
+{
+  "baseline-block": {
+    "matched_median_sample": {
+      "case": "x87_bench",
+      "arm": "baseline-block",
+      "round": 1,
+      "prefix": "compile-x87_bench-baseline-block-1",
+      "total_ms": 0.600835,
+      "exclusive_ms": {
+        "formation_and_ir": 0.201302,
+        "ir_optimization": 0.078281,
+        "allocation_and_encoding": 0.119063,
+        "transfer_and_publication": 0.083907,
+        "native_owner_release": 0.097344,
+        "other": 0.020938000000000012
+      },
+      "closure_error_ms": 0.0,
+      "fault_service_ms_in_other": 0.014532
+    },
+    "all_samples": [
+      {
+        "case": "x87_bench",
+        "arm": "baseline-block",
+        "round": 0,
+        "prefix": "compile-x87_bench-baseline-block-0",
+        "total_ms": 0.55943,
+        "exclusive_ms": {
+          "formation_and_ir": 0.211668,
+          "ir_optimization": 0.061771,
+          "allocation_and_encoding": 0.112448,
+          "transfer_and_publication": 0.076979,
+          "native_owner_release": 0.077708,
+          "other": 0.018855999999999984
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.012709
+      },
+      {
+        "case": "x87_bench",
+        "arm": "baseline-block",
+        "round": 1,
+        "prefix": "compile-x87_bench-baseline-block-1",
+        "total_ms": 0.600835,
+        "exclusive_ms": {
+          "formation_and_ir": 0.201302,
+          "ir_optimization": 0.078281,
+          "allocation_and_encoding": 0.119063,
+          "transfer_and_publication": 0.083907,
+          "native_owner_release": 0.097344,
+          "other": 0.020938000000000012
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.014532
+      },
+      {
+        "case": "x87_bench",
+        "arm": "baseline-block",
+        "round": 2,
+        "prefix": "compile-x87_bench-baseline-block-2",
+        "total_ms": 0.630572,
+        "exclusive_ms": {
+          "formation_and_ir": 0.196403,
+          "ir_optimization": 0.106927,
+          "allocation_and_encoding": 0.112448,
+          "transfer_and_publication": 0.075937,
+          "native_owner_release": 0.119844,
+          "other": 0.019013000000000058
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.012813
+      },
+      {
+        "case": "x87_bench",
+        "arm": "baseline-block",
+        "round": 3,
+        "prefix": "compile-x87_bench-baseline-block-3",
+        "total_ms": 0.625,
+        "exclusive_ms": {
+          "formation_and_ir": 0.218906,
+          "ir_optimization": 0.067344,
+          "allocation_and_encoding": 0.122396,
+          "transfer_and_publication": 0.077603,
+          "native_owner_release": 0.114427,
+          "other": 0.024324000000000012
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.015989
+      },
+      {
+        "case": "x87_bench",
+        "arm": "baseline-block",
+        "round": 4,
+        "prefix": "compile-x87_bench-baseline-block-4",
+        "total_ms": 0.570102,
+        "exclusive_ms": {
+          "formation_and_ir": 0.21573,
+          "ir_optimization": 0.063282,
+          "allocation_and_encoding": 0.111095,
+          "transfer_and_publication": 0.076197,
+          "native_owner_release": 0.084896,
+          "other": 0.018901999999999974
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.013749
+      }
+    ]
+  },
+  "block": {
+    "matched_median_sample": {
+      "case": "x87_bench",
+      "arm": "block",
+      "round": 0,
+      "prefix": "compile-x87_bench-block-0",
+      "total_ms": 0.625779,
+      "exclusive_ms": {
+        "formation_and_ir": 0.202446,
+        "ir_optimization": 0.078697,
+        "allocation_and_encoding": 0.127082,
+        "transfer_and_publication": 0.072084,
+        "native_owner_release": 0.121354,
+        "other": 0.024116000000000026
+      },
+      "closure_error_ms": 0.0,
+      "fault_service_ms_in_other": 0.014947
+    },
+    "all_samples": [
+      {
+        "case": "x87_bench",
+        "arm": "block",
+        "round": 0,
+        "prefix": "compile-x87_bench-block-0",
+        "total_ms": 0.625779,
+        "exclusive_ms": {
+          "formation_and_ir": 0.202446,
+          "ir_optimization": 0.078697,
+          "allocation_and_encoding": 0.127082,
+          "transfer_and_publication": 0.072084,
+          "native_owner_release": 0.121354,
+          "other": 0.024116000000000026
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.014947
+      },
+      {
+        "case": "x87_bench",
+        "arm": "block",
+        "round": 1,
+        "prefix": "compile-x87_bench-block-1",
+        "total_ms": 0.524113,
+        "exclusive_ms": {
+          "formation_and_ir": 0.185626,
+          "ir_optimization": 0.075417,
+          "allocation_and_encoding": 0.110261,
+          "transfer_and_publication": 0.069948,
+          "native_owner_release": 0.064583,
+          "other": 0.018278000000000016
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.011926
+      },
+      {
+        "case": "x87_bench",
+        "arm": "block",
+        "round": 2,
+        "prefix": "compile-x87_bench-block-2",
+        "total_ms": 0.652454,
+        "exclusive_ms": {
+          "formation_and_ir": 0.231047,
+          "ir_optimization": 0.078698,
+          "allocation_and_encoding": 0.124792,
+          "transfer_and_publication": 0.072761,
+          "native_owner_release": 0.121042,
+          "other": 0.02411399999999997
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.015729
+      },
+      {
+        "case": "x87_bench",
+        "arm": "block",
+        "round": 3,
+        "prefix": "compile-x87_bench-block-3",
+        "total_ms": 0.646614,
+        "exclusive_ms": {
+          "formation_and_ir": 0.222447,
+          "ir_optimization": 0.092291,
+          "allocation_and_encoding": 0.123021,
+          "transfer_and_publication": 0.074322,
+          "native_owner_release": 0.112343,
+          "other": 0.022190000000000043
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.015
+      },
+      {
+        "case": "x87_bench",
+        "arm": "block",
+        "round": 4,
+        "prefix": "compile-x87_bench-block-4",
+        "total_ms": 0.537241,
+        "exclusive_ms": {
+          "formation_and_ir": 0.180364,
+          "ir_optimization": 0.077813,
+          "allocation_and_encoding": 0.1075,
+          "transfer_and_publication": 0.070418,
+          "native_owner_release": 0.083906,
+          "other": 0.017240000000000033
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.012345
+      }
+    ]
+  },
+  "baseline-function": {
+    "matched_median_sample": {
+      "case": "x87_bench",
+      "arm": "baseline-function",
+      "round": 1,
+      "prefix": "compile-x87_bench-baseline-function-1",
+      "total_ms": 0.64078,
+      "exclusive_ms": {
+        "formation_and_ir": 0.278176,
+        "ir_optimization": 0.08151,
+        "allocation_and_encoding": 0.080521,
+        "transfer_and_publication": 0.107761,
+        "native_owner_release": 0.077917,
+        "other": 0.014894999999999992
+      },
+      "closure_error_ms": -1.1102230246251565e-16,
+      "fault_service_ms_in_other": 0.012656
+    },
+    "all_samples": [
+      {
+        "case": "x87_bench",
+        "arm": "baseline-function",
+        "round": 0,
+        "prefix": "compile-x87_bench-baseline-function-0",
+        "total_ms": 0.641562,
+        "exclusive_ms": {
+          "formation_and_ir": 0.304375,
+          "ir_optimization": 0.086718,
+          "allocation_and_encoding": 0.078593,
+          "transfer_and_publication": 0.073645,
+          "native_owner_release": 0.082344,
+          "other": 0.015886999999999984
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.013437
+      },
+      {
+        "case": "x87_bench",
+        "arm": "baseline-function",
+        "round": 1,
+        "prefix": "compile-x87_bench-baseline-function-1",
+        "total_ms": 0.64078,
+        "exclusive_ms": {
+          "formation_and_ir": 0.278176,
+          "ir_optimization": 0.08151,
+          "allocation_and_encoding": 0.080521,
+          "transfer_and_publication": 0.107761,
+          "native_owner_release": 0.077917,
+          "other": 0.014894999999999992
+        },
+        "closure_error_ms": -1.1102230246251565e-16,
+        "fault_service_ms_in_other": 0.012656
+      },
+      {
+        "case": "x87_bench",
+        "arm": "baseline-function",
+        "round": 2,
+        "prefix": "compile-x87_bench-baseline-function-2",
+        "total_ms": 0.762816,
+        "exclusive_ms": {
+          "formation_and_ir": 0.28016,
+          "ir_optimization": 0.088959,
+          "allocation_and_encoding": 0.07776,
+          "transfer_and_publication": 0.077604,
+          "native_owner_release": 0.224011,
+          "other": 0.014322000000000057
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.012084
+      },
+      {
+        "case": "x87_bench",
+        "arm": "baseline-function",
+        "round": 3,
+        "prefix": "compile-x87_bench-baseline-function-3",
+        "total_ms": 0.591567,
+        "exclusive_ms": {
+          "formation_and_ir": 0.261305,
+          "ir_optimization": 0.056563,
+          "allocation_and_encoding": 0.082656,
+          "transfer_and_publication": 0.095104,
+          "native_owner_release": 0.081875,
+          "other": 0.014063999999999965
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.011511
+      },
+      {
+        "case": "x87_bench",
+        "arm": "baseline-function",
+        "round": 4,
+        "prefix": "compile-x87_bench-baseline-function-4",
+        "total_ms": 0.594633,
+        "exclusive_ms": {
+          "formation_and_ir": 0.275832,
+          "ir_optimization": 0.069323,
+          "allocation_and_encoding": 0.079583,
+          "transfer_and_publication": 0.076978,
+          "native_owner_release": 0.076979,
+          "other": 0.015937999999999897
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.013698
+      }
+    ]
+  },
+  "function": {
+    "matched_median_sample": {
+      "case": "x87_bench",
+      "arm": "function",
+      "round": 1,
+      "prefix": "compile-x87_bench-function-1",
+      "total_ms": 0.592396,
+      "exclusive_ms": {
+        "formation_and_ir": 0.244895,
+        "ir_optimization": 0.082865,
+        "allocation_and_encoding": 0.094479,
+        "transfer_and_publication": 0.073542,
+        "native_owner_release": 0.080573,
+        "other": 0.016042
+      },
+      "closure_error_ms": 0.0,
+      "fault_service_ms_in_other": 0.012762
+    },
+    "all_samples": [
+      {
+        "case": "x87_bench",
+        "arm": "function",
+        "round": 0,
+        "prefix": "compile-x87_bench-function-0",
+        "total_ms": 0.834165,
+        "exclusive_ms": {
+          "formation_and_ir": 0.204948,
+          "ir_optimization": 0.371979,
+          "allocation_and_encoding": 0.094844,
+          "transfer_and_publication": 0.072865,
+          "native_owner_release": 0.074115,
+          "other": 0.015414000000000039
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.012291
+      },
+      {
+        "case": "x87_bench",
+        "arm": "function",
+        "round": 1,
+        "prefix": "compile-x87_bench-function-1",
+        "total_ms": 0.592396,
+        "exclusive_ms": {
+          "formation_and_ir": 0.244895,
+          "ir_optimization": 0.082865,
+          "allocation_and_encoding": 0.094479,
+          "transfer_and_publication": 0.073542,
+          "native_owner_release": 0.080573,
+          "other": 0.016042
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.012762
+      },
+      {
+        "case": "x87_bench",
+        "arm": "function",
+        "round": 2,
+        "prefix": "compile-x87_bench-function-2",
+        "total_ms": 0.516512,
+        "exclusive_ms": {
+          "formation_and_ir": 0.192501,
+          "ir_optimization": 0.070573,
+          "allocation_and_encoding": 0.092448,
+          "transfer_and_publication": 0.068906,
+          "native_owner_release": 0.076979,
+          "other": 0.015104999999999924
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.011876
+      },
+      {
+        "case": "x87_bench",
+        "arm": "function",
+        "round": 3,
+        "prefix": "compile-x87_bench-function-3",
+        "total_ms": 0.607814,
+        "exclusive_ms": {
+          "formation_and_ir": 0.241773,
+          "ir_optimization": 0.081719,
+          "allocation_and_encoding": 0.094011,
+          "transfer_and_publication": 0.096562,
+          "native_owner_release": 0.079792,
+          "other": 0.013956999999999997
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.011406
+      },
+      {
+        "case": "x87_bench",
+        "arm": "function",
+        "round": 4,
+        "prefix": "compile-x87_bench-function-4",
+        "total_ms": 0.563699,
+        "exclusive_ms": {
+          "formation_and_ir": 0.23573,
+          "ir_optimization": 0.077448,
+          "allocation_and_encoding": 0.091719,
+          "transfer_and_publication": 0.073958,
+          "native_owner_release": 0.069114,
+          "other": 0.015730000000000022
+        },
+        "closure_error_ms": 0.0,
+        "fault_service_ms_in_other": 0.013021
+      }
+    ]
+  },
+  "fex": {
+    "matched_median_sample": {
+      "case": "x87_bench",
+      "arm": "fex",
+      "round": 4,
+      "prefix": "compile-x87_bench-fex-4",
+      "total_ms": 0.30578125,
+      "exclusive_ms": {
+        "formation_and_ir": 0.11994791666666667,
+        "ir_optimization": 0.04015625,
+        "allocation_and_encoding": 0.11807291666666667,
+        "transfer_and_publication": 0.0203125,
+        "logical_work_buffer_release": 0.0022395833333333334,
+        "other": 0.005052083333333333
+      },
+      "closure_error_ms": 0.0,
+      "exclusive_ticks": {
+        "formation_and_ir": 2303,
+        "ir_optimization": 771,
+        "allocation_and_encoding": 2267,
+        "transfer_and_publication": 390,
+        "logical_work_buffer_release": 43,
+        "other": 97
+      },
+      "cntfrq_hz": 19200000,
+      "root_calls": 1,
+      "byte_decode_calls": 22,
+      "exact_tick_closure": true
+    },
+    "all_samples": [
+      {
+        "case": "x87_bench",
+        "arm": "fex",
+        "round": 0,
+        "prefix": "compile-x87_bench-fex-0",
+        "total_ms": 0.2910416666666667,
+        "exclusive_ms": {
+          "formation_and_ir": 0.11546875,
+          "ir_optimization": 0.0425,
+          "allocation_and_encoding": 0.10880208333333333,
+          "transfer_and_publication": 0.01703125,
+          "logical_work_buffer_release": 0.00234375,
+          "other": 0.004895833333333334
+        },
+        "closure_error_ms": -5.551115123125783e-17,
+        "exclusive_ticks": {
+          "formation_and_ir": 2217,
+          "ir_optimization": 816,
+          "allocation_and_encoding": 2089,
+          "transfer_and_publication": 327,
+          "logical_work_buffer_release": 45,
+          "other": 94
+        },
+        "cntfrq_hz": 19200000,
+        "root_calls": 1,
+        "byte_decode_calls": 22,
+        "exact_tick_closure": true
+      },
+      {
+        "case": "x87_bench",
+        "arm": "fex",
+        "round": 1,
+        "prefix": "compile-x87_bench-fex-1",
+        "total_ms": 0.3121875,
+        "exclusive_ms": {
+          "formation_and_ir": 0.11640625,
+          "ir_optimization": 0.0428125,
+          "allocation_and_encoding": 0.12963541666666667,
+          "transfer_and_publication": 0.01625,
+          "logical_work_buffer_release": 0.0021354166666666665,
+          "other": 0.0049479166666666664
+        },
+        "closure_error_ms": 0.0,
+        "exclusive_ticks": {
+          "formation_and_ir": 2235,
+          "ir_optimization": 822,
+          "allocation_and_encoding": 2489,
+          "transfer_and_publication": 312,
+          "logical_work_buffer_release": 41,
+          "other": 95
+        },
+        "cntfrq_hz": 19200000,
+        "root_calls": 1,
+        "byte_decode_calls": 22,
+        "exact_tick_closure": true
+      },
+      {
+        "case": "x87_bench",
+        "arm": "fex",
+        "round": 2,
+        "prefix": "compile-x87_bench-fex-2",
+        "total_ms": 0.3141145833333333,
+        "exclusive_ms": {
+          "formation_and_ir": 0.12786458333333334,
+          "ir_optimization": 0.04421875,
+          "allocation_and_encoding": 0.11473958333333334,
+          "transfer_and_publication": 0.019375,
+          "logical_work_buffer_release": 0.0025,
+          "other": 0.005416666666666667
+        },
+        "closure_error_ms": 5.551115123125783e-17,
+        "exclusive_ticks": {
+          "formation_and_ir": 2455,
+          "ir_optimization": 849,
+          "allocation_and_encoding": 2203,
+          "transfer_and_publication": 372,
+          "logical_work_buffer_release": 48,
+          "other": 104
+        },
+        "cntfrq_hz": 19200000,
+        "root_calls": 1,
+        "byte_decode_calls": 22,
+        "exact_tick_closure": true
+      },
+      {
+        "case": "x87_bench",
+        "arm": "fex",
+        "round": 3,
+        "prefix": "compile-x87_bench-fex-3",
+        "total_ms": 0.30234375,
+        "exclusive_ms": {
+          "formation_and_ir": 0.11572916666666666,
+          "ir_optimization": 0.043020833333333335,
+          "allocation_and_encoding": 0.1190625,
+          "transfer_and_publication": 0.017447916666666667,
+          "logical_work_buffer_release": 0.0020833333333333333,
+          "other": 0.005
+        },
+        "closure_error_ms": 0.0,
+        "exclusive_ticks": {
+          "formation_and_ir": 2222,
+          "ir_optimization": 826,
+          "allocation_and_encoding": 2286,
+          "transfer_and_publication": 335,
+          "logical_work_buffer_release": 40,
+          "other": 96
+        },
+        "cntfrq_hz": 19200000,
+        "root_calls": 1,
+        "byte_decode_calls": 22,
+        "exact_tick_closure": true
+      },
+      {
+        "case": "x87_bench",
+        "arm": "fex",
+        "round": 4,
+        "prefix": "compile-x87_bench-fex-4",
+        "total_ms": 0.30578125,
+        "exclusive_ms": {
+          "formation_and_ir": 0.11994791666666667,
+          "ir_optimization": 0.04015625,
+          "allocation_and_encoding": 0.11807291666666667,
+          "transfer_and_publication": 0.0203125,
+          "logical_work_buffer_release": 0.0022395833333333334,
+          "other": 0.005052083333333333
+        },
+        "closure_error_ms": 0.0,
+        "exclusive_ticks": {
+          "formation_and_ir": 2303,
+          "ir_optimization": 771,
+          "allocation_and_encoding": 2267,
+          "transfer_and_publication": 390,
+          "logical_work_buffer_release": 43,
+          "other": 97
+        },
+        "cntfrq_hz": 19200000,
+        "root_calls": 1,
+        "byte_decode_calls": 22,
+        "exact_tick_closure": true
+      }
+    ]
+  }
+}

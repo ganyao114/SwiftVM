@@ -1,0 +1,251 @@
+{
+  "utc": "2026-11-06T11:01:57.164872+00:00",
+  "base_commit": "ebf557408e14aef165b28bd7f0f3ebfc0ae3e918",
+  "working_tree_modified": true,
+  "committed": false,
+  "source_digest": "ead9d0166558dc4ef37915bc09cc7d1b62fb7b7e40ae242c0e22f6d828c0e074",
+  "source_files": 282,
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 21944152,
+    "sha256": "2539a519d83743b3dde0c2aa10b14fec34792221de601b573b484876f231077d"
+  },
+  "baseline": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/codegen-quality-optimization-20261106/baseline-svm",
+    "bytes": 21917072,
+    "sha256": "83e10c8fa6cb94dab777ce2c07c8882e2d9634bbc3393728a70641f3f7961946"
+  },
+  "source_archive_sha256": "2fab91a3eb2b29a45bcc6e1a722c07c49ee478acd25021661d9040ba389c82d7",
+  "runtime_samples": {
+    "valid": 200,
+    "total": 200
+  },
+  "compile_samples": {
+    "valid": 200,
+    "total": 200
+  },
+  "host_ctest": [
+    9,
+    9
+  ],
+  "sanitizer_ctest": [
+    9,
+    9
+  ],
+  "phone_cpp": [
+    7,
+    7
+  ],
+  "phone_state_images": [
+    3,
+    3
+  ],
+  "workload_smoke": [
+    40,
+    40
+  ],
+  "gates": {
+    "passed": 47,
+    "total": 48
+  },
+  "remaining_gates": [
+    {
+      "case": "x87_bench",
+      "scope": "block",
+      "gates": {
+        "compile": false
+      }
+    }
+  ],
+  "fixed_sample_grid_verified": true,
+  "source_current_and_archive_verified": true,
+  "device_inputs_before_after_verified": true,
+  "component_ledgers_closed": true,
+  "prior_samples_not_pooled": true,
+  "no_optional_sample_replacement": true,
+  "policy_observations": {
+    "compile-policy-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-0-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-0-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-1-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-1-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-2-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-2-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-3-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-3-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-4-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "compile-policy-round-4-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "prepare-policy.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "258"
+    ],
+    "runtime-policy-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "262"
+    ],
+    "runtime-policy-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "260"
+    ],
+    "runtime-policy-round-0-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "runtime-policy-round-0-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "260"
+    ],
+    "runtime-policy-round-1-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "260"
+    ],
+    "runtime-policy-round-1-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "259"
+    ],
+    "runtime-policy-round-2-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "261"
+    ],
+    "runtime-policy-round-2-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "260"
+    ],
+    "runtime-policy-round-3-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "262"
+    ],
+    "runtime-policy-round-3-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "261"
+    ],
+    "runtime-policy-round-4-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "262"
+    ],
+    "runtime-policy-round-4-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "262"
+    ],
+    "smoke-policy-after.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "258"
+    ],
+    "smoke-policy-before.stdout": [
+      "614400",
+      "1171200",
+      "1171200",
+      "258"
+    ]
+  },
+  "phone_cleanup": {
+    "utc": "2026-11-06T10:56:57.848912+00:00",
+    "namespace": "/data/local/tmp/swiftvm-codegen-quality-20261106",
+    "allocated_bytes_removed": 63579136,
+    "df_actual_free_delta_bytes": 66916352,
+    "remaining_bytes": 0,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "functional_phone_cleanup": {
+    "utc": "2026-11-06T10:36:44.083035+00:00",
+    "namespace": "/data/local/tmp/swiftvm-codegen-functional-20261106",
+    "allocated_bytes_removed": 145276928,
+    "df_actual_free_delta_bytes": 145313792,
+    "remaining_bytes": 0,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "raw_results": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/codegen-quality-optimization-20261106"
+}

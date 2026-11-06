@@ -1,0 +1,116 @@
+0000  mov        x2, #0xdd1d
+0004  movk       x2, #0x4f6c, lsl #16
+0008  movk       x2, #0xf491, lsl #32
+000c  movk       x2, #0x2545, lsl #48
+0010  mul        x3, x2, x27
+0014  smulh      x4, x2, x27
+0018  eor        x5, x4, x3, asr #63
+001c  clz        x2, x5
+0020  ubfx       x2, x2, #6, #1
+0024  rmif       x2, #0x3f, #2
+0028  mov        w29, w3
+002c  mrs        x30, nzcv
+0030  adds       x20, x3, #1
+0034  rmif       x30, #0x1c, #2
+0038  ldapur     x2, [x24]
+003c  add        x24, x24, #8
+0040  mov        x1, x20
+0044  mov        x0, x2
+0048  adr        x2, #0x68
+004c  ubfx       x5, x0, #2, #4
+0050  add        x2, x2, x5, lsl #4
+0054  ldp        x4, x16, [x2]
+0058  sub        x4, x4, x0
+005c  cbnz       x4, #0x170
+0060  br         x16
+0064  nop        
+0068  udf        #0
+006c  udf        #0
+0070  udf        #0
+0074  udf        #0
+0078  udf        #0
+007c  udf        #0
+0080  udf        #0
+0084  udf        #0
+0088  udf        #0
+008c  udf        #0
+0090  udf        #0
+0094  udf        #0
+0098  udf        #0
+009c  udf        #0
+00a0  udf        #0
+00a4  udf        #0
+00a8  udf        #0
+00ac  udf        #0
+00b0  udf        #0
+00b4  udf        #0
+00b8  udf        #0
+00bc  udf        #0
+00c0  udf        #0
+00c4  udf        #0
+00c8  udf        #0
+00cc  udf        #0
+00d0  udf        #0
+00d4  udf        #0
+00d8  udf        #0
+00dc  udf        #0
+00e0  udf        #0
+00e4  udf        #0
+00e8  udf        #0
+00ec  udf        #0
+00f0  udf        #0
+00f4  udf        #0
+00f8  udf        #0
+00fc  udf        #0
+0100  udf        #0
+0104  udf        #0
+0108  udf        #0
+010c  udf        #0
+0110  udf        #0
+0114  udf        #0
+0118  udf        #0
+011c  udf        #0
+0120  udf        #0
+0124  udf        #0
+0128  udf        #0
+012c  udf        #0
+0130  udf        #0
+0134  udf        #0
+0138  udf        #0
+013c  udf        #0
+0140  udf        #0
+0144  udf        #0
+0148  udf        #0
+014c  udf        #0
+0150  udf        #0
+0154  udf        #0
+0158  udf        #0
+015c  udf        #0
+0160  udf        #0
+0164  udf        #0
+0168  udf        #0
+016c  udf        #0
+0170  ldp        x2, x6, [x28, #0x18]
+0174  eor        x5, x0, x0, lsr #13
+0178  and        x5, x5, x6
+017c  add        x3, x2, x5, lsl #5
+0180  ldp        x4, x16, [x3]
+0184  sub        x4, x4, x0
+0188  cbnz       x4, #0x1b0
+018c  ldr        w4, [x3, #0x10]
+0190  add        w4, w4, #1
+0194  cbz        w4, #0x1ac
+0198  ldr        x2, #0x168
+019c  cbz        x2, #0x1ac
+01a0  ubfx       x5, x0, #2, #4
+01a4  add        x2, x2, x5, lsl #4
+01a8  stp        x0, x16, [x2]
+01ac  br         x16
+01b0  ldrb       w4, [x3, #0x18]
+01b4  cbz        w4, #0x1c4
+01b8  add        x5, x5, #1
+01bc  and        x5, x5, x6
+01c0  b          #0x17c
+01c4  ldr        x16, #0x1d0
+01c8  br         x16
+01cc  nop        

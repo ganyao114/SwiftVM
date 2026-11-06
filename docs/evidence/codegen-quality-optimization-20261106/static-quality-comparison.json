@@ -1,0 +1,100 @@
+[
+  {
+    "case": "int",
+    "scope": "block",
+    "before_words": 47,
+    "after_words": 43,
+    "summary": "native valid=1 words=43 frame=0 spills=0 nodes=40"
+  },
+  {
+    "case": "int",
+    "scope": "function",
+    "before_words": 47,
+    "after_words": 43,
+    "summary": "native valid=1 words=43 frame=0 spills=0 nodes=40"
+  },
+  {
+    "case": "mem-stream",
+    "scope": "block",
+    "before_words": 59,
+    "after_words": 55,
+    "summary": "native valid=1 words=55 frame=0 spills=0 nodes=33"
+  },
+  {
+    "case": "mem-stream",
+    "scope": "function",
+    "before_words": 59,
+    "after_words": 55,
+    "summary": "native valid=1 words=55 frame=0 spills=0 nodes=33"
+  },
+  {
+    "case": "mem-rmw",
+    "scope": "block",
+    "before_words": 54,
+    "after_words": 54,
+    "summary": "native valid=1 words=54 frame=0 spills=0 nodes=24"
+  },
+  {
+    "case": "mem-rmw",
+    "scope": "function",
+    "before_words": 54,
+    "after_words": 54,
+    "summary": "native valid=1 words=54 frame=0 spills=0 nodes=24"
+  },
+  {
+    "case": "mem-tail",
+    "scope": "block",
+    "before_words": 51,
+    "after_words": 49,
+    "summary": "native valid=1 words=49 frame=0 spills=0 nodes=29"
+  },
+  {
+    "case": "mem-tail",
+    "scope": "function",
+    "before_words": 51,
+    "after_words": 49,
+    "summary": "native valid=1 words=49 frame=0 spills=0 nodes=29"
+  },
+  {
+    "case": "mem-chase",
+    "scope": "block",
+    "before_words": 69,
+    "after_words": 69,
+    "summary": "native valid=1 words=69 frame=0 spills=0 nodes=41"
+  },
+  {
+    "case": "mem-chase",
+    "scope": "function",
+    "before_words": 69,
+    "after_words": 69,
+    "summary": "native valid=1 words=69 frame=0 spills=0 nodes=41"
+  },
+  {
+    "case": "fp",
+    "scope": "block",
+    "before_words": 69,
+    "after_words": 69,
+    "summary": "native valid=1 words=69 frame=0 spills=0 nodes=72"
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "before_words": 69,
+    "after_words": 69,
+    "summary": "native valid=1 words=69 frame=0 spills=0 nodes=72"
+  },
+  {
+    "case": "call-leaf",
+    "scope": "block",
+    "before_words": 123,
+    "after_words": 121,
+    "summary": "native valid=1 words=121 frame=0 spills=0 nodes=17"
+  },
+  {
+    "case": "call-leaf",
+    "scope": "function",
+    "before_words": 123,
+    "after_words": 121,
+    "summary": "native valid=1 words=121 frame=0 spills=0 nodes=17"
+  }
+]

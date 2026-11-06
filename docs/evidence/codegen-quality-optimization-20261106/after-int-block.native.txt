@@ -1,0 +1,24 @@
+0000  mul        x2, x20, x26
+0004  add        x14, x2, x8
+0008  eor        x3, x10, x10, lsl #13
+000c  eor        x4, x3, x3, lsr #7
+0010  eor        x11, x4, x4, lsl #17
+0014  add        x2, x11, x22
+0018  eor        x20, x14, x2, lsr #32
+001c  lsr        x3, x20, #0xb
+0020  eor        x23, x3, x2, lsl #5
+0024  add        x2, x9, x11
+0028  add        x10, x2, x23
+002c  add        x21, x21, #3
+0030  mov        x17, #-3
+0034  adds       x9, x9, x17
+0038  mov        w29, w27
+003c  cfinv      
+0040  mrs        x30, nzcv
+0044  subs       x27, x27, #1
+0048  rmif       x30, #0x1c, #2
+004c  mov        x1, x27
+0050  b.ne       #0x88
+0054  ldr        x16, #0x60
+0058  br         x16
+005c  nop        

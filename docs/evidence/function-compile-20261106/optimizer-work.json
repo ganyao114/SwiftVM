@@ -1,0 +1,162 @@
+[
+  {
+    "case": "coremark",
+    "scope": "function",
+    "final_walks_skipped": [
+      451
+    ],
+    "copy_forwarded": [
+      652
+    ]
+  },
+  {
+    "case": "coremark",
+    "scope": "block",
+    "final_walks_skipped": [
+      1651
+    ],
+    "copy_forwarded": [
+      462
+    ]
+  },
+  {
+    "case": "int",
+    "scope": "function",
+    "final_walks_skipped": [
+      22
+    ],
+    "copy_forwarded": [
+      9
+    ]
+  },
+  {
+    "case": "int",
+    "scope": "block",
+    "final_walks_skipped": [
+      24
+    ],
+    "copy_forwarded": [
+      7
+    ]
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "final_walks_skipped": [
+      24
+    ],
+    "copy_forwarded": [
+      67
+    ]
+  },
+  {
+    "case": "fp",
+    "scope": "block",
+    "final_walks_skipped": [
+      27
+    ],
+    "copy_forwarded": [
+      35
+    ]
+  },
+  {
+    "case": "mem",
+    "scope": "function",
+    "final_walks_skipped": [
+      24
+    ],
+    "copy_forwarded": [
+      39
+    ]
+  },
+  {
+    "case": "mem",
+    "scope": "block",
+    "final_walks_skipped": [
+      27
+    ],
+    "copy_forwarded": [
+      26
+    ]
+  },
+  {
+    "case": "branch",
+    "scope": "function",
+    "final_walks_skipped": [
+      22
+    ],
+    "copy_forwarded": [
+      17
+    ]
+  },
+  {
+    "case": "branch",
+    "scope": "block",
+    "final_walks_skipped": [
+      24
+    ],
+    "copy_forwarded": [
+      10
+    ]
+  },
+  {
+    "case": "call",
+    "scope": "function",
+    "final_walks_skipped": [
+      29
+    ],
+    "copy_forwarded": [
+      12
+    ]
+  },
+  {
+    "case": "call",
+    "scope": "block",
+    "final_walks_skipped": [
+      30
+    ],
+    "copy_forwarded": [
+      10
+    ]
+  },
+  {
+    "case": "func_tests",
+    "scope": "function",
+    "final_walks_skipped": [
+      221
+    ],
+    "copy_forwarded": [
+      281
+    ]
+  },
+  {
+    "case": "func_tests",
+    "scope": "block",
+    "final_walks_skipped": [
+      957
+    ],
+    "copy_forwarded": [
+      182
+    ]
+  },
+  {
+    "case": "x87_bench",
+    "scope": "function",
+    "final_walks_skipped": [
+      1
+    ],
+    "copy_forwarded": [
+      0
+    ]
+  },
+  {
+    "case": "x87_bench",
+    "scope": "block",
+    "final_walks_skipped": [
+      3
+    ],
+    "copy_forwarded": [
+      0
+    ]
+  }
+]

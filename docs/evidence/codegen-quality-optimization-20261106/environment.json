@@ -1,0 +1,19 @@
+{
+  "PATH": "/system/bin:/data/local/tmp/swiftvm-codegen-quality-20261106",
+  "FEX_APP_DATA_LOCATION": "/data/local/tmp/swiftvm-codegen-quality-20261106/fex-data/",
+  "FEX_APP_CONFIG_LOCATION": "/data/local/tmp/swiftvm-codegen-quality-20261106/fex-config/",
+  "FEX_SERVERSOCKETPATH": "/data/local/tmp/swiftvm-codegen-quality-20261106/fex.sock",
+  "XDG_RUNTIME_DIR": "/data/local/tmp/swiftvm-codegen-quality-20261106/fex-tmp",
+  "FEX_ROOTFS": "/",
+  "FEX_HOSTFEATURES": "disableavx",
+  "FEX_PORTABLE": "1",
+  "FEX_CACHEOBJECTCODECOMPILATION": "0",
+  "FEX_AOTIRLOAD": "0",
+  "FEX_AOTIRCAPTURE": "0",
+  "FEX_AOTIRGENERATE": "0",
+  "FEX_TSOAUTOMIGRATION": "0",
+  "FEX_TSOENABLED": "1",
+  "FEX_VECTORTSOENABLED": "1",
+  "FEX_MEMCPYSETTSOENABLED": "1",
+  "FEX_HALFBARRIERTSOENABLED": "1"
+}

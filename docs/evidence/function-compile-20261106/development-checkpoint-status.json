@@ -1,0 +1,11 @@
+{
+  "utc": "2026-11-06T13:24:47.369493+00:00",
+  "compile_samples": 200,
+  "all_compile_valid": true,
+  "runtime_samples": 0,
+  "status": "compile-only development checkpoint; not accepted as an optimization",
+  "reason": "Whole compile did not improve despite stable-walk hit. Preserving all200 samples and snapshot; profile formation, IR birth, optimizer internals before further real source change.",
+  "baseline_function_median_ns": 578645,
+  "candidate_function_median_ns": 590158,
+  "fex_median_ns": 292708.3333333333
+}

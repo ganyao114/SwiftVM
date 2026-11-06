@@ -1,0 +1,50 @@
+0000  fmul       v23.2d, v23.2d, v22.2d
+0004  mov        w2, #0x16e0
+0008  movk       w2, #0x40, lsl #16
+000c  ldr        q26, [x2]
+0010  dmb        ishld
+0014  fadd       v2.2d, v23.2d, v26.2d
+0018  fcmgt      v3.2d, v2.2d, v24.2d
+001c  and        v4.16b, v25.16b, v3.16b
+0020  bic        v5.16b, v2.16b, v3.16b
+0024  orr        v23.16b, v5.16b, v4.16b
+0028  fmul       v2.2d, v21.2d, v20.2d
+002c  fadd       v3.2d, v2.2d, v26.2d
+0030  fcmgt      v2.2d, v3.2d, v24.2d
+0034  and        v4.16b, v25.16b, v2.16b
+0038  bic        v5.16b, v3.16b, v2.16b
+003c  orr        v21.16b, v5.16b, v4.16b
+0040  fmul       v2.4s, v19.4s, v18.4s
+0044  fadd       v3.4s, v2.4s, v29.4s
+0048  fcmgt      v2.4s, v3.4s, v31.4s
+004c  and        v4.16b, v29.16b, v2.16b
+0050  bic        v5.16b, v3.16b, v2.16b
+0054  orr        v19.16b, v5.16b, v4.16b
+0058  fmul       v2.4s, v17.4s, v16.4s
+005c  fadd       v3.4s, v2.4s, v29.4s
+0060  fcmgt      v2.4s, v3.4s, v31.4s
+0064  and        v28.16b, v29.16b, v2.16b
+0068  bic        v27.16b, v3.16b, v2.16b
+006c  orr        v17.16b, v27.16b, v28.16b
+0070  mov        w2, #0x16f0
+0074  movk       w2, #0x40, lsl #16
+0078  ldr        q26, [x2]
+007c  dmb        ishld
+0080  fmul       v22.2d, v22.2d, v26.2d
+0084  mov        w2, #0x1700
+0088  movk       w2, #0x40, lsl #16
+008c  ldr        q27, [x2]
+0090  dmb        ishld
+0094  fadd       v22.2d, v22.2d, v27.2d
+0098  fmul       v2.2d, v20.2d, v26.2d
+009c  fadd       v20.2d, v2.2d, v27.2d
+00a0  fmul       v18.4s, v18.4s, v30.4s
+00a4  fmul       v16.4s, v16.4s, v30.4s
+00a8  mov        w29, w27
+00ac  mrs        x30, nzcv
+00b0  subs       x27, x27, #1
+00b4  rmif       x30, #0x1c, #2
+00b8  mov        x1, x27
+00bc  b.eq       #0xf0
+00c0  ldr        x16, #0xc8
+00c4  br         x16

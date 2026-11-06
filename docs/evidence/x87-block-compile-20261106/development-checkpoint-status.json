@@ -1,0 +1,12 @@
+{
+  "complete_compile_samples": 200,
+  "all_compile_valid": true,
+  "runtime_samples": 0,
+  "planned_runtime_not_run": true,
+  "reason": "A further production change removes per-request short decode/slice heap allocations. This is a compile-only development checkpoint, not a completed benchmark campaign or proof of the 2x goal. All 200 compile samples are retained and will not be pooled or substituted.",
+  "x87_block_compile_median_ns": 613436,
+  "fex_compile_median_ns": 295468.75,
+  "ratio": 2.0761451084082494,
+  "goal_met": false,
+  "next_source_snapshot_directory": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/x87-block-compile-final-20261106"
+}

@@ -1,0 +1,22 @@
+{
+  "created_utc": "2026-11-06T16:02:11.313958+00:00",
+  "base_commit": "ebf557408e14aef165b28bd7f0f3ebfc0ae3e918",
+  "implementation_commit": "f3f236a5beb6b76581a3c81c028612c6fb436690",
+  "branch": "refactor/middle-pipeline-rebuild-parity",
+  "measured_source_digest": "166aeaed5d886c5da6d7c23eb3da663a4bfa788fc0957c884ae016ef943cc959",
+  "source_files": 282,
+  "committed_files_match_measured_snapshot": true,
+  "measured_runner_sha256": "7b1799033060b8f00ecc6b437b363c26ee30a94f04f7fea68976fa549be5f86a",
+  "measurement_state": "uncommitted snapshot at measurement time; original manifests retained unchanged",
+  "runtime_samples": 200,
+  "compile_samples": 200,
+  "median_gates_passed": 47,
+  "median_gates_total": 48,
+  "remaining_limits": {
+    "x87_function_mean_vs_fex": 2.041723896343337,
+    "x87_function_max_ms": 0.834165,
+    "x87_block_median_vs_fex": 2.0464923863055695,
+    "x87_function_engineering_target_ms": 0.5,
+    "engineering_target_met": false
+  }
+}

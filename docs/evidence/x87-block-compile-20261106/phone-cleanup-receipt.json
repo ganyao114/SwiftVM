@@ -1,0 +1,10 @@
+{
+  "utc": "2026-11-06T12:23:35.601529+00:00",
+  "namespace": "/data/local/tmp/swiftvm-x87-block-final-20261106",
+  "allocated_bytes_removed": 63632384,
+  "df_actual_free_delta_bytes": 66969600,
+  "remaining_bytes": 0,
+  "active_processes": [],
+  "open_files": [],
+  "errors": []
+}

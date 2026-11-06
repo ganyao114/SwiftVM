@@ -1,0 +1,338 @@
+[
+  {
+    "case": "coremark",
+    "scope": "block",
+    "compile_ms": 42.435255,
+    "baseline_compile_ms": 42.132333,
+    "fex_compile_ms": 47.47645833333333,
+    "compile_vs_baseline": 1.0071897751306578,
+    "compile_vs_fex": 0.8938167776134662,
+    "runtime_seconds": 16.112,
+    "runtime_vs_baseline": 0.9996277453778384,
+    "runtime_vs_fex": 1.0712053719832457,
+    "cycles_vs_baseline": 0.9997646388205736,
+    "cycles_vs_fex": 1.0707588189007342,
+    "instructions_vs_baseline": 0.9999754507607758,
+    "instructions_vs_fex": 1.0377921025123453,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "coremark",
+    "scope": "function",
+    "compile_ms": 51.945773,
+    "baseline_compile_ms": 51.325924,
+    "fex_compile_ms": 47.47645833333333,
+    "compile_vs_baseline": 1.0120767236455404,
+    "compile_vs_fex": 1.0941374909494619,
+    "runtime_seconds": 15.786,
+    "runtime_vs_baseline": 1.0078529017429612,
+    "runtime_vs_fex": 1.049531281164816,
+    "cycles_vs_baseline": 1.0071852975994229,
+    "cycles_vs_fex": 1.0492004940537911,
+    "instructions_vs_baseline": 0.9999751973130728,
+    "instructions_vs_fex": 1.009919422295908,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "int",
+    "scope": "block",
+    "compile_ms": 1.909341,
+    "baseline_compile_ms": 1.996207,
+    "fex_compile_ms": 1.5033333333333332,
+    "compile_vs_baseline": 0.9564844728026702,
+    "compile_vs_fex": 1.2700716186252772,
+    "runtime_seconds": 0.233436,
+    "runtime_vs_baseline": 0.7736739536795217,
+    "runtime_vs_fex": 0.7405964467005077,
+    "cycles_vs_baseline": 0.7083106526356983,
+    "cycles_vs_fex": 0.7029292580345875,
+    "instructions_vs_baseline": 0.8300376822242622,
+    "instructions_vs_fex": 1.0161392217027252,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "int",
+    "scope": "function",
+    "compile_ms": 1.953179,
+    "baseline_compile_ms": 1.85921,
+    "fex_compile_ms": 1.5033333333333332,
+    "compile_vs_baseline": 1.0505424346900027,
+    "compile_vs_fex": 1.2992321507760534,
+    "runtime_seconds": 0.230381,
+    "runtime_vs_baseline": 0.760692339949217,
+    "runtime_vs_fex": 0.730904187817259,
+    "cycles_vs_baseline": 0.7084143689709079,
+    "cycles_vs_fex": 0.7030136904717761,
+    "instructions_vs_baseline": 0.8027525942942652,
+    "instructions_vs_fex": 1.0161468681153287,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "fp",
+    "scope": "block",
+    "compile_ms": 2.450612,
+    "baseline_compile_ms": 2.568122,
+    "fex_compile_ms": 1.6611458333333333,
+    "compile_vs_baseline": 0.9542428280276405,
+    "compile_vs_fex": 1.475253978804791,
+    "runtime_seconds": 0.249941,
+    "runtime_vs_baseline": 0.9971514631665037,
+    "runtime_vs_fex": 0.9470618994210191,
+    "cycles_vs_baseline": 0.9991563360704585,
+    "cycles_vs_fex": 0.9833743608761505,
+    "instructions_vs_baseline": 0.9999867091061284,
+    "instructions_vs_fex": 0.9902273662405717,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "compile_ms": 2.632565,
+    "baseline_compile_ms": 2.487831,
+    "fex_compile_ms": 1.6611458333333333,
+    "compile_vs_baseline": 1.058176781300659,
+    "compile_vs_fex": 1.5847886122781716,
+    "runtime_seconds": 0.249111,
+    "runtime_vs_baseline": 0.9933606086706862,
+    "runtime_vs_fex": 0.9439169116978388,
+    "cycles_vs_baseline": 0.9976625940073954,
+    "cycles_vs_fex": 0.9831081609108006,
+    "instructions_vs_baseline": 0.9849841431667486,
+    "instructions_vs_fex": 0.9902451885170718,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "mem",
+    "scope": "block",
+    "compile_ms": 2.23333,
+    "baseline_compile_ms": 2.243116,
+    "fex_compile_ms": 1.5754166666666667,
+    "compile_vs_baseline": 0.9956373188011677,
+    "compile_vs_fex": 1.4176122718857445,
+    "runtime_seconds": 2.142269,
+    "runtime_vs_baseline": 0.9965863527612258,
+    "runtime_vs_fex": 1.0440797826325345,
+    "cycles_vs_baseline": 0.9968600508896929,
+    "cycles_vs_fex": 1.0513562781805885,
+    "instructions_vs_baseline": 0.9416268502430809,
+    "instructions_vs_fex": 1.2548655565350204,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "mem",
+    "scope": "function",
+    "compile_ms": 2.362329,
+    "baseline_compile_ms": 2.395869,
+    "fex_compile_ms": 1.5754166666666667,
+    "compile_vs_baseline": 0.9860009040561066,
+    "compile_vs_fex": 1.4994947368421052,
+    "runtime_seconds": 2.134359,
+    "runtime_vs_baseline": 0.9792510769261826,
+    "runtime_vs_fex": 1.0402246780305338,
+    "cycles_vs_baseline": 0.9824849588216907,
+    "cycles_vs_fex": 1.0464666408127996,
+    "instructions_vs_baseline": 0.9185714853117104,
+    "instructions_vs_fex": 1.2548684142447222,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "branch",
+    "scope": "block",
+    "compile_ms": 1.933282,
+    "baseline_compile_ms": 1.85927,
+    "fex_compile_ms": 1.4988541666666668,
+    "compile_vs_baseline": 1.0398070210351373,
+    "compile_vs_fex": 1.2898399610813815,
+    "runtime_seconds": 0.253696,
+    "runtime_vs_baseline": 0.9852157062247818,
+    "runtime_vs_fex": 0.9461608461504035,
+    "cycles_vs_baseline": 0.9800811066710292,
+    "cycles_vs_fex": 0.9819594147658341,
+    "instructions_vs_baseline": 0.9480050768486936,
+    "instructions_vs_fex": 1.0785165143310596,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "branch",
+    "scope": "function",
+    "compile_ms": 1.949677,
+    "baseline_compile_ms": 1.926816,
+    "fex_compile_ms": 1.4988541666666668,
+    "compile_vs_baseline": 1.0118646513211433,
+    "compile_vs_fex": 1.3007783167697546,
+    "runtime_seconds": 0.2544,
+    "runtime_vs_baseline": 0.9779725521854459,
+    "runtime_vs_fex": 0.9487864186296303,
+    "cycles_vs_baseline": 0.9731506995217601,
+    "cycles_vs_fex": 0.9819793020313395,
+    "instructions_vs_baseline": 0.9318545265229258,
+    "instructions_vs_fex": 1.078522121992427,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "call",
+    "scope": "block",
+    "compile_ms": 2.060924,
+    "baseline_compile_ms": 1.911298,
+    "fex_compile_ms": 1.6808333333333332,
+    "compile_vs_baseline": 1.0782850188719917,
+    "compile_vs_fex": 1.2261322756569164,
+    "runtime_seconds": 0.468633,
+    "runtime_vs_baseline": 0.9763634999937497,
+    "runtime_vs_fex": 1.0232384986571759,
+    "cycles_vs_baseline": 0.9714058000222348,
+    "cycles_vs_fex": 1.0455726705363153,
+    "instructions_vs_baseline": 0.9778235410668363,
+    "instructions_vs_fex": 1.2130912515490917,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "call",
+    "scope": "function",
+    "compile_ms": 2.009221,
+    "baseline_compile_ms": 1.882127,
+    "fex_compile_ms": 1.6808333333333332,
+    "compile_vs_baseline": 1.0675267928253513,
+    "compile_vs_fex": 1.1953719385225585,
+    "runtime_seconds": 0.468349,
+    "runtime_vs_baseline": 0.9801377029968191,
+    "runtime_vs_fex": 1.022618397781611,
+    "cycles_vs_baseline": 0.9762787440215726,
+    "cycles_vs_fex": 1.0457979997686737,
+    "instructions_vs_baseline": 0.9706482158529561,
+    "instructions_vs_fex": 1.2130928197161936,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "func_tests",
+    "scope": "block",
+    "compile_ms": 21.41195,
+    "baseline_compile_ms": 21.023601,
+    "fex_compile_ms": 30.19052083333333,
+    "compile_vs_baseline": 1.018472049578947,
+    "compile_vs_fex": 0.709227579020733,
+    "runtime_seconds": 0.108437,
+    "runtime_vs_baseline": 0.9911521411270052,
+    "runtime_vs_fex": 0.7705541264585081,
+    "cycles_vs_baseline": 1.0048714503675094,
+    "cycles_vs_fex": 0.7837862539055506,
+    "instructions_vs_baseline": 1.0001198600939236,
+    "instructions_vs_fex": 0.7886272430319556,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "func_tests",
+    "scope": "function",
+    "compile_ms": 33.38007,
+    "baseline_compile_ms": 33.123223,
+    "fex_compile_ms": 30.19052083333333,
+    "compile_vs_baseline": 1.0077542876790704,
+    "compile_vs_fex": 1.105647371381056,
+    "runtime_seconds": 0.121277,
+    "runtime_vs_baseline": 1.0090692004958939,
+    "runtime_vs_fex": 0.8617952617142532,
+    "cycles_vs_baseline": 1.008395701119864,
+    "cycles_vs_fex": 0.9706261245301725,
+    "instructions_vs_baseline": 1.000252283393437,
+    "instructions_vs_fex": 1.040218063396557,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  },
+  {
+    "case": "x87_bench",
+    "scope": "block",
+    "compile_ms": 0.677291,
+    "baseline_compile_ms": 0.667922,
+    "fex_compile_ms": 0.29651041666666667,
+    "compile_vs_baseline": 1.014027086995188,
+    "compile_vs_fex": 2.2842064289478308,
+    "runtime_seconds": 0.607976,
+    "runtime_vs_baseline": 1.0281570571901115,
+    "runtime_vs_fex": 0.7071815492772622,
+    "cycles_vs_baseline": 1.0294829887662618,
+    "cycles_vs_fex": 0.6945168049058911,
+    "instructions_vs_baseline": 0.9999992611295954,
+    "instructions_vs_fex": 1.3753599495281188,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": false
+    }
+  },
+  {
+    "case": "x87_bench",
+    "scope": "function",
+    "compile_ms": 0.566303,
+    "baseline_compile_ms": 0.585778,
+    "fex_compile_ms": 0.29651041666666667,
+    "compile_vs_baseline": 0.9667536165578086,
+    "compile_vs_fex": 1.9098924292991393,
+    "runtime_seconds": 0.598357,
+    "runtime_vs_baseline": 1.0118936488287302,
+    "runtime_vs_fex": 0.6959929837376719,
+    "cycles_vs_baseline": 1.0153274084699244,
+    "cycles_vs_fex": 0.6838027082903647,
+    "instructions_vs_baseline": 0.999999257877153,
+    "instructions_vs_fex": 1.3725064243385863,
+    "gates": {
+      "time": true,
+      "cycles": true,
+      "compile": true
+    }
+  }
+]

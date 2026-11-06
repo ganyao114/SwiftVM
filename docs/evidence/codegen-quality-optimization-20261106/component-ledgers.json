@@ -1,0 +1,3842 @@
+[
+  {
+    "case": "coremark",
+    "arm": "fex",
+    "round": 0,
+    "prefix": "compile-coremark-fex-0",
+    "total_ms": 47.47645833333333,
+    "exclusive_ms": {
+      "formation_and_ir": 22.183489583333333,
+      "ir_optimization": 6.848020833333333,
+      "allocation_and_encoding": 14.006614583333333,
+      "transfer_and_publication": 3.38546875,
+      "logical_work_buffer_release": 0.34317708333333335,
+      "other": 0.7096875
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 425923,
+      "ir_optimization": 131482,
+      "allocation_and_encoding": 268927,
+      "transfer_and_publication": 65001,
+      "logical_work_buffer_release": 6589,
+      "other": 13626
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 255,
+    "byte_decode_calls": 29915,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-block",
+    "round": 0,
+    "prefix": "compile-coremark-baseline-block-0",
+    "total_ms": 42.2618,
+    "exclusive_ms": {
+      "formation_and_ir": 11.574422,
+      "ir_optimization": 8.534122,
+      "allocation_and_encoding": 13.959698,
+      "transfer_and_publication": 5.949662,
+      "native_owner_release": 0.499115,
+      "other": 1.7447810000000032
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010468
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-function",
+    "round": 0,
+    "prefix": "compile-coremark-baseline-function-0",
+    "total_ms": 51.159866,
+    "exclusive_ms": {
+      "formation_and_ir": 16.950743,
+      "ir_optimization": 12.146925,
+      "allocation_and_encoding": 17.087852,
+      "transfer_and_publication": 3.991659,
+      "native_owner_release": 0.333646,
+      "other": 0.649041000000004
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010834
+  },
+  {
+    "case": "coremark",
+    "arm": "block",
+    "round": 0,
+    "prefix": "compile-coremark-block-0",
+    "total_ms": 42.198084,
+    "exclusive_ms": {
+      "formation_and_ir": 11.440545,
+      "ir_optimization": 8.66143,
+      "allocation_and_encoding": 14.07167,
+      "transfer_and_publication": 6.053437,
+      "native_owner_release": 0.418645,
+      "other": 1.5523570000000007
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010677
+  },
+  {
+    "case": "coremark",
+    "arm": "function",
+    "round": 0,
+    "prefix": "compile-coremark-function-0",
+    "total_ms": 52.296423,
+    "exclusive_ms": {
+      "formation_and_ir": 17.441825,
+      "ir_optimization": 11.57829,
+      "allocation_and_encoding": 17.990316,
+      "transfer_and_publication": 4.10031,
+      "native_owner_release": 0.335572,
+      "other": 0.8501099999999937
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010625
+  },
+  {
+    "case": "int",
+    "arm": "fex",
+    "round": 0,
+    "prefix": "compile-int-fex-0",
+    "total_ms": 1.5033333333333332,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7853125,
+      "ir_optimization": 0.19052083333333333,
+      "allocation_and_encoding": 0.43864583333333335,
+      "transfer_and_publication": 0.07166666666666667,
+      "logical_work_buffer_release": 0.005364583333333333,
+      "other": 0.011822916666666667
+    },
+    "closure_error_ms": 2.220446049250313e-16,
+    "exclusive_ticks": {
+      "formation_and_ir": 15078,
+      "ir_optimization": 3658,
+      "allocation_and_encoding": 8422,
+      "transfer_and_publication": 1376,
+      "logical_work_buffer_release": 103,
+      "other": 227
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "int",
+    "arm": "baseline-block",
+    "round": 0,
+    "prefix": "compile-int-baseline-block-0",
+    "total_ms": 1.895396,
+    "exclusive_ms": {
+      "formation_and_ir": 0.745195,
+      "ir_optimization": 0.293851,
+      "allocation_and_encoding": 0.411303,
+      "transfer_and_publication": 0.329113,
+      "native_owner_release": 0.067968,
+      "other": 0.047966000000000175
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013698
+  },
+  {
+    "case": "int",
+    "arm": "baseline-function",
+    "round": 0,
+    "prefix": "compile-int-baseline-function-0",
+    "total_ms": 2.152486,
+    "exclusive_ms": {
+      "formation_and_ir": 1.05785,
+      "ir_optimization": 0.274274,
+      "allocation_and_encoding": 0.396876,
+      "transfer_and_publication": 0.32302,
+      "native_owner_release": 0.053854,
+      "other": 0.0466120000000001
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013074
+  },
+  {
+    "case": "int",
+    "arm": "block",
+    "round": 0,
+    "prefix": "compile-int-block-0",
+    "total_ms": 2.051767,
+    "exclusive_ms": {
+      "formation_and_ir": 0.875775,
+      "ir_optimization": 0.279218,
+      "allocation_and_encoding": 0.414685,
+      "transfer_and_publication": 0.33812,
+      "native_owner_release": 0.097656,
+      "other": 0.04631300000000005
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013177
+  },
+  {
+    "case": "int",
+    "arm": "function",
+    "round": 0,
+    "prefix": "compile-int-function-0",
+    "total_ms": 1.795159,
+    "exclusive_ms": {
+      "formation_and_ir": 0.702505,
+      "ir_optimization": 0.256974,
+      "allocation_and_encoding": 0.401668,
+      "transfer_and_publication": 0.330361,
+      "native_owner_release": 0.058959,
+      "other": 0.044691999999999954
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.0125
+  },
+  {
+    "case": "fp",
+    "arm": "fex",
+    "round": 0,
+    "prefix": "compile-fp-fex-0",
+    "total_ms": 1.6275520833333332,
+    "exclusive_ms": {
+      "formation_and_ir": 0.83859375,
+      "ir_optimization": 0.20510416666666667,
+      "allocation_and_encoding": 0.49020833333333336,
+      "transfer_and_publication": 0.07697916666666667,
+      "logical_work_buffer_release": 0.0053125,
+      "other": 0.011354166666666667
+    },
+    "closure_error_ms": 2.220446049250313e-16,
+    "exclusive_ticks": {
+      "formation_and_ir": 16101,
+      "ir_optimization": 3938,
+      "allocation_and_encoding": 9412,
+      "transfer_and_publication": 1478,
+      "logical_work_buffer_release": 102,
+      "other": 218
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 973,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-block",
+    "round": 0,
+    "prefix": "compile-fp-baseline-block-0",
+    "total_ms": 2.541879,
+    "exclusive_ms": {
+      "formation_and_ir": 0.921826,
+      "ir_optimization": 0.425209,
+      "allocation_and_encoding": 0.708384,
+      "transfer_and_publication": 0.389789,
+      "native_owner_release": 0.048177,
+      "other": 0.04849400000000026
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011771
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-function",
+    "round": 0,
+    "prefix": "compile-fp-baseline-function-0",
+    "total_ms": 2.427385,
+    "exclusive_ms": {
+      "formation_and_ir": 0.91973,
+      "ir_optimization": 0.421043,
+      "allocation_and_encoding": 0.625678,
+      "transfer_and_publication": 0.343334,
+      "native_owner_release": 0.068073,
+      "other": 0.04952700000000032
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013073
+  },
+  {
+    "case": "fp",
+    "arm": "block",
+    "round": 0,
+    "prefix": "compile-fp-block-0",
+    "total_ms": 2.515638,
+    "exclusive_ms": {
+      "formation_and_ir": 0.981778,
+      "ir_optimization": 0.410941,
+      "allocation_and_encoding": 0.654012,
+      "transfer_and_publication": 0.347813,
+      "native_owner_release": 0.069947,
+      "other": 0.05114699999999983
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012761
+  },
+  {
+    "case": "fp",
+    "arm": "function",
+    "round": 0,
+    "prefix": "compile-fp-function-0",
+    "total_ms": 2.447183,
+    "exclusive_ms": {
+      "formation_and_ir": 0.920206,
+      "ir_optimization": 0.429427,
+      "allocation_and_encoding": 0.628751,
+      "transfer_and_publication": 0.353282,
+      "native_owner_release": 0.068489,
+      "other": 0.04702800000000007
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011458
+  },
+  {
+    "case": "mem",
+    "arm": "fex",
+    "round": 0,
+    "prefix": "compile-mem-fex-0",
+    "total_ms": 1.5754166666666667,
+    "exclusive_ms": {
+      "formation_and_ir": 0.79890625,
+      "ir_optimization": 0.19869791666666667,
+      "allocation_and_encoding": 0.47703125,
+      "transfer_and_publication": 0.08375,
+      "logical_work_buffer_release": 0.005260416666666667,
+      "other": 0.011770833333333333
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 15339,
+      "ir_optimization": 3815,
+      "allocation_and_encoding": 9159,
+      "transfer_and_publication": 1608,
+      "logical_work_buffer_release": 101,
+      "other": 226
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 848,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-block",
+    "round": 0,
+    "prefix": "compile-mem-baseline-block-0",
+    "total_ms": 2.168127,
+    "exclusive_ms": {
+      "formation_and_ir": 0.829428,
+      "ir_optimization": 0.331092,
+      "allocation_and_encoding": 0.516147,
+      "transfer_and_publication": 0.364066,
+      "native_owner_release": 0.072031,
+      "other": 0.05536300000000027
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014114
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-function",
+    "round": 0,
+    "prefix": "compile-mem-baseline-function-0",
+    "total_ms": 2.395869,
+    "exclusive_ms": {
+      "formation_and_ir": 0.91337,
+      "ir_optimization": 0.327602,
+      "allocation_and_encoding": 0.641982,
+      "transfer_and_publication": 0.376352,
+      "native_owner_release": 0.079479,
+      "other": 0.05708399999999969
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014897
+  },
+  {
+    "case": "mem",
+    "arm": "block",
+    "round": 0,
+    "prefix": "compile-mem-block-0",
+    "total_ms": 2.381511,
+    "exclusive_ms": {
+      "formation_and_ir": 0.886883,
+      "ir_optimization": 0.329844,
+      "allocation_and_encoding": 0.667656,
+      "transfer_and_publication": 0.366099,
+      "native_owner_release": 0.073593,
+      "other": 0.05743600000000004
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01448
+  },
+  {
+    "case": "mem",
+    "arm": "function",
+    "round": 0,
+    "prefix": "compile-mem-function-0",
+    "total_ms": 2.395376,
+    "exclusive_ms": {
+      "formation_and_ir": 1.042406,
+      "ir_optimization": 0.341563,
+      "allocation_and_encoding": 0.529686,
+      "transfer_and_publication": 0.362392,
+      "native_owner_release": 0.064427,
+      "other": 0.05490200000000023
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013594
+  },
+  {
+    "case": "branch",
+    "arm": "fex",
+    "round": 0,
+    "prefix": "compile-branch-fex-0",
+    "total_ms": 1.4925520833333332,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7622916666666667,
+      "ir_optimization": 0.18807291666666667,
+      "allocation_and_encoding": 0.45703125,
+      "transfer_and_publication": 0.06833333333333333,
+      "logical_work_buffer_release": 0.005104166666666667,
+      "other": 0.01171875
+    },
+    "closure_error_ms": 2.220446049250313e-16,
+    "exclusive_ticks": {
+      "formation_and_ir": 14636,
+      "ir_optimization": 3611,
+      "allocation_and_encoding": 8775,
+      "transfer_and_publication": 1312,
+      "logical_work_buffer_release": 98,
+      "other": 225
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 812,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-block",
+    "round": 0,
+    "prefix": "compile-branch-baseline-block-0",
+    "total_ms": 1.765835,
+    "exclusive_ms": {
+      "formation_and_ir": 0.701458,
+      "ir_optimization": 0.248071,
+      "allocation_and_encoding": 0.399689,
+      "transfer_and_publication": 0.324163,
+      "native_owner_release": 0.046823,
+      "other": 0.04563099999999998
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012238
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-function",
+    "round": 0,
+    "prefix": "compile-branch-baseline-function-0",
+    "total_ms": 1.926816,
+    "exclusive_ms": {
+      "formation_and_ir": 0.69604,
+      "ir_optimization": 0.405416,
+      "allocation_and_encoding": 0.416302,
+      "transfer_and_publication": 0.289587,
+      "native_owner_release": 0.074844,
+      "other": 0.044627000000000194
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011615
+  },
+  {
+    "case": "branch",
+    "arm": "block",
+    "round": 0,
+    "prefix": "compile-branch-block-0",
+    "total_ms": 1.885615,
+    "exclusive_ms": {
+      "formation_and_ir": 0.751453,
+      "ir_optimization": 0.25724,
+      "allocation_and_encoding": 0.442292,
+      "transfer_and_publication": 0.32297,
+      "native_owner_release": 0.062969,
+      "other": 0.04869100000000004
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.015313
+  },
+  {
+    "case": "branch",
+    "arm": "function",
+    "round": 0,
+    "prefix": "compile-branch-function-0",
+    "total_ms": 2.127456,
+    "exclusive_ms": {
+      "formation_and_ir": 0.730835,
+      "ir_optimization": 0.44104,
+      "allocation_and_encoding": 0.453336,
+      "transfer_and_publication": 0.392024,
+      "native_owner_release": 0.062396,
+      "other": 0.047825000000000006
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013386
+  },
+  {
+    "case": "call",
+    "arm": "fex",
+    "round": 0,
+    "prefix": "compile-call-fex-0",
+    "total_ms": 1.7280208333333333,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7898958333333334,
+      "ir_optimization": 0.20625,
+      "allocation_and_encoding": 0.6052083333333333,
+      "transfer_and_publication": 0.09713541666666667,
+      "logical_work_buffer_release": 0.008697916666666666,
+      "other": 0.020833333333333332
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 15166,
+      "ir_optimization": 3960,
+      "allocation_and_encoding": 11620,
+      "transfer_and_publication": 1865,
+      "logical_work_buffer_release": 167,
+      "other": 400
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 7,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "call",
+    "arm": "baseline-block",
+    "round": 0,
+    "prefix": "compile-call-baseline-block-0",
+    "total_ms": 1.911298,
+    "exclusive_ms": {
+      "formation_and_ir": 0.744586,
+      "ir_optimization": 0.2787,
+      "allocation_and_encoding": 0.430052,
+      "transfer_and_publication": 0.342291,
+      "native_owner_release": 0.063386,
+      "other": 0.05228300000000008
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013593
+  },
+  {
+    "case": "call",
+    "arm": "baseline-function",
+    "round": 0,
+    "prefix": "compile-call-baseline-function-0",
+    "total_ms": 1.975207,
+    "exclusive_ms": {
+      "formation_and_ir": 0.827813,
+      "ir_optimization": 0.265416,
+      "allocation_and_encoding": 0.425574,
+      "transfer_and_publication": 0.337923,
+      "native_owner_release": 0.066406,
+      "other": 0.05207499999999987
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012603
+  },
+  {
+    "case": "call",
+    "arm": "block",
+    "round": 0,
+    "prefix": "compile-call-block-0",
+    "total_ms": 2.075067,
+    "exclusive_ms": {
+      "formation_and_ir": 0.76631,
+      "ir_optimization": 0.284793,
+      "allocation_and_encoding": 0.543701,
+      "transfer_and_publication": 0.357913,
+      "native_owner_release": 0.071614,
+      "other": 0.050736000000000114
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01245
+  },
+  {
+    "case": "call",
+    "arm": "function",
+    "round": 0,
+    "prefix": "compile-call-function-0",
+    "total_ms": 2.009221,
+    "exclusive_ms": {
+      "formation_and_ir": 0.682026,
+      "ir_optimization": 0.372137,
+      "allocation_and_encoding": 0.452912,
+      "transfer_and_publication": 0.323122,
+      "native_owner_release": 0.083333,
+      "other": 0.09569100000000019
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01224
+  },
+  {
+    "case": "func_tests",
+    "arm": "fex",
+    "round": 0,
+    "prefix": "compile-func_tests-fex-0",
+    "total_ms": 29.429166666666667,
+    "exclusive_ms": {
+      "formation_and_ir": 13.742708333333333,
+      "ir_optimization": 4.383697916666667,
+      "allocation_and_encoding": 8.7996875,
+      "transfer_and_publication": 1.8370833333333334,
+      "logical_work_buffer_release": 0.20817708333333335,
+      "other": 0.4578125
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 263860,
+      "ir_optimization": 84167,
+      "allocation_and_encoding": 168954,
+      "transfer_and_publication": 35272,
+      "logical_work_buffer_release": 3997,
+      "other": 8790
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 180,
+    "byte_decode_calls": 17475,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-block",
+    "round": 0,
+    "prefix": "compile-func_tests-baseline-block-0",
+    "total_ms": 20.78685,
+    "exclusive_ms": {
+      "formation_and_ir": 5.416543,
+      "ir_optimization": 4.074266,
+      "allocation_and_encoding": 6.821791,
+      "transfer_and_publication": 3.234333,
+      "native_owner_release": 0.245312,
+      "other": 0.994605
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010105
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-function",
+    "round": 0,
+    "prefix": "compile-func_tests-baseline-function-0",
+    "total_ms": 32.329109,
+    "exclusive_ms": {
+      "formation_and_ir": 11.684893,
+      "ir_optimization": 6.598843,
+      "allocation_and_encoding": 10.28037,
+      "transfer_and_publication": 3.143535,
+      "native_owner_release": 0.262865,
+      "other": 0.3586030000000022
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011354
+  },
+  {
+    "case": "func_tests",
+    "arm": "block",
+    "round": 0,
+    "prefix": "compile-func_tests-block-0",
+    "total_ms": 21.359509,
+    "exclusive_ms": {
+      "formation_and_ir": 5.450038,
+      "ir_optimization": 4.143219,
+      "allocation_and_encoding": 6.890365,
+      "transfer_and_publication": 3.777778,
+      "native_owner_release": 0.240834,
+      "other": 0.8572749999999978
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010678
+  },
+  {
+    "case": "func_tests",
+    "arm": "function",
+    "round": 0,
+    "prefix": "compile-func_tests-function-0",
+    "total_ms": 32.710627,
+    "exclusive_ms": {
+      "formation_and_ir": 11.786203,
+      "ir_optimization": 6.730705,
+      "allocation_and_encoding": 10.27791,
+      "transfer_and_publication": 3.288682,
+      "native_owner_release": 0.273906,
+      "other": 0.3532209999999978
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013334
+  },
+  {
+    "case": "x87_bench",
+    "arm": "fex",
+    "round": 0,
+    "prefix": "compile-x87_bench-fex-0",
+    "total_ms": 0.29651041666666667,
+    "exclusive_ms": {
+      "formation_and_ir": 0.11369791666666666,
+      "ir_optimization": 0.043229166666666666,
+      "allocation_and_encoding": 0.11640625,
+      "transfer_and_publication": 0.01630208333333333,
+      "logical_work_buffer_release": 0.00203125,
+      "other": 0.00484375
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 2183,
+      "ir_optimization": 830,
+      "allocation_and_encoding": 2235,
+      "transfer_and_publication": 313,
+      "logical_work_buffer_release": 39,
+      "other": 93
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 1,
+    "byte_decode_calls": 22,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-block",
+    "round": 0,
+    "prefix": "compile-x87_bench-baseline-block-0",
+    "total_ms": 0.667922,
+    "exclusive_ms": {
+      "formation_and_ir": 0.232973,
+      "ir_optimization": 0.073907,
+      "allocation_and_encoding": 0.12922,
+      "transfer_and_publication": 0.162865,
+      "native_owner_release": 0.048281,
+      "other": 0.020676000000000028
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014167
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-function",
+    "round": 0,
+    "prefix": "compile-x87_bench-baseline-function-0",
+    "total_ms": 0.532085,
+    "exclusive_ms": {
+      "formation_and_ir": 0.222241,
+      "ir_optimization": 0.067604,
+      "allocation_and_encoding": 0.076771,
+      "transfer_and_publication": 0.058855,
+      "native_owner_release": 0.09125,
+      "other": 0.015364000000000044
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012657
+  },
+  {
+    "case": "x87_bench",
+    "arm": "block",
+    "round": 0,
+    "prefix": "compile-x87_bench-block-0",
+    "total_ms": 0.677291,
+    "exclusive_ms": {
+      "formation_and_ir": 0.267656,
+      "ir_optimization": 0.077604,
+      "allocation_and_encoding": 0.119219,
+      "transfer_and_publication": 0.14724,
+      "native_owner_release": 0.049271,
+      "other": 0.0163009999999999
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011094
+  },
+  {
+    "case": "x87_bench",
+    "arm": "function",
+    "round": 0,
+    "prefix": "compile-x87_bench-function-0",
+    "total_ms": 0.585781,
+    "exclusive_ms": {
+      "formation_and_ir": 0.263541,
+      "ir_optimization": 0.081354,
+      "allocation_and_encoding": 0.081615,
+      "transfer_and_publication": 0.065625,
+      "native_owner_release": 0.07875,
+      "other": 0.01489600000000002
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012188
+  },
+  {
+    "case": "coremark",
+    "arm": "function",
+    "round": 1,
+    "prefix": "compile-coremark-function-1",
+    "total_ms": 51.253157,
+    "exclusive_ms": {
+      "formation_and_ir": 17.211548,
+      "ir_optimization": 11.677963,
+      "allocation_and_encoding": 17.27196,
+      "transfer_and_publication": 4.199224,
+      "native_owner_release": 0.335313,
+      "other": 0.5571490000000026
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011927
+  },
+  {
+    "case": "coremark",
+    "arm": "fex",
+    "round": 1,
+    "prefix": "compile-coremark-fex-1",
+    "total_ms": 48.42234375,
+    "exclusive_ms": {
+      "formation_and_ir": 22.396354166666665,
+      "ir_optimization": 6.492864583333334,
+      "allocation_and_encoding": 14.25796875,
+      "transfer_and_publication": 4.163541666666666,
+      "logical_work_buffer_release": 0.34942708333333333,
+      "other": 0.7621875
+    },
+    "closure_error_ms": -7.105427357601002e-15,
+    "exclusive_ticks": {
+      "formation_and_ir": 430010,
+      "ir_optimization": 124663,
+      "allocation_and_encoding": 273753,
+      "transfer_and_publication": 79940,
+      "logical_work_buffer_release": 6709,
+      "other": 14634
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 255,
+    "byte_decode_calls": 29915,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-block",
+    "round": 1,
+    "prefix": "compile-coremark-baseline-block-1",
+    "total_ms": 42.132333,
+    "exclusive_ms": {
+      "formation_and_ir": 11.052856,
+      "ir_optimization": 8.405659,
+      "allocation_and_encoding": 14.523554,
+      "transfer_and_publication": 6.169603,
+      "native_owner_release": 0.420104,
+      "other": 1.5605570000000029
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011355
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-function",
+    "round": 1,
+    "prefix": "compile-coremark-baseline-function-1",
+    "total_ms": 50.931588,
+    "exclusive_ms": {
+      "formation_and_ir": 16.746755,
+      "ir_optimization": 11.880972,
+      "allocation_and_encoding": 17.414998,
+      "transfer_and_publication": 3.983796,
+      "native_owner_release": 0.340521,
+      "other": 0.564546
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011822
+  },
+  {
+    "case": "coremark",
+    "arm": "block",
+    "round": 1,
+    "prefix": "compile-coremark-block-1",
+    "total_ms": 42.662469,
+    "exclusive_ms": {
+      "formation_and_ir": 11.856346,
+      "ir_optimization": 8.562538,
+      "allocation_and_encoding": 14.176788,
+      "transfer_and_publication": 5.901883,
+      "native_owner_release": 0.60875,
+      "other": 1.5561640000000025
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011823
+  },
+  {
+    "case": "int",
+    "arm": "function",
+    "round": 1,
+    "prefix": "compile-int-function-1",
+    "total_ms": 2.057923,
+    "exclusive_ms": {
+      "formation_and_ir": 0.886574,
+      "ir_optimization": 0.274587,
+      "allocation_and_encoding": 0.405051,
+      "transfer_and_publication": 0.384739,
+      "native_owner_release": 0.060573,
+      "other": 0.04639900000000008
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012864
+  },
+  {
+    "case": "int",
+    "arm": "fex",
+    "round": 1,
+    "prefix": "compile-int-fex-1",
+    "total_ms": 1.6476041666666668,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7846354166666667,
+      "ir_optimization": 0.3143229166666667,
+      "allocation_and_encoding": 0.45984375,
+      "transfer_and_publication": 0.07291666666666667,
+      "logical_work_buffer_release": 0.004895833333333334,
+      "other": 0.010989583333333334
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 15065,
+      "ir_optimization": 6035,
+      "allocation_and_encoding": 8829,
+      "transfer_and_publication": 1400,
+      "logical_work_buffer_release": 94,
+      "other": 211
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "int",
+    "arm": "baseline-block",
+    "round": 1,
+    "prefix": "compile-int-baseline-block-1",
+    "total_ms": 2.086088,
+    "exclusive_ms": {
+      "formation_and_ir": 0.876142,
+      "ir_optimization": 0.270104,
+      "allocation_and_encoding": 0.457709,
+      "transfer_and_publication": 0.349271,
+      "native_owner_release": 0.082344,
+      "other": 0.050518000000000285
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014896
+  },
+  {
+    "case": "int",
+    "arm": "baseline-function",
+    "round": 1,
+    "prefix": "compile-int-baseline-function-1",
+    "total_ms": 1.796092,
+    "exclusive_ms": {
+      "formation_and_ir": 0.699479,
+      "ir_optimization": 0.271299,
+      "allocation_and_encoding": 0.402238,
+      "transfer_and_publication": 0.320415,
+      "native_owner_release": 0.058385,
+      "other": 0.04427599999999998
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012343
+  },
+  {
+    "case": "int",
+    "arm": "block",
+    "round": 1,
+    "prefix": "compile-int-block-1",
+    "total_ms": 1.909341,
+    "exclusive_ms": {
+      "formation_and_ir": 0.768661,
+      "ir_optimization": 0.291043,
+      "allocation_and_encoding": 0.409945,
+      "transfer_and_publication": 0.333018,
+      "native_owner_release": 0.06099,
+      "other": 0.045683999999999836
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013334
+  },
+  {
+    "case": "fp",
+    "arm": "function",
+    "round": 1,
+    "prefix": "compile-fp-function-1",
+    "total_ms": 2.751594,
+    "exclusive_ms": {
+      "formation_and_ir": 1.065865,
+      "ir_optimization": 0.583544,
+      "allocation_and_encoding": 0.629479,
+      "transfer_and_publication": 0.361252,
+      "native_owner_release": 0.063073,
+      "other": 0.04838100000000001
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012761
+  },
+  {
+    "case": "fp",
+    "arm": "fex",
+    "round": 1,
+    "prefix": "compile-fp-fex-1",
+    "total_ms": 1.6624479166666668,
+    "exclusive_ms": {
+      "formation_and_ir": 0.856875,
+      "ir_optimization": 0.21213541666666666,
+      "allocation_and_encoding": 0.49161458333333335,
+      "transfer_and_publication": 0.08364583333333334,
+      "logical_work_buffer_release": 0.005416666666666667,
+      "other": 0.012760416666666666
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 16452,
+      "ir_optimization": 4073,
+      "allocation_and_encoding": 9439,
+      "transfer_and_publication": 1606,
+      "logical_work_buffer_release": 104,
+      "other": 245
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 973,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-block",
+    "round": 1,
+    "prefix": "compile-fp-baseline-block-1",
+    "total_ms": 2.73125,
+    "exclusive_ms": {
+      "formation_and_ir": 1.080987,
+      "ir_optimization": 0.480206,
+      "allocation_and_encoding": 0.69349,
+      "transfer_and_publication": 0.357865,
+      "native_owner_release": 0.069323,
+      "other": 0.04937900000000006
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011822
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-function",
+    "round": 1,
+    "prefix": "compile-fp-baseline-function-1",
+    "total_ms": 2.76965,
+    "exclusive_ms": {
+      "formation_and_ir": 1.193819,
+      "ir_optimization": 0.458176,
+      "allocation_and_encoding": 0.629635,
+      "transfer_and_publication": 0.370935,
+      "native_owner_release": 0.064739,
+      "other": 0.052346000000000004
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014062
+  },
+  {
+    "case": "fp",
+    "arm": "block",
+    "round": 1,
+    "prefix": "compile-fp-block-1",
+    "total_ms": 2.418443,
+    "exclusive_ms": {
+      "formation_and_ir": 0.9612,
+      "ir_optimization": 0.39979,
+      "allocation_and_encoding": 0.609999,
+      "transfer_and_publication": 0.33224,
+      "native_owner_release": 0.069427,
+      "other": 0.0457869999999998
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011772
+  },
+  {
+    "case": "mem",
+    "arm": "function",
+    "round": 1,
+    "prefix": "compile-mem-function-1",
+    "total_ms": 2.421512,
+    "exclusive_ms": {
+      "formation_and_ir": 0.90927,
+      "ir_optimization": 0.311301,
+      "allocation_and_encoding": 0.542294,
+      "transfer_and_publication": 0.536506,
+      "native_owner_release": 0.068541,
+      "other": 0.05359999999999987
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013229
+  },
+  {
+    "case": "mem",
+    "arm": "fex",
+    "round": 1,
+    "prefix": "compile-mem-fex-1",
+    "total_ms": 1.5684895833333332,
+    "exclusive_ms": {
+      "formation_and_ir": 0.79609375,
+      "ir_optimization": 0.19708333333333333,
+      "allocation_and_encoding": 0.48083333333333333,
+      "transfer_and_publication": 0.07739583333333333,
+      "logical_work_buffer_release": 0.0053125,
+      "other": 0.011770833333333333
+    },
+    "closure_error_ms": 2.220446049250313e-16,
+    "exclusive_ticks": {
+      "formation_and_ir": 15285,
+      "ir_optimization": 3784,
+      "allocation_and_encoding": 9232,
+      "transfer_and_publication": 1486,
+      "logical_work_buffer_release": 102,
+      "other": 226
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 848,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-block",
+    "round": 1,
+    "prefix": "compile-mem-baseline-block-1",
+    "total_ms": 2.549767,
+    "exclusive_ms": {
+      "formation_and_ir": 1.009653,
+      "ir_optimization": 0.467549,
+      "allocation_and_encoding": 0.53875,
+      "transfer_and_publication": 0.394372,
+      "native_owner_release": 0.083385,
+      "other": 0.05605800000000016
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014426
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-function",
+    "round": 1,
+    "prefix": "compile-mem-baseline-function-1",
+    "total_ms": 2.506926,
+    "exclusive_ms": {
+      "formation_and_ir": 0.925624,
+      "ir_optimization": 0.328646,
+      "allocation_and_encoding": 0.736458,
+      "transfer_and_publication": 0.380361,
+      "native_owner_release": 0.078438,
+      "other": 0.0573990000000002
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014479
+  },
+  {
+    "case": "mem",
+    "arm": "block",
+    "round": 1,
+    "prefix": "compile-mem-block-1",
+    "total_ms": 2.229623,
+    "exclusive_ms": {
+      "formation_and_ir": 0.845193,
+      "ir_optimization": 0.32427,
+      "allocation_and_encoding": 0.547343,
+      "transfer_and_publication": 0.375208,
+      "native_owner_release": 0.078958,
+      "other": 0.05865100000000023
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.015573
+  },
+  {
+    "case": "branch",
+    "arm": "function",
+    "round": 1,
+    "prefix": "compile-branch-function-1",
+    "total_ms": 1.949677,
+    "exclusive_ms": {
+      "formation_and_ir": 0.750767,
+      "ir_optimization": 0.284846,
+      "allocation_and_encoding": 0.436566,
+      "transfer_and_publication": 0.370519,
+      "native_owner_release": 0.059271,
+      "other": 0.047708000000000084
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013386
+  },
+  {
+    "case": "branch",
+    "arm": "fex",
+    "round": 1,
+    "prefix": "compile-branch-fex-1",
+    "total_ms": 1.4988541666666668,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7753645833333334,
+      "ir_optimization": 0.18911458333333334,
+      "allocation_and_encoding": 0.4370833333333333,
+      "transfer_and_publication": 0.08098958333333334,
+      "logical_work_buffer_release": 0.005,
+      "other": 0.011302083333333334
+    },
+    "closure_error_ms": -2.220446049250313e-16,
+    "exclusive_ticks": {
+      "formation_and_ir": 14887,
+      "ir_optimization": 3631,
+      "allocation_and_encoding": 8392,
+      "transfer_and_publication": 1555,
+      "logical_work_buffer_release": 96,
+      "other": 217
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 812,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-block",
+    "round": 1,
+    "prefix": "compile-branch-baseline-block-1",
+    "total_ms": 1.85927,
+    "exclusive_ms": {
+      "formation_and_ir": 0.736348,
+      "ir_optimization": 0.263018,
+      "allocation_and_encoding": 0.418024,
+      "transfer_and_publication": 0.336829,
+      "native_owner_release": 0.058854,
+      "other": 0.046197000000000044
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013075
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-function",
+    "round": 1,
+    "prefix": "compile-branch-baseline-function-1",
+    "total_ms": 1.842872,
+    "exclusive_ms": {
+      "formation_and_ir": 0.692926,
+      "ir_optimization": 0.247811,
+      "allocation_and_encoding": 0.409061,
+      "transfer_and_publication": 0.384952,
+      "native_owner_release": 0.061771,
+      "other": 0.04635100000000003
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012917
+  },
+  {
+    "case": "branch",
+    "arm": "block",
+    "round": 1,
+    "prefix": "compile-branch-block-1",
+    "total_ms": 2.084008,
+    "exclusive_ms": {
+      "formation_and_ir": 0.739687,
+      "ir_optimization": 0.269166,
+      "allocation_and_encoding": 0.431142,
+      "transfer_and_publication": 0.534371,
+      "native_owner_release": 0.062812,
+      "other": 0.04682999999999993
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011875
+  },
+  {
+    "case": "call",
+    "arm": "function",
+    "round": 1,
+    "prefix": "compile-call-function-1",
+    "total_ms": 1.956312,
+    "exclusive_ms": {
+      "formation_and_ir": 0.754859,
+      "ir_optimization": 0.297394,
+      "allocation_and_encoding": 0.438492,
+      "transfer_and_publication": 0.349213,
+      "native_owner_release": 0.064792,
+      "other": 0.05156200000000011
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01198
+  },
+  {
+    "case": "call",
+    "arm": "fex",
+    "round": 1,
+    "prefix": "compile-call-fex-1",
+    "total_ms": 1.74140625,
+    "exclusive_ms": {
+      "formation_and_ir": 0.9355729166666666,
+      "ir_optimization": 0.19395833333333334,
+      "allocation_and_encoding": 0.4846875,
+      "transfer_and_publication": 0.09744791666666666,
+      "logical_work_buffer_release": 0.01015625,
+      "other": 0.019583333333333335
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 17963,
+      "ir_optimization": 3724,
+      "allocation_and_encoding": 9306,
+      "transfer_and_publication": 1871,
+      "logical_work_buffer_release": 195,
+      "other": 376
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 7,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "call",
+    "arm": "baseline-block",
+    "round": 1,
+    "prefix": "compile-call-baseline-block-1",
+    "total_ms": 1.892595,
+    "exclusive_ms": {
+      "formation_and_ir": 0.685986,
+      "ir_optimization": 0.288334,
+      "allocation_and_encoding": 0.439276,
+      "transfer_and_publication": 0.351565,
+      "native_owner_release": 0.070365,
+      "other": 0.057069000000000036
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014166
+  },
+  {
+    "case": "call",
+    "arm": "baseline-function",
+    "round": 1,
+    "prefix": "compile-call-baseline-function-1",
+    "total_ms": 1.850566,
+    "exclusive_ms": {
+      "formation_and_ir": 0.705612,
+      "ir_optimization": 0.2688,
+      "allocation_and_encoding": 0.437501,
+      "transfer_and_publication": 0.318854,
+      "native_owner_release": 0.067917,
+      "other": 0.051881999999999984
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012395
+  },
+  {
+    "case": "call",
+    "arm": "block",
+    "round": 1,
+    "prefix": "compile-call-block-1",
+    "total_ms": 1.889846,
+    "exclusive_ms": {
+      "formation_and_ir": 0.705525,
+      "ir_optimization": 0.286455,
+      "allocation_and_encoding": 0.431198,
+      "transfer_and_publication": 0.349011,
+      "native_owner_release": 0.063437,
+      "other": 0.054219999999999935
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011667
+  },
+  {
+    "case": "func_tests",
+    "arm": "function",
+    "round": 1,
+    "prefix": "compile-func_tests-function-1",
+    "total_ms": 33.07371,
+    "exclusive_ms": {
+      "formation_and_ir": 11.74303,
+      "ir_optimization": 7.262505,
+      "allocation_and_encoding": 10.281087,
+      "transfer_and_publication": 3.171188,
+      "native_owner_release": 0.25974,
+      "other": 0.3561600000000027
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010261
+  },
+  {
+    "case": "func_tests",
+    "arm": "fex",
+    "round": 1,
+    "prefix": "compile-func_tests-fex-1",
+    "total_ms": 30.258229166666666,
+    "exclusive_ms": {
+      "formation_and_ir": 13.800104166666667,
+      "ir_optimization": 4.587395833333333,
+      "allocation_and_encoding": 9.003645833333334,
+      "transfer_and_publication": 2.165677083333333,
+      "logical_work_buffer_release": 0.23744791666666668,
+      "other": 0.4639583333333333
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 264962,
+      "ir_optimization": 88078,
+      "allocation_and_encoding": 172870,
+      "transfer_and_publication": 41581,
+      "logical_work_buffer_release": 4559,
+      "other": 8908
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 180,
+    "byte_decode_calls": 17475,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-block",
+    "round": 1,
+    "prefix": "compile-func_tests-baseline-block-1",
+    "total_ms": 21.023601,
+    "exclusive_ms": {
+      "formation_and_ir": 5.529281,
+      "ir_optimization": 3.881495,
+      "allocation_and_encoding": 6.970452,
+      "transfer_and_publication": 3.537089,
+      "native_owner_release": 0.246823,
+      "other": 0.8584609999999984
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010677
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-function",
+    "round": 1,
+    "prefix": "compile-func_tests-baseline-function-1",
+    "total_ms": 32.668771,
+    "exclusive_ms": {
+      "formation_and_ir": 11.959328,
+      "ir_optimization": 6.639795,
+      "allocation_and_encoding": 10.31261,
+      "transfer_and_publication": 3.149955,
+      "native_owner_release": 0.255364,
+      "other": 0.3517190000000028
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01151
+  },
+  {
+    "case": "func_tests",
+    "arm": "block",
+    "round": 1,
+    "prefix": "compile-func_tests-block-1",
+    "total_ms": 21.356428,
+    "exclusive_ms": {
+      "formation_and_ir": 5.65204,
+      "ir_optimization": 4.387341,
+      "allocation_and_encoding": 6.909228,
+      "transfer_and_publication": 3.313441,
+      "native_owner_release": 0.240989,
+      "other": 0.853389
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011822
+  },
+  {
+    "case": "x87_bench",
+    "arm": "function",
+    "round": 1,
+    "prefix": "compile-x87_bench-function-1",
+    "total_ms": 0.566303,
+    "exclusive_ms": {
+      "formation_and_ir": 0.248491,
+      "ir_optimization": 0.072708,
+      "allocation_and_encoding": 0.076407,
+      "transfer_and_publication": 0.062656,
+      "native_owner_release": 0.090417,
+      "other": 0.015623999999999971
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01297
+  },
+  {
+    "case": "x87_bench",
+    "arm": "fex",
+    "round": 1,
+    "prefix": "compile-x87_bench-fex-1",
+    "total_ms": 0.31375,
+    "exclusive_ms": {
+      "formation_and_ir": 0.1203125,
+      "ir_optimization": 0.04932291666666667,
+      "allocation_and_encoding": 0.11552083333333334,
+      "transfer_and_publication": 0.02078125,
+      "logical_work_buffer_release": 0.002395833333333333,
+      "other": 0.005416666666666667
+    },
+    "closure_error_ms": 5.551115123125783e-17,
+    "exclusive_ticks": {
+      "formation_and_ir": 2310,
+      "ir_optimization": 947,
+      "allocation_and_encoding": 2218,
+      "transfer_and_publication": 399,
+      "logical_work_buffer_release": 46,
+      "other": 104
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 1,
+    "byte_decode_calls": 22,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-block",
+    "round": 1,
+    "prefix": "compile-x87_bench-baseline-block-1",
+    "total_ms": 0.607915,
+    "exclusive_ms": {
+      "formation_and_ir": 0.22729,
+      "ir_optimization": 0.046094,
+      "allocation_and_encoding": 0.116822,
+      "transfer_and_publication": 0.150676,
+      "native_owner_release": 0.04901,
+      "other": 0.01802300000000001
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011457
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-function",
+    "round": 1,
+    "prefix": "compile-x87_bench-baseline-function-1",
+    "total_ms": 0.614948,
+    "exclusive_ms": {
+      "formation_and_ir": 0.238281,
+      "ir_optimization": 0.069167,
+      "allocation_and_encoding": 0.079166,
+      "transfer_and_publication": 0.130052,
+      "native_owner_release": 0.081875,
+      "other": 0.01640700000000006
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013958
+  },
+  {
+    "case": "x87_bench",
+    "arm": "block",
+    "round": 1,
+    "prefix": "compile-x87_bench-block-1",
+    "total_ms": 0.806092,
+    "exclusive_ms": {
+      "formation_and_ir": 0.219688,
+      "ir_optimization": 0.06604,
+      "allocation_and_encoding": 0.139843,
+      "transfer_and_publication": 0.287554,
+      "native_owner_release": 0.069323,
+      "other": 0.02364400000000011
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.016094
+  },
+  {
+    "case": "coremark",
+    "arm": "block",
+    "round": 2,
+    "prefix": "compile-coremark-block-2",
+    "total_ms": 42.682914,
+    "exclusive_ms": {
+      "formation_and_ir": 11.234633,
+      "ir_optimization": 8.793449,
+      "allocation_and_encoding": 14.230392,
+      "transfer_and_publication": 6.166255,
+      "native_owner_release": 0.403594,
+      "other": 1.8545909999999992
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010573
+  },
+  {
+    "case": "coremark",
+    "arm": "function",
+    "round": 2,
+    "prefix": "compile-coremark-function-2",
+    "total_ms": 51.132308,
+    "exclusive_ms": {
+      "formation_and_ir": 17.095293,
+      "ir_optimization": 11.551766,
+      "allocation_and_encoding": 17.617234,
+      "transfer_and_publication": 3.981769,
+      "native_owner_release": 0.341198,
+      "other": 0.5450480000000013
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010678
+  },
+  {
+    "case": "coremark",
+    "arm": "fex",
+    "round": 2,
+    "prefix": "compile-coremark-fex-2",
+    "total_ms": 47.35526041666667,
+    "exclusive_ms": {
+      "formation_and_ir": 22.918072916666667,
+      "ir_optimization": 6.401302083333333,
+      "allocation_and_encoding": 13.992916666666666,
+      "transfer_and_publication": 3.06859375,
+      "logical_work_buffer_release": 0.30463541666666666,
+      "other": 0.6697395833333334
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 440027,
+      "ir_optimization": 122905,
+      "allocation_and_encoding": 268664,
+      "transfer_and_publication": 58917,
+      "logical_work_buffer_release": 5849,
+      "other": 12859
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 255,
+    "byte_decode_calls": 29915,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-block",
+    "round": 2,
+    "prefix": "compile-coremark-baseline-block-2",
+    "total_ms": 41.697015,
+    "exclusive_ms": {
+      "formation_and_ir": 11.468088,
+      "ir_optimization": 8.505534,
+      "allocation_and_encoding": 13.932358,
+      "transfer_and_publication": 5.834433,
+      "native_owner_release": 0.406927,
+      "other": 1.5496750000000006
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011512
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-function",
+    "round": 2,
+    "prefix": "compile-coremark-baseline-function-2",
+    "total_ms": 51.325924,
+    "exclusive_ms": {
+      "formation_and_ir": 17.462024,
+      "ir_optimization": 11.749265,
+      "allocation_and_encoding": 16.951459,
+      "transfer_and_publication": 4.266783,
+      "native_owner_release": 0.349583,
+      "other": 0.5468100000000007
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012291
+  },
+  {
+    "case": "int",
+    "arm": "block",
+    "round": 2,
+    "prefix": "compile-int-block-2",
+    "total_ms": 2.054626,
+    "exclusive_ms": {
+      "formation_and_ir": 0.804573,
+      "ir_optimization": 0.274271,
+      "allocation_and_encoding": 0.550102,
+      "transfer_and_publication": 0.319589,
+      "native_owner_release": 0.060782,
+      "other": 0.045309000000000044
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012292
+  },
+  {
+    "case": "int",
+    "arm": "function",
+    "round": 2,
+    "prefix": "compile-int-function-2",
+    "total_ms": 1.961781,
+    "exclusive_ms": {
+      "formation_and_ir": 0.762198,
+      "ir_optimization": 0.289536,
+      "allocation_and_encoding": 0.419791,
+      "transfer_and_publication": 0.379791,
+      "native_owner_release": 0.064271,
+      "other": 0.046193999999999846
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012501
+  },
+  {
+    "case": "int",
+    "arm": "fex",
+    "round": 2,
+    "prefix": "compile-int-fex-2",
+    "total_ms": 1.5944791666666667,
+    "exclusive_ms": {
+      "formation_and_ir": 0.8657291666666667,
+      "ir_optimization": 0.19083333333333333,
+      "allocation_and_encoding": 0.44697916666666665,
+      "transfer_and_publication": 0.073125,
+      "logical_work_buffer_release": 0.005520833333333333,
+      "other": 0.012291666666666666
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 16622,
+      "ir_optimization": 3664,
+      "allocation_and_encoding": 8582,
+      "transfer_and_publication": 1404,
+      "logical_work_buffer_release": 106,
+      "other": 236
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "int",
+    "arm": "baseline-block",
+    "round": 2,
+    "prefix": "compile-int-baseline-block-2",
+    "total_ms": 1.833912,
+    "exclusive_ms": {
+      "formation_and_ir": 0.740106,
+      "ir_optimization": 0.254685,
+      "allocation_and_encoding": 0.412134,
+      "transfer_and_publication": 0.319793,
+      "native_owner_release": 0.061771,
+      "other": 0.04542299999999999
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012761
+  },
+  {
+    "case": "int",
+    "arm": "baseline-function",
+    "round": 2,
+    "prefix": "compile-int-baseline-function-2",
+    "total_ms": 1.985097,
+    "exclusive_ms": {
+      "formation_and_ir": 0.754259,
+      "ir_optimization": 0.285571,
+      "allocation_and_encoding": 0.423123,
+      "transfer_and_publication": 0.332708,
+      "native_owner_release": 0.094219,
+      "other": 0.09521699999999989
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012552
+  },
+  {
+    "case": "fp",
+    "arm": "block",
+    "round": 2,
+    "prefix": "compile-fp-block-2",
+    "total_ms": 2.399411,
+    "exclusive_ms": {
+      "formation_and_ir": 0.890656,
+      "ir_optimization": 0.43703,
+      "allocation_and_encoding": 0.622291,
+      "transfer_and_publication": 0.329898,
+      "native_owner_release": 0.069271,
+      "other": 0.050265000000000004
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012291
+  },
+  {
+    "case": "fp",
+    "arm": "function",
+    "round": 2,
+    "prefix": "compile-fp-function-2",
+    "total_ms": 2.56162,
+    "exclusive_ms": {
+      "formation_and_ir": 0.968237,
+      "ir_optimization": 0.433591,
+      "allocation_and_encoding": 0.695629,
+      "transfer_and_publication": 0.345367,
+      "native_owner_release": 0.068594,
+      "other": 0.05020200000000008
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.0125
+  },
+  {
+    "case": "fp",
+    "arm": "fex",
+    "round": 2,
+    "prefix": "compile-fp-fex-2",
+    "total_ms": 1.6611458333333333,
+    "exclusive_ms": {
+      "formation_and_ir": 0.84703125,
+      "ir_optimization": 0.20958333333333334,
+      "allocation_and_encoding": 0.5072395833333333,
+      "transfer_and_publication": 0.08036458333333334,
+      "logical_work_buffer_release": 0.004791666666666666,
+      "other": 0.012135416666666666
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 16263,
+      "ir_optimization": 4024,
+      "allocation_and_encoding": 9739,
+      "transfer_and_publication": 1543,
+      "logical_work_buffer_release": 92,
+      "other": 233
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 973,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-block",
+    "round": 2,
+    "prefix": "compile-fp-baseline-block-2",
+    "total_ms": 2.568122,
+    "exclusive_ms": {
+      "formation_and_ir": 0.928126,
+      "ir_optimization": 0.424219,
+      "allocation_and_encoding": 0.640572,
+      "transfer_and_publication": 0.471875,
+      "native_owner_release": 0.053177,
+      "other": 0.05015299999999989
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013541
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-function",
+    "round": 2,
+    "prefix": "compile-fp-baseline-function-2",
+    "total_ms": 2.487831,
+    "exclusive_ms": {
+      "formation_and_ir": 0.933558,
+      "ir_optimization": 0.428022,
+      "allocation_and_encoding": 0.619484,
+      "transfer_and_publication": 0.387857,
+      "native_owner_release": 0.070365,
+      "other": 0.04854499999999984
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012396
+  },
+  {
+    "case": "mem",
+    "arm": "block",
+    "round": 2,
+    "prefix": "compile-mem-block-2",
+    "total_ms": 2.543734,
+    "exclusive_ms": {
+      "formation_and_ir": 1.128427,
+      "ir_optimization": 0.352445,
+      "allocation_and_encoding": 0.530829,
+      "transfer_and_publication": 0.391977,
+      "native_owner_release": 0.0825,
+      "other": 0.05755599999999994
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014583
+  },
+  {
+    "case": "mem",
+    "arm": "function",
+    "round": 2,
+    "prefix": "compile-mem-function-2",
+    "total_ms": 2.362329,
+    "exclusive_ms": {
+      "formation_and_ir": 0.949675,
+      "ir_optimization": 0.329011,
+      "allocation_and_encoding": 0.55568,
+      "transfer_and_publication": 0.391666,
+      "native_owner_release": 0.078645,
+      "other": 0.05765200000000004
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014478
+  },
+  {
+    "case": "mem",
+    "arm": "fex",
+    "round": 2,
+    "prefix": "compile-mem-fex-2",
+    "total_ms": 1.5675520833333332,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7989583333333333,
+      "ir_optimization": 0.19671875,
+      "allocation_and_encoding": 0.47046875,
+      "transfer_and_publication": 0.08416666666666667,
+      "logical_work_buffer_release": 0.005572916666666667,
+      "other": 0.011666666666666667
+    },
+    "closure_error_ms": 2.220446049250313e-16,
+    "exclusive_ticks": {
+      "formation_and_ir": 15340,
+      "ir_optimization": 3777,
+      "allocation_and_encoding": 9033,
+      "transfer_and_publication": 1616,
+      "logical_work_buffer_release": 107,
+      "other": 224
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 848,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-block",
+    "round": 2,
+    "prefix": "compile-mem-baseline-block-2",
+    "total_ms": 2.243116,
+    "exclusive_ms": {
+      "formation_and_ir": 0.866098,
+      "ir_optimization": 0.333071,
+      "allocation_and_encoding": 0.535992,
+      "transfer_and_publication": 0.369788,
+      "native_owner_release": 0.081146,
+      "other": 0.05702100000000021
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.015312
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-function",
+    "round": 2,
+    "prefix": "compile-mem-baseline-function-2",
+    "total_ms": 2.330005,
+    "exclusive_ms": {
+      "formation_and_ir": 0.957611,
+      "ir_optimization": 0.334999,
+      "allocation_and_encoding": 0.51167,
+      "transfer_and_publication": 0.363803,
+      "native_owner_release": 0.1075,
+      "other": 0.05442199999999975
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012708
+  },
+  {
+    "case": "branch",
+    "arm": "block",
+    "round": 2,
+    "prefix": "compile-branch-block-2",
+    "total_ms": 1.875158,
+    "exclusive_ms": {
+      "formation_and_ir": 0.754016,
+      "ir_optimization": 0.264374,
+      "allocation_and_encoding": 0.42479,
+      "transfer_and_publication": 0.324424,
+      "native_owner_release": 0.060156,
+      "other": 0.04739800000000005
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012657
+  },
+  {
+    "case": "branch",
+    "arm": "function",
+    "round": 2,
+    "prefix": "compile-branch-function-2",
+    "total_ms": 1.855509,
+    "exclusive_ms": {
+      "formation_and_ir": 0.731397,
+      "ir_optimization": 0.268957,
+      "allocation_and_encoding": 0.41797,
+      "transfer_and_publication": 0.332917,
+      "native_owner_release": 0.0575,
+      "other": 0.04676800000000014
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012708
+  },
+  {
+    "case": "branch",
+    "arm": "fex",
+    "round": 2,
+    "prefix": "compile-branch-fex-2",
+    "total_ms": 1.5001041666666668,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7663541666666667,
+      "ir_optimization": 0.19057291666666668,
+      "allocation_and_encoding": 0.4383854166666667,
+      "transfer_and_publication": 0.08734375,
+      "logical_work_buffer_release": 0.006354166666666667,
+      "other": 0.01109375
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 14714,
+      "ir_optimization": 3659,
+      "allocation_and_encoding": 8417,
+      "transfer_and_publication": 1677,
+      "logical_work_buffer_release": 122,
+      "other": 213
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 812,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-block",
+    "round": 2,
+    "prefix": "compile-branch-baseline-block-2",
+    "total_ms": 2.014169,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7251,
+      "ir_optimization": 0.270725,
+      "allocation_and_encoding": 0.522604,
+      "transfer_and_publication": 0.336148,
+      "native_owner_release": 0.113854,
+      "other": 0.045738000000000056
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012291
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-function",
+    "round": 2,
+    "prefix": "compile-branch-baseline-function-2",
+    "total_ms": 1.811257,
+    "exclusive_ms": {
+      "formation_and_ir": 0.681356,
+      "ir_optimization": 0.359322,
+      "allocation_and_encoding": 0.384529,
+      "transfer_and_publication": 0.29959,
+      "native_owner_release": 0.042448,
+      "other": 0.04401199999999994
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011198
+  },
+  {
+    "case": "call",
+    "arm": "block",
+    "round": 2,
+    "prefix": "compile-call-block-2",
+    "total_ms": 1.948379,
+    "exclusive_ms": {
+      "formation_and_ir": 0.759836,
+      "ir_optimization": 0.261151,
+      "allocation_and_encoding": 0.426927,
+      "transfer_and_publication": 0.382497,
+      "native_owner_release": 0.064115,
+      "other": 0.05385300000000015
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012812
+  },
+  {
+    "case": "call",
+    "arm": "function",
+    "round": 2,
+    "prefix": "compile-call-function-2",
+    "total_ms": 2.054325,
+    "exclusive_ms": {
+      "formation_and_ir": 0.719903,
+      "ir_optimization": 0.295831,
+      "allocation_and_encoding": 0.567708,
+      "transfer_and_publication": 0.355518,
+      "native_owner_release": 0.063958,
+      "other": 0.0514070000000002
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012345
+  },
+  {
+    "case": "call",
+    "arm": "fex",
+    "round": 2,
+    "prefix": "compile-call-fex-2",
+    "total_ms": 1.6249479166666667,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7852604166666667,
+      "ir_optimization": 0.23604166666666668,
+      "allocation_and_encoding": 0.4796875,
+      "transfer_and_publication": 0.0940625,
+      "logical_work_buffer_release": 0.0096875,
+      "other": 0.02020833333333333
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 15077,
+      "ir_optimization": 4532,
+      "allocation_and_encoding": 9210,
+      "transfer_and_publication": 1806,
+      "logical_work_buffer_release": 186,
+      "other": 388
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 7,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "call",
+    "arm": "baseline-block",
+    "round": 2,
+    "prefix": "compile-call-baseline-block-2",
+    "total_ms": 2.208298,
+    "exclusive_ms": {
+      "formation_and_ir": 0.866942,
+      "ir_optimization": 0.274583,
+      "allocation_and_encoding": 0.591249,
+      "transfer_and_publication": 0.354536,
+      "native_owner_release": 0.069166,
+      "other": 0.051822000000000035
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012657
+  },
+  {
+    "case": "call",
+    "arm": "baseline-function",
+    "round": 2,
+    "prefix": "compile-call-baseline-function-2",
+    "total_ms": 1.882127,
+    "exclusive_ms": {
+      "formation_and_ir": 0.724531,
+      "ir_optimization": 0.287448,
+      "allocation_and_encoding": 0.423439,
+      "transfer_and_publication": 0.325728,
+      "native_owner_release": 0.069219,
+      "other": 0.051762000000000086
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012448
+  },
+  {
+    "case": "func_tests",
+    "arm": "block",
+    "round": 2,
+    "prefix": "compile-func_tests-block-2",
+    "total_ms": 22.246906,
+    "exclusive_ms": {
+      "formation_and_ir": 5.934479,
+      "ir_optimization": 4.086486,
+      "allocation_and_encoding": 7.361503,
+      "transfer_and_publication": 3.742658,
+      "native_owner_release": 0.262187,
+      "other": 0.8595930000000003
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011563
+  },
+  {
+    "case": "func_tests",
+    "arm": "function",
+    "round": 2,
+    "prefix": "compile-func_tests-function-2",
+    "total_ms": 33.38007,
+    "exclusive_ms": {
+      "formation_and_ir": 12.233821,
+      "ir_optimization": 6.70552,
+      "allocation_and_encoding": 10.495627,
+      "transfer_and_publication": 3.333076,
+      "native_owner_release": 0.253281,
+      "other": 0.358744999999999
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011824
+  },
+  {
+    "case": "func_tests",
+    "arm": "fex",
+    "round": 2,
+    "prefix": "compile-func_tests-fex-2",
+    "total_ms": 30.297395833333333,
+    "exclusive_ms": {
+      "formation_and_ir": 13.863177083333333,
+      "ir_optimization": 4.83890625,
+      "allocation_and_encoding": 8.78828125,
+      "transfer_and_publication": 2.08046875,
+      "logical_work_buffer_release": 0.2384375,
+      "other": 0.488125
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 266173,
+      "ir_optimization": 92907,
+      "allocation_and_encoding": 168735,
+      "transfer_and_publication": 39945,
+      "logical_work_buffer_release": 4578,
+      "other": 9372
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 180,
+    "byte_decode_calls": 17475,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-block",
+    "round": 2,
+    "prefix": "compile-func_tests-baseline-block-2",
+    "total_ms": 21.150258,
+    "exclusive_ms": {
+      "formation_and_ir": 5.53402,
+      "ir_optimization": 4.25073,
+      "allocation_and_encoding": 6.805171,
+      "transfer_and_publication": 3.401134,
+      "native_owner_release": 0.247291,
+      "other": 0.9119120000000009
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011563
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-function",
+    "round": 2,
+    "prefix": "compile-func_tests-baseline-function-2",
+    "total_ms": 33.362966,
+    "exclusive_ms": {
+      "formation_and_ir": 11.920545,
+      "ir_optimization": 6.949807,
+      "allocation_and_encoding": 10.743068,
+      "transfer_and_publication": 3.131037,
+      "native_owner_release": 0.256615,
+      "other": 0.3618939999999995
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011145
+  },
+  {
+    "case": "x87_bench",
+    "arm": "block",
+    "round": 2,
+    "prefix": "compile-x87_bench-block-2",
+    "total_ms": 0.690054,
+    "exclusive_ms": {
+      "formation_and_ir": 0.270314,
+      "ir_optimization": 0.080729,
+      "allocation_and_encoding": 0.120521,
+      "transfer_and_publication": 0.143855,
+      "native_owner_release": 0.057448,
+      "other": 0.017186999999999952
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011303
+  },
+  {
+    "case": "x87_bench",
+    "arm": "function",
+    "round": 2,
+    "prefix": "compile-x87_bench-function-2",
+    "total_ms": 0.545417,
+    "exclusive_ms": {
+      "formation_and_ir": 0.25344,
+      "ir_optimization": 0.055156,
+      "allocation_and_encoding": 0.079427,
+      "transfer_and_publication": 0.06276,
+      "native_owner_release": 0.079479,
+      "other": 0.01515500000000003
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012915
+  },
+  {
+    "case": "x87_bench",
+    "arm": "fex",
+    "round": 2,
+    "prefix": "compile-x87_bench-fex-2",
+    "total_ms": 0.29484375,
+    "exclusive_ms": {
+      "formation_and_ir": 0.11578125,
+      "ir_optimization": 0.04140625,
+      "allocation_and_encoding": 0.1146875,
+      "transfer_and_publication": 0.01609375,
+      "logical_work_buffer_release": 0.00203125,
+      "other": 0.00484375
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 2223,
+      "ir_optimization": 795,
+      "allocation_and_encoding": 2202,
+      "transfer_and_publication": 309,
+      "logical_work_buffer_release": 39,
+      "other": 93
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 1,
+    "byte_decode_calls": 22,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-block",
+    "round": 2,
+    "prefix": "compile-x87_bench-baseline-block-2",
+    "total_ms": 0.820258,
+    "exclusive_ms": {
+      "formation_and_ir": 0.362393,
+      "ir_optimization": 0.076564,
+      "allocation_and_encoding": 0.120833,
+      "transfer_and_publication": 0.191824,
+      "native_owner_release": 0.048907,
+      "other": 0.019737000000000005
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013282
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-function",
+    "round": 2,
+    "prefix": "compile-x87_bench-baseline-function-2",
+    "total_ms": 0.577653,
+    "exclusive_ms": {
+      "formation_and_ir": 0.263695,
+      "ir_optimization": 0.082187,
+      "allocation_and_encoding": 0.076458,
+      "transfer_and_publication": 0.059376,
+      "native_owner_release": 0.08052,
+      "other": 0.015417000000000014
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012916
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-function",
+    "round": 3,
+    "prefix": "compile-coremark-baseline-function-3",
+    "total_ms": 51.336663,
+    "exclusive_ms": {
+      "formation_and_ir": 16.76244,
+      "ir_optimization": 11.696801,
+      "allocation_and_encoding": 17.837496,
+      "transfer_and_publication": 4.160274,
+      "native_owner_release": 0.330052,
+      "other": 0.5495999999999981
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011301
+  },
+  {
+    "case": "coremark",
+    "arm": "block",
+    "round": 3,
+    "prefix": "compile-coremark-block-3",
+    "total_ms": 42.065032,
+    "exclusive_ms": {
+      "formation_and_ir": 11.621579,
+      "ir_optimization": 8.349942,
+      "allocation_and_encoding": 14.290883,
+      "transfer_and_publication": 5.844385,
+      "native_owner_release": 0.411146,
+      "other": 1.5470970000000008
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010936
+  },
+  {
+    "case": "coremark",
+    "arm": "function",
+    "round": 3,
+    "prefix": "compile-coremark-function-3",
+    "total_ms": 51.945773,
+    "exclusive_ms": {
+      "formation_and_ir": 17.547249,
+      "ir_optimization": 11.936674,
+      "allocation_and_encoding": 17.56313,
+      "transfer_and_publication": 3.996435,
+      "native_owner_release": 0.334479,
+      "other": 0.5678059999999974
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011509
+  },
+  {
+    "case": "coremark",
+    "arm": "fex",
+    "round": 3,
+    "prefix": "compile-coremark-fex-3",
+    "total_ms": 47.243541666666665,
+    "exclusive_ms": {
+      "formation_and_ir": 22.207135416666667,
+      "ir_optimization": 6.378489583333334,
+      "allocation_and_encoding": 14.511927083333333,
+      "transfer_and_publication": 3.1466666666666665,
+      "logical_work_buffer_release": 0.31963541666666667,
+      "other": 0.6796875
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 426377,
+      "ir_optimization": 122467,
+      "allocation_and_encoding": 278629,
+      "transfer_and_publication": 60416,
+      "logical_work_buffer_release": 6137,
+      "other": 13050
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 255,
+    "byte_decode_calls": 29915,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-block",
+    "round": 3,
+    "prefix": "compile-coremark-baseline-block-3",
+    "total_ms": 43.081573,
+    "exclusive_ms": {
+      "formation_and_ir": 11.807406,
+      "ir_optimization": 8.454984,
+      "allocation_and_encoding": 13.913019,
+      "transfer_and_publication": 6.678855,
+      "native_owner_release": 0.428281,
+      "other": 1.7990279999999998
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011874
+  },
+  {
+    "case": "int",
+    "arm": "baseline-function",
+    "round": 3,
+    "prefix": "compile-int-baseline-function-3",
+    "total_ms": 1.817286,
+    "exclusive_ms": {
+      "formation_and_ir": 0.725407,
+      "ir_optimization": 0.285777,
+      "allocation_and_encoding": 0.384788,
+      "transfer_and_publication": 0.318539,
+      "native_owner_release": 0.057188,
+      "other": 0.04558699999999982
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012395
+  },
+  {
+    "case": "int",
+    "arm": "block",
+    "round": 3,
+    "prefix": "compile-int-block-3",
+    "total_ms": 1.803539,
+    "exclusive_ms": {
+      "formation_and_ir": 0.695833,
+      "ir_optimization": 0.265988,
+      "allocation_and_encoding": 0.416459,
+      "transfer_and_publication": 0.319581,
+      "native_owner_release": 0.058802,
+      "other": 0.04687599999999992
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013801
+  },
+  {
+    "case": "int",
+    "arm": "function",
+    "round": 3,
+    "prefix": "compile-int-function-3",
+    "total_ms": 1.931782,
+    "exclusive_ms": {
+      "formation_and_ir": 0.780793,
+      "ir_optimization": 0.263015,
+      "allocation_and_encoding": 0.42729,
+      "transfer_and_publication": 0.349066,
+      "native_owner_release": 0.064948,
+      "other": 0.04667000000000021
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013282
+  },
+  {
+    "case": "int",
+    "arm": "fex",
+    "round": 3,
+    "prefix": "compile-int-fex-3",
+    "total_ms": 1.4855729166666667,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7797916666666667,
+      "ir_optimization": 0.188125,
+      "allocation_and_encoding": 0.429375,
+      "transfer_and_publication": 0.07119791666666667,
+      "logical_work_buffer_release": 0.005104166666666667,
+      "other": 0.011979166666666667
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 14972,
+      "ir_optimization": 3612,
+      "allocation_and_encoding": 8244,
+      "transfer_and_publication": 1367,
+      "logical_work_buffer_release": 98,
+      "other": 230
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "int",
+    "arm": "baseline-block",
+    "round": 3,
+    "prefix": "compile-int-baseline-block-3",
+    "total_ms": 1.996207,
+    "exclusive_ms": {
+      "formation_and_ir": 0.759698,
+      "ir_optimization": 0.264792,
+      "allocation_and_encoding": 0.427499,
+      "transfer_and_publication": 0.436506,
+      "native_owner_release": 0.060417,
+      "other": 0.04729500000000009
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012865
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-function",
+    "round": 3,
+    "prefix": "compile-fp-baseline-function-3",
+    "total_ms": 2.753552,
+    "exclusive_ms": {
+      "formation_and_ir": 1.153294,
+      "ir_optimization": 0.474895,
+      "allocation_and_encoding": 0.67979,
+      "transfer_and_publication": 0.345368,
+      "native_owner_release": 0.051146,
+      "other": 0.04905899999999974
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011355
+  },
+  {
+    "case": "fp",
+    "arm": "block",
+    "round": 3,
+    "prefix": "compile-fp-block-3",
+    "total_ms": 2.555906,
+    "exclusive_ms": {
+      "formation_and_ir": 0.941383,
+      "ir_optimization": 0.439273,
+      "allocation_and_encoding": 0.615784,
+      "transfer_and_publication": 0.442807,
+      "native_owner_release": 0.066718,
+      "other": 0.04994100000000001
+    },
+    "closure_error_ms": 4.440892098500626e-16,
+    "fault_service_ms_in_other": 0.012968
+  },
+  {
+    "case": "fp",
+    "arm": "function",
+    "round": 3,
+    "prefix": "compile-fp-function-3",
+    "total_ms": 2.632565,
+    "exclusive_ms": {
+      "formation_and_ir": 1.095576,
+      "ir_optimization": 0.421512,
+      "allocation_and_encoding": 0.641617,
+      "transfer_and_publication": 0.360628,
+      "native_owner_release": 0.06401,
+      "other": 0.04922199999999988
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012604
+  },
+  {
+    "case": "fp",
+    "arm": "fex",
+    "round": 3,
+    "prefix": "compile-fp-fex-3",
+    "total_ms": 1.8241145833333332,
+    "exclusive_ms": {
+      "formation_and_ir": 1.0122916666666666,
+      "ir_optimization": 0.2115625,
+      "allocation_and_encoding": 0.5022395833333333,
+      "transfer_and_publication": 0.0803125,
+      "logical_work_buffer_release": 0.0049479166666666664,
+      "other": 0.012760416666666666
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 19436,
+      "ir_optimization": 4062,
+      "allocation_and_encoding": 9643,
+      "transfer_and_publication": 1542,
+      "logical_work_buffer_release": 95,
+      "other": 245
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 973,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-block",
+    "round": 3,
+    "prefix": "compile-fp-baseline-block-3",
+    "total_ms": 2.431291,
+    "exclusive_ms": {
+      "formation_and_ir": 0.902548,
+      "ir_optimization": 0.425673,
+      "allocation_and_encoding": 0.617031,
+      "transfer_and_publication": 0.368225,
+      "native_owner_release": 0.06802,
+      "other": 0.049793999999999894
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012811
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-function",
+    "round": 3,
+    "prefix": "compile-mem-baseline-function-3",
+    "total_ms": 2.252832,
+    "exclusive_ms": {
+      "formation_and_ir": 0.866167,
+      "ir_optimization": 0.337447,
+      "allocation_and_encoding": 0.534636,
+      "transfer_and_publication": 0.365885,
+      "native_owner_release": 0.085,
+      "other": 0.06369700000000034
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.019947
+  },
+  {
+    "case": "mem",
+    "arm": "block",
+    "round": 3,
+    "prefix": "compile-mem-block-3",
+    "total_ms": 2.23333,
+    "exclusive_ms": {
+      "formation_and_ir": 0.852074,
+      "ir_optimization": 0.33047,
+      "allocation_and_encoding": 0.540784,
+      "transfer_and_publication": 0.37802,
+      "native_owner_release": 0.075625,
+      "other": 0.05635699999999977
+    },
+    "closure_error_ms": -4.440892098500626e-16,
+    "fault_service_ms_in_other": 0.013595
+  },
+  {
+    "case": "mem",
+    "arm": "function",
+    "round": 3,
+    "prefix": "compile-mem-function-3",
+    "total_ms": 2.214935,
+    "exclusive_ms": {
+      "formation_and_ir": 0.856189,
+      "ir_optimization": 0.31875,
+      "allocation_and_encoding": 0.521151,
+      "transfer_and_publication": 0.402185,
+      "native_owner_release": 0.063229,
+      "other": 0.05343100000000023
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012814
+  },
+  {
+    "case": "mem",
+    "arm": "fex",
+    "round": 3,
+    "prefix": "compile-mem-fex-3",
+    "total_ms": 1.66375,
+    "exclusive_ms": {
+      "formation_and_ir": 0.90203125,
+      "ir_optimization": 0.20057291666666666,
+      "allocation_and_encoding": 0.46729166666666666,
+      "transfer_and_publication": 0.07619791666666667,
+      "logical_work_buffer_release": 0.005416666666666667,
+      "other": 0.012239583333333333
+    },
+    "closure_error_ms": -2.220446049250313e-16,
+    "exclusive_ticks": {
+      "formation_and_ir": 17319,
+      "ir_optimization": 3851,
+      "allocation_and_encoding": 8972,
+      "transfer_and_publication": 1463,
+      "logical_work_buffer_release": 104,
+      "other": 235
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 848,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-block",
+    "round": 3,
+    "prefix": "compile-mem-baseline-block-3",
+    "total_ms": 2.408787,
+    "exclusive_ms": {
+      "formation_and_ir": 0.925867,
+      "ir_optimization": 0.301564,
+      "allocation_and_encoding": 0.677086,
+      "transfer_and_publication": 0.36636,
+      "native_owner_release": 0.082032,
+      "other": 0.05587799999999987
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01526
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-function",
+    "round": 3,
+    "prefix": "compile-branch-baseline-function-3",
+    "total_ms": 1.971301,
+    "exclusive_ms": {
+      "formation_and_ir": 0.75552,
+      "ir_optimization": 0.281667,
+      "allocation_and_encoding": 0.414898,
+      "transfer_and_publication": 0.410732,
+      "native_owner_release": 0.061667,
+      "other": 0.04681700000000011
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012709
+  },
+  {
+    "case": "branch",
+    "arm": "block",
+    "round": 3,
+    "prefix": "compile-branch-block-3",
+    "total_ms": 2.21448,
+    "exclusive_ms": {
+      "formation_and_ir": 0.976773,
+      "ir_optimization": 0.258748,
+      "allocation_and_encoding": 0.424479,
+      "transfer_and_publication": 0.457806,
+      "native_owner_release": 0.045052,
+      "other": 0.05162200000000006
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011876
+  },
+  {
+    "case": "branch",
+    "arm": "function",
+    "round": 3,
+    "prefix": "compile-branch-function-3",
+    "total_ms": 1.786826,
+    "exclusive_ms": {
+      "formation_and_ir": 0.689483,
+      "ir_optimization": 0.264848,
+      "allocation_and_encoding": 0.415051,
+      "transfer_and_publication": 0.317705,
+      "native_owner_release": 0.052916,
+      "other": 0.04682300000000006
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012343
+  },
+  {
+    "case": "branch",
+    "arm": "fex",
+    "round": 3,
+    "prefix": "compile-branch-fex-3",
+    "total_ms": 1.5690104166666667,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7790625,
+      "ir_optimization": 0.18255208333333334,
+      "allocation_and_encoding": 0.50203125,
+      "transfer_and_publication": 0.08796875,
+      "logical_work_buffer_release": 0.00515625,
+      "other": 0.012239583333333333
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 14958,
+      "ir_optimization": 3505,
+      "allocation_and_encoding": 9639,
+      "transfer_and_publication": 1689,
+      "logical_work_buffer_release": 99,
+      "other": 235
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 812,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-block",
+    "round": 3,
+    "prefix": "compile-branch-baseline-block-3",
+    "total_ms": 1.822709,
+    "exclusive_ms": {
+      "formation_and_ir": 0.716044,
+      "ir_optimization": 0.263593,
+      "allocation_and_encoding": 0.410367,
+      "transfer_and_publication": 0.324892,
+      "native_owner_release": 0.061719,
+      "other": 0.04609399999999986
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012812
+  },
+  {
+    "case": "call",
+    "arm": "baseline-function",
+    "round": 3,
+    "prefix": "compile-call-baseline-function-3",
+    "total_ms": 1.80224,
+    "exclusive_ms": {
+      "formation_and_ir": 0.670518,
+      "ir_optimization": 0.278748,
+      "allocation_and_encoding": 0.409539,
+      "transfer_and_publication": 0.331142,
+      "native_owner_release": 0.060052,
+      "other": 0.052241000000000204
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013541
+  },
+  {
+    "case": "call",
+    "arm": "block",
+    "round": 3,
+    "prefix": "compile-call-block-3",
+    "total_ms": 2.115532,
+    "exclusive_ms": {
+      "formation_and_ir": 0.813448,
+      "ir_optimization": 0.302554,
+      "allocation_and_encoding": 0.44443,
+      "transfer_and_publication": 0.354003,
+      "native_owner_release": 0.066614,
+      "other": 0.1344829999999999
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013332
+  },
+  {
+    "case": "call",
+    "arm": "function",
+    "round": 3,
+    "prefix": "compile-call-function-3",
+    "total_ms": 2.100465,
+    "exclusive_ms": {
+      "formation_and_ir": 0.732496,
+      "ir_optimization": 0.435832,
+      "allocation_and_encoding": 0.451821,
+      "transfer_and_publication": 0.357029,
+      "native_owner_release": 0.069427,
+      "other": 0.0538599999999998
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013437
+  },
+  {
+    "case": "call",
+    "arm": "fex",
+    "round": 3,
+    "prefix": "compile-call-fex-3",
+    "total_ms": 1.6808333333333332,
+    "exclusive_ms": {
+      "formation_and_ir": 0.78625,
+      "ir_optimization": 0.194375,
+      "allocation_and_encoding": 0.48442708333333334,
+      "transfer_and_publication": 0.18770833333333334,
+      "logical_work_buffer_release": 0.009270833333333334,
+      "other": 0.018802083333333334
+    },
+    "closure_error_ms": 2.220446049250313e-16,
+    "exclusive_ticks": {
+      "formation_and_ir": 15096,
+      "ir_optimization": 3732,
+      "allocation_and_encoding": 9301,
+      "transfer_and_publication": 3604,
+      "logical_work_buffer_release": 178,
+      "other": 361
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 7,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "call",
+    "arm": "baseline-block",
+    "round": 3,
+    "prefix": "compile-call-baseline-block-3",
+    "total_ms": 1.8402,
+    "exclusive_ms": {
+      "formation_and_ir": 0.696921,
+      "ir_optimization": 0.259638,
+      "allocation_and_encoding": 0.425263,
+      "transfer_and_publication": 0.336302,
+      "native_owner_release": 0.069896,
+      "other": 0.052180000000000115
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013489
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-function",
+    "round": 3,
+    "prefix": "compile-func_tests-baseline-function-3",
+    "total_ms": 33.123223,
+    "exclusive_ms": {
+      "formation_and_ir": 12.001981,
+      "ir_optimization": 6.658545,
+      "allocation_and_encoding": 10.395726,
+      "transfer_and_publication": 3.447906,
+      "native_owner_release": 0.267031,
+      "other": 0.3520340000000033
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011251
+  },
+  {
+    "case": "func_tests",
+    "arm": "block",
+    "round": 3,
+    "prefix": "compile-func_tests-block-3",
+    "total_ms": 21.41195,
+    "exclusive_ms": {
+      "formation_and_ir": 5.682776,
+      "ir_optimization": 4.238427,
+      "allocation_and_encoding": 6.935833,
+      "transfer_and_publication": 3.451574,
+      "native_owner_release": 0.244531,
+      "other": 0.8588090000000008
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.009895
+  },
+  {
+    "case": "func_tests",
+    "arm": "function",
+    "round": 3,
+    "prefix": "compile-func_tests-function-3",
+    "total_ms": 33.466025,
+    "exclusive_ms": {
+      "formation_and_ir": 11.937751,
+      "ir_optimization": 7.00343,
+      "allocation_and_encoding": 10.628968,
+      "transfer_and_publication": 3.266929,
+      "native_owner_release": 0.261562,
+      "other": 0.36738499999999874
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011094
+  },
+  {
+    "case": "func_tests",
+    "arm": "fex",
+    "round": 3,
+    "prefix": "compile-func_tests-fex-3",
+    "total_ms": 30.19052083333333,
+    "exclusive_ms": {
+      "formation_and_ir": 13.682135416666666,
+      "ir_optimization": 4.502864583333333,
+      "allocation_and_encoding": 9.334010416666667,
+      "transfer_and_publication": 2.0091666666666668,
+      "logical_work_buffer_release": 0.21286458333333333,
+      "other": 0.44947916666666665
+    },
+    "closure_error_ms": 3.552713678800501e-15,
+    "exclusive_ticks": {
+      "formation_and_ir": 262697,
+      "ir_optimization": 86455,
+      "allocation_and_encoding": 179213,
+      "transfer_and_publication": 38576,
+      "logical_work_buffer_release": 4087,
+      "other": 8630
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 180,
+    "byte_decode_calls": 17475,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-block",
+    "round": 3,
+    "prefix": "compile-func_tests-baseline-block-3",
+    "total_ms": 21.005487,
+    "exclusive_ms": {
+      "formation_and_ir": 5.470312,
+      "ir_optimization": 4.105004,
+      "allocation_and_encoding": 7.043336,
+      "transfer_and_publication": 3.28411,
+      "native_owner_release": 0.248385,
+      "other": 0.854339999999997
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011564
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-function",
+    "round": 3,
+    "prefix": "compile-x87_bench-baseline-function-3",
+    "total_ms": 0.728904,
+    "exclusive_ms": {
+      "formation_and_ir": 0.251092,
+      "ir_optimization": 0.2225,
+      "allocation_and_encoding": 0.079896,
+      "transfer_and_publication": 0.066771,
+      "native_owner_release": 0.09276,
+      "other": 0.015885000000000038
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013229
+  },
+  {
+    "case": "x87_bench",
+    "arm": "block",
+    "round": 3,
+    "prefix": "compile-x87_bench-block-3",
+    "total_ms": 0.669115,
+    "exclusive_ms": {
+      "formation_and_ir": 0.27599,
+      "ir_optimization": 0.063229,
+      "allocation_and_encoding": 0.119271,
+      "transfer_and_publication": 0.143594,
+      "native_owner_release": 0.046875,
+      "other": 0.02015599999999995
+    },
+    "closure_error_ms": -1.1102230246251565e-16,
+    "fault_service_ms_in_other": 0.012656
+  },
+  {
+    "case": "x87_bench",
+    "arm": "function",
+    "round": 3,
+    "prefix": "compile-x87_bench-function-3",
+    "total_ms": 0.611926,
+    "exclusive_ms": {
+      "formation_and_ir": 0.275832,
+      "ir_optimization": 0.10323,
+      "allocation_and_encoding": 0.078906,
+      "transfer_and_publication": 0.063125,
+      "native_owner_release": 0.075886,
+      "other": 0.014946999999999933
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012552
+  },
+  {
+    "case": "x87_bench",
+    "arm": "fex",
+    "round": 3,
+    "prefix": "compile-x87_bench-fex-3",
+    "total_ms": 0.30859375,
+    "exclusive_ms": {
+      "formation_and_ir": 0.11536458333333334,
+      "ir_optimization": 0.04286458333333333,
+      "allocation_and_encoding": 0.12421875,
+      "transfer_and_publication": 0.019166666666666665,
+      "logical_work_buffer_release": 0.0021875,
+      "other": 0.004791666666666666
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 2215,
+      "ir_optimization": 823,
+      "allocation_and_encoding": 2385,
+      "transfer_and_publication": 368,
+      "logical_work_buffer_release": 42,
+      "other": 92
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 1,
+    "byte_decode_calls": 22,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-block",
+    "round": 3,
+    "prefix": "compile-x87_bench-baseline-block-3",
+    "total_ms": 0.696669,
+    "exclusive_ms": {
+      "formation_and_ir": 0.235836,
+      "ir_optimization": 0.075677,
+      "allocation_and_encoding": 0.141301,
+      "transfer_and_publication": 0.161927,
+      "native_owner_release": 0.059219,
+      "other": 0.02270899999999998
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.014114
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-block",
+    "round": 4,
+    "prefix": "compile-coremark-baseline-block-4",
+    "total_ms": 41.929199,
+    "exclusive_ms": {
+      "formation_and_ir": 11.339245,
+      "ir_optimization": 8.443235,
+      "allocation_and_encoding": 14.004256,
+      "transfer_and_publication": 6.061575,
+      "native_owner_release": 0.417708,
+      "other": 1.663179999999997
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011041
+  },
+  {
+    "case": "coremark",
+    "arm": "baseline-function",
+    "round": 4,
+    "prefix": "compile-coremark-baseline-function-4",
+    "total_ms": 51.444776,
+    "exclusive_ms": {
+      "formation_and_ir": 17.138977,
+      "ir_optimization": 11.739164,
+      "allocation_and_encoding": 17.144635,
+      "transfer_and_publication": 4.534944,
+      "native_owner_release": 0.333541,
+      "other": 0.5535149999999973
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011667
+  },
+  {
+    "case": "coremark",
+    "arm": "block",
+    "round": 4,
+    "prefix": "compile-coremark-block-4",
+    "total_ms": 42.435255,
+    "exclusive_ms": {
+      "formation_and_ir": 11.431737,
+      "ir_optimization": 8.470855,
+      "allocation_and_encoding": 14.499506,
+      "transfer_and_publication": 6.008048,
+      "native_owner_release": 0.473541,
+      "other": 1.551567999999996
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011353
+  },
+  {
+    "case": "coremark",
+    "arm": "function",
+    "round": 4,
+    "prefix": "compile-coremark-function-4",
+    "total_ms": 52.375755,
+    "exclusive_ms": {
+      "formation_and_ir": 17.239258,
+      "ir_optimization": 11.824948,
+      "allocation_and_encoding": 17.646967,
+      "transfer_and_publication": 4.761974,
+      "native_owner_release": 0.351719,
+      "other": 0.550888999999998
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011354
+  },
+  {
+    "case": "coremark",
+    "arm": "fex",
+    "round": 4,
+    "prefix": "compile-coremark-fex-4",
+    "total_ms": 47.521822916666665,
+    "exclusive_ms": {
+      "formation_and_ir": 22.330364583333335,
+      "ir_optimization": 6.3409375,
+      "allocation_and_encoding": 14.5046875,
+      "transfer_and_publication": 3.1947395833333334,
+      "logical_work_buffer_release": 0.31713541666666667,
+      "other": 0.8339583333333334
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 428743,
+      "ir_optimization": 121746,
+      "allocation_and_encoding": 278490,
+      "transfer_and_publication": 61339,
+      "logical_work_buffer_release": 6089,
+      "other": 16012
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 255,
+    "byte_decode_calls": 29915,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "int",
+    "arm": "baseline-block",
+    "round": 4,
+    "prefix": "compile-int-baseline-block-4",
+    "total_ms": 2.026046,
+    "exclusive_ms": {
+      "formation_and_ir": 0.796621,
+      "ir_optimization": 0.273904,
+      "allocation_and_encoding": 0.460624,
+      "transfer_and_publication": 0.362186,
+      "native_owner_release": 0.079271,
+      "other": 0.05343999999999993
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.015833
+  },
+  {
+    "case": "int",
+    "arm": "baseline-function",
+    "round": 4,
+    "prefix": "compile-int-baseline-function-4",
+    "total_ms": 1.85921,
+    "exclusive_ms": {
+      "formation_and_ir": 0.725563,
+      "ir_optimization": 0.283543,
+      "allocation_and_encoding": 0.413538,
+      "transfer_and_publication": 0.330619,
+      "native_owner_release": 0.060052,
+      "other": 0.04589500000000002
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012449
+  },
+  {
+    "case": "int",
+    "arm": "block",
+    "round": 4,
+    "prefix": "compile-int-block-4",
+    "total_ms": 1.888748,
+    "exclusive_ms": {
+      "formation_and_ir": 0.752287,
+      "ir_optimization": 0.271561,
+      "allocation_and_encoding": 0.41724,
+      "transfer_and_publication": 0.340471,
+      "native_owner_release": 0.061407,
+      "other": 0.04578199999999999
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012448
+  },
+  {
+    "case": "int",
+    "arm": "function",
+    "round": 4,
+    "prefix": "compile-int-function-4",
+    "total_ms": 1.953179,
+    "exclusive_ms": {
+      "formation_and_ir": 0.784947,
+      "ir_optimization": 0.298802,
+      "allocation_and_encoding": 0.418594,
+      "transfer_and_publication": 0.341357,
+      "native_owner_release": 0.063125,
+      "other": 0.046354000000000006
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013178
+  },
+  {
+    "case": "int",
+    "arm": "fex",
+    "round": 4,
+    "prefix": "compile-int-fex-4",
+    "total_ms": 1.4941666666666666,
+    "exclusive_ms": {
+      "formation_and_ir": 0.78734375,
+      "ir_optimization": 0.18890625,
+      "allocation_and_encoding": 0.4344791666666667,
+      "transfer_and_publication": 0.06708333333333333,
+      "logical_work_buffer_release": 0.004895833333333334,
+      "other": 0.011458333333333333
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 15117,
+      "ir_optimization": 3627,
+      "allocation_and_encoding": 8342,
+      "transfer_and_publication": 1288,
+      "logical_work_buffer_release": 94,
+      "other": 220
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-block",
+    "round": 4,
+    "prefix": "compile-fp-baseline-block-4",
+    "total_ms": 2.596912,
+    "exclusive_ms": {
+      "formation_and_ir": 0.913677,
+      "ir_optimization": 0.430259,
+      "allocation_and_encoding": 0.665783,
+      "transfer_and_publication": 0.46568,
+      "native_owner_release": 0.066927,
+      "other": 0.05458600000000002
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012344
+  },
+  {
+    "case": "fp",
+    "arm": "baseline-function",
+    "round": 4,
+    "prefix": "compile-fp-baseline-function-4",
+    "total_ms": 2.445888,
+    "exclusive_ms": {
+      "formation_and_ir": 0.899846,
+      "ir_optimization": 0.428019,
+      "allocation_and_encoding": 0.633438,
+      "transfer_and_publication": 0.362444,
+      "native_owner_release": 0.066719,
+      "other": 0.05542200000000008
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013332
+  },
+  {
+    "case": "fp",
+    "arm": "block",
+    "round": 4,
+    "prefix": "compile-fp-block-4",
+    "total_ms": 2.450612,
+    "exclusive_ms": {
+      "formation_and_ir": 0.924159,
+      "ir_optimization": 0.424896,
+      "allocation_and_encoding": 0.626613,
+      "transfer_and_publication": 0.362031,
+      "native_owner_release": 0.065521,
+      "other": 0.04739199999999988
+    },
+    "closure_error_ms": -4.440892098500626e-16,
+    "fault_service_ms_in_other": 0.011718
+  },
+  {
+    "case": "fp",
+    "arm": "function",
+    "round": 4,
+    "prefix": "compile-fp-function-4",
+    "total_ms": 2.644178,
+    "exclusive_ms": {
+      "formation_and_ir": 1.015846,
+      "ir_optimization": 0.418649,
+      "allocation_and_encoding": 0.780524,
+      "transfer_and_publication": 0.332192,
+      "native_owner_release": 0.049531,
+      "other": 0.047436000000000256
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010833
+  },
+  {
+    "case": "fp",
+    "arm": "fex",
+    "round": 4,
+    "prefix": "compile-fp-fex-4",
+    "total_ms": 1.6610416666666667,
+    "exclusive_ms": {
+      "formation_and_ir": 0.8365104166666667,
+      "ir_optimization": 0.20776041666666667,
+      "allocation_and_encoding": 0.5167708333333333,
+      "transfer_and_publication": 0.08390625,
+      "logical_work_buffer_release": 0.005052083333333333,
+      "other": 0.011041666666666667
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 16061,
+      "ir_optimization": 3989,
+      "allocation_and_encoding": 9922,
+      "transfer_and_publication": 1611,
+      "logical_work_buffer_release": 97,
+      "other": 212
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 973,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-block",
+    "round": 4,
+    "prefix": "compile-mem-baseline-block-4",
+    "total_ms": 2.031866,
+    "exclusive_ms": {
+      "formation_and_ir": 0.760041,
+      "ir_optimization": 0.310676,
+      "allocation_and_encoding": 0.495985,
+      "transfer_and_publication": 0.347968,
+      "native_owner_release": 0.064844,
+      "other": 0.052351999999999954
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012396
+  },
+  {
+    "case": "mem",
+    "arm": "baseline-function",
+    "round": 4,
+    "prefix": "compile-mem-baseline-function-4",
+    "total_ms": 2.541768,
+    "exclusive_ms": {
+      "formation_and_ir": 0.888439,
+      "ir_optimization": 0.326247,
+      "allocation_and_encoding": 0.806356,
+      "transfer_and_publication": 0.38281,
+      "native_owner_release": 0.078958,
+      "other": 0.058958000000000066
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.016615
+  },
+  {
+    "case": "mem",
+    "arm": "block",
+    "round": 4,
+    "prefix": "compile-mem-block-4",
+    "total_ms": 2.225844,
+    "exclusive_ms": {
+      "formation_and_ir": 0.844848,
+      "ir_optimization": 0.33245,
+      "allocation_and_encoding": 0.539525,
+      "transfer_and_publication": 0.376146,
+      "native_owner_release": 0.079687,
+      "other": 0.05318800000000001
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013646
+  },
+  {
+    "case": "mem",
+    "arm": "function",
+    "round": 4,
+    "prefix": "compile-mem-function-4",
+    "total_ms": 2.169887,
+    "exclusive_ms": {
+      "formation_and_ir": 0.794936,
+      "ir_optimization": 0.331722,
+      "allocation_and_encoding": 0.521767,
+      "transfer_and_publication": 0.409061,
+      "native_owner_release": 0.058333,
+      "other": 0.054068000000000005
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012292
+  },
+  {
+    "case": "mem",
+    "arm": "fex",
+    "round": 4,
+    "prefix": "compile-mem-fex-4",
+    "total_ms": 1.605625,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7565104166666666,
+      "ir_optimization": 0.19390625,
+      "allocation_and_encoding": 0.55890625,
+      "transfer_and_publication": 0.07921875,
+      "logical_work_buffer_release": 0.0056770833333333335,
+      "other": 0.01140625
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 14525,
+      "ir_optimization": 3723,
+      "allocation_and_encoding": 10731,
+      "transfer_and_publication": 1521,
+      "logical_work_buffer_release": 109,
+      "other": 219
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 848,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-block",
+    "round": 4,
+    "prefix": "compile-branch-baseline-block-4",
+    "total_ms": 1.997455,
+    "exclusive_ms": {
+      "formation_and_ir": 0.68542,
+      "ir_optimization": 0.287863,
+      "allocation_and_encoding": 0.528177,
+      "transfer_and_publication": 0.38927,
+      "native_owner_release": 0.06026,
+      "other": 0.04646499999999998
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012708
+  },
+  {
+    "case": "branch",
+    "arm": "baseline-function",
+    "round": 4,
+    "prefix": "compile-branch-baseline-function-4",
+    "total_ms": 1.943225,
+    "exclusive_ms": {
+      "formation_and_ir": 0.745937,
+      "ir_optimization": 0.314952,
+      "allocation_and_encoding": 0.42724,
+      "transfer_and_publication": 0.345731,
+      "native_owner_release": 0.061146,
+      "other": 0.04821900000000001
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.0125
+  },
+  {
+    "case": "branch",
+    "arm": "block",
+    "round": 4,
+    "prefix": "compile-branch-block-4",
+    "total_ms": 1.933282,
+    "exclusive_ms": {
+      "formation_and_ir": 0.703124,
+      "ir_optimization": 0.284475,
+      "allocation_and_encoding": 0.428022,
+      "transfer_and_publication": 0.408229,
+      "native_owner_release": 0.061042,
+      "other": 0.04838999999999993
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012345
+  },
+  {
+    "case": "branch",
+    "arm": "function",
+    "round": 4,
+    "prefix": "compile-branch-function-4",
+    "total_ms": 2.156451,
+    "exclusive_ms": {
+      "formation_and_ir": 0.89572,
+      "ir_optimization": 0.253857,
+      "allocation_and_encoding": 0.562396,
+      "transfer_and_publication": 0.352494,
+      "native_owner_release": 0.045834,
+      "other": 0.04615000000000036
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012136
+  },
+  {
+    "case": "branch",
+    "arm": "fex",
+    "round": 4,
+    "prefix": "compile-branch-fex-4",
+    "total_ms": 1.475625,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7444791666666667,
+      "ir_optimization": 0.18411458333333333,
+      "allocation_and_encoding": 0.45307291666666666,
+      "transfer_and_publication": 0.07744791666666667,
+      "logical_work_buffer_release": 0.005364583333333333,
+      "other": 0.011145833333333334
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 14294,
+      "ir_optimization": 3535,
+      "allocation_and_encoding": 8699,
+      "transfer_and_publication": 1487,
+      "logical_work_buffer_release": 103,
+      "other": 214
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 3,
+    "byte_decode_calls": 812,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "call",
+    "arm": "baseline-block",
+    "round": 4,
+    "prefix": "compile-call-baseline-block-4",
+    "total_ms": 2.071454,
+    "exclusive_ms": {
+      "formation_and_ir": 0.835253,
+      "ir_optimization": 0.326044,
+      "allocation_and_encoding": 0.452496,
+      "transfer_and_publication": 0.330835,
+      "native_owner_release": 0.07375,
+      "other": 0.0530759999999999
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012605
+  },
+  {
+    "case": "call",
+    "arm": "baseline-function",
+    "round": 4,
+    "prefix": "compile-call-baseline-function-4",
+    "total_ms": 1.938954,
+    "exclusive_ms": {
+      "formation_and_ir": 0.725302,
+      "ir_optimization": 0.269529,
+      "allocation_and_encoding": 0.499218,
+      "transfer_and_publication": 0.327866,
+      "native_owner_release": 0.066302,
+      "other": 0.05073700000000003
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012866
+  },
+  {
+    "case": "call",
+    "arm": "block",
+    "round": 4,
+    "prefix": "compile-call-block-4",
+    "total_ms": 2.060924,
+    "exclusive_ms": {
+      "formation_and_ir": 0.704575,
+      "ir_optimization": 0.262241,
+      "allocation_and_encoding": 0.430417,
+      "transfer_and_publication": 0.454482,
+      "native_owner_release": 0.157604,
+      "other": 0.0516049999999999
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.0125
+  },
+  {
+    "case": "call",
+    "arm": "function",
+    "round": 4,
+    "prefix": "compile-call-function-4",
+    "total_ms": 1.912252,
+    "exclusive_ms": {
+      "formation_and_ir": 0.730643,
+      "ir_optimization": 0.296665,
+      "allocation_and_encoding": 0.438333,
+      "transfer_and_publication": 0.326826,
+      "native_owner_release": 0.069479,
+      "other": 0.05030599999999996
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01276
+  },
+  {
+    "case": "call",
+    "arm": "fex",
+    "round": 4,
+    "prefix": "compile-call-fex-4",
+    "total_ms": 1.5594270833333332,
+    "exclusive_ms": {
+      "formation_and_ir": 0.7799479166666666,
+      "ir_optimization": 0.19546875,
+      "allocation_and_encoding": 0.46807291666666667,
+      "transfer_and_publication": 0.088125,
+      "logical_work_buffer_release": 0.009322916666666667,
+      "other": 0.018489583333333334
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 14975,
+      "ir_optimization": 3753,
+      "allocation_and_encoding": 8987,
+      "transfer_and_publication": 1692,
+      "logical_work_buffer_release": 179,
+      "other": 355
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 7,
+    "byte_decode_calls": 810,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-block",
+    "round": 4,
+    "prefix": "compile-func_tests-baseline-block-4",
+    "total_ms": 21.567889,
+    "exclusive_ms": {
+      "formation_and_ir": 5.443341,
+      "ir_optimization": 4.338652,
+      "allocation_and_encoding": 6.937174,
+      "transfer_and_publication": 3.735935,
+      "native_owner_release": 0.258906,
+      "other": 0.8538810000000012
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012031
+  },
+  {
+    "case": "func_tests",
+    "arm": "baseline-function",
+    "round": 4,
+    "prefix": "compile-func_tests-baseline-function-4",
+    "total_ms": 33.450082,
+    "exclusive_ms": {
+      "formation_and_ir": 12.054196,
+      "ir_optimization": 6.875483,
+      "allocation_and_encoding": 10.612809,
+      "transfer_and_publication": 3.290344,
+      "native_owner_release": 0.261146,
+      "other": 0.356104000000002
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011666
+  },
+  {
+    "case": "func_tests",
+    "arm": "block",
+    "round": 4,
+    "prefix": "compile-func_tests-block-4",
+    "total_ms": 21.503943,
+    "exclusive_ms": {
+      "formation_and_ir": 5.662186,
+      "ir_optimization": 4.174403,
+      "allocation_and_encoding": 7.071189,
+      "transfer_and_publication": 3.497265,
+      "native_owner_release": 0.241511,
+      "other": 0.8573889999999977
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.010363
+  },
+  {
+    "case": "func_tests",
+    "arm": "function",
+    "round": 4,
+    "prefix": "compile-func_tests-function-4",
+    "total_ms": 33.395675,
+    "exclusive_ms": {
+      "formation_and_ir": 11.751004,
+      "ir_optimization": 6.951526,
+      "allocation_and_encoding": 10.659745,
+      "transfer_and_publication": 3.409323,
+      "native_owner_release": 0.263854,
+      "other": 0.36022299999999774
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.011926
+  },
+  {
+    "case": "func_tests",
+    "arm": "fex",
+    "round": 4,
+    "prefix": "compile-func_tests-fex-4",
+    "total_ms": 30.144322916666667,
+    "exclusive_ms": {
+      "formation_and_ir": 14.137864583333334,
+      "ir_optimization": 4.466927083333333,
+      "allocation_and_encoding": 8.85296875,
+      "transfer_and_publication": 2.0428125,
+      "logical_work_buffer_release": 0.21296875,
+      "other": 0.43078125
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 271447,
+      "ir_optimization": 85765,
+      "allocation_and_encoding": 169977,
+      "transfer_and_publication": 39222,
+      "logical_work_buffer_release": 4089,
+      "other": 8271
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 180,
+    "byte_decode_calls": 17475,
+    "exact_tick_closure": true
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-block",
+    "round": 4,
+    "prefix": "compile-x87_bench-baseline-block-4",
+    "total_ms": 0.624997,
+    "exclusive_ms": {
+      "formation_and_ir": 0.221455,
+      "ir_optimization": 0.068386,
+      "allocation_and_encoding": 0.118802,
+      "transfer_and_publication": 0.14953,
+      "native_owner_release": 0.050052,
+      "other": 0.01677200000000001
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.01177
+  },
+  {
+    "case": "x87_bench",
+    "arm": "baseline-function",
+    "round": 4,
+    "prefix": "compile-x87_bench-baseline-function-4",
+    "total_ms": 0.585778,
+    "exclusive_ms": {
+      "formation_and_ir": 0.268435,
+      "ir_optimization": 0.085208,
+      "allocation_and_encoding": 0.081459,
+      "transfer_and_publication": 0.057395,
+      "native_owner_release": 0.077343,
+      "other": 0.015938000000000008
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.013645
+  },
+  {
+    "case": "x87_bench",
+    "arm": "block",
+    "round": 4,
+    "prefix": "compile-x87_bench-block-4",
+    "total_ms": 0.626193,
+    "exclusive_ms": {
+      "formation_and_ir": 0.211298,
+      "ir_optimization": 0.062865,
+      "allocation_and_encoding": 0.13422,
+      "transfer_and_publication": 0.150365,
+      "native_owner_release": 0.049739,
+      "other": 0.017706
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012499
+  },
+  {
+    "case": "x87_bench",
+    "arm": "function",
+    "round": 4,
+    "prefix": "compile-x87_bench-function-4",
+    "total_ms": 0.561408,
+    "exclusive_ms": {
+      "formation_and_ir": 0.260991,
+      "ir_optimization": 0.059063,
+      "allocation_and_encoding": 0.077656,
+      "transfer_and_publication": 0.062709,
+      "native_owner_release": 0.085781,
+      "other": 0.015208
+    },
+    "closure_error_ms": 0.0,
+    "fault_service_ms_in_other": 0.012866
+  },
+  {
+    "case": "x87_bench",
+    "arm": "fex",
+    "round": 4,
+    "prefix": "compile-x87_bench-fex-4",
+    "total_ms": 0.2811458333333333,
+    "exclusive_ms": {
+      "formation_and_ir": 0.11479166666666667,
+      "ir_optimization": 0.0453125,
+      "allocation_and_encoding": 0.09427083333333333,
+      "transfer_and_publication": 0.019375,
+      "logical_work_buffer_release": 0.0021354166666666665,
+      "other": 0.005260416666666667
+    },
+    "closure_error_ms": 0.0,
+    "exclusive_ticks": {
+      "formation_and_ir": 2204,
+      "ir_optimization": 870,
+      "allocation_and_encoding": 1810,
+      "transfer_and_publication": 372,
+      "logical_work_buffer_release": 41,
+      "other": 101
+    },
+    "cntfrq_hz": 19200000,
+    "root_calls": 1,
+    "byte_decode_calls": 22,
+    "exact_tick_closure": true
+  }
+]

@@ -1,0 +1,170 @@
+[
+  {
+    "case": "coremark",
+    "arm": "block",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-coremark-block"
+  },
+  {
+    "case": "coremark",
+    "arm": "function",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-coremark-function"
+  },
+  {
+    "case": "coremark",
+    "arm": "fex",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-coremark-fex"
+  },
+  {
+    "case": "int",
+    "arm": "block",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-int-block"
+  },
+  {
+    "case": "int",
+    "arm": "function",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-int-function"
+  },
+  {
+    "case": "int",
+    "arm": "fex",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-int-fex"
+  },
+  {
+    "case": "fp",
+    "arm": "block",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-fp-block"
+  },
+  {
+    "case": "fp",
+    "arm": "function",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-fp-function"
+  },
+  {
+    "case": "fp",
+    "arm": "fex",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-fp-fex"
+  },
+  {
+    "case": "mem",
+    "arm": "block",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-mem-block"
+  },
+  {
+    "case": "mem",
+    "arm": "function",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-mem-function"
+  },
+  {
+    "case": "mem",
+    "arm": "fex",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-mem-fex"
+  },
+  {
+    "case": "branch",
+    "arm": "block",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-branch-block"
+  },
+  {
+    "case": "branch",
+    "arm": "function",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-branch-function"
+  },
+  {
+    "case": "branch",
+    "arm": "fex",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-branch-fex"
+  },
+  {
+    "case": "call",
+    "arm": "block",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-call-block"
+  },
+  {
+    "case": "call",
+    "arm": "function",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-call-function"
+  },
+  {
+    "case": "call",
+    "arm": "fex",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-call-fex"
+  },
+  {
+    "case": "func_tests",
+    "arm": "block",
+    "exit": 101,
+    "valid": true,
+    "prefix": "smoke-func_tests-block"
+  },
+  {
+    "case": "func_tests",
+    "arm": "function",
+    "exit": 101,
+    "valid": true,
+    "prefix": "smoke-func_tests-function"
+  },
+  {
+    "case": "func_tests",
+    "arm": "fex",
+    "exit": 101,
+    "valid": true,
+    "prefix": "smoke-func_tests-fex"
+  },
+  {
+    "case": "x87_bench",
+    "arm": "block",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-x87_bench-block"
+  },
+  {
+    "case": "x87_bench",
+    "arm": "function",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-x87_bench-function"
+  },
+  {
+    "case": "x87_bench",
+    "arm": "fex",
+    "exit": 0,
+    "valid": true,
+    "prefix": "smoke-x87_bench-fex"
+  }
+]

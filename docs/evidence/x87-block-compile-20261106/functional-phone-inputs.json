@@ -1,0 +1,47 @@
+{
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 21969568,
+    "sha256": "e579c6fbdadad2902e59d0df447b03c2e8c8774f4d6de3edf1bba1f8f42953b1"
+  },
+  "instruction-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_instruction_coverage_test",
+    "bytes": 19909328,
+    "sha256": "e747d1adf0f0df48e64dfcdd4ced36b2af1cf1c35a1fbc4ea4356a49db249408"
+  },
+  "avx-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_avx_coverage_test",
+    "bytes": 20282832,
+    "sha256": "3f2026c97136e8523938ddf07007f74025f1b1650540d5376bf4f3aa0ba20fad"
+  },
+  "x87-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_x87_coverage_test",
+    "bytes": 20202040,
+    "sha256": "a9b0115ff96487ce1ce9a2b0b46fd4844043371cd28281083d5a671005e85d18"
+  },
+  "backend-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_arm64_compile_test",
+    "bytes": 17075336,
+    "sha256": "2f12eff7756a1fa3058f1d638bf6acad99430f1a4e1239afe1f3d04acba4e065"
+  },
+  "pipeline-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_compile_pipeline_test",
+    "bytes": 17977800,
+    "sha256": "033bdf9327f9a89cafdf8824ec441c7603e19d353bb21f5bc75d300caeffc216"
+  },
+  "interpreter-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_x86_interpreter_test",
+    "bytes": 5905728,
+    "sha256": "aa26d18e7fa01fb6f629fac0655d8df44a1b44a43052465db02897b8d9a56d23"
+  },
+  "runtime-engine-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_engine_test",
+    "bytes": 21994400,
+    "sha256": "fa03d1a6d3a3469ea55f8d60689a72ea5389dfafbcb73054806be9beb250d7d1"
+  },
+  "state-images": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-cost-optimization-20261105/state-images",
+    "bytes": 3104,
+    "sha256": "dd3d02ee296ba5cb2b34da82cfb761090f40d51c07967effb5dc7e1e18040507"
+  }
+}

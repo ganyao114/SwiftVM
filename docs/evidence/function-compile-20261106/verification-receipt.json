@@ -1,0 +1,23 @@
+{
+  "utc": "2026-11-06T14:02:43.742231+00:00",
+  "source_digest": "166aeaed5d886c5da6d7c23eb3da663a4bfa788fc0957c884ae016ef943cc959",
+  "baseline_source_digest": "9a37021cd0cde4d04fa1bfaad358e44bbd99f3877d54f22b741660a2a8c662c0",
+  "baseline_runner": "e579c6fbdadad2902e59d0df447b03c2e8c8774f4d6de3edf1bba1f8f42953b1",
+  "candidate_runner": "7b1799033060b8f00ecc6b437b363c26ee30a94f04f7fea68976fa549be5f86a",
+  "runtime_samples": 200,
+  "compile_samples": 200,
+  "all_samples_valid": true,
+  "frozen_compressed_runners_match_inputs": true,
+  "functional_runner_matches_benchmark": true,
+  "fixed_fex_inputs_unchanged": true,
+  "validation": {
+    "source_current_and_archive": true,
+    "device_input_hashes_before_after": true,
+    "complete_fixed_sample_grid": true,
+    "compile_exclusive_parts_closed": true,
+    "affinity_live_pid_samples": 170,
+    "affinity_inheritance_samples": 30
+  },
+  "phone_remaining_bytes": 0,
+  "errors": []
+}

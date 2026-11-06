@@ -1,0 +1,962 @@
+[
+  {
+    "case": "coremark",
+    "scope": "block",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          36575
+        ],
+        "current": [
+          36575
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          65717
+        ],
+        "current": [
+          65717
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          388764
+        ],
+        "current": [
+          388764
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          25
+        ],
+        "current": [
+          25
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          48
+        ],
+        "current": [
+          48
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          5072
+        ],
+        "current": [
+          5072
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "coremark",
+    "scope": "function",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          50739
+        ],
+        "current": [
+          50739
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          84868
+        ],
+        "current": [
+          84868
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          394016
+        ],
+        "current": [
+          394016
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          33
+        ],
+        "current": [
+          33
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          64
+        ],
+        "current": [
+          64
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          6768
+        ],
+        "current": [
+          6768
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "int",
+    "scope": "block",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          615
+        ],
+        "current": [
+          615
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          1127
+        ],
+        "current": [
+          1127
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          5600
+        ],
+        "current": [
+          5600
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          33
+        ],
+        "current": [
+          33
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "int",
+    "scope": "function",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          615
+        ],
+        "current": [
+          615
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          1127
+        ],
+        "current": [
+          1127
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          5600
+        ],
+        "current": [
+          5600
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          33
+        ],
+        "current": [
+          33
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "fp",
+    "scope": "block",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          1433
+        ],
+        "current": [
+          1433
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          2733
+        ],
+        "current": [
+          2733
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          8208
+        ],
+        "current": [
+          8208
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          188
+        ],
+        "current": [
+          188
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          1433
+        ],
+        "current": [
+          1433
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          2733
+        ],
+        "current": [
+          2733
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          8208
+        ],
+        "current": [
+          8208
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          188
+        ],
+        "current": [
+          188
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "mem",
+    "scope": "block",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          818
+        ],
+        "current": [
+          818
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          1521
+        ],
+        "current": [
+          1521
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          7228
+        ],
+        "current": [
+          7228
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          63
+        ],
+        "current": [
+          63
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "mem",
+    "scope": "function",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          818
+        ],
+        "current": [
+          818
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          1521
+        ],
+        "current": [
+          1521
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          7228
+        ],
+        "current": [
+          7228
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          63
+        ],
+        "current": [
+          63
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "branch",
+    "scope": "block",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          615
+        ],
+        "current": [
+          615
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          1152
+        ],
+        "current": [
+          1152
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          5656
+        ],
+        "current": [
+          5656
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          29
+        ],
+        "current": [
+          29
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "branch",
+    "scope": "function",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          615
+        ],
+        "current": [
+          615
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          1152
+        ],
+        "current": [
+          1152
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          5656
+        ],
+        "current": [
+          5656
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          29
+        ],
+        "current": [
+          29
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "call",
+    "scope": "block",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          673
+        ],
+        "current": [
+          673
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          1201
+        ],
+        "current": [
+          1201
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          7824
+        ],
+        "current": [
+          7824
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          48
+        ],
+        "current": [
+          48
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "call",
+    "scope": "function",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          673
+        ],
+        "current": [
+          673
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          1201
+        ],
+        "current": [
+          1201
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          7824
+        ],
+        "current": [
+          7824
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          48
+        ],
+        "current": [
+          48
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "func_tests",
+    "scope": "block",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          16874
+        ],
+        "current": [
+          16874
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          28847
+        ],
+        "current": [
+          28847
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          220512
+        ],
+        "current": [
+          220512
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          14
+        ],
+        "current": [
+          14
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          16
+        ],
+        "current": [
+          16
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          2140
+        ],
+        "current": [
+          2140
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "func_tests",
+    "scope": "function",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          29419
+        ],
+        "current": [
+          29419
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          46599
+        ],
+        "current": [
+          46599
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          289940
+        ],
+        "current": [
+          289940
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          25
+        ],
+        "current": [
+          25
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          32
+        ],
+        "current": [
+          32
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          3575
+        ],
+        "current": [
+          3575
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "x87_bench",
+    "scope": "block",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          65
+        ],
+        "current": [
+          65
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          182
+        ],
+        "current": [
+          182
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          2532
+        ],
+        "current": [
+          2532
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          1
+        ],
+        "current": [
+          1
+        ],
+        "equal": true
+      }
+    }
+  },
+  {
+    "case": "x87_bench",
+    "scope": "function",
+    "fields": {
+      "ir_nodes": {
+        "previous": [
+          50
+        ],
+        "current": [
+          50
+        ],
+        "equal": true
+      },
+      "operand_words": {
+        "previous": [
+          126
+        ],
+        "current": [
+          126
+        ],
+        "equal": true
+      },
+      "native_bytes": {
+        "previous": [
+          1732
+        ],
+        "current": [
+          1732
+        ],
+        "equal": true
+      },
+      "spill_slots": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "max_frame_bytes": {
+        "previous": [
+          0
+        ],
+        "current": [
+          0
+        ],
+        "equal": true
+      },
+      "fault_sites": {
+        "previous": [
+          1
+        ],
+        "current": [
+          1
+        ],
+        "equal": true
+      }
+    }
+  }
+]

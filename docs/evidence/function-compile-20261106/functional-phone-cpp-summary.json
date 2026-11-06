@@ -1,0 +1,37 @@
+[
+  {
+    "case": "instruction-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "avx-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "x87-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "backend-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "pipeline-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "interpreter-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "runtime-engine-test",
+    "exit": 0,
+    "valid": true
+  }
+]

@@ -1,0 +1,16 @@
+coremark block compile 42.4353 ms; old 1.0072x; FEX 0.8938x {'time': True, 'cycles': True, 'compile': True}
+coremark function compile 51.9458 ms; old 1.0121x; FEX 1.0941x {'time': True, 'cycles': True, 'compile': True}
+int block compile 1.9093 ms; old 0.9565x; FEX 1.2701x {'time': True, 'cycles': True, 'compile': True}
+int function compile 1.9532 ms; old 1.0505x; FEX 1.2992x {'time': True, 'cycles': True, 'compile': True}
+fp block compile 2.4506 ms; old 0.9542x; FEX 1.4753x {'time': True, 'cycles': True, 'compile': True}
+fp function compile 2.6326 ms; old 1.0582x; FEX 1.5848x {'time': True, 'cycles': True, 'compile': True}
+mem block compile 2.2333 ms; old 0.9956x; FEX 1.4176x {'time': True, 'cycles': True, 'compile': True}
+mem function compile 2.3623 ms; old 0.9860x; FEX 1.4995x {'time': True, 'cycles': True, 'compile': True}
+branch block compile 1.9333 ms; old 1.0398x; FEX 1.2898x {'time': True, 'cycles': True, 'compile': True}
+branch function compile 1.9497 ms; old 1.0119x; FEX 1.3008x {'time': True, 'cycles': True, 'compile': True}
+call block compile 2.0609 ms; old 1.0783x; FEX 1.2261x {'time': True, 'cycles': True, 'compile': True}
+call function compile 2.0092 ms; old 1.0675x; FEX 1.1954x {'time': True, 'cycles': True, 'compile': True}
+func_tests block compile 21.4120 ms; old 1.0185x; FEX 0.7092x {'time': True, 'cycles': True, 'compile': True}
+func_tests function compile 33.3801 ms; old 1.0078x; FEX 1.1056x {'time': True, 'cycles': True, 'compile': True}
+x87_bench block compile 0.6773 ms; old 1.0140x; FEX 2.2842x {'time': True, 'cycles': True, 'compile': False}
+x87_bench function compile 0.5663 ms; old 0.9668x; FEX 1.9099x {'time': True, 'cycles': True, 'compile': True}

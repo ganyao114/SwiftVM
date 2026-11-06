@@ -1,0 +1,249 @@
+{
+  "not_ordinary": true,
+  "nested_logs_and_clocks_perturb_parent": true,
+  "not_for_budget_acceptance": true,
+  "results": {
+    "baseline": {
+      "function_formation": {
+        "median_us": 121.354,
+        "all_us": [
+          126.355,
+          154.062,
+          121.354,
+          96.407,
+          112.604
+        ],
+        "minor_faults": [
+          3,
+          5,
+          5,
+          3,
+          4
+        ]
+      },
+      "ir_birth": {
+        "median_us": 168.229,
+        "all_us": [
+          211.406,
+          149.948,
+          172.448,
+          143.489,
+          168.229
+        ],
+        "minor_faults": [
+          8,
+          9,
+          9,
+          9,
+          11
+        ]
+      },
+      "opt_init": {
+        "median_us": 18.594,
+        "all_us": [
+          18.594,
+          18.75,
+          16.719,
+          18.75,
+          15.0
+        ],
+        "minor_faults": [
+          2,
+          2,
+          1,
+          2,
+          1
+        ]
+      },
+      "opt_reverse1": {
+        "median_us": 30.157,
+        "all_us": [
+          51.198,
+          20.677,
+          36.875,
+          25.365,
+          30.157
+        ],
+        "minor_faults": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "opt_cfg": {
+        "median_us": 2.396,
+        "all_us": [
+          2.396,
+          3.073,
+          2.24,
+          2.968,
+          1.927
+        ],
+        "minor_faults": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "opt_forward": {
+        "median_us": 11.25,
+        "all_us": [
+          10.937,
+          11.25,
+          11.563,
+          11.458,
+          10.313
+        ],
+        "minor_faults": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "opt_finish_or_reverse3": {
+        "median_us": 4.688,
+        "all_us": [
+          4.427,
+          5.156,
+          5.417,
+          4.688,
+          4.583
+        ],
+        "minor_faults": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "candidate": {
+      "function_formation": {
+        "median_us": 81.563,
+        "all_us": [
+          117.448,
+          81.563,
+          70.729,
+          76.354,
+          126.771
+        ],
+        "minor_faults": [
+          3,
+          2,
+          3,
+          2,
+          4
+        ]
+      },
+      "ir_birth": {
+        "median_us": 146.51,
+        "all_us": [
+          220.573,
+          145.937,
+          142.396,
+          189.375,
+          146.51
+        ],
+        "minor_faults": [
+          9,
+          8,
+          9,
+          9,
+          8
+        ]
+      },
+      "opt_init": {
+        "median_us": 19.375,
+        "all_us": [
+          18.281,
+          19.688,
+          19.375,
+          21.042,
+          19.271
+        ],
+        "minor_faults": [
+          1,
+          3,
+          2,
+          2,
+          2
+        ]
+      },
+      "opt_reverse1": {
+        "median_us": 26.979,
+        "all_us": [
+          63.646,
+          19.792,
+          30.261,
+          26.979,
+          19.947
+        ],
+        "minor_faults": [
+          1,
+          1,
+          1,
+          1,
+          1
+        ]
+      },
+      "opt_cfg": {
+        "median_us": 2.188,
+        "all_us": [
+          2.083,
+          2.605,
+          2.187,
+          2.812,
+          2.188
+        ],
+        "minor_faults": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "opt_forward": {
+        "median_us": 10.885,
+        "all_us": [
+          10.99,
+          10.573,
+          10.99,
+          10.885,
+          10.782
+        ],
+        "minor_faults": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "opt_finish_or_reverse3": {
+        "median_us": 1.458,
+        "all_us": [
+          1.25,
+          1.406,
+          1.459,
+          1.458,
+          1.458
+        ],
+        "minor_faults": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  }
+}
