@@ -15,7 +15,7 @@ struct X87Value {
 static_assert(sizeof(X87Value) == 16 && offsetof(X87Value, sign_exp) == 8);
 
 struct alignas(16) X87State {
-    X87Value registers[8]{}; // Physical registers; logical ST(i)=(TOP+i)&7.
+    X87Value registers[8]{};  // Physical registers; logical ST(i)=(TOP+i)&7.
     std::uint16_t control{0x037f}, status{}, tags{0xffff}, reserved{};
     // Query output, never an extra x87 register or an arithmetic cache.
     // The helper always returns X87Result; raw64 data uses this separate word.
@@ -25,28 +25,88 @@ static_assert(sizeof(X87State) == 144 && alignof(X87State) == 16);
 static_assert(offsetof(X87State, control) == 128 && offsetof(X87State, result) == 136);
 
 enum class X87Command : std::uint8_t {
-    Init = 0, PushOne, PushF64, Exchange, Add, Mul, Div, Sqrt,
-    StoreRegPop, Status, ControlWord, ReadF64, Pop, SetControlWord,
-    ExchangeTwice, PushOnePop,
-    PushF32, PushI16, PushI32, PushI64, PushReg, StageExtLow, PushExtHigh,
-    StoreReg, PrepareF32, PrepareF64, PrepareExt80, PrepareI16, PrepareI32,
-    PrepareI64, CommitPrepared, CommitExt80, Binary, Compare, Unary,
-    PushConstant, Free, AdjustTop, ClearExceptions, Wait, LoadControlWord,
-    RefreshStatus, MaskExceptions, QueryRegExt, RestoreRegExtHigh,
-    Remainder, Scale, Extract, Transcendental,
-    ConditionalMove, PushBcdHigh, PrepareBcd, CommitBcd
+    Init = 0,
+    PushOne,
+    PushF64,
+    Exchange,
+    Add,
+    Mul,
+    Div,
+    Sqrt,
+    StoreRegPop,
+    Status,
+    ControlWord,
+    ReadF64,
+    Pop,
+    SetControlWord,
+    ExchangeTwice,
+    PushOnePop,
+    PushF32,
+    PushI16,
+    PushI32,
+    PushI64,
+    PushReg,
+    StageExtLow,
+    PushExtHigh,
+    StoreReg,
+    PrepareF32,
+    PrepareF64,
+    PrepareExt80,
+    PrepareI16,
+    PrepareI32,
+    PrepareI64,
+    CommitPrepared,
+    CommitExt80,
+    Binary,
+    Compare,
+    Unary,
+    PushConstant,
+    Free,
+    AdjustTop,
+    ClearExceptions,
+    Wait,
+    LoadControlWord,
+    RefreshStatus,
+    MaskExceptions,
+    QueryRegExt,
+    RestoreRegExtHigh,
+    Remainder,
+    Scale,
+    Extract,
+    Transcendental,
+    ConditionalMove,
+    PushBcdHigh,
+    PrepareBcd,
+    CommitBcd
 };
-enum class X87Result : std::uint64_t { Ok = 0, Unsupported = 1, UnmaskedPending = 2, RaisedException = 3 };
+enum class X87Result : std::uint64_t {
+    Ok = 0,
+    Unsupported = 1,
+    UnmaskedPending = 2,
+    RaisedException = 3
+};
 
 enum class X87Format : std::uint8_t { Register, Float32, Float64, Int16, Int32, Int64 };
 enum class X87Binary : std::uint8_t { Add, Mul, Sub, Div };
 enum class X87Unary : std::uint8_t { ChangeSign, Abs, Test, Examine, Round };
 enum class X87Constant : std::uint8_t { One, Log2Ten, Log2E, Pi, Log10Two, LnTwo, Zero };
-enum class X87Transcendental : std::uint8_t { Sin, Cos, SinCos, Tan, Atan, YLog2X, YLog2XPlusOne, TwoToXMinusOne };
+enum class X87Transcendental : std::uint8_t {
+    Sin,
+    Cos,
+    SinCos,
+    Tan,
+    Atan,
+    YLog2X,
+    YLog2XPlusOne,
+    TwoToXMinusOne
+};
 enum X87Option : std::uint64_t {
-    X87Pop = UINT64_C(1) << 16, X87Reverse = UINT64_C(1) << 17,
-    X87DestIndex = UINT64_C(1) << 18, X87QuietCompare = UINT64_C(1) << 19,
-    X87ToFlags = UINT64_C(1) << 20, X87PopTwice = UINT64_C(1) << 21,
+    X87Pop = UINT64_C(1) << 16,
+    X87Reverse = UINT64_C(1) << 17,
+    X87DestIndex = UINT64_C(1) << 18,
+    X87QuietCompare = UINT64_C(1) << 19,
+    X87ToFlags = UINT64_C(1) << 20,
+    X87PopTwice = UINT64_C(1) << 21,
 };
 
 // Low8=command, bits10:8=logical ST index. Legacy commands require remaining
@@ -67,9 +127,11 @@ constexpr std::uint64_t X87Encode(X87Command command, unsigned index = 0) noexce
 
 // Binary/Compare alone use format[13:11], operation[15:14] and X87Option.
 // The raw argument is the actual memory value, never a guest pointer.
-constexpr std::uint64_t X87EncodeOperation(X87Command command, unsigned index, X87Format format,
-                                          X87Binary operation = X87Binary::Add,
-                                          std::uint64_t options = 0) noexcept {
+constexpr std::uint64_t X87EncodeOperation(X87Command command,
+                                           unsigned index,
+                                           X87Format format,
+                                           X87Binary operation = X87Binary::Add,
+                                           std::uint64_t options = 0) noexcept {
     return X87Encode(command, index) | (static_cast<std::uint64_t>(format) << 11) |
            (static_cast<std::uint64_t>(operation) << 14) | options;
 }
@@ -78,8 +140,12 @@ constexpr std::uint64_t X87EncodeOperation(X87Command command, unsigned index, X
 // This is a call immediate, not persistent execution or analysis state.
 // Bit60 also commits metadata on success, only for the instruction's final
 // helper after any guest memory stores have completed.
-constexpr std::uint64_t X87EncodeMetadata(std::int16_t ip_offset, std::int16_t dp_offset,
-        std::int16_t opcode_offset, std::uint16_t opcode, bool has_dp, bool commit_success = false) noexcept {
+constexpr std::uint64_t X87EncodeMetadata(std::int16_t ip_offset,
+                                          std::int16_t dp_offset,
+                                          std::int16_t opcode_offset,
+                                          std::uint16_t opcode,
+                                          bool has_dp,
+                                          bool commit_success = false) noexcept {
     return std::uint64_t{static_cast<std::uint16_t>(ip_offset)} |
            (std::uint64_t{static_cast<std::uint16_t>(dp_offset)} << 16) |
            (std::uint64_t{static_cast<std::uint16_t>(opcode_offset)} << 32) |
@@ -89,9 +155,13 @@ constexpr std::uint64_t X87EncodeMetadata(std::int16_t ip_offset, std::int16_t d
 constexpr std::int16_t X87MetadataOffset(std::uint64_t encoded, unsigned field) noexcept {
     return static_cast<std::int16_t>((encoded >> (field * 16)) & 0xffff);
 }
-constexpr std::uint16_t X87MetadataOpcode(std::uint64_t encoded) noexcept { return (encoded >> 48) & 0x7ff; }
+constexpr std::uint16_t X87MetadataOpcode(std::uint64_t encoded) noexcept {
+    return (encoded >> 48) & 0x7ff;
+}
 constexpr bool X87MetadataHasDP(std::uint64_t encoded) noexcept { return (encoded >> 59) & 1; }
-constexpr bool X87MetadataCommitsSuccess(std::uint64_t encoded) noexcept { return (encoded >> 60) & 1; }
+constexpr bool X87MetadataCommitsSuccess(std::uint64_t encoded) noexcept {
+    return (encoded >> 60) & 1;
+}
 
 // BCD scratch keeps the low sixteen decimal digits in result. reserved holds
 // digit16/17 in bits7:0 and the original sign in bit15. Unused bits12:8 hold
@@ -119,9 +189,10 @@ constexpr std::uint16_t X87BcdHigh(std::uint16_t scratch) noexcept {
 std::uint8_t X87AbridgedTag(const X87State&) noexcept;
 void X87RestoreAbridgedTags(X87State&, std::uint8_t) noexcept;
 
-} // namespace swift::runtime::x86
+}  // namespace swift::runtime::x86
 
 // No guest-memory access, allocation, native floating-point or host exception.
 // Unmasked exceptions update sticky status and leave stack/results uncommitted.
-extern "C" std::uint64_t SvmX87Execute(void* state, std::uint64_t command,
-                                      std::uint64_t raw) noexcept;
+extern "C" std::uint64_t SvmX87Execute(void* state,
+                                       std::uint64_t command,
+                                       std::uint64_t raw) noexcept;

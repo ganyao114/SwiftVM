@@ -23,4 +23,4 @@ struct GuestThread {
     bool exited{}, interpret_requested{};
     int exit_code{};
 };
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

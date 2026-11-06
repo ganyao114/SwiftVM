@@ -7,17 +7,18 @@ namespace swift::runtime::backend::arm64 {
 // These capabilities describe accepted neutral IR forms, not optional CPU
 // instructions. CompileOptions separately enables optional RCpc loads.
 constexpr ir::TargetInfo KnownTargetInfo() noexcept {
-    return {ir::TargetMode::Known, 0xa64,
+    return {ir::TargetMode::Known,
+            0xa64,
             static_cast<std::uint64_t>(ir::TargetFeature::ShiftedAddress) |
-            static_cast<std::uint64_t>(ir::TargetFeature::ConditionalUniformStore) |
-            static_cast<std::uint64_t>(ir::TargetFeature::VectorSignedMulWidenLow)};
+                    static_cast<std::uint64_t>(ir::TargetFeature::ConditionalUniformStore) |
+                    static_cast<std::uint64_t>(ir::TargetFeature::VectorSignedMulWidenLow)};
 }
 
+using backend::CompileResult;
+using backend::EntryPoint;
 using backend::FaultSite;
 using backend::LinkKind;
 using backend::LinkSite;
-using backend::EntryPoint;
-using backend::CompileResult;
 
 enum class DispatchMode : std::uint8_t { Callback, Inline, InlineCounted };
 
@@ -27,9 +28,10 @@ struct CompileOptions {
     // NZCV occupy bits 31..28, AF bit 26, and the raw parity-result byte 7..0.
     // Unwritten bits are preserved. This is not an architectural x86 RFLAGS.
     std::uint32_t flags_offset{UINT32_MAX};
-    bool rcpc_loads{}; // Caller has checked actual host FEAT_LRCPC support.
+    bool rcpc_loads{};  // Caller has checked actual host FEAT_LRCPC support.
     bool fault_locations{};
-    bool recover_unaligned{}; // Caller owns SIGBUS recovery and the fast-instruction branch-patch service.
+    bool recover_unaligned{};  // Caller owns SIGBUS recovery and the fast-instruction branch-patch
+                               // service.
     // Both callbacks enable the native ABI: x19=state, x1=flags,
     // x28=context. With native_nzcv, x29 carries raw AF (bit4); otherwise it
     // points to state.pc. Only the unit's spill area is adjusted.
@@ -55,9 +57,9 @@ struct CompileOptions {
     // memory. Entry/reload and publication translate that one real shadow.
     // Standalone native units retain their compatible packed x1/AF ABI.
     bool native_nzcv{};
-    bool rcpc_imm9{}; // Caller has checked actual FEAT_LRCPC2 (HWCAP_ILRCPC).
-    bool lse_atomics{}; // Caller has checked actual FEAT_LSE (HWCAP_ATOMICS).
-    bool crc32c{}; // Caller has checked actual FEAT_CRC32 (HWCAP_CRC32).
+    bool rcpc_imm9{};    // Caller has checked actual FEAT_LRCPC2 (HWCAP_ILRCPC).
+    bool lse_atomics{};  // Caller has checked actual FEAT_LSE (HWCAP_ATOMICS).
+    bool crc32c{};       // Caller has checked actual FEAT_CRC32 (HWCAP_CRC32).
     // Linked x28 points to the real NativeRunContext FP owner. Helpers run in
     // its saved host environment and return to guest_fpcr with clear FPSR.
     bool native_fp_environment{};
@@ -71,7 +73,7 @@ struct CompileOptions {
     // Real observers materialize the entry PC; a cold dispatcher must publish
     // x0 before resolving. The publisher relocates every returned LinkSite.
     bool deferred_pc{};
-    std::uint64_t entry_pc{}; // The actual request PC, not a guessed x0 input.
+    std::uint64_t entry_pc{};  // The actual request PC, not a guessed x0 input.
     // Explicit opt-in to abi.h's one-directory NativeRunContext layout.
     // Custom callbacks/default callers keep their original tail transfer.
     DispatchMode dispatch_mode{DispatchMode::Callback};
@@ -112,4 +114,4 @@ void Compile(const ir::Program&, CompileOptions, CompileResult& output);
 // The writer borrows it only for this call, including any branch re-emission.
 void Compile(const ir::Program&, CompileOptions, CompileResult& output, Allocation& allocation);
 
-} // namespace swift::runtime::backend::arm64
+}  // namespace swift::runtime::backend::arm64

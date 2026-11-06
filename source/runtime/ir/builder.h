@@ -25,8 +25,9 @@ public:
     // The returned request permits only local rewrites, not block creation.
     // The optional absolute bound counts actual arena words, including retired
     // ranges. It does not shrink an existing reserve or limit allocator bytes.
-    static Builder Edit(Program&&, std::size_t max_operand_words =
-                        std::numeric_limits<std::size_t>::max()) noexcept;
+    static Builder Edit(
+            Program&&,
+            std::size_t max_operand_words = std::numeric_limits<std::size_t>::max()) noexcept;
 
     // Actual records borrowed from this sole owner, with no decoded mirror.
     // Edit ends all old Program borrows. Rewrite/EraseUnused preserve operation
@@ -36,13 +37,15 @@ public:
     std::uint64_t UnitId() const noexcept { return storage ? storage->unit : 0; }
     BlockId EntryBlock() const noexcept { return storage ? storage->entry : BlockId{}; }
     std::span<const Operation> Operations() const noexcept {
-        return storage ? std::span<const Operation>{storage->operations} : std::span<const Operation>{};
+        return storage ? std::span<const Operation>{storage->operations}
+                       : std::span<const Operation>{};
     }
     CellRange Operands(NodeId local) const noexcept {
         return storage ? storage->Operands(local) : CellRange{};
     }
     std::span<const BlockRecord> Blocks() const noexcept {
-        return storage ? std::span<const BlockRecord>{storage->blocks} : std::span<const BlockRecord>{};
+        return storage ? std::span<const BlockRecord>{storage->blocks}
+                       : std::span<const BlockRecord>{};
     }
 
     // Operand capacity is a physical word count, not a logical cell count.
@@ -53,21 +56,23 @@ public:
     Error SetEntry(BlockRef) noexcept;
     Error BeginBlock(BlockRef);
     AppendResult Append(OpCode, Type result, std::span<const Operand>, OperationMetadata = {});
-    AppendResult Append(OpCode op, Type result, std::initializer_list<Operand> operands,
+    AppendResult Append(OpCode op,
+                        Type result,
+                        std::initializer_list<Operand> operands,
                         OperationMetadata metadata = {}) {
         return Append(op, result, {operands.begin(), operands.size()}, metadata);
     }
     // The same declaration and transaction as Append, with its logical
     // signature/result policy fixed by the caller's compile-time opcode.
-    template<OpCode op>
-    AppendResult Emit(Type result, std::span<const Operand> operands,
-                      OperationMetadata metadata = {}) {
+    template <OpCode op> AppendResult Emit(Type result,
+                                           std::span<const Operand> operands,
+                                           OperationMetadata metadata = {}) {
         static_assert(static_cast<std::size_t>(op) < static_cast<std::size_t>(OpCode::Count));
         return AppendImpl<op>(op, result, operands, metadata);
     }
-    template<OpCode op>
-    AppendResult Emit(Type result, std::initializer_list<Operand> operands,
-                      OperationMetadata metadata = {}) {
+    template <OpCode op> AppendResult Emit(Type result,
+                                           std::initializer_list<Operand> operands,
+                                           OperationMetadata metadata = {}) {
         return Emit<op>(result, {operands.begin(), operands.size()}, metadata);
     }
     Error EndBlock(Terminal);
@@ -82,8 +87,10 @@ public:
     // edit neither allocates nor invalidates other operand iterators. The new
     // source must be an earlier, non-Void value in this owner. Semantic copy
     // equivalence and use bookkeeping remain the caller's responsibilities.
-    Error ReplaceValueUse(NodeId consumer, CellRange::Iterator edge,
-                          Value replacement, Type view = Type::Void) noexcept;
+    Error ReplaceValueUse(NodeId consumer,
+                          CellRange::Iterator edge,
+                          Value replacement,
+                          Type view = Type::Void) noexcept;
     // Owner-local, type/order preserving replacement only. Every value must
     // predate local (no self/late inputs, including Phi forward references).
     // This operation is exclusive and non-reentrant; input operands remain
@@ -93,7 +100,10 @@ public:
     // free-list, compaction or promise of reclaiming arbitrary edit history.
     // Effects/equivalence are caller duties; insertion is not provided.
     Error Rewrite(NodeId local, OpCode, Type, std::span<const Operand>, OperationMetadata = {});
-    Error Rewrite(NodeId local, OpCode op, Type type, std::initializer_list<Operand> operands,
+    Error Rewrite(NodeId local,
+                  OpCode op,
+                  Type type,
+                  std::initializer_list<Operand> operands,
                   OperationMetadata metadata = {}) {
         return Rewrite(local, op, type, {operands.begin(), operands.size()}, metadata);
     }
@@ -111,15 +121,19 @@ public:
 
 private:
     explicit Builder(std::unique_ptr<Program::Storage>, std::size_t max_operand_words) noexcept;
-    template<bool measure>
-    Error StoreOperand(const Operand&, std::size_t& words);
-    template<int known_signature, bool measure>
-    Error AppendArgument(Signature, std::span<const Operand>, std::size_t&, Type&,
-                         std::size_t& words, std::uint32_t before);
-    template<OpCode known_op, bool measure>
-    Error ProcessArguments(const Schema&, std::span<const Operand>, Type&,
-                           std::size_t& words, std::uint32_t before);
-    template<OpCode known_op>
+    template <bool measure> Error StoreOperand(const Operand&, std::size_t& words);
+    template <int known_signature, bool measure> Error AppendArgument(Signature,
+                                                                      std::span<const Operand>,
+                                                                      std::size_t&,
+                                                                      Type&,
+                                                                      std::size_t& words,
+                                                                      std::uint32_t before);
+    template <OpCode known_op, bool measure> Error ProcessArguments(const Schema&,
+                                                                    std::span<const Operand>,
+                                                                    Type&,
+                                                                    std::size_t& words,
+                                                                    std::uint32_t before);
+    template <OpCode known_op>
     AppendResult AppendImpl(OpCode, Type, std::span<const Operand>, OperationMetadata);
     std::unique_ptr<Program::Storage> storage;
     bool edit_only{};

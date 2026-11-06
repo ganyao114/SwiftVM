@@ -29,7 +29,7 @@ struct FaultContext {
     volatile sig_atomic_t smc_pending{};
     std::uint32_t pinned_uniform_offset{UINT32_MAX}, flags_offset{UINT32_MAX};
     std::uint8_t pinned_uniform_slots{8};
-    bool native_nzcv{}; // Linked raw PF/AF ABI; reserved bits remain in flags_offset's shadow.
+    bool native_nzcv{};  // Linked raw PF/AF ABI; reserved bits remain in flags_offset's shadow.
     GuestState* state{};
     pid_t thread_id{};
     bool registered{};
@@ -37,18 +37,24 @@ struct FaultContext {
     std::atomic<std::uintptr_t> host_pc{}, address{};
     std::atomic<std::uint64_t> unaligned_recoveries{}, unaligned_patches{};
     std::atomic<std::uint64_t> smc_write_faults{};
-    bool (*patch_ordered)(const NativeCode&, backend::NativeOffset, backend::NativeOffset, std::uintptr_t) noexcept {};
+    bool (*patch_ordered)(const NativeCode&,
+                          backend::NativeOffset,
+                          backend::NativeOffset,
+                          std::uintptr_t) noexcept {};
     bool (*recover_native)(FaultContext&, int, int, std::uintptr_t, void*) noexcept {};
-    std::uintptr_t page_size{}; // Queried once at registration, never from the handler.
-    std::uint64_t service_ns{}; // Fixed registration/restoration work, including rollback.
+    std::uintptr_t page_size{};  // Queried once at registration, never from the handler.
+    std::uint64_t service_ns{};  // Fixed registration/restoration work, including rollback.
     int restore_error{};
     // Actual private XMM bank in v16..v31; fatal recovery reads FPSIMD state.
     std::uint32_t pinned_vector_offset{UINT32_MAX};
 };
 
-[[noreturn]] void RaiseGuestFault(FaultContext&, const backend::FaultSite&,
-                                int signal, int code, std::uintptr_t host_pc,
-                                std::uintptr_t address) noexcept;
+[[noreturn]] void RaiseGuestFault(FaultContext&,
+                                  const backend::FaultSite&,
+                                  int signal,
+                                  int code,
+                                  std::uintptr_t host_pc,
+                                  std::uintptr_t address) noexcept;
 
 // Construct before the one sigsetjmp in Run. Registration and previous
 // actions remain unchanged while native code can jump back to that frame.
@@ -65,4 +71,4 @@ private:
     static void Handle(int, siginfo_t*, void*) noexcept;
     void Chain(int, siginfo_t*, void*) const noexcept;
 };
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

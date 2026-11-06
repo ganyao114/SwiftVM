@@ -30,10 +30,15 @@ public:
     GuestMemory(const GuestMemory&) = delete;
     GuestMemory& operator=(const GuestMemory&) = delete;
     void InitializeBrk(std::uint64_t start, std::uint64_t limit) noexcept {
-        brk_start = brk_current = start; brk_limit = limit;
+        brk_start = brk_current = start;
+        brk_limit = limit;
     }
-    std::uint64_t Map(std::uint64_t address, std::size_t length, int protection,
-                      int flags, int fd = -1, std::uint64_t offset = 0);
+    std::uint64_t Map(std::uint64_t address,
+                      std::size_t length,
+                      int protection,
+                      int flags,
+                      int fd = -1,
+                      std::uint64_t offset = 0);
     int Unmap(std::uint64_t address, std::size_t length);
     int Protect(std::uint64_t address, std::size_t length, int protection);
     std::uint64_t Brk(std::uint64_t requested);
@@ -63,9 +68,12 @@ private:
     std::size_t page_size;
     std::size_t file_regions{}, executable_file_regions{};
     std::uint64_t brk_start{}, brk_current{}, brk_limit{};
-    std::vector<MemoryRegion> Replaced(std::uint64_t address, std::size_t length, int protection, bool remove,
+    std::vector<MemoryRegion> Replaced(std::uint64_t address,
+                                       std::size_t length,
+                                       int protection,
+                                       bool remove,
                                        const MemoryRegion* replacement = nullptr) const;
     void CommitRegions(std::vector<MemoryRegion>&) noexcept;
 };
 
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

@@ -19,4 +19,4 @@ struct CpuQueryResult {
 // Fixed 1 GHz guest TSC, independent of the host CPU's counter frequency.
 [[nodiscard]] CpuQueryResult QueryGuestSystem(std::uint64_t kind, std::uint64_t argument) noexcept;
 
-} // namespace swift::runtime::x86
+}  // namespace swift::runtime::x86

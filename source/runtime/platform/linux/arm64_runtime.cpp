@@ -24,8 +24,11 @@ using execution::NativeCode;
 struct ServiceTimer {
     std::uint64_t& total;
     std::chrono::steady_clock::time_point begin{std::chrono::steady_clock::now()};
-    ~ServiceTimer() { total += static_cast<std::uint64_t>(std::chrono::duration_cast<
-            std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count()); }
+    ~ServiceTimer() {
+        total += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                    std::chrono::steady_clock::now() - begin)
+                                                    .count());
+    }
 };
 #if defined(__aarch64__)
 const fpsimd_context* FindFPSIMD(const ucontext_t& machine) noexcept {
@@ -33,7 +36,8 @@ const fpsimd_context* FindFPSIMD(const ucontext_t& machine) noexcept {
     constexpr auto bytes = sizeof(machine.uc_mcontext.__reserved);
     for (std::size_t at = 0; at + sizeof(_aarch64_ctx) <= bytes;) {
         const auto* head = reinterpret_cast<const _aarch64_ctx*>(records + at);
-        if (head->size < sizeof(_aarch64_ctx) || (head->size & 15) || head->size > bytes - at) break;
+        if (head->size < sizeof(_aarch64_ctx) || (head->size & 15) || head->size > bytes - at)
+            break;
         if (head->magic == FPSIMD_MAGIC && head->size >= sizeof(fpsimd_context))
             return reinterpret_cast<const fpsimd_context*>(head);
         at += head->size;
@@ -42,16 +46,19 @@ const fpsimd_context* FindFPSIMD(const ucontext_t& machine) noexcept {
 }
 
 #endif
-bool RecoverNative(FaultContext& context, int signal, int signal_code,
-                   std::uintptr_t address, void* raw) noexcept {
+bool RecoverNative(FaultContext& context,
+                   int signal,
+                   int signal_code,
+                   std::uintptr_t address,
+                   void* raw) noexcept {
 #if defined(__aarch64__)
     auto* machine = static_cast<ucontext_t*>(raw);
     const auto host_pc = static_cast<std::uintptr_t>(machine->uc_mcontext.pc);
     const auto* code = context.active.load();
     if (code) {
         if (context.lookup_native) code = context.lookup_native(context.lookup_opaque, host_pc);
-    }
-    else code = nullptr;
+    } else
+        code = nullptr;
     if (code) {
         const auto base = reinterpret_cast<std::uintptr_t>(code->entry);
         if (host_pc >= base && host_pc - base < code->bytes && !((host_pc - base) & 3)) {
@@ -66,12 +73,16 @@ bool RecoverNative(FaultContext& context, int signal, int signal_code,
                     ServiceTimer service{context.service_ns};
                     if (context.recover_code_write(context.code_write_opaque, address)) {
                         context.smc_write_faults.fetch_add(1, std::memory_order_relaxed);
-                        return true; // Retry the actual store; retirement waits for the cold dispatcher.
+                        return true;  // Retry the actual store; retirement waits for the cold
+                                      // dispatcher.
                     }
                 }
                 if (signal == SIGBUS && signal_code == BUS_ADRALN &&
                     offset == site.unaligned_offset && has_fallback) {
-                    if (context.patch_ordered && context.patch_ordered(*code, site.unaligned_offset, site.fallback_offset, context.page_size)) {
+                    if (context.patch_ordered && context.patch_ordered(*code,
+                                                                       site.unaligned_offset,
+                                                                       site.fallback_offset,
+                                                                       context.page_size)) {
                         context.unaligned_patches.fetch_add(1, std::memory_order_relaxed);
                         context.unaligned_recoveries.fetch_add(1, std::memory_order_relaxed);
                         machine->uc_mcontext.pc = base + static_cast<std::uintptr_t>(fallback);
@@ -80,53 +91,75 @@ bool RecoverNative(FaultContext& context, int signal, int signal_code,
                 }
                 if (context.pinned_vector_offset != UINT32_MAX) {
                     const auto* vectors = FindFPSIMD(*machine);
-                    if (!vectors) break; // Do not publish incomplete guest state; chain the original signal.
-                    auto* slots = reinterpret_cast<std::uint8_t*>(context.state) + context.pinned_vector_offset;
+                    if (!vectors)
+                        break;  // Do not publish incomplete guest state; chain the original signal.
+                    auto* slots = reinterpret_cast<std::uint8_t*>(context.state) +
+                                  context.pinned_vector_offset;
                     std::memcpy(slots, &vectors->vregs[16], 16 * sizeof(vectors->vregs[0]));
                 }
                 if (context.pinned_uniform_offset != UINT32_MAX) {
-                    auto* slots = reinterpret_cast<std::uint8_t*>(context.state) + context.pinned_uniform_offset;
+                    auto* slots = reinterpret_cast<std::uint8_t*>(context.state) +
+                                  context.pinned_uniform_offset;
                     for (unsigned i = 0; i < context.pinned_uniform_slots; ++i) {
                         // Low eight are callee-saved; pin16 maps high slots
                         // directly to x8..x15. Preserve the legacy pin12 map.
-                        const auto reg = backend::arm64::abi::PinnedUniformRegister(i, context.pinned_uniform_slots);
+                        const auto reg = backend::arm64::abi::PinnedUniformRegister(
+                                i, context.pinned_uniform_slots);
                         std::memcpy(slots + i * 8, &machine->uc_mcontext.regs[reg], 8);
                     }
                 }
                 if (context.flags_offset != UINT32_MAX) {
                     auto packed = machine->uc_mcontext.regs[1];
                     if (context.native_nzcv) {
-                        std::memcpy(&packed, reinterpret_cast<const std::uint8_t*>(context.state) + context.flags_offset, 8);
+                        std::memcpy(&packed,
+                                    reinterpret_cast<const std::uint8_t*>(context.state) +
+                                            context.flags_offset,
+                                    8);
                         packed &= ~backend::arm64::abi::PackedDynamicFlags;
-                        if (recipe.test_bits && (machine->uc_mcontext.regs[29] & backend::arm64::abi::DeferredTestTag)) {
+                        if (recipe.test_bits && (machine->uc_mcontext.regs[29] &
+                                                 backend::arm64::abi::DeferredTestTag)) {
                             // The compiler records the actual still-valid
                             // entry snapshot, which can differ from the pin
                             // already overwritten by a successful load.
                             const auto raw = machine->uc_mcontext.regs[recipe.test_register];
-                            const auto value = recipe.test_bits == 32 ? std::uint64_t{static_cast<std::uint32_t>(raw)} : raw;
+                            const auto value =
+                                    recipe.test_bits == 32
+                                            ? std::uint64_t{static_cast<std::uint32_t>(raw)}
+                                            : raw;
                             packed |= (value & UINT64_C(0xff)) | (std::uint64_t{value == 0} << 30) |
                                       (((value >> (recipe.test_bits - 1)) & 1) << 31);
                         } else {
-                            const auto pf = machine->uc_mcontext.regs[recipe.parity_register ? recipe.parity_register : 1];
-                            const auto carry_flip = recipe.carry_direct ? UINT64_C(0) : UINT64_C(0x20000000);
+                            const auto pf =
+                                    machine->uc_mcontext
+                                            .regs[recipe.parity_register ? recipe.parity_register
+                                                                         : 1];
+                            const auto carry_flip =
+                                    recipe.carry_direct ? UINT64_C(0) : UINT64_C(0x20000000);
                             packed |= (pf & UINT64_C(0xff)) |
-                                      ((machine->uc_mcontext.pstate ^ carry_flip) & UINT64_C(0xf0000000)) |
+                                      ((machine->uc_mcontext.pstate ^ carry_flip) &
+                                       UINT64_C(0xf0000000)) |
                                       ((((machine->uc_mcontext.regs[29] ^ pf) >> 4) & 1) << 26);
                         }
                     }
-                    std::memcpy(reinterpret_cast<std::uint8_t*>(context.state) + context.flags_offset,
-                                &packed, 8);
+                    std::memcpy(
+                            reinterpret_cast<std::uint8_t*>(context.state) + context.flags_offset,
+                            &packed,
+                            8);
                 }
                 execution::RaiseGuestFault(context, site, signal, signal_code, host_pc, address);
             }
         }
     }
 #else
-    (void)context; (void)signal; (void)signal_code; (void)address; (void)raw;
+    (void)context;
+    (void)signal;
+    (void)signal_code;
+    (void)address;
+    (void)raw;
 #endif
     return false;
 }
-} // namespace
+}  // namespace
 
 Arm64Runtime::Arm64Runtime(bool diagnostic) noexcept {
 #if defined(__aarch64__)
@@ -155,11 +188,14 @@ Arm64Runtime::Arm64Runtime(bool diagnostic) noexcept {
     options.pmull = capabilities.pmull;
     options.sha256 = capabilities.sha256;
     options.native_fp_environment = true;
-    options.dispatch_mode = diagnostic ? backend::arm64::DispatchMode::InlineCounted : backend::arm64::DispatchMode::Inline;
+    options.dispatch_mode = diagnostic ? backend::arm64::DispatchMode::InlineCounted
+                                       : backend::arm64::DispatchMode::Inline;
     options.local_dispatch_cache = options.callable_directory = true;
     const auto dispatch = capabilities.native_nzcv
-        ? (diagnostic ? &execution::SvmNativeDispatchNZCVCounted : &execution::SvmNativeDispatchNZCV)
-        : (diagnostic ? &execution::SvmNativeDispatchCounted : &execution::SvmNativeDispatch);
+                                  ? (diagnostic ? &execution::SvmNativeDispatchNZCVCounted
+                                                : &execution::SvmNativeDispatchNZCV)
+                                  : (diagnostic ? &execution::SvmNativeDispatchCounted
+                                                : &execution::SvmNativeDispatch);
     options.dispatcher = reinterpret_cast<std::uintptr_t>(dispatch);
     options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
     if (!capabilities.afp) options.mxcsr_flush_offset = offsetof(GuestState, mxcsr);
@@ -170,15 +206,19 @@ execution::HostBackendOps Arm64Runtime::Bind() noexcept {
     ops.context = this;
     ops.target = backend::arm64::KnownTargetInfo();
     ops.capabilities = capabilities;
-    ops.compile = [](void* raw, const ir::Program& program, execution::HostCompileRequest request) -> backend::CompileResult& {
+    ops.compile = [](void* raw,
+                     const ir::Program& program,
+                     execution::HostCompileRequest request) -> backend::CompileResult& {
         auto& self = *static_cast<Arm64Runtime*>(raw);
         auto policy = self.options;
         policy.entry_pc = request.entry_pc;
         policy.fault_locations = policy.recover_unaligned = request.fault_locations;
         policy.private_uniforms = request.private_state;
-        policy.local_flags = request.private_state && request.fault_locations && self.capabilities.native_nzcv;
+        policy.local_flags =
+                request.private_state && request.fault_locations && self.capabilities.native_nzcv;
         policy.deferred_pc = request.private_state && request.fault_locations;
-        policy.pinned_vector_offset = request.private_state ? offsetof(x86::GuestState, xmm) : UINT32_MAX;
+        policy.pinned_vector_offset =
+                request.private_state ? offsetof(x86::GuestState, xmm) : UINT32_MAX;
         if (!self.capabilities.afp) policy.mxcsr_flush_mode = request.fp_mode;
         backend::arm64::Compile(program, policy, self.output, self.allocation);
         return self.output;
@@ -191,15 +231,25 @@ execution::HostBackendOps Arm64Runtime::Bind() noexcept {
         if (out.entries.capacity() > 4096) std::vector<backend::EntryPoint>{}.swap(out.entries);
         if (self.allocation.homes.capacity() > 8u * 1024 * 1024 / sizeof(backend::arm64::Home))
             std::vector<backend::arm64::Home>{}.swap(self.allocation.homes);
-        if (self.allocation.block_order.capacity() > 4096) std::vector<std::uint32_t>{}.swap(self.allocation.block_order);
+        if (self.allocation.block_order.capacity() > 4096)
+            std::vector<std::uint32_t>{}.swap(self.allocation.block_order);
     };
     ops.release = [](void* raw) noexcept {
         auto& self = *static_cast<Arm64Runtime*>(raw);
-        self.output = {}; self.allocation = {};
+        self.output = {};
+        self.allocation = {};
     };
-    ops.initialize_link = [](void*, std::span<std::uint8_t> write, std::uintptr_t execute, bool dual,
-                             const backend::LinkSite& site, std::uintptr_t ready) noexcept {
-        return backend::arm64::InitializeNativeLink(write, execute, site, ready,
+    ops.initialize_link = [](void*,
+                             std::span<std::uint8_t> write,
+                             std::uintptr_t execute,
+                             bool dual,
+                             const backend::LinkSite& site,
+                             std::uintptr_t ready) noexcept {
+        return backend::arm64::InitializeNativeLink(
+                write,
+                execute,
+                site,
+                ready,
                 dual ? reinterpret_cast<std::uintptr_t>(write.data()) : 0);
     };
     ops.synchronize_code = backend::arm64::SynchronizeCode;
@@ -216,7 +266,10 @@ execution::HostBackendOps Arm64Runtime::Bind() noexcept {
     };
     ops.restore_host_fp = [](const NativeRunContext& native) noexcept {
 #if defined(__aarch64__)
-        asm volatile("msr fpcr, %0\nmsr fpsr, %1" : : "r"(native.host_fpcr), "r"(native.host_fpsr) : "memory");
+        asm volatile("msr fpcr, %0\nmsr fpsr, %1"
+                     :
+                     : "r"(native.host_fpcr), "r"(native.host_fpsr)
+                     : "memory");
 #else
         (void)native;
 #endif
@@ -251,11 +304,13 @@ SVM_CHECK_CONTEXT(fp_environment, SVM_A64_CTX_FP_ENVIRONMENT);
 SVM_CHECK_CONTEXT(probe_steps, SVM_A64_CTX_PROBES);
 SVM_CHECK_CONTEXT(pinned_vector_offset, SVM_A64_CTX_VECTOR_OFFSET);
 #undef SVM_CHECK_CONTEXT
-} // namespace swift::runtime::platform
+}  // namespace swift::runtime::platform
 
 namespace swift::runtime::execution {
-RunResult RunGuest(const std::string& executable, std::span<const std::string> argv,
-                   std::span<const std::string> environment, RuntimeOptions options) {
+RunResult RunGuest(const std::string& executable,
+                   std::span<const std::string> argv,
+                   std::span<const std::string> environment,
+                   RuntimeOptions options) {
     using Clock = std::chrono::steady_clock;
     RuntimeStats stats;
     int code = 125;
@@ -265,26 +320,35 @@ RunResult RunGuest(const std::string& executable, std::span<const std::string> a
         const auto binding_begin = Clock::now();
         platform::Arm64Runtime host{options.decode_timing};
         const auto backend = host.Bind();
-        const auto binding_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<
-                std::chrono::nanoseconds>(Clock::now() - binding_begin).count());
+        const auto binding_ns = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - binding_begin)
+                        .count());
         stats.compile_request_ns += binding_ns;
         stats.fault_service_ns += binding_ns;
         VM vm{options, stats, backend};
-        try { code = vm.Run(executable, argv, environment); }
-        catch (const std::exception& failure) { error = failure.what(); }
+        try {
+            code = vm.Run(executable, argv, environment);
+        } catch (const std::exception& failure) {
+            error = failure.what();
+        }
         const auto released = vm.Close();
         if (!released.Complete()) {
             if (!error.empty()) error += "; ";
-            error += "native mapping release failed: remaining=" + std::to_string(released.remaining_views) +
+            error += "native mapping release failed: remaining=" +
+                     std::to_string(released.remaining_views) +
                      " unmap_errno=" + std::to_string(released.unmap_error) +
                      " close_errno=" + std::to_string(released.close_error);
         }
-    } catch (const std::exception& failure) { error = failure.what(); }
-    stats.run_lifetime_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<
-            std::chrono::nanoseconds>(Clock::now() - begin).count());
+    } catch (const std::exception& failure) {
+        error = failure.what();
+    }
+    stats.run_lifetime_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - begin).count());
     if (options.decode_timing)
-        stats.compile_without_byte_decode_ns = stats.compile_request_ns > stats.compile_decode.nanoseconds
-            ? stats.compile_request_ns - stats.compile_decode.nanoseconds : 0;
+        stats.compile_without_byte_decode_ns =
+                stats.compile_request_ns > stats.compile_decode.nanoseconds
+                        ? stats.compile_request_ns - stats.compile_decode.nanoseconds
+                        : 0;
     return {code, stats, std::move(error)};
 }
 #if !defined(__aarch64__)
@@ -297,4 +361,4 @@ extern "C" void SvmNativePending() noexcept {}
 extern "C" void SvmNativePendingCounted() noexcept {}
 extern "C" void SvmNativeExit() noexcept {}
 #endif
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

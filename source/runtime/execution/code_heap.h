@@ -16,14 +16,17 @@ using NativeCode = backend::NativeCode;
 // PC directory borrow these ranges; an entry never changes the unit base.
 class CodeHeap {
 public:
-    using ReadyResolver = std::uintptr_t(*)(void*, std::uint64_t) noexcept;
+    using ReadyResolver = std::uintptr_t (*)(void*, std::uint64_t) noexcept;
     CodeHeap(const HostBackendOps&, std::size_t page_size) noexcept;
     ~CodeHeap();
     CodeHeap(const CodeHeap&) = delete;
     CodeHeap& operator=(const CodeHeap&) = delete;
 
-    NativeCode Publish(std::span<const std::uint32_t>, std::vector<backend::FaultSite>,
-                       std::span<const backend::LinkSite>, ReadyResolver = nullptr, void* = nullptr);
+    NativeCode Publish(std::span<const std::uint32_t>,
+                       std::vector<backend::FaultSite>,
+                       std::span<const backend::LinkSite>,
+                       ReadyResolver = nullptr,
+                       void* = nullptr);
     // Caller has revoked all entries/links and ended native/fault borrows.
     // Failed mappings remain owned here; no global retained-owner registry.
     MappingRelease Release() noexcept;
@@ -32,10 +35,13 @@ public:
     std::size_t ReservedBytes() const noexcept;
 
 private:
-    struct Slab { MemMap mapping; std::size_t used{}; };
+    struct Slab {
+        MemMap mapping;
+        std::size_t used{};
+    };
     const HostBackendOps& backend;
     std::size_t page_size;
     std::vector<Slab> slabs;
     std::vector<std::vector<backend::FaultSite>> fault_tables;
 };
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

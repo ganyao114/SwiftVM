@@ -6,4 +6,4 @@ void Assembler::Patch(WordOffset from, WordOffset to) {
     const auto* target = vixl::aarch64::Instruction::Cast(words.data() + to);
     instruction->SetImmPCOffsetTarget(target);
 }
-} // namespace swift::runtime::backend::arm64::detail
+}  // namespace swift::runtime::backend::arm64::detail

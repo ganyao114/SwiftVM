@@ -13,10 +13,15 @@ namespace swift::x86 {
 // Optional diagnostic accumulator over actual selected byte-decoder calls,
 // including unsuccessful attempts. The caller owns/resets this accumulator;
 // formation, allocation, buffer writes and validation remain outside it.
-struct DecodeTiming { std::uint64_t nanoseconds{}, calls{}; };
+struct DecodeTiming {
+    std::uint64_t nanoseconds{}, calls{};
+};
 enum class DecodeError : std::uint8_t {
-    None, InvalidInput, InvalidEncoding, Truncated,
-    OverlappingTarget, // Region formation only; never emitted by DecodeOne.
+    None,
+    InvalidInput,
+    InvalidEncoding,
+    Truncated,
+    OverlappingTarget,  // Region formation only; never emitted by DecodeOne.
     UnsupportedGuestFeature,
 };
 struct DecodeOneResult {
@@ -24,8 +29,10 @@ struct DecodeOneResult {
     Instruction instruction{};
     explicit operator bool() const noexcept { return error == DecodeError::None; }
 };
-[[nodiscard]] DecodeOneResult DecodeOne(std::span<const std::uint8_t> bytes, std::uint64_t pc,
-                                       DecodeTiming* timing = nullptr,
-                                       runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
+[[nodiscard]] DecodeOneResult DecodeOne(
+        std::span<const std::uint8_t> bytes,
+        std::uint64_t pc,
+        DecodeTiming* timing = nullptr,
+        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
 
 }  // namespace swift::x86

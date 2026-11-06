@@ -9,4 +9,4 @@ namespace swift::runtime::backend::arm64 {
 // Block128(u64 metadata, const Block128*) noexcept; its result becomes v0.
 // All actual homes, raw PF/AF and NZCV survive. No guest state is observed.
 std::uintptr_t VectorHelperBridge() noexcept;
-} // namespace swift::runtime::backend::arm64
+}  // namespace swift::runtime::backend::arm64

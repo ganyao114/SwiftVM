@@ -15,9 +15,13 @@ public:
     bool Recover(std::uintptr_t) noexcept;
     void Clear();
     void Invalidate();
+
 private:
-    struct Page { std::uint64_t address; bool armed; };
+    struct Page {
+        std::uint64_t address;
+        bool armed;
+    };
     VM& vm;
     std::vector<Page> pages;
 };
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

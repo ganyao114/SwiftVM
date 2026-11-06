@@ -1,0 +1,135 @@
+[
+  {
+    "case": "instruction-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "avx-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "x87-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "backend-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "pipeline-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "interpreter-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "runtime-engine-test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "coremark",
+    "scope": "block",
+    "exit": 0,
+    "valid": true,
+    "check": "Short 20-iteration smoke: exit0 and CRC0x4983; not an official CoreMark score."
+  },
+  {
+    "case": "coremark",
+    "scope": "function",
+    "exit": 0,
+    "valid": true,
+    "check": "Short 20-iteration smoke: exit0 and CRC0x4983; not an official CoreMark score."
+  },
+  {
+    "case": "int",
+    "scope": "block",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "int",
+    "scope": "function",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "fp",
+    "scope": "block",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "mem",
+    "scope": "block",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "mem",
+    "scope": "function",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "branch",
+    "scope": "block",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "branch",
+    "scope": "function",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "call",
+    "scope": "block",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "call",
+    "scope": "function",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "func_tests",
+    "scope": "block",
+    "exit": 101,
+    "valid": true
+  },
+  {
+    "case": "func_tests",
+    "scope": "function",
+    "exit": 101,
+    "valid": true
+  },
+  {
+    "case": "x87_bench",
+    "scope": "block",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "x87_bench",
+    "scope": "function",
+    "exit": 0,
+    "valid": true
+  }
+]

@@ -21,8 +21,10 @@ void VM::RefreshNative(NativeRunContext& context) noexcept {
 void VM::ObserveCache() noexcept {
     std::uint64_t entries{}, occupied{}, slots{}, allocations{};
     for (const auto& cache : caches) {
-        entries += cache.Entries(); occupied += cache.Occupied();
-        slots += cache.Slots(); allocations += cache.Allocations();
+        entries += cache.Entries();
+        occupied += cache.Occupied();
+        slots += cache.Slots();
+        allocations += cache.Allocations();
     }
     stats.peak_cache_entries = std::max(stats.peak_cache_entries, entries);
     stats.peak_cache_occupied = std::max(stats.peak_cache_occupied, occupied);
@@ -31,12 +33,20 @@ void VM::ObserveCache() noexcept {
 }
 std::uintptr_t VM::ResolveBridge(void* opaque, NativeRunContext* context) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
-    try { return vm.Resolve(*context); }
-    catch (const std::exception& error) {
-        try { vm.thread.diagnostic = error.what(); vm.thread.resolver_error = nullptr; }
-        catch (...) { vm.thread.resolver_error = "native resolver failed while recording its diagnostic"; }
-    } catch (...) { vm.thread.resolver_error = "unknown native resolver failure"; }
-    vm.ObserveCache(); vm.RefreshNative(*context);
+    try {
+        return vm.Resolve(*context);
+    } catch (const std::exception& error) {
+        try {
+            vm.thread.diagnostic = error.what();
+            vm.thread.resolver_error = nullptr;
+        } catch (...) {
+            vm.thread.resolver_error = "native resolver failed while recording its diagnostic";
+        }
+    } catch (...) {
+        vm.thread.resolver_error = "unknown native resolver failure";
+    }
+    vm.ObserveCache();
+    vm.RefreshNative(*context);
     return 0;
 }
 std::uintptr_t VM::Resolve(NativeRunContext& context) {
@@ -50,12 +60,19 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
         RuntimeTimer total{stats.compile_request_ns};
         if (options.scope == ir::Scope::Function) {
             code = compiler.Compile(ir::Scope::Function);
-            if (!code.entry) { ++stats.fallbacks; code = compiler.Compile(ir::Scope::Block); }
-        } else code = compiler.Compile(ir::Scope::Block);
+            if (!code.entry) {
+                ++stats.fallbacks;
+                code = compiler.Compile(ir::Scope::Block);
+            }
+        } else
+            code = compiler.Compile(ir::Scope::Block);
         if (!code.entry) {
-            if (options.mode == ExecutionMode::Mixed && compiler.Failure() == CompileFailure::Unsupported)
+            if (options.mode == ExecutionMode::Mixed &&
+                compiler.Failure() == CompileFailure::Unsupported)
                 thread.interpret_requested = true;
-            ObserveCache(); RefreshNative(context); return 0;
+            ObserveCache();
+            RefreshNative(context);
+            return 0;
         }
         {
             RuntimeTimer publish{stats.publication_ns};
@@ -72,4 +89,4 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
     RefreshNative(context);
     return reinterpret_cast<std::uintptr_t>(entry);
 }
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

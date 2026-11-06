@@ -25,7 +25,8 @@ struct StateLayout {
     std::uint32_t mxcsr_offset{UINT32_MAX};
     // Optional architectural extended-precision state, described by arch/x86/x87.h.
     std::uint32_t x87_offset{UINT32_MAX};
-    std::uint32_t x87_ip_offset{UINT32_MAX}, x87_dp_offset{UINT32_MAX}, x87_opcode_offset{UINT32_MAX};
+    std::uint32_t x87_ip_offset{UINT32_MAX}, x87_dp_offset{UINT32_MAX},
+            x87_opcode_offset{UINT32_MAX};
     std::uint32_t ymm_high_offset{UINT32_MAX};
 };
 // Native units return zero for ordinary dispatch, one for SYSCALL and three
@@ -33,7 +34,13 @@ struct StateLayout {
 // owns syscall execution and architectural RCX/R11 updates; no extra guest-state
 // reason slot or per-dispatch state reset is needed.
 enum class BuildError : std::uint8_t {
-    None, InvalidInput, InvalidEncoding, Truncated, Unsupported, IRRejected, FormationRejected,
+    None,
+    InvalidInput,
+    InvalidEncoding,
+    Truncated,
+    Unsupported,
+    IRRejected,
+    FormationRejected,
 };
 struct BuildResult {
     BuildError error{BuildError::None};
@@ -41,9 +48,7 @@ struct BuildResult {
     std::size_t decoded_bytes{}, instruction_count{};
     runtime::ir::Error ir_error{runtime::ir::Error::None};
     runtime::ir::Program program;
-    explicit operator bool() const noexcept {
-        return error == BuildError::None && bool(program);
-    }
+    explicit operator bool() const noexcept { return error == BuildError::None && bool(program); }
 };
 
 // Scalar x86-64 data movement/arithmetic, calls, stack operations and dispatch.
@@ -64,15 +69,16 @@ struct BuildResult {
 // while preserving the requested IR scope and allocation path.
 // Optional reusable is consumed only when IR construction starts. Its old
 // borrows end, capacity transfers, and the new Program gets a fresh full ID.
-[[nodiscard]] BuildResult BuildIR(std::span<const BlockWindow> windows,
-                                  runtime::ir::Scope scope,
-                                  StateLayout layout,
-                                  runtime::ir::TargetInfo target = {},
-                                  runtime::ir::WorkCounts* collected = nullptr,
-                                  DecodeTiming* timing = nullptr,
-                                  bool external_edges = false,
-                                  runtime::ir::Program* reusable = nullptr,
-                                  runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
+[[nodiscard]] BuildResult BuildIR(
+        std::span<const BlockWindow> windows,
+        runtime::ir::Scope scope,
+        StateLayout layout,
+        runtime::ir::TargetInfo target = {},
+        runtime::ir::WorkCounts* collected = nullptr,
+        DecodeTiming* timing = nullptr,
+        bool external_edges = false,
+        runtime::ir::Program* reusable = nullptr,
+        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
 
 // The actual trusted-decoder records, with no second operand representation or
 // re-decoding. Blocks select independently bounded slices in any physical
@@ -100,15 +106,16 @@ struct BuildResult {
 
 // Formation completes before any IR birth. Decode failures report zero emitted
 // instruction/byte/work counts; DecodeFunction exposes their actual decode work.
-[[nodiscard]] BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
-                                          std::uint64_t entry_pc,
-                                          StateLayout layout,
-                                          DecodeLimits limits = {},
-                                          runtime::ir::TargetInfo target = {},
-                                          runtime::ir::WorkCounts* collected = nullptr,
-                                          DecodeTiming* timing = nullptr,
-                                          runtime::ir::Program* reusable = nullptr,
-                                          ReadyEntryLookup ready = {},
-                                          runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
+[[nodiscard]] BuildResult BuildFunctionIR(
+        std::span<const BlockWindow> readable,
+        std::uint64_t entry_pc,
+        StateLayout layout,
+        DecodeLimits limits = {},
+        runtime::ir::TargetInfo target = {},
+        runtime::ir::WorkCounts* collected = nullptr,
+        DecodeTiming* timing = nullptr,
+        runtime::ir::Program* reusable = nullptr,
+        ReadyEntryLookup ready = {},
+        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
 
 }  // namespace swift::x86

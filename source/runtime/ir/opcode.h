@@ -14,21 +14,54 @@ enum class OpCode : std::uint16_t {
 };
 
 enum class Signature : std::uint8_t {
-    Value, IntValue, Int32Value, Int64Value, Imm, IntImm, Uniform, Local,
-    Cond, Flags, Operand, IntOperand, Lambda, Params,
-    OptionalData, OptionalOperand, OptionalIntOperand,
+    Value,
+    IntValue,
+    Int32Value,
+    Int64Value,
+    Imm,
+    IntImm,
+    Uniform,
+    Local,
+    Cond,
+    Flags,
+    Operand,
+    IntOperand,
+    Lambda,
+    Params,
+    OptionalData,
+    OptionalOperand,
+    OptionalIntOperand,
 };
 enum class ResultPolicy : std::uint8_t {
-    Void, Fixed, Arg0, Explicit, Call, IntegerFixed, IntegerArg0, IntegerExplicit,
+    Void,
+    Fixed,
+    Arg0,
+    Explicit,
+    Call,
+    IntegerFixed,
+    IntegerArg0,
+    IntegerExplicit,
 };
 // Guest-visible semantics, independent of register allocation or host forms.
 // Unclassified operations remain conservative until their contract is defined.
 enum class Effect : std::uint16_t {
-    None = 0, ReadMemory = 1, WriteMemory = 2,
-    ReadGuestState = 4, WriteGuestState = 8, ReadLocal = 16, WriteLocal = 32,
-    ReadFlags = 64, WriteFlags = 128, ReadHostState = 256, WriteHostState = 512,
-    MayFault = 1024, Ordered = 2048, Control = 4096, External = 8192,
-    Location = 16384, Unknown = 32768,
+    None = 0,
+    ReadMemory = 1,
+    WriteMemory = 2,
+    ReadGuestState = 4,
+    WriteGuestState = 8,
+    ReadLocal = 16,
+    WriteLocal = 32,
+    ReadFlags = 64,
+    WriteFlags = 128,
+    ReadHostState = 256,
+    WriteHostState = 512,
+    MayFault = 1024,
+    Ordered = 2048,
+    Control = 4096,
+    External = 8192,
+    Location = 16384,
+    Unknown = 32768,
 };
 constexpr Effect operator|(Effect left, Effect right) noexcept {
     return static_cast<Effect>(static_cast<unsigned>(left) | static_cast<unsigned>(right));
@@ -45,7 +78,7 @@ struct Schema {
 };
 
 namespace detail {
-template<class... Args>
+template <class... Args>
 constexpr Schema MakeSchema(ResultPolicy result, Type type, Effect effects, Args... args) noexcept {
     static_assert(sizeof...(args) <= 5);
     return {result, type, effects, sizeof...(args), {args...}};
@@ -74,8 +107,8 @@ constexpr Schema MakeSchema(ResultPolicy result, Type type, Effect effects, Args
 #define OptionalData Signature::OptionalData
 #define OptionalOperand Signature::OptionalOperand
 #define OptionalIntOperand Signature::OptionalIntOperand
-#define INST(name, ret, policy, effects, ...) \
-    detail::MakeSchema(ResultPolicy::policy, IR_TYPE_##ret, effects __VA_OPT__(,) __VA_ARGS__),
+#define INST(name, ret, policy, effects, ...)                                                      \
+    detail::MakeSchema(ResultPolicy::policy, IR_TYPE_##ret, effects __VA_OPT__(, ) __VA_ARGS__),
 inline constexpr std::array<Schema, static_cast<std::size_t>(OpCode::Count)> schemas{{
 #include "opcodes.inc"
 }};

@@ -1,0 +1,67 @@
+{
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 21917072,
+    "sha256": "83e10c8fa6cb94dab777ce2c07c8882e2d9634bbc3393728a70641f3f7961946"
+  },
+  "instruction-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_instruction_coverage_test",
+    "bytes": 19862360,
+    "sha256": "a50a6874da13f66c0dc72298db4d091172519ee0d4c26c35e6305e336ed5488d"
+  },
+  "avx-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_avx_coverage_test",
+    "bytes": 20234544,
+    "sha256": "9e0426b00706e6a126ecad19563a51429fbf60e9b86da356977d23acaf25f523"
+  },
+  "x87-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_x87_coverage_test",
+    "bytes": 20153728,
+    "sha256": "6a6112f2a83b25f28c85c59643ed4ba538dc21151d53fc0498ed287f7de0e89a"
+  },
+  "backend-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_arm64_compile_test",
+    "bytes": 16910392,
+    "sha256": "3a6415afc43a73cb46b161236712741bc69381525f556e97b60dc89e62313486"
+  },
+  "pipeline-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_compile_pipeline_test",
+    "bytes": 17928624,
+    "sha256": "8a57146eb4f69353c8161a51813880855ec58b05a4db806f41ff509e925c2c67"
+  },
+  "interpreter-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_x86_interpreter_test",
+    "bytes": 5905728,
+    "sha256": "aa26d18e7fa01fb6f629fac0655d8df44a1b44a43052465db02897b8d9a56d23"
+  },
+  "runtime-engine-test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_engine_test",
+    "bytes": 21941912,
+    "sha256": "fed934ffecc1acc356ffd725feb204219fbf7524cb518fdf3aac9dffdc160c4d"
+  },
+  "coremark": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+    "bytes": 1921016,
+    "sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba"
+  },
+  "bench-suite": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/bench_suite_x86_64",
+    "bytes": 6272,
+    "sha256": "df60aa3f57d40ed3eb0b44d124f2cb8c9d15899f90021b6d20e94be179240a6d"
+  },
+  "func-tests": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/func_tests_x86_64",
+    "bytes": 799168,
+    "sha256": "4740aad183296f458756a6ebb5abf42a2affb17dddd3b74d115a8e2f3266ae60"
+  },
+  "x87-bench": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/x87_bench_x86_64",
+    "bytes": 184,
+    "sha256": "60350fb2a0828e63934a3c8e4890302448d028ce8875a17dfa96b141f91bfabb"
+  },
+  "state-images": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/compile-cost-optimization-20261105/state-images",
+    "bytes": 3104,
+    "sha256": "dd3d02ee296ba5cb2b34da82cfb761090f40d51c07967effb5dc7e1e18040507"
+  }
+}

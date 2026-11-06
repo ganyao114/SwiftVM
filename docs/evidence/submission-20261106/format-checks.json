@@ -1,0 +1,20 @@
+{
+  "census_unchanged": true,
+  "vex_descriptor_tokens_unchanged": true,
+  "census_python_ast_unchanged": true,
+  "clang_format_version": "Android (13818152, +pgo, -bolt, +lto, -mlgo, based on r563880b) clang-format version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 5e96669f06077099aa41290cdb4c5e6fa0f59349)",
+  "ruff_version": "ruff 0.17.4",
+  "functional_tree": "4ee866dc2b524b2df66b2e31fb1c11e99456a866",
+  "counts": {
+    "owned": 901,
+    "entries": 901,
+    "descriptors": 316,
+    "ir_names": 210,
+    "emitted_ir": 153,
+    "handlers": 171,
+    "structural": 3,
+    "delegates": 171
+  },
+  "formatted_cpp_files": 151,
+  "cpp_format_check_passed": true
+}

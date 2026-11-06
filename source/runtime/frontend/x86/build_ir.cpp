@@ -32,14 +32,19 @@ public:
     using Result = AppendResult;
     Type NaturalType(Value value) const { return Operations()[value.node.value].type; }
     OperationMetadata Metadata(NodeId node) const { return Operations()[node.value].Metadata(); }
-    template<OpCode op>
-    Result Apply(Type type, std::initializer_list<Operand> inputs, OperationMetadata metadata = {}) {
+    template <OpCode op> Result Apply(Type type,
+                                      std::initializer_list<Operand> inputs,
+                                      OperationMetadata metadata = {}) {
         return Emit<op>(type, inputs, metadata);
     }
-#define INST(name, ...) Result name(Type type, std::initializer_list<Operand> inputs, OperationMetadata metadata = {}) { return Apply<OpCode::name>(type, inputs, metadata); }
+#define INST(name, ...)                                                                            \
+    Result name(                                                                                   \
+            Type type, std::initializer_list<Operand> inputs, OperationMetadata metadata = {}) {   \
+        return Apply<OpCode::name>(type, inputs, metadata);                                        \
+    }
 #include "runtime/ir/opcodes.inc"
 #undef INST
-    template<class Body> void IfNonZero(Value count, Body&& body) {
+    template <class Body> void IfNonZero(Value count, Body&& body) {
         const auto skip = Emit<OpCode::NotGoto>(Type::U64, {Operand::ValueOf(count)});
         if (!skip) throw detail::Rejected{BuildError::IRRejected, skip.error};
         body();
@@ -47,13 +52,20 @@ public:
         if (!bind) throw detail::Rejected{BuildError::IRRejected, bind.error};
     }
     Emitter(Scope scope, TargetInfo target, StateLayout layout, Program reusable)
-            : Builder(scope, target, std::move(reusable)), layout(layout), private_gprs(target.Has(TargetFeature::PrivateGPRState)),
-              private_vectors(target.Has(TargetFeature::PrivateVectorState)) {}
+            : Builder(scope, target, std::move(reusable))
+            , layout(layout)
+            , private_gprs(target.Has(TargetFeature::PrivateGPRState))
+            , private_vectors(target.Has(TargetFeature::PrivateVectorState)) {}
     Error BeginBlock(BlockRef block) {
         const auto error = Builder::BeginBlock(block);
         if (error == Error::None) {
-            valid_gprs = 0; whole_gprs = 0; pending_gprs = 0; valid_vectors = 0; last_address = {};
-            x87_state = {}; x87_zero = {};
+            valid_gprs = 0;
+            whole_gprs = 0;
+            pending_gprs = 0;
+            valid_vectors = 0;
+            last_address = {};
+            x87_state = {};
+            x87_zero = {};
         }
         return error;
     }
@@ -63,13 +75,17 @@ public:
     }
     void PublishGPRs(std::uint16_t slots = UINT16_MAX);
     void PublishVectors();
-    void PublishRegisters() { PublishGPRs(); PublishVectors(); }
+    void PublishRegisters() {
+        PublishGPRs();
+        PublishVectors();
+    }
     void StateMemory(unsigned, Value, Value, u64 pc, u64) {
         if (!layout.runtime_state_services) throw detail::Rejected{BuildError::Unsupported};
         PublishRegisters();
         const auto at = Emit<OpCode::LoadImm>(Type::U64, {Operand::Immediate(pc, Type::U64)});
         if (!at) throw detail::Rejected{BuildError::IRRejected, at.error};
-        const auto error = Emit<OpCode::StoreUniform>(Type::Void,
+        const auto error = Emit<OpCode::StoreUniform>(
+                Type::Void,
                 {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(at.GetValue())});
         if (!error) throw detail::Rejected{BuildError::IRRejected, error.error};
         FinishDispatch(5);
@@ -84,15 +100,22 @@ private:
     void InvalidateXmm(unsigned slot);
     Value X87Zero();
     Value X87Address(u32 offset);
-    std::pair<runtime::x86::X87Command, unsigned> X87Window(runtime::x86::X87Command command,
-            unsigned index, const InstructionData& instruction, InstructionRange following,
+    std::pair<runtime::x86::X87Command, unsigned> X87Window(
+            runtime::x86::X87Command command,
+            unsigned index,
+            const InstructionData& instruction,
+            InstructionRange following,
             std::span<const std::uint8_t> available) const;
     void FinishDispatch(u64 reason);
     Value AddressExpression(Type type, std::initializer_list<Operand> inputs);
     Value ShiftedAddress(TargetInfo target, Type type, Value base, Value index, std::uint8_t shift);
     void PrepareFault(StateLayout layout, u64 pc, TargetInfo target, bool external_helper);
     void MaterializeGPR(unsigned slot);
-    struct CachedGPR { NodeId value, view; std::uint8_t view_first{}; Type field_type{Type::Void}; };
+    struct CachedGPR {
+        NodeId value, view;
+        std::uint8_t view_first{};
+        Type field_type{Type::Void};
+    };
     static_assert(sizeof(CachedGPR) == 12);
     std::array<CachedGPR, 16> gprs;
     // Whole-parent coverage is independent of dirty: a U32 read lacks high32,
@@ -103,7 +126,7 @@ private:
     std::uint16_t valid_vectors{}, dirty_vectors{};
     const StateLayout layout;
     const bool private_gprs, private_vectors;
-    template<class> friend struct detail::Semantics;
+    template <class> friend struct detail::Semantics;
 };
 
 using Sem = detail::Semantics<Emitter>;
@@ -127,11 +150,16 @@ Value Emitter::AddressExpression(Type type, std::initializer_list<Operand> input
             auto at = actual.begin();
             bool same = true;
             for (const auto& input : inputs) {
-                if (at == actual.end()) { same = false; break; }
+                if (at == actual.end()) {
+                    same = false;
+                    break;
+                }
                 const auto cell = *at++;
                 if (cell.Kind() != input.kind || cell.TypeView() != input.type ||
-                    cell.Payload() != input.payload || cell.Count() != input.count || cell.Code() != input.code) {
-                    same = false; break;
+                    cell.Payload() != input.payload || cell.Count() != input.count ||
+                    cell.Code() != input.code) {
+                    same = false;
+                    break;
                 }
             }
             if (same && at == actual.end()) return {UnitId(), last_address};
@@ -141,11 +169,13 @@ Value Emitter::AddressExpression(Type type, std::initializer_list<Operand> input
     last_address = cache ? value.node : NodeId{};
     return value;
 }
-Value Emitter::ShiftedAddress(TargetInfo target, Type type, Value base, Value index, std::uint8_t shift) {
+Value Emitter::ShiftedAddress(
+        TargetInfo target, Type type, Value base, Value index, std::uint8_t shift) {
     if (!target.Has(TargetFeature::ShiftedAddress)) return {};
-    return AddressExpression(type, {Operand::Expression(OperandOp::AddShift, 2, shift),
-            Operand::ValueOf(base, type == Type::U32 ? Type::U32 : Type::Void),
-            Operand::ValueOf(index, type == Type::U32 ? Type::U32 : Type::Void)});
+    return AddressExpression(type,
+                             {Operand::Expression(OperandOp::AddShift, 2, shift),
+                              Operand::ValueOf(base, type == Type::U32 ? Type::U32 : Type::Void),
+                              Operand::ValueOf(index, type == Type::U32 ? Type::U32 : Type::Void)});
 }
 void Emitter::PrepareFault(StateLayout layout, u64 pc, TargetInfo target, bool external_helper) {
     PublishRegisters();
@@ -165,9 +195,12 @@ void Emitter::MaterializeGPR(unsigned slot) {
     const bool canonical_view = Operations()[cached.view.value].type == field_type;
     // The captured parent is whole U32/U64. U32 keeps the EAX write's
     // zero-high coverage; BitInsert cuts the original logical write field.
-    const auto combined = Require(Emit<OpCode::BitInsert>(type,
-            {Operand::ValueOf({UnitId(), cached.value}), Operand::ValueOf({UnitId(), cached.view}),
-             Operand::Immediate(cached.view_first, Type::U8), Operand::Immediate(TypeBits(field_type), Type::U8)}));
+    const auto combined =
+            Require(Emit<OpCode::BitInsert>(type,
+                                            {Operand::ValueOf({UnitId(), cached.value}),
+                                             Operand::ValueOf({UnitId(), cached.view}),
+                                             Operand::Immediate(cached.view_first, Type::U8),
+                                             Operand::Immediate(TypeBits(field_type), Type::U8)}));
     cached.value = combined.node;
     // A wide source was only the field's input, never a full-parent view.
     if (!canonical_view) cached.view = {};
@@ -183,7 +216,8 @@ void Emitter::PublishGPRs(std::uint16_t slots) {
         MaterializeGPR(slot);
         const auto node = gprs[slot].value;
         const auto type = Operations()[node.value].type;
-        Require(Emit<OpCode::StoreUniform>(Type::Void,
+        Require(Emit<OpCode::StoreUniform>(
+                Type::Void,
                 {Operand::Uniform(layout.gprs_offset + slot * layout.stride, Type::U64),
                  Operand::ValueOf({UnitId(), node}, type)}));
     }
@@ -194,7 +228,8 @@ void Emitter::PublishVectors() {
     while (publish) {
         const auto slot = std::countr_zero(publish);
         publish = static_cast<std::uint16_t>(publish & (publish - 1));
-        Require(Emit<OpCode::StoreUniform>(Type::Void,
+        Require(Emit<OpCode::StoreUniform>(
+                Type::Void,
                 {Operand::Uniform(layout.fprs_offset + slot * 16, Type::V128),
                  Operand::ValueOf({UnitId(), vectors[slot]}, Type::V128)}));
     }
@@ -219,9 +254,11 @@ Value Emitter::ReadGpr(u32 offset, unsigned slot, unsigned bits) {
         if (builder.pending_gprs & bit) {
             if (cached.view_first == first && cached.field_type == type) {
                 if (builder.Operations()[cached.view.value].type != type) {
-                    const auto view = Require(builder.BitExtract(type,
-                            {Operand::ValueOf({builder.UnitId(), cached.view}),
-                             Operand::Immediate(0, Type::U8), Operand::Immediate(bits, Type::U8)}));
+                    const auto view = Require(
+                            builder.BitExtract(type,
+                                               {Operand::ValueOf({builder.UnitId(), cached.view}),
+                                                Operand::Immediate(0, Type::U8),
+                                                Operand::Immediate(bits, Type::U8)}));
                     cached.view = view.node;
                 }
                 return {builder.UnitId(), cached.view};
@@ -236,8 +273,8 @@ Value Emitter::ReadGpr(u32 offset, unsigned slot, unsigned bits) {
                 if (natural == Type::U64) return value;
                 // An EAX write describes the full, zero-high parent even
                 // after it has been published. Widen this version once.
-                const auto full = Require(builder.ZeroExtend64(Type::U64,
-                        {Operand::ValueOf(value, Type::U32)}));
+                const auto full = Require(
+                        builder.ZeroExtend64(Type::U64, {Operand::ValueOf(value, Type::U32)}));
                 cached.value = full.node;
                 cached.view = node;
                 cached.view_first = 0;
@@ -246,15 +283,19 @@ Value Emitter::ReadGpr(u32 offset, unsigned slot, unsigned bits) {
             // A mere EAX load did not capture RAX's unknown high half.
         } else {
             if (bits == 32 && natural == Type::U32) return value;
-            if (cached.view && cached.view_first == first && builder.Operations()[cached.view.value].type == type)
+            if (cached.view && cached.view_first == first &&
+                builder.Operations()[cached.view.value].type == type)
                 return {builder.UnitId(), cached.view};
             // A narrow read is a derived value, never the new parent cache.
             // Retain only the last view in this same fixed slot, avoiding
             // repeated normalizers without a value-indexed side table.
-            const auto view = bits == 32
-                    ? Require(builder.ZeroExtend32(Type::U32, {Operand::ValueOf(value, Type::U32)}))
-                    : Require(builder.BitExtract(type,
-                            {Operand::ValueOf(value), Operand::Immediate(first, Type::U8), Operand::Immediate(bits, Type::U8)}));
+            const auto view =
+                    bits == 32 ? Require(builder.ZeroExtend32(Type::U32,
+                                                              {Operand::ValueOf(value, Type::U32)}))
+                               : Require(builder.BitExtract(type,
+                                                            {Operand::ValueOf(value),
+                                                             Operand::Immediate(first, Type::U8),
+                                                             Operand::Immediate(bits, Type::U8)}));
             cached.view = view.node;
             cached.view_first = static_cast<std::uint8_t>(first);
             return view;
@@ -267,10 +308,10 @@ Value Emitter::ReadGpr(u32 offset, unsigned slot, unsigned bits) {
     if (cache && bits >= 32) {
         builder.gprs[slot] = {value.node, {}, 0};
         builder.valid_gprs |= bit;
-        builder.whole_gprs = static_cast<std::uint16_t>((builder.whole_gprs & ~bit) | (bits == 64 ? bit : 0));
+        builder.whole_gprs =
+                static_cast<std::uint16_t>((builder.whole_gprs & ~bit) | (bits == 64 ? bit : 0));
     }
     return value;
-
 }
 void Emitter::WriteGpr(u32 offset, unsigned slot, unsigned bits, Value value) {
     auto& builder = *this;
@@ -280,8 +321,10 @@ void Emitter::WriteGpr(u32 offset, unsigned slot, unsigned bits, Value value) {
     if (builder.private_gprs) {
         const auto& producer = builder.Operations()[value.node.value];
         const bool canonical = IntegerType(producer.type) && producer.opcode != OpCode::BitCast &&
-            producer.opcode != OpCode::GetResult && producer.opcode != OpCode::GetFlags &&
-            !HasAnyEffect(EffectsFor(producer.opcode), Effect::Unknown | Effect::External | Effect::Control);
+                               producer.opcode != OpCode::GetResult &&
+                               producer.opcode != OpCode::GetFlags &&
+                               !HasAnyEffect(EffectsFor(producer.opcode),
+                                             Effect::Unknown | Effect::External | Effect::Control);
         // Same-width numeric values describe the whole register, including a
         // U32 write's implicit zero high half. A full overwrite kills an
         // unobserved partial without materializing its old parent.
@@ -309,8 +352,10 @@ void Emitter::WriteGpr(u32 offset, unsigned slot, unsigned bits, Value value) {
     }
     // Partial writes preserve the old parent. An immediate full write instead
     // replaces it, so an unobserved pending full write can simply disappear.
-    if (bits < 32) builder.PublishGPRs(bit);
-    else builder.pending_gprs = static_cast<std::uint16_t>(builder.pending_gprs & ~bit);
+    if (bits < 32)
+        builder.PublishGPRs(bit);
+    else
+        builder.pending_gprs = static_cast<std::uint16_t>(builder.pending_gprs & ~bit);
     builder.valid_gprs = static_cast<std::uint16_t>(builder.valid_gprs & ~bit);
     builder.dirty_gprs = static_cast<std::uint16_t>(builder.dirty_gprs & ~bit);
     builder.whole_gprs = static_cast<std::uint16_t>(builder.whole_gprs & ~bit);
@@ -320,9 +365,8 @@ void Emitter::WriteGpr(u32 offset, unsigned slot, unsigned bits, Value value) {
     // width. U64 field + U32 input therefore zeroes the architectural high half,
     // including raw aliases, without birthing an explicit zero-extend node.
     Require(builder.StoreUniform(Type::Void,
-            {Operand::Uniform(offset, bits == 32 ? Type::U64 : type),
-             Operand::ValueOf(value, type)}));
-
+                                 {Operand::Uniform(offset, bits == 32 ? Type::U64 : type),
+                                  Operand::ValueOf(value, type)}));
 }
 bool ValidRequest(std::size_t blocks, Scope scope, StateLayout layout, TargetInfo target) {
     if (!blocks || blocks > BlockId::invalid ||
@@ -332,14 +376,16 @@ bool ValidRequest(std::size_t blocks, Scope scope, StateLayout layout, TargetInf
         layout.stride < 8 || layout.pc_offset > std::numeric_limits<u32>::max() - 7 ||
         u64{layout.gprs_offset} + u64{15} * layout.stride > std::numeric_limits<u32>::max() - 7)
         return false;
-    if (layout.fprs_offset != UINT32_MAX &&
-        (layout.fprs_offset > UINT32_MAX - 255 ||
-         (u64{layout.fprs_offset} < u64{layout.pc_offset} + 8 && layout.pc_offset < u64{layout.fprs_offset} + 256))) return false;
+    if (layout.fprs_offset != UINT32_MAX && (layout.fprs_offset > UINT32_MAX - 255 ||
+                                             (u64{layout.fprs_offset} < u64{layout.pc_offset} + 8 &&
+                                              layout.pc_offset < u64{layout.fprs_offset} + 256)))
+        return false;
     for (unsigned reg = 0; reg < 16; ++reg) {
         const u64 offset = u64{layout.gprs_offset} + u64{reg} * layout.stride;
         if (offset < u64{layout.pc_offset} + 8 && layout.pc_offset < offset + 8) return false;
         if (layout.fprs_offset != UINT32_MAX && offset < u64{layout.fprs_offset} + 256 &&
-            layout.fprs_offset < offset + 8) return false;
+            layout.fprs_offset < offset + 8)
+            return false;
     }
     return true;
 }
@@ -348,26 +394,36 @@ bool ValidSources(std::span<const BlockWindow> windows) {
     for (std::size_t i = 0; i < windows.size(); ++i)
         if (windows[i].bytes.empty() || !windows[i].bytes.data() ||
             windows[i].bytes.size() > std::numeric_limits<u64>::max() - windows[i].pc ||
-            (i && windows[i - 1].pc >= windows[i].pc)) return false;
+            (i && windows[i - 1].pc >= windows[i].pc))
+            return false;
     return true;
 }
 Value Emitter::ReadAddressGpr(unsigned slot) {
     if (!private_gprs || !(valid_gprs & (1u << slot))) return {};
-    MaterializeGPR(slot); return {UnitId(), gprs[slot].value};
+    MaterializeGPR(slot);
+    return {UnitId(), gprs[slot].value};
 }
 Value Emitter::ReadXmm(u32 offset, unsigned slot) {
     const auto bit = static_cast<std::uint16_t>(1u << slot);
     if (private_vectors && (valid_vectors & bit)) return {UnitId(), vectors[slot]};
     const auto value = Require(LoadUniform(Type::V128, {Operand::Uniform(offset, Type::V128)}));
-    if (private_vectors) { vectors[slot] = value.node; valid_vectors |= bit; }
+    if (private_vectors) {
+        vectors[slot] = value.node;
+        valid_vectors |= bit;
+    }
     return value;
 }
 void Emitter::WriteXmm(u32 offset, unsigned slot, Value value) {
     if (private_vectors) {
         const auto bit = static_cast<std::uint16_t>(1u << slot);
-        vectors[slot] = value.node; valid_vectors |= bit; dirty_vectors |= bit; return;
+        vectors[slot] = value.node;
+        valid_vectors |= bit;
+        dirty_vectors |= bit;
+        return;
     }
-    Require(StoreUniform(Type::Void, {Operand::Uniform(offset, Type::V128), Operand::ValueOf(value, Type::V128)}));
+    Require(StoreUniform(
+            Type::Void,
+            {Operand::Uniform(offset, Type::V128), Operand::ValueOf(value, Type::V128)}));
 }
 void Emitter::InvalidateXmm(unsigned slot) {
     const auto bit = static_cast<std::uint16_t>(1u << slot);
@@ -379,24 +435,32 @@ Value Emitter::X87Zero() {
     return {UnitId(), x87_zero};
 }
 Value Emitter::X87Address(u32 offset) {
-    if (!x87_state) x87_state = Require(GetUniformAddress(Type::U64, {Operand::Immediate(offset, Type::U32)})).node;
+    if (!x87_state)
+        x87_state =
+                Require(GetUniformAddress(Type::U64, {Operand::Immediate(offset, Type::U32)})).node;
     return {UnitId(), x87_state};
 }
-std::pair<runtime::x86::X87Command, unsigned> Emitter::X87Window(runtime::x86::X87Command command,
-        unsigned index, const InstructionData& instruction, InstructionRange following,
+std::pair<runtime::x86::X87Command, unsigned> Emitter::X87Window(
+        runtime::x86::X87Command command,
+        unsigned index,
+        const InstructionData& instruction,
+        InstructionRange following,
         std::span<const std::uint8_t> available) const {
     using runtime::x86::X87Command;
     // Only these contiguous register windows have no independent failure after
     // their first operation succeeds. Preserve each original record's later
     // validation/counting and all actual helper stack/status effects.
     unsigned consumed = 1;
-    const auto second_instruction = following.size() > 1 ? following[1].Record() : InstructionData{};
+    const auto second_instruction =
+            following.size() > 1 ? following[1].Record() : InstructionData{};
     const auto third_instruction = following.size() > 2 ? following[2].Record() : InstructionData{};
     const auto exact = [&](unsigned at, Op opcode, std::uint8_t low, std::uint8_t high) {
         if (at >= following.size() || available.size() < (at + 1) * 2) return false;
-        const auto& record = at == 0 ? instruction : at == 1 ? second_instruction : third_instruction;
-        return record.addr == instruction.addr + at * 2 && record.size == 2 && record.opcode == opcode &&
-               available[at * 2] == low && available[at * 2 + 1] == high;
+        const auto& record = at == 0   ? instruction
+                             : at == 1 ? second_instruction
+                                       : third_instruction;
+        return record.addr == instruction.addr + at * 2 && record.size == 2 &&
+               record.opcode == opcode && available[at * 2] == low && available[at * 2 + 1] == high;
     };
     const auto empty_after = [](const InstructionData& decoded, unsigned first_operand) {
         for (unsigned i = first_operand; i < 4; ++i)
@@ -407,36 +471,45 @@ std::pair<runtime::x86::X87Command, unsigned> Emitter::X87Window(runtime::x86::X
         exact(1, Op::FXCH, 0xd9, 0xc8 + index)) {
         const auto& other = second_instruction;
         if (empty_after(other, 1) && (other.ops[0].type == GuestOperandKind::None ||
-            (other.ops[0].type == GuestOperandKind::Register && other.ops[0].index == Register::ST0 + index))) {
+                                      (other.ops[0].type == GuestOperandKind::Register &&
+                                       other.ops[0].index == Register::ST0 + index))) {
             command = X87Command::ExchangeTwice;
             consumed = 2;
         }
     } else if (command == X87Command::PushOne && exact(0, Op::FLD1, 0xd9, 0xe8) &&
                exact(1, Op::FSQRT, 0xd9, 0xfa) && exact(2, Op::FSTP, 0xdd, 0xd8) &&
                empty_after(second_instruction, 0) && empty_after(third_instruction, 1) &&
-               third_instruction.ops[0].type == GuestOperandKind::Register && third_instruction.ops[0].index == Register::ST0) {
+               third_instruction.ops[0].type == GuestOperandKind::Register &&
+               third_instruction.ops[0].index == Register::ST0) {
         command = X87Command::PushOnePop;
         consumed = 3;
     }
     return {command, consumed};
 }
 void Emitter::FinishDispatch(u64 reason) {
-    Require(EndBlock(reason ? Terminal::Return(Sem::Constant(*this, reason)) : Terminal::Dispatch()));
+    Require(EndBlock(reason ? Terminal::Return(Sem::Constant(*this, reason))
+                            : Terminal::Dispatch()));
 }
 
-
-BuildResult EmitDecoded(InstructionRange instructions, std::span<const DecodedBlock> blocks,
-                        std::span<const BlockWindow> sources, Scope scope, StateLayout layout,
-                        TargetInfo target, WorkCounts* collected, DecodeFailure failure = {}, u32 entry_block = 0,
-                        bool external_edges = false, Program* reusable = nullptr) {
+BuildResult EmitDecoded(InstructionRange instructions,
+                        std::span<const DecodedBlock> blocks,
+                        std::span<const BlockWindow> sources,
+                        Scope scope,
+                        StateLayout layout,
+                        TargetInfo target,
+                        WorkCounts* collected,
+                        DecodeFailure failure = {},
+                        u32 entry_block = 0,
+                        bool external_edges = false,
+                        Program* reusable = nullptr) {
     if (collected) *collected = {};
-    if (!ValidRequest(blocks.size(), scope, layout, target) || !ValidSources(sources) || entry_block >= blocks.size())
+    if (!ValidRequest(blocks.size(), scope, layout, target) || !ValidSources(sources) ||
+        entry_block >= blocks.size())
         return {BuildError::InvalidInput, 0, 0, 0, Error::None, {}};
     for (std::size_t i = 0; i < blocks.size(); ++i) {
         const auto& block = blocks[i];
         const std::size_t first = block.first_instruction;
-        if (first > instructions.size() ||
-            block.instruction_count > instructions.size() - first ||
+        if (first > instructions.size() || block.instruction_count > instructions.size() - first ||
             (i && blocks[i - 1].pc >= block.pc))
             return {BuildError::InvalidInput, block.pc, 0, 0, Error::None, {}};
     }
@@ -446,13 +519,18 @@ BuildResult EmitDecoded(InstructionRange instructions, std::span<const DecodedBl
     try {
         const auto internal = [&](u64 address) {
             if (external_edges) return BlockId{};
-            const auto found = std::lower_bound(blocks.begin(), blocks.end(), address,
+            const auto found = std::lower_bound(
+                    blocks.begin(),
+                    blocks.end(),
+                    address,
                     [](const DecodedBlock& block, u64 value) { return block.pc < value; });
             return found != blocks.end() && found->pc == address
-                    ? BlockId{static_cast<u32>(found - blocks.begin())} : BlockId{};
+                           ? BlockId{static_cast<u32>(found - blocks.begin())}
+                           : BlockId{};
         };
         const auto external_choice = [&](u64 taken, u64 next) {
-            return target.Has(TargetFeature::ConditionalUniformStore) && !internal(taken) && !internal(next);
+            return target.Has(TargetFeature::ConditionalUniformStore) && !internal(taken) &&
+                   !internal(next);
         };
         std::vector<u64> exits;
         if (scope == Scope::Function) {
@@ -460,13 +538,20 @@ BuildResult EmitDecoded(InstructionRange instructions, std::span<const DecodedBl
             // reads terminal records, not a second whole-instruction plan.
             for (const auto& block : blocks) {
                 if (!block.instruction_count) continue;
-                const auto& last = instructions[std::size_t{block.first_instruction} + block.instruction_count - 1].Record();
-                if ((!Sem::Conditional(last.opcode) && !Sem::CounterConditional(last.opcode)) || !Sem::Direct(last)) continue;
+                const auto& last = instructions[std::size_t{block.first_instruction} +
+                                                block.instruction_count - 1]
+                                           .Record();
+                if ((!Sem::Conditional(last.opcode) && !Sem::CounterConditional(last.opcode)) ||
+                    !Sem::Direct(last))
+                    continue;
                 const u64 next = last.addr + last.size, taken = next + last.immediate;
-                const bool taken_internal = bool(internal(taken)), next_internal = bool(internal(next));
+                const bool taken_internal = bool(internal(taken)),
+                           next_internal = bool(internal(next));
                 // Two outgoing PCs already fit one existing conditional
                 // Uniform store. Keep CFG bodies only for real internal edges.
-                if (target.Has(TargetFeature::ConditionalUniformStore) && !taken_internal && !next_internal) continue;
+                if (target.Has(TargetFeature::ConditionalUniformStore) && !taken_internal &&
+                    !next_internal)
+                    continue;
                 if (!taken_internal) exits.push_back(taken);
                 if (!next_internal) exits.push_back(next);
             }
@@ -492,32 +577,47 @@ BuildResult EmitDecoded(InstructionRange instructions, std::span<const DecodedBl
             // publish their destination below.
             if (!found || !target.Has(TargetFeature::FaultLocations))
                 Sem::StorePC(builder, layout, Sem::Constant(builder, destination));
-            if (found) Require(builder.EndBlock(Terminal::Jump({unit, found})));
-            else Sem::EndDispatch(builder);
+            if (found)
+                Require(builder.EndBlock(Terminal::Jump({unit, found})));
+            else
+                Sem::EndDispatch(builder);
         };
         const auto target_block = [&](u64 destination) {
             if (const auto found = internal(destination)) return BlockRef{unit, found};
             const auto found = std::lower_bound(exits.begin(), exits.end(), destination);
             if (found == exits.end() || *found != destination)
                 throw Rejected{BuildError::InvalidInput};
-            return BlockRef{unit, BlockId{static_cast<u32>(blocks.size() + (found - exits.begin()))}};
+            return BlockRef{unit,
+                            BlockId{static_cast<u32>(blocks.size() + (found - exits.begin()))}};
         };
         const auto branch = [&](Value condition, u64 taken, u64 next_pc) {
             if (scope == Scope::Block || external_choice(taken, next_pc)) {
                 if (target.Has(TargetFeature::ConditionalUniformStore))
-                    Require(builder.Emit<OpCode::StoreUniformSelectImm>(Type::Void,
-                            {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(condition),
-                             Operand::Immediate(taken, Type::U64), Operand::Immediate(next_pc, Type::U64)}));
+                    Require(builder.Emit<OpCode::StoreUniformSelectImm>(
+                            Type::Void,
+                            {Operand::Uniform(layout.pc_offset, Type::U64),
+                             Operand::ValueOf(condition),
+                             Operand::Immediate(taken, Type::U64),
+                             Operand::Immediate(next_pc, Type::U64)}));
                 else {
-                    const auto yes = Sem::Constant(builder, taken), no = Sem::Constant(builder, next_pc);
-                    const auto destination = Require(builder.Emit<OpCode::Select>(Type::U64,
-                            {Operand::ValueOf(condition), Operand::ValueOf(yes), Operand::ValueOf(no)}));
+                    const auto yes = Sem::Constant(builder, taken),
+                               no = Sem::Constant(builder, next_pc);
+                    const auto destination =
+                            Require(builder.Emit<OpCode::Select>(Type::U64,
+                                                                 {Operand::ValueOf(condition),
+                                                                  Operand::ValueOf(yes),
+                                                                  Operand::ValueOf(no)}));
                     Sem::StorePC(builder, layout, destination);
                 }
                 Sem::EndDispatch(builder);
-            } else Require(builder.EndBlock(Terminal::Branch(condition, target_block(taken), target_block(next_pc))));
+            } else
+                Require(builder.EndBlock(
+                        Terminal::Branch(condition, target_block(taken), target_block(next_pc))));
         };
-        struct Flow { decltype(finish)& finish; decltype(branch)& branch; } cfg_flow{finish, branch};
+        struct Flow {
+            decltype(finish)& finish;
+            decltype(branch)& branch;
+        } cfg_flow{finish, branch};
         std::size_t source{};
         for (std::size_t block = 0; block < blocks.size(); ++block) {
             const auto& slice = blocks[block];
@@ -526,42 +626,60 @@ BuildResult EmitDecoded(InstructionRange instructions, std::span<const DecodedBl
             // Empty budget frontiers dispatch to their own PC so a later
             // request can decode it. They must never become cached self entries.
             if (scope == Scope::Function && target.Has(TargetFeature::ExternalEntries) &&
-                    block != entry_block && slice.instruction_count)
+                block != entry_block && slice.instruction_count)
                 Require(builder.Emit<OpCode::EntryPoint>(Type::Void,
-                        {Operand::Immediate(pc, Type::U64)}));
+                                                         {Operand::Immediate(pc, Type::U64)}));
             bool ended{};
             unsigned x87_following{};
             for (std::size_t i = 0; i < slice.instruction_count; ++i) {
                 const auto& instruction = instructions[slice.first_instruction + i].Record();
                 if (instruction.addr != pc) throw Rejected{BuildError::InvalidInput};
                 if (instruction.flags == InstructionFlag::Invalid || !instruction.size ||
-                    instruction.size > 15) throw Rejected{BuildError::InvalidEncoding};
+                    instruction.size > 15)
+                    throw Rejected{BuildError::InvalidEncoding};
                 while (source + 1 < sources.size() && sources[source + 1].pc <= pc) ++source;
                 const auto& window = sources[source];
                 if (pc < window.pc || pc - window.pc > window.bytes.size() ||
-                    instruction.size > window.bytes.size() - static_cast<std::size_t>(pc - window.pc))
+                    instruction.size >
+                            window.bytes.size() - static_cast<std::size_t>(pc - window.pc))
                     throw Rejected{BuildError::Truncated};
-                if (block + 1 < blocks.size() && (pc >= blocks[block + 1].pc ||
-                    instruction.size > blocks[block + 1].pc - pc))
+                if (block + 1 < blocks.size() &&
+                    (pc >= blocks[block + 1].pc || instruction.size > blocks[block + 1].pc - pc))
                     throw Rejected{BuildError::InvalidInput};
-                const auto bytes = window.bytes.subspan(static_cast<std::size_t>(pc - window.pc), instruction.size);
+                const auto bytes = window.bytes.subspan(static_cast<std::size_t>(pc - window.pc),
+                                                        instruction.size);
                 if (!Sem::AllowedPrefixes(instruction, bytes)) Unsupported();
                 const u64 next_pc = pc + instruction.size;
-                if (instruction.unit_boundary &&
-                    i + 1 != slice.instruction_count) throw Rejected{BuildError::InvalidInput};
+                if (instruction.unit_boundary && i + 1 != slice.instruction_count)
+                    throw Rejected{BuildError::InvalidInput};
                 // Combined x87 windows still pass every original record through
                 // the same byte/range/prefix validation and instruction counts.
-                if (x87_following) --x87_following;
-                else x87_following = Sem::Execute(builder, layout, instruction, bytes, pending, pc, next_pc, target,
-                        cfg_flow, ended, instructions.subspan(slice.first_instruction + i, slice.instruction_count - i),
-                        window.bytes.subspan(static_cast<std::size_t>(pc - window.pc))) - 1;
+                if (x87_following)
+                    --x87_following;
+                else
+                    x87_following = Sem::Execute(builder,
+                                                 layout,
+                                                 instruction,
+                                                 bytes,
+                                                 pending,
+                                                 pc,
+                                                 next_pc,
+                                                 target,
+                                                 cfg_flow,
+                                                 ended,
+                                                 instructions.subspan(slice.first_instruction + i,
+                                                                      slice.instruction_count - i),
+                                                 window.bytes.subspan(static_cast<std::size_t>(
+                                                         pc - window.pc))) -
+                                    1;
                 decoded += instruction.size;
                 ++instruction_count;
                 pc = next_pc;
             }
             if (failure.block == block) throw Rejected{failure.error, failure.detail};
             if (!ended) {
-                if (slice.instruction_count) finish(pc);
+                if (slice.instruction_count)
+                    finish(pc);
                 else {
                     Sem::StorePC(builder, layout, Sem::Constant(builder, pc));
                     Sem::EndDispatch(builder);
@@ -577,7 +695,12 @@ BuildResult EmitDecoded(InstructionRange instructions, std::span<const DecodedBl
         auto submitted = builder.Submit();
         if (!submitted)
             return {BuildError::IRRejected, pc, decoded, instruction_count, submitted.error, {}};
-        return {BuildError::None, 0, decoded, instruction_count, Error::None, std::move(submitted.program)};
+        return {BuildError::None,
+                0,
+                decoded,
+                instruction_count,
+                Error::None,
+                std::move(submitted.program)};
     } catch (const Rejected& rejected) {
         if (collected) *collected = builder.CountWork();
         return {rejected.error, pc, decoded, instruction_count, rejected.detail, {}};
@@ -585,40 +708,79 @@ BuildResult EmitDecoded(InstructionRange instructions, std::span<const DecodedBl
 }
 }  // namespace
 
-BuildResult BuildDecodedIR(InstructionRange instructions, std::span<const DecodedBlock> blocks,
-                           std::span<const BlockWindow> source_bytes, Scope scope, StateLayout layout,
-                           TargetInfo target, WorkCounts* collected, u32 entry_block, Program* reusable) {
-    return EmitDecoded(instructions, blocks, source_bytes, scope, layout, target, collected, {}, entry_block, false, reusable);
+BuildResult BuildDecodedIR(InstructionRange instructions,
+                           std::span<const DecodedBlock> blocks,
+                           std::span<const BlockWindow> source_bytes,
+                           Scope scope,
+                           StateLayout layout,
+                           TargetInfo target,
+                           WorkCounts* collected,
+                           u32 entry_block,
+                           Program* reusable) {
+    return EmitDecoded(instructions,
+                       blocks,
+                       source_bytes,
+                       scope,
+                       layout,
+                       target,
+                       collected,
+                       {},
+                       entry_block,
+                       false,
+                       reusable);
 }
 
-BuildResult BuildFunctionIR(std::span<const BlockWindow> readable, u64 entry_pc, StateLayout layout,
-                            DecodeLimits limits, TargetInfo target, WorkCounts* collected, DecodeTiming* timing,
-                            Program* reusable, ReadyEntryLookup ready, runtime::x86::GuestCpuModel model) {
+BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
+                            u64 entry_pc,
+                            StateLayout layout,
+                            DecodeLimits limits,
+                            TargetInfo target,
+                            WorkCounts* collected,
+                            DecodeTiming* timing,
+                            Program* reusable,
+                            ReadyEntryLookup ready,
+                            runtime::x86::GuestCpuModel model) {
     if (collected) *collected = {};
     if (!ValidRequest(1, Scope::Function, layout, target))
         return {BuildError::InvalidInput, entry_pc, 0, 0, Error::None, {}};
     const bool entries = target.Has(TargetFeature::ExternalEntries);
-    const auto decoded = DecodeFunction(readable, entry_pc, limits, timing,
-                                         entries ? ready : ReadyEntryLookup{}, model);
+    const auto decoded = DecodeFunction(
+            readable, entry_pc, limits, timing, entries ? ready : ReadyEntryLookup{}, model);
     if (!decoded) {
-        const auto error = decoded.error == DecodeError::InvalidInput ? BuildError::InvalidInput :
-                decoded.error == DecodeError::Truncated ? BuildError::Truncated :
-                decoded.error == DecodeError::OverlappingTarget ? BuildError::FormationRejected :
-                decoded.error == DecodeError::UnsupportedGuestFeature ? BuildError::Unsupported : BuildError::InvalidEncoding;
+        const auto error = decoded.error == DecodeError::InvalidInput ? BuildError::InvalidInput
+                           : decoded.error == DecodeError::Truncated  ? BuildError::Truncated
+                           : decoded.error == DecodeError::OverlappingTarget
+                                   ? BuildError::FormationRejected
+                           : decoded.error == DecodeError::UnsupportedGuestFeature
+                                   ? BuildError::Unsupported
+                                   : BuildError::InvalidEncoding;
         return {error, decoded.error_pc, 0, 0, Error::None, {}};
     }
-    return BuildDecodedIR(decoded.instructions, decoded.blocks, readable, Scope::Function, layout,
-                          target, collected, decoded.entry_block, reusable);
+    return BuildDecodedIR(decoded.instructions,
+                          decoded.blocks,
+                          readable,
+                          Scope::Function,
+                          layout,
+                          target,
+                          collected,
+                          decoded.entry_block,
+                          reusable);
 }
 
-BuildResult BuildIR(std::span<const BlockWindow> windows, Scope scope, StateLayout layout,
-                    TargetInfo target, WorkCounts* collected, DecodeTiming* timing, bool external_edges,
-                    Program* reusable, runtime::x86::GuestCpuModel model) {
+BuildResult BuildIR(std::span<const BlockWindow> windows,
+                    Scope scope,
+                    StateLayout layout,
+                    TargetInfo target,
+                    WorkCounts* collected,
+                    DecodeTiming* timing,
+                    bool external_edges,
+                    Program* reusable,
+                    runtime::x86::GuestCpuModel model) {
     if (collected) *collected = {};
     if (!ValidRequest(windows.size(), scope, layout, target) || !ValidSources(windows))
         return {BuildError::InvalidInput, 0, 0, 0, Error::None, {}};
     std::vector<Instruction> instructions;
-    instructions.reserve(16); // Short blocks need one actual record buffer allocation.
+    instructions.reserve(16);  // Short blocks need one actual record buffer allocation.
     std::vector<DecodedBlock> blocks;
     blocks.reserve(windows.size());
     DecodeFailure failure;
@@ -633,13 +795,17 @@ BuildResult BuildIR(std::span<const BlockWindow> windows, Scope scope, StateLayo
         while (!bytes.empty()) {
             const auto parsed = DecodeOne(bytes, pc, timing, model);
             if (!parsed) {
-                failure = {block, parsed.error == DecodeError::Truncated ? BuildError::Truncated :
-                        parsed.error == DecodeError::UnsupportedGuestFeature ? BuildError::Unsupported : BuildError::InvalidEncoding};
+                failure = {block,
+                           parsed.error == DecodeError::Truncated ? BuildError::Truncated
+                           : parsed.error == DecodeError::UnsupportedGuestFeature
+                                   ? BuildError::Unsupported
+                                   : BuildError::InvalidEncoding};
                 break;
             }
             const auto& instruction = parsed.instruction.View().Record();
             if (instructions.size() == std::numeric_limits<u32>::max()) {
-                failure = {block, BuildError::IRRejected, Error::CapacityOverflow}; break;
+                failure = {block, BuildError::IRRejected, Error::CapacityOverflow};
+                break;
             }
             instructions.push_back(parsed.instruction);
             ++blocks.back().instruction_count;
@@ -648,7 +814,17 @@ BuildResult BuildIR(std::span<const BlockWindow> windows, Scope scope, StateLayo
             if (instruction.unit_boundary) break;
         }
     }
-    return EmitDecoded(instructions, blocks, windows, scope, layout, target, collected, failure, 0, external_edges, reusable);
+    return EmitDecoded(instructions,
+                       blocks,
+                       windows,
+                       scope,
+                       layout,
+                       target,
+                       collected,
+                       failure,
+                       0,
+                       external_edges,
+                       reusable);
 }
 
 }  // namespace swift::x86

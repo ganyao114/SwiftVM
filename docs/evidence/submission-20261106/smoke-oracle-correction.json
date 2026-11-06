@@ -1,0 +1,22 @@
+{
+  "reason": "The initial harness incorrectly required the official >=10-second validation message in a 20-iteration smoke. Recheck uses the existing short-smoke exit/CRC contract on the unchanged original outputs; no samples rerun or replaced.",
+  "original_harness_exit": 1,
+  "corrections": [
+    {
+      "case": "coremark",
+      "scope": "block",
+      "original_valid": false,
+      "corrected_valid": true,
+      "exit": 0,
+      "crc": "0x4983"
+    },
+    {
+      "case": "coremark",
+      "scope": "function",
+      "original_valid": false,
+      "corrected_valid": true,
+      "exit": 0,
+      "crc": "0x4983"
+    }
+  ]
+}

@@ -19,7 +19,10 @@ void Check(bool condition, const char* expression, int line) {
 }
 #define CHECK(x) Check(static_cast<bool>(x), #x, __LINE__)
 
-Value Emit(Builder& builder, OpCode opcode, Type type, std::initializer_list<Operand> cells,
+Value Emit(Builder& builder,
+           OpCode opcode,
+           Type type,
+           std::initializer_list<Operand> cells,
            OperationMetadata metadata = {}) {
     const auto emitted = builder.Append(opcode, type, cells, metadata);
     CHECK(emitted);
@@ -29,7 +32,9 @@ Value Literal(Builder& builder, std::uint64_t bits, Type type = Type::U64) {
     return Emit(builder, OpCode::LoadImm, type, {Operand::Immediate(bits, type)});
 }
 void Store(Builder& builder, std::uint32_t offset, Value value, Type type = Type::U64) {
-    Emit(builder, OpCode::StoreUniform, Type::Void,
+    Emit(builder,
+         OpCode::StoreUniform,
+         Type::Void,
          {Operand::Uniform(offset, type), Operand::ValueOf(value, type)});
 }
 Program Submit(Builder& builder) {
@@ -49,47 +54,70 @@ std::uint64_t Immediate(const Program& program, Value value, Type type) {
 }
 
 void LowByteMaskWriteback() {
-    Builder builder{Scope::Block}; const auto block = builder.CreateBlock(); CHECK(block);
+    Builder builder{Scope::Block};
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
-    const auto parent = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(0, Type::U32)});
-    const auto other = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(4, Type::U32)});
+    const auto parent =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(0, Type::U32)});
+    const auto other =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(4, Type::U32)});
     const auto extract = [&](Type view) {
-        return Emit(builder, OpCode::BitExtract, Type::U8,
-                {Operand::ValueOf(parent, view), Operand::Immediate(0, Type::U8), Operand::Immediate(8, Type::U8)});
+        return Emit(builder,
+                    OpCode::BitExtract,
+                    Type::U8,
+                    {Operand::ValueOf(parent, view),
+                     Operand::Immediate(0, Type::U8),
+                     Operand::Immediate(8, Type::U8)});
     };
     const auto low = extract(Type::Void), narrow_view = extract(Type::U8);
-    const auto masked = Emit(builder, OpCode::And, Type::U8,
-            {Operand::ValueOf(low), Operand::Immediate(0xdf, Type::U8)});
-    const auto other_mask = Emit(builder, OpCode::And, Type::U8,
-            {Operand::ValueOf(low), Operand::Immediate(0x7f, Type::U8)});
-    const auto narrowed_mask = Emit(builder, OpCode::And, Type::U8,
-            {Operand::ValueOf(narrow_view), Operand::Immediate(0xdf, Type::U8)});
+    const auto masked = Emit(builder,
+                             OpCode::And,
+                             Type::U8,
+                             {Operand::ValueOf(low), Operand::Immediate(0xdf, Type::U8)});
+    const auto other_mask = Emit(builder,
+                                 OpCode::And,
+                                 Type::U8,
+                                 {Operand::ValueOf(low), Operand::Immediate(0x7f, Type::U8)});
+    const auto narrowed_mask =
+            Emit(builder,
+                 OpCode::And,
+                 Type::U8,
+                 {Operand::ValueOf(narrow_view), Operand::Immediate(0xdf, Type::U8)});
     const auto insert = [&](Value whole, Type view, Value byte, unsigned first) {
-        return Emit(builder, OpCode::BitInsert, Type::U32,
-                {Operand::ValueOf(whole, view), Operand::ValueOf(byte),
-                 Operand::Immediate(first, Type::U8), Operand::Immediate(8, Type::U8)});
+        return Emit(builder,
+                    OpCode::BitInsert,
+                    Type::U32,
+                    {Operand::ValueOf(whole, view),
+                     Operand::ValueOf(byte),
+                     Operand::Immediate(first, Type::U8),
+                     Operand::Immediate(8, Type::U8)});
     };
     const auto combined = insert(parent, Type::Void, masked, 0);
     const auto combined_other_mask = insert(parent, Type::Void, other_mask, 0);
     const auto different_parent = insert(other, Type::Void, masked, 0);
     const auto partial_parent_view = insert(parent, Type::U8, narrowed_mask, 0);
     const auto high_field = insert(parent, Type::Void, masked, 8);
-    Store(builder, 64, masked); // A real second reader must survive the merge rewrite.
-    for (const auto value : {combined, combined_other_mask, different_parent, partial_parent_view, high_field})
+    Store(builder, 64, masked);  // A real second reader must survive the merge rewrite.
+    for (const auto value :
+         {combined, combined_other_mask, different_parent, partial_parent_view, high_field})
         Store(builder, static_cast<std::uint32_t>(72 + value.node.value * 8), value);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
-    auto input = Submit(builder); const auto unit = input.UnitId();
+    auto input = Submit(builder);
+    const auto unit = input.UnitId();
     const auto words = input.OperandArena().size(), nodes = input.Operations().size();
     auto result = Optimize(std::move(input));
     CHECK(result && result.program.UnitId() == unit && result.program.Operations().size() == nodes);
     for (const auto value : {combined, combined_other_mask}) {
         CHECK(result.program.Operations()[value.node.value].opcode == OpCode::And);
         CHECK(result.program.Operations()[value.node.value].type == Type::U32);
-        const auto inputs = result.program.Operands(value.node); auto at = inputs.begin();
-        const auto whole = *at++; CHECK(whole.Payload() == parent.node.value && whole.TypeView() == Type::Void);
+        const auto inputs = result.program.Operands(value.node);
+        auto at = inputs.begin();
+        const auto whole = *at++;
+        CHECK(whole.Payload() == parent.node.value && whole.TypeView() == Type::Void);
         const auto mask = *at++;
         CHECK(mask.Kind() == OperandKind::Immediate && mask.TypeView() == Type::U32 &&
-                mask.Payload() == (value == combined ? 0xffffffdfULL : 0xffffff7fULL));
+              mask.Payload() == (value == combined ? 0xffffffdfULL : 0xffffff7fULL));
         CHECK(at == inputs.end());
     }
     CHECK(result.program.Operations()[masked.node.value].opcode == OpCode::And);
@@ -102,15 +130,21 @@ void LowByteMaskWriteback() {
 void FoldAndDeadCascade() {
     const TargetInfo target{TargetMode::EarlyOff, 0xa64, UINT64_C(0x8000000000000001)};
     Builder builder{Scope::Block, target};
-    const auto block = builder.CreateBlock(); CHECK(block);
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
     const auto five = Literal(builder, 5), seven = Literal(builder, 7);
-    const auto add = Emit(builder, OpCode::Add, Type::U64,
-                          {Operand::ValueOf(five), Operand::ValueOf(seven)});
-    const auto product = Emit(builder, OpCode::Mul, Type::U64,
+    const auto add = Emit(
+            builder, OpCode::Add, Type::U64, {Operand::ValueOf(five), Operand::ValueOf(seven)});
+    const auto product = Emit(builder,
+                              OpCode::Mul,
+                              Type::U64,
                               {Operand::ValueOf(add), Operand::Immediate(3, Type::U64)});
     const auto dead = Literal(builder, 99);
-    Emit(builder, OpCode::Add, Type::U64, {Operand::ValueOf(dead), Operand::Immediate(1, Type::U64)});
+    Emit(builder,
+         OpCode::Add,
+         Type::U64,
+         {Operand::ValueOf(dead), Operand::Immediate(1, Type::U64)});
     Store(builder, 0, product);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
     auto input = Submit(builder);
@@ -137,9 +171,12 @@ void FoldAndDeadCascade() {
 
 void CopyAndTerminalRoots() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block);
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
-    const auto source = Emit(builder, OpCode::GetHostGPR, Type::U64,
+    const auto source = Emit(builder,
+                             OpCode::GetHostGPR,
+                             Type::U64,
                              {Operand::Immediate(0, Type::U8), Operand::Immediate(0, Type::U8)});
     const auto first = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(source)});
     const auto second = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(first)});
@@ -150,7 +187,9 @@ void CopyAndTerminalRoots() {
     CHECK(result.program.Operations()[first.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operations()[second.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operations()[source.node.value].opcode == OpCode::GetHostGPR);
-    const auto cells = result.program.Operands(NodeId{3}); auto at = cells.begin(); ++at;
+    const auto cells = result.program.Operands(NodeId{3});
+    auto at = cells.begin();
+    ++at;
     CHECK((*at).Kind() == OperandKind::Value && (*at).Payload() == source.node.value);
     CHECK(result.program.Blocks()[0].terminal.value == source.node);
     CHECK(result.program.Blocks()[0].terminal.HasValue());
@@ -158,28 +197,44 @@ void CopyAndTerminalRoots() {
 
 void MetadataSensitiveAndObservable() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block);
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
     const auto value = Literal(builder, 8);
-    const auto flags_source = Emit(builder, OpCode::Add, Type::U64,
+    const auto flags_source = Emit(builder,
+                                   OpCode::Add,
+                                   Type::U64,
                                    {Operand::ValueOf(value), Operand::Immediate(1, Type::U64)});
-    Emit(builder, OpCode::SaveFlags, Type::Void,
+    Emit(builder,
+         OpCode::SaveFlags,
+         Type::Void,
          {Operand::ValueOf(flags_source), Operand::Flags(7)});
-    const auto flags_read = Emit(builder, OpCode::GetFlags, Type::U64,
+    const auto flags_read = Emit(builder,
+                                 OpCode::GetFlags,
+                                 Type::U64,
                                  {Operand::ValueOf(flags_source), Operand::Flags(7)});
     const OperationMetadata profile{0, FlagProfile::ArithmeticRaw, false};
-    const auto profile_only = Emit(builder, OpCode::Add, Type::U64,
-                                   {Operand::ValueOf(value), Operand::Immediate(2, Type::U64)}, profile);
+    const auto profile_only = Emit(builder,
+                                   OpCode::Add,
+                                   Type::U64,
+                                   {Operand::ValueOf(value), Operand::Immediate(2, Type::U64)},
+                                   profile);
     const OperationMetadata branch{0, FlagProfile::None, true};
-    const auto branch_only = Emit(builder, OpCode::Sub, Type::U64,
-                                  {Operand::ValueOf(value), Operand::Immediate(3, Type::U64)}, branch);
+    const auto branch_only = Emit(builder,
+                                  OpCode::Sub,
+                                  Type::U64,
+                                  {Operand::ValueOf(value), Operand::Immediate(3, Type::U64)},
+                                  branch);
     const auto address = Literal(builder, 0x1000);
     const auto fault = Emit(builder, OpCode::LoadMemory, Type::U64, {Operand::ValueOf(address)});
     Emit(builder, OpCode::MemoryBarrierTSO, Type::Void, {});
-    Emit(builder, OpCode::CallLambda, Type::Void,
+    Emit(builder,
+         OpCode::CallLambda,
+         Type::Void,
          {Operand::Lambda(), Operand::Immediate(0x1234, Type::U64)});
     CHECK(builder.EndBlock(Terminal::Return(flags_read)) == Error::None);
-    auto result = Optimize(Submit(builder)); CHECK(result);
+    auto result = Optimize(Submit(builder));
+    CHECK(result);
     CHECK(result.program.Operations()[flags_source.node.value].opcode == OpCode::Add);
     CHECK(result.program.Operations()[profile_only.node.value].opcode == OpCode::Add);
     CHECK(result.program.Operations()[profile_only.node.value].Metadata() == profile);
@@ -193,29 +248,37 @@ void MetadataSensitiveAndObservable() {
 
 void UniformWindows() {
     Builder builder{Scope::Function};
-    const auto first = builder.CreateBlock(), second = builder.CreateBlock(); CHECK(first && second);
+    const auto first = builder.CreateBlock(), second = builder.CreateBlock();
+    CHECK(first && second);
     CHECK(builder.BeginBlock(first.block) == Error::None);
     const auto word = Literal(builder, 0x11223344, Type::U32);
     Store(builder, 16, word, Type::U32);
-    const auto forwarded = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(16, Type::U32)});
+    const auto forwarded =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(16, Type::U32)});
     Store(builder, 32, forwarded, Type::U32);
     const auto byte = Literal(builder, 7, Type::U8);
-    Store(builder, 17, byte, Type::U8); // Overlaps the cached four-byte range.
-    const auto overlap = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(16, Type::U32)});
+    Store(builder, 17, byte, Type::U8);  // Overlaps the cached four-byte range.
+    const auto overlap =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(16, Type::U32)});
     Store(builder, 36, overlap, Type::U32);
     Emit(builder, OpCode::UniformBarrier, Type::Void, {});
-    const auto barrier = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(32, Type::U32)});
+    const auto barrier =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(32, Type::U32)});
     Store(builder, 40, barrier, Type::U32);
-    const auto read = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(60, Type::U32)});
+    const auto read =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(60, Type::U32)});
     Store(builder, 64, read, Type::U32);
-    const auto repeated = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(60, Type::U32)});
+    const auto repeated =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(60, Type::U32)});
     Store(builder, 44, repeated, Type::U32);
     CHECK(builder.EndBlock(Terminal::Jump(second.block)) == Error::None);
     CHECK(builder.BeginBlock(second.block) == Error::None);
-    const auto next_block = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(40, Type::U32)});
+    const auto next_block =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(40, Type::U32)});
     Store(builder, 48, next_block, Type::U32);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
-    auto result = Optimize(Submit(builder)); CHECK(result);
+    auto result = Optimize(Submit(builder));
+    CHECK(result);
     CHECK(result.stats.uniform_forwarded >= 2);
     CHECK(Immediate(result.program, forwarded, Type::U32) == 0x11223344);
     CHECK(result.program.Operations()[overlap.node.value].opcode == OpCode::LoadUniform);
@@ -227,89 +290,121 @@ void UniformWindows() {
 
 void ViewWidthAndShiftEdges() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block);
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
     const auto wide = Literal(builder, UINT64_C(0x8000000000000000));
-    const auto zero_shift = Emit(builder, OpCode::AsrImm, Type::U64,
+    const auto zero_shift = Emit(builder,
+                                 OpCode::AsrImm,
+                                 Type::U64,
                                  {Operand::ValueOf(wide), Operand::Immediate(64, Type::U8)});
-    const auto sign_shift = Emit(builder, OpCode::AsrImm, Type::U64,
+    const auto sign_shift = Emit(builder,
+                                 OpCode::AsrImm,
+                                 Type::U64,
                                  {Operand::ValueOf(wide), Operand::Immediate(63, Type::U8)});
-    Store(builder, 0, zero_shift); Store(builder, 8, sign_shift);
+    Store(builder, 0, zero_shift);
+    Store(builder, 8, sign_shift);
     const auto bits = Literal(builder, 0x12345678);
-    const auto extract = Emit(builder, OpCode::BitExtract, Type::U8,
-                              {Operand::ValueOf(bits), Operand::Immediate(8, Type::U32), Operand::Immediate(16, Type::U32)});
+    const auto extract = Emit(builder,
+                              OpCode::BitExtract,
+                              Type::U8,
+                              {Operand::ValueOf(bits),
+                               Operand::Immediate(8, Type::U32),
+                               Operand::Immediate(16, Type::U32)});
     Store(builder, 16, extract, Type::U8);
     const auto narrow = Literal(builder, 0x80, Type::U8);
     const auto widened_view = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(narrow)});
     Store(builder, 24, widened_view);
     const auto high = Literal(builder, UINT64_C(0x100000000));
-    const auto zero_low_view = Emit(builder, OpCode::TestZero, Type::Bool, {Operand::ValueOf(high, Type::U32)});
+    const auto zero_low_view =
+            Emit(builder, OpCode::TestZero, Type::Bool, {Operand::ValueOf(high, Type::U32)});
     CHECK(builder.EndBlock(Terminal::Return(zero_low_view)) == Error::None);
-    auto result = Optimize(Submit(builder)); CHECK(result);
+    auto result = Optimize(Submit(builder));
+    CHECK(result);
     CHECK(Immediate(result.program, zero_shift, Type::U64) == UINT64_C(0x8000000000000000));
     CHECK(Immediate(result.program, sign_shift, Type::U64) == UINT64_MAX);
     CHECK(Immediate(result.program, extract, Type::U8) == 0x56);
     CHECK(result.program.Operations()[widened_view.node.value].opcode == OpCode::BitCast);
     CHECK(result.program.Operations()[widened_view.node.value].type == Type::U64);
     const auto preserved = result.program.Operands(widened_view.node).front();
-    CHECK(preserved.Kind() == OperandKind::Value && preserved.Payload() == narrow.node.value && preserved.TypeView() == Type::Void);
+    CHECK(preserved.Kind() == OperandKind::Value && preserved.Payload() == narrow.node.value &&
+          preserved.TypeView() == Type::Void);
     CHECK(Immediate(result.program, narrow, Type::U8) == 0x80);
     CHECK(Immediate(result.program, zero_low_view, Type::Bool) == 1);
 }
 
 void BudgetAndUnsupported() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block);
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
     const auto zero = Emit(builder, OpCode::Zero, Type::U64, {});
     CHECK(builder.EndBlock(Terminal::Return(zero)) == Error::None);
-    auto input = Submit(builder); const auto unit = input.UnitId();
+    auto input = Submit(builder);
+    const auto unit = input.UnitId();
     auto rejected = Optimize(std::move(input), 0);
     CHECK(!rejected && rejected.error == Error::EditBudgetExceeded && !rejected.allocation_failed);
     CHECK(rejected.program && rejected.program.UnitId() == unit);
     CHECK(rejected.program.Operations()[zero.node.value].opcode == OpCode::Zero);
     CHECK(rejected.program.Operands(zero.node).empty() && rejected.stats.folded == 0);
-    auto accepted = Optimize(std::move(rejected.program)); CHECK(accepted);
+    auto accepted = Optimize(std::move(rejected.program));
+    CHECK(accepted);
     CHECK(Immediate(accepted.program, zero, Type::U64) == 0);
 
     Builder other{Scope::Block};
-    const auto b = other.CreateBlock(); CHECK(b && other.BeginBlock(b.block) == Error::None);
+    const auto b = other.CreateBlock();
+    CHECK(b && other.BeginBlock(b.block) == Error::None);
     const auto value = Literal(other, 17);
     const auto unsupported = Emit(other, OpCode::PopCount, Type::U64, {Operand::ValueOf(value)});
     CHECK(other.EndBlock(Terminal::Return(unsupported)) == Error::None);
-    auto unchanged = Optimize(Submit(other)); CHECK(unchanged);
+    auto unchanged = Optimize(Submit(other));
+    CHECK(unchanged);
     CHECK(unchanged.program.Operations()[unsupported.node.value].opcode == OpCode::PopCount);
     CHECK(unchanged.program.Operands(unsupported.node).front().Payload() == value.node.value);
 }
 
 void RawAliasesAndNormalizedUniforms() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block);
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
     const auto raw = Literal(builder, 0x1234);
     const auto alias = Emit(builder, OpCode::BitCast, Type::U8, {Operand::ValueOf(raw, Type::U8)});
-    const auto wide_alias = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(alias, Type::U64)});
+    const auto wide_alias =
+            Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(alias, Type::U64)});
     Store(builder, 0, wide_alias);
     // This matching-view chain may be shortened, while its raw source still
     // carries 0x1234 for the final U64 view. No alias becomes literal 0x34.
     const auto chain = Emit(builder, OpCode::BitCast, Type::U8, {Operand::ValueOf(alias)});
-    const auto chain_wide = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(chain, Type::U64)});
+    const auto chain_wide =
+            Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(chain, Type::U64)});
     Store(builder, 8, chain_wide);
 
-    const auto host = Emit(builder, OpCode::GetHostGPR, Type::U64,
+    const auto host = Emit(builder,
+                           OpCode::GetHostGPR,
+                           Type::U64,
                            {Operand::Immediate(0, Type::U8), Operand::Immediate(0, Type::U8)});
-    Emit(builder, OpCode::StoreUniform, Type::Void,
+    Emit(builder,
+         OpCode::StoreUniform,
+         Type::Void,
          {Operand::Uniform(32, Type::U32), Operand::ValueOf(host, Type::U32)});
-    const auto load = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(32, Type::U32)});
-    const auto load_wide = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(load, Type::U64)});
+    const auto load =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(32, Type::U32)});
+    const auto load_wide =
+            Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(load, Type::U64)});
     Store(builder, 40, load_wide);
     const auto constant = Literal(builder, UINT64_C(0x100000001));
-    Emit(builder, OpCode::StoreUniform, Type::Void,
+    Emit(builder,
+         OpCode::StoreUniform,
+         Type::Void,
          {Operand::Uniform(48, Type::U32), Operand::ValueOf(constant, Type::U32)});
-    const auto constant_load = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(48, Type::U32)});
-    const auto constant_wide = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(constant_load, Type::U64)});
+    const auto constant_load =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(48, Type::U32)});
+    const auto constant_wide =
+            Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(constant_load, Type::U64)});
     CHECK(builder.EndBlock(Terminal::Return(constant_wide)) == Error::None);
-    auto result = Optimize(Submit(builder)); CHECK(result);
+    auto result = Optimize(Submit(builder));
+    CHECK(result);
     CHECK(Immediate(result.program, raw, Type::U64) == 0x1234);
     CHECK(result.program.Operations()[alias.node.value].opcode == OpCode::BitCast);
     CHECK(result.program.Operations()[alias.node.value].type == Type::U8);
@@ -321,25 +416,32 @@ void RawAliasesAndNormalizedUniforms() {
     CHECK(result.program.Operands(load.node).front().TypeView() == Type::U32);
     // Safe wrappers can die. Check the actual live widened readers instead.
     const auto stored = [&](std::uint32_t node, Value source) {
-        const auto args = result.program.Operands(NodeId{node}); auto at = args.begin(); ++at;
+        const auto args = result.program.Operands(NodeId{node});
+        auto at = args.begin();
+        ++at;
         CHECK((*at).Kind() == OperandKind::Value && (*at).Payload() == source.node.value);
         CHECK((*at).TypeView() == Type::U64);
     };
-    stored(3, alias); stored(6, chain); stored(11, load);
+    stored(3, alias);
+    stored(6, chain);
+    stored(11, load);
     CHECK(Immediate(result.program, constant_load, Type::U32) == 1);
     CHECK(result.program.Operands(constant_wide.node).front().TypeView() == Type::U64);
 }
 
 void LabelIdentityIsNotADataCopy() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block);
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
     const auto condition = Literal(builder, 1);
     const auto jump = Emit(builder, OpCode::Goto, Type::U64, {Operand::ValueOf(condition)});
     const auto label = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(jump)});
-    const auto bind = builder.Append(OpCode::BindLabel, Type::Void, {Operand::ValueOf(label)}); CHECK(bind);
+    const auto bind = builder.Append(OpCode::BindLabel, Type::Void, {Operand::ValueOf(label)});
+    CHECK(bind);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
-    auto result = Optimize(Submit(builder)); CHECK(result);
+    auto result = Optimize(Submit(builder));
+    CHECK(result);
     CHECK(result.program.Operations()[label.node.value].opcode == OpCode::BitCast);
     CHECK(result.program.Operands(bind.node).front().Payload() == label.node.value);
     CHECK(result.program.Operands(bind.node).front().TypeView() == Type::Void);
@@ -347,48 +449,63 @@ void LabelIdentityIsNotADataCopy() {
 
 void UniformReadsObserveFlagWrites() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block && builder.BeginBlock(block.block) == Error::None);
+    const auto block = builder.CreateBlock();
+    CHECK(block && builder.BeginBlock(block.block) == Error::None);
     // CompileOptions can place the packed flags word at any Uniform slot.
     // Every sampled value has a real, non-overlapping observable Store user.
-    const auto before = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
+    const auto before =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
     Store(builder, 128, before);
     const auto input = Literal(builder, 3);
-    Emit(builder, OpCode::Add, Type::U64,
+    Emit(builder,
+         OpCode::Add,
+         Type::U64,
          {Operand::ValueOf(input), Operand::Immediate(1, Type::U64)},
          {FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry});
-    const auto metadata = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
+    const auto metadata =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
     Store(builder, 136, metadata);
     Emit(builder, OpCode::ClearFlags, Type::Void, {Operand::Flags(Flag::Carry | Flag::Zero)});
-    const auto cleared = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
+    const auto cleared =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
     Store(builder, 144, cleared);
     Emit(builder, OpCode::SetCarry, Type::Void, {Operand::ValueOf(input)});
-    const auto carry = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
+    const auto carry =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
     Store(builder, 152, carry);
     // A read alone does not mutate the cached Uniform value.
-    const auto flag_read = Emit(builder, OpCode::TestFlags, Type::Bool, {Operand::Flags(Flag::Carry)});
+    const auto flag_read =
+            Emit(builder, OpCode::TestFlags, Type::Bool, {Operand::Flags(Flag::Carry)});
     Store(builder, 160, flag_read, Type::U8);
-    const auto read_only = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
+    const auto read_only =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
     Store(builder, 168, read_only);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
-    auto result = Optimize(Submit(builder)); CHECK(result);
+    auto result = Optimize(Submit(builder));
+    CHECK(result);
     for (const auto value : {before, metadata, cleared, carry})
         CHECK(result.program.Operations()[value.node.value].opcode == OpCode::LoadUniform);
-    auto published = result.program.Operands(NodeId{read_only.node.value + 1}).begin(); ++published;
+    auto published = result.program.Operands(NodeId{read_only.node.value + 1}).begin();
+    ++published;
     CHECK((*published).Kind() == OperandKind::Value && (*published).Payload() == carry.node.value);
     CHECK(result.stats.uniform_forwarded == 1);
 }
 
 void StreamingParamsRemainComplete() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block);
+    const auto block = builder.CreateBlock();
+    CHECK(block);
     CHECK(builder.BeginBlock(block.block) == Error::None);
     std::array<Operand, 23> cells;
-    cells[0] = Operand::Lambda(); cells[1] = Operand::Immediate(0x1234, Type::U64);
+    cells[0] = Operand::Lambda();
+    cells[1] = Operand::Immediate(0x1234, Type::U64);
     cells[2] = Operand::Arguments(20);
     for (std::size_t i = 0; i < 20; ++i) cells[i + 3] = Operand::ValueOf(Literal(builder, i));
-    const auto call = builder.Append(OpCode::CallLocation, Type::Void, cells); CHECK(call);
+    const auto call = builder.Append(OpCode::CallLocation, Type::Void, cells);
+    CHECK(call);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
-    auto result = Optimize(Submit(builder)); CHECK(result);
+    auto result = Optimize(Submit(builder));
+    CHECK(result);
     CHECK(result.stats.value_uses == 20 && result.stats.erased == 0);
     CHECK(result.program.Operations()[call.node.value].opcode == OpCode::CallLocation);
     const auto args = result.program.Operands(call.node);
@@ -397,23 +514,34 @@ void StreamingParamsRemainComplete() {
 
 void UniformReadForwardingKeepsFaultsAndAliases() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block && builder.BeginBlock(block.block) == Error::None);
-    const auto gpr = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
-    const auto flags = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
+    const auto block = builder.CreateBlock();
+    CHECK(block && builder.BeginBlock(block.block) == Error::None);
+    const auto gpr =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const auto flags =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
     Store(builder, 64, flags);
     Emit(builder, OpCode::SetCarry, Type::Void, {Operand::ValueOf(gpr)});
     const auto address = Literal(builder, 0x1000);
     const auto fault = Emit(builder, OpCode::LoadMemoryTSO, Type::U64, {Operand::ValueOf(address)});
-    const auto kept = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const auto kept =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
     Store(builder, 72, kept);
-    const auto changed_flags = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
+    const auto changed_flags =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
     Store(builder, 80, changed_flags);
-    Emit(builder, OpCode::StoreMemoryTSO, Type::Void, {Operand::ValueOf(address), Operand::ValueOf(gpr)});
-    const auto after_store = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    Emit(builder,
+         OpCode::StoreMemoryTSO,
+         Type::Void,
+         {Operand::ValueOf(address), Operand::ValueOf(gpr)});
+    const auto after_store =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
     CHECK(builder.EndBlock(Terminal::Return(after_store)) == Error::None);
-    auto result = Optimize(Submit(builder), SIZE_MAX,
-            {.flags = swift::runtime::compile::UniformRange{16, 8}}); CHECK(result);
-    auto published = result.program.Operands(NodeId{kept.node.value + 1}).begin(); ++published;
+    auto result = Optimize(
+            Submit(builder), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{16, 8}});
+    CHECK(result);
+    auto published = result.program.Operands(NodeId{kept.node.value + 1}).begin();
+    ++published;
     CHECK((*published).Kind() == OperandKind::Value && (*published).Payload() == gpr.node.value);
     CHECK(result.program.Operations()[changed_flags.node.value].opcode == OpCode::LoadUniform);
     CHECK(result.program.Operations()[after_store.node.value].opcode == OpCode::LoadUniform);
@@ -422,31 +550,54 @@ void UniformReadForwardingKeepsFaultsAndAliases() {
 
 void CoveredMultiplyFlagsReleaseTheirInputs() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block && builder.BeginBlock(block.block) == Error::None);
-    const OperationMetadata arithmetic{FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry, false, true};
+    const auto block = builder.CreateBlock();
+    CHECK(block && builder.BeginBlock(block.block) == Error::None);
+    const OperationMetadata arithmetic{
+            FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry, false, true};
     const auto a = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(0, Type::U32)});
     const auto b = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(8, Type::U32)});
-    const auto add = Emit(builder, OpCode::Add, Type::U32,
-                          {Operand::ValueOf(a), Operand::Immediate(1, Type::U32)}, arithmetic);
-    const auto low = Emit(builder, OpCode::Mul, Type::U32, {Operand::ValueOf(add), Operand::ValueOf(b)});
+    const auto add = Emit(builder,
+                          OpCode::Add,
+                          Type::U32,
+                          {Operand::ValueOf(a), Operand::Immediate(1, Type::U32)},
+                          arithmetic);
+    const auto low =
+            Emit(builder, OpCode::Mul, Type::U32, {Operand::ValueOf(add), Operand::ValueOf(b)});
     const auto wide_a = Emit(builder, OpCode::SignExtend, Type::U64, {Operand::ValueOf(add)});
     const auto wide_b = Emit(builder, OpCode::SignExtend, Type::U64, {Operand::ValueOf(b)});
-    const auto full = Emit(builder, OpCode::Mul, Type::U64, {Operand::ValueOf(wide_a), Operand::ValueOf(wide_b)});
+    const auto full = Emit(
+            builder, OpCode::Mul, Type::U64, {Operand::ValueOf(wide_a), Operand::ValueOf(wide_b)});
     const auto expected = Emit(builder, OpCode::SignExtend, Type::U64, {Operand::ValueOf(low)});
-    const auto different = Emit(builder, OpCode::Xor, Type::U64, {Operand::ValueOf(full), Operand::ValueOf(expected)});
-    const auto overflow = Emit(builder, OpCode::TestNotZero, Type::Bool, {Operand::ValueOf(different)});
-    const auto carry = builder.Append(OpCode::SetCarry, Type::Void, {Operand::ValueOf(overflow)}); CHECK(carry);
-    const auto sign = builder.Append(OpCode::SetOverflow, Type::Void, {Operand::ValueOf(overflow)}); CHECK(sign);
-    const auto snapshot = Emit(builder, OpCode::GetFlags, Type::U64, {Operand::ValueOf(low), Operand::Flags(Flag::All)});
-    const auto restore = builder.Append(OpCode::RestoreFlags, Type::Void,
-            {Operand::ValueOf(snapshot), Operand::Flags(Flag::Carry | Flag::Overflow)}); CHECK(restore);
-    const auto shift = Emit(builder, OpCode::LsrImm, Type::U32, {Operand::ValueOf(low), Operand::Immediate(2, Type::U8)});
-    const auto last = Emit(builder, OpCode::And, Type::U32,
+    const auto different = Emit(
+            builder, OpCode::Xor, Type::U64, {Operand::ValueOf(full), Operand::ValueOf(expected)});
+    const auto overflow =
+            Emit(builder, OpCode::TestNotZero, Type::Bool, {Operand::ValueOf(different)});
+    const auto carry = builder.Append(OpCode::SetCarry, Type::Void, {Operand::ValueOf(overflow)});
+    CHECK(carry);
+    const auto sign = builder.Append(OpCode::SetOverflow, Type::Void, {Operand::ValueOf(overflow)});
+    CHECK(sign);
+    const auto snapshot = Emit(builder,
+                               OpCode::GetFlags,
+                               Type::U64,
+                               {Operand::ValueOf(low), Operand::Flags(Flag::All)});
+    const auto restore = builder.Append(
+            OpCode::RestoreFlags,
+            Type::Void,
+            {Operand::ValueOf(snapshot), Operand::Flags(Flag::Carry | Flag::Overflow)});
+    CHECK(restore);
+    const auto shift = Emit(builder,
+                            OpCode::LsrImm,
+                            Type::U32,
+                            {Operand::ValueOf(low), Operand::Immediate(2, Type::U8)});
+    const auto last = Emit(builder,
+                           OpCode::And,
+                           Type::U32,
                            {Operand::ValueOf(shift), Operand::Immediate(0x7f, Type::U32)},
                            {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
     CHECK(builder.EndBlock(Terminal::Return(last)) == Error::None);
-    auto result = Optimize(Submit(builder), SIZE_MAX,
-            {.flags = swift::runtime::compile::UniformRange{128, 8}}); CHECK(result);
+    auto result = Optimize(
+            Submit(builder), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+    CHECK(result);
     CHECK(result.program.Operations()[add.node.value].opcode == OpCode::Add);
     CHECK(result.program.Operations()[add.node.value].Metadata() == OperationMetadata{});
     CHECK(result.program.Operations()[low.node.value].opcode == OpCode::Mul);
@@ -460,16 +611,23 @@ void CoveredMultiplyFlagsReleaseTheirInputs() {
 
 void FlagsObserveFaultsAliasesAndBlockExits() {
     Builder builder{Scope::Function};
-    const auto first = builder.CreateBlock(), second = builder.CreateBlock(); CHECK(first && second);
+    const auto first = builder.CreateBlock(), second = builder.CreateBlock();
+    CHECK(first && second);
     CHECK(builder.BeginBlock(first.block) == Error::None);
-    const auto value = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const auto value =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
     const OperationMetadata arithmetic{FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry};
     const auto flags = [&] {
-        return Emit(builder, OpCode::Add, Type::U64,
-                    {Operand::ValueOf(value), Operand::Immediate(1, Type::U64)}, arithmetic);
+        return Emit(builder,
+                    OpCode::Add,
+                    Type::U64,
+                    {Operand::ValueOf(value), Operand::Immediate(1, Type::U64)},
+                    arithmetic);
     };
     const auto logical_flags = [&] {
-        return Emit(builder, OpCode::And, Type::U64,
+        return Emit(builder,
+                    OpCode::And,
+                    Type::U64,
                     {Operand::ValueOf(value), Operand::ValueOf(value)},
                     {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
     };
@@ -477,17 +635,24 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     const auto address = Literal(builder, 0x1000);
     Emit(builder, OpCode::LoadMemoryTSO, Type::U64, {Operand::ValueOf(address)});
     const auto before_read = logical_flags();
-    const auto raw = Emit(builder, OpCode::GetFlags, Type::U64,
+    const auto raw = Emit(builder,
+                          OpCode::GetFlags,
+                          Type::U64,
                           {Operand::ValueOf(value), Operand::Flags(Flag::Carry)});
     Store(builder, 64, raw);
     const auto before_alias = logical_flags();
-    const auto alias = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(128, Type::U64)});
+    const auto alias =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(128, Type::U64)});
     Store(builder, 72, alias);
     const auto before_helper = logical_flags();
-    Emit(builder, OpCode::CallLambda, Type::Void, {Operand::Lambda(), Operand::Immediate(0x1234, Type::U64)});
+    Emit(builder,
+         OpCode::CallLambda,
+         Type::Void,
+         {Operand::Lambda(), Operand::Immediate(0x1234, Type::U64)});
     const auto partial = flags();
-    const auto clear = builder.Append(OpCode::ClearFlags, Type::Void,
-                                      {Operand::Flags(Flag::Carry | Flag::Overflow)}); CHECK(clear);
+    const auto clear = builder.Append(
+            OpCode::ClearFlags, Type::Void, {Operand::Flags(Flag::Carry | Flag::Overflow)});
+    CHECK(clear);
     Emit(builder, OpCode::SetCarry, Type::Void, {Operand::ValueOf(value)});
     CHECK(builder.EndBlock(Terminal::Jump(second.block)) == Error::None);
     CHECK(builder.BeginBlock(second.block) == Error::None);
@@ -496,8 +661,11 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     Emit(builder, OpCode::LoadMemoryTSO, Type::U64, {Operand::ValueOf(address)});
     const auto next = flags();
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
-    auto result = Optimize(Submit(builder), SIZE_MAX,
-            {.flags = swift::runtime::compile::UniformRange{128, 8}, .guest_memory_disjoint = true}); CHECK(result);
+    auto result = Optimize(Submit(builder),
+                           SIZE_MAX,
+                           {.flags = swift::runtime::compile::UniformRange{128, 8},
+                            .guest_memory_disjoint = true});
+    CHECK(result);
     for (const auto source : {before_fault, before_read, before_alias, before_helper, next}) {
         CHECK(result.program.Operations()[source.node.value].flag_outputs == FlagBits(Flag::All));
         CHECK(!result.program.Operations()[source.node.value].Metadata().discard_omitted_flags);
@@ -512,37 +680,59 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     // edge, only ZF at the exit, and the real external exit observes All.
     Builder graph{Scope::Function};
     const auto entry = graph.CreateBlock(), empty = graph.CreateBlock();
-    const auto body = graph.CreateBlock(), exit = graph.CreateBlock(); CHECK(entry && empty && body && exit);
+    const auto body = graph.CreateBlock(), exit = graph.CreateBlock();
+    CHECK(entry && empty && body && exit);
     CHECK(graph.BeginBlock(entry.block) == Error::None);
-    const auto source = Emit(graph, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
-    const auto entry_flags = Emit(graph, OpCode::Add, Type::U64,
-                                  {Operand::ValueOf(source), Operand::Immediate(1, Type::U64)}, arithmetic);
+    const auto source =
+            Emit(graph, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const auto entry_flags = Emit(graph,
+                                  OpCode::Add,
+                                  Type::U64,
+                                  {Operand::ValueOf(source), Operand::Immediate(1, Type::U64)},
+                                  arithmetic);
     CHECK(graph.EndBlock(Terminal::Branch(source, empty.block, exit.block)) == Error::None);
     CHECK(graph.BeginBlock(empty.block) == Error::None);
     CHECK(graph.EndBlock(Terminal::Jump(body.block)) == Error::None);
     CHECK(graph.BeginBlock(body.block) == Error::None);
-    const auto adc = Emit(graph, OpCode::Adc, Type::U64,
+    const auto adc = Emit(graph,
+                          OpCode::Adc,
+                          Type::U64,
                           {Operand::ValueOf(source), Operand::Immediate(1, Type::U64)});
     Store(graph, 32, adc);
-    const auto invert = graph.Append(OpCode::InvertCarry, Type::Void, {}); CHECK(invert);
-    const auto carry_read = Emit(graph, OpCode::TestFlags, Type::Bool, {Operand::Flags(Flag::Carry)});
+    const auto invert = graph.Append(OpCode::InvertCarry, Type::Void, {});
+    CHECK(invert);
+    const auto carry_read =
+            Emit(graph, OpCode::TestFlags, Type::Bool, {Operand::Flags(Flag::Carry)});
     Store(graph, 48, carry_read, Type::U8);
-    const auto body_flags = Emit(graph, OpCode::Add, Type::U64,
-                                 {Operand::ValueOf(source), Operand::Immediate(2, Type::U64)}, arithmetic);
+    const auto body_flags = Emit(graph,
+                                 OpCode::Add,
+                                 Type::U64,
+                                 {Operand::ValueOf(source), Operand::Immediate(2, Type::U64)},
+                                 arithmetic);
     CHECK(graph.EndBlock(Terminal::Branch(carry_read, empty.block, exit.block)) == Error::None);
     CHECK(graph.BeginBlock(exit.block) == Error::None);
-    const auto zero_read = Emit(graph, OpCode::CondSet, Type::Bool, {Operand::Condition(Condition::EQ)});
+    const auto zero_read =
+            Emit(graph, OpCode::CondSet, Type::Bool, {Operand::Condition(Condition::EQ)});
     Store(graph, 56, zero_read, Type::U8);
-    const auto selected = Emit(graph, OpCode::CondSelect, Type::U64,
-                               {Operand::Condition(Condition::NE), Operand::ValueOf(source), Operand::ValueOf(source)});
+    const auto selected = Emit(graph,
+                               OpCode::CondSelect,
+                               Type::U64,
+                               {Operand::Condition(Condition::NE),
+                                Operand::ValueOf(source),
+                                Operand::ValueOf(source)});
     Store(graph, 64, selected);
-    const auto exit_flags = Emit(graph, OpCode::Sub, Type::U64,
-                                 {Operand::ValueOf(source), Operand::Immediate(1, Type::U64)}, arithmetic);
+    const auto exit_flags = Emit(graph,
+                                 OpCode::Sub,
+                                 Type::U64,
+                                 {Operand::ValueOf(source), Operand::Immediate(1, Type::U64)},
+                                 arithmetic);
     CHECK(graph.EndBlock(Terminal::Return()) == Error::None);
-    auto reduced = Optimize(Submit(graph), SIZE_MAX,
-            {.flags = swift::runtime::compile::UniformRange{128, 8}}); CHECK(reduced);
+    auto reduced = Optimize(
+            Submit(graph), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+    CHECK(reduced);
     for (const auto writer : {entry_flags, body_flags}) {
-        CHECK(reduced.program.Operations()[writer.node.value].flag_outputs == FlagBits(Flag::Carry | Flag::Zero));
+        CHECK(reduced.program.Operations()[writer.node.value].flag_outputs ==
+              FlagBits(Flag::Carry | Flag::Zero));
         CHECK(reduced.program.Operations()[writer.node.value].Metadata().discard_omitted_flags);
     }
     CHECK(reduced.program.Operations()[exit_flags.node.value].flag_outputs == FlagBits(Flag::All));
@@ -553,45 +743,69 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     // Only a real external terminal can omit the Function graph. A single
     // self edge must retain the CFG path even though it also has one block.
     for (const bool self_loop : {false, true}) {
-        Builder single{Scope::Function}; const auto block = single.CreateBlock(); CHECK(block);
+        Builder single{Scope::Function};
+        const auto block = single.CreateBlock();
+        CHECK(block);
         CHECK(single.BeginBlock(block.block) == Error::None);
-        const auto source = Emit(single, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
-        const auto writer = Emit(single, OpCode::And, Type::U64,
-                {Operand::ValueOf(source), Operand::ValueOf(source)},
-                {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
-        CHECK(single.EndBlock(self_loop ? Terminal::Jump(block.block) : Terminal::Return(source)) == Error::None);
-        auto local = Optimize(Submit(single)); CHECK(local);
+        const auto source =
+                Emit(single, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+        const auto writer = Emit(single,
+                                 OpCode::And,
+                                 Type::U64,
+                                 {Operand::ValueOf(source), Operand::ValueOf(source)},
+                                 {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
+        CHECK(single.EndBlock(self_loop ? Terminal::Jump(block.block) : Terminal::Return(source)) ==
+              Error::None);
+        auto local = Optimize(Submit(single));
+        CHECK(local);
         CHECK(local.program.ScopeKind() == Scope::Function);
         CHECK((local.stats.block_flags_bytes != 0) == self_loop);
-        if (!self_loop) CHECK(local.program.Operations()[writer.node.value].flag_outputs == FlagBits(Flag::All));
+        if (!self_loop)
+            CHECK(local.program.Operations()[writer.node.value].flag_outputs ==
+                  FlagBits(Flag::All));
     }
 
     // The requested Z mask is already narrow: unchanged keep must still
     // acquire the literal permission when final successor demand is only Z.
     Builder permission{Scope::Function};
-    const auto producer = permission.CreateBlock(), consumer = permission.CreateBlock(); CHECK(producer && consumer);
+    const auto producer = permission.CreateBlock(), consumer = permission.CreateBlock();
+    CHECK(producer && consumer);
     CHECK(permission.BeginBlock(producer.block) == Error::None);
-    const auto byte = Emit(permission, OpCode::LoadUniform, Type::U8, {Operand::Uniform(0, Type::U8)});
-    const auto logical_z = Emit(permission, OpCode::And, Type::U8,
-            {Operand::ValueOf(byte), Operand::ValueOf(byte)}, {FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA});
+    const auto byte =
+            Emit(permission, OpCode::LoadUniform, Type::U8, {Operand::Uniform(0, Type::U8)});
+    const auto logical_z = Emit(permission,
+                                OpCode::And,
+                                Type::U8,
+                                {Operand::ValueOf(byte), Operand::ValueOf(byte)},
+                                {FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA});
     CHECK(permission.EndBlock(Terminal::Jump(consumer.block)) == Error::None);
     CHECK(permission.BeginBlock(consumer.block) == Error::None);
-    const auto nonzero = Emit(permission, OpCode::CondSet, Type::Bool, {Operand::Condition(Condition::NE)});
+    const auto nonzero =
+            Emit(permission, OpCode::CondSet, Type::Bool, {Operand::Condition(Condition::NE)});
     Store(permission, 8, nonzero, Type::U8);
-    const auto observer = Emit(permission, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
-    const auto complete = Emit(permission, OpCode::And, Type::U8,
-            {Operand::ValueOf(byte), Operand::ValueOf(byte)}, {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
+    const auto observer =
+            Emit(permission, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
+    const auto complete = Emit(permission,
+                               OpCode::And,
+                               Type::U8,
+                               {Operand::ValueOf(byte), Operand::ValueOf(byte)},
+                               {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
     CHECK(permission.EndBlock(Terminal::Return(observer)) == Error::None);
-    auto permitted = Optimize(Submit(permission), SIZE_MAX,
-            {.flags = swift::runtime::compile::UniformRange{128, 8}}); CHECK(permitted);
-    const OperationMetadata specified_z{FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA, false, true};
+    auto permitted = Optimize(
+            Submit(permission), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+    CHECK(permitted);
+    const OperationMetadata specified_z{
+            FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA, false, true};
     CHECK(permitted.program.Operations()[logical_z.node.value].Metadata() == specified_z);
     CHECK(!permitted.program.Operations()[complete.node.value].Metadata().discard_omitted_flags);
     auto edit = Builder::Edit(std::move(permitted.program));
-    CHECK(edit.Rewrite(observer.node, OpCode::GetFlags, Type::U64,
-            {Operand::ValueOf(byte), Operand::Flags(Flag::All)}) == Error::None);
-    auto observed = Optimize(Submit(edit), SIZE_MAX,
-            {.flags = swift::runtime::compile::UniformRange{128, 8}}); CHECK(observed);
+    CHECK(edit.Rewrite(observer.node,
+                       OpCode::GetFlags,
+                       Type::U64,
+                       {Operand::ValueOf(byte), Operand::Flags(Flag::All)}) == Error::None);
+    auto observed = Optimize(
+            Submit(edit), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+    CHECK(observed);
     // An added whole-word observer reads the declared unspecified fields.
     // It neither invalidates a proof nor restores previously omitted flags.
     CHECK(observed.program.Operations()[logical_z.node.value].Metadata() == specified_z);
@@ -600,33 +814,46 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
 
 void SingleNumericReadAbsorbsU32Normalizer() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block && builder.BeginBlock(block.block) == Error::None);
-    const auto parent = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const auto block = builder.CreateBlock();
+    CHECK(block && builder.BeginBlock(block.block) == Error::None);
+    const auto parent =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
     const auto normalize = [&](Type view = Type::U32) {
         return Emit(builder, OpCode::ZeroExtend32, Type::U32, {Operand::ValueOf(parent, view)});
     };
     const auto single = normalize();
     const OperationMetadata flags{FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry};
-    const auto sum = Emit(builder, OpCode::Add, Type::U32,
-                          {Operand::ValueOf(single), Operand::Immediate(1, Type::U32)}, flags);
+    const auto sum = Emit(builder,
+                          OpCode::Add,
+                          Type::U32,
+                          {Operand::ValueOf(single), Operand::Immediate(1, Type::U32)},
+                          flags);
     Store(builder, 16, sum, Type::U32);
     const auto raw_input = normalize();
     const auto raw = Emit(builder, OpCode::BitCast, Type::U32, {Operand::ValueOf(raw_input)});
     const auto wide = Emit(builder, OpCode::BitCast, Type::U64, {Operand::ValueOf(raw, Type::U64)});
     Store(builder, 24, wide);
     const auto shared = normalize();
-    const auto first = Emit(builder, OpCode::Add, Type::U32,
+    const auto first = Emit(builder,
+                            OpCode::Add,
+                            Type::U32,
                             {Operand::ValueOf(shared), Operand::Immediate(3, Type::U32)});
-    const auto second = Emit(builder, OpCode::Sub, Type::U32,
+    const auto second = Emit(builder,
+                             OpCode::Sub,
+                             Type::U32,
                              {Operand::ValueOf(shared), Operand::Immediate(4, Type::U32)});
-    Store(builder, 32, first, Type::U32); Store(builder, 36, second, Type::U32);
+    Store(builder, 32, first, Type::U32);
+    Store(builder, 36, second, Type::U32);
     const auto byte_input = normalize(Type::U8);
-    const auto byte_sum = Emit(builder, OpCode::Add, Type::U32,
+    const auto byte_sum = Emit(builder,
+                               OpCode::Add,
+                               Type::U32,
                                {Operand::ValueOf(byte_input), Operand::Immediate(6, Type::U32)});
     Store(builder, 40, byte_sum, Type::U32);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
-    auto result = Optimize(Submit(builder), SIZE_MAX,
-            {.flags = swift::runtime::compile::UniformRange{128, 8}}); CHECK(result);
+    auto result = Optimize(
+            Submit(builder), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+    CHECK(result);
     CHECK(result.program.Operations()[single.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operands(sum.node).front().Payload() == parent.node.value);
     CHECK(result.program.Operands(sum.node).front().TypeView() == Type::U32);
@@ -641,79 +868,126 @@ void SingleNumericReadAbsorbsU32Normalizer() {
 
 void ExtractShiftAlgebra() {
     Builder builder{Scope::Block};
-    const auto block = builder.CreateBlock(); CHECK(block && builder.BeginBlock(block.block) == Error::None);
-    const auto parent = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const auto block = builder.CreateBlock();
+    CHECK(block && builder.BeginBlock(block.block) == Error::None);
+    const auto parent =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
     const auto extract = [&](unsigned first = 0, Type view = Type::Void) {
-        return Emit(builder, OpCode::BitExtract, Type::U8,
-                    {Operand::ValueOf(parent, view), Operand::Immediate(first, Type::U8), Operand::Immediate(8, Type::U8)});
+        return Emit(builder,
+                    OpCode::BitExtract,
+                    Type::U8,
+                    {Operand::ValueOf(parent, view),
+                     Operand::Immediate(first, Type::U8),
+                     Operand::Immediate(8, Type::U8)});
     };
     const auto low = extract();
-    const auto normalizer = Emit(builder, OpCode::ZeroExtend32, Type::U32, {Operand::ValueOf(low, Type::U32)});
-    const auto shifted = Emit(builder, OpCode::LsrImm, Type::U32,
+    const auto normalizer =
+            Emit(builder, OpCode::ZeroExtend32, Type::U32, {Operand::ValueOf(low, Type::U32)});
+    const auto shifted = Emit(builder,
+                              OpCode::LsrImm,
+                              Type::U32,
                               {Operand::ValueOf(normalizer), Operand::Immediate(1, Type::U8)});
     Store(builder, 16, shifted, Type::U32);
     // BitExtract's raw carrier survives its narrow parent view; 33 reduces
     // modulo the U32 shift width, rather than the extracted U8 width.
     const auto raw = extract(40, Type::U8);
-    const auto reduced = Emit(builder, OpCode::LsrImm, Type::U32,
+    const auto reduced = Emit(builder,
+                              OpCode::LsrImm,
+                              Type::U32,
                               {Operand::ValueOf(raw, Type::U32), Operand::Immediate(33, Type::U8)});
     Store(builder, 20, reduced, Type::U32);
     const auto shared = extract();
-    const auto shared_shift = Emit(builder, OpCode::LsrImm, Type::U32,
-                                   {Operand::ValueOf(shared, Type::U32), Operand::Immediate(2, Type::U8)});
-    Store(builder, 24, shared, Type::U8); Store(builder, 28, shared_shift, Type::U32);
+    const auto shared_shift =
+            Emit(builder,
+                 OpCode::LsrImm,
+                 Type::U32,
+                 {Operand::ValueOf(shared, Type::U32), Operand::Immediate(2, Type::U8)});
+    Store(builder, 24, shared, Type::U8);
+    Store(builder, 28, shared_shift, Type::U32);
     const auto flagged = extract();
     const OperationMetadata profile{0, FlagProfile::ArithmeticRaw};
-    const auto flagged_shift = Emit(builder, OpCode::LsrImm, Type::U32,
-            {Operand::ValueOf(flagged, Type::U32), Operand::Immediate(1, Type::U8)}, profile);
+    const auto flagged_shift =
+            Emit(builder,
+                 OpCode::LsrImm,
+                 Type::U32,
+                 {Operand::ValueOf(flagged, Type::U32), Operand::Immediate(1, Type::U8)},
+                 profile);
     Store(builder, 32, flagged_shift, Type::U32);
     const auto narrow = extract();
-    const auto narrow_shift = Emit(builder, OpCode::LsrImm, Type::U32,
+    const auto narrow_shift = Emit(builder,
+                                   OpCode::LsrImm,
+                                   Type::U32,
                                    {Operand::ValueOf(narrow), Operand::Immediate(1, Type::U8)});
     Store(builder, 36, narrow_shift, Type::U32);
     const auto zero = extract();
-    const auto zero_shift = Emit(builder, OpCode::LsrImm, Type::U32,
-                                 {Operand::ValueOf(zero, Type::U32), Operand::Immediate(32, Type::U8)});
+    const auto zero_shift =
+            Emit(builder,
+                 OpCode::LsrImm,
+                 Type::U32,
+                 {Operand::ValueOf(zero, Type::U32), Operand::Immediate(32, Type::U8)});
     Store(builder, 40, zero_shift, Type::U32);
-    const OperationMetadata logical{FlagBits(Flag::Carry | Flag::Zero), FlagProfile::LogicalZeroCVA};
+    const OperationMetadata logical{FlagBits(Flag::Carry | Flag::Zero),
+                                    FlagProfile::LogicalZeroCVA};
     const auto bit = extract(0, Type::Bool);
-    const auto masked = Emit(builder, OpCode::And, Type::U8,
-            {Operand::ValueOf(bit), Operand::Immediate(1, Type::U8)}, logical);
-    const auto observed = Emit(builder, OpCode::TestFlags, Type::Bool, {Operand::Flags(Flag::Carry | Flag::Zero)});
+    const auto masked = Emit(builder,
+                             OpCode::And,
+                             Type::U8,
+                             {Operand::ValueOf(bit), Operand::Immediate(1, Type::U8)},
+                             logical);
+    const auto observed = Emit(
+            builder, OpCode::TestFlags, Type::Bool, {Operand::Flags(Flag::Carry | Flag::Zero)});
     Store(builder, 44, observed, Type::U8);
     const auto wide_bit = extract();
-    const auto wide_masked = Emit(builder, OpCode::And, Type::U8,
-            {Operand::ValueOf(wide_bit, Type::U32), Operand::Immediate(1, Type::U8)}, logical);
-    const auto wide_observed = Emit(builder, OpCode::TestFlags, Type::Bool, {Operand::Flags(Flag::Carry | Flag::Zero)});
+    const auto wide_masked =
+            Emit(builder,
+                 OpCode::And,
+                 Type::U8,
+                 {Operand::ValueOf(wide_bit, Type::U32), Operand::Immediate(1, Type::U8)},
+                 logical);
+    const auto wide_observed = Emit(
+            builder, OpCode::TestFlags, Type::Bool, {Operand::Flags(Flag::Carry | Flag::Zero)});
     Store(builder, 48, wide_observed, Type::U8);
     // Keep the real birth chain: walk2 first combines the shift, then sees
     // the resulting U32 extract through this later low8 observation.
     const auto clip_low = extract(0, Type::U8);
-    const auto clip_normalizer = Emit(builder, OpCode::ZeroExtend32, Type::U32,
-                                     {Operand::ValueOf(clip_low, Type::U32)});
-    const auto clip_shift = Emit(builder, OpCode::LsrImm, Type::U32,
-            {Operand::ValueOf(clip_normalizer), Operand::Immediate(3, Type::U8)});
-    const auto clipped = Emit(builder, OpCode::BitExtract, Type::U8,
-            {Operand::ValueOf(clip_shift), Operand::Immediate(0, Type::U8), Operand::Immediate(8, Type::U8)});
+    const auto clip_normalizer =
+            Emit(builder, OpCode::ZeroExtend32, Type::U32, {Operand::ValueOf(clip_low, Type::U32)});
+    const auto clip_shift =
+            Emit(builder,
+                 OpCode::LsrImm,
+                 Type::U32,
+                 {Operand::ValueOf(clip_normalizer), Operand::Immediate(3, Type::U8)});
+    const auto clipped = Emit(builder,
+                              OpCode::BitExtract,
+                              Type::U8,
+                              {Operand::ValueOf(clip_shift),
+                               Operand::Immediate(0, Type::U8),
+                               Operand::Immediate(8, Type::U8)});
     Store(builder, 52, clipped, Type::U8);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
     auto input = Submit(builder);
     const auto unit = input.UnitId();
     const auto words = input.OperandArena().size(), nodes = input.Operations().size();
-    auto result = Optimize(std::move(input)); CHECK(result);
+    auto result = Optimize(std::move(input));
+    CHECK(result);
     CHECK(result.program.UnitId() == unit && result.program.Operations().size() == nodes);
     CHECK(result.stats.folded == 4 && result.stats.erased == 7 && result.stats.copy_forwarded == 3);
     CHECK(result.stats.words_after <= words + 2 * nodes);
     const auto combined = [&](Value value, unsigned first, Type view) {
         const auto& op = result.program.Operations()[value.node.value];
-        CHECK(op.opcode == OpCode::BitExtract && op.type == Type::U32 && op.block == block.block.id);
-        const auto inputs = result.program.Operands(value.node); auto at = inputs.begin();
+        CHECK(op.opcode == OpCode::BitExtract && op.type == Type::U32 &&
+              op.block == block.block.id);
+        const auto inputs = result.program.Operands(value.node);
+        auto at = inputs.begin();
         const auto source = *at++, offset = *at++, count = *at++;
-        CHECK(at == inputs.end() && source.Kind() == OperandKind::Value && source.Payload() == parent.node.value);
-        CHECK(source.TypeView() == view && offset.Kind() == OperandKind::Immediate && offset.Payload() == first);
+        CHECK(at == inputs.end() && source.Kind() == OperandKind::Value &&
+              source.Payload() == parent.node.value);
+        CHECK(source.TypeView() == view && offset.Kind() == OperandKind::Immediate &&
+              offset.Payload() == first);
         CHECK(count.Kind() == OperandKind::Immediate && count.Payload() == 7);
     };
-    combined(shifted, 1, Type::Void); combined(reduced, 41, Type::U8);
+    combined(shifted, 1, Type::Void);
+    combined(reduced, 41, Type::U8);
     CHECK(result.program.Operations()[low.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operations()[normalizer.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operations()[raw.node.value].opcode == OpCode::Nop);
@@ -746,16 +1020,23 @@ void SignedWidenMultiplyAlgebra() {
     constexpr auto capability = static_cast<std::uint64_t>(TargetFeature::VectorSignedMulWidenLow);
     const auto scene = [&](TargetInfo target, bool fuse) {
         Builder builder{Scope::Block, target};
-        const auto block = builder.CreateBlock(); CHECK(block && builder.BeginBlock(block.block) == Error::None);
+        const auto block = builder.CreateBlock();
+        CHECK(block && builder.BeginBlock(block.block) == Error::None);
         // Low signed halfwords are {-1,2,-3,-32768} and {-1,-4,5,-32768}.
         const auto left_bits = Literal(builder, UINT64_C(0x8000fffd0002ffff));
         const auto right_bits = Literal(builder, UINT64_C(0x80000005fffcffff));
-        const auto left = Emit(builder, OpCode::VecDup64, Type::V128, {Operand::ValueOf(left_bits)});
-        const auto right = Emit(builder, OpCode::VecDup64, Type::V128, {Operand::ValueOf(right_bits)});
+        const auto left =
+                Emit(builder, OpCode::VecDup64, Type::V128, {Operand::ValueOf(left_bits)});
+        const auto right =
+                Emit(builder, OpCode::VecDup64, Type::V128, {Operand::ValueOf(right_bits)});
         const auto extend = [&](Value parent, Type view) {
-            return Emit(builder, OpCode::VecExtend, Type::V128,
-                    {Operand::ValueOf(parent, view), Operand::Immediate(16, Type::U8),
-                     Operand::Immediate(32, Type::U8), Operand::Immediate(0, Type::U8)});
+            return Emit(builder,
+                        OpCode::VecExtend,
+                        Type::V128,
+                        {Operand::ValueOf(parent, view),
+                         Operand::Immediate(16, Type::U8),
+                         Operand::Immediate(32, Type::U8),
+                         Operand::Immediate(0, Type::U8)});
         };
         const auto published = extend(left, Type::V128);
         Store(builder, 0, published, Type::V128);
@@ -763,11 +1044,19 @@ void SignedWidenMultiplyAlgebra() {
         Emit(builder, OpCode::FaultLocation, Type::Void, {Operand::Immediate(0x1234, Type::U64)});
         Emit(builder, OpCode::LoadMemoryTSO, Type::U8, {Operand::ValueOf(left_bits)});
         const auto exclusive = extend(right, Type::Void);
-        const auto product = Emit(builder, OpCode::VecMadd16, Type::V128,
-                                  {Operand::ValueOf(published), Operand::ValueOf(exclusive, Type::V128)});
-        const auto accumulator = Emit(builder, OpCode::LoadUniform, Type::V128, {Operand::Uniform(64, Type::V128)});
-        const auto sum = Emit(builder, OpCode::VecAdd, Type::V128,
-                {Operand::ValueOf(accumulator), Operand::ValueOf(product), Operand::Immediate(32, Type::U8)});
+        const auto product =
+                Emit(builder,
+                     OpCode::VecMadd16,
+                     Type::V128,
+                     {Operand::ValueOf(published), Operand::ValueOf(exclusive, Type::V128)});
+        const auto accumulator =
+                Emit(builder, OpCode::LoadUniform, Type::V128, {Operand::Uniform(64, Type::V128)});
+        const auto sum = Emit(builder,
+                              OpCode::VecAdd,
+                              Type::V128,
+                              {Operand::ValueOf(accumulator),
+                               Operand::ValueOf(product),
+                               Operand::Immediate(32, Type::U8)});
         Store(builder, 64, sum, Type::V128);
         Store(builder, 80, product, Type::V128);
         const auto snapshot = NodeId{sum.node.value + 2};
@@ -775,31 +1064,40 @@ void SignedWidenMultiplyAlgebra() {
         auto input = Submit(builder);
         const auto unit = input.UnitId();
         const auto words = input.OperandArena().size(), nodes = input.Operations().size();
-        auto result = Optimize(std::move(input), words + 2 * nodes); CHECK(result);
+        auto result = Optimize(std::move(input), words + 2 * nodes);
+        CHECK(result);
         CHECK(result.program.UnitId() == unit && result.program.Target() == target);
         CHECK(result.program.Operations().size() == nodes && result.stats.words_before == words);
         CHECK(result.stats.words_after <= words + 2 * nodes);
         const auto& operation = result.program.Operations()[product.node.value];
-        CHECK(operation.type == Type::V128 && operation.block == block.block.id && operation.Metadata() == OperationMetadata{});
+        CHECK(operation.type == Type::V128 && operation.block == block.block.id &&
+              operation.Metadata() == OperationMetadata{});
         CHECK(result.program.Operations()[published.node.value].opcode == OpCode::VecExtend);
         CHECK(result.program.Operations()[publication.value].opcode == OpCode::StoreUniform);
-        auto published_use = result.program.Operands(publication).begin(); ++published_use;
+        auto published_use = result.program.Operands(publication).begin();
+        ++published_use;
         CHECK((*published_use).Payload() == published.node.value);
-        auto add_use = result.program.Operands(sum.node).begin(); ++add_use;
+        auto add_use = result.program.Operands(sum.node).begin();
+        ++add_use;
         CHECK((*add_use).Payload() == product.node.value);
-        auto snapshot_use = result.program.Operands(snapshot).begin(); ++snapshot_use;
+        auto snapshot_use = result.program.Operands(snapshot).begin();
+        ++snapshot_use;
         CHECK((*snapshot_use).Payload() == product.node.value);
-        const auto inputs = result.program.Operands(product.node); auto at = inputs.begin();
+        const auto inputs = result.program.Operands(product.node);
+        auto at = inputs.begin();
         const auto first = *at++, second = *at++;
         if (fuse) {
             CHECK(operation.opcode == OpCode::VecSignedMulWidenLow && operation.operand_count == 3);
             CHECK(first.Payload() == left.node.value && first.TypeView() == Type::V128);
             CHECK(second.Payload() == right.node.value && second.TypeView() == Type::Void);
             const auto bits = *at++;
-            CHECK(at == inputs.end() && bits.Kind() == OperandKind::Immediate && bits.Payload() == 16);
+            CHECK(at == inputs.end() && bits.Kind() == OperandKind::Immediate &&
+                  bits.Payload() == 16);
             CHECK(result.program.Operations()[exclusive.node.value].opcode == OpCode::Nop);
-            CHECK(result.stats.folded == 1 && result.stats.erased == 1 && result.stats.words_after == words + 3);
-            const auto a = Immediate(result.program, left_bits, Type::U64), b = Immediate(result.program, right_bits, Type::U64);
+            CHECK(result.stats.folded == 1 && result.stats.erased == 1 &&
+                  result.stats.words_after == words + 3);
+            const auto a = Immediate(result.program, left_bits, Type::U64),
+                       b = Immediate(result.program, right_bits, Type::U64);
             constexpr std::array<std::int32_t, 4> expected{1, -8, -15, 1073741824};
             for (unsigned lane = 0; lane < expected.size(); ++lane) {
                 const auto signed_half = [&](std::uint64_t value) {
@@ -810,9 +1108,11 @@ void SignedWidenMultiplyAlgebra() {
             }
         } else {
             CHECK(operation.opcode == OpCode::VecMadd16 && at == inputs.end());
-            CHECK(first.Payload() == published.node.value && second.Payload() == exclusive.node.value);
+            CHECK(first.Payload() == published.node.value &&
+                  second.Payload() == exclusive.node.value);
             CHECK(result.program.Operations()[exclusive.node.value].opcode == OpCode::VecExtend);
-            CHECK(result.stats.folded == 0 && result.stats.erased == 0 && result.stats.words_after == words);
+            CHECK(result.stats.folded == 0 && result.stats.erased == 0 &&
+                  result.stats.words_after == words);
         }
     };
     scene({TargetMode::Known, 0xa64, capability}, true);
@@ -823,46 +1123,61 @@ void SignedWidenMultiplyAlgebra() {
 
 void OrderedLoadAddresses() {
     Builder builder{Scope::Block, {TargetMode::Unknown, 0xa64, 0}};
-    const auto block = builder.CreateBlock(); CHECK(block && builder.BeginBlock(block.block) == Error::None);
-    const auto base = Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
-    const auto address = [&](OpCode opcode, Value parent, std::uint64_t amount, Type view = Type::Void) {
-        return Emit(builder, opcode, Type::U64,
-                    {Operand::ValueOf(parent, view), Operand::Immediate(amount, Type::U64)});
-    };
+    const auto block = builder.CreateBlock();
+    CHECK(block && builder.BeginBlock(block.block) == Error::None);
+    const auto base =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const auto address =
+            [&](OpCode opcode, Value parent, std::uint64_t amount, Type view = Type::Void) {
+                return Emit(
+                        builder,
+                        opcode,
+                        Type::U64,
+                        {Operand::ValueOf(parent, view), Operand::Immediate(amount, Type::U64)});
+            };
     const auto load = [&](Value at) {
         return Emit(builder, OpCode::LoadMemoryTSO, Type::U16, {Operand::ValueOf(at)});
     };
     const auto positive = address(OpCode::Add, base, 2, Type::U64);
     const auto first = load(positive);
     const auto negative = address(OpCode::Add, base, ~std::uint64_t{});
-    const auto second = load(negative); // A wide negative literal needs four actual edit words.
+    const auto second = load(negative);  // A wide negative literal needs four actual edit words.
     const auto subtract = address(OpCode::Sub, base, 256);
     const auto third = load(subtract);
     const auto shared = address(OpCode::Add, base, 8);
     const auto fourth = load(shared);
     Store(builder, 64, shared);
-    const auto narrow = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(8, Type::U32)});
+    const auto narrow =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(8, Type::U32)});
     const auto widened = address(OpCode::Add, narrow, 2, Type::U64);
-    const auto fifth = load(widened); // A wide view does not grant a natural U64 base.
+    const auto fifth = load(widened);  // A wide view does not grant a natural U64 base.
     CHECK(builder.EndBlock(Terminal::Return(first)) == Error::None);
     auto input = Submit(builder);
     const auto words = input.OperandArena().size(), nodes = input.Operations().size();
     const auto unit = input.UnitId();
-    auto result = Optimize(std::move(input), words + 2 * nodes); CHECK(result);
+    auto result = Optimize(std::move(input), words + 2 * nodes);
+    CHECK(result);
     CHECK(result.program.UnitId() == unit && result.program.Target().mode == TargetMode::Unknown);
     CHECK(result.program.Operations().size() == nodes && result.stats.words_before == words);
-    CHECK(result.stats.folded == 3 && result.stats.erased == 3 && result.stats.words_after == words + 10);
-    const auto folded = [&](Value loaded, Value removed, OperandOp opcode, std::uint64_t amount, Type view) {
-        const auto& op = result.program.Operations()[loaded.node.value];
-        CHECK(op.opcode == OpCode::LoadMemoryTSO && op.type == Type::U16 && op.Metadata() == OperationMetadata{});
-        CHECK(result.program.Operations()[removed.node.value].opcode == OpCode::Nop);
-        const auto inputs = result.program.Operands(loaded.node); auto at = inputs.begin();
-        const auto expression = *at++, parent = *at++, literal = *at++;
-        CHECK(at == inputs.end() && expression.Kind() == OperandKind::Expression && expression.Count() == 2);
-        CHECK(expression.ExpressionOp() == opcode && !expression.ShiftAmount());
-        CHECK(parent.Kind() == OperandKind::Value && parent.Payload() == base.node.value && parent.TypeView() == view);
-        CHECK(literal.Kind() == OperandKind::Immediate && literal.TypeView() == Type::U64 && literal.Payload() == amount);
-    };
+    CHECK(result.stats.folded == 3 && result.stats.erased == 3 &&
+          result.stats.words_after == words + 10);
+    const auto folded =
+            [&](Value loaded, Value removed, OperandOp opcode, std::uint64_t amount, Type view) {
+                const auto& op = result.program.Operations()[loaded.node.value];
+                CHECK(op.opcode == OpCode::LoadMemoryTSO && op.type == Type::U16 &&
+                      op.Metadata() == OperationMetadata{});
+                CHECK(result.program.Operations()[removed.node.value].opcode == OpCode::Nop);
+                const auto inputs = result.program.Operands(loaded.node);
+                auto at = inputs.begin();
+                const auto expression = *at++, parent = *at++, literal = *at++;
+                CHECK(at == inputs.end() && expression.Kind() == OperandKind::Expression &&
+                      expression.Count() == 2);
+                CHECK(expression.ExpressionOp() == opcode && !expression.ShiftAmount());
+                CHECK(parent.Kind() == OperandKind::Value && parent.Payload() == base.node.value &&
+                      parent.TypeView() == view);
+                CHECK(literal.Kind() == OperandKind::Immediate && literal.TypeView() == Type::U64 &&
+                      literal.Payload() == amount);
+            };
     folded(first, positive, OperandOp::Add, 2, Type::U64);
     folded(second, negative, OperandOp::Add, ~std::uint64_t{}, Type::Void);
     folded(third, subtract, OperandOp::Sub, 256, Type::Void);
@@ -878,15 +1193,17 @@ void ReusedRowsKeepOnlyCurrentRequest() {
     for (unsigned dead_count : {12u, 1u, 17u}) {
         const auto scope = dead_count == 1 ? Scope::Function : Scope::Block;
         Builder builder{scope, {}, std::move(reusable)};
-        const auto block = builder.CreateBlock(); CHECK(block);
+        const auto block = builder.CreateBlock();
+        CHECK(block);
         CHECK(builder.BeginBlock(block.block) == Error::None);
         const auto dead = Literal(builder, 99);
         for (unsigned i = 1; i < dead_count; ++i) Literal(builder, i);
         const auto left = Literal(builder, 7), right = Literal(builder, 11);
-        const auto sum = Emit(builder, OpCode::Add, Type::U64,
-                {Operand::ValueOf(left), Operand::ValueOf(right)});
+        const auto sum = Emit(
+                builder, OpCode::Add, Type::U64, {Operand::ValueOf(left), Operand::ValueOf(right)});
         CHECK(builder.EndBlock(Terminal::Return(sum)) == Error::None);
-        auto result = Optimize(Submit(builder), rows); CHECK(result);
+        auto result = Optimize(Submit(builder), rows);
+        CHECK(result);
         CHECK(result.program.ScopeKind() == scope);
         CHECK(result.program.Operations()[dead.node.value].opcode == OpCode::Nop);
         CHECK(Immediate(result.program, sum, Type::U64) == 18);
@@ -897,7 +1214,8 @@ void ReusedRowsKeepOnlyCurrentRequest() {
 
 int main() {
     ReusedRowsKeepOnlyCurrentRequest();
-    FoldAndDeadCascade(); LowByteMaskWriteback();
+    FoldAndDeadCascade();
+    LowByteMaskWriteback();
     CopyAndTerminalRoots();
     MetadataSensitiveAndObservable();
     UniformWindows();

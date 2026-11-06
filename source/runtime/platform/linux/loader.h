@@ -16,6 +16,8 @@ struct LoadedImage {
     std::uint64_t device{}, inode{}, file_size{};
 };
 LoadedImage LoadELF(execution::GuestMemory&, const std::string&);
-std::uint64_t InitialStack(execution::GuestMemory&, const LoadedImage&,
-                           std::span<const std::string> argv, std::span<const std::string> environment);
-} // namespace swift::runtime::platform
+std::uint64_t InitialStack(execution::GuestMemory&,
+                           const LoadedImage&,
+                           std::span<const std::string> argv,
+                           std::span<const std::string> environment);
+}  // namespace swift::runtime::platform

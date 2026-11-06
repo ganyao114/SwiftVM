@@ -8,7 +8,24 @@
 namespace swift::runtime::x86 {
 
 // Architectural x86-64 register order, shared by IR construction and execution.
-enum GPR : unsigned { RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R14, R15 };
+enum GPR : unsigned {
+    RAX,
+    RCX,
+    RDX,
+    RBX,
+    RSP,
+    RBP,
+    RSI,
+    RDI,
+    R8,
+    R9,
+    R10,
+    R11,
+    R12,
+    R13,
+    R14,
+    R15
+};
 struct GuestState {
     std::uint64_t gprs[16]{};
     std::uint64_t pc{}, packed_flags{1}, fs_base{}, gs_base{};
@@ -27,4 +44,4 @@ static_assert(offsetof(GuestState, xmm) == 160 && offsetof(GuestState, mxcsr) ==
 static_assert(offsetof(GuestState, x87) == 432 && offsetof(GuestState, x87_ip) == 576);
 static_assert(offsetof(GuestState, ymm_high) == 608 && sizeof(GuestState) == 864);
 
-} // namespace swift::runtime::x86
+}  // namespace swift::runtime::x86

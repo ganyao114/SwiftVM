@@ -61,4 +61,4 @@ X87Result ExecuteRemainder(X87State&, bool);
 X87Result ExecuteScale(X87State&);
 X87Result ExecuteExtract(X87State&);
 X87Result ExecuteTranscendental(X87State&, X87Transcendental);
-} // namespace swift::runtime::x86::detail
+}  // namespace swift::runtime::x86::detail

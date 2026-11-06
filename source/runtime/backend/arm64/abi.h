@@ -12,9 +12,13 @@ inline constexpr std::uint64_t PackedDynamicFlags = 0xf40000ff;
 
 // The cold directory and retired native tails share one PC mix and layout.
 // These are backend/runtime facts, never frontend or public IR facts.
-inline constexpr unsigned DispatchSlotShift = SVM_A64_SLOT_SHIFT, DispatchOccupiedOffset = SVM_A64_OCCUPIED_OFFSET, DispatchHashShift = SVM_A64_DISPATCH_HASH_SHIFT;
-inline constexpr unsigned ContextSlotsOffset = SVM_A64_CTX_SLOTS, ContextDispatchesOffset = SVM_A64_CTX_DISPATCHES,
-        ContextHitsOffset = SVM_A64_CTX_HITS, ContextProbesOffset = SVM_A64_CTX_PROBES;
+inline constexpr unsigned DispatchSlotShift = SVM_A64_SLOT_SHIFT,
+                          DispatchOccupiedOffset = SVM_A64_OCCUPIED_OFFSET,
+                          DispatchHashShift = SVM_A64_DISPATCH_HASH_SHIFT;
+inline constexpr unsigned ContextSlotsOffset = SVM_A64_CTX_SLOTS,
+                          ContextDispatchesOffset = SVM_A64_CTX_DISPATCHES,
+                          ContextHitsOffset = SVM_A64_CTX_HITS,
+                          ContextProbesOffset = SVM_A64_CTX_PROBES;
 // Per actual dynamic tail: sixteen (PC,entry) pairs plus one writable base alias.
 inline constexpr unsigned DynamicCacheEntries = 16, DynamicCacheWords = DynamicCacheEntries * 4 + 2;
 
@@ -37,4 +41,4 @@ constexpr unsigned VectorHomeRegister(unsigned slot, bool pinned) noexcept {
     return slot < 6 ? slot + 2 : pinned ? slot + 4 : slot + 10;
 }
 
-} // namespace swift::runtime::backend::arm64::abi
+}  // namespace swift::runtime::backend::arm64::abi

@@ -13,30 +13,41 @@
 namespace swift::runtime::execution {
 namespace {
 using u64 = std::uint64_t;
-[[noreturn]] void SystemError(const char* op) { throw std::runtime_error(std::string(op)+": "+std::strerror(errno)); }
-u64 Add(u64 a,u64 b) { if(b>UINT64_MAX-a) throw std::length_error("source range overflow"); return a+b; }
-bool IsFile(const MemoryRegion& r) noexcept { return r.backing==BackingKind::FilePrivate||r.backing==BackingKind::FileShared; }
-bool FileOverlap(const MemoryRegion& a,const MemoryRegion& b,u64 first,u64 last) noexcept {
- return IsFile(a)&&IsFile(b)&&a.device==b.device&&a.inode==b.inode&&first<b.file_offset+b.size&&b.file_offset<last;
+[[noreturn]] void SystemError(const char* op) {
+    throw std::runtime_error(std::string(op) + ": " + std::strerror(errno));
 }
-template<typename Visit>
+u64 Add(u64 a, u64 b) {
+    if (b > UINT64_MAX - a) throw std::length_error("source range overflow");
+    return a + b;
+}
+bool IsFile(const MemoryRegion& r) noexcept {
+    return r.backing == BackingKind::FilePrivate || r.backing == BackingKind::FileShared;
+}
+bool FileOverlap(const MemoryRegion& a, const MemoryRegion& b, u64 first, u64 last) noexcept {
+    return IsFile(a) && IsFile(b) && a.device == b.device && a.inode == b.inode &&
+           first < b.file_offset + b.size && b.file_offset < last;
+}
+template <typename Visit>
 void CodeWriteRanges(std::span<const MemoryRegion> regions, u64 address, u64 end, Visit visit) {
     for (const auto& source : regions) {
-        const auto begin = std::max(address, source.address), tail = std::min(end, source.address + source.size);
+        const auto begin = std::max(address, source.address),
+                   tail = std::min(end, source.address + source.size);
         if (begin >= tail || !(source.protection & PROT_EXEC)) continue;
         if (source.protection & PROT_WRITE) visit(begin, tail);
         if (!IsFile(source)) continue;
-        const auto first = source.file_offset + (begin - source.address), last = source.file_offset + (tail - source.address);
+        const auto first = source.file_offset + (begin - source.address),
+                   last = source.file_offset + (tail - source.address);
         for (const auto& peer : regions) {
-            if (&source == &peer || peer.backing != BackingKind::FileShared || !(peer.protection & PROT_WRITE) ||
-                !FileOverlap(source, peer, first, last)) continue;
+            if (&source == &peer || peer.backing != BackingKind::FileShared ||
+                !(peer.protection & PROT_WRITE) || !FileOverlap(source, peer, first, last))
+                continue;
             visit(peer.address + (std::max(first, peer.file_offset) - peer.file_offset),
                   peer.address + (std::min(last, peer.file_offset + peer.size) - peer.file_offset));
         }
     }
 }
 
-}
+}  // namespace
 
 void Smc::Arm(u64 address, std::size_t length) {
     const auto page_size = vm.memory.PageSize();
@@ -58,13 +69,15 @@ void Smc::Arm(u64 address, std::size_t length) {
             if (page == last) break;
         }
     });
-    std::sort(pages.begin(), pages.end(),
-            [](const Page& left, const Page& right) { return left.address < right.address; });
+    std::sort(pages.begin(), pages.end(), [](const Page& left, const Page& right) {
+        return left.address < right.address;
+    });
     std::size_t kept{};
     for (const auto page : pages) {
         if (kept && pages[kept - 1].address == page.address)
             pages[kept - 1].armed |= page.armed;
-        else pages[kept++] = page;
+        else
+            pages[kept++] = page;
     }
     pages.resize(kept);
     // All records and allocations precede protection, including non-EXEC
@@ -72,15 +85,18 @@ void Smc::Arm(u64 address, std::size_t length) {
     for (auto& page : pages) {
         const auto protection = vm.memory.PageProtection(page.address);
         if (page.armed || protection < 0 || !(protection & PROT_WRITE)) continue;
-        if (mprotect(reinterpret_cast<void*>(page.address), page_size, protection & ~PROT_WRITE)) SystemError("protect guest code source/alias");
+        if (mprotect(reinterpret_cast<void*>(page.address), page_size, protection & ~PROT_WRITE))
+            SystemError("protect guest code source/alias");
         page.armed = true;
     }
 }
 bool Smc::Recover(std::uintptr_t address) noexcept {
     const auto page_size = vm.memory.PageSize();
     const auto page = address & ~(u64{page_size} - 1);
-    const auto found = std::lower_bound(pages.begin(), pages.end(), page,
-            [](const Page& row, u64 value) { return row.address < value; });
+    const auto found =
+            std::lower_bound(pages.begin(), pages.end(), page, [](const Page& row, u64 value) {
+                return row.address < value;
+            });
     if (found == pages.end() || found->address != page || !found->armed) return false;
     const auto protection = vm.memory.PageProtection(page);
     if (protection < 0 || !(protection & PROT_WRITE)) return false;
@@ -94,15 +110,17 @@ bool Smc::Recover(std::uintptr_t address) noexcept {
 }
 void Smc::Clear() {
     const auto page_size = vm.memory.PageSize();
-    for (auto& page : pages) if (page.armed) {
-        const auto protection = vm.memory.PageProtection(page.address);
-        // Mapping/protection syscalls may already have replaced or unmapped
-        // this page. Never restore the earlier mapping's permissions.
-        if (protection >= 0 && mprotect(reinterpret_cast<void*>(page.address), page_size, protection))
-            SystemError("restore guest code source");
-        page.armed = false;
-    }
-    pages.clear(); // Retain actual page-record capacity.
+    for (auto& page : pages)
+        if (page.armed) {
+            const auto protection = vm.memory.PageProtection(page.address);
+            // Mapping/protection syscalls may already have replaced or unmapped
+            // this page. Never restore the earlier mapping's permissions.
+            if (protection >= 0 &&
+                mprotect(reinterpret_cast<void*>(page.address), page_size, protection))
+                SystemError("restore guest code source");
+            page.armed = false;
+        }
+    pages.clear();  // Retain actual page-record capacity.
 }
 void Smc::Invalidate() {
     RuntimeTimer total{vm.stats.compile_request_ns}, release{vm.stats.code_release_ns};
@@ -118,4 +136,4 @@ void Smc::Invalidate() {
     if (!released.Complete()) throw std::runtime_error("cannot retire native code mapping");
     ++vm.stats.cache_invalidations;
 }
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

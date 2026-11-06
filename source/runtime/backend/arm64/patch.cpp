@@ -8,7 +8,9 @@
 #include <unistd.h>
 namespace swift::runtime::backend::arm64 {
 
-void SynchronizeCode(std::uint8_t* writable, const std::uint8_t* executable, std::size_t bytes) noexcept {
+void SynchronizeCode(std::uint8_t* writable,
+                     const std::uint8_t* executable,
+                     std::size_t bytes) noexcept {
     if (!bytes) return;
 #if defined(__linux__) && defined(__aarch64__)
     // Arm's PoU sequence, with LLVM compiler-rt's CTR_EL0 IDC/DIC and line
@@ -33,88 +35,115 @@ void SynchronizeCode(std::uint8_t* writable, const std::uint8_t* executable, std
     }
     asm volatile("isb" : : : "memory");
 #else
-    __builtin___clear_cache(reinterpret_cast<char*>(writable), reinterpret_cast<char*>(writable + bytes));
+    __builtin___clear_cache(reinterpret_cast<char*>(writable),
+                            reinterpret_cast<char*>(writable + bytes));
     if (writable != executable)
-        __builtin___clear_cache(reinterpret_cast<char*>(const_cast<std::uint8_t*>(executable)),
-                                reinterpret_cast<char*>(const_cast<std::uint8_t*>(executable + bytes)));
+        __builtin___clear_cache(
+                reinterpret_cast<char*>(const_cast<std::uint8_t*>(executable)),
+                reinterpret_cast<char*>(const_cast<std::uint8_t*>(executable + bytes)));
 #endif
 }
 
 namespace {
-bool Imm19Link(std::uint32_t instruction) noexcept {
-    return encoding::Imm19(instruction);
-}
+bool Imm19Link(std::uint32_t instruction) noexcept { return encoding::Imm19(instruction); }
 
-bool WriteLinkInstruction(std::uintptr_t* writable, std::uint32_t back_words, std::uint32_t instruction) noexcept {
+bool WriteLinkInstruction(std::uintptr_t* writable,
+                          std::uint32_t back_words,
+                          std::uint32_t instruction) noexcept {
     auto* write = reinterpret_cast<std::uint32_t*>(writable) - back_words;
     if (__atomic_load_n(write, __ATOMIC_RELAXED) == instruction) return false;
     __atomic_store_n(write, instruction, __ATOMIC_RELEASE);
     return true;
 }
-void SynchronizeLink(std::uintptr_t* writable, const std::uintptr_t* executable,
-                     std::uint32_t gate_back, std::uint32_t head_back, bool gate_changed, bool head_changed) noexcept {
+void SynchronizeLink(std::uintptr_t* writable,
+                     const std::uintptr_t* executable,
+                     std::uint32_t gate_back,
+                     std::uint32_t head_back,
+                     bool gate_changed,
+                     bool head_changed) noexcept {
     if (!gate_changed && !head_changed) return;
     const auto first = std::max(gate_changed ? gate_back : 0, head_changed ? head_back : 0);
-    const auto last = std::min(gate_changed ? gate_back : UINT32_MAX, head_changed ? head_back : UINT32_MAX);
+    const auto last =
+            std::min(gate_changed ? gate_back : UINT32_MAX, head_changed ? head_back : UINT32_MAX);
     SynchronizeCode(reinterpret_cast<std::uint8_t*>(writable) - first * 4,
-                    reinterpret_cast<const std::uint8_t*>(executable) - first * 4, (first - last + 1) * 4);
+                    reinterpret_cast<const std::uint8_t*>(executable) - first * 4,
+                    (first - last + 1) * 4);
 }
 
-void PatchLink(std::uintptr_t* writable, const std::uintptr_t* executable,
-               std::uintptr_t target, std::uint32_t back_words, bool synchronize) noexcept {
+void PatchLink(std::uintptr_t* writable,
+               const std::uintptr_t* executable,
+               std::uintptr_t target,
+               std::uint32_t back_words,
+               bool synchronize) noexcept {
     // Keep the far fallback ready before publishing a direct instruction.
     __atomic_store_n(writable, target, __ATOMIC_RELEASE);
-    const auto head = __atomic_load_n(reinterpret_cast<std::uint32_t*>(writable) - back_words, __ATOMIC_RELAXED);
+    const auto head = __atomic_load_n(reinterpret_cast<std::uint32_t*>(writable) - back_words,
+                                      __ATOMIC_RELAXED);
     const bool conditional = Imm19Link(head);
     const auto gate_back = conditional ? 2u : back_words;
-    const auto from = reinterpret_cast<std::uintptr_t>(executable) - gate_back * sizeof(std::uint32_t);
+    const auto from =
+            reinterpret_cast<std::uintptr_t>(executable) - gate_back * sizeof(std::uint32_t);
     const auto delta = static_cast<std::int64_t>(target - from);
-    const auto instruction = !(delta & 3) && delta >= -(INT64_C(1) << 27) && delta < (INT64_C(1) << 27)
-            ? encoding::Branch(delta / 4) : encoding::LoadLiteral16(gate_back);
+    const auto instruction =
+            !(delta & 3) && delta >= -(INT64_C(1) << 27) && delta < (INT64_C(1) << 27)
+                    ? encoding::Branch(delta / 4)
+                    : encoding::LoadLiteral16(gate_back);
     const bool gate_changed = WriteLinkInstruction(writable, gate_back, instruction);
     bool head_changed{};
     if (conditional) {
-        const auto head_from = reinterpret_cast<std::uintptr_t>(executable) - back_words * sizeof(std::uint32_t);
+        const auto head_from =
+                reinterpret_cast<std::uintptr_t>(executable) - back_words * sizeof(std::uint32_t);
         const auto distance = static_cast<std::int64_t>(target - head_from);
-        const auto words = !(distance & 3) && distance >= -(INT64_C(1) << 20) && distance < (INT64_C(1) << 20)
-                ? static_cast<std::uint32_t>(distance / 4) : back_words - 2;
-        head_changed = WriteLinkInstruction(writable, back_words,
-                encoding::Retarget19(head, static_cast<std::int32_t>(words)));
+        const auto words =
+                !(distance & 3) && distance >= -(INT64_C(1) << 20) && distance < (INT64_C(1) << 20)
+                        ? static_cast<std::uint32_t>(distance / 4)
+                        : back_words - 2;
+        head_changed = WriteLinkInstruction(
+                writable, back_words, encoding::Retarget19(head, static_cast<std::int32_t>(words)));
     }
     // This mutation runs while native execution is stopped. Keep the target,
     // gate, head store order, then synchronize the actual changed range once.
-    if (synchronize) SynchronizeLink(writable, executable, gate_back, back_words, gate_changed, head_changed);
+    if (synchronize)
+        SynchronizeLink(writable, executable, gate_back, back_words, gate_changed, head_changed);
 }
-}
+}  // namespace
 
-void PatchNativeLink(std::uintptr_t* writable, const std::uintptr_t* executable,
-                     std::uintptr_t target, NativeOffset back_bytes) noexcept {
+void PatchNativeLink(std::uintptr_t* writable,
+                     const std::uintptr_t* executable,
+                     std::uintptr_t target,
+                     NativeOffset back_bytes) noexcept {
     PatchLink(writable, executable, target, back_bytes / 4, true);
 }
 
-void UnlinkNativeLink(std::uintptr_t* writable, const std::uintptr_t* executable,
+void UnlinkNativeLink(std::uintptr_t* writable,
+                      const std::uintptr_t* executable,
                       NativeOffset back_bytes) noexcept {
     const auto back_words = back_bytes / 4;
     __atomic_store_n(writable, reinterpret_cast<std::uintptr_t>(executable + 1), __ATOMIC_RELEASE);
-    const auto head = __atomic_load_n(reinterpret_cast<std::uint32_t*>(writable) - back_words, __ATOMIC_RELAXED);
+    const auto head = __atomic_load_n(reinterpret_cast<std::uint32_t*>(writable) - back_words,
+                                      __ATOMIC_RELAXED);
     const bool conditional = Imm19Link(head);
     const auto gate_back = conditional ? 2u : back_words;
-    const bool gate_changed = WriteLinkInstruction(writable, gate_back, encoding::LoadLiteral16(gate_back));
+    const bool gate_changed =
+            WriteLinkInstruction(writable, gate_back, encoding::LoadLiteral16(gate_back));
     bool head_changed{};
     if (conditional)
-        head_changed = WriteLinkInstruction(writable, back_words,
-                encoding::Retarget19(head, back_words - 2));
+        head_changed = WriteLinkInstruction(
+                writable, back_words, encoding::Retarget19(head, back_words - 2));
     SynchronizeLink(writable, executable, gate_back, back_words, gate_changed, head_changed);
 }
 
-
 void ResetIndirectSite(std::uintptr_t* writable_array, const std::uintptr_t* fallback) noexcept {
     for (unsigned i = 0; i < abi::DynamicCacheEntries; ++i)
-        __atomic_store_n(writable_array + i * 2 + 1, reinterpret_cast<std::uintptr_t>(fallback), __ATOMIC_RELEASE);
+        __atomic_store_n(writable_array + i * 2 + 1,
+                         reinterpret_cast<std::uintptr_t>(fallback),
+                         __ATOMIC_RELEASE);
 }
 
-bool InitializeNativeLink(std::span<std::uint8_t> write, std::uintptr_t execute,
-                          const backend::LinkSite& site, std::uintptr_t ready_target,
+bool InitializeNativeLink(std::span<std::uint8_t> write,
+                          std::uintptr_t execute,
+                          const backend::LinkSite& site,
+                          std::uintptr_t ready_target,
                           std::uintptr_t writable_alias) noexcept {
     const auto data = site.data_offset;
     if ((data & 7) || data > write.size()) return false;
@@ -135,7 +164,8 @@ bool InitializeNativeLink(std::span<std::uint8_t> write, std::uintptr_t execute,
     if (8u > write.size() - data || (branch & 3) || branch >= data) return false;
     auto* pointer = reinterpret_cast<std::uintptr_t*>(write.data() + data);
     auto* executable = reinterpret_cast<const std::uintptr_t*>(execute + data);
-    if (ready_target && writable_alias) PatchLink(pointer, executable, ready_target, (data - branch) / 4, false);
+    if (ready_target && writable_alias)
+        PatchLink(pointer, executable, ready_target, (data - branch) / 4, false);
     else {
         const auto cold = execute + fallback;
         std::memcpy(pointer, &cold, 8);
@@ -143,13 +173,17 @@ bool InitializeNativeLink(std::span<std::uint8_t> write, std::uintptr_t execute,
     return true;
 }
 
-bool PatchOrderedFallback(const backend::NativeCode& code, NativeOffset fast,
-                          NativeOffset fallback, std::uintptr_t page_size) noexcept {
-    if (!page_size || (fast & 3) || (fallback & 3) || fast > code.bytes ||
-            code.bytes - fast < 4 || fallback > code.bytes || code.bytes - fallback < 12) return false;
+bool PatchOrderedFallback(const backend::NativeCode& code,
+                          NativeOffset fast,
+                          NativeOffset fallback,
+                          std::uintptr_t page_size) noexcept {
+    if (!page_size || (fast & 3) || (fallback & 3) || fast > code.bytes || code.bytes - fast < 4 ||
+        fallback > code.bytes || code.bytes - fallback < 12)
+        return false;
     const auto fast_word = fast / 4, fallback_word = fallback / 4;
     auto* execute = reinterpret_cast<std::uint8_t*>(code.entry) + std::size_t{fast_word} * 4;
-    const auto instruction = __atomic_load_n(reinterpret_cast<const std::uint32_t*>(execute), __ATOMIC_ACQUIRE);
+    const auto instruction =
+            __atomic_load_n(reinterpret_cast<const std::uint32_t*>(execute), __ATOMIC_ACQUIRE);
     const bool ordered = encoding::OrderedAccess(instruction) != encoding::OrderedKind::None;
     // Inspect only this actual generated instruction. A later fault from an
     // already-patched plain cold access is fatal, not another alignment retry.
@@ -165,8 +199,7 @@ bool PatchOrderedFallback(const backend::NativeCode& code, NativeOffset fast,
         return mprotect(reinterpret_cast<void*>(page), page_size, permissions);
 #endif
     };
-    if (!code.writable && protect(PROT_READ | PROT_WRITE))
-        return false;
+    if (!code.writable && protect(PROT_READ | PROT_WRITE)) return false;
     auto* write = code.writable ? code.writable + std::size_t{fast_word} * 4 : execute;
     const auto branch = encoding::Branch(distance);
     // The complete half-barrier stub was published with this same code owner.
@@ -178,8 +211,7 @@ bool PatchOrderedFallback(const backend::NativeCode& code, NativeOffset fast,
     }
     // Single-RX fallback retains its full synchronization before mprotect.
     __builtin___clear_cache(reinterpret_cast<char*>(write), reinterpret_cast<char*>(write + 4));
-    if (protect(PROT_READ | PROT_EXEC))
-        return false;
+    if (protect(PROT_READ | PROT_EXEC)) return false;
     return true;
 }
-} // namespace swift::runtime::backend::arm64
+}  // namespace swift::runtime::backend::arm64

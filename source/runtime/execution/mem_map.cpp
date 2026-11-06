@@ -14,7 +14,7 @@ namespace {
 [[noreturn]] void Failed(const char* operation) {
     throw std::runtime_error(std::string(operation) + ": " + std::strerror(errno));
 }
-}
+}  // namespace
 
 void MemMap::MapNative(std::size_t bytes) {
     if (!bytes || bytes > SIZE_MAX / 2) throw std::length_error("native mapping size overflow");
@@ -33,8 +33,12 @@ void MemMap::MapNative(std::size_t bytes) {
                 this->write = static_cast<std::uint8_t*>(write);
                 this->execute = this->write;
                 dual = true;
-                execute = mmap(static_cast<std::uint8_t*>(write) + bytes, bytes,
-                               PROT_READ | PROT_EXEC, MAP_SHARED | MAP_FIXED, fd, 0);
+                execute = mmap(static_cast<std::uint8_t*>(write) + bytes,
+                               bytes,
+                               PROT_READ | PROT_EXEC,
+                               MAP_SHARED | MAP_FIXED,
+                               fd,
+                               0);
             }
         }
         // close consumes this descriptor even when it reports an error. No
@@ -58,8 +62,11 @@ void MemMap::MapNative(std::size_t bytes) {
 }
 
 MemMap::MemMap(MemMap&& other) noexcept
-        : write(std::exchange(other.write, nullptr)), execute(std::exchange(other.execute, nullptr)),
-          size(std::exchange(other.size, 0)), dual(other.dual), close_error(std::exchange(other.close_error, 0)) {}
+        : write(std::exchange(other.write, nullptr))
+        , execute(std::exchange(other.execute, nullptr))
+        , size(std::exchange(other.size, 0))
+        , dual(other.dual)
+        , close_error(std::exchange(other.close_error, 0)) {}
 MemMap::~MemMap() { (void)Release(); }
 bool MemMap::SetWritable() noexcept {
     return dual || !write || mprotect(write, size, PROT_READ | PROT_WRITE) == 0;
@@ -74,4 +81,4 @@ MappingRelease MemMap::Release() noexcept {
     size = 0;
     return {0, 0, close_error};
 }
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

@@ -21,7 +21,7 @@ struct DecodeLimits {
 // domain. Pending keys are not ready. No directory or code owner is copied.
 struct ReadyEntryLookup {
     void* opaque{};
-    bool (*ready)(void*, std::uint64_t) noexcept{};
+    bool (*ready)(void*, std::uint64_t) noexcept {};
     bool Contains(std::uint64_t pc) const noexcept { return ready && ready(opaque, pc); }
 };
 struct DecodedFunction {
@@ -59,11 +59,12 @@ struct DecodedFunction {
 // decoded. CALL remains a region exit: its continuation is formed when first
 // requested, rather than expanding the speculative graph for entry reuse.
 // Without a ready lookup, discovery retains the original bounded region.
-[[nodiscard]] DecodedFunction DecodeFunction(std::span<const BlockWindow> readable,
-                                              std::uint64_t entry_pc,
-                                              DecodeLimits limits = {},
-                                              DecodeTiming* timing = nullptr,
-                                              ReadyEntryLookup ready = {},
-                                              runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
+[[nodiscard]] DecodedFunction DecodeFunction(
+        std::span<const BlockWindow> readable,
+        std::uint64_t entry_pc,
+        DecodeLimits limits = {},
+        DecodeTiming* timing = nullptr,
+        ReadyEntryLookup ready = {},
+        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
 
-} // namespace swift::x86
+}  // namespace swift::x86

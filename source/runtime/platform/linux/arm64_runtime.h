@@ -19,4 +19,4 @@ private:
     backend::arm64::Allocation allocation;
 };
 
-} // namespace swift::runtime::platform
+}  // namespace swift::runtime::platform

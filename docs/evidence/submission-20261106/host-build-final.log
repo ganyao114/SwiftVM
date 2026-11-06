@@ -1,0 +1,12 @@
+[1/12] Building CXX object CMakeFiles/svm_x86_construction_test.dir/source/tests/rebuild/x86_construction_test.cpp.o
+[2/12] Building CXX object CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/interpreter.cpp.o
+[3/12] Building CXX object CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/build_ir.cpp.o
+[4/12] Linking CXX static library libsvm_x86_ir.a
+[5/12] Linking CXX executable svm_x86_interpreter_test
+[6/12] Linking CXX executable svm_x86_build_submit_bench
+[7/12] Linking CXX executable svm_x86_construction_test
+[8/12] Linking CXX executable svm_compile_pipeline_test
+[9/12] Linking CXX executable svm_x87_coverage_test
+[10/12] Linking CXX executable svm_function_compile_bench
+[11/12] Linking CXX executable svm_instruction_coverage_test
+[12/12] Linking CXX executable svm_avx_coverage_test

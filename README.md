@@ -56,6 +56,21 @@ instruction semantics with the IR frontend and does not construct a Program.
 leave it off for ordinary runtime measurements. Requested Function cost includes
 failed formation and actual Block retries.
 
+## Formatting
+
+Use clang-format 21 with the repository style:
+
+```sh
+python3 scripts/format_runtime.py
+python3 scripts/format_runtime.py --check
+```
+
+Set `CLANG_FORMAT` or pass `--clang-format` to select the executable. The helper
+covers active C++ sources, tests and benchmarks, preserves include order and
+macro tables, and leaves assembly and vendored formatting intact.
+The [submission validation](docs/submission-validation-2026-11-06.md) records
+the formatted-source identity and host/Android regression results.
+
 ## Current checkpoint
 
 The runtime now separates guest architecture, execution ownership and platform

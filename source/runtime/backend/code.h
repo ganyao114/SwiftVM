@@ -12,8 +12,15 @@
 namespace swift::runtime::backend {
 
 enum class CompileError : std::uint8_t {
-    None, InvalidProgram, UnsupportedOpcode, UnsupportedType, UnsupportedOperand,
-    UnsupportedFlags, UnsupportedControlFlow, FrameTooLarge, CodeTooLarge,
+    None,
+    InvalidProgram,
+    UnsupportedOpcode,
+    UnsupportedType,
+    UnsupportedOperand,
+    UnsupportedFlags,
+    UnsupportedControlFlow,
+    FrameTooLarge,
+    CodeTooLarge,
 };
 
 // Byte offsets from the owning native unit, independent of its callable entry.
@@ -33,7 +40,7 @@ enum class LinkKind : std::uint8_t { Static, Dynamic };
 struct LinkSite {
     LinkKind kind{LinkKind::Static};
     NativeOffset data_offset{}, branch_offset{}, fallback_offset{};
-    std::uint64_t target_pc{}; // Only Static links carry a guest target.
+    std::uint64_t target_pc{};  // Only Static links carry a guest target.
 };
 static_assert(sizeof(LinkSite) == 24);
 
@@ -46,7 +53,7 @@ static_assert(sizeof(EntryPoint) == 16);
 // A borrowed view. The code heap owns mappings and recovery buffers; every
 // callable entry into this unit retains this original base/range descriptor.
 struct NativeCode {
-    using Function = std::uint64_t(*)(std::uint8_t*);
+    using Function = std::uint64_t (*)(std::uint8_t*);
     Function entry{};
     std::size_t bytes{};
     std::uint8_t* writable{};
@@ -66,4 +73,4 @@ struct CompileResult {
     std::vector<EntryPoint> entries;
 };
 
-} // namespace swift::runtime::backend
+}  // namespace swift::runtime::backend

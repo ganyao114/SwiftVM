@@ -14,8 +14,7 @@ std::uint64_t NewUnitId() {
     for (;;) {
         if (value == std::numeric_limits<std::uint64_t>::max())
             throw std::length_error("IR request identities exhausted");
-        if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed))
-            return value;
+        if (next.compare_exchange_weak(value, value + 1, std::memory_order_relaxed)) return value;
     }
 }
 }  // namespace
@@ -25,9 +24,15 @@ Program::Storage::Storage(Scope scope, TargetInfo target)
 
 void Program::Storage::Reset(Scope next_scope, TargetInfo next_target) {
     const auto next_unit = NewUnitId();
-    operations.clear(); operands.clear(); blocks.clear();
-    unit = next_unit; scope = next_scope; target = next_target;
-    entry = {}; active = {}; unfinished = 0;
+    operations.clear();
+    operands.clear();
+    blocks.clear();
+    unit = next_unit;
+    scope = next_scope;
+    target = next_target;
+    entry = {};
+    active = {};
+    unfinished = 0;
 }
 
 Error Program::Storage::CheckBlock(BlockRef ref) const noexcept {
@@ -60,7 +65,8 @@ CellRange Program::Operands(const Operation& op) const noexcept {
     const auto base = reinterpret_cast<std::uintptr_t>(storage->operations.data());
     if (address < base) return {};
     const auto offset = address - base;
-    if (offset % sizeof(Operation) || offset / sizeof(Operation) >= storage->operations.size()) return {};
+    if (offset % sizeof(Operation) || offset / sizeof(Operation) >= storage->operations.size())
+        return {};
     return Operands(NodeId{static_cast<std::uint32_t>(offset / sizeof(Operation))});
 }
 bool Program::Contains(Value value) const noexcept {
@@ -69,11 +75,15 @@ bool Program::Contains(Value value) const noexcept {
 }
 std::size_t Program::StorageBytes() const noexcept {
     return storage ? sizeof(Storage) + storage->operations.size() * sizeof(Operation) +
-            storage->operands.size() * sizeof(Cell) + storage->blocks.size() * sizeof(BlockRecord) : 0;
+                             storage->operands.size() * sizeof(Cell) +
+                             storage->blocks.size() * sizeof(BlockRecord)
+                   : 0;
 }
 std::size_t Program::ReservedBytes() const noexcept {
     return storage ? sizeof(Storage) + storage->operations.capacity() * sizeof(Operation) +
-            storage->operands.capacity() * sizeof(Cell) + storage->blocks.capacity() * sizeof(BlockRecord) : 0;
+                             storage->operands.capacity() * sizeof(Cell) +
+                             storage->blocks.capacity() * sizeof(BlockRecord)
+                   : 0;
 }
 
 }  // namespace swift::runtime::ir

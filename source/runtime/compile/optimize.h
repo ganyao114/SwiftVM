@@ -11,7 +11,9 @@ namespace swift::runtime::compile {
 
 // The caller's actual flags storage in the Uniform buffer. No backend flag
 // bit layout is exposed here. Unknown placement keeps the broad alias barrier.
-struct UniformRange { std::uint32_t offset{}, bytes{}; };
+struct UniformRange {
+    std::uint32_t offset{}, bytes{};
+};
 struct UniformPolicy {
     std::optional<UniformRange> flags;
     // Actual execution ownership: valid guest-memory addresses cannot name
@@ -22,7 +24,8 @@ struct UniformPolicy {
 struct OptimizeStats {
     std::size_t nodes{}, value_uses{}, folded{}, copy_forwarded{}, uniform_forwarded{}, erased{};
     std::size_t dense_bytes{}, words_before{}, words_after{};
-    std::size_t block_flags_bytes{}; // Function-only summaries, actual predecessor edges and bounded queue.
+    std::size_t block_flags_bytes{};  // Function-only summaries, actual predecessor edges and
+                                      // bounded queue.
 };
 
 struct OptimizeResult {
@@ -53,7 +56,8 @@ OptimizeResult Optimize(ir::Program&&,
 
 // Borrow the same use/flag rows across requests. Their contents are reset
 // before taking Program ownership; no Program reference survives the call.
-OptimizeResult Optimize(ir::Program&&, std::vector<std::uint64_t>& rows,
+OptimizeResult Optimize(ir::Program&&,
+                        std::vector<std::uint64_t>& rows,
                         std::size_t max_operand_words = std::numeric_limits<std::size_t>::max(),
                         UniformPolicy uniforms = {});
 

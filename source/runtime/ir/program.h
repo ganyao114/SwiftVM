@@ -23,7 +23,10 @@ struct Operation {
     Type type{Type::Void};
     std::uint8_t properties{};
     OperationMetadata Metadata() const noexcept {
-        return {flag_outputs, static_cast<FlagProfile>(properties & 3), bool(properties & 4), bool(properties & 8)};
+        return {flag_outputs,
+                static_cast<FlagProfile>(properties & 3),
+                bool(properties & 4),
+                bool(properties & 8)};
     }
 };
 static_assert(sizeof(Operation) == 24);
@@ -39,7 +42,8 @@ struct StoredTerminal {
 
 private:
     void SetState(BlockState state) noexcept {
-        properties = static_cast<std::uint8_t>((properties & ~6u) | (static_cast<unsigned>(state) << 1));
+        properties =
+                static_cast<std::uint8_t>((properties & ~6u) | (static_cast<unsigned>(state) << 1));
     }
     friend class Builder;
 };
@@ -69,7 +73,8 @@ public:
     // Empty or consumed owners return the invalid BlockId.
     BlockId EntryBlock() const noexcept { return storage ? storage->entry : BlockId{}; }
     std::span<const Operation> Operations() const noexcept {
-        return storage ? std::span<const Operation>{storage->operations} : std::span<const Operation>{};
+        return storage ? std::span<const Operation>{storage->operations}
+                       : std::span<const Operation>{};
     }
     // Physical arena only: rewrites can leave retired/unclaimed words. Live
     // operands are the operation-local ranges below, never this raw span.
@@ -77,7 +82,8 @@ public:
         return storage ? std::span<const Cell>{storage->operands} : std::span<const Cell>{};
     }
     std::span<const BlockRecord> Blocks() const noexcept {
-        return storage ? std::span<const BlockRecord>{storage->blocks} : std::span<const BlockRecord>{};
+        return storage ? std::span<const BlockRecord>{storage->blocks}
+                       : std::span<const BlockRecord>{};
     }
     CellRange Operands(NodeId local) const noexcept {
         return storage ? storage->Operands(local) : CellRange{};
@@ -108,9 +114,10 @@ private:
         CellRange Operands(NodeId local) const noexcept {
             if (!local || local.value >= operations.size()) return {};
             const auto& op = operations[local.value];
-            if (!op.operand_count) return {}; // Empty ranges own no arena position.
+            if (!op.operand_count) return {};  // Empty ranges own no arena position.
             const std::span<const Cell> words{operands};
-            if (op.first_operand > words.size() || op.operand_count > words.size() - op.first_operand)
+            if (op.first_operand > words.size() ||
+                op.operand_count > words.size() - op.first_operand)
                 return {};
             return CellRange{words.subspan(op.first_operand, op.operand_count)};
         }
@@ -140,7 +147,7 @@ struct BlockResult {
 struct AppendResult {
     Error error{Error::None};
     NodeId node{};
-    std::uint64_t value_unit{}; // Zero for Void/failure; node still names every successful birth.
+    std::uint64_t value_unit{};  // Zero for Void/failure; node still names every successful birth.
     constexpr Value GetValue() const noexcept {
         return value_unit ? Value{value_unit, node} : Value{};
     }

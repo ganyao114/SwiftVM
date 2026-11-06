@@ -6,7 +6,9 @@
 
 #include "decode.h"
 
-namespace swift::runtime::x86 { struct GuestState; }
+namespace swift::runtime::x86 {
+struct GuestState;
+}
 
 namespace swift::x86 {
 
@@ -24,10 +26,22 @@ struct CodeReadResult {
     // The decoder, not the fetch service, determines the instruction length.
     std::size_t bytes{};
 };
-struct AtomicValue { std::uint64_t low{}, high{}; };
+struct AtomicValue {
+    std::uint64_t low{}, high{};
+};
 enum class AtomicOperation : std::uint8_t {
-    CompareExchange, Exchange, FetchAdd, Add, Sub, And, Or, Xor, Neg,
-    AddCarry, SubBorrow, CompareExchange128,
+    CompareExchange,
+    Exchange,
+    FetchAdd,
+    Add,
+    Sub,
+    And,
+    Or,
+    Xor,
+    Neg,
+    AddCarry,
+    SubBorrow,
+    CompareExchange128,
 };
 struct AtomicRequest {
     std::uint64_t address{};
@@ -36,7 +50,9 @@ struct AtomicRequest {
     AtomicValue expected, desired;
     bool carry{};
 };
-struct CpuResult { std::uint64_t lower{}, upper{}; };
+struct CpuResult {
+    std::uint64_t lower{}, upper{};
+};
 
 // Actual execution services, bound once by the VM. All accesses report failure
 // without unwinding across guest code. Read/write buffers carry exactly the
@@ -44,16 +60,27 @@ struct CpuResult { std::uint64_t lower{}, upper{}; };
 // UnsupportedBeforeAccess promises no memory or architectural side effect.
 struct DirectServices {
     void* opaque{};
-    CodeReadResult (*fetch)(void*, std::uint64_t pc, std::span<std::uint8_t>) noexcept{};
-    AccessResult (*read)(void*, std::uint64_t, std::span<std::uint8_t>, bool ordered) noexcept{};
-    AccessResult (*write)(void*, std::uint64_t, std::span<const std::uint8_t>, bool ordered) noexcept{};
-    AccessResult (*atomic)(void*, const AtomicRequest&, AtomicValue& observed) noexcept{};
-    CpuResult (*cpuid)(void*, std::uint32_t leaf, std::uint32_t subleaf) noexcept{};
+    CodeReadResult (*fetch)(void*, std::uint64_t pc, std::span<std::uint8_t>) noexcept {};
+    AccessResult (*read)(void*, std::uint64_t, std::span<std::uint8_t>, bool ordered) noexcept {};
+    AccessResult (*write)(void*,
+                          std::uint64_t,
+                          std::span<const std::uint8_t>,
+                          bool ordered) noexcept {};
+    AccessResult (*atomic)(void*, const AtomicRequest&, AtomicValue& observed) noexcept {};
+    CpuResult (*cpuid)(void*, std::uint32_t leaf, std::uint32_t subleaf) noexcept {};
     runtime::x86::GuestCpuModel model{runtime::x86::BaselineGuestCpu};
-    AccessResult (*state_image)(void*, unsigned kind, std::uint64_t address, std::uint64_t requested) noexcept{};
+    AccessResult (*state_image)(void*,
+                                unsigned kind,
+                                std::uint64_t address,
+                                std::uint64_t requested) noexcept {};
 };
 enum class StepKind : std::uint8_t {
-    Completed, Service, Fault, Unsupported, InvalidEncoding, Truncated,
+    Completed,
+    Service,
+    Fault,
+    Unsupported,
+    InvalidEncoding,
+    Truncated,
 };
 struct StepResult {
     StepKind kind{StepKind::Completed};
@@ -69,7 +96,8 @@ struct StepResult {
 // All completed effects precede next_pc; faults retain the current instruction
 // and its architecturally defined partial completion. Unsupported is returned
 // before guest side effects and never means "retry a partly executed step".
-[[nodiscard]] StepResult InterpretOne(runtime::x86::GuestState&, const DirectServices&,
+[[nodiscard]] StepResult InterpretOne(runtime::x86::GuestState&,
+                                      const DirectServices&,
                                       DecodeTiming* timing = nullptr);
 
-} // namespace swift::x86
+}  // namespace swift::x86

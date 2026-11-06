@@ -12,19 +12,24 @@
 #include "runtime/arch/x86/x87.h"
 #include "runtime/arch/x86/flags.h"
 
-namespace swift::x86 { std::uint8_t DisabledCetHintSize(std::span<const std::uint8_t>) noexcept; }
+namespace swift::x86 {
+std::uint8_t DisabledCetHintSize(std::span<const std::uint8_t>) noexcept;
+}
 
 namespace swift::x86::detail {
 using namespace runtime::ir;
 using runtime::x86::X87Command;
-using runtime::x86::X87Result;
 using runtime::x86::X87Encode;
+using runtime::x86::X87Result;
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
-struct Rejected { BuildError error; Error detail{Error::None}; };
+struct Rejected {
+    BuildError error;
+    Error detail{Error::None};
+};
 using ::swift::x86::DisabledCetHintSize;
 
-template<class Sink> struct Semantics {
+template <class Sink> struct Semantics {
     using Emitter = Sink;
     using Value = typename Sink::Value;
     using Producer = typename Sink::Producer;
@@ -55,4 +60,4 @@ template<class Sink> struct Semantics {
 #include "semantics_avx.inc"
 #include "semantics_dispatch.inc"
 };
-} // namespace swift::x86::detail
+}  // namespace swift::x86::detail

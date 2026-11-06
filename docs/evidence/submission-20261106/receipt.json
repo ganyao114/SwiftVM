@@ -1,0 +1,34 @@
+{
+  "utc": "2026-11-06T09:25:20.486567+00:00",
+  "implementation_commit": "ea97d8b2b8edd86840c9f9dd4df81f7fc1ef590c",
+  "implementation_tree": "4ee866dc2b524b2df66b2e31fb1c11e99456a866",
+  "source_digest": "8cfb6b743bf838545951d348413cd501e6e1a1612644095aadd43a0d3a020977",
+  "source_file_count": 282,
+  "android_runner_sha256": "83e10c8fa6cb94dab777ce2c07c8882e2d9634bbc3393728a70641f3f7961946",
+  "host_ctest": {
+    "passed": 9,
+    "total": 9
+  },
+  "sanitizer_ctest": {
+    "passed": 9,
+    "total": 9
+  },
+  "phone_smoke": {
+    "passed": 23,
+    "total": 23
+  },
+  "phone_state_images": {
+    "passed": 3,
+    "total": 3
+  },
+  "phone": "bf1359ff / RedMagic NX729J",
+  "benchmark_rerun": false,
+  "scope": "Formatting and submission validation; historical compile/runtime/PMU samples are unchanged.",
+  "raw_results": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/format-submit-20261106",
+  "oracle_note": "Two short CoreMark smoke verdicts were corrected offline against the existing exit0/CRC0x4983 contract. Original stdout and initial verdicts are retained; no workload samples were rerun or replaced.",
+  "excluded_from_formatting": [
+    "vendored sources",
+    "assembly",
+    "historical evidence"
+  ]
+}

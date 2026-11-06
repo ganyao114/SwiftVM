@@ -10,4 +10,4 @@ namespace swift::runtime::platform {
 bool ReadGuestBytes(void* destination, std::uint64_t source, std::size_t size) noexcept;
 bool WriteGuestBytes(std::uint64_t destination, const void* source, std::size_t size) noexcept;
 
-} // namespace swift::runtime::platform
+}  // namespace swift::runtime::platform

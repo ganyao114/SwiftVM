@@ -43,4 +43,4 @@ private:
     int close_error{};
 };
 
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

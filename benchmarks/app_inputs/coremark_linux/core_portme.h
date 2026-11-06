@@ -29,12 +29,14 @@ typedef double ee_f32;
 typedef uintptr_t ee_ptr_int;
 typedef size_t ee_size_t;
 typedef uint64_t CORE_TICKS;
-#define align_mem(x) ((void *)((((ee_ptr_int)(x)) + 3) & ~(ee_ptr_int)3))
+#define align_mem(x) ((void*)((((ee_ptr_int)(x)) + 3) & ~(ee_ptr_int)3))
 
-typedef struct CORE_PORTABLE_S { ee_u8 portable_id; } core_portable;
+typedef struct CORE_PORTABLE_S {
+    ee_u8 portable_id;
+} core_portable;
 extern ee_u32 default_num_contexts;
-void portable_init(core_portable *, int *, char *[]);
-void portable_fini(core_portable *);
-int ee_printf(const char *, ...);
+void portable_init(core_portable*, int*, char*[]);
+void portable_fini(core_portable*);
+int ee_printf(const char*, ...);
 
 #endif

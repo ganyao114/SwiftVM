@@ -18,13 +18,16 @@ bool Valid(std::span<const BlockWindow> windows, DecodeLimits limits) {
         const auto& window = windows[i];
         if (window.bytes.empty() || !window.bytes.data() ||
             window.bytes.size() > std::numeric_limits<u64>::max() - window.pc ||
-            (i && windows[i - 1].pc + windows[i - 1].bytes.size() > window.pc)) return false;
+            (i && windows[i - 1].pc + windows[i - 1].bytes.size() > window.pc))
+            return false;
     }
     return true;
 }
 auto ReadableAt(std::span<const BlockWindow> windows, u64 pc) {
-    auto next = std::upper_bound(windows.begin(), windows.end(), pc,
-            [](u64 address, const BlockWindow& window) { return address < window.pc; });
+    auto next = std::upper_bound(
+            windows.begin(), windows.end(), pc, [](u64 address, const BlockWindow& window) {
+                return address < window.pc;
+            });
     if (next == windows.begin()) return windows.end();
     const auto found = std::prev(next);
     return pc - found->pc < found->bytes.size() ? found : windows.end();
@@ -39,18 +42,25 @@ struct Slice {
 };
 }  // namespace
 
-DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_pc, DecodeLimits limits,
-                                DecodeTiming* timing, ReadyEntryLookup ready, runtime::x86::GuestCpuModel model) {
+DecodedFunction DecodeFunction(std::span<const BlockWindow> readable,
+                               u64 entry_pc,
+                               DecodeLimits limits,
+                               DecodeTiming* timing,
+                               ReadyEntryLookup ready,
+                               runtime::x86::GuestCpuModel model) {
     DecodedFunction out;
     if (!Valid(readable, limits) || ReadableAt(readable, entry_pc) == readable.end()) {
-        out.error = DecodeError::InvalidInput; out.error_pc = entry_pc; return out;
+        out.error = DecodeError::InvalidInput;
+        out.error_pc = entry_pc;
+        return out;
     }
     std::map<u64, Slice> directory;
     std::vector<u64> pending;
     directory.emplace(entry_pc, Slice{entry_pc});
     pending.push_back(entry_pc);
     const auto fail = [&](DecodeError error, u64 pc) {
-        out.error = error; out.error_pc = pc;
+        out.error = error;
+        out.error_pc = pc;
     };
     const auto queue = [&](u64 target) {
         if (ReadableAt(readable, target) == readable.end()) return true;
@@ -63,23 +73,35 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
             if (target < slice.end) {
                 const auto first = out.instructions.begin() + slice.first;
                 const auto last = first + slice.count;
-                const auto at = std::lower_bound(first, last, target,
-                        [](const Instruction& instruction, u64 pc) { return instruction.View().PC() < pc; });
+                const auto at = std::lower_bound(
+                        first, last, target, [](const Instruction& instruction, u64 pc) {
+                            return instruction.View().PC() < pc;
+                        });
                 if (at == last || at->View().PC() != target) {
-                    fail(DecodeError::OverlappingTarget, target); return false;
+                    fail(DecodeError::OverlappingTarget, target);
+                    return false;
                 }
-                if (directory.size() == limits.max_blocks) { ++out.budget_exits; return true; }
+                if (directory.size() == limits.max_blocks) {
+                    ++out.budget_exits;
+                    return true;
+                }
                 const auto offset = static_cast<u32>(at - first);
-                directory.emplace_hint(next, target,
-                        Slice{slice.end, static_cast<u32>(slice.first + offset),
-                              static_cast<u32>(slice.count - offset), false});
-                slice.count = offset; slice.end = target;
+                directory.emplace_hint(next,
+                                       target,
+                                       Slice{slice.end,
+                                             static_cast<u32>(slice.first + offset),
+                                             static_cast<u32>(slice.count - offset),
+                                             false});
+                slice.count = offset;
+                slice.end = target;
                 ++out.splits;
                 return true;
             }
         }
-        if (directory.size() == limits.max_blocks || out.instructions.size() == limits.max_instructions) {
-            ++out.budget_exits; return true;
+        if (directory.size() == limits.max_blocks ||
+            out.instructions.size() == limits.max_instructions) {
+            ++out.budget_exits;
+            return true;
         }
         directory.emplace_hint(next, target, Slice{target});
         pending.push_back(target);
@@ -87,7 +109,8 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
     };
 
     while (!pending.empty()) {
-        const u64 start = pending.back(); pending.pop_back();
+        const u64 start = pending.back();
+        pending.pop_back();
         const auto current = directory.find(start);
         auto& slice = current->second;
         if (!slice.pending) continue;
@@ -101,7 +124,10 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
         for (;;) {
             // Another admitted entry owns that stream from here onward.
             if (has_next && pc == next_start) break;
-            if (out.instructions.size() == limits.max_instructions) { ++out.budget_exits; break; }
+            if (out.instructions.size() == limits.max_instructions) {
+                ++out.budget_exits;
+                break;
+            }
             if (pc != entry_pc && ready.Contains(pc)) break;
             // A readable-span boundary is a real exit frontier. Do not fetch
             // across separate spans, even if their guest addresses touch.
@@ -109,19 +135,27 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
             const auto bytes = window->bytes.subspan(static_cast<std::size_t>(pc - window->pc));
             ++out.decode_calls;
             const auto decoded = DecodeOne(bytes, pc, timing, model);
-            if (!decoded) { fail(decoded.error, pc); return out; }
+            if (!decoded) {
+                fail(decoded.error, pc);
+                return out;
+            }
             const auto& instruction = decoded.instruction.View().Record();
             const u64 after = pc + instruction.size;
-            if (has_next && after > next_start) { fail(DecodeError::OverlappingTarget, next_start); return out; }
+            if (has_next && after > next_start) {
+                fail(DecodeError::OverlappingTarget, next_start);
+                return out;
+            }
             const auto flow = instruction.flow;
             out.instructions.push_back(decoded.instruction);
-            ++slice.count; slice.end = after;
+            ++slice.count;
+            slice.end = after;
             out.decoded_bytes += instruction.size;
             // CPUID serializes the stream; LDMXCSR returns to the runtime to
             // install the new FP environment. REP STOS dispatches after one
             // restartable iteration. These frontiers admit no sequential edge.
             if (instruction.unit_boundary) {
-                if ((flow == FlowKind::Conditional || flow == FlowKind::Jump) && instruction.ops[0].type == GuestOperandKind::Relative) {
+                if ((flow == FlowKind::Conditional || flow == FlowKind::Jump) &&
+                    instruction.ops[0].type == GuestOperandKind::Relative) {
                     if (!queue(after + instruction.immediate)) return out;
                     if (flow == FlowKind::Conditional && !queue(after)) return out;
                 }
@@ -138,4 +172,4 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable, u64 entry_
     return out;
 }
 
-} // namespace swift::x86
+}  // namespace swift::x86

@@ -25,7 +25,9 @@ public:
     ~VM();
     VM(const VM&) = delete;
     VM& operator=(const VM&) = delete;
-    int Run(const std::string&, std::span<const std::string> argv, std::span<const std::string> environment);
+    int Run(const std::string&,
+            std::span<const std::string> argv,
+            std::span<const std::string> environment);
     // Call after Run (also on failure). Remaining mappings stay in this VM
     // when Release reports a failure; no resource is transferred to a registry.
     MappingRelease Close() noexcept;
@@ -62,11 +64,24 @@ private:
     void FileChanged(int);
     void Interpret();
     ::swift::x86::DirectServices DirectServices() noexcept;
-    static ::swift::x86::CodeReadResult Fetch(void*, std::uint64_t, std::span<std::uint8_t>) noexcept;
-    static ::swift::x86::AccessResult Read(void*, std::uint64_t, std::span<std::uint8_t>, bool) noexcept;
-    static ::swift::x86::AccessResult Write(void*, std::uint64_t, std::span<const std::uint8_t>, bool) noexcept;
-    static ::swift::x86::AccessResult Atomic(void*, const ::swift::x86::AtomicRequest&, ::swift::x86::AtomicValue&) noexcept;
+    static ::swift::x86::CodeReadResult Fetch(void*,
+                                              std::uint64_t,
+                                              std::span<std::uint8_t>) noexcept;
+    static ::swift::x86::AccessResult Read(void*,
+                                           std::uint64_t,
+                                           std::span<std::uint8_t>,
+                                           bool) noexcept;
+    static ::swift::x86::AccessResult Write(void*,
+                                            std::uint64_t,
+                                            std::span<const std::uint8_t>,
+                                            bool) noexcept;
+    static ::swift::x86::AccessResult Atomic(void*,
+                                             const ::swift::x86::AtomicRequest&,
+                                             ::swift::x86::AtomicValue&) noexcept;
     static ::swift::x86::CpuResult Cpu(void*, std::uint32_t, std::uint32_t) noexcept;
-    static ::swift::x86::AccessResult StateImage(void*, unsigned, std::uint64_t, std::uint64_t) noexcept;
+    static ::swift::x86::AccessResult StateImage(void*,
+                                                 unsigned,
+                                                 std::uint64_t,
+                                                 std::uint64_t) noexcept;
 };
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

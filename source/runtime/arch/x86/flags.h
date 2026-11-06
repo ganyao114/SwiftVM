@@ -33,10 +33,9 @@ constexpr std::uint64_t ToRflags(std::uint64_t value) noexcept {
 }
 
 constexpr std::uint64_t FromRflags(std::uint64_t value, std::uint64_t previous = 0) noexcept {
-    return (previous & ~(Arithmetic | Direction)) | (value & Direction) |
-           ((value & 1) << 29) | ((value & 4) ? 0 : 1) |
-           (((value >> 4) & 1) << 26) | (((value >> 6) & 1) << 30) |
+    return (previous & ~(Arithmetic | Direction)) | (value & Direction) | ((value & 1) << 29) |
+           ((value & 4) ? 0 : 1) | (((value >> 4) & 1) << 26) | (((value >> 6) & 1) << 30) |
            (((value >> 7) & 1) << 31) | (((value >> 11) & 1) << 28);
 }
 
-} // namespace swift::runtime::x86::flags
+}  // namespace swift::runtime::x86::flags

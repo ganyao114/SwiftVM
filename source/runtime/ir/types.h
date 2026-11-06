@@ -38,25 +38,59 @@ struct BlockRef {
 };
 
 enum class Type : std::uint8_t {
-    Void, Bool, U8, U16, U32, U64, S8, S16, S32, S64,
-    U128, F32, F64, V8, V16, V32, V64, V128, V256,
+    Void,
+    Bool,
+    U8,
+    U16,
+    U32,
+    U64,
+    S8,
+    S16,
+    S32,
+    S64,
+    U128,
+    F32,
+    F64,
+    V8,
+    V16,
+    V32,
+    V64,
+    V128,
+    V256,
 };
 constexpr bool ValidType(Type type) noexcept {
     return static_cast<unsigned>(type) <= static_cast<unsigned>(Type::V256);
 }
-constexpr bool IntegerType(Type type) noexcept {
-    return type >= Type::Bool && type <= Type::S64;
-}
+constexpr bool IntegerType(Type type) noexcept { return type >= Type::Bool && type <= Type::S64; }
 constexpr unsigned TypeBits(Type type) noexcept {
     switch (type) {
-        case Type::Bool: return 1;
-        case Type::U8: case Type::S8: case Type::V8: return 8;
-        case Type::U16: case Type::S16: case Type::V16: return 16;
-        case Type::U32: case Type::S32: case Type::F32: case Type::V32: return 32;
-        case Type::U64: case Type::S64: case Type::F64: case Type::V64: return 64;
-        case Type::U128: case Type::V128: return 128;
-        case Type::V256: return 256;
-        default: return 0;
+        case Type::Bool:
+            return 1;
+        case Type::U8:
+        case Type::S8:
+        case Type::V8:
+            return 8;
+        case Type::U16:
+        case Type::S16:
+        case Type::V16:
+            return 16;
+        case Type::U32:
+        case Type::S32:
+        case Type::F32:
+        case Type::V32:
+            return 32;
+        case Type::U64:
+        case Type::S64:
+        case Type::F64:
+        case Type::V64:
+            return 64;
+        case Type::U128:
+        case Type::V128:
+            return 128;
+        case Type::V256:
+            return 256;
+        default:
+            return 0;
     }
 }
 
@@ -96,17 +130,41 @@ struct TargetInfo {
 };
 
 enum class Error : std::uint8_t {
-    None, Consumed, ScopeMismatch, InvalidBlock, ForeignUnit,
-    BlockAlreadyOpen, BlockAlreadyEnded, NoActiveBlock,
-    InvalidOpcode, InvalidType, InvalidResultType, InvalidOperandKind,
-    MissingOperand, ExtraOperand, InvalidValue, InvalidRange,
-    IncompleteTerminal, IncompleteScope, CapacityOverflow, EditOnly,
-    EditBudgetExceeded, ObservableOperation,
+    None,
+    Consumed,
+    ScopeMismatch,
+    InvalidBlock,
+    ForeignUnit,
+    BlockAlreadyOpen,
+    BlockAlreadyEnded,
+    NoActiveBlock,
+    InvalidOpcode,
+    InvalidType,
+    InvalidResultType,
+    InvalidOperandKind,
+    MissingOperand,
+    ExtraOperand,
+    InvalidValue,
+    InvalidRange,
+    IncompleteTerminal,
+    IncompleteScope,
+    CapacityOverflow,
+    EditOnly,
+    EditBudgetExceeded,
+    ObservableOperation,
 };
 
 enum class OperandKind : std::uint8_t {
-    Invalid, Value, Immediate, Uniform, Local, Condition, Flags,
-    Expression, Arguments, Lambda,
+    Invalid,
+    Value,
+    Immediate,
+    Uniform,
+    Local,
+    Condition,
+    Flags,
+    Expression,
+    Arguments,
+    Lambda,
 };
 enum class OperandOp : std::uint16_t { Identity, Add, Sub, Lsl, Lsr, Asr, AddExtend, AddShift };
 
@@ -114,18 +172,31 @@ enum class OperandOp : std::uint16_t { Identity, Add, Sub, Lsl, Lsr, Asr, AddExt
 // result width. AddCarry/SubBorrow consume an explicit zero-or-one carry;
 // other operations ignore it, and Neg also ignores the ordinary operand.
 enum class AtomicRMWOp : std::uint8_t {
-    Add, Sub, And, Or, Xor, Neg, AddCarry, SubBorrow,
+    Add,
+    Sub,
+    And,
+    Or,
+    Xor,
+    Neg,
+    AddCarry,
+    SubBorrow,
 };
 
 // Neutral flags-word ABI. Raw u64 operands/metadata can retain additional
 // bits; All names the currently defined architectural subset, not a filter.
 enum class Flag : std::uint64_t {
-    None = 0, Carry = 1, Overflow = 2, Zero = 4, Negate = 8,
-    Parity = 16, AuxiliaryCarry = 64, Direction = 128, NZCV = 15, All = 95,
+    None = 0,
+    Carry = 1,
+    Overflow = 2,
+    Zero = 4,
+    Negate = 8,
+    Parity = 16,
+    AuxiliaryCarry = 64,
+    Direction = 128,
+    NZCV = 15,
+    All = 95,
 };
-constexpr std::uint64_t FlagBits(Flag flags) noexcept {
-    return static_cast<std::uint64_t>(flags);
-}
+constexpr std::uint64_t FlagBits(Flag flags) noexcept { return static_cast<std::uint64_t>(flags); }
 constexpr Flag operator|(Flag first, Flag second) noexcept {
     return static_cast<Flag>(FlagBits(first) | FlagBits(second));
 }
@@ -134,11 +205,29 @@ constexpr Flag operator&(Flag first, Flag second) noexcept {
 }
 
 enum class Condition : std::uint8_t {
-    EQ, NE, CS, CC, MI, PL, VS, VC, HI, LS, GE, LT, GT, LE, AL, NV,
+    EQ,
+    NE,
+    CS,
+    CC,
+    MI,
+    PL,
+    VS,
+    VC,
+    HI,
+    LS,
+    GE,
+    LT,
+    GT,
+    LE,
+    AL,
+    NV,
 };
 
 enum class FlagProfile : std::uint8_t {
-    None, ArithmeticRaw, ArithmeticCanonicalCarry, LogicalZeroCVA,
+    None,
+    ArithmeticRaw,
+    ArithmeticCanonicalCarry,
+    LogicalZeroCVA,
 };
 struct OperationMetadata {
     std::uint64_t flag_outputs{};
@@ -173,7 +262,8 @@ public:
     }
     constexpr std::uint32_t Count() const noexcept {
         return Kind() == OperandKind::Expression || Kind() == OperandKind::Arguments
-                ? static_cast<std::uint32_t>(header) : 0;
+                       ? static_cast<std::uint32_t>(header)
+                       : 0;
     }
     constexpr std::uint16_t Code() const noexcept {
         return Kind() == OperandKind::Expression ? static_cast<std::uint16_t>(header >> 32) : 0;
@@ -207,7 +297,11 @@ public:
                 current += (current->bits & Cell::wide_bit) && end - current >= 2 ? 2 : 1;
             return *this;
         }
-        Iterator operator++(int) noexcept { auto old = *this; ++*this; return old; }
+        Iterator operator++(int) noexcept {
+            auto old = *this;
+            ++*this;
+            return old;
+        }
         friend bool operator==(Iterator, Iterator) = default;
 
     private:
@@ -223,17 +317,19 @@ public:
     Iterator end() const noexcept { return {End(), End()}; }
     const Cell* data() const noexcept { return words.data(); }
     bool empty() const noexcept { return words.empty(); }
-    std::size_t WordCount() const noexcept { return words.size(); } // O(1), physical words.
+    std::size_t WordCount() const noexcept { return words.size(); }  // O(1), physical words.
     CellView front() const noexcept { return Read(words.data(), End()); }
 
 private:
     explicit CellRange(std::span<const Cell> words) noexcept : words(words) {}
-    const Cell* End() const noexcept { return words.empty() ? words.data() : words.data() + words.size(); }
+    const Cell* End() const noexcept {
+        return words.empty() ? words.data() : words.data() + words.size();
+    }
     static CellView Read(const Cell* at, const Cell* end) noexcept {
         if (at == end) return {};
         const auto header = at->bits;
         if (header & Cell::wide_bit) {
-            if (end - at < 2) return {}; // A forged/truncated operation range cannot overread.
+            if (end - at < 2) return {};  // A forged/truncated operation range cannot overread.
             return {header, at[1].bits};
         }
         return {header, static_cast<std::uint32_t>(header)};
@@ -253,44 +349,72 @@ struct Operand {
     Type type{Type::Void};
 
     static constexpr Operand ValueOf(Value value, Type view = Type::Void) noexcept {
-        Operand out; out.kind = OperandKind::Value;
-        out.payload = value.node.value; out.unit = value.unit; out.type = view; return out;
+        Operand out;
+        out.kind = OperandKind::Value;
+        out.payload = value.node.value;
+        out.unit = value.unit;
+        out.type = view;
+        return out;
     }
     static constexpr Operand Immediate(std::uint64_t bits, Type type) noexcept {
-        Operand out; out.kind = OperandKind::Immediate;
-        out.payload = bits; out.type = type; return out;
+        Operand out;
+        out.kind = OperandKind::Immediate;
+        out.payload = bits;
+        out.type = type;
+        return out;
     }
     static constexpr Operand Uniform(std::uint32_t offset, Type type) noexcept {
-        Operand out; out.kind = OperandKind::Uniform;
-        out.payload = offset; out.type = type; return out;
+        Operand out;
+        out.kind = OperandKind::Uniform;
+        out.payload = offset;
+        out.type = type;
+        return out;
     }
     static constexpr Operand Local(std::uint32_t slot, Type type) noexcept {
-        Operand out; out.kind = OperandKind::Local;
-        out.payload = slot; out.type = type; return out;
+        Operand out;
+        out.kind = OperandKind::Local;
+        out.payload = slot;
+        out.type = type;
+        return out;
     }
     static constexpr Operand Condition(std::uint32_t condition) noexcept {
-        Operand out; out.kind = OperandKind::Condition; out.payload = condition; return out;
+        Operand out;
+        out.kind = OperandKind::Condition;
+        out.payload = condition;
+        return out;
     }
     static constexpr Operand Condition(::swift::runtime::ir::Condition condition) noexcept {
         return Condition(static_cast<std::uint32_t>(condition));
     }
     static constexpr Operand Flags(std::uint64_t flags) noexcept {
-        Operand out; out.kind = OperandKind::Flags; out.payload = flags; return out;
+        Operand out;
+        out.kind = OperandKind::Flags;
+        out.payload = flags;
+        return out;
     }
     static constexpr Operand Flags(Flag flags) noexcept { return Flags(FlagBits(flags)); }
     // The existing 16-bit code word carries the operation and its shift.
     // Code() retains both bytes for lossless traces and semantic checksums.
-    static constexpr Operand Expression(OperandOp operation, std::uint32_t atoms = 1,
+    static constexpr Operand Expression(OperandOp operation,
+                                        std::uint32_t atoms = 1,
                                         std::uint8_t shift = 0) noexcept {
-        Operand out; out.kind = OperandKind::Expression;
+        Operand out;
+        out.kind = OperandKind::Expression;
         out.code = static_cast<std::uint16_t>(operation) | (std::uint16_t{shift} << 8);
-        out.count = atoms; return out;
+        out.count = atoms;
+        return out;
     }
     static constexpr Operand Arguments(std::uint32_t cells) noexcept {
-        Operand out; out.kind = OperandKind::Arguments; out.count = cells; return out;
+        Operand out;
+        out.kind = OperandKind::Arguments;
+        out.count = cells;
+        return out;
     }
     static constexpr Operand Lambda(std::uint64_t traits = 0) noexcept {
-        Operand out; out.kind = OperandKind::Lambda; out.payload = traits; return out;
+        Operand out;
+        out.kind = OperandKind::Lambda;
+        out.payload = traits;
+        return out;
     }
 };
 
@@ -303,26 +427,45 @@ struct Terminal {
     BlockRef first{}, second{};
 
     static constexpr Terminal Return() noexcept {
-        Terminal out; out.kind = TerminalKind::Return; return out;
+        Terminal out;
+        out.kind = TerminalKind::Return;
+        return out;
     }
     static constexpr Terminal Return(Value value, Type view = Type::Void) noexcept {
-        auto out = Return(); out.value_present = true; out.value = value;
-        out.value_type = view; return out;
+        auto out = Return();
+        out.value_present = true;
+        out.value = value;
+        out.value_type = view;
+        return out;
     }
     static constexpr Terminal Jump(BlockRef target) noexcept {
-        Terminal out; out.kind = TerminalKind::Jump; out.first = target; return out;
+        Terminal out;
+        out.kind = TerminalKind::Jump;
+        out.first = target;
+        return out;
     }
-    static constexpr Terminal Branch(Value condition, BlockRef yes, BlockRef no,
-                                      Type view = Type::Void) noexcept {
-        Terminal out; out.kind = TerminalKind::Branch; out.value_present = true;
-        out.value = condition; out.first = yes; out.second = no; out.value_type = view;
+    static constexpr Terminal Branch(Value condition,
+                                     BlockRef yes,
+                                     BlockRef no,
+                                     Type view = Type::Void) noexcept {
+        Terminal out;
+        out.kind = TerminalKind::Branch;
+        out.value_present = true;
+        out.value = condition;
+        out.first = yes;
+        out.second = no;
+        out.value_type = view;
         return out;
     }
     static constexpr Terminal Unreachable() noexcept {
-        Terminal out; out.kind = TerminalKind::Unreachable; return out;
+        Terminal out;
+        out.kind = TerminalKind::Unreachable;
+        return out;
     }
     static constexpr Terminal Dispatch() noexcept {
-        Terminal out; out.kind = TerminalKind::Dispatch; return out;
+        Terminal out;
+        out.kind = TerminalKind::Dispatch;
+        return out;
     }
 };
 

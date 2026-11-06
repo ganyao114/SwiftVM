@@ -15,8 +15,6 @@
 // actual descriptor and children. Full-width payloads use an extension word.
 // Physical word counts are not logical argument counts or Value-use counts.
 
-
-
 // Read Write
 INST(DefineLocal, Void, Void, (Effect::WriteLocal), Local)
 INST(LoadLocal, Value, Arg0, (Effect::ReadLocal), Local)

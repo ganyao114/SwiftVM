@@ -16,6 +16,7 @@ public:
     const backend::CompileResult* LastOutput() const noexcept { return last; }
     CompileFailure Failure() const noexcept { return failure; }
     void Release() noexcept;
+
 private:
     VM& vm;
     ir::Program reusable;
@@ -23,4 +24,4 @@ private:
     backend::CompileResult* last{};
     CompileFailure failure{};
 };
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

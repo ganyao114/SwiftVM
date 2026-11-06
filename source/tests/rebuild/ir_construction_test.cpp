@@ -29,8 +29,7 @@ void* Allocate(std::size_t size) {
 void* AllocateAligned(std::size_t size, std::size_t alignment) {
     BeforeAllocation();
     size = size ? size : 1;
-    if (size > std::numeric_limits<std::size_t>::max() - (alignment - 1))
-        throw std::bad_alloc{};
+    if (size > std::numeric_limits<std::size_t>::max() - (alignment - 1)) throw std::bad_alloc{};
     size = (size + alignment - 1) & ~(alignment - 1);
     if (void* pointer = std::aligned_alloc(alignment, size)) return pointer;
     throw std::bad_alloc{};
@@ -38,9 +37,15 @@ void* AllocateAligned(std::size_t size, std::size_t alignment) {
 
 class AllocationCount {
 public:
-    AllocationCount() { allocation_count = 0; count_allocations = true; }
+    AllocationCount() {
+        allocation_count = 0;
+        count_allocations = true;
+    }
     ~AllocationCount() { count_allocations = false; }
-    std::size_t Stop() { count_allocations = false; return allocation_count; }
+    std::size_t Stop() {
+        count_allocations = false;
+        return allocation_count;
+    }
 };
 
 void Check(bool condition, const char* expression, int line) {
@@ -67,7 +72,10 @@ std::size_t CellCount(CellRange cells) {
 // Explicitly linear, used only for small expected rows in this test binary.
 CellView CellAt(CellRange cells, std::size_t index) {
     auto at = cells.begin();
-    while (index && at != cells.end()) { --index; ++at; }
+    while (index && at != cells.end()) {
+        --index;
+        ++at;
+    }
     CHECK(index == 0 && at != cells.end());
     return *at;
 }
@@ -85,9 +93,22 @@ static_assert(Operand::Flags(static_cast<Flag>(UINT64_C(1) << 63)).payload == (U
 static_assert(Operand::Condition(Condition::LT).payload == 11);
 static_assert(Operand::Condition(15u).payload == 15);
 static_assert([] {
-    constexpr std::array conditions{Condition::EQ, Condition::NE, Condition::CS, Condition::CC,
-        Condition::MI, Condition::PL, Condition::VS, Condition::VC, Condition::HI, Condition::LS,
-        Condition::GE, Condition::LT, Condition::GT, Condition::LE, Condition::AL, Condition::NV};
+    constexpr std::array conditions{Condition::EQ,
+                                    Condition::NE,
+                                    Condition::CS,
+                                    Condition::CC,
+                                    Condition::MI,
+                                    Condition::PL,
+                                    Condition::VS,
+                                    Condition::VC,
+                                    Condition::HI,
+                                    Condition::LS,
+                                    Condition::GE,
+                                    Condition::LT,
+                                    Condition::GT,
+                                    Condition::LE,
+                                    Condition::AL,
+                                    Condition::NV};
     for (std::size_t i = 0; i < conditions.size(); ++i)
         if (static_cast<unsigned>(conditions[i]) != i) return false;
     return true;
@@ -106,14 +127,14 @@ static_assert(EffectsFor(OpCode::CallLambda) == static_cast<Effect>(UINT16_MAX))
 static_assert(EffectsFor(OpCode::CallLocation) == static_cast<Effect>(UINT16_MAX));
 static_assert(HasAnyEffect(EffectsFor(OpCode::AddPhi), Effect::Control));
 static_assert(HasAnyEffect(EffectsFor(OpCode::Add, {UINT64_C(1) << 63}), Effect::WriteFlags));
-static_assert(HasAnyEffect(EffectsFor(OpCode::And,
-        {FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA, false, true}), Effect::WriteFlags));
+static_assert(HasAnyEffect(
+        EffectsFor(OpCode::And, {FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA, false, true}),
+        Effect::WriteFlags));
 static_assert(OperationMetadata{FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA} !=
-        OperationMetadata{FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA, false, true});
+              OperationMetadata{FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA, false, true});
 static_assert(TargetInfo{TargetMode::Known, 0, 1}.Has(TargetFeature::ShiftedAddress));
 static_assert(!TargetInfo{TargetMode::EarlyOff, 0, 1}.Has(TargetFeature::ShiftedAddress));
 static_assert(!TargetInfo{TargetMode::Unknown, 0, 1}.Has(TargetFeature::ShiftedAddress));
-
 
 SubmitResult SubmitWithoutAllocation(Builder& builder) {
     AllocationCount counter;
@@ -141,13 +162,15 @@ void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer)
 void operator delete(void* pointer, std::align_val_t) noexcept { std::free(pointer); }
 void operator delete[](void* pointer, std::align_val_t) noexcept { std::free(pointer); }
 void operator delete(void* pointer, std::size_t, std::align_val_t) noexcept { std::free(pointer); }
-void operator delete[](void* pointer, std::size_t, std::align_val_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer, std::size_t, std::align_val_t) noexcept {
+    std::free(pointer);
+}
 
 namespace {
 
 AppendResult Literal(Builder& builder, std::uint64_t bits, Type type = Type::U64) {
-    const auto result = builder.Append(OpCode::LoadImm, Type::Void,
-                                       {Operand::Immediate(bits, type)});
+    const auto result =
+            builder.Append(OpCode::LoadImm, Type::Void, {Operand::Immediate(bits, type)});
     CHECK(result);
     CHECK(result.node);
     CHECK(result.GetValue());
@@ -162,26 +185,30 @@ void BlockConstructionRoundtrip() {
     CHECK(builder.CreateBlock().error == Error::ScopeMismatch);
     CHECK(builder.BeginBlock(block.block) == Error::None);
     const auto literal = Literal(builder, 0xfedcba9876543210ULL);
-    const auto add = builder.Append(OpCode::Add, Type::Void,
-            {Operand::ValueOf(literal.GetValue()), Operand::Expression(OperandOp::Identity),
-             Operand::Immediate(17, Type::U64)});
+    const auto add = builder.Append(OpCode::Add,
+                                    Type::Void,
+                                    {Operand::ValueOf(literal.GetValue()),
+                                     Operand::Expression(OperandOp::Identity),
+                                     Operand::Immediate(17, Type::U64)});
     CHECK(add);
-    const auto alias = builder.Append(OpCode::BitCast, Type::Void,
-                                      {Operand::ValueOf(add.GetValue())});
+    const auto alias =
+            builder.Append(OpCode::BitCast, Type::Void, {Operand::ValueOf(add.GetValue())});
     CHECK(alias);
-    const auto local = builder.Append(OpCode::LoadLocal, Type::Void,
-                                      {Operand::Local(7, Type::U32)});
-    const auto uniform = builder.Append(OpCode::LoadUniform, Type::Void,
-                                        {Operand::Uniform(24, Type::U64)});
+    const auto local =
+            builder.Append(OpCode::LoadLocal, Type::Void, {Operand::Local(7, Type::U32)});
+    const auto uniform =
+            builder.Append(OpCode::LoadUniform, Type::Void, {Operand::Uniform(24, Type::U64)});
     CHECK(local);
     CHECK(uniform);
     const OperationMetadata metadata{0x80000001000008d5ULL, FlagProfile::ArithmeticRaw, true, true};
-    const auto narrow = builder.Append(OpCode::Add, Type::Void,
-            {Operand::ValueOf(literal.GetValue(), Type::U16),
-             Operand::Expression(OperandOp::Identity), Operand::Immediate(2, Type::U16)},
-            metadata);
-    const auto signed_view = builder.Append(OpCode::BitCast, Type::Void,
-                                            {Operand::ValueOf(literal.GetValue(), Type::S16)});
+    const auto narrow = builder.Append(OpCode::Add,
+                                       Type::Void,
+                                       {Operand::ValueOf(literal.GetValue(), Type::U16),
+                                        Operand::Expression(OperandOp::Identity),
+                                        Operand::Immediate(2, Type::U16)},
+                                       metadata);
+    const auto signed_view = builder.Append(
+            OpCode::BitCast, Type::Void, {Operand::ValueOf(literal.GetValue(), Type::S16)});
     CHECK(narrow);
     CHECK(signed_view);
     CHECK(builder.EndBlock(Terminal::Return(alias.GetValue(), Type::U16)) == Error::None);
@@ -212,10 +239,12 @@ void BlockConstructionRoundtrip() {
     CHECK(CellAt(program.Operands(program.Operations()[local.node.value]), 0).Payload() == 7);
     CHECK(CellAt(program.Operands(program.Operations()[uniform.node.value]), 0).Payload() == 24);
     CHECK(program.Operations()[narrow.node.value].type == Type::U16);
-    CHECK(CellAt(program.Operands(program.Operations()[narrow.node.value]), 0).TypeView() == Type::U16);
+    CHECK(CellAt(program.Operands(program.Operations()[narrow.node.value]), 0).TypeView() ==
+          Type::U16);
     CHECK(program.Operations()[narrow.node.value].Metadata() == metadata);
     CHECK(program.Operations()[signed_view.node.value].type == Type::S16);
-    CHECK(CellAt(program.Operands(program.Operations()[signed_view.node.value]), 0).TypeView() == Type::S16);
+    CHECK(CellAt(program.Operands(program.Operations()[signed_view.node.value]), 0).TypeView() ==
+          Type::S16);
     CHECK(program.Operations()[literal.node.value].type == Type::U64);
     CHECK(program.Blocks()[0].State() == BlockState::Closed);
     CHECK(program.Blocks()[0].first_node == 0);
@@ -242,11 +271,14 @@ void FunctionConstructionAndIncompleteSubmit() {
     CHECK(builder.BeginBlock(entry.block) == Error::None);
     const auto value = Literal(builder, 27);
     const auto condition = Literal(builder, 1, Type::Bool);
-    CHECK(builder.EndBlock(Terminal::Branch(condition.GetValue(), yes.block, no.block)) == Error::None);
+    CHECK(builder.EndBlock(Terminal::Branch(condition.GetValue(), yes.block, no.block)) ==
+          Error::None);
     CHECK(builder.BeginBlock(yes.block) == Error::None);
-    const auto sum = builder.Append(OpCode::Add, Type::Void,
-            {Operand::ValueOf(value.GetValue()), Operand::Expression(OperandOp::Identity),
-             Operand::Immediate(3, Type::U64)});
+    const auto sum = builder.Append(OpCode::Add,
+                                    Type::Void,
+                                    {Operand::ValueOf(value.GetValue()),
+                                     Operand::Expression(OperandOp::Identity),
+                                     Operand::Immediate(3, Type::U64)});
     CHECK(sum);
     CHECK(builder.EndBlock(Terminal::Jump(no.block)) == Error::None);
     {
@@ -265,7 +297,8 @@ void FunctionConstructionAndIncompleteSubmit() {
     CHECK(program.Blocks().size() == 3);
     CHECK(program.Operations().size() == 3);
     CHECK(program.Operations()[sum.node.value].block == yes.block.id);
-    CHECK(CellAt(program.Operands(program.Operations()[sum.node.value]), 0).Payload() == value.node.value);
+    CHECK(CellAt(program.Operands(program.Operations()[sum.node.value]), 0).Payload() ==
+          value.node.value);
     CHECK(program.Blocks()[entry.block.id.value].terminal.value == condition.node);
     CHECK(program.Blocks()[entry.block.id.value].terminal.HasValue());
     CHECK(program.Blocks()[entry.block.id.value].terminal.first == yes.block.id);
@@ -280,26 +313,32 @@ void FunctionConstructionAndIncompleteSubmit() {
 void ReusedCapacityHasFreshIdentity() {
     Builder first{Scope::Block};
     CHECK(first.Reserve(32, 64, 8) == Error::None);
-    const auto old_block = first.CreateBlock(); CHECK(old_block);
+    const auto old_block = first.CreateBlock();
+    CHECK(old_block);
     CHECK(first.BeginBlock(old_block.block) == Error::None);
     const auto old_value = Literal(first, 7).GetValue();
     CHECK(first.EndBlock(Terminal::Return(old_value)) == Error::None);
-    auto submitted = first.Submit(); CHECK(submitted);
+    auto submitted = first.Submit();
+    CHECK(submitted);
     auto owner = std::move(submitted.program);
     const auto capacity = owner.ReservedBytes();
     const TargetInfo known{TargetMode::Known, 0xa64, 0};
     Builder next{Scope::Function, known, std::move(owner)};
-    CHECK(!owner && next.UnitId() != old_value.unit && next.Operations().empty() && next.Blocks().empty());
-    const auto block = next.CreateBlock(); CHECK(block);
+    CHECK(!owner && next.UnitId() != old_value.unit && next.Operations().empty() &&
+          next.Blocks().empty());
+    const auto block = next.CreateBlock();
+    CHECK(block);
     CHECK(next.BeginBlock(old_block.block) == Error::ForeignUnit);
     CHECK(next.BeginBlock(block.block) == Error::None);
-    CHECK(next.Emit<OpCode::BitCast>(Type::U64, {Operand::ValueOf(old_value)}).error == Error::ForeignUnit);
+    CHECK(next.Emit<OpCode::BitCast>(Type::U64, {Operand::ValueOf(old_value)}).error ==
+          Error::ForeignUnit);
     const auto value = Literal(next, 11).GetValue();
     CHECK(value.node == old_value.node && next.EndBlock(Terminal::Return(value)) == Error::None);
-    submitted = next.Submit(); CHECK(submitted);
+    submitted = next.Submit();
+    CHECK(submitted);
     CHECK(submitted.program.ScopeKind() == Scope::Function && submitted.program.Target() == known &&
-            submitted.program.ReservedBytes() == capacity && submitted.program.Contains(value) &&
-            !submitted.program.Contains(old_value));
+          submitted.program.ReservedBytes() == capacity && submitted.program.Contains(value) &&
+          !submitted.program.Contains(old_value));
 }
 
 void RejectedInputIsAtomic() {
@@ -327,32 +366,53 @@ void RejectedInputIsAtomic() {
     CHECK(builder.BeginBlock(block.block) == Error::BlockAlreadyOpen);
     const auto first = Literal(builder, 5);
     CHECK(first.node == stale_value.node && first.GetValue().unit != stale_value.unit);
-    const auto reject = [&](OpCode op, Type type, std::initializer_list<Operand> cells, Error error) {
-        const auto result = builder.Append(op, type, cells);
-        CHECK(result.error == error);
-        CHECK(!result.node);
-        CHECK(!result.GetValue());
-    };
+    const auto reject =
+            [&](OpCode op, Type type, std::initializer_list<Operand> cells, Error error) {
+                const auto result = builder.Append(op, type, cells);
+                CHECK(result.error == error);
+                CHECK(!result.node);
+                CHECK(!result.GetValue());
+            };
     reject(OpCode::BitCast, Type::Void, {Operand::ValueOf(foreign.GetValue())}, Error::ForeignUnit);
-    reject(OpCode::BitCast, Type::Void, {Operand::ValueOf(stale_value, Type::S16)}, Error::ForeignUnit);
+    reject(OpCode::BitCast,
+           Type::Void,
+           {Operand::ValueOf(stale_value, Type::S16)},
+           Error::ForeignUnit);
     reject(OpCode::BitCast, Type::Void, {Operand::ValueOf({})}, Error::InvalidValue);
-    reject(OpCode::BitCast, Type::Void,
-           {Operand::ValueOf({first.GetValue().unit, NodeId{NodeId::invalid - 1}})}, Error::InvalidValue);
-    reject(OpCode::LoadImm, Type::Void, {Operand::ValueOf(first.GetValue())}, Error::InvalidOperandKind);
+    reject(OpCode::BitCast,
+           Type::Void,
+           {Operand::ValueOf({first.GetValue().unit, NodeId{NodeId::invalid - 1}})},
+           Error::InvalidValue);
+    reject(OpCode::LoadImm,
+           Type::Void,
+           {Operand::ValueOf(first.GetValue())},
+           Error::InvalidOperandKind);
     reject(OpCode::BitCast, Type::Void, {}, Error::MissingOperand);
-    reject(OpCode::BitCast, Type::Void,
-           {Operand::ValueOf(first.GetValue()), Operand::ValueOf(first.GetValue())}, Error::ExtraOperand);
-    reject(OpCode::Add, Type::Void,
-           {Operand::ValueOf(first.GetValue()), Operand::Expression(OperandOp::Add, 2),
-            Operand::Immediate(1, Type::U64)}, Error::MissingOperand);
-    reject(OpCode::Add, Type::Void,
-           {Operand::ValueOf(first.GetValue()), Operand::Expression(OperandOp::Identity, 0)}, Error::InvalidRange);
-    reject(OpCode::Add, Type::Void,
-           {Operand::ValueOf(first.GetValue()), Operand::Expression(OperandOp::Identity),
-            Operand::ValueOf(foreign.GetValue(), Type::U16)}, Error::ForeignUnit);
-    CHECK(!builder.Append(OpCode::Add, Type::Void,
-            {Operand::ValueOf(first.GetValue()), Operand::Expression(OperandOp::Identity),
-             Operand::Immediate(1, Type::F32)}));
+    reject(OpCode::BitCast,
+           Type::Void,
+           {Operand::ValueOf(first.GetValue()), Operand::ValueOf(first.GetValue())},
+           Error::ExtraOperand);
+    reject(OpCode::Add,
+           Type::Void,
+           {Operand::ValueOf(first.GetValue()),
+            Operand::Expression(OperandOp::Add, 2),
+            Operand::Immediate(1, Type::U64)},
+           Error::MissingOperand);
+    reject(OpCode::Add,
+           Type::Void,
+           {Operand::ValueOf(first.GetValue()), Operand::Expression(OperandOp::Identity, 0)},
+           Error::InvalidRange);
+    reject(OpCode::Add,
+           Type::Void,
+           {Operand::ValueOf(first.GetValue()),
+            Operand::Expression(OperandOp::Identity),
+            Operand::ValueOf(foreign.GetValue(), Type::U16)},
+           Error::ForeignUnit);
+    CHECK(!builder.Append(OpCode::Add,
+                          Type::Void,
+                          {Operand::ValueOf(first.GetValue()),
+                           Operand::Expression(OperandOp::Identity),
+                           Operand::Immediate(1, Type::F32)}));
     reject(OpCode::Zero, Type::Void, {}, Error::InvalidResultType);
     reject(OpCode::Zero, static_cast<Type>(255), {}, Error::InvalidType);
     reject(OpCode::Count, Type::Void, {}, Error::InvalidOpcode);
@@ -384,35 +444,56 @@ void WidePayloadsAndCompoundBoundaries() {
     const auto block = builder.CreateBlock();
     CHECK(block && builder.BeginBlock(block.block) == Error::None);
     const auto seed = Literal(builder, 0x8000000000000001ULL);
-    const auto flags = builder.Emit<OpCode::SaveFlags>(Type::Void,
-            {Operand::ValueOf(seed.GetValue()), Operand::Flags(mask)});
-    const auto expression = builder.Append(OpCode::GetOperand, Type::U64,
-            {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(seed.GetValue()),
-             Operand::Immediate(negative, Type::S64)});
-    const auto call = builder.Emit<OpCode::CallLocation>(Type::U64,
-            {Operand::Lambda(traits), Operand::Immediate(address, Type::U64), Operand::Arguments(3),
-             Operand::ValueOf(seed.GetValue(), Type::S16), Operand::Immediate(address, Type::U64),
-             Operand::Immediate(negative, Type::S64)});
-    const auto optional = builder.Append(OpCode::CallLambda, Type::U64,
-            {Operand::Lambda(mask), Operand::Immediate(address, Type::U64),
-             Operand::Immediate(mask, Type::S64)});
+    const auto flags = builder.Emit<OpCode::SaveFlags>(
+            Type::Void, {Operand::ValueOf(seed.GetValue()), Operand::Flags(mask)});
+    const auto expression = builder.Append(OpCode::GetOperand,
+                                           Type::U64,
+                                           {Operand::Expression(OperandOp::Add, 2),
+                                            Operand::ValueOf(seed.GetValue()),
+                                            Operand::Immediate(negative, Type::S64)});
+    const auto call =
+            builder.Emit<OpCode::CallLocation>(Type::U64,
+                                               {Operand::Lambda(traits),
+                                                Operand::Immediate(address, Type::U64),
+                                                Operand::Arguments(3),
+                                                Operand::ValueOf(seed.GetValue(), Type::S16),
+                                                Operand::Immediate(address, Type::U64),
+                                                Operand::Immediate(negative, Type::S64)});
+    const auto optional = builder.Append(OpCode::CallLambda,
+                                         Type::U64,
+                                         {Operand::Lambda(mask),
+                                          Operand::Immediate(address, Type::U64),
+                                          Operand::Immediate(mask, Type::S64)});
     CHECK(flags && expression && call && optional);
     const auto reject = [&](OpCode op, std::initializer_list<Operand> cells, Error error) {
         const auto result = builder.Append(op, Type::U64, cells);
         CHECK(result.error == error && !result.node && !result.GetValue());
     };
     reject(OpCode::CallLocation,
-            {Operand::Lambda(traits), Operand::Immediate(address, Type::U64), Operand::Arguments(2),
-             Operand::Immediate(negative, Type::S64)}, Error::MissingOperand);
+           {Operand::Lambda(traits),
+            Operand::Immediate(address, Type::U64),
+            Operand::Arguments(2),
+            Operand::Immediate(negative, Type::S64)},
+           Error::MissingOperand);
     reject(OpCode::CallLocation,
-            {Operand::Lambda(traits), Operand::Immediate(address, Type::U64), Operand::Arguments(1),
-             Operand::Expression(OperandOp::Identity), Operand::ValueOf(seed.GetValue())}, Error::InvalidOperandKind);
+           {Operand::Lambda(traits),
+            Operand::Immediate(address, Type::U64),
+            Operand::Arguments(1),
+            Operand::Expression(OperandOp::Identity),
+            Operand::ValueOf(seed.GetValue())},
+           Error::InvalidOperandKind);
     reject(OpCode::CallLocation,
-            {Operand::Lambda(traits), Operand::Immediate(address, Type::U64), Operand::Arguments(1),
-             Operand::Arguments(0)}, Error::InvalidOperandKind);
+           {Operand::Lambda(traits),
+            Operand::Immediate(address, Type::U64),
+            Operand::Arguments(1),
+            Operand::Arguments(0)},
+           Error::InvalidOperandKind);
     reject(OpCode::GetOperand,
-            {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(seed.GetValue()),
-             Operand::Lambda(traits), Operand::Immediate(address, Type::U64)}, Error::InvalidOperandKind);
+           {Operand::Expression(OperandOp::Add, 2),
+            Operand::ValueOf(seed.GetValue()),
+            Operand::Lambda(traits),
+            Operand::Immediate(address, Type::U64)},
+           Error::InvalidOperandKind);
     reject(OpCode::CallLambda, {Operand::Lambda(traits)}, Error::MissingOperand);
     const auto tail = Literal(builder, 37);
     CHECK(tail.node.value == optional.node.value + 1);
@@ -437,17 +518,24 @@ void WidePayloadsAndCompoundBoundaries() {
     const auto call_cells = program.Operands(program.Operations()[call.node.value]);
     CHECK(CellCount(call_cells) == 6 && call_cells.WordCount() == 10);
     auto at = call_cells.begin();
-    CHECK((*at).Kind() == OperandKind::Lambda && (*at).Payload() == traits); ++at;
-    CHECK((*at).Kind() == OperandKind::Immediate && (*at).Payload() == address); ++at;
-    CHECK((*at).Kind() == OperandKind::Arguments && (*at).Count() == 3); ++at;
+    CHECK((*at).Kind() == OperandKind::Lambda && (*at).Payload() == traits);
+    ++at;
+    CHECK((*at).Kind() == OperandKind::Immediate && (*at).Payload() == address);
+    ++at;
+    CHECK((*at).Kind() == OperandKind::Arguments && (*at).Count() == 3);
+    ++at;
     CHECK((*at).Kind() == OperandKind::Value && (*at).Payload() == seed.node.value);
-    CHECK((*at).TypeView() == Type::S16); ++at;
-    CHECK((*at).Payload() == address); ++at;
-    CHECK((*at).Payload() == negative && (*at).TypeView() == Type::S64); ++at;
+    CHECK((*at).TypeView() == Type::S16);
+    ++at;
+    CHECK((*at).Payload() == address);
+    ++at;
+    CHECK((*at).Payload() == negative && (*at).TypeView() == Type::S64);
+    ++at;
     CHECK(at == call_cells.end());
     const auto optional_cells = program.Operands(program.Operations()[optional.node.value]);
     CHECK(CellCount(optional_cells) == 3 && optional_cells.WordCount() == 6);
-    CHECK(optional_cells.front().Kind() == OperandKind::Lambda && optional_cells.front().Payload() == mask);
+    CHECK(optional_cells.front().Kind() == OperandKind::Lambda &&
+          optional_cells.front().Payload() == mask);
     CHECK(CellAt(optional_cells, 2).Payload() == mask);
     CHECK(CellAt(program.Operands(program.Operations()[tail.node.value]), 0).Payload() == 37);
     // A copied/forged record cannot borrow an arbitrary word interval.
@@ -470,9 +558,11 @@ void AllocationFailureIsAtomic() {
         (void)Literal(builder, 7);
         constexpr std::uint64_t wide = 0x8123456789abcdefULL;
         const auto append_wide = [&](std::uint64_t bits) {
-            return word_growth
-                    ? builder.Emit<OpCode::LoadImm>(Type::Void, {Operand::Immediate(bits, Type::U64)})
-                    : builder.Append(OpCode::LoadImm, Type::Void, {Operand::Immediate(bits, Type::U64)});
+            return word_growth ? builder.Emit<OpCode::LoadImm>(
+                                         Type::Void, {Operand::Immediate(bits, Type::U64)})
+                               : builder.Append(OpCode::LoadImm,
+                                                Type::Void,
+                                                {Operand::Immediate(bits, Type::U64)});
         };
         std::size_t successful = 1;
         bool failed{};
@@ -507,10 +597,11 @@ void AllocationFailureIsAtomic() {
             ++logical;
         }
         CHECK(logical == successful + 1);
-        CHECK(CellAt(ready.program.Operands(ready.program.Operations().back()), 0).Payload() == ~wide);
+        CHECK(CellAt(ready.program.Operands(ready.program.Operations().back()), 0).Payload() ==
+              ~wide);
     };
-    check_growth(false); // Generic: wide cells rollback when operations grow.
-    check_growth(true);  // Static: a wide payload requires more operand words.
+    check_growth(false);  // Generic: wide cells rollback when operations grow.
+    check_growth(true);   // Static: a wide payload requires more operand words.
 
     Builder function{Scope::Function};
     std::array<BlockRef, 256> blocks{};
@@ -569,7 +660,8 @@ void MoveAndSubmittedOwnerLifetime() {
             const auto* operations = submitted.program.Operations().data();
             const auto* words = submitted.program.OperandArena().data();
             const auto* blocks = submitted.program.Blocks().data();
-            const auto first_cell = submitted.program.Operands(submitted.program.Operations().front());
+            const auto first_cell =
+                    submitted.program.Operands(submitted.program.Operations().front());
             owner = std::move(submitted.program);
             CHECK(!submitted.program);
             CHECK(owner.Operations().data() == operations);
@@ -584,7 +676,8 @@ void MoveAndSubmittedOwnerLifetime() {
         CHECK(owner.Contains(value));
         CHECK(owner.Operations().size() == 129);
         CHECK(owner.OperandArena().size() == 130);
-        CHECK(CellAt(owner.Operands(owner.Operations()[value.node.value]), 0).Payload() == 0x8000000000000001ULL);
+        CHECK(CellAt(owner.Operands(owner.Operations()[value.node.value]), 0).Payload() ==
+              0x8000000000000001ULL);
         CHECK(owner.Blocks()[0].terminal.value == value.node);
         Program moved{std::move(owner)};
         CHECK(!owner);
@@ -602,34 +695,47 @@ void StaticOpcodeWritesKeepTheConstructionContract() {
     CHECK(builder.Reserve(3, 6, 1) == Error::None);
     const auto block = builder.CreateBlock();
     CHECK(builder.BeginBlock(block.block) == Error::None);
-    const auto value = builder.Emit<OpCode::LoadImm>(Type::Void,
-            {Operand::Immediate(0xfedcba9876543210ULL, Type::U64)});
+    const auto value = builder.Emit<OpCode::LoadImm>(
+            Type::Void, {Operand::Immediate(0xfedcba9876543210ULL, Type::U64)});
     CHECK(value && value.node.value == 0);
-    CHECK(builder.Emit<OpCode::BitCast>(Type::Void,
-            {Operand::ValueOf(foreign_value)}).error == Error::ForeignUnit);
+    CHECK(builder.Emit<OpCode::BitCast>(Type::Void, {Operand::ValueOf(foreign_value)}).error ==
+          Error::ForeignUnit);
     CHECK(builder.Emit<OpCode::LoadImm>(Type::Void, {}).error == Error::MissingOperand);
-    CHECK(builder.Emit<OpCode::LoadImm>(Type::Void,
-            {Operand::Immediate(256, Type::U8)}).error == Error::InvalidRange);
+    CHECK(builder.Emit<OpCode::LoadImm>(Type::Void, {Operand::Immediate(256, Type::U8)}).error ==
+          Error::InvalidRange);
     CHECK(builder.Emit<OpCode::Nop>(Type::U64, {}).error == Error::InvalidResultType);
     CHECK(builder.Emit<OpCode::Add>(Type::Void,
-            {Operand::ValueOf(value.GetValue()), Operand::Expression(OperandOp::Add, 2),
-             Operand::Immediate(1, Type::U64)}).error == Error::MissingOperand);
+                                    {Operand::ValueOf(value.GetValue()),
+                                     Operand::Expression(OperandOp::Add, 2),
+                                     Operand::Immediate(1, Type::U64)})
+                  .error == Error::MissingOperand);
     CHECK(builder.Emit<OpCode::Add>(Type::Void,
-            {Operand::ValueOf(value.GetValue()), Operand::Expression(OperandOp::Identity, 2),
-             Operand::Immediate(1, Type::U64), Operand::Immediate(2, Type::U64)}).error == Error::InvalidRange);
+                                    {Operand::ValueOf(value.GetValue()),
+                                     Operand::Expression(OperandOp::Identity, 2),
+                                     Operand::Immediate(1, Type::U64),
+                                     Operand::Immediate(2, Type::U64)})
+                  .error == Error::InvalidRange);
     CHECK(builder.Emit<OpCode::Add>(Type::Void,
-            {Operand::ValueOf(value.GetValue()), Operand::ValueOf(foreign_value, Type::U32)}).error == Error::ForeignUnit);
+                                    {Operand::ValueOf(value.GetValue()),
+                                     Operand::ValueOf(foreign_value, Type::U32)})
+                  .error == Error::ForeignUnit);
     CHECK(builder.Emit<OpCode::Add>(Type::Void,
-            {Operand::ValueOf(value.GetValue()), Operand::Expression(OperandOp::Identity),
-             Operand::Immediate(1, Type::F32)}).error == Error::InvalidType);
-    const auto sum = builder.Emit<OpCode::Add>(Type::Void,
+                                    {Operand::ValueOf(value.GetValue()),
+                                     Operand::Expression(OperandOp::Identity),
+                                     Operand::Immediate(1, Type::F32)})
+                  .error == Error::InvalidType);
+    const auto sum = builder.Emit<OpCode::Add>(
+            Type::Void,
             {Operand::ValueOf(value.GetValue(), Type::U32), Operand::Immediate(3, Type::U32)},
             {0x41, FlagProfile::ArithmeticRaw, false});
     CHECK(sum && sum.node.value == 1);
     AllocationCount compact_append;
-    const auto generic = builder.Append(OpCode::Add, Type::Void,
-            {Operand::ValueOf(value.GetValue(), Type::U32), Operand::Expression(OperandOp::Identity),
-             Operand::Immediate(3, Type::U32)}, {0x41, FlagProfile::ArithmeticRaw, false});
+    const auto generic = builder.Append(OpCode::Add,
+                                        Type::Void,
+                                        {Operand::ValueOf(value.GetValue(), Type::U32),
+                                         Operand::Expression(OperandOp::Identity),
+                                         Operand::Immediate(3, Type::U32)},
+                                        {0x41, FlagProfile::ArithmeticRaw, false});
     const auto compact_allocations = compact_append.Stop();
     // Two actual words fill the exact reserve; the discarded Identity
     // header must not inflate an allocation estimate to three words.
@@ -643,9 +749,11 @@ void StaticOpcodeWritesKeepTheConstructionContract() {
     CHECK(submitted.program.Operations()[1].type == Type::U32);
     CHECK(submitted.program.Operations()[1].Metadata().flag_outputs == 0x41);
     CHECK(CellAt(submitted.program.Operands(submitted.program.Operations()[0]), 0).Payload() ==
-            0xfedcba9876543210ULL);
-    CHECK(CellAt(submitted.program.Operands(submitted.program.Operations()[1]), 0).TypeView() == Type::U32);
-    CHECK(submitted.program.Operations()[1].Metadata() == submitted.program.Operations()[2].Metadata());
+          0xfedcba9876543210ULL);
+    CHECK(CellAt(submitted.program.Operands(submitted.program.Operations()[1]), 0).TypeView() ==
+          Type::U32);
+    CHECK(submitted.program.Operations()[1].Metadata() ==
+          submitted.program.Operations()[2].Metadata());
     CHECK(submitted.program.Operations()[1].type == submitted.program.Operations()[2].type);
     const auto known_cells = submitted.program.Operands(submitted.program.Operations()[1]);
     const auto generic_cells = submitted.program.Operands(submitted.program.Operations()[2]);
@@ -659,8 +767,6 @@ void StaticOpcodeWritesKeepTheConstructionContract() {
     }
     CHECK(known == known_cells.end() && dynamic == generic_cells.end());
     CHECK(builder.Emit<OpCode::Nop>(Type::Void, {}).error == Error::Consumed);
-
-
 }
 
 void ExplicitWorkAccounting() {
@@ -669,13 +775,14 @@ void ExplicitWorkAccounting() {
     const auto first = builder.CreateBlock(), second = builder.CreateBlock();
     CHECK(first && second && builder.BeginBlock(first.block) == Error::None);
     const auto seed = Literal(builder, UINT64_MAX);
-    const auto sum = builder.Emit<OpCode::Add>(Type::Void,
-            {Operand::ValueOf(seed.GetValue()), Operand::ValueOf(seed.GetValue())});
+    const auto sum = builder.Emit<OpCode::Add>(
+            Type::Void, {Operand::ValueOf(seed.GetValue()), Operand::ValueOf(seed.GetValue())});
     CHECK(sum);
     AllocationCount observation;
     CHECK((builder.CountWork() == WorkCounts{2, 2, 4, 2}));
     CHECK(observation.Stop() == 0);
-    CHECK(builder.EndBlock(Terminal::Branch(sum.GetValue(), first.block, second.block)) == Error::None);
+    CHECK(builder.EndBlock(Terminal::Branch(sum.GetValue(), first.block, second.block)) ==
+          Error::None);
     CHECK((builder.CountWork() == WorkCounts{2, 3, 4, 2}));
     CHECK(builder.BeginBlock(second.block) == Error::None);
     CHECK(builder.Emit<OpCode::BitCast>(Type::Void, {Operand::ValueOf(seed.GetValue())}));
@@ -685,8 +792,9 @@ void ExplicitWorkAccounting() {
     CHECK((builder.CountWork() == WorkCounts{}));
     auto editor = Builder::Edit(std::move(owner));
     CHECK((editor.CountWork() == WorkCounts{3, 5, 5, 2}));
-    CHECK(editor.Rewrite(sum.node, OpCode::LoadImm, Type::Void,
-            {Operand::Immediate(3, Type::U64)}) == Error::None);
+    CHECK(editor.Rewrite(
+                  sum.node, OpCode::LoadImm, Type::Void, {Operand::Immediate(3, Type::U64)}) ==
+          Error::None);
     // Non-tail shrink leaves a retired word; only live Value uses are counted.
     CHECK((editor.CountWork() == WorkCounts{3, 3, 5, 2}));
 
@@ -694,16 +802,22 @@ void ExplicitWorkAccounting() {
     const auto block = shifted.CreateBlock();
     CHECK(block && shifted.BeginBlock(block.block) == Error::None);
     const auto base = Literal(shifted, 1);
-    const auto address = shifted.Emit<OpCode::GetOperand>(Type::U64,
-            {Operand::Expression(OperandOp::AddShift, 2, 3),
-             Operand::ValueOf(base.GetValue()), Operand::Immediate(5, Type::U64)});
+    const auto address =
+            shifted.Emit<OpCode::GetOperand>(Type::U64,
+                                             {Operand::Expression(OperandOp::AddShift, 2, 3),
+                                              Operand::ValueOf(base.GetValue()),
+                                              Operand::Immediate(5, Type::U64)});
     CHECK(address);
     CHECK(shifted.Emit<OpCode::GetOperand>(Type::U64,
-            {Operand::Expression(OperandOp::AddShift, 2, 64),
-             Operand::ValueOf(base.GetValue()), Operand::Immediate(5, Type::U64)}).error == Error::InvalidRange);
+                                           {Operand::Expression(OperandOp::AddShift, 2, 64),
+                                            Operand::ValueOf(base.GetValue()),
+                                            Operand::Immediate(5, Type::U64)})
+                  .error == Error::InvalidRange);
     CHECK(shifted.Emit<OpCode::GetOperand>(Type::U64,
-            {Operand::Expression(OperandOp::Add, 2, 3),
-             Operand::ValueOf(base.GetValue()), Operand::Immediate(5, Type::U64)}).error == Error::InvalidRange);
+                                           {Operand::Expression(OperandOp::Add, 2, 3),
+                                            Operand::ValueOf(base.GetValue()),
+                                            Operand::Immediate(5, Type::U64)})
+                  .error == Error::InvalidRange);
     CHECK(shifted.EndBlock(Terminal::Return(address.GetValue())) == Error::None);
     auto ready = SubmitWithoutAllocation(shifted);
     const auto expression = ready.program.Operands(address.node).front();
@@ -715,12 +829,18 @@ void ExplicitWorkAccounting() {
     CHECK(wb && widths.BeginBlock(wb.block) == Error::None);
     const auto wide = Literal(widths, UINT64_MAX);
     const auto narrow = widths.Emit<OpCode::BitExtract>(Type::U32,
-            {Operand::ValueOf(wide.GetValue()), Operand::Immediate(8, Type::U8), Operand::Immediate(16, Type::U8)});
-    const auto masked = widths.Append(OpCode::And, Type::U8,
+                                                        {Operand::ValueOf(wide.GetValue()),
+                                                         Operand::Immediate(8, Type::U8),
+                                                         Operand::Immediate(16, Type::U8)});
+    const auto masked = widths.Append(
+            OpCode::And,
+            Type::U8,
             {Operand::ValueOf(wide.GetValue(), Type::U16), Operand::Immediate(255, Type::U16)});
     CHECK(narrow && masked);
-    CHECK(widths.Emit<OpCode::And>(Type::F32,
-            {Operand::ValueOf(wide.GetValue()), Operand::Immediate(1, Type::U64)}).error == Error::InvalidResultType);
+    CHECK(widths.Emit<OpCode::And>(
+                        Type::F32,
+                        {Operand::ValueOf(wide.GetValue()), Operand::Immediate(1, Type::U64)})
+                  .error == Error::InvalidResultType);
     CHECK(widths.EndBlock(Terminal::Return(narrow.GetValue())) == Error::None);
     auto result = SubmitWithoutAllocation(widths);
     CHECK(result.program.Operations()[narrow.node.value].type == Type::U32);
@@ -736,7 +856,8 @@ void OwnerLocalRewrites() {
     const auto block = initial.CreateBlock();
     CHECK(block && initial.BeginBlock(block.block) == Error::None);
     const auto seed = Literal(initial, 7);
-    const auto changed = initial.Emit<OpCode::BitCast>(Type::Void, {Operand::ValueOf(seed.GetValue())});
+    const auto changed =
+            initial.Emit<OpCode::BitCast>(Type::Void, {Operand::ValueOf(seed.GetValue())});
     const auto later = Literal(initial, 9);
     CHECK(changed && initial.EndBlock(Terminal::Return(later.GetValue())) == Error::None);
     auto submitted = SubmitWithoutAllocation(initial);
@@ -747,7 +868,7 @@ void OwnerLocalRewrites() {
     std::array<Cell, 3> old_words{};
     std::copy(owner.OperandArena().begin(), owner.OperandArena().end(), old_words.begin());
     const auto old_record = owner.Operations()[changed.node.value];
-    CHECK(owner.Operands(old_record).empty()); // Record copies carry no ownership.
+    CHECK(owner.Operands(old_record).empty());  // Record copies carry no ownership.
     CHECK(!owner.Operands(owner.Operations()[changed.node.value]).empty());
     CHECK(!owner.Operands(changed.node).empty());
     CHECK(owner.Operands(NodeId{}).empty() && owner.Operands(NodeId{3}).empty());
@@ -769,32 +890,50 @@ void OwnerLocalRewrites() {
     CHECK(editor.CreateBlock().error == Error::EditOnly);
     CHECK(editor.Append(OpCode::Nop, Type::Void, {}).error == Error::NoActiveBlock);
     AllocationCount rejection;
-    CHECK(editor.Rewrite(changed.node, OpCode::BitCast, Type::Void,
-            {Operand::ValueOf(changed.GetValue())} ) == Error::InvalidValue);
-    CHECK(editor.Rewrite(changed.node, OpCode::BitCast, Type::Void,
-            {Operand::ValueOf(later.GetValue())} ) == Error::InvalidValue);
-    CHECK(editor.Rewrite(changed.node, OpCode::BitCast, Type::Void,
-            {Operand::ValueOf(foreign.GetValue())} ) == Error::ForeignUnit);
-    CHECK(editor.Rewrite(changed.node, OpCode::BitCast, Type::Void,
-            {Operand::ValueOf(seed.GetValue(), Type::S32)} ) == Error::InvalidResultType);
+    CHECK(editor.Rewrite(changed.node,
+                         OpCode::BitCast,
+                         Type::Void,
+                         {Operand::ValueOf(changed.GetValue())}) == Error::InvalidValue);
+    CHECK(editor.Rewrite(changed.node,
+                         OpCode::BitCast,
+                         Type::Void,
+                         {Operand::ValueOf(later.GetValue())}) == Error::InvalidValue);
+    CHECK(editor.Rewrite(changed.node,
+                         OpCode::BitCast,
+                         Type::Void,
+                         {Operand::ValueOf(foreign.GetValue())}) == Error::ForeignUnit);
+    CHECK(editor.Rewrite(changed.node,
+                         OpCode::BitCast,
+                         Type::Void,
+                         {Operand::ValueOf(seed.GetValue(), Type::S32)}) ==
+          Error::InvalidResultType);
     CHECK(editor.Rewrite(changed.node, OpCode::Nop, Type::Void, {}) == Error::InvalidResultType);
     CHECK(editor.Rewrite(NodeId{3}, OpCode::Nop, Type::Void, {}) == Error::InvalidValue);
-    CHECK(editor.Rewrite(changed.node, OpCode::CallLocation, Type::U64,
-            {Operand::Lambda(UINT64_MAX), Operand::Immediate(UINT64_MAX, Type::U64),
-             Operand::Arguments(2), Operand::ValueOf(seed.GetValue()),
-             Operand::ValueOf(changed.GetValue())}) == Error::InvalidValue);
+    CHECK(editor.Rewrite(changed.node,
+                         OpCode::CallLocation,
+                         Type::U64,
+                         {Operand::Lambda(UINT64_MAX),
+                          Operand::Immediate(UINT64_MAX, Type::U64),
+                          Operand::Arguments(2),
+                          Operand::ValueOf(seed.GetValue()),
+                          Operand::ValueOf(changed.GetValue())}) == Error::InvalidValue);
     const auto rejection_allocations = rejection.Stop();
     CHECK(rejection_allocations == 0);
 
     // This non-tail replacement really needs a larger word arena. Its only
     // growth failure must leave the whole old record and old prefix intact.
-    const std::array<Operand, 5> call{
-        Operand::Lambda(UINT64_MAX), Operand::Immediate(UINT64_MAX, Type::U64),
-        Operand::Arguments(2), Operand::ValueOf(seed.GetValue()), Operand::Immediate(UINT64_MAX, Type::U64)};
+    const std::array<Operand, 5> call{Operand::Lambda(UINT64_MAX),
+                                      Operand::Immediate(UINT64_MAX, Type::U64),
+                                      Operand::Arguments(2),
+                                      Operand::ValueOf(seed.GetValue()),
+                                      Operand::Immediate(UINT64_MAX, Type::U64)};
     bool failed{};
     failure_countdown = 1;
-    try { (void)editor.Rewrite(changed.node, OpCode::CallLocation, Type::U64, call); }
-    catch (const std::bad_alloc&) { failed = true; }
+    try {
+        (void)editor.Rewrite(changed.node, OpCode::CallLocation, Type::U64, call);
+    } catch (const std::bad_alloc&) {
+        failed = true;
+    }
     failure_countdown = 0;
     CHECK(failed);
     owner = std::move(SubmitWithoutAllocation(editor).program);
@@ -805,19 +944,27 @@ void OwnerLocalRewrites() {
     for (std::size_t i = 0; i < old_words.size(); ++i)
         CHECK(owner.OperandArena()[i].bits == old_words[i].bits);
     const auto& kept = owner.Operations()[changed.node.value];
-    CHECK(kept.opcode == old_record.opcode && kept.type == old_record.type && kept.block == old_record.block);
-    CHECK(kept.Metadata() == old_record.Metadata() && kept.first_operand == old_record.first_operand);
+    CHECK(kept.opcode == old_record.opcode && kept.type == old_record.type &&
+          kept.block == old_record.block);
+    CHECK(kept.Metadata() == old_record.Metadata() &&
+          kept.first_operand == old_record.first_operand);
     CHECK(kept.operand_count == old_record.operand_count);
 
     editor = Builder::Edit(std::move(owner));
     const OperationMetadata metadata{UINT64_MAX, FlagProfile::LogicalZeroCVA, true, true};
     AllocationCount inplace;
-    CHECK(editor.Rewrite(changed.node, OpCode::LoadImm, Type::Void,
-            {Operand::Immediate(42, Type::U64)}, {0, FlagProfile::None, false, true}) == Error::InvalidRange);
+    CHECK(editor.Rewrite(changed.node,
+                         OpCode::LoadImm,
+                         Type::Void,
+                         {Operand::Immediate(42, Type::U64)},
+                         {0, FlagProfile::None, false, true}) == Error::InvalidRange);
     CHECK(editor.Operations()[changed.node.value].Metadata() == old_record.Metadata());
     CHECK(editor.Operations()[changed.node.value].first_operand == old_record.first_operand);
-    CHECK(editor.Rewrite(changed.node, OpCode::LoadImm, Type::Void,
-            {Operand::Immediate(42, Type::U64)}, metadata) == Error::None);
+    CHECK(editor.Rewrite(changed.node,
+                         OpCode::LoadImm,
+                         Type::Void,
+                         {Operand::Immediate(42, Type::U64)},
+                         metadata) == Error::None);
     const auto inplace_allocations = inplace.Stop();
     CHECK(inplace_allocations == 0);
     owner = std::move(SubmitWithoutAllocation(editor).program);
@@ -825,21 +972,25 @@ void OwnerLocalRewrites() {
     CHECK(owner.Operations()[changed.node.value].Metadata() == metadata);
     CHECK(owner.OperandArena().size() == old_words.size());
     CHECK(owner.Operands(changed.node).front().Payload() == 42);
-    CHECK(owner.Contains(seed.GetValue()) && owner.Contains(changed.GetValue()) && owner.Contains(later.GetValue()));
+    CHECK(owner.Contains(seed.GetValue()) && owner.Contains(changed.GetValue()) &&
+          owner.Contains(later.GetValue()));
 
     editor = Builder::Edit(std::move(owner));
     CHECK(editor.Rewrite(changed.node, OpCode::CallLocation, Type::U64, call) == Error::None);
     owner = std::move(SubmitWithoutAllocation(editor).program);
     CHECK(owner.Operations()[changed.node.value].first_operand == 3);
     CHECK(owner.Operations()[changed.node.value].operand_count == 8);
-    CHECK(owner.OperandArena().size() == 11); // Old non-tail range is retired, not a second program.
+    CHECK(owner.OperandArena().size() ==
+          11);  // Old non-tail range is retired, not a second program.
     CHECK(LiveCellCount(owner) == 7);
     const auto retained_bytes = owner.ReservedBytes();
     editor = Builder::Edit(std::move(owner));
     AllocationCount repeat;
     for (unsigned i = 0; i < 32; ++i) {
-        CHECK(editor.Rewrite(changed.node, OpCode::LoadImm, Type::Void,
-                {Operand::Immediate(i, Type::U64)}) == Error::None);
+        CHECK(editor.Rewrite(changed.node,
+                             OpCode::LoadImm,
+                             Type::Void,
+                             {Operand::Immediate(i, Type::U64)}) == Error::None);
         CHECK(editor.Rewrite(changed.node, OpCode::CallLocation, Type::U64, call) == Error::None);
     }
     const auto repeat_allocations = repeat.Stop();
@@ -870,23 +1021,31 @@ void ZeroWordAnchorsSurviveTailEdits() {
     bool failed{};
     failure_countdown = 1;
     try {
-        (void)editor.Rewrite(first.node, OpCode::GetOperand, Type::U64,
-                {Operand::Expression(OperandOp::Add, 2), Operand::Immediate(UINT64_MAX, Type::U64),
-                 Operand::Immediate(UINT64_MAX, Type::U64)});
-    } catch (const std::bad_alloc&) { failed = true; }
+        (void)editor.Rewrite(first.node,
+                             OpCode::GetOperand,
+                             Type::U64,
+                             {Operand::Expression(OperandOp::Add, 2),
+                              Operand::Immediate(UINT64_MAX, Type::U64),
+                              Operand::Immediate(UINT64_MAX, Type::U64)});
+    } catch (const std::bad_alloc&) {
+        failed = true;
+    }
     failure_countdown = 0;
     CHECK(failed);
     owner = std::move(SubmitWithoutAllocation(editor).program);
     CHECK(owner.OperandArena().size() == 1 && owner.Operands(first.node).front().Payload() == 0);
-    CHECK(owner.Operations()[empty.node.value].first_operand == 1 && owner.Operands(empty.node).empty());
+    CHECK(owner.Operations()[empty.node.value].first_operand == 1 &&
+          owner.Operands(empty.node).empty());
     editor = Builder::Edit(std::move(owner));
     CHECK(editor.Rewrite(first.node, OpCode::Zero, Type::U64, {}) == Error::None);
     owner = std::move(SubmitWithoutAllocation(editor).program);
     CHECK(owner.OperandArena().empty());
-    CHECK(owner.Operations()[empty.node.value].first_operand == 1 && owner.Operands(empty.node).empty());
+    CHECK(owner.Operations()[empty.node.value].first_operand == 1 &&
+          owner.Operands(empty.node).empty());
     editor = Builder::Edit(std::move(owner));
-    CHECK(editor.Rewrite(empty.node, OpCode::LoadImm, Type::Void,
-            {Operand::Immediate(5, Type::U64)}) == Error::None);
+    CHECK(editor.Rewrite(
+                  empty.node, OpCode::LoadImm, Type::Void, {Operand::Immediate(5, Type::U64)}) ==
+          Error::None);
     owner = std::move(SubmitWithoutAllocation(editor).program);
     CHECK(owner.OperandArena().size() == 1 && owner.Operands(empty.node).front().Payload() == 5);
     CHECK(owner.Operands(first.node).empty());
@@ -899,26 +1058,26 @@ void EditableViewsAndUnusedErase() {
     const auto first = builder.CreateBlock(), second = builder.CreateBlock();
     CHECK(first && second && builder.BeginBlock(first.block) == Error::None);
     const auto seed = Literal(builder, 42);
-    const auto unused = builder.Emit<OpCode::Add>(Type::Void,
-            {Operand::ValueOf(seed.GetValue()), Operand::Immediate(1, Type::U64)});
+    const auto unused = builder.Emit<OpCode::Add>(
+            Type::Void, {Operand::ValueOf(seed.GetValue()), Operand::Immediate(1, Type::U64)});
     const std::array reads{
-        builder.Emit<OpCode::LoadUniform>(Type::Void, {Operand::Uniform(8, Type::U64)}),
-        builder.Emit<OpCode::LoadLocal>(Type::Void, {Operand::Local(0, Type::U64)}),
-        builder.Emit<OpCode::GetHostGPR>(Type::U64,
-                {Operand::Immediate(1, Type::U16), Operand::Immediate(0, Type::U8)}),
-        builder.Emit<OpCode::TestFlags>(Type::Void, {Operand::Flags(1)})};
+            builder.Emit<OpCode::LoadUniform>(Type::Void, {Operand::Uniform(8, Type::U64)}),
+            builder.Emit<OpCode::LoadLocal>(Type::Void, {Operand::Local(0, Type::U64)}),
+            builder.Emit<OpCode::GetHostGPR>(
+                    Type::U64, {Operand::Immediate(1, Type::U16), Operand::Immediate(0, Type::U8)}),
+            builder.Emit<OpCode::TestFlags>(Type::Void, {Operand::Flags(1)})};
     const std::array observable{
-        builder.Emit<OpCode::LoadMemory>(Type::U64, {Operand::Immediate(4096, Type::U64)}),
-        builder.Emit<OpCode::LoadMemoryTSO>(Type::U64, {Operand::Immediate(4096, Type::U64)}),
-        builder.Emit<OpCode::StoreLocal>(Type::Void,
-                {Operand::Local(0, Type::U64), Operand::ValueOf(seed.GetValue())}),
-        builder.Emit<OpCode::AddPhi>(Type::U64, {Operand::Arguments(0)}),
-        builder.Emit<OpCode::CallLambda>(Type::U64,
-                {Operand::Lambda(), Operand::Immediate(4096, Type::U64)})};
+            builder.Emit<OpCode::LoadMemory>(Type::U64, {Operand::Immediate(4096, Type::U64)}),
+            builder.Emit<OpCode::LoadMemoryTSO>(Type::U64, {Operand::Immediate(4096, Type::U64)}),
+            builder.Emit<OpCode::StoreLocal>(
+                    Type::Void, {Operand::Local(0, Type::U64), Operand::ValueOf(seed.GetValue())}),
+            builder.Emit<OpCode::AddPhi>(Type::U64, {Operand::Arguments(0)}),
+            builder.Emit<OpCode::CallLambda>(
+                    Type::U64, {Operand::Lambda(), Operand::Immediate(4096, Type::U64)})};
     const std::array flagged{
-        builder.Emit<OpCode::Zero>(Type::U64, {}, {UINT64_C(1) << 63}),
-        builder.Emit<OpCode::Zero>(Type::U64, {}, {0, FlagProfile::ArithmeticRaw}),
-        builder.Emit<OpCode::Zero>(Type::U64, {}, {0, FlagProfile::None, true})};
+            builder.Emit<OpCode::Zero>(Type::U64, {}, {UINT64_C(1) << 63}),
+            builder.Emit<OpCode::Zero>(Type::U64, {}, {0, FlagProfile::ArithmeticRaw}),
+            builder.Emit<OpCode::Zero>(Type::U64, {}, {0, FlagProfile::None, true})};
     CHECK(unused);
     for (const auto result : reads) CHECK(result);
     for (const auto result : observable) CHECK(result);
@@ -952,18 +1111,20 @@ void EditableViewsAndUnusedErase() {
     // No data/flags/terminal use points to any of these unused results.
     CHECK(editor.EraseUnused(unused.node) == Error::None);
     for (const auto result : reads) CHECK(editor.EraseUnused(result.node) == Error::None);
-    CHECK(editor.EraseUnused(unused.node) == Error::None); // Stable tombstone.
+    CHECK(editor.EraseUnused(unused.node) == Error::None);  // Stable tombstone.
     CHECK(editor.Operations().data() == operations && editor.Blocks().data() == blocks);
     const auto& erased = editor.Operations()[unused.node.value];
     CHECK(erased.opcode == OpCode::Nop && erased.type == Type::Void && erased.operand_count == 0);
     CHECK(erased.block == first.block.id && editor.Operands(unused.node).empty());
     CHECK(editor.Blocks()[0].node_count == old_block_count);
-    CHECK(editor.Rewrite(later.node, OpCode::BitCast, Type::U64,
-            {Operand::ValueOf(unused.GetValue())}) == Error::InvalidValue);
+    CHECK(editor.Rewrite(
+                  later.node, OpCode::BitCast, Type::U64, {Operand::ValueOf(unused.GetValue())}) ==
+          Error::InvalidValue);
     CHECK(editor.EraseUnused(NodeId{}) == Error::InvalidValue);
     CHECK(editing.Stop() == 0);
     owner = std::move(SubmitWithoutAllocation(editor).program);
-    CHECK(!owner.Contains(unused.GetValue()) && owner.Contains(seed.GetValue()) && owner.Contains(later.GetValue()));
+    CHECK(!owner.Contains(unused.GetValue()) && owner.Contains(seed.GetValue()) &&
+          owner.Contains(later.GetValue()));
     CHECK(owner.UnitId() == unit && owner.Operations().size() == nodes);
     CHECK(owner.OperandArena().size() == words);
     CHECK(editor.UnitId() == 0 && editor.Operations().empty() && editor.Blocks().empty());
@@ -975,7 +1136,8 @@ void EditWordBudgetsAreAtomic() {
     CHECK(builder.Reserve(3, 3, 1) == Error::None);
     const auto block = builder.CreateBlock();
     CHECK(block && builder.BeginBlock(block.block) == Error::None);
-    const auto anchor = Literal(builder, 0), first = Literal(builder, 1), second = Literal(builder, 2);
+    const auto anchor = Literal(builder, 0), first = Literal(builder, 1),
+               second = Literal(builder, 2);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
     auto owner = std::move(SubmitWithoutAllocation(builder).program);
     const auto unit = owner.UnitId();
@@ -984,30 +1146,40 @@ void EditWordBudgetsAreAtomic() {
     std::array<Cell, 3> prefix{};
     std::copy(owner.OperandArena().begin(), owner.OperandArena().end(), prefix.begin());
     auto bounded = Builder::Edit(std::move(owner), 3);
-    auto editor = std::move(bounded); // The actual bound moves with its owner.
+    auto editor = std::move(bounded);  // The actual bound moves with its owner.
     CHECK(bounded.UnitId() == 0);
     AllocationCount rejected;
-    failure_countdown = 1; // Growth would allocate if reached.
-    const auto error = editor.Rewrite(first.node, OpCode::Add, Type::Void,
-            {Operand::ValueOf(anchor.GetValue()), Operand::Immediate(1, Type::U64)});
+    failure_countdown = 1;  // Growth would allocate if reached.
+    const auto error =
+            editor.Rewrite(first.node,
+                           OpCode::Add,
+                           Type::Void,
+                           {Operand::ValueOf(anchor.GetValue()), Operand::Immediate(1, Type::U64)});
     failure_countdown = 0;
     CHECK(error == Error::EditBudgetExceeded && rejected.Stop() == 0);
     owner = std::move(SubmitWithoutAllocation(editor).program);
     CHECK(owner.Operations().data() == operations && owner.UnitId() == unit);
     const auto& kept = owner.Operations()[first.node.value];
-    CHECK(kept.opcode == initial.opcode && kept.type == initial.type && kept.block == initial.block);
-    CHECK(kept.first_operand == initial.first_operand && kept.operand_count == initial.operand_count);
+    CHECK(kept.opcode == initial.opcode && kept.type == initial.type &&
+          kept.block == initial.block);
+    CHECK(kept.first_operand == initial.first_operand &&
+          kept.operand_count == initial.operand_count);
     CHECK(kept.Metadata() == initial.Metadata() && owner.OperandArena().size() == prefix.size());
-    for (std::size_t i = 0; i < prefix.size(); ++i) CHECK(owner.OperandArena()[i].bits == prefix[i].bits);
+    for (std::size_t i = 0; i < prefix.size(); ++i)
+        CHECK(owner.OperandArena()[i].bits == prefix[i].bits);
 
     const auto cap = owner.OperandArena().size() + 2 * owner.Operations().size();
     editor = Builder::Edit(std::move(owner), cap);
     const auto add = [&](NodeId node) {
-        return editor.Rewrite(node, OpCode::Add, Type::Void,
+        return editor.Rewrite(
+                node,
+                OpCode::Add,
+                Type::Void,
                 {Operand::ValueOf(anchor.GetValue()), Operand::Immediate(1, Type::U64)});
     };
     const auto literal = [&](NodeId node) {
-        return editor.Rewrite(node, OpCode::LoadImm, Type::Void, {Operand::Immediate(1, Type::U64)});
+        return editor.Rewrite(
+                node, OpCode::LoadImm, Type::Void, {Operand::Immediate(1, Type::U64)});
     };
     CHECK(add(first.node) == Error::None && add(second.node) == Error::None);
     CHECK(literal(first.node) == Error::None && literal(second.node) == Error::None);
@@ -1025,21 +1197,28 @@ void EditWordBudgetsAreAtomic() {
     CHECK(overflow.Stop() == 0);
     owner = std::move(SubmitWithoutAllocation(editor).program);
     const auto& same = owner.Operations()[second.node.value];
-    CHECK(same.opcode == old_record.opcode && same.type == old_record.type && same.block == old_record.block);
-    CHECK(same.first_operand == old_record.first_operand && same.operand_count == old_record.operand_count);
+    CHECK(same.opcode == old_record.opcode && same.type == old_record.type &&
+          same.block == old_record.block);
+    CHECK(same.first_operand == old_record.first_operand &&
+          same.operand_count == old_record.operand_count);
     CHECK(same.Metadata() == old_record.Metadata() && owner.OperandArena().size() == before.size());
-    for (std::size_t i = 0; i < before.size(); ++i) CHECK(owner.OperandArena()[i].bits == before[i].bits);
+    for (std::size_t i = 0; i < before.size(); ++i)
+        CHECK(owner.OperandArena()[i].bits == before[i].bits);
 }
 
 void TypedFlagAndConditionInputs() {
     Builder builder{Scope::Block};
     CHECK(builder.Reserve(3, 4, 1) == Error::None);
-    const auto block = builder.CreateBlock(); CHECK(block && builder.BeginBlock(block.block) == Error::None);
-    CHECK(builder.Append(OpCode::CondSet, Type::Void,
-            {Operand::Condition(static_cast<Condition>(255))}).error == Error::InvalidRange);
+    const auto block = builder.CreateBlock();
+    CHECK(block && builder.BeginBlock(block.block) == Error::None);
+    CHECK(builder.Append(OpCode::CondSet,
+                         Type::Void,
+                         {Operand::Condition(static_cast<Condition>(255))})
+                  .error == Error::InvalidRange);
     const auto typed = builder.Emit<OpCode::TestFlags>(Type::Void, {Operand::Flags(Flag::All)});
     const auto raw = builder.Append(OpCode::TestFlags, Type::Void, {Operand::Flags(UINT64_MAX)});
-    const auto condition = builder.Emit<OpCode::CondSet>(Type::Void, {Operand::Condition(Condition::GE)});
+    const auto condition =
+            builder.Emit<OpCode::CondSet>(Type::Void, {Operand::Condition(Condition::GE)});
     CHECK(typed && raw && condition);
     CHECK(builder.EndBlock(Terminal::Return(condition.GetValue())) == Error::None);
     auto submitted = SubmitWithoutAllocation(builder);
@@ -1052,13 +1231,16 @@ void TypedFlagAndConditionInputs() {
 void MetadataUpdatesStayLocal() {
     Builder builder{Scope::Function};
     CHECK(builder.Reserve(4, 16, 2) == Error::None);
-    const auto first = builder.CreateBlock(), second = builder.CreateBlock(); CHECK(first && second);
+    const auto first = builder.CreateBlock(), second = builder.CreateBlock();
+    CHECK(first && second);
     CHECK(builder.BeginBlock(first.block) == Error::None);
     const auto seed = Literal(builder, UINT64_MAX);
-    const auto alu = builder.Emit<OpCode::Add>(Type::U64,
+    const auto alu = builder.Emit<OpCode::Add>(
+            Type::U64,
             {Operand::ValueOf(seed.GetValue()), Operand::Immediate(UINT64_C(1) << 63, Type::U64)},
             {FlagBits(Flag::Zero), FlagProfile::ArithmeticCanonicalCarry, false, true});
-    const auto unused = builder.Emit<OpCode::Zero>(Type::U64, {}); CHECK(alu && unused);
+    const auto unused = builder.Emit<OpCode::Zero>(Type::U64, {});
+    CHECK(alu && unused);
     CHECK(builder.Operations()[alu.node.value].Metadata().discard_omitted_flags);
     CHECK(builder.Operations()[alu.node.value].properties & 8);
     const auto unit = builder.UnitId();
@@ -1069,25 +1251,34 @@ void MetadataUpdatesStayLocal() {
     std::array<Cell, 5> prefix{};
     std::copy_n(builder.Operands(seed.node).data(), prefix.size(), prefix.begin());
     const auto unchanged = [&](const Builder& owner) {
-        CHECK(owner.UnitId() == unit && owner.Operations().data() == operations && owner.Blocks().data() == blocks);
+        CHECK(owner.UnitId() == unit && owner.Operations().data() == operations &&
+              owner.Blocks().data() == blocks);
         const auto& op = owner.Operations()[alu.node.value];
-        CHECK(op.opcode == original.opcode && op.type == original.type && op.block == original.block);
-        CHECK(op.first_operand == original.first_operand && op.operand_count == original.operand_count);
+        CHECK(op.opcode == original.opcode && op.type == original.type &&
+              op.block == original.block);
+        CHECK(op.first_operand == original.first_operand &&
+              op.operand_count == original.operand_count);
         for (std::size_t i = 0; i < prefix.size(); ++i)
             CHECK(owner.Operands(seed.node).data()[i].bits == prefix[i].bits);
     };
     const OperationMetadata full{UINT64_MAX, FlagProfile::ArithmeticCanonicalCarry, true, true};
     AllocationCount updating;
-    failure_countdown = 1; // Even a single hidden allocation would fail.
+    failure_countdown = 1;  // Even a single hidden allocation would fail.
     CHECK(builder.SetMetadata(alu.node, full) == Error::None);
-    CHECK(builder.SetMetadata(alu.node, {0, FlagProfile::None, false, true}) == Error::InvalidRange);
-    CHECK(builder.Append(OpCode::Add, Type::U64,
-            {Operand::ValueOf(seed.GetValue()), Operand::Immediate(1, Type::U64)},
-            {0, FlagProfile::None, false, true}).error == Error::InvalidRange);
-    CHECK(builder.Emit<OpCode::Add>(Type::U64,
-            {Operand::ValueOf(seed.GetValue()), Operand::Immediate(1, Type::U64)},
-            {0, FlagProfile::None, false, true}).error == Error::InvalidRange);
-    CHECK(builder.SetMetadata(alu.node, {0, static_cast<FlagProfile>(255), false}) == Error::InvalidRange);
+    CHECK(builder.SetMetadata(alu.node, {0, FlagProfile::None, false, true}) ==
+          Error::InvalidRange);
+    CHECK(builder.Append(OpCode::Add,
+                         Type::U64,
+                         {Operand::ValueOf(seed.GetValue()), Operand::Immediate(1, Type::U64)},
+                         {0, FlagProfile::None, false, true})
+                  .error == Error::InvalidRange);
+    CHECK(builder.Emit<OpCode::Add>(
+                         Type::U64,
+                         {Operand::ValueOf(seed.GetValue()), Operand::Immediate(1, Type::U64)},
+                         {0, FlagProfile::None, false, true})
+                  .error == Error::InvalidRange);
+    CHECK(builder.SetMetadata(alu.node, {0, static_cast<FlagProfile>(255), false}) ==
+          Error::InvalidRange);
     CHECK(builder.SetMetadata(NodeId{}, {}) == Error::InvalidValue);
     CHECK(builder.SetMetadata(NodeId{3}, {}) == Error::InvalidValue);
     CHECK(builder.SetMetadata(NodeId{UINT32_MAX - 1}, {}) == Error::InvalidValue);
@@ -1095,7 +1286,8 @@ void MetadataUpdatesStayLocal() {
     CHECK(updating.Stop() == 0 && builder.Operations()[alu.node.value].Metadata() == full);
     unchanged(builder);
     CHECK(builder.CountWork() == work);
-    CHECK(HasAnyEffect(EffectsFor(OpCode::Add, builder.Operations()[alu.node.value].Metadata()), Effect::WriteFlags));
+    CHECK(HasAnyEffect(EffectsFor(OpCode::Add, builder.Operations()[alu.node.value].Metadata()),
+                       Effect::WriteFlags));
     CHECK(builder.EndBlock(Terminal::Jump(second.block)) == Error::None);
     // No active block is required, and the earlier block remains the owner.
     CHECK(builder.SetMetadata(alu.node, {0, FlagProfile::LogicalZeroCVA}) == Error::None);
@@ -1115,18 +1307,20 @@ void MetadataUpdatesStayLocal() {
     // Metadata does not grow or inspect the arena, even under a zero edit cap.
     auto editor = Builder::Edit(std::move(owner), 0);
     failure_countdown = 1;
-    CHECK(editor.SetMetadata(alu.node, {FlagBits(Flag::All), FlagProfile::ArithmeticRaw}) == Error::None);
+    CHECK(editor.SetMetadata(alu.node, {FlagBits(Flag::All), FlagProfile::ArithmeticRaw}) ==
+          Error::None);
     CHECK(editor.EraseUnused(alu.node) == Error::ObservableOperation);
     CHECK(editor.SetMetadata(alu.node, {0, FlagProfile::LogicalZeroCVA}) == Error::None);
     CHECK(EffectsFor(OpCode::Add, editor.Operations()[alu.node.value].Metadata()) == Effect::None);
-    CHECK(editor.EraseUnused(alu.node) == Error::ObservableOperation); // Profile alone pins.
+    CHECK(editor.EraseUnused(alu.node) == Error::ObservableOperation);  // Profile alone pins.
     CHECK(editor.SetMetadata(alu.node, {0, FlagProfile::None, true}) == Error::None);
-    CHECK(editor.EraseUnused(alu.node) == Error::ObservableOperation); // branch_only alone pins.
+    CHECK(editor.EraseUnused(alu.node) == Error::ObservableOperation);  // branch_only alone pins.
     unchanged(editor);
     CHECK(editor.SetMetadata(alu.node, {}) == Error::None);
     // This unused result has no data, terminal or flag readers.
     CHECK(editor.EraseUnused(alu.node) == Error::None);
-    CHECK(editor.SetMetadata(alu.node, full) == Error::None); // No opcode/backend admission at this write port.
+    CHECK(editor.SetMetadata(alu.node, full) ==
+          Error::None);  // No opcode/backend admission at this write port.
     CHECK(editor.Operations()[alu.node.value].opcode == OpCode::Nop);
     CHECK(editor.EraseUnused(alu.node) == Error::ObservableOperation);
     CHECK(editor.SetMetadata(alu.node, {}) == Error::None);
@@ -1134,11 +1328,16 @@ void MetadataUpdatesStayLocal() {
     CHECK(editing.Stop() == 0);
     owner = std::move(SubmitWithoutAllocation(editor).program);
     CHECK(editor.SetMetadata(alu.node, {}) == Error::Consumed);
-    CHECK(owner.UnitId() == unit && owner.Operations().data() == operations && owner.Blocks().data() == blocks);
-    CHECK(owner.ReservedBytes() == reserved && owner.StorageBytes() == stored && owner.OperandArena().size() == words);
-    CHECK(owner.Operations().size() == 4 && owner.Blocks()[0].node_count == 3 && owner.Blocks()[1].node_count == 1);
-    CHECK(owner.Blocks()[0].terminal.first == second.block.id && owner.Blocks()[1].terminal.value == later.node);
-    for (std::size_t i = 0; i < payload.size(); ++i) CHECK(owner.OperandArena()[i].bits == payload[i].bits);
+    CHECK(owner.UnitId() == unit && owner.Operations().data() == operations &&
+          owner.Blocks().data() == blocks);
+    CHECK(owner.ReservedBytes() == reserved && owner.StorageBytes() == stored &&
+          owner.OperandArena().size() == words);
+    CHECK(owner.Operations().size() == 4 && owner.Blocks()[0].node_count == 3 &&
+          owner.Blocks()[1].node_count == 1);
+    CHECK(owner.Blocks()[0].terminal.first == second.block.id &&
+          owner.Blocks()[1].terminal.value == later.node);
+    for (std::size_t i = 0; i < payload.size(); ++i)
+        CHECK(owner.OperandArena()[i].bits == payload[i].bits);
 }
 
 void EntryBelongsToTheActualOwner() {
@@ -1150,10 +1349,12 @@ void EntryBelongsToTheActualOwner() {
     AllocationCount incomplete;
     CHECK(single.Submit().error == Error::IncompleteScope);
     CHECK(incomplete.Stop() == 0 && !single.EntryBlock());
-    const auto only = single.CreateBlock(); CHECK(only && only.block.id == BlockId{0});
+    const auto only = single.CreateBlock();
+    CHECK(only && only.block.id == BlockId{0});
     CHECK(single.EntryBlock() == only.block.id);
     CHECK(single.BeginBlock(only.block) == Error::None);
-    CHECK(single.EndBlock(Terminal::Return()) == Error::None); // An empty body still has a real entry.
+    CHECK(single.EndBlock(Terminal::Return()) ==
+          Error::None);  // An empty body still has a real entry.
     auto default_owner = std::move(SubmitWithoutAllocation(single).program);
     CHECK(default_owner.EntryBlock() == only.block.id && default_owner.Operations().empty());
     CHECK(!single.EntryBlock() && single.SetEntry(only.block) == Error::Consumed);
@@ -1161,10 +1362,12 @@ void EntryBelongsToTheActualOwner() {
     const TargetInfo target{TargetMode::Unknown, 17, UINT64_MAX};
     Builder builder{Scope::Function, target};
     CHECK(builder.Reserve(4, 6, 3) == Error::None);
-    const auto first = builder.CreateBlock(), entry = builder.CreateBlock(), last = builder.CreateBlock();
+    const auto first = builder.CreateBlock(), entry = builder.CreateBlock(),
+               last = builder.CreateBlock();
     CHECK(first && entry && last && builder.EntryBlock() == first.block.id);
     Builder foreign{Scope::Block};
-    const auto foreign_block = foreign.CreateBlock(); CHECK(foreign_block);
+    const auto foreign_block = foreign.CreateBlock();
+    CHECK(foreign_block);
     AllocationCount selecting;
     failure_countdown = 1;
     CHECK(builder.SetEntry(entry.block) == Error::None);
@@ -1180,15 +1383,17 @@ void EntryBelongsToTheActualOwner() {
     CHECK(builder.EndBlock(Terminal::Return(unreachable.GetValue())) == Error::None);
     CHECK(builder.BeginBlock(entry.block) == Error::None);
     const auto seed = Literal(builder, 3);
-    const auto alu = builder.Emit<OpCode::Add>(Type::U64,
-            {Operand::ValueOf(seed.GetValue()), Operand::Immediate(4, Type::U64)}); CHECK(alu);
-    CHECK(builder.SetEntry(entry.block) == Error::None); // Also valid with a current body.
+    const auto alu = builder.Emit<OpCode::Add>(
+            Type::U64, {Operand::ValueOf(seed.GetValue()), Operand::Immediate(4, Type::U64)});
+    CHECK(alu);
+    CHECK(builder.SetEntry(entry.block) == Error::None);  // Also valid with a current body.
     const OperationMetadata metadata{FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry};
     CHECK(builder.SetMetadata(alu.node, metadata) == Error::None);
     CHECK(builder.EndBlock(Terminal::Jump(last.block)) == Error::None);
     CHECK(builder.BeginBlock(last.block) == Error::None);
-    const auto result = builder.Emit<OpCode::Add>(Type::U64,
-            {Operand::ValueOf(alu.GetValue()), Operand::Immediate(5, Type::U64)}); CHECK(result);
+    const auto result = builder.Emit<OpCode::Add>(
+            Type::U64, {Operand::ValueOf(alu.GetValue()), Operand::Immediate(5, Type::U64)});
+    CHECK(result);
     CHECK(builder.EndBlock(Terminal::Return(result.GetValue())) == Error::None);
     const auto unit = builder.UnitId();
     const auto work = builder.CountWork();
@@ -1198,7 +1403,8 @@ void EntryBelongsToTheActualOwner() {
     Builder moved = std::move(builder);
     CHECK(!builder.EntryBlock() && builder.SetEntry(entry.block) == Error::Consumed);
     CHECK(moved.EntryBlock() == entry.block.id && moved.UnitId() == unit);
-    CHECK(moved.SetEntry(entry.block) == Error::None); // Completed bodies need no active-block gate.
+    CHECK(moved.SetEntry(entry.block) ==
+          Error::None);  // Completed bodies need no active-block gate.
     CHECK(moving.Stop() == 0);
     auto owner = std::move(SubmitWithoutAllocation(moved).program);
     CHECK(!moved.EntryBlock());
@@ -1227,18 +1433,23 @@ void EntryBelongsToTheActualOwner() {
     CHECK(transferring.Stop() == 0 && editor.CountWork() == work);
     CHECK(editor.Operations().data() == operations && editor.Blocks().data() == blocks);
     owner = std::move(SubmitWithoutAllocation(editor).program);
-    CHECK(owner.EntryBlock() == entry.block.id && owner.UnitId() == unit && owner.Target() == target);
+    CHECK(owner.EntryBlock() == entry.block.id && owner.UnitId() == unit &&
+          owner.Target() == target);
     CHECK(owner.ReservedBytes() == reserved && owner.StorageBytes() == stored);
     CHECK(owner.Operations().size() == original.size() && owner.Blocks().size() == 3);
     for (std::size_t i = 0; i < original.size(); ++i) {
-        const auto& op = owner.Operations()[i]; const auto& before = original[i];
+        const auto& op = owner.Operations()[i];
+        const auto& before = original[i];
         CHECK(op.opcode == before.opcode && op.type == before.type && op.block == before.block);
         CHECK(op.first_operand == before.first_operand && op.operand_count == before.operand_count);
         CHECK(op.Metadata() == before.Metadata());
     }
-    for (std::size_t i = 0; i < words.size(); ++i) CHECK(owner.OperandArena()[i].bits == words[i].bits);
-    CHECK(owner.Blocks()[0].first_node == 0 && owner.Blocks()[1].first_node == 1 && owner.Blocks()[2].first_node == 3);
-    CHECK(owner.Blocks()[1].terminal.first == last.block.id && owner.Blocks()[2].terminal.value == result.node);
+    for (std::size_t i = 0; i < words.size(); ++i)
+        CHECK(owner.OperandArena()[i].bits == words[i].bits);
+    CHECK(owner.Blocks()[0].first_node == 0 && owner.Blocks()[1].first_node == 1 &&
+          owner.Blocks()[2].first_node == 3);
+    CHECK(owner.Blocks()[1].terminal.first == last.block.id &&
+          owner.Blocks()[2].terminal.value == result.node);
     CHECK(!editor.EntryBlock() && editor.SetEntry(entry.block) == Error::Consumed);
 }
 

@@ -17,7 +17,6 @@ constexpr std::size_t DirectoryIndex(std::uint64_t pc, std::size_t mask) noexcep
     return (pc ^ (pc >> SVM_DISPATCH_HASH_SHIFT)) & mask;
 }
 
-
 // The runtime's sole PC directory, shared directly with native dispatch.
 // Public pending slots may have null entry. The Process-owned callable
 // directory instead fills pending/empty payloads with a cold thunk; only its
@@ -29,11 +28,12 @@ struct alignas(32) DispatchSlot {
     std::uint32_t pending_head{UINT32_MAX};
     bool occupied{};
 };
-static_assert(std::is_standard_layout_v<DispatchSlot> && sizeof(DispatchSlot) == 32 && alignof(DispatchSlot) == 32);
+static_assert(std::is_standard_layout_v<DispatchSlot> && sizeof(DispatchSlot) == 32 &&
+              alignof(DispatchSlot) == 32);
 static_assert(offsetof(DispatchSlot, pc) == 0 && offsetof(DispatchSlot, entry) == 8);
 static_assert(offsetof(NativeCode, entry) == 0 && sizeof(NativeCode::Function) == 8);
 static_assert(offsetof(DispatchSlot, code_id) == 16 && offsetof(DispatchSlot, pending_head) == 20 &&
-        offsetof(DispatchSlot, occupied) == 24);
+              offsetof(DispatchSlot, occupied) == 24);
 static_assert(sizeof(DispatchSlot) == (1u << SVM_DISPATCH_SLOT_SHIFT) &&
               offsetof(DispatchSlot, occupied) == SVM_DISPATCH_OCCUPIED_OFFSET);
 
@@ -67,20 +67,25 @@ struct NativeRunContext {
     std::uint64_t pinned_vector_offset{UINT32_MAX};
 };
 static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 160);
-static_assert(sizeof(std::atomic<const NativeCode*>) == 8 && std::atomic<const NativeCode*>::is_always_lock_free);
+static_assert(sizeof(std::atomic<const NativeCode*>) == 8 &&
+              std::atomic<const NativeCode*>::is_always_lock_free);
 static_assert(offsetof(NativeRunContext, state) == 0 && offsetof(NativeRunContext, opaque) == 8);
 static_assert(offsetof(NativeRunContext, resolve) == 16 && offsetof(NativeRunContext, slots) == 24);
 static_assert(offsetof(NativeRunContext, mask) == 32 && offsetof(NativeRunContext, active) == 40);
-static_assert(offsetof(NativeRunContext, anchor) == 48 && offsetof(NativeRunContext, dispatcher_entries) == 56);
-static_assert(offsetof(NativeRunContext, cache_hits) == 64 && offsetof(NativeRunContext, pinned_uniform_offset) == 72);
-static_assert(offsetof(NativeRunContext, flags_offset) == 80 && offsetof(NativeRunContext, pc_offset) == 88);
+static_assert(offsetof(NativeRunContext, anchor) == 48 &&
+              offsetof(NativeRunContext, dispatcher_entries) == 56);
+static_assert(offsetof(NativeRunContext, cache_hits) == 64 &&
+              offsetof(NativeRunContext, pinned_uniform_offset) == 72);
+static_assert(offsetof(NativeRunContext, flags_offset) == 80 &&
+              offsetof(NativeRunContext, pc_offset) == 88);
 static_assert(offsetof(NativeRunContext, pinned_uniform_slots) == 96);
 static_assert(offsetof(NativeRunContext, native_nzcv) == 104);
-static_assert(offsetof(NativeRunContext, host_fpcr) == 112 && offsetof(NativeRunContext, host_fpsr) == 120);
-static_assert(offsetof(NativeRunContext, guest_fpcr) == 128 && offsetof(NativeRunContext, fp_environment) == 136);
+static_assert(offsetof(NativeRunContext, host_fpcr) == 112 &&
+              offsetof(NativeRunContext, host_fpsr) == 120);
+static_assert(offsetof(NativeRunContext, guest_fpcr) == 128 &&
+              offsetof(NativeRunContext, fp_environment) == 136);
 static_assert(offsetof(NativeRunContext, probe_steps) == 144);
 static_assert(offsetof(NativeRunContext, pinned_vector_offset) == 152);
-
 
 // Linked units enter/leave through these thunks. Only SvmNativeExit returns to C++;
 // the root frame owns the one save of x19..x30 and host d8..d15 across all
@@ -103,4 +108,4 @@ extern "C" void SvmNativePending() noexcept;
 extern "C" void SvmNativePendingCounted() noexcept;
 extern "C" void SvmNativeExit() noexcept;
 
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution

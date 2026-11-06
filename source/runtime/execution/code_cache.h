@@ -60,4 +60,4 @@ private:
     static std::size_t Index(std::uint64_t, std::size_t) noexcept;
     static std::size_t EmptyOrMatching(const std::vector<DispatchSlot>&, std::uint64_t) noexcept;
 };
-} // namespace swift::runtime::execution
+}  // namespace swift::runtime::execution
