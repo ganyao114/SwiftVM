@@ -155,6 +155,8 @@ NativeCode CompileService::Compile(ir::Scope scope) {
             stats.optimized_erased += optimized.stats.erased;
             stats.optimized_uniform_forwarded += optimized.stats.uniform_forwarded;
             stats.optimized_folded += optimized.stats.folded;
+            stats.optimized_copy_forwarded += optimized.stats.copy_forwarded;
+            stats.optimized_final_walks_skipped += optimized.stats.final_walk_skipped;
         }
         built.program = std::move(optimized.program);
         if (optimizer_rows.capacity() > 8u * 1024 * 1024 / sizeof(std::uint64_t))
@@ -210,31 +212,30 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                 compiled.words,
                 std::move(compiled.faults),
                 compiled.links,
-                [](void* cache, u64 pc) noexcept -> std::uintptr_t {
-                    return reinterpret_cast<std::uintptr_t>(
-                            static_cast<CodeCache*>(cache)->Find(pc));
+                [](void* opaque, u64 pc, std::uintptr_t unit) noexcept -> std::uintptr_t {
+                    auto& owner = *static_cast<VM*>(opaque);
+                    if (const auto ready = owner.Cache().Find(pc))
+                        return reinterpret_cast<std::uintptr_t>(ready);
+                    return pc == owner.thread.state.pc ? unit : 0;
                 },
-                &vm.Cache());
+                &vm);
         ++stats.code_units_published;
-        stats.static_links +=
-                std::count_if(compiled.links.begin(), compiled.links.end(), [](const auto& link) {
-                    return link.kind == backend::LinkKind::Static;
-                });
         if (options.decode_timing) stats.fault_sites += code.faults.size();
         stats.native_bytes += code.bytes;
         stats.peak_code_bytes =
                 std::max(stats.peak_code_bytes, static_cast<u64>(vm.heap.ReservedBytes()));
-        stats.peak_slabs = std::max(stats.peak_slabs, static_cast<u64>(vm.heap.Slabs()));
-        stats.peak_dual_slabs =
-                std::max(stats.peak_dual_slabs, static_cast<u64>(vm.heap.DualSlabs()));
-        stats.code_wx_fallback |= vm.heap.Slabs() != vm.heap.DualSlabs();
-        if (code.writable)
-            for (const auto& link : compiled.links) {
-                if (link.kind == backend::LinkKind::Dynamic)
-                    vm.Cache().AddIndirectSite(code, link);
-                else
-                    vm.Cache().AddStaticLink(code, link);
-            }
+        const auto slabs = vm.heap.Slabs(), dual_slabs = vm.heap.DualSlabs();
+        stats.peak_slabs = std::max(stats.peak_slabs, static_cast<u64>(slabs));
+        stats.peak_dual_slabs = std::max(stats.peak_dual_slabs, static_cast<u64>(dual_slabs));
+        stats.code_wx_fallback |= slabs != dual_slabs;
+        for (const auto& link : compiled.links) {
+            if (link.kind == backend::LinkKind::Static) ++stats.static_links;
+            if (!code.writable) continue;
+            if (link.kind == backend::LinkKind::Dynamic)
+                vm.Cache().AddIndirectSite(code, link);
+            else
+                vm.Cache().AddStaticLink(code, link);
+        }
         // Function formation excludes mutable source regions, including RX
         // mappings with shared writers. Entry requests keep Function RA but
         // externalize every single-source-block edge.

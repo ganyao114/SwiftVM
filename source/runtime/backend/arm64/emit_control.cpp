@@ -248,7 +248,9 @@ void Writer::ConditionPC(unsigned condition, u64 taken, u64 fallthrough) {
     }
     bool restore{}, flip{};
     condition = PrepareTerminalCondition(condition, restore, flip);
-    if (source.ScopeKind() == Scope::Block && options.deferred_pc && !restore && !flip) {
+    if (options.deferred_pc && !restore && !flip) {
+        // This external PC tail already completed local flags and retired
+        // its frame. Its patchable link contract is the same in both scopes.
         // Backward/self yes edge takes priority; otherwise choose no. This is
         // only a static layout preference, not a guest fallthrough contract.
         const bool primary_yes = taken <= options.entry_pc;

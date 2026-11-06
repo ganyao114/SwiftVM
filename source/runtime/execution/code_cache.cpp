@@ -35,6 +35,9 @@ void CodeCache::InsertReady(std::uint64_t pc,
     if (codes.size() >= UINT32_MAX) throw std::length_error("native unit capacity overflow");
     const auto capacity = codes.capacity();
     const auto id = static_cast<std::uint32_t>(codes.size());
+    // The minimum PC directory admits four entries before growing. Allocate
+    // its first native rows together, only when a unit is actually published.
+    if (!capacity) codes.reserve(4);
     codes.push_back(code);
     if (capacity != codes.capacity()) ++allocations;
     // Publication may have partially registered entries if a later allocation
@@ -77,12 +80,16 @@ std::size_t CodeCache::EmptyOrMatching(const std::vector<DispatchSlot>& table,
     return at;
 }
 DispatchSlot& CodeCache::Reserve(std::uint64_t pc) {
+    std::size_t at{};
     if (!slots.empty()) {
-        const auto at = EmptyOrMatching(slots, pc);
+        at = EmptyOrMatching(slots, pc);
         if (slots[at].occupied) return slots[at];
     }
-    if (slots.empty() || occupied == slots.size() / 8) Grow();
-    auto& slot = slots[EmptyOrMatching(slots, pc)];
+    if (slots.empty() || occupied == slots.size() / 8) {
+        Grow();
+        at = EmptyOrMatching(slots, pc);
+    }
+    auto& slot = slots[at];
     slot.pc = pc;
     slot.occupied = true;
     ++occupied;

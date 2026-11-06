@@ -1,9 +1,12 @@
 #include "region.h"
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <memory_resource>
 
 #include "instruction.h"
 
@@ -54,8 +57,15 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable,
         out.error_pc = entry_pc;
         return out;
     }
-    std::map<u64, Slice> directory;
-    std::vector<u64> pending;
+    // Only formation's original directory and worklist use this local arena.
+    // The returned instruction/block vectors retain their own ordinary storage.
+    alignas(std::max_align_t) std::array<std::byte, 2048> formation_storage;
+    std::pmr::monotonic_buffer_resource formation_memory{
+            formation_storage.data(), formation_storage.size(), std::pmr::new_delete_resource()};
+    std::pmr::map<u64, Slice> directory{&formation_memory};
+    std::pmr::vector<u64> pending{&formation_memory};
+    out.instructions.reserve(std::min<u32>(limits.max_instructions, 32));
+    pending.reserve(std::min<u32>(limits.max_blocks, 8));
     directory.emplace(entry_pc, Slice{entry_pc});
     pending.push_back(entry_pc);
     const auto fail = [&](DecodeError error, u64 pc) {

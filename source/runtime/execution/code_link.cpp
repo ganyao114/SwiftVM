@@ -13,11 +13,7 @@ void CodeCache::AddStaticLink(const NativeCode& owner, const backend::LinkSite& 
     const auto back = site.data_offset - site.branch_offset;
     if (slot.code_id != UINT32_MAX) {
         links.push_back({writable, executable, UINT32_MAX, back, backend::LinkKind::Static});
-        if (__atomic_load_n(writable, __ATOMIC_RELAXED) ==
-            reinterpret_cast<std::uintptr_t>(slot.entry))
-            ++patched;
-        else
-            Patch(links.back(), slot.entry);
+        Patch(links.back(), slot.entry);
         return;
     }
     links.push_back({writable, executable, slot.pending_head, back, backend::LinkKind::Static});
@@ -36,10 +32,9 @@ void CodeCache::AddIndirectSite(const NativeCode& owner, const backend::LinkSite
              backend::LinkKind::Dynamic});
 }
 void CodeCache::Patch(const Relocation& link, NativeCode::Function entry) noexcept {
-    backend.patch_link(link.writable,
-                       link.executable,
-                       reinterpret_cast<std::uintptr_t>(entry),
-                       link.branch_back_bytes);
+    const auto target = reinterpret_cast<std::uintptr_t>(entry);
+    if (__atomic_load_n(link.writable, __ATOMIC_RELAXED) != target)
+        backend.patch_link(link.writable, link.executable, target, link.branch_back_bytes);
     ++patched;
 }
 void CodeCache::ResetLinks() noexcept {

@@ -75,9 +75,10 @@ NativeCode CodeHeap::Publish(std::span<const std::uint32_t> words,
     auto* execute = slab.mapping.Executable() + offset;
     std::memcpy(write, words.data(), bytes);
     for (const auto& link : links) {
-        const auto target = link.kind == backend::LinkKind::Static && ready && slab.mapping.Dual()
-                                    ? ready(opaque, link.target_pc)
-                                    : 0;
+        const auto target =
+                link.kind == backend::LinkKind::Static && ready && slab.mapping.Dual()
+                        ? ready(opaque, link.target_pc, reinterpret_cast<std::uintptr_t>(execute))
+                        : 0;
         if (!backend.initialize_link(backend.context,
                                      {write, bytes},
                                      reinterpret_cast<std::uintptr_t>(execute),

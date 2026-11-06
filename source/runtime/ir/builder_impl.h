@@ -10,8 +10,9 @@ namespace swift::runtime::ir {
 namespace detail {
 inline constexpr auto limit = std::size_t{NodeId::invalid};
 
-template <class T>
-inline void Grow(std::vector<T>& values, std::size_t needed, std::size_t initial) {
+template <class T> [[gnu::noinline]] inline void Grow(std::vector<T>& values,
+                                                      std::size_t needed,
+                                                      std::size_t initial) {
     if (needed <= values.capacity()) return;
     const auto capacity = values.capacity();
     const auto doubled = !capacity ? initial : capacity > limit / 2 ? limit : capacity * 2;
@@ -99,7 +100,9 @@ inline std::uint64_t OperandHeader(const Operand& input, bool wide) noexcept {
 
 }  // namespace detail
 
-template <bool measure> Error Builder::StoreOperand(const Operand& input, std::size_t& word_count) {
+template <bool measure>
+[[gnu::always_inline]] inline Error Builder::StoreOperand(const Operand& input,
+                                                          std::size_t& word_count) {
     const bool wide = detail::WideOperand(input);
     const std::size_t words = wide ? 2 : 1;
     if constexpr (measure) {
@@ -107,7 +110,8 @@ template <bool measure> Error Builder::StoreOperand(const Operand& input, std::s
         word_count += words;
     } else {
         if (storage->operands.size() > detail::limit - words) return Error::CapacityOverflow;
-        detail::Grow(storage->operands, storage->operands.size() + words, 96);
+        const auto needed = storage->operands.size() + words;
+        if (needed > storage->operands.capacity()) detail::Grow(storage->operands, needed, 96);
         storage->operands.push_back({detail::OperandHeader(input, wide)});
         if (wide) storage->operands.push_back({input.payload});
     }

@@ -16,7 +16,8 @@ using NativeCode = backend::NativeCode;
 // PC directory borrow these ranges; an entry never changes the unit base.
 class CodeHeap {
 public:
-    using ReadyResolver = std::uintptr_t (*)(void*, std::uint64_t) noexcept;
+    // The last argument is this unpublished unit's actual RX base.
+    using ReadyResolver = std::uintptr_t (*)(void*, std::uint64_t, std::uintptr_t) noexcept;
     CodeHeap(const HostBackendOps&, std::size_t page_size) noexcept;
     ~CodeHeap();
     CodeHeap(const CodeHeap&) = delete;

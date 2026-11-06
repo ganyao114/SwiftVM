@@ -166,13 +166,17 @@ void Writer::HandleX87OpFamily(OpContext& ctx) {
         Width(View(raw)) > 64 ||
         (checked && (Width(View(dp)) != 64 || options.pc_offset == UINT32_MAX)))
         Reject(CompileError::UnsupportedOperand);
+    const bool result_used = ctx.home.last_use != ctx.home.definition_position;
     if (command == X87Encode(X87Command::Init) && state.Kind() == OperandKind::Value &&
         source.Operations()[state.Payload()].opcode == OpCode::GetUniformAddress) {
         const auto address = Read(state, 17);
         Immediate(16, UINT64_C(0x0000ffff0000037f));
         Memory(false, 64, 16, address, offsetof(X87State, control) / 8);
         Memory(false, 64, 31, address, offsetof(X87State, result) / 8);
-        Move(ctx.destination, 31);
+        if (result_used)
+            Move(ctx.destination, 31);
+        else
+            ctx.saved = true;
         return;
     }
     Shadow(false);
@@ -210,7 +214,10 @@ void Writer::HandleX87OpFamily(OpContext& ctx) {
     masm.Patch(success, masm.Here());
     if (checked && x86::X87MetadataCommitsSuccess(metadata))
         WriteX87Metadata(state, dp, metadata, fault_location, has_fault_location);
-    Immediate(ctx.destination, 0);  // Successful helper results are status zero.
+    if (result_used)
+        Immediate(ctx.destination, 0);  // Successful helper results are status zero.
+    else
+        ctx.saved = true;
 }
 
 void Writer::HandleVecFCvtIntToFloatFamily(OpContext& ctx) {

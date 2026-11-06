@@ -55,6 +55,8 @@ struct BuildResult {
 // Unimplemented forms are rejected. Windows are
 // readable bounds, ordered by strictly increasing PC;
 // decoding stops at the first terminal or the next declared entry/window end.
+// Block IR stops at an interior direct-backedge leader before any IR is born;
+// parser work through the original terminal is still included in DecodeTiming.
 // Known targets may request a neutral shifted-address expression. EarlyOff and
 // Unknown retain generic arithmetic. No physical registers enter the frontend.
 // FaultLocations is enabled only with a real exception-location consumer;

@@ -657,6 +657,11 @@ void Writer::HandleSetCarryFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     do {
         {
+            if (node == elided_consumer) {
+                cursor.Take();
+                elided_consumer = {};
+                break;
+            }
             CompleteLocalFlags();
             RequireFlags();
             const auto value = Read(cursor.Take(), 16);

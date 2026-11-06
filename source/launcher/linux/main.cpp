@@ -173,7 +173,8 @@ int main(int argc, char** argv) {
                          "\"ir_nodes\":%llu,\"operand_words\":%llu,\"ir_work_counts_include_"
                          "rejected_prefixes\":false,"
                          "\"optimized_erased\":%llu,\"optimized_uniform_forwarded\":%llu,"
-                         "\"optimized_folded\":%llu,"
+                         "\"optimized_folded\":%llu,\"optimized_copy_forwarded\":%llu,"
+                         "\"optimized_final_walks_skipped\":%llu,"
                          "\"spill_slots\":%llu,\"max_frame_bytes\":%llu,"
                          "\"guest_pc_policy\":\"%s\",\"packed_flags_policy\":\"%s\","
                          "\"rcpc_loads\":%s,\"rcpc_imm9\":%s,\"fault_locations\":%s,\"recover_"
@@ -188,6 +189,8 @@ int main(int argc, char** argv) {
                          static_cast<unsigned long long>(s.optimized_erased),
                          static_cast<unsigned long long>(s.optimized_uniform_forwarded),
                          static_cast<unsigned long long>(s.optimized_folded),
+                         static_cast<unsigned long long>(s.optimized_copy_forwarded),
+                         static_cast<unsigned long long>(s.optimized_final_walks_skipped),
                          static_cast<unsigned long long>(s.spill_slots),
                          static_cast<unsigned long long>(s.max_frame_bytes),
                          s.fault_locations ? "native_fault_sites" : "explicit_guest_pc",

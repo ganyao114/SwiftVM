@@ -46,8 +46,10 @@ BlockResult Builder::CreateBlock() {
     if (edit_only) return {Error::EditOnly};
     if (storage->scope == Scope::Block && !storage->blocks.empty()) return {Error::ScopeMismatch};
     if (storage->blocks.size() == limit) return {Error::CapacityOverflow};
-    detail::Grow(
-            storage->blocks, storage->blocks.size() + 1, storage->scope == Scope::Block ? 1 : 4);
+    if (storage->blocks.size() == storage->blocks.capacity())
+        detail::Grow(storage->blocks,
+                     storage->blocks.size() + 1,
+                     storage->scope == Scope::Block ? 1 : 4);
     const BlockRef block{storage->unit,
                          BlockId{static_cast<std::uint32_t>(storage->blocks.size())}};
     storage->blocks.push_back({});
@@ -179,7 +181,7 @@ Error Builder::Rewrite(NodeId local,
     // All allocation precedes any changed payload/header. The immutable
     // input span and sole mutable owner remain in this synchronous call.
     // Encode directly into the one arena; no decoded draft is produced.
-    detail::Grow(storage->operands, size, 96);
+    if (size > storage->operands.capacity()) detail::Grow(storage->operands, size, 96);
     storage->operands.resize(size);
     auto at = start;
     for (const auto& input : operands) {

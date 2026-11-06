@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <new>
+#include <span>
 #include <utility>
 #include <vector>
 #include "runtime/ir/builder.h"
@@ -837,13 +838,33 @@ OptimizeResult Optimize(ir::Program&& input,
                 function_scope &&
                 (blocks.size() != 1 || blocks.front().terminal.kind == TerminalKind::Jump ||
                  blocks.front().terminal.kind == TerminalKind::Branch);
-        std::vector<FlagBlock> flags;
-        std::vector<std::size_t> predecessor_offsets, pending;
-        std::vector<BlockId> predecessors;
+        std::array<FlagBlock, 8> small_flags;
+        std::array<std::size_t, 9> small_offsets{};
+        std::array<std::size_t, 8> small_pending{};
+        std::array<BlockId, 16> small_predecessors;
+        std::vector<FlagBlock> flag_storage;
+        std::vector<std::size_t> offset_storage, pending_storage;
+        std::vector<BlockId> predecessor_storage;
+        std::span<FlagBlock> flags;
+        std::span<std::size_t> predecessor_offsets, pending;
+        std::span<BlockId> predecessors;
         if (function) {
-            flags.resize(blocks.size());
-            predecessor_offsets.resize(blocks.size() + 1);
-            pending.resize(blocks.size());
+            // A terminal has at most two edges, so eight blocks also bound
+            // the actual predecessor rows to sixteen. These are the same
+            // four CFG buffers, with local storage for small Functions.
+            const bool small = blocks.size() <= small_flags.size();
+            if (small) {
+                flags = std::span{small_flags}.first(blocks.size());
+                predecessor_offsets = std::span{small_offsets}.first(blocks.size() + 1);
+                pending = std::span{small_pending}.first(blocks.size());
+            } else {
+                flag_storage.resize(blocks.size());
+                offset_storage.resize(blocks.size() + 1);
+                pending_storage.resize(blocks.size());
+                flags = flag_storage;
+                predecessor_offsets = offset_storage;
+                pending = pending_storage;
+            }
             for (const auto& block : blocks) {
                 const auto& terminal = block.terminal;
                 if (terminal.kind == TerminalKind::Jump || terminal.kind == TerminalKind::Branch)
@@ -855,7 +876,12 @@ OptimizeResult Optimize(ir::Program&& input,
                 predecessor_offsets[b + 1] += predecessor_offsets[b];
                 pending[b] = predecessor_offsets[b];
             }
-            predecessors.resize(predecessor_offsets.back());
+            if (small)
+                predecessors = std::span{small_predecessors}.first(predecessor_offsets.back());
+            else {
+                predecessor_storage.resize(predecessor_offsets.back());
+                predecessors = predecessor_storage;
+            }
             for (std::size_t b = 0; b < blocks.size(); ++b) {
                 const auto& terminal = blocks[b].terminal;
                 if (terminal.kind == TerminalKind::Jump || terminal.kind == TerminalKind::Branch)
@@ -868,9 +894,12 @@ OptimizeResult Optimize(ir::Program&& input,
             // The fill cursors become the bounded ring queue; no second
             // block directory or per-node flags storage is constructed.
             stats.block_flags_bytes =
-                    flags.capacity() * sizeof(FlagBlock) +
-                    (predecessor_offsets.capacity() + pending.capacity()) * sizeof(std::size_t) +
-                    predecessors.capacity() * sizeof(BlockId);
+                    small ? sizeof(small_flags) + sizeof(small_offsets) + sizeof(small_pending) +
+                                    sizeof(small_predecessors)
+                          : flag_storage.capacity() * sizeof(FlagBlock) +
+                                    (offset_storage.capacity() + pending_storage.capacity()) *
+                                            sizeof(std::size_t) +
+                                    predecessor_storage.capacity() * sizeof(BlockId);
         }
         for (const auto& block : blocks)
             if (block.terminal.HasValue()) {
@@ -884,6 +913,9 @@ OptimizeResult Optimize(ir::Program&& input,
         u64 needed_flags = all_flags;
         BlockId flags_block{};
         FlagBlock* summary{};
+        // Local to this invocation: any dead node, changed graph, narrower
+        // exit or new omitted-flags permission requires the final reverse walk.
+        bool needs_final_cleanup{};
         for (std::size_t at = operations.size(); at--;) {
             const auto id = NodeId{static_cast<std::uint32_t>(at)};
             const auto& op = operations[at];
@@ -894,6 +926,13 @@ OptimizeResult Optimize(ir::Program&& input,
             }
             if (op.opcode == OpCode::Nop && !op.flag_outputs && !op.properties) continue;
             const auto meta = op.Metadata();
+            // The final walk skips every Nop, while this walk conservatively
+            // observes non-default Nop metadata. Keep that existing path intact.
+            if (op.opcode == OpCode::Nop) needs_final_cleanup = true;
+            if (op.opcode == OpCode::FaultLocation && meta == OperationMetadata{}) {
+                rows[at] |= live_bit;  // An immutable location has no value or flag inputs.
+                continue;
+            }
             const auto effects = EffectsFor(op.opcode, meta);
             const auto write =
                     meta != OperationMetadata{} || HasAnyEffect(effects, Effect::WriteFlags)
@@ -903,15 +942,23 @@ OptimizeResult Optimize(ir::Program&& input,
             const bool dead_setter =
                     (write.kind == FlagWriteKind::Mask || write.kind == FlagWriteKind::Fixed) &&
                     !keep;
-            if (keep != write.mask || dead_setter)
+            if (keep != write.mask || dead_setter) {
+                needs_final_cleanup = true;
                 if (const auto error = TrimFlags(editor, id, op, write, keep); error != Error::None)
                     return Finish(editor, error, stats);
+            }
             if (dead_setter) {
                 ++stats.erased;
                 continue;
             }
             if (Observable(effects, write) || keep) rows[at] |= live_bit;
-            if (!(rows[at] & live_bit)) continue;
+            if (!(rows[at] & live_bit)) {
+                needs_final_cleanup = true;
+                continue;
+            }
+            if (write.kind == FlagWriteKind::Metadata && keep && keep != all_flags &&
+                !meta.branch_only && !(needed_flags & ~keep) && !meta.discard_omitted_flags)
+                needs_final_cleanup = true;
             const auto inputs = editor.Operands(id);
             // GetFlags reads its whole carrier. Fault/helper observations
             // remain All even with private state; only actual Uniform access
@@ -958,6 +1005,7 @@ OptimizeResult Optimize(ir::Program&& input,
                     output = flags[terminal.first.value].input;
                 else if (terminal.kind == TerminalKind::Branch)
                     output = flags[terminal.first.value].input | flags[terminal.second.value].input;
+                needs_final_cleanup |= output != all_flags;
                 info.output = static_cast<std::uint8_t>(output);
                 const auto input = static_cast<std::uint8_t>(info.gen | (output & ~info.kill));
                 if (input == info.input) continue;
@@ -990,6 +1038,7 @@ OptimizeResult Optimize(ir::Program&& input,
                     const auto write = FlagWrites(editor, id, op, meta);
                     const auto keep = KeptFlags(write, (write.mask & ~exit_only) | info.output);
                     if (keep == write.mask) continue;
+                    needs_final_cleanup = true;
                     const bool dead_setter = write.kind != FlagWriteKind::Metadata && !keep;
                     const bool dead_value =
                             !keep && !(rows[id.value] & count_mask) && !Observable(effects, write);
@@ -1096,6 +1145,7 @@ OptimizeResult Optimize(ir::Program&& input,
                                     id, edge, {unit, NodeId{new_id}}, replacement.type);
                             error != Error::None)
                             return Finish(editor, error, stats);
+                        needs_final_cleanup = true;  // Includes a changed effective view.
                         --rows[old_id];
                         rows[new_id] = (rows[new_id] | live_bit) + 1;
                         ++stats.copy_forwarded;
@@ -1167,6 +1217,7 @@ OptimizeResult Optimize(ir::Program&& input,
                     if (const auto error = editor.Rewrite(id, opcode, op.type, replacement, meta);
                         error != Error::None)
                         return Finish(editor, error, stats);
+                    needs_final_cleanup = true;
                     for (std::size_t i = 0; i < old_use_count; ++i)
                         if (!DropUse(rows, old_uses[i]))
                             return Finish(editor, Error::InvalidValue, stats);
@@ -1212,6 +1263,14 @@ OptimizeResult Optimize(ir::Program&& input,
             }
         }
 
+        if (!needs_final_cleanup) {
+            // Every non-Nop was live, uses and flag writes stayed unchanged,
+            // and every exit still demands All. The reverse walk would only
+            // repeat those decisions; retain the normal Submit/stats boundary.
+            stats.final_walk_skipped = 1;
+            return Finish(editor, Error::None, stats);
+        }
+
         // 3. Recompute flags demand from the current graph, coupled to DCE.
         // A now-dead flag reader must not resurrect older flag writers.
         // Deleting a formerly live node releases its current inputs, so both
@@ -1230,6 +1289,7 @@ OptimizeResult Optimize(ir::Program&& input,
             }
             if (op.opcode == OpCode::Nop) continue;
             const auto meta = op.Metadata();
+            if (op.opcode == OpCode::FaultLocation && meta == OperationMetadata{}) continue;
             const auto effects = EffectsFor(op.opcode, meta);
             const auto write =
                     meta != OperationMetadata{} || HasAnyEffect(effects, Effect::WriteFlags)

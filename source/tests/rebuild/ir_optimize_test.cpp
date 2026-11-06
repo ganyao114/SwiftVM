@@ -167,6 +167,7 @@ void FoldAndDeadCascade() {
     CHECK(result.program.Operations()[6].opcode == OpCode::StoreUniform);
     auto again = Optimize(std::move(result.program));
     CHECK(again && again.stats.erased == 0 && again.stats.folded == 0);
+    CHECK(again.stats.final_walk_skipped == 1);
 }
 
 void CopyAndTerminalRoots() {
@@ -184,6 +185,7 @@ void CopyAndTerminalRoots() {
     CHECK(builder.EndBlock(Terminal::Return(source)) == Error::None);
     auto result = Optimize(Submit(builder));
     CHECK(result && result.stats.copy_forwarded == 2);
+    CHECK(result.stats.final_walk_skipped == 0);  // Forwarding removes both copies' last users.
     CHECK(result.program.Operations()[first.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operations()[second.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operations()[source.node.value].opcode == OpCode::GetHostGPR);
@@ -232,9 +234,13 @@ void MetadataSensitiveAndObservable() {
          OpCode::CallLambda,
          Type::Void,
          {Operand::Lambda(), Operand::Immediate(0x1234, Type::U64)});
+    const auto location = builder.Append(
+            OpCode::FaultLocation, Type::Void, {Operand::Immediate(0x5000, Type::U64)});
+    CHECK(location);
     CHECK(builder.EndBlock(Terminal::Return(flags_read)) == Error::None);
     auto result = Optimize(Submit(builder));
     CHECK(result);
+    CHECK(result.stats.final_walk_skipped == 1);
     CHECK(result.program.Operations()[flags_source.node.value].opcode == OpCode::Add);
     CHECK(result.program.Operations()[profile_only.node.value].opcode == OpCode::Add);
     CHECK(result.program.Operations()[profile_only.node.value].Metadata() == profile);
@@ -244,6 +250,35 @@ void MetadataSensitiveAndObservable() {
     CHECK(result.program.Operations()[address.node.value].opcode == OpCode::LoadImm);
     CHECK(result.program.Operations()[8].opcode == OpCode::MemoryBarrierTSO);
     CHECK(result.program.Operations()[9].opcode == OpCode::CallLambda);
+    CHECK(result.program.Operations()[location.node.value].opcode == OpCode::FaultLocation);
+    CHECK(result.program.Operands(location.node).front().Payload() == 0x5000);
+
+    // A metadata Nop is an opaque observation in the first walk but is
+    // skipped by the final walk. The earlier flag-only producer still dies.
+    Builder nop_graph{Scope::Block};
+    const auto nop_block = nop_graph.CreateBlock();
+    CHECK(nop_block && nop_graph.BeginBlock(nop_block.block) == Error::None);
+    const auto input =
+            Emit(nop_graph, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const OperationMetadata arithmetic{FlagBits(Flag::All), FlagProfile::ArithmeticRaw};
+    const auto old_flags = Emit(nop_graph,
+                                OpCode::Add,
+                                Type::U64,
+                                {Operand::ValueOf(input), Operand::Immediate(1, Type::U64)},
+                                arithmetic);
+    const OperationMetadata opaque{FlagBits(Flag::All)};
+    const auto nop = nop_graph.Append(OpCode::Nop, Type::Void, {}, opaque);
+    CHECK(nop);
+    const auto last = Emit(nop_graph,
+                           OpCode::Sub,
+                           Type::U64,
+                           {Operand::ValueOf(input), Operand::Immediate(1, Type::U64)},
+                           arithmetic);
+    CHECK(nop_graph.EndBlock(Terminal::Return(last)) == Error::None);
+    auto cleaned = Optimize(Submit(nop_graph));
+    CHECK(cleaned && cleaned.stats.final_walk_skipped == 0);
+    CHECK(cleaned.program.Operations()[old_flags.node.value].opcode == OpCode::Nop);
+    CHECK(cleaned.program.Operations()[nop.node.value].Metadata() == opaque);
 }
 
 void UniformWindows() {
@@ -678,10 +713,17 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
 
     // One diamond with an empty loop header: only CF is read on the loop
     // edge, only ZF at the exit, and the real external exit observes All.
+    // Five empty entry edges put this same graph beyond local CFG storage.
     Builder graph{Scope::Function};
     const auto entry = graph.CreateBlock(), empty = graph.CreateBlock();
     const auto body = graph.CreateBlock(), exit = graph.CreateBlock();
     CHECK(entry && empty && body && exit);
+    std::array<BlockRef, 5> forwarding;
+    for (auto& block : forwarding) {
+        const auto created = graph.CreateBlock();
+        CHECK(created);
+        block = created.block;
+    }
     CHECK(graph.BeginBlock(entry.block) == Error::None);
     const auto source =
             Emit(graph, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
@@ -690,7 +732,12 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
                                   Type::U64,
                                   {Operand::ValueOf(source), Operand::Immediate(1, Type::U64)},
                                   arithmetic);
-    CHECK(graph.EndBlock(Terminal::Branch(source, empty.block, exit.block)) == Error::None);
+    CHECK(graph.EndBlock(Terminal::Branch(source, forwarding.front(), exit.block)) == Error::None);
+    for (std::size_t i = 0; i < forwarding.size(); ++i) {
+        CHECK(graph.BeginBlock(forwarding[i]) == Error::None);
+        CHECK(graph.EndBlock(Terminal::Jump(
+                      i + 1 < forwarding.size() ? forwarding[i + 1] : empty.block)) == Error::None);
+    }
     CHECK(graph.BeginBlock(empty.block) == Error::None);
     CHECK(graph.EndBlock(Terminal::Jump(body.block)) == Error::None);
     CHECK(graph.BeginBlock(body.block) == Error::None);
@@ -730,6 +777,7 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     auto reduced = Optimize(
             Submit(graph), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
     CHECK(reduced);
+    CHECK(reduced.stats.final_walk_skipped == 0);  // The actual Function exit demands narrowed.
     for (const auto writer : {entry_flags, body_flags}) {
         CHECK(reduced.program.Operations()[writer.node.value].flag_outputs ==
               FlagBits(Flag::Carry | Flag::Zero));
@@ -739,6 +787,7 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     CHECK(reduced.program.Operations()[adc.node.value].opcode == OpCode::Adc);
     CHECK(reduced.program.Operations()[invert.node.value].opcode == OpCode::InvertCarry);
     CHECK(reduced.program.Blocks()[empty.block.id.value].node_count == 0);
+    CHECK(reduced.program.Blocks().size() == 9);
 
     // Only a real external terminal can omit the Function graph. A single
     // self edge must retain the CFG path even though it also has one block.
@@ -760,6 +809,9 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
         CHECK(local);
         CHECK(local.program.ScopeKind() == Scope::Function);
         CHECK((local.stats.block_flags_bytes != 0) == self_loop);
+        // Unknown Uniform placement observes All, including on the self edge.
+        CHECK(local.stats.final_walk_skipped == 1);
+        if (self_loop) CHECK(reduced.stats.block_flags_bytes > local.stats.block_flags_bytes);
         if (!self_loop)
             CHECK(local.program.Operations()[writer.node.value].flag_outputs ==
                   FlagBits(Flag::All));
@@ -810,6 +862,36 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     // It neither invalidates a proof nor restores previously omitted flags.
     CHECK(observed.program.Operations()[logical_z.node.value].Metadata() == specified_z);
     CHECK(observed.program.Operations()[observer.node.value].opcode == OpCode::GetFlags);
+
+    // No node, use or output mask changes here. Only the final walk grants
+    // the partial writer its omitted-flags permission before a full overwrite.
+    Builder local_permission{Scope::Block};
+    const auto local_block = local_permission.CreateBlock();
+    CHECK(local_block && local_permission.BeginBlock(local_block.block) == Error::None);
+    const auto permission_source =
+            Emit(local_permission, OpCode::LoadUniform, Type::U8, {Operand::Uniform(0, Type::U8)});
+    const auto partial_z =
+            Emit(local_permission,
+                 OpCode::And,
+                 Type::U8,
+                 {Operand::ValueOf(permission_source), Operand::ValueOf(permission_source)},
+                 {FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA});
+    const auto predicate = Emit(
+            local_permission, OpCode::CondSet, Type::Bool, {Operand::Condition(Condition::NE)});
+    Store(local_permission, 8, predicate, Type::U8);
+    Emit(local_permission,
+         OpCode::And,
+         Type::U8,
+         {Operand::ValueOf(permission_source), Operand::ValueOf(permission_source)},
+         {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
+    CHECK(local_permission.EndBlock(Terminal::Return(permission_source)) == Error::None);
+    auto granted = Optimize(Submit(local_permission),
+                            SIZE_MAX,
+                            {.flags = swift::runtime::compile::UniformRange{128, 8}});
+    CHECK(granted && granted.stats.final_walk_skipped == 0);
+    CHECK(granted.stats.erased == 0 && granted.stats.folded == 0 &&
+          granted.stats.copy_forwarded == 0 && granted.stats.uniform_forwarded == 0);
+    CHECK(granted.program.Operations()[partial_z.node.value].Metadata() == specified_z);
 }
 
 void SingleNumericReadAbsorbsU32Normalizer() {

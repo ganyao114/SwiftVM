@@ -408,7 +408,10 @@ void Writer::HandleAddFamily(OpContext& ctx) {
                 }
                 const bool shifted = literal > 4095 && !(literal & 4095);
                 const auto field = shifted ? literal >> 12 : literal;
-                if (field <= 4095) {
+                const bool split = field > 4095 && !flag_mask && width >= 32 &&
+                                   literal <= 0xffffff && (literal >> 16) && (literal & 0xffff) &&
+                                   (literal & 0xffff) != 0xffff;
+                if (field <= 4095 || split) {
                     cursor.Take();
                     // A final narrow result makes the low-width sum modulo
                     // 2^width. Borrow only when the actual read is at least
@@ -438,8 +441,16 @@ void Writer::HandleAddFamily(OpContext& ctx) {
                         nzcv_matches = 0;
                         PrepareNZCV(flag_mask);
                     }
-                    const auto result = R(destination, width <= 32 ? 32 : 64),
-                               source_reg = R(left, result.GetSizeInBits());
+                    const auto result = R(destination, width <= 32 ? 32 : 64);
+                    auto source_reg = R(left, result.GetSizeInBits());
+                    if (split) {
+                        if (subtract)
+                            masm.exact.sub(result, source_reg, Operand(literal & ~u64{4095}));
+                        else
+                            masm.exact.add(result, source_reg, Operand(literal & ~u64{4095}));
+                        source_reg = result;
+                        literal &= 4095;
+                    }
                     if (subtract) {
                         if (set_nzcv)
                             masm.exact.subs(result, source_reg, Operand(literal));
@@ -1177,7 +1188,35 @@ void Writer::HandleTestZeroFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto destination = ctx.destination;
     do {
-        Predicate(destination, Read(cursor.Take(), 16), operation.opcode == OpCode::TestZero);
+        const auto tested = cursor.Take();
+        if (NativeNZCV() && operation.opcode == OpCode::TestNotZero &&
+            operation.Metadata() == OperationMetadata{} && !ctx.home.spilled &&
+            node.value + 1 < source.Operations().size()) {
+            const NodeId consumer{node.value + 1};
+            const auto& next = source.Operations()[consumer.value];
+            const auto& next_home = allocation.homes[consumer.value];
+            if (next.opcode == OpCode::SetCarry && next.block == operation.block &&
+                next.Metadata() == OperationMetadata{} && !next_home.spilled &&
+                ctx.home.last_use == next_home.definition_position) {
+                const auto operands = source.Operands(consumer);
+                auto at = operands.begin();
+                const auto input = *at++;
+                if (at == operands.end() && input.Kind() == OperandKind::Value &&
+                    input.Payload() == node.value && View(input) == operation.type) {
+                    CompleteLocalFlags();
+                    RequireFlags();
+                    // The zero predicate already is inverted guest CF: neither inversion is needed.
+                    Predicate(destination, Read(tested, 16), true);
+                    Rmif(destination, 63, 2);
+                    packed_current = false;
+                    shadow_dirty = true;
+                    elided_consumer = consumer;
+                    ctx.saved = true;
+                    break;
+                }
+            }
+        }
+        Predicate(destination, Read(tested, 16), operation.opcode == OpCode::TestZero);
         break;
     } while (false);
 }
@@ -1219,6 +1258,53 @@ void Writer::HandleLslImmFamily(OpContext& ctx) {
                         IntegerImmediate(amount) & (width - 1) &
                         ((u64{1} << std::min(Width(amount.TypeView()), 6u)) - 1));
                 const auto value = Read(input, 16, width, asr, width == 32 ? 32 : 64);
+                if (width == 64 && operation.Metadata() == OperationMetadata{} &&
+                    !ctx.home.spilled && node.value + 1 < source.Operations().size()) {
+                    const NodeId consumer{node.value + 1};
+                    const auto& next = source.Operations()[consumer.value];
+                    const auto& next_home = allocation.homes[consumer.value];
+                    if (next.block == operation.block && next.type == Type::U64 &&
+                        next.Metadata() == OperationMetadata{} &&
+                        (next.opcode == OpCode::Xor || next.opcode == OpCode::And ||
+                         next.opcode == OpCode::Or) &&
+                        !next_home.spilled && ctx.home.last_use == next_home.definition_position) {
+                        const auto operands = source.Operands(consumer);
+                        auto at = operands.begin();
+                        const auto first = *at++;
+                        const auto second = *at++;
+                        const bool first_shift =
+                                first.Kind() == OperandKind::Value && first.Payload() == node.value;
+                        const bool second_shift = second.Kind() == OperandKind::Value &&
+                                                  second.Payload() == node.value;
+                        NodeId publication{consumer.value + 1};
+                        if (publication.value < source.Operations().size() &&
+                            source.Operations()[publication.value].opcode == OpCode::ClearFlags)
+                            ++publication.value;
+                        if (at == operands.end() && first.Kind() == OperandKind::Value &&
+                            second.Kind() == OperandKind::Value && first_shift != second_shift &&
+                            View(first_shift ? first : second) == Type::U64 &&
+                            !LegacyMask(consumer, publication)) {
+                            const auto other = Read(first_shift ? second : first, 17);
+                            // The next Emit would protect this carrier before replacing its pin.
+                            if (next_home.reg == deferred_parity) CompleteParity();
+                            const Operand shifted{X(value),
+                                                  ror   ? v::ROR
+                                                  : asr ? v::ASR
+                                                  : lsl ? v::LSL
+                                                        : v::LSR,
+                                                  count};
+                            if (next.opcode == OpCode::Xor)
+                                masm.exact.eor(X(next_home.reg), X(other), shifted);
+                            else if (next.opcode == OpCode::And)
+                                masm.exact.and_(X(next_home.reg), X(other), shifted);
+                            else
+                                masm.exact.orr(X(next_home.reg), X(other), shifted);
+                            elided_consumer = consumer;
+                            ctx.saved = true;
+                            break;
+                        }
+                    }
+                }
                 if (ror) {
                     masm.exact.ror(R(destination, width), R(value, width), count);
                 } else if (asr) {

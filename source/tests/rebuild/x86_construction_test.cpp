@@ -880,6 +880,85 @@ void ActualDecodedBufferAndRejectedFrontier() {
           counts.blocks == 1);  // LoadImm, StoreUniform(U32 read view).
 }
 
+void BlockBackedgesSeparateThePrefixBeforeIRBirth() {
+    // Five prefix instructions, ten in the loop, and five at the exit. The
+    // first request decodes the backedge, but births only the prefix's IR.
+    const std::uint8_t bytes[]{
+            0xb8, 1,    0,    0, 0,    0xb9, 3, 0,    0,    0,    0xba, 2,    0,    0,    0,
+            0xbb, 4,    0,    0, 0,    0xbe, 5, 0,    0,    0,    0x83, 0xc0, 1,    0x83, 0xc0,
+            1,    0x83, 0xc0, 1, 0x83, 0xc0, 1, 0x83, 0xc0, 1,    0x83, 0xc0, 1,    0x83, 0xc0,
+            1,    0x83, 0xc0, 1, 0x83, 0xe9, 1, 0x75, 0xe3, 0x90, 0x90, 0x90, 0x90, 0xc3};
+    constexpr std::uint64_t start = 0x11000, leader = start + 25, exit = leader + 29;
+    const BlockWindow prefix{start, bytes};
+    const BlockWindow loop{leader, std::span{bytes}.subspan(25)};
+    const BlockWindow tail{exit, std::span{bytes}.subspan(54)};
+    for (const auto mode : {TargetMode::Known, TargetMode::Unknown}) {
+        const TargetInfo target{mode, 0xa64, 0};
+        const auto first = BuildIR({&prefix, 1}, Scope::Block, layout, target);
+        CHECK(first && first.instruction_count == 5 && first.decoded_bytes == 25);
+        CHECK(first.program.Blocks().size() == 1 &&
+              first.program.Blocks()[0].terminal.kind == TerminalKind::Dispatch);
+        CHECK(StoresImmediate(first.program, layout.pc_offset, leader));
+        CHECK(std::none_of(first.program.Operations().begin(),
+                           first.program.Operations().end(),
+                           [](const auto& op) {
+                               return op.opcode == OpCode::Add || op.opcode == OpCode::Sub ||
+                                      op.opcode == OpCode::CondSet;
+                           }));
+        const auto body = BuildIR({&loop, 1}, Scope::Block, layout, target);
+        const auto done = BuildIR({&tail, 1}, Scope::Block, layout, target);
+        CHECK(body && body.instruction_count == 10 && body.decoded_bytes == 29);
+        CHECK(HasImmediate(body.program, leader) && HasImmediate(body.program, exit));
+        CHECK(done && done.instruction_count == 5 && done.decoded_bytes == 5);
+        CHECK(first.instruction_count + body.instruction_count + done.instruction_count == 20);
+    }
+    const auto function = BuildIR({&prefix, 1}, Scope::Function, layout);
+    CHECK(function && function.instruction_count == 15 && function.decoded_bytes == 54);
+
+    const std::uint8_t jump[]{0xb8, 1, 0, 0, 0, 0x90, 0xeb, 0xfd};
+    const BlockWindow direct{0x12000, jump};
+    const auto cut = BuildIR({&direct, 1}, Scope::Block, layout);
+    CHECK(cut && cut.instruction_count == 1 && cut.decoded_bytes == 5);
+    CHECK(StoresImmediate(cut.program, layout.pc_offset, 0x12005));
+    const std::uint8_t middle[]{0xb8, 1, 0, 0, 0, 0x90, 0xeb, 0xfa};
+    const BlockWindow overlapping{0x12000, middle};
+    const auto uncut = BuildIR({&overlapping, 1}, Scope::Block, layout);
+    CHECK(uncut && uncut.instruction_count == 3 && uncut.decoded_bytes == sizeof(middle));
+    CHECK(StoresImmediate(uncut.program, layout.pc_offset, 0x12002));
+
+    // Without a successfully decoded terminal, retain the actual rejected prefix.
+    const BlockWindow truncated{start, std::span{bytes}.first(53)};
+    const auto rejected = BuildIR({&truncated, 1}, Scope::Block, layout);
+    CHECK(!rejected && rejected.error == swift::x86::BuildError::Truncated);
+    CHECK(rejected.instruction_count == 14 && rejected.decoded_bytes == 52 &&
+          rejected.error_pc == start + 52);
+}
+
+void ShortDecodeStorageGrowsWithoutChangingSlices() {
+    std::vector<std::uint8_t> bytes;
+    for (unsigned value = 1; value <= 40; ++value)
+        bytes.insert(bytes.end(), {0xb8, static_cast<std::uint8_t>(value), 0, 0, 0});
+    bytes.insert(bytes.end(), {0x75, 0xf9});  // JNZ to the final MOV, after both growth points.
+    const BlockWindow source{0x13000, bytes};
+    const auto block = BuildIR({&source, 1}, Scope::Block, layout);
+    CHECK(block && block.instruction_count == 39 && block.decoded_bytes == 195);
+    CHECK(block.program.Blocks().size() == 1);
+    CHECK(StoresImmediate(block.program, layout.pc_offset, source.pc + 195));
+    CHECK(HasImmediate(block.program, 39) && !HasImmediate(block.program, 40));
+
+    const std::uint8_t tail[]{0x89, 0xc3, 0x90};  // MOV EBX,EAX; NOP, in a separate window.
+    const std::array<BlockWindow, 2> windows{{source, {0x14000, tail}}};
+    const auto function = BuildIR(windows, Scope::Function, layout);
+    CHECK(function && function.instruction_count == 43 &&
+          function.decoded_bytes == bytes.size() + sizeof(tail));
+    CHECK(function.program.Blocks().size() == 4 && HasImmediate(function.program, 40));
+    const auto& second = function.program.Blocks()[1];
+    const auto& load = function.program.Operations()[second.first_node];
+    CHECK(load.opcode == OpCode::LoadUniform && load.type == Type::U32);
+    CHECK(function.program.Operands(load).front().Payload() == layout.gprs_offset);
+    CHECK(StoresImmediate(function.program, layout.pc_offset, 0x14003));
+}
+
 void AutomaticFunctionDiscoveryAndEntry() {
     using swift::x86::BuildFunctionIR;
     using swift::x86::DecodeFunction;
@@ -924,6 +1003,14 @@ void AutomaticFunctionDiscoveryAndEntry() {
                                                    nullptr,
                                                    nonlowest.entry_block);
     CHECK(direct && direct.program.EntryBlock().value == 1);
+    CHECK(direct.program.Operations().size() == entry.program.Operations().size() &&
+          direct.program.OperandArena().size() == entry.program.OperandArena().size());
+    for (std::size_t i = 0; i < direct.program.Operations().size(); ++i) {
+        const auto& checked = direct.program.Operations()[i];
+        const auto& formed = entry.program.Operations()[i];
+        CHECK(checked.opcode == formed.opcode && checked.type == formed.type &&
+              checked.Metadata() == formed.Metadata());
+    }
     CHECK(swift::x86::BuildDecodedIR(nonlowest.instructions,
                                      nonlowest.blocks,
                                      {&reversed, 1},
@@ -968,7 +1055,8 @@ void AutomaticFunctionDiscoveryAndEntry() {
           exact_split.decode_calls == 4);
     CHECK(exact_split.budget_exits == 1);
 
-    // A long chain is processed by the actual iterative frontier, not the C++ stack.
+    // The iterative frontier exceeds the local PMR arena and uses its upstream.
+    // Returned records remain independently owned after that arena is destroyed.
     std::vector<std::uint8_t> chain;
     for (unsigned i = 0; i < 128; ++i) {
         chain.push_back(0xeb);
@@ -979,6 +1067,16 @@ void AutomaticFunctionDiscoveryAndEntry() {
     const auto iterative = DecodeFunction({&linked, 1}, linked.pc, {129, 129});
     CHECK(iterative && iterative.blocks.size() == 129 && iterative.instructions.size() == 129);
     CHECK(iterative.decode_calls == 129 && iterative.budget_exits == 0);
+    const auto iterative_ir = swift::x86::BuildDecodedIR(iterative.instructions,
+                                                         iterative.blocks,
+                                                         {&linked, 1},
+                                                         Scope::Function,
+                                                         layout,
+                                                         {},
+                                                         nullptr,
+                                                         iterative.entry_block);
+    CHECK(iterative_ir && iterative_ir.instruction_count == 129 &&
+          iterative_ir.program.Blocks().size() == 129);
 }
 
 void AutomaticFunctionFailuresAndFrontiers() {
@@ -1040,6 +1138,21 @@ void AutomaticFunctionFailuresAndFrontiers() {
     CHECK(emitted && emitted.instruction_count == 1 && emitted.decoded_bytes == 5);
     CHECK(emitted.program.Blocks()[0].terminal.kind == TerminalKind::Dispatch);
     CHECK(StoresImmediate(emitted.program, layout.pc_offset, 0xf005));
+
+    // Formed records still undergo ISA/prefix admission, at the same original
+    // instruction as externally supplied decoded records, after the same prefix.
+    const std::uint8_t bad_lock[]{0x90, 0xf0, 0x48, 0x89, 0x00};
+    const BlockWindow prefixed{0xf100, bad_lock};
+    const auto records = DecodeFunction({&prefixed, 1}, prefixed.pc);
+    CHECK(records && records.instructions.size() == 2);
+    const auto formed_bad = BuildFunctionIR({&prefixed, 1}, prefixed.pc, layout);
+    const auto checked_bad = swift::x86::BuildDecodedIR(
+            records.instructions, records.blocks, {&prefixed, 1}, Scope::Function, layout);
+    CHECK(!formed_bad && !checked_bad && formed_bad.error == swift::x86::BuildError::Unsupported &&
+          formed_bad.error == checked_bad.error && formed_bad.error_pc == prefixed.pc + 1 &&
+          formed_bad.error_pc == checked_bad.error_pc);
+    CHECK(formed_bad.instruction_count == 1 && checked_bad.instruction_count == 1 &&
+          formed_bad.decoded_bytes == 1 && checked_bad.decoded_bytes == 1);
 }
 
 void NarrowMovesAndStackControlAreConstructible() {
@@ -1705,6 +1818,8 @@ int main() {
         EveryConditionalBranchAndRealExits();
         ExternalEntriesAndReadyFrontiers();
         ActualDecodedBufferAndRejectedFrontier();
+        BlockBackedgesSeparateThePrefixBeforeIRBirth();
+        ShortDecodeStorageGrowsWithoutChangingSlices();
         AutomaticFunctionDiscoveryAndEntry();
         AutomaticFunctionFailuresAndFrontiers();
         NarrowMovesAndStackControlAreConstructible();

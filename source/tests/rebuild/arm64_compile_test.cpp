@@ -1,6 +1,7 @@
 #include "runtime/backend/arm64/compile.h"
 #include "runtime/backend/arm64/abi.h"
 #include "runtime/backend/arm64/patch.h"
+#include "runtime/arch/x86/x87.h"
 #include "runtime/ir/builder.h"
 
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 #include "runtime/execution/code_heap.h"
+#include "runtime/execution/code_cache.h"
 #include "runtime/platform/linux/arm64_runtime.h"
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
@@ -887,6 +889,27 @@ void PureIntegers() {
             Need(builder.Emit<OpCode::BitCast>(Type::U8, {Operand::ValueOf(source, Type::U8)}));
     const auto inserted =
             Need(builder.Emit<OpCode::BitCast>(Type::U16, {Operand::ValueOf(other, Type::U16)}));
+    const auto shifted_xor = Need(builder.Emit<OpCode::LslImm>(
+            Type::U64, {Operand::ValueOf(source), Operand::Immediate(13, Type::U8)}));
+    expect(Need(builder.Emit<OpCode::Xor>(
+                   Type::U64, {Operand::ValueOf(shifted_xor), Operand::ValueOf(other)})),
+           (raw << 13) ^ other_raw);
+    const auto shifted_and = Need(builder.Emit<OpCode::LsrImm>(
+            Type::U64, {Operand::ValueOf(alias, Type::U8), Operand::Immediate(3, Type::U8)}));
+    expect(Need(builder.Emit<OpCode::And>(
+                   Type::U64, {Operand::ValueOf(other, Type::U16), Operand::ValueOf(shifted_and)})),
+           (other_raw & 65535) & ((raw & 255) >> 3));
+    const auto shifted_or = Need(builder.Emit<OpCode::RorImm>(
+            Type::U64, {Operand::ValueOf(source), Operand::Immediate(9, Type::U8)}));
+    expect(Need(builder.Emit<OpCode::Or>(
+                   Type::U64, {Operand::ValueOf(shifted_or), Operand::ValueOf(other, Type::U32)})),
+           std::rotr(raw, 9) | (other_raw & UINT32_MAX));
+    const auto clipped_shift = Need(builder.Emit<OpCode::LslImm>(
+            Type::U64, {Operand::ValueOf(source), Operand::Immediate(1, Type::U8)}));
+    expect(Need(builder.Emit<OpCode::Xor>(
+                   Type::U64,
+                   {Operand::ValueOf(clipped_shift, Type::U8), Operand::ValueOf(other)})),
+           ((raw << 1) & 255) ^ other_raw);
     expect(Need(builder.Emit<OpCode::And>(
                    Type::U8,
                    {Operand::ValueOf(alias, Type::U8), Operand::Immediate(0x100, Type::U16)})),
@@ -1003,6 +1026,66 @@ void PureIntegers() {
 #if defined(__aarch64__) && defined(__ANDROID__)
     for (std::size_t i = 0; i < expected.size(); ++i)
         Check(Read64(state.data() + i * 8) == expected[i], "pure integer raw-carrier/width oracle");
+#endif
+}
+
+void X87StatusResultUses() {
+    namespace x86 = swift::runtime::x86;
+    struct State {
+        x86::X87State fpu;
+        u64 initialized{~u64{}}, poison{};
+    };
+    Builder builder{Scope::Block};
+    Need(builder.BeginBlock(Create(builder)));
+    const auto state = Need(builder.Emit<OpCode::GetUniformAddress>(
+            Type::U64, {Operand::Immediate(offsetof(State, fpu), Type::U32)}));
+    const auto zero = Constant(builder, 0);
+    const auto init = Need(builder.Emit<OpCode::X87Op>(
+            Type::U64,
+            {Operand::ValueOf(state),
+             Operand::Immediate(x86::X87Encode(x86::X87Command::Init), Type::U64),
+             Operand::ValueOf(zero)}));
+    const auto live_init = Need(builder.Emit<OpCode::X87Op>(
+            Type::U64,
+            {Operand::ValueOf(state),
+             Operand::Immediate(x86::X87Encode(x86::X87Command::Init), Type::U64),
+             Operand::ValueOf(zero)}));
+    Store(builder, offsetof(State, initialized), live_init);
+    const auto push = Need(builder.Emit<OpCode::X87Op>(
+            Type::U64,
+            {Operand::ValueOf(state),
+             Operand::Immediate(x86::X87Encode(x86::X87Command::PushOne), Type::U64),
+             Operand::ValueOf(zero)}));
+    Store(builder, offsetof(State, poison), Constant(builder, 0x55));
+    const auto status = Need(builder.Emit<OpCode::X87Op>(
+            Type::U64,
+            {Operand::ValueOf(state),
+             Operand::Immediate(x86::X87Encode(x86::X87Command::Status), Type::U64),
+             Operand::ValueOf(zero)}));
+    Need(builder.EndBlock(Terminal::Return(status)));
+    auto program = Submit(builder);
+    const auto allocation = arm64::AllocateBlock(program);
+    Check(bool(allocation) &&
+                  allocation.homes[init.node.value].last_use ==
+                          allocation.homes[init.node.value].definition_position &&
+                  allocation.homes[push.node.value].last_use ==
+                          allocation.homes[push.node.value].definition_position &&
+                  allocation.homes[live_init.node.value].last_use >
+                          allocation.homes[live_init.node.value].definition_position &&
+                  allocation.homes[status.node.value].last_use >
+                          allocation.homes[status.node.value].definition_position,
+          "x87 status users include a real numeric store and the terminal return");
+    const auto code = Compile(program);
+    State observed;
+    observed.fpu.control = 0;
+    Execute(code, reinterpret_cast<std::uint8_t*>(&observed), 0);
+#if defined(__aarch64__) && defined(__ANDROID__)
+    Check(observed.initialized == 0 && observed.poison == 0x55 && observed.fpu.control == 0x037f &&
+                  observed.fpu.status == 0x3800 && observed.fpu.tags == 0x3fff &&
+                  observed.fpu.result == 0x3800 &&
+                  observed.fpu.registers[7].significand == UINT64_C(0x8000000000000000) &&
+                  observed.fpu.registers[7].sign_exp == 0x3fff,
+          "dead x87 status results retain state effects and live status results remain zero");
 #endif
 }
 
@@ -1444,7 +1527,7 @@ void DeferredPCLinks() {
             std::uintptr_t entry;
             unsigned calls{};
         } ready{site.target_pc, entry};
-        const auto lookup = [](void* opaque, u64 pc) noexcept -> std::uintptr_t {
+        const auto lookup = [](void* opaque, u64 pc, std::uintptr_t) noexcept -> std::uintptr_t {
             auto& target = *static_cast<Ready*>(opaque);
             ++target.calls;
             return pc == target.pc ? target.entry : 0;
@@ -1499,6 +1582,67 @@ void DeferredPCLinks() {
         UnlinkWords(write, execute, back_words);
         Check(*branch == load && Read64(execute) == reinterpret_cast<std::uintptr_t>(execute + 1),
               "even and odd unlink restore the original load and this edge's RX cold stub");
+    }
+    static unsigned patch_calls{}, unlink_calls{};
+    patch_calls = unlink_calls = 0;
+    auto counted_backend = TestBackendOps();
+    counted_backend.patch_link = [](std::uintptr_t* write,
+                                    const std::uintptr_t* execute,
+                                    std::uintptr_t target,
+                                    std::uint32_t back) noexcept {
+        ++patch_calls;
+        arm64::PatchNativeLink(write, execute, target, back);
+    };
+    counted_backend.unlink =
+            [](std::uintptr_t* write, const std::uintptr_t* execute, std::uint32_t back) noexcept {
+                ++unlink_calls;
+                arm64::UnlinkNativeLink(write, execute, back);
+            };
+    execution::CodeCache self_cache{nullptr, counted_backend};
+    const auto& self_site = code.links.front();
+    const auto incoming = arena.Publish(code.words, {}, code.links);
+    self_cache.InsertReady(options.entry_pc, incoming, {});
+    self_cache.AddStaticLink(incoming, self_site);
+    struct SelfLookup {
+        execution::CodeCache& cache;
+        u64 pc;
+        unsigned calls{};
+    } self_lookup{self_cache, self_site.target_pc};
+    const auto self = arena.Publish(
+            code.words,
+            {},
+            code.links,
+            [](void* opaque, u64 pc, std::uintptr_t unit) noexcept -> std::uintptr_t {
+                auto& lookup = *static_cast<SelfLookup*>(opaque);
+                ++lookup.calls;
+                if (const auto ready = lookup.cache.Find(pc))
+                    return reinterpret_cast<std::uintptr_t>(ready);
+                return pc == lookup.pc ? unit : 0;
+            },
+            &self_lookup);
+    self_cache.AddStaticLink(self, self_site);
+    Check(self_lookup.calls == (self.writable ? 1u : 0u) &&
+                  self_cache.Pending() == (self.writable ? 2u : 0u),
+          "an unpublished self target uses its actual RX base while both relocation rows remain "
+          "pending until ready registration");
+    self_cache.InsertReady(self_site.target_pc, self, {});
+    Check(patch_calls == (self.writable ? 1u : 0u) &&
+                  self_cache.Patched() == (self.writable ? 2u : 0u) && self_cache.Pending() == 0,
+          "ready registration patches the old incoming edge once without resynchronizing the "
+          "already prepared self edge");
+    self_cache.ResetLinks();
+    if (self.writable) {
+        const auto base = reinterpret_cast<std::uintptr_t>(self.entry);
+        const auto* words = reinterpret_cast<const std::uint32_t*>(self.entry);
+        Check(unlink_calls == 2 &&
+                      Read64(words + WordOffset(self_site.data_offset)) ==
+                              base + self_site.fallback_offset &&
+                      words[WordOffset(self_site.branch_offset)] ==
+                              (0x58000010u | ((WordOffset(self_site.data_offset) -
+                                               WordOffset(self_site.branch_offset))
+                                              << 5)),
+              "the prelinked self edge keeps its real relocation and restores its cold gate on "
+              "unlink");
     }
 #endif
     auto [shared, shared_target] = source(true, false);
@@ -1827,136 +1971,148 @@ void LinkedDynamicPC() {
         resolver.target_pc = next_pc;
         context.slots = slots.data();
         context.mask = slots.size() - 1;
-        if (native_nzcv) {
-            constexpr u64 other_pc = 0x3000;
-            const auto predicate_source = [&](Condition condition) {
-                Builder builder{Scope::Block};
-                Need(builder.BeginBlock(Create(builder)));
-                const auto check = Need(
-                        builder.Emit<OpCode::CondSet>(Type::Bool, {Operand::Condition(condition)}));
-                Need(builder.Emit<OpCode::StoreUniformSelectImm>(
-                        Type::Void,
-                        {Operand::Uniform(options.pc_offset, Type::U64),
-                         Operand::ValueOf(check),
-                         Operand::Immediate(other_pc, Type::U64),
-                         Operand::Immediate(next_pc, Type::U64)}));
-                Need(builder.EndBlock(Terminal::Dispatch()));
-                return Submit(builder);
-            };
-            auto predicate_options = options;
-            predicate_options.entry_pc = entry_pc;
-            auto predicate_program = predicate_source(Condition::EQ);
-            const auto predicate_code = arm64::Compile(predicate_program, predicate_options);
-            Check(bool(predicate_code) && predicate_code.links.size() == 2,
-                  "direct PC predicate compiles with two owned edges");
-            const auto primary = std::find_if(
-                    predicate_code.links.begin(),
-                    predicate_code.links.end(),
-                    [](const arm64::LinkSite& link) { return link.target_pc == next_pc; });
-            Check(primary != predicate_code.links.end() &&
-                          (predicate_code.words[WordOffset(primary->branch_offset)] &
-                           0xff00001fu) == 0x54000001u,
-                  "two forward targets choose predicate-false as a patchable B.NE head");
-            auto backward_options = predicate_options;
-            backward_options.entry_pc = 0x4000;
-            const auto backward = arm64::Compile(predicate_program, backward_options);
-            Check(bool(backward) &&
-                          std::any_of(backward.links.begin(),
+        if (native_nzcv)
+            for (const auto scope : {Scope::Block, Scope::Function}) {
+                constexpr u64 other_pc = 0x3000;
+                const auto predicate_source = [&](Condition condition) {
+                    Builder builder{scope};
+                    Need(builder.BeginBlock(Create(builder)));
+                    const auto check = Need(builder.Emit<OpCode::CondSet>(
+                            Type::Bool, {Operand::Condition(condition)}));
+                    Need(builder.Emit<OpCode::StoreUniformSelectImm>(
+                            Type::Void,
+                            {Operand::Uniform(options.pc_offset, Type::U64),
+                             Operand::ValueOf(check),
+                             Operand::Immediate(other_pc, Type::U64),
+                             Operand::Immediate(next_pc, Type::U64)}));
+                    Need(builder.EndBlock(Terminal::Dispatch()));
+                    return Submit(builder);
+                };
+                auto predicate_options = options;
+                predicate_options.entry_pc = entry_pc;
+                auto predicate_program = predicate_source(Condition::EQ);
+                const auto predicate_code = arm64::Compile(predicate_program, predicate_options);
+                Check(bool(predicate_code) && predicate_code.links.size() == 2,
+                      "direct PC predicate compiles with two owned edges");
+                const auto primary = std::find_if(
+                        predicate_code.links.begin(),
+                        predicate_code.links.end(),
+                        [](const arm64::LinkSite& link) { return link.target_pc == next_pc; });
+                Check(primary != predicate_code.links.end() &&
+                              (predicate_code.words[WordOffset(primary->branch_offset)] &
+                               0xff00001fu) == 0x54000001u,
+                      "two forward targets choose predicate-false as a patchable B.NE head");
+                auto backward_options = predicate_options;
+                backward_options.entry_pc = 0x4000;
+                const auto backward = arm64::Compile(predicate_program, backward_options);
+                Check(bool(backward) &&
+                              std::any_of(
+                                      backward.links.begin(),
                                       backward.links.end(),
                                       [&](const arm64::LinkSite& link) {
                                           return link.target_pc == other_pc &&
                                                  (backward.words[WordOffset(link.branch_offset)] &
                                                   0xff00001fu) == 0x54000000u;
                                       }),
-                  "a backward yes target has priority over the default no layout");
-            auto flip_program = predicate_source(Condition::HI);
-            const auto flip = arm64::Compile(flip_program, predicate_options);
-            Check(bool(flip) &&
-                          std::count(flip.words.begin(), flip.words.end(), 0xd500401fu) == 3 &&
-                          std::all_of(flip.links.begin(),
-                                      flip.links.end(),
-                                      [&](const arm64::LinkSite& link) {
-                                          return (flip.words[WordOffset(link.branch_offset)] &
-                                                  0xff00001fu) == 0x58000010u;
-                                      }),
-                  "temporary carry inversion retains the old per-edge restoration and ordinary "
-                  "links");
+                      "a backward yes target has priority over the default no layout");
+                auto flip_program = predicate_source(Condition::HI);
+                const auto flip = arm64::Compile(flip_program, predicate_options);
+                Check(bool(flip) &&
+                              std::count(flip.words.begin(), flip.words.end(), 0xd500401fu) == 3 &&
+                              std::all_of(flip.links.begin(),
+                                          flip.links.end(),
+                                          [&](const arm64::LinkSite& link) {
+                                              return (flip.words[WordOffset(link.branch_offset)] &
+                                                      0xff00001fu) == 0x58000010u;
+                                          }),
+                      "temporary carry inversion retains the old per-edge restoration and ordinary "
+                      "links");
 
-            auto other_options = options;
-            other_options.entry_pc = other_pc;
-            const auto other_code = arm64::Compile(target_program, other_options);
-            Check(bool(other_code),
-                  "second predicate target preserves its actual entry PC observer");
-            const auto other_destination = arena.Publish(other_code.words, {}, other_code.links);
-            auto at = (other_pc ^ (other_pc >> arm64::abi::DispatchHashShift)) & (slots.size() - 1);
-            while (slots[at].occupied) at = (at + 1) & (slots.size() - 1);
-            slots[at].pc = other_pc;
-            slots[at].entry = other_destination.entry;
-            slots[at].occupied = true;
-            struct ReadyTargets {
-                std::uintptr_t no, yes;
-                unsigned calls{};
-            } targets{reinterpret_cast<std::uintptr_t>(destination.entry),
-                      reinterpret_cast<std::uintptr_t>(other_destination.entry)};
-            const auto predicate_entry = arena.Publish(
-                    predicate_code.words,
-                    {},
-                    predicate_code.links,
-                    [](void* opaque, u64 pc) noexcept -> std::uintptr_t {
-                        auto& ready = *static_cast<ReadyTargets*>(opaque);
-                        ++ready.calls;
-                        return pc == next_pc ? ready.no : pc == other_pc ? ready.yes : 0;
-                    },
-                    &targets);
-            Check(targets.calls == (predicate_entry.writable ? 2u : 0u),
-                  "only unlinkable conditional edges resolve during unpublished initialization");
-            resolver.first = &predicate_entry;
-            const auto run_predicate = [&](bool zero) {
-                const auto flags = zero ? initial | (u64{1} << 30) : initial & ~(u64{1} << 30);
-                state = {};
-                state.pc = entry_pc;
-                state.packed_flags = flags;
-                resolver.calls = 0;
-                resolver.observed = {};
-                const auto selected_pc = zero ? other_pc : next_pc;
-                Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == 1 &&
-                              state.pc == selected_pc &&
-                              state.gprs[swift::runtime::x86::RCX] == selected_pc &&
-                              state.packed_flags == flags,
-                      "both predicate outcomes preserve whole flags/reserved and observe the true "
-                      "target PC before Return42");
-            };
-            run_predicate(false);
-            run_predicate(true);
-            if (predicate_entry.writable) {
-                auto* write = reinterpret_cast<std::uintptr_t*>(
-                        predicate_entry.writable + WordOffset(primary->data_offset) * 4);
-                const auto* execute = reinterpret_cast<const std::uintptr_t*>(
-                        reinterpret_cast<const std::uint8_t*>(predicate_entry.entry) +
-                        WordOffset(primary->data_offset) * 4);
-                const auto back =
-                        WordOffset(primary->data_offset) - WordOffset(primary->branch_offset);
-                const auto* words = reinterpret_cast<const std::uint32_t*>(predicate_entry.entry);
-                PatchLinkWords(write,
-                               execute,
-                               reinterpret_cast<std::uintptr_t>(predicate_entry.entry) +
-                                       (std::uintptr_t{1} << 21),
-                               back);
-                Check(words[WordOffset(primary->branch_offset)] ==
-                                      predicate_code.words[WordOffset(primary->branch_offset)] &&
-                              (words[WordOffset(primary->data_offset) - 2] & 0xfc000000u) ==
-                                      0x14000000u,
-                      "far B.cond target preserves its condition and falls back through the real "
-                      "B26 gate");
-                UnlinkWords(write, execute, back);
-                Check(words[WordOffset(primary->branch_offset)] ==
-                                      predicate_code.words[WordOffset(primary->branch_offset)] &&
-                              words[WordOffset(primary->data_offset) - 2] == 0x58000050u &&
-                              Read64(execute) == reinterpret_cast<std::uintptr_t>(execute + 1),
-                      "B.cond unlink restores the owned cold stub without changing its predicate");
+                auto other_options = options;
+                other_options.entry_pc = other_pc;
+                const auto other_code = arm64::Compile(target_program, other_options);
+                Check(bool(other_code),
+                      "second predicate target preserves its actual entry PC observer");
+                const auto other_destination =
+                        arena.Publish(other_code.words, {}, other_code.links);
+                auto at = (other_pc ^ (other_pc >> arm64::abi::DispatchHashShift)) &
+                          (slots.size() - 1);
+                while (slots[at].occupied && slots[at].pc != other_pc)
+                    at = (at + 1) & (slots.size() - 1);
+                slots[at].pc = other_pc;
+                slots[at].entry = other_destination.entry;
+                slots[at].occupied = true;
+                struct ReadyTargets {
+                    std::uintptr_t no, yes;
+                    unsigned calls{};
+                } targets{reinterpret_cast<std::uintptr_t>(destination.entry),
+                          reinterpret_cast<std::uintptr_t>(other_destination.entry)};
+                const auto predicate_entry = arena.Publish(
+                        predicate_code.words,
+                        {},
+                        predicate_code.links,
+                        [](void* opaque, u64 pc, std::uintptr_t) noexcept -> std::uintptr_t {
+                            auto& ready = *static_cast<ReadyTargets*>(opaque);
+                            ++ready.calls;
+                            return pc == next_pc ? ready.no : pc == other_pc ? ready.yes : 0;
+                        },
+                        &targets);
+                Check(targets.calls == (predicate_entry.writable ? 2u : 0u),
+                      "only unlinkable conditional edges resolve during unpublished "
+                      "initialization");
+                resolver.first = &predicate_entry;
+                const auto run_predicate = [&](bool zero) {
+                    const auto flags = zero ? initial | (u64{1} << 30) : initial & ~(u64{1} << 30);
+                    state = {};
+                    state.pc = entry_pc;
+                    state.packed_flags = flags;
+                    resolver.calls = 0;
+                    resolver.observed = {};
+                    const auto selected_pc = zero ? other_pc : next_pc;
+                    Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == 1 &&
+                                  state.pc == selected_pc &&
+                                  state.gprs[swift::runtime::x86::RCX] == selected_pc &&
+                                  state.packed_flags == flags,
+                          "both predicate outcomes preserve whole flags/reserved and observe the "
+                          "true "
+                          "target PC before Return42");
+                };
                 run_predicate(false);
+                run_predicate(true);
+                if (predicate_entry.writable) {
+                    auto* write = reinterpret_cast<std::uintptr_t*>(
+                            predicate_entry.writable + WordOffset(primary->data_offset) * 4);
+                    const auto* execute = reinterpret_cast<const std::uintptr_t*>(
+                            reinterpret_cast<const std::uint8_t*>(predicate_entry.entry) +
+                            WordOffset(primary->data_offset) * 4);
+                    const auto back =
+                            WordOffset(primary->data_offset) - WordOffset(primary->branch_offset);
+                    const auto* words =
+                            reinterpret_cast<const std::uint32_t*>(predicate_entry.entry);
+                    PatchLinkWords(write,
+                                   execute,
+                                   reinterpret_cast<std::uintptr_t>(predicate_entry.entry) +
+                                           (std::uintptr_t{1} << 21),
+                                   back);
+                    Check(words[WordOffset(primary->branch_offset)] ==
+                                          predicate_code
+                                                  .words[WordOffset(primary->branch_offset)] &&
+                                  (words[WordOffset(primary->data_offset) - 2] & 0xfc000000u) ==
+                                          0x14000000u,
+                          "far B.cond target preserves its condition and falls back through the "
+                          "real "
+                          "B26 gate");
+                    UnlinkWords(write, execute, back);
+                    Check(words[WordOffset(primary->branch_offset)] ==
+                                          predicate_code
+                                                  .words[WordOffset(primary->branch_offset)] &&
+                                  words[WordOffset(primary->data_offset) - 2] == 0x58000050u &&
+                                  Read64(execute) == reinterpret_cast<std::uintptr_t>(execute + 1),
+                          "B.cond unlink restores the owned cold stub without changing its "
+                          "predicate");
+                    run_predicate(false);
+                }
             }
-        }
         // The same scene owns a callable seed. Packed/plain covers the empty
         // PC-zero tag match; Native/counting covers empty mismatch and pending.
         auto callable_options = options;
@@ -3059,7 +3215,7 @@ void LinkedRawAuxiliaryCarry() {
     namespace execution = swift::runtime::execution;
     struct ObservedState {
         swift::runtime::x86::GuestState state;
-        std::array<u64, 15> comparisons{};
+        std::array<u64, 17> comparisons{};
     };
     constexpr auto comparisons = offsetof(ObservedState, comparisons);
     constexpr u64 entry_pc = 0x1000, next_pc = 0x2000, initial = 0xa5a50000bc00003cULL;
@@ -3406,6 +3562,14 @@ void LinkedRawAuxiliaryCarry() {
                                          Operand::ValueOf(madd_accumulator, Type::U32)},
                                         metadata));
     Store(second, comparisons + 14 * sizeof(u64), Snapshot(second, raw_source));
+    const auto carry_zero = Need(second.Emit<OpCode::TestNotZero>(
+            Type::Bool, {Operand::ValueOf(Constant(second, 0x100), Type::U8)}));
+    Need(second.Emit<OpCode::SetCarry>(Type::Void, {Operand::ValueOf(carry_zero)}));
+    Store(second, comparisons + 15 * sizeof(u64), Snapshot(second, raw_source));
+    const auto carry_nonzero = Need(second.Emit<OpCode::TestNotZero>(
+            Type::Bool, {Operand::ValueOf(Constant(second, 0x101), Type::U8)}));
+    Need(second.Emit<OpCode::SetCarry>(Type::Void, {Operand::ValueOf(carry_nonzero)}));
+    Store(second, comparisons + 16 * sizeof(u64), Snapshot(second, raw_source));
     Need(second.Emit<OpCode::RestoreFlags>(
             Type::Void, {Operand::ValueOf(result_flags), Operand::Flags(Flag::All)}));
     Need(second.EndBlock(Terminal::Return(result)));
@@ -3689,6 +3853,11 @@ void LinkedRawAuxiliaryCarry() {
                                                                         initial),
           "non-S byte publication and MADD preserve old flags; a flagged add keeps its full "
           "arithmetic result flags");
+    Check(observed_state.comparisons[15] == (observed_state.comparisons[14] & ~(u64{1} << 29)) &&
+                  observed_state.comparisons[16] ==
+                          (observed_state.comparisons[14] | (u64{1} << 29)),
+          "adjacent nonzero predicates set only CF from their logical byte view and preserve "
+          "NZV, raw PF/AF and reserved bits");
     Check(Read64(state.xmm[14]) == 0x81 &&
                   Read64(state.xmm[14] + 8) == ((initial & ~written) | 0x80000081ULL) &&
                   Read64(state.xmm[15]) == 0xe110 &&
@@ -4728,6 +4897,7 @@ int main() {
         LegacyFlags();
         ExplicitEntry();
         PureIntegers();
+        X87StatusResultUses();
         PureIntegerSpills();
         InvalidIntegerShapes();
         DirectTerminalCondition();

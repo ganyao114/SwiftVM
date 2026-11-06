@@ -219,8 +219,14 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
         {
             if (!options.private_uniforms) Shadow(false);
             const auto address = Read(cursor.Take(), 16);
-            Immediate(17, IntegerImmediate(cursor.Take()));
-            masm.exact.and_(v::x0, X(address), Operand(v::x17));  // AND x0,address,mask.
+            const auto bits = IntegerImmediate(cursor.Take());
+            LogicalMask mask;
+            if (mask.Encode(bits, 64))
+                mask.Emit(masm.exact, v::x0, X(address), v::AND);
+            else {
+                Immediate(17, bits);
+                masm.exact.and_(v::x0, X(address), Operand(v::x17));
+            }
             masm.exact.cbz(v::x0, 2);
             masm.exact.brk(0);  // CBZ x0,+8; BRK on a guest fault.
             break;

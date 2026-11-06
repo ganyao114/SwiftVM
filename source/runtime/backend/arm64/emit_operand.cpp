@@ -43,6 +43,21 @@ unsigned Writer::Expression(Cursor& cursor,
                 masm.exact.add(R(first, native_width), R(left, native_width), Operand(literal));
             return first;
         }
+        if (literal <= 0xffffff && (literal >> 16) && (literal & 0xffff) &&
+            (literal & 0xffff) != 0xffff) {
+            // Two immediate additions beat materializing both nonzero 16-bit
+            // halves before a register ADD. Both steps leave guest flags alone.
+            const auto left = Read(base, first, 64, false, native_width);
+            const auto result = R(first, native_width);
+            if (subtract) {
+                masm.exact.sub(result, R(left, native_width), Operand(literal & ~u64{4095}));
+                masm.exact.sub(result, result, Operand(literal & 4095));
+            } else {
+                masm.exact.add(result, R(left, native_width), Operand(literal & ~u64{4095}));
+                masm.exact.add(result, result, Operand(literal & 4095));
+            }
+            return first;
+        }
     }
     if (native_width == 64 && operand.Kind() == OperandKind::Value && input.ShiftAmount() <= 4) {
         const auto bits =

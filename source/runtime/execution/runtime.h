@@ -36,7 +36,7 @@ struct RuntimeStats {
     // O(1) existing-result observations, enabled with decode_timing. IR sizes
     // cover returned owners, not a rejected frontend's already-freed prefix.
     std::uint64_t ir_nodes{}, operand_words{}, optimized_erased{}, optimized_uniform_forwarded{},
-            optimized_folded{};
+            optimized_folded{}, optimized_copy_forwarded{}, optimized_final_walks_skipped{};
     std::uint64_t spill_slots{}, max_frame_bytes{};
     std::uint64_t emitted_instructions{}, emitted_guest_bytes{}, native_bytes{},
             cache_invalidations{};
