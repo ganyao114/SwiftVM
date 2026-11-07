@@ -14,9 +14,13 @@ struct LoadedImage {
     std::uint16_t phnum{}, phentsize{};
     std::string path;
     std::uint64_t device{}, inode{}, file_size{};
+    std::uint16_t elf_type{};
 };
 
 LoadedImage LoadELF(execution::GuestMemory&, const std::string&);
+LoadedImage LoadELF(execution::GuestMemory&,
+                    std::span<const std::uint8_t>,
+                    const std::string& display_path);
 std::uint64_t InitialStack(execution::GuestMemory&,
                            const LoadedImage&,
                            std::span<const std::string> argv,

@@ -6,6 +6,7 @@
 #include "allocate.h"
 #include "abi.h"
 #include "assembler.h"
+#include "relocate.h"
 
 #include <algorithm>
 #include <array>
@@ -376,6 +377,32 @@ private:
         }
     }
 
+    // Only actual process addresses use this entry. Numeric constants retain
+    // Immediate's original compact form and never acquire relocation checks.
+    void HostAddress(unsigned reg,
+                     std::uintptr_t address,
+                     HostSymbol symbol,
+                     std::int64_t addend = 0) {
+        if (!options.relocatable) {
+            Immediate(reg, address);
+            return;
+        }
+        const auto offset = static_cast<NativeOffset>(output.words.size() * 4);
+        __ movz(X(reg), address & 0xffffu, 0);
+        for (unsigned part = 1; part < 4; ++part)
+            __ movk(X(reg), (address >> (part * 16)) & 0xffffu, part * 16);
+        if (symbol == HostSymbol::None) symbol = CallbackSymbol(address);
+        RecordAddress(offset, RelocationKind::Arm64MoveWide64, symbol, addend);
+    }
+
+    void RecordAddress(NativeOffset offset,
+                       RelocationKind kind,
+                       HostSymbol symbol,
+                       std::int64_t addend = 0) {
+        if (symbol == HostSymbol::None) output.relocatable = false;
+        if (output.relocatable) output.relocations.push_back({offset, kind, symbol, addend});
+    }
+
     void Narrow(unsigned to, unsigned from, unsigned bits, bool sign = false) {
         if (bits == 64) {
             Move(to, from);
@@ -703,7 +730,8 @@ private:
     void Emit(const Operation& operation, Effect effects);
     void Branch(BlockId target);
     bool ShortBranch(Branch19 instruction, BlockId target);
-    void TailJump(std::uintptr_t destination,
+    void TailJump(HostSymbol symbol,
+                  std::uintptr_t destination,
                   bool link = false,
                   u64 target_pc = 0,
                   u32 conditional_head = UINT32_MAX);

@@ -82,7 +82,9 @@ struct BuildResult {
         DecodeTiming* timing = nullptr,
         bool external_edges = false,
         runtime::ir::Program* reusable = nullptr,
-        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
+        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu,
+        std::vector<runtime::SourceSpan>* source_spans = nullptr,
+        std::vector<std::uint64_t>* continuations = nullptr);
 
 // The actual trusted-decoder records, with no second operand representation or
 // re-decoding. Blocks select independently bounded slices in any physical
@@ -106,7 +108,9 @@ struct BuildResult {
                                          runtime::ir::TargetInfo target = {},
                                          runtime::ir::WorkCounts* collected = nullptr,
                                          std::uint32_t entry_block = 0,
-                                         runtime::ir::Program* reusable = nullptr);
+                                         runtime::ir::Program* reusable = nullptr,
+                                         std::vector<runtime::SourceSpan>* source_spans = nullptr,
+                                         std::vector<std::uint64_t>* continuations = nullptr);
 
 // Formation completes before any IR birth. Decode failures report zero emitted
 // instruction/byte/work counts; DecodeFunction exposes their actual decode work.
@@ -120,6 +124,8 @@ struct BuildResult {
         DecodeTiming* timing = nullptr,
         runtime::ir::Program* reusable = nullptr,
         ReadyEntryLookup ready = {},
-        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
+        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu,
+        std::vector<runtime::SourceSpan>* source_spans = nullptr,
+        std::vector<std::uint64_t>* continuations = nullptr);
 
 }  // namespace swift::x86

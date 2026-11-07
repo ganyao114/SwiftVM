@@ -4,6 +4,7 @@
 // consume the original Program and its fixed homes; no lowered IR is built.
 #include "compile.h"
 #include "allocate.h"
+#include "relocate.h"
 
 #include <array>
 #include <type_traits>
@@ -72,6 +73,8 @@ public:
     void Address(GPR destination, GPR base, std::int64_t offset);
     void FrameDelta(std::int64_t);
     void Call(std::uintptr_t);
+    void Call(std::uintptr_t, HostSymbol);
+    void HostAddress(GPR, std::uintptr_t, HostSymbol, std::int64_t addend = 0);
     void CallRegister(GPR target);
     void Exit(u64 reason);
     void StaticExit(u64 pc);

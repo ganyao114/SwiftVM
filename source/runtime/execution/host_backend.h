@@ -17,6 +17,7 @@ struct HostCompileRequest {
     std::uint64_t entry_pc{};
     std::uint8_t fp_mode{};
     bool fault_locations{}, private_state{};
+    bool relocatable{};
 };
 
 struct HostCapabilities {
@@ -34,6 +35,9 @@ struct HostBackendOps {
     // Only backends that bake software DAZ/FTZ into code need separate domains.
     bool specializes_fp_flush{};
     backend::CompileResult& (*compile)(void*, const ir::Program&, HostCompileRequest){};
+    bool (*relocate)(void*,
+                     std::span<std::uint8_t>,
+                     std::span<const backend::Relocation>) noexcept {};
     void (*trim)(void*) noexcept {};
     void (*release)(void*) noexcept {};
     bool (*initialize_link)(void*,

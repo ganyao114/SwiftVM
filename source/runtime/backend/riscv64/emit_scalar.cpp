@@ -363,7 +363,8 @@ void Writer::Handle(Op<OpCode::PopCount>, OpContext& ctx) {
 void Writer::Handle(Op<OpCode::ParallelBitDeposit>, OpContext& ctx) {
     Read(ctx.Arg(0), a0);
     Read(ctx.Arg(1), a1);
-    Call(reinterpret_cast<std::uintptr_t>(&::swift::runtime::x86::ParallelBitDeposit));
+    Call(reinterpret_cast<std::uintptr_t>(&::swift::runtime::x86::ParallelBitDeposit),
+         HostSymbol::DepositBits);
     as.MV(ctx.destination, a0);
     Mask(ctx.destination, ctx.width);
 }
@@ -371,7 +372,8 @@ void Writer::Handle(Op<OpCode::ParallelBitDeposit>, OpContext& ctx) {
 void Writer::Handle(Op<OpCode::ParallelBitExtract>, OpContext& ctx) {
     Read(ctx.Arg(0), a0);
     Read(ctx.Arg(1), a1);
-    Call(reinterpret_cast<std::uintptr_t>(&::swift::runtime::x86::ParallelBitExtract));
+    Call(reinterpret_cast<std::uintptr_t>(&::swift::runtime::x86::ParallelBitExtract),
+         HostSymbol::ExtractBits);
     as.MV(ctx.destination, a0);
     Mask(ctx.destination, ctx.width);
 }

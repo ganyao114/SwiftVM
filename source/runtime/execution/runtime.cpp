@@ -1,9 +1,12 @@
 #include "vm.h"
 #include "timing.h"
+#include "disk_cache.h"
+#include "runtime/platform/linux/artifact_file.h"
 
 #include <atomic>
 #include <algorithm>
 #include <cerrno>
+#include <elf.h>
 #include "base/error.h"
 #include "base/format.h"
 #include <stdexcept>
@@ -156,6 +159,7 @@ MappingRelease VM::Close() noexcept {
     if (closed) return close_result;
     if (thread.faults.registered || thread.faults.active.load()) return {1, EBUSY, 0};
     closing = true;
+    FlushDisk();
     ObserveFinal();
     MappingRelease native;
     {
@@ -179,15 +183,156 @@ MappingRelease VM::Close() noexcept {
 int VM::Run(const std::string& path,
             std::span<const std::string> argv,
             std::span<const std::string> environment) {
-    if (closing || closed) swift::ThrowError("VM has been closed", ErrorKind::InvalidState);
+    PrepareGuest(path, argv, environment);
+    return RunPrepared();
+}
+
+void VM::PrepareGuest(const std::string& path,
+                      std::span<const std::string> argv,
+                      std::span<const std::string> environment) {
+    if (!options.cache_directory.empty() || offline_output) {
+        std::vector<std::uint8_t> bytes;
+        try {
+            RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
+            bytes = platform::ReadArtifactFile(path);
+        } catch (const std::exception&) {
+            if (offline_output) throw;
+            ++stats.disk_cache_rejects;
+            DisablePersistence();
+        }
+        if (!persistence_disabled) {
+            PrepareGuest(bytes, path, argv, environment);
+            return;
+        }
+    }
+    if (closing || closed || prepared)
+        swift::ThrowError("VM cannot load another guest image", ErrorKind::InvalidState);
     image = platform::LoadELF(memory, path);
-    thread.native.state.pc = image.entry;
-    thread.native.state.gprs[x86::RSP] = platform::InitialStack(memory, image, argv, environment);
+    PrepareLoaded(argv, environment, nullptr, nullptr);
+}
+
+void VM::PrepareGuest(std::span<const std::uint8_t> bytes,
+                      const std::string& display_path,
+                      std::span<const std::string> argv,
+                      std::span<const std::string> environment,
+                      const CodeImage* native) {
+    if (closing || closed || prepared)
+        swift::ThrowError("VM cannot load another guest image", ErrorKind::InvalidState);
+    image = platform::LoadELF(memory, bytes, display_path);
+    Digest identity;
+    {
+        RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
+        identity = swift::HashBytes(bytes);
+    }
+    PrepareLoaded(argv, environment, &identity, native);
+}
+
+void VM::PrepareLoaded(std::span<const std::string> argv,
+                       std::span<const std::string> environment,
+                       const Digest* guest_identity,
+                       const CodeImage* native) {
+    auto& state = thread.native.state;
+    state.pc = image.entry;
+    state.gprs[x86::RSP] = platform::InitialStack(memory, image, argv, environment);
+    UpdateFPEnvironment();
+    if (guest_identity) {
+        RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
+        image_key = MakeCodeImageKey(*guest_identity, image.load_bias, backend, options);
+    }
+    if (offline_output || native) {
+        if (image.elf_type != ET_EXEC)
+            swift::ThrowError("AOT supports static ET_EXEC guest images", ErrorKind::Unsupported);
+        if (!backend.compile || !backend.relocate)
+            swift::ThrowError("AOT requires an available native backend", ErrorKind::Unsupported);
+    }
+    if (!options.cache_directory.empty() && image.elf_type == ET_EXEC && backend.compile &&
+        backend.relocate && !offline_output && !native && !persistence_disabled && guest_identity) {
+        RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
+        try {
+            disk_cache = std::make_unique<DiskCache>(options.cache_directory, image_key);
+            (void)disk_cache->Load();
+        } catch (const std::exception&) {
+            ++stats.disk_cache_rejects;
+            disk_cache.reset();
+        }
+    }
+    if (native) {
+        FaultScope registration{thread.faults, state};
+        RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
+        InstallImage(*native);
+    }
+    prepared = true;
+}
+
+int VM::RunPrepared() {
+    if (!prepared || closing || closed)
+        swift::ThrowError("guest image is not available for execution", ErrorKind::InvalidState);
+    host_returned = false;
+    Execute();
+    FlushDisk();
+    return thread.exit_code;
+}
+
+void* VM::HostPointer(std::uint64_t address, std::size_t size, bool write) {
+    if (!memory.Accessible(address, size, PROT_READ | (write ? PROT_WRITE : 0)))
+        swift::ThrowError("guest call buffer is not accessible", ErrorKind::GuestFault);
+    if (write && memory.WriteAffectsCode(address, size)) Invalidate();
+    return reinterpret_cast<void*>(address);
+}
+
+void VM::CallGuest(std::uint64_t pc, std::uint64_t stack_pointer, std::uint64_t stop_pc) {
+    if (!prepared || closing || closed || host_call_active || thread.exited)
+        swift::ThrowError("guest is not available for a host call", ErrorKind::InvalidState);
+    if (!memory.CodeAt(stop_pc).empty())
+        swift::ThrowError("guest call return sentinel must not be executable",
+                          ErrorKind::InvalidArgument);
+    thread.native.state.pc = pc;
+    thread.native.state.gprs[x86::RSP] = stack_pointer;
+    ExecuteHostCall(stop_pc);
+}
+
+void VM::RunUntilGuestStop(std::uint64_t stop_pc) {
+    if (!prepared || closing || closed || host_call_active || thread.exited)
+        swift::ThrowError("guest is not available for startup", ErrorKind::InvalidState);
+    const auto source = memory.CodeAt(stop_pc);
+    if (source.empty() || source.front() != 0xf4 ||
+        std::any_of(caches.begin(), caches.end(), [stop_pc](const CodeCache& cache) {
+            return bool(cache.Find(stop_pc));
+        }))
+        swift::ThrowError("guest startup requires an uncached explicit HLT stop",
+                          ErrorKind::InvalidArgument);
+    ExecuteHostCall(stop_pc);
+}
+
+void VM::ExecuteHostCall(std::uint64_t stop_pc) {
+    host_return_pc = stop_pc;
+    host_returned = false;
+    host_call_active = true;
+    try {
+        Execute();
+        host_call_active = false;
+        if (!host_returned)
+            swift::ThrowError("guest exited before returning to its host caller",
+                              ErrorKind::GuestFault);
+        FlushDisk();
+    } catch (...) {
+        host_call_active = false;
+        throw;
+    }
+}
+
+void VM::Execute() {
     UpdateFPEnvironment();
     if (options.mode == ExecutionMode::InterpretOnly ||
         (options.mode == ExecutionMode::Mixed && !backend.compile)) {
-        while (!thread.exited) Interpret(true);
-        return thread.exit_code;
+        while (!thread.exited && !host_returned) {
+            if (host_call_active && thread.native.state.pc == host_return_pc) {
+                host_returned = true;
+                break;
+            }
+            Interpret(true);
+        }
+        return;
     }
     if (!backend.compile)
         swift::ThrowError("native backend is unavailable on this host", ErrorKind::Unsupported);
@@ -215,13 +360,14 @@ int VM::Run(const std::string& path,
                                             thread.faults.address.load()),
                               ErrorKind::GuestFault);
         }
-        while (!thread.exited) {
+        while (!thread.exited && !host_returned) {
             const auto reason = static_cast<NativeExit>(SvmRunNative(&thread.native));
             thread.faults.active.store(nullptr);
             if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
             if (reason == NativeExit::Syscall)
                 syscalls.Service();
             else if (reason == NativeExit::ResolveFailure) {
+                if (host_returned) break;
                 if (thread.interpret_requested) {
                     thread.interpret_requested = false;
                     Interpret(true);
@@ -251,7 +397,6 @@ int VM::Run(const std::string& path,
     if (thread.faults.restore_error)
         swift::ThrowSystemError("restore native fault handlers or signal mask",
                                 thread.faults.restore_error);
-    return thread.exit_code;
 }
 
 void VM::UpdateFPEnvironment() {
@@ -450,9 +595,12 @@ front::CpuResult VM::Cpu(void*, std::uint32_t leaf, std::uint32_t subleaf) noexc
 
 void VM::Interpret(bool block) {
     thread.bridge_failure.Clear();
-    const front::ReadyEntryLookup ready{this, [](void* raw, std::uint64_t pc) noexcept {
-                                            return bool(static_cast<VM*>(raw)->Cache().Find(pc));
-                                        }};
+    const front::ReadyEntryLookup ready{
+            this, [](void* raw, std::uint64_t pc) noexcept {
+                const auto& owner = *static_cast<VM*>(raw);
+                return (owner.host_call_active && pc == owner.host_return_pc) ||
+                       bool(static_cast<VM*>(raw)->Cache().Find(pc));
+            }};
     const auto step = block ? front::InterpretBlock(
                                       thread.native.state, DirectServices(), 256, nullptr, ready)
                             : front::InterpretOne(thread.native.state, DirectServices());

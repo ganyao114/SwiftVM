@@ -98,3 +98,22 @@ endif()
 
 svm_test_target(svm_base_test SOURCES base_test.cpp LIBRARIES svm_base)
 svm_test(base_contract svm_base_test)
+
+svm_test_target(svm_code_image_test SOURCES rebuild/code_image_test.cpp
+    LIBRARIES svm_disk_cache svm_artifact_file)
+svm_test(code_image_contract svm_code_image_test)
+svm_test_target(svm_persistence_relocation_test ISA host SOURCES rebuild/persistence_relocation_test.cpp
+    LIBRARIES svm_arm64 svm_riscv64)
+svm_test(persistence_relocation_contract svm_persistence_relocation_test)
+svm_native_test(persistence_relocation_native svm_persistence_relocation_test)
+svm_test_target(svm_aot_artifact_test SOURCES rebuild/aot_artifact_test.cpp
+    LIBRARIES svm_aot_artifact svm_guest_call)
+svm_test(aot_artifact_contract svm_aot_artifact_test)
+if(TARGET svm_aot_support)
+    svm_test_target(svm_aot_call_test ISA host SOURCES rebuild/aot_call_test.cpp
+        LIBRARIES svm_aot_support)
+    svm_native_test(aot_call_native svm_aot_call_test)
+    svm_test_target(svm_runtime_persistence_test ISA host SOURCES rebuild/runtime_persistence_test.cpp
+        LIBRARIES svm_execution svm_disk_cache svm_artifact_file)
+    svm_native_test(runtime_persistence_native svm_runtime_persistence_test)
+endif()

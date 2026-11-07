@@ -28,8 +28,8 @@ void Writer::HandleReadSystemFamily(OpContext& ctx) {
     if (kind == 1) __ dmb(v::InnerShareable, v::BarrierAll);
     Immediate(0, kind);
     Immediate(16, 0);
-    Immediate(17, callback);
-    Immediate(30, CpuidHelper());
+    HostAddress(17, callback, HostSymbol::None);
+    HostAddress(30, CpuidHelper(), HostSymbol::ArmPairBridge);
     __ blr(v::x30);
     HelperFPEnvironment(true);
     if (kind == 1) __ isb();
@@ -59,7 +59,10 @@ void Writer::HandleDiv128Family(OpContext& ctx) {
     Move(0, Read(high, 0));
     Move(16, Read(low, 16));
     Move(17, Read(divisor, 17));
-    Immediate(30, DivisionHelper(bits, sign != 0));
+    const auto symbol = static_cast<HostSymbol>(
+            static_cast<unsigned>(sign ? HostSymbol::ArmDivideS8 : HostSymbol::ArmDivideU8) +
+            std::countr_zero(bits) - 3);
+    HostAddress(30, DivisionHelper(bits, sign != 0), symbol);
     __ blr(v::x30);  // BLR x30.
     // The private helper returns a real status in x17; no host signal
     // crosses its C++ frame. Test before restoring FP controls clobbers x17.
@@ -103,8 +106,8 @@ void Writer::HandleCpuidFamily(OpContext& ctx) {
     HelperFPEnvironment(false);
     Move(0, Read(leaf, 0));
     Move(16, Read(subleaf, 16));
-    Immediate(17, callback);
-    Immediate(30, CpuidHelper());
+    HostAddress(17, callback, HostSymbol::None);
+    HostAddress(30, CpuidHelper(), HostSymbol::ArmPairBridge);
     __ blr(v::x30);  // BLR x30.
     HelperFPEnvironment(true);
     __ isb();  // ISB: following instructions start after the query.
@@ -212,7 +215,7 @@ void Writer::HandleX87OpFamily(OpContext& ctx) {
     Move(0, Read(state, 0));
     Immediate(16, command);
     Move(17, Read(raw, 17));
-    Immediate(30, X87Helper());
+    HostAddress(30, X87Helper(), HostSymbol::ArmX87Bridge);
     __ blr(v::x30);
 #if !SVM_X87_GPR_ONLY
     HelperFPEnvironment(true);

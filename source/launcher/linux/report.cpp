@@ -1,5 +1,5 @@
-#include "report.h"
 #include "base/format.h"
+#include "report.h"
 #include "runtime/execution/dispatch.h"
 
 #include <iterator>
@@ -83,6 +83,13 @@ void WriteReport(std::FILE* stream,
     r.Number("function_attempts", s.function_attempts);
     r.Number("block_attempts", s.block_attempts);
     r.Number("fallbacks", s.fallbacks);
+    r.Number("cache_load_ns", s.cache_load_ns);
+    r.Number("cache_write_ns", s.cache_write_ns);
+    r.Number("disk_cache_hits", s.disk_cache_hits);
+    r.Number("disk_cache_misses", s.disk_cache_misses);
+    r.Number("disk_cache_rejects", s.disk_cache_rejects);
+    r.Number("disk_cache_writes", s.disk_cache_writes);
+    r.Number("aot_units_loaded", s.aot_units_loaded);
     r.Optional("dispatches", s.dispatches, options.decode_timing);
     r.Optional("cache_hits", s.cache_hits, options.decode_timing);
     r.Optional("directory_probe_steps", s.directory_probe_steps, options.decode_timing);

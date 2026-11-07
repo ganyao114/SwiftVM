@@ -52,7 +52,11 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable,
                                DecodeLimits limits,
                                DecodeTiming* timing,
                                ReadyEntryLookup ready,
-                               runtime::x86::GuestCpuModel model) {
+                               runtime::x86::GuestCpuModel model,
+                               std::vector<runtime::SourceSpan>* source_spans,
+                               std::vector<std::uint64_t>* continuations) {
+    if (source_spans) source_spans->clear();
+    if (continuations) continuations->clear();
     DecodedFunction out;
     if (!Valid(readable, limits) || ReadableAt(readable, entry_pc) == readable.end()) {
         out.error = DecodeError::InvalidInput;
@@ -166,6 +170,9 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable,
             // install the new FP environment. REP STOS dispatches after one
             // restartable iteration. These frontiers admit no sequential edge.
             if (instruction.unit_boundary) {
+                if (continuations && (flow == FlowKind::Call || instruction.opcode == Op::CPUID ||
+                                      instruction.opcode == Op::LDMXCSR))
+                    continuations->push_back(after);
                 if ((flow == FlowKind::Conditional || flow == FlowKind::Jump) &&
                     instruction.ops[0].type == GuestOperandKind::Relative) {
                     if (!queue(after + instruction.immediate)) return out;
@@ -175,6 +182,7 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> readable,
             }
             pc = after;
         }
+        if (source_spans && slice.end > start) source_spans->push_back({start, slice.end - start});
     }
     out.blocks.reserve(directory.size());
     for (const auto& [pc, slice] : directory) {

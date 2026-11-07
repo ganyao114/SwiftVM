@@ -23,6 +23,9 @@ struct RuntimeOptions {
     std::uint16_t hot_threshold{8};
     ::swift::x86::DecodeLimits function_limits{};
     bool decode_timing{};
+    // Empty keeps persistence entirely disabled.
+    std::string cache_directory;
+    std::string artifact_path;
 };
 
 struct RuntimeStats {
@@ -38,6 +41,9 @@ struct RuntimeStats {
     std::uint64_t compile_request_ns{}, frontend_ns{}, optimize_ns{}, backend_ns{},
             publication_ns{};
     std::uint64_t code_release_ns{}, fault_service_ns{};
+    std::uint64_t cache_load_ns{}, cache_write_ns{};
+    std::uint64_t disk_cache_hits{}, disk_cache_misses{}, disk_cache_rejects{}, disk_cache_writes{},
+            aot_units_loaded{};
     ::swift::x86::DecodeTiming
             compile_decode;  // Opt-in diagnostic; ordinary runs read no per-instruction clocks.
     std::uint64_t compile_without_byte_decode_ns{};

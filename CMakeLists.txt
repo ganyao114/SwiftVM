@@ -8,7 +8,7 @@ set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
 set(FMT_OS OFF CACHE BOOL "" FORCE)
 set(FMT_SYSTEM_HEADERS ON CACHE BOOL "" FORCE)
 add_subdirectory(source/runtime/externals/fmt)
-add_library(svm_base STATIC source/base/error.cpp source/base/logging.cpp)
+add_library(svm_base STATIC source/base/error.cpp source/base/logging.cpp source/base/hash.cpp)
 target_include_directories(svm_base PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/source")
 target_compile_features(svm_base PUBLIC cxx_std_20)
 target_link_libraries(svm_base PUBLIC fmt::fmt)
@@ -31,6 +31,21 @@ endif()
 
 add_library(svm_allocation STATIC source/runtime/backend/allocation_cfg.cpp)
 target_link_libraries(svm_allocation PUBLIC svm_ir)
+
+# A native image is data, independent of its execution owner or container.
+add_library(svm_code_image STATIC
+    source/runtime/execution/code_image.cpp
+    source/runtime/execution/code_identity.cpp)
+target_link_libraries(svm_code_image PUBLIC svm_ir svm_base)
+target_include_directories(svm_code_image PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_library(svm_artifact_file STATIC source/runtime/platform/linux/artifact_file.cpp)
+target_link_libraries(svm_artifact_file PUBLIC svm_base)
+add_library(svm_disk_cache STATIC source/runtime/execution/disk_cache.cpp)
+target_link_libraries(svm_disk_cache PUBLIC svm_code_image PRIVATE svm_artifact_file)
+add_library(svm_aot_artifact STATIC source/aot/artifact.cpp source/aot/elf.cpp source/aot/startup.cpp)
+target_link_libraries(svm_aot_artifact PUBLIC svm_code_image PRIVATE svm_artifact_file)
+add_library(svm_guest_call STATIC source/aot/guest_call.cpp)
+target_link_libraries(svm_guest_call PUBLIC svm_base)
 
 # The portable IR optimizer shares the IR contract, independently of execution
 # ownership and any backend. Files divide responsibilities, not extra walks.
@@ -73,12 +88,19 @@ target_include_directories(svm_x87 PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/source")
 target_compile_features(svm_x87 PUBLIC cxx_std_20)
 target_link_libraries(svm_x87 PRIVATE svm_softfloat_ext80 svm_cephes)
 
+# Clock/entropy callbacks are host services shared by both code generators
+# and direct execution, outside the integer-only numerical helper closure.
+add_library(svm_system_query STATIC source/runtime/platform/system_query.cpp)
+target_include_directories(svm_system_query PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/source")
+target_compile_features(svm_system_query PUBLIC cxx_std_20)
+
 add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/allocate.cpp
     source/runtime/backend/arm64/allocation_selection.cpp
     source/runtime/backend/arm64/helper_calls.cpp
     source/runtime/backend/arm64/assembler.cpp
     source/runtime/backend/arm64/patch.cpp
+    source/runtime/backend/arm64/relocate.cpp
     source/runtime/backend/arm64/emit.cpp
     source/runtime/backend/arm64/emit_operand.cpp
     source/runtime/backend/arm64/emit_scalar.cpp
@@ -96,7 +118,7 @@ add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/vector_helper.cpp
     source/runtime/backend/arm64/emit_float.cpp
     source/runtime/backend/arm64/compile.cpp)
-target_link_libraries(svm_arm64 PUBLIC svm_ir PRIVATE svm_x87 svm_allocation)
+target_link_libraries(svm_arm64 PUBLIC svm_ir PRIVATE svm_x87 svm_allocation svm_system_query)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     target_sources(svm_arm64 PRIVATE source/runtime/backend/arm64/helper_bridge.S)
 endif()
@@ -131,6 +153,7 @@ add_library(svm_riscv64 STATIC
     source/runtime/backend/riscv64/allocate.cpp
     source/runtime/backend/riscv64/compile.cpp
     source/runtime/backend/riscv64/patch.cpp
+    source/runtime/backend/riscv64/relocate.cpp
     source/runtime/backend/riscv64/emit.cpp
     source/runtime/backend/riscv64/emit_operand.cpp
     source/runtime/backend/riscv64/emit_scalar.cpp
@@ -143,7 +166,7 @@ add_library(svm_riscv64 STATIC
     source/runtime/backend/riscv64/call_helpers.cpp
     source/runtime/backend/riscv64/emit_vector.cpp
     source/runtime/backend/riscv64/emit_float.cpp)
-target_link_libraries(svm_riscv64 PUBLIC svm_ir PRIVATE svm_biscuit_exact svm_x87 svm_allocation)
+target_link_libraries(svm_riscv64 PUBLIC svm_ir PRIVATE svm_biscuit_exact svm_x87 svm_allocation svm_system_query)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(svm_riscv64 PRIVATE atomic)
 endif()
@@ -171,9 +194,8 @@ add_library(svm_x86_ir STATIC
     source/runtime/frontend/x86/detail/extended_decode.cpp
     source/runtime/frontend/x86/decode.cpp
     source/runtime/frontend/x86/region.cpp
-    source/runtime/frontend/x86/interpreter.cpp
-    source/runtime/platform/system_query.cpp)
-target_link_libraries(svm_x86_ir PUBLIC svm_ir PRIVATE distorm svm_x87 svm_ir_direct)
+    source/runtime/frontend/x86/interpreter.cpp)
+target_link_libraries(svm_x86_ir PUBLIC svm_ir PRIVATE distorm svm_x87 svm_ir_direct svm_system_query)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     set_source_files_properties(source/runtime/ir/direct/interpreter.cpp
         PROPERTIES COMPILE_OPTIONS "-frounding-math")
@@ -191,6 +213,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/execution/code_cache.cpp
         source/runtime/execution/code_link.cpp
         source/runtime/execution/compile_service.cpp
+        source/runtime/execution/code_persistence.cpp
+        source/runtime/execution/offline_compile.cpp
         source/runtime/execution/state_service.cpp
         source/runtime/execution/smc.cpp
         source/runtime/execution/runtime.cpp
@@ -199,7 +223,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/platform/linux/safe_access.cpp
         source/runtime/platform/linux/signals.cpp
         source/runtime/platform/linux/run_guest.cpp)
-    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_ir_optimize PRIVATE svm_base)
+    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_ir_optimize svm_code_image
+        PRIVATE svm_base svm_disk_cache svm_aot_artifact svm_artifact_file)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64")
         target_sources(svm_execution PRIVATE source/runtime/platform/linux/riscv64_host.cpp
             source/runtime/backend/riscv64/runtime.cpp
@@ -214,6 +239,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     add_executable(svm_rebuild_linux source/launcher/linux/main.cpp
         source/launcher/linux/options.cpp source/launcher/linux/report.cpp)
     target_link_libraries(svm_rebuild_linux PRIVATE svm_execution svm_base)
+    add_library(svm_aot_support STATIC source/aot/compile.cpp source/aot/call.cpp)
+    target_link_libraries(svm_aot_support PUBLIC svm_execution svm_aot_artifact svm_guest_call)
+    add_executable(svm_aot source/launcher/linux/aot_main.cpp
+        source/launcher/linux/options.cpp source/launcher/linux/report.cpp)
+    target_link_libraries(svm_aot PRIVATE svm_aot_support svm_base)
 endif()
 
 option(SVM_BUILD_IR_BENCHMARK "Build the IR construction/submission benchmark" ON)
@@ -261,3 +291,5 @@ if(SVM_ENABLE_IPO)
         message(STATUS "SVM Release IPO unavailable: ${svm_ipo_error}")
     endif()
 endif()
+
+include(cmake/CodeBuildId.cmake)

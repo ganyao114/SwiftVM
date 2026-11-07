@@ -55,6 +55,11 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
     // All native/fault readers have left. SMC retained old ranges and links
     // until this exact point; no allocation is reclaimed in the handler.
     if (thread.faults.smc_pending) Invalidate();
+    if (host_call_active && context.state.pc == host_return_pc) {
+        host_returned = true;
+        RefreshNative(context);
+        return 0;
+    }
     NativeCode code;
     auto entry = Cache().Find(thread.native.state.pc, &code);
     if (!entry) {
@@ -88,12 +93,15 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
         }
         {
             RuntimeTimer publish{stats.publication_ns};
-            Cache().InsertReady(thread.native.state.pc, code, compiler.LastOutput()->entries);
+            Cache().InsertReady(compiler.EntryPC(), code, compiler.LastOutput()->entries);
         }
         // Registration has consumed extra entries; only now may the backend
         // trim its oversized output capacities. All work remains charged.
         if (backend.trim) backend.trim(backend.context);
-        entry = code.entry;
+        entry = Cache().Find(thread.native.state.pc, &code);
+        if (!entry)
+            swift::ThrowError("native unit does not export the requested guest entry",
+                              ErrorKind::InvalidState);
         ObserveCache();
     }
     thread.anchor = code;

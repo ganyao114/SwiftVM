@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "runtime/ir/types.h"
+#include "relocation.h"
 
 namespace swift::runtime::backend {
 
@@ -24,9 +25,6 @@ enum class CompileError : std::uint8_t {
 };
 
 // Byte offsets from the owning native unit, independent of its callable entry.
-using NativeOffset = std::uint32_t;
-inline constexpr NativeOffset NoNativeOffset = UINT32_MAX;
-
 struct FaultSite {
     NativeOffset first_offset{}, last_offset{};
     std::uint64_t guest_pc{};
@@ -68,6 +66,9 @@ static_assert(sizeof(NativeCode) == 40 && std::is_trivially_destructible_v<Nativ
 
 struct CompileResult {
     CompileError error{CompileError::None};
+    // True only for a complete opt-in symbol recording. Ordinary JIT keeps
+    // its original address materializations and allocates no relocation rows.
+    bool relocatable{};
     ir::NodeId node{};
     ir::BlockId block{};
     std::vector<std::uint32_t> words;
@@ -78,6 +79,7 @@ struct CompileResult {
     std::vector<FaultSite> faults;
     std::vector<LinkSite> links;
     std::vector<EntryPoint> entries;
+    std::vector<Relocation> relocations;
 };
 
 }  // namespace swift::runtime::backend

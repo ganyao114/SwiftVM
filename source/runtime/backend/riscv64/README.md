@@ -40,7 +40,7 @@
 - CAS128 的 libatomic fallback 在持锁前由 VM 检查完整 RW Anonymous 范围，并解除实际 SMC 写监视；其它 backing 明确不接受。失配也执行 old→old 写周期。该资格检查不回收当前 unit，撤链后在冷 dispatcher 安全退休。
 - NativeRunContext 利用原 offset 152 的空余空间保存这一窄 atomic callback；state 仍在 offset 160，完整对象仍为 1024B。GuestState 私有性来自 VM 映射合同，与物理 pin 无关；RV 当前不 pin guest GPR/XMM。
 
-当前 210 个中立 opcode 中有 193 个 lowering 入口，其中 85 个为向量／FP。这是 IR 入口清点，不是完整 x86 ISA 或所有 type／operand 组合覆盖。旧 local／Phi／host-register／RSB、MemoryCopy 和 LoadMemoryExtend 形态明确拒绝；CallLocation／CallDynamic 的 Params 也未接回。当前 x86 前端不依赖这些入口：guest CALL/RET 仍由栈访存和 dispatch 执行，AVX/AVX2 仍分解为 V128 IR。RVV、Zbb／Crypto／Zacas 的可选硬件加速、旧磁盘缓存／AOT 不在本次恢复范围。
+当前 210 个中立 opcode 中有 193 个 lowering 入口，其中 85 个为向量／FP。这是 IR 入口清点，不是完整 x86 ISA 或所有 type／operand 组合覆盖。旧 local／Phi／host-register／RSB、MemoryCopy 和 LoadMemoryExtend 形态明确拒绝；CallLocation／CallDynamic 的 Params 也未接回。当前 x86 前端不依赖这些入口：guest CALL/RET 仍由栈访存和 dispatch 执行，AVX/AVX2 仍分解为 V128 IR。RVV、Zbb／Crypto／Zacas 的可选硬件加速仍在后续范围。2026-11-07 已通过当前 native-unit 格式恢复磁盘缓存与 AOT，包含跨进程重定位、SMC 失效和命名调用；见 [AOT／缓存合同](../../../../docs/aot-code-cache-2026-11-07.md)，未接回旧持久化实现。
 
 ## 构建与验证
 

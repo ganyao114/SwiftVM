@@ -11,7 +11,7 @@ import sys
 
 
 REPO = Path(__file__).resolve().parents[1]
-ROOTS = ("source/base", "source/runtime", "source/launcher", "source/tests", "benchmarks")
+ROOTS = ("source/base", "source/runtime", "source/aot", "source/launcher", "source/tests", "benchmarks")
 TABLES = {
     "source/runtime/ir/opcodes.inc",
     "source/runtime/backend/riscv64/scalar_ops.inc",

@@ -22,6 +22,7 @@ struct CompileOptions {
     std::uintptr_t dispatcher{}, exit_handler{};
     std::uint64_t entry_pc{};
     bool native_fp_environment{}, fault_locations{};
+    bool relocatable{};  // Explicit persistence recording; ordinary JIT stays unchanged.
 };
 
 // Exact RV64G words. The caller owns publication, W^X, I-cache synchronization

@@ -27,7 +27,8 @@ public:
                        std::vector<backend::FaultSite>,
                        std::span<const backend::LinkSite>,
                        ReadyResolver = nullptr,
-                       void* = nullptr);
+                       void* = nullptr,
+                       std::span<const backend::Relocation> = {});
     // Caller has revoked all entries/links and ended native/fault borrows.
     // Failed mappings remain owned here; no global retained-owner registry.
     MappingRelease Release() noexcept;

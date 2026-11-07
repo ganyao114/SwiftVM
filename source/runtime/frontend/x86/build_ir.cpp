@@ -533,7 +533,9 @@ BuildResult EmitDecoded(InstructionRange instructions,
                         u32 entry_block = 0,
                         bool external_edges = false,
                         Program* reusable = nullptr,
-                        bool formed_function = false) {
+                        bool formed_function = false,
+                        std::vector<runtime::SourceSpan>* source_spans = nullptr,
+                        std::vector<std::uint64_t>* continuations = nullptr) {
     if (collected) *collected = {};
     if (entry_block >= blocks.size() ||
         (formed_function
@@ -728,6 +730,15 @@ BuildResult EmitDecoded(InstructionRange instructions,
                 ++instruction_count;
                 pc = next_pc;
             }
+            if (source_spans && pc > slice.pc) source_spans->push_back({slice.pc, pc - slice.pc});
+            if (continuations && slice.instruction_count) {
+                const auto& terminal =
+                        instructions[slice.first_instruction + slice.instruction_count - 1]
+                                .Record();
+                if (terminal.flow == FlowKind::Call || terminal.opcode == Op::CPUID ||
+                    terminal.opcode == Op::LDMXCSR)
+                    continuations->push_back(pc);
+            }
             if (failure.block == block) throw Rejected{failure.error, failure.detail};
             if (!ended) {
                 if (slice.instruction_count)
@@ -768,7 +779,11 @@ BuildResult BuildDecodedIR(InstructionRange instructions,
                            TargetInfo target,
                            WorkCounts* collected,
                            u32 entry_block,
-                           Program* reusable) {
+                           Program* reusable,
+                           std::vector<runtime::SourceSpan>* source_spans,
+                           std::vector<std::uint64_t>* continuations) {
+    if (source_spans) source_spans->clear();
+    if (continuations) continuations->clear();
     return EmitDecoded(instructions,
                        blocks,
                        source_bytes,
@@ -779,7 +794,10 @@ BuildResult BuildDecodedIR(InstructionRange instructions,
                        {},
                        entry_block,
                        false,
-                       reusable);
+                       reusable,
+                       false,
+                       source_spans,
+                       continuations);
 }
 
 BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
@@ -791,13 +809,23 @@ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
                             DecodeTiming* timing,
                             Program* reusable,
                             ReadyEntryLookup ready,
-                            runtime::x86::GuestCpuModel model) {
+                            runtime::x86::GuestCpuModel model,
+                            std::vector<runtime::SourceSpan>* source_spans,
+                            std::vector<std::uint64_t>* continuations) {
+    if (source_spans) source_spans->clear();
+    if (continuations) continuations->clear();
     if (collected) *collected = {};
     if (!ValidRequest(1, Scope::Function, layout, target))
         return {BuildError::InvalidInput, entry_pc, 0, 0, Error::None, {}};
     const bool entries = target.Has(TargetFeature::ExternalEntries);
-    const auto decoded = DecodeFunction(
-            readable, entry_pc, limits, timing, entries ? ready : ReadyEntryLookup{}, model);
+    const auto decoded = DecodeFunction(readable,
+                                        entry_pc,
+                                        limits,
+                                        timing,
+                                        entries ? ready : ReadyEntryLookup{},
+                                        model,
+                                        source_spans,
+                                        continuations);
     if (!decoded) {
         const auto error = decoded.error == DecodeError::InvalidInput ? BuildError::InvalidInput
                            : decoded.error == DecodeError::Truncated  ? BuildError::Truncated
@@ -832,7 +860,11 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
                     DecodeTiming* timing,
                     bool external_edges,
                     Program* reusable,
-                    runtime::x86::GuestCpuModel model) {
+                    runtime::x86::GuestCpuModel model,
+                    std::vector<runtime::SourceSpan>* source_spans,
+                    std::vector<std::uint64_t>* continuations) {
+    if (source_spans) source_spans->clear();
+    if (continuations) continuations->clear();
     if (collected) *collected = {};
     if (!ValidRequest(windows.size(), scope, layout, target) || !ValidSources(windows))
         return {BuildError::InvalidInput, 0, 0, 0, Error::None, {}};
@@ -885,6 +917,10 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
             pc += instruction.size;
             bytes = bytes.subspan(instruction.size);
             if (instruction.unit_boundary) {
+                if (continuations &&
+                    (instruction.flow == FlowKind::Call || instruction.opcode == Op::CPUID ||
+                     instruction.opcode == Op::LDMXCSR))
+                    continuations->push_back(pc);
                 if (scope == Scope::Block &&
                     (instruction.flow == FlowKind::Conditional ||
                      instruction.flow == FlowKind::Jump) &&
@@ -908,6 +944,7 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
                 break;
             }
         }
+        if (source_spans && pc > window.pc) source_spans->push_back({window.pc, pc - window.pc});
     }
     return EmitDecoded(instructions,
                        blocks,

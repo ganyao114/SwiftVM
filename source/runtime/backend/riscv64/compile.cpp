@@ -9,6 +9,8 @@ void ClearCode(backend::CompileResult& result) noexcept {
     result.faults.clear();
     result.links.clear();
     result.entries.clear();
+    result.relocations.clear();
+    result.relocatable = false;
 }
 }  // namespace
 
@@ -21,11 +23,13 @@ void Compile(const ir::Program& program,
     result.block = {};
     result.frame_bytes = result.spill_slots = 0;
     ClearCode(result);
+    result.relocatable = options.relocatable;
     if (program.ScopeKind() == ir::Scope::Block)
         AllocateBlock(program, allocation);
     else
         AllocateFunction(program, allocation);
     if (!allocation) {
+        result.relocatable = false;
         result.error = allocation.error;
         result.node = allocation.node;
         result.block = allocation.block;

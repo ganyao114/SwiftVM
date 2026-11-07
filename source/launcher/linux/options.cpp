@@ -1,6 +1,6 @@
-#include "options.h"
 #include "base/error.h"
 #include "base/format.h"
+#include "options.h"
 
 #include <charconv>
 #include <cstdio>
@@ -56,6 +56,10 @@ Options ParseOptions(int argc, char* const* argv) {
                 Invalid("--hot-threshold requires an integer in 0..65535");
         } else if (option == "--no-opt")
             options.optimize = false;
+        else if (option == "--cache-dir")
+            options.cache_directory = value(option);
+        else if (option == "--aot")
+            options.artifact_path = value(option);
         else if (option == "--decode-timing")
             options.decode_timing = true;
         else if (option.starts_with('-'))
@@ -63,7 +67,7 @@ Options ParseOptions(int argc, char* const* argv) {
         else
             break;
     }
-    if (argument >= argc) Invalid("a guest ELF path is required");
+    if (argument >= argc && options.artifact_path.empty()) Invalid("a guest ELF path is required");
     parsed.guest_argument = argument;
     return parsed;
 }
@@ -72,6 +76,8 @@ void PrintUsage() {
     std::puts(
             "svm_rebuild_linux [--scope block|function] [--engine jit|interpreter|mixed] "
             "[--hot-threshold N] [--no-opt] [--decode-timing] [--] guest [args...]\n"
+            "  [--cache-dir DIR] persists native code across processes (off by default).\n"
+            "  [--aot ARTIFACT] loads embedded guest/code; the guest path is optional.\n"
             "Static x86-64 ELF, direct guest==host memory, one guest thread.\n"
             "PT_INTERP and unknown instructions are rejected. Unimplemented syscalls return "
             "ENOSYS.\n"

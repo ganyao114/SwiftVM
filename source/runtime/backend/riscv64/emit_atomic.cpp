@@ -210,7 +210,7 @@ void Writer::Handle(Op<OpCode::CompareAndSwap128>, OpContext& ctx) {
     Read(ctx.Arg(2), a2);
     Read(ctx.Arg(3), a3);
     Read(ctx.Arg(4), a4);
-    Call(reinterpret_cast<std::uintptr_t>(&CompareExchange128));
+    Call(reinterpret_cast<std::uintptr_t>(&CompareExchange128), HostSymbol::CompareExchange128);
     as.MV(ctx.destination, a0);
     as.MV(ctx.high, a1);
 }

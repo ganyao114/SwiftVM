@@ -366,7 +366,7 @@ template <O opcode> void VectorCrypto(Writer& writer, OpContext& ctx) {
     writer.as.LI(a0, static_cast<u64>(operation));
     constexpr bool immediate = opcode == O::VecAesKeygenAssist || opcode == O::VecPclMul;
     writer.as.LI(a7, immediate ? VectorImmediate(ctx, opcode == O::VecPclMul ? 2 : 1) : 0);
-    writer.Call(reinterpret_cast<std::uintptr_t>(&crypto::Execute));
+    writer.Call(reinterpret_cast<std::uintptr_t>(&crypto::Execute), HostSymbol::Crypto);
     writer.as.MV(ctx.destination, a0);
     writer.as.MV(ctx.high, a1);
 }

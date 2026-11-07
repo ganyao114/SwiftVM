@@ -54,7 +54,8 @@ NativeCode CodeHeap::Publish(std::span<const std::uint32_t> words,
                              std::vector<backend::FaultSite> faults,
                              std::span<const backend::LinkSite> links,
                              ReadyResolver ready,
-                             void* opaque) {
+                             void* opaque,
+                             std::span<const backend::Relocation> relocations) {
     if (words.empty() || words.size() > (SIZE_MAX - 4096) / 4)
         swift::ThrowError("invalid native code size");
     const auto bytes = words.size_bytes();
@@ -80,6 +81,11 @@ NativeCode CodeHeap::Publish(std::span<const std::uint32_t> words,
     auto* write = slab.mapping.Writable() + offset;
     auto* execute = slab.mapping.Executable() + offset;
     std::memcpy(write, words.data(), bytes);
+    if (!relocations.empty() &&
+        (!backend.relocate || !backend.relocate(backend.context, {write, bytes}, relocations))) {
+        if (!slab.mapping.SetExecutable()) Failed("native slab executable");
+        swift::ThrowError("invalid native symbol relocation", ErrorKind::InvalidArgument);
+    }
     for (const auto& link : links) {
         const auto target =
                 link.kind == backend::LinkKind::Static && ready && slab.mapping.Dual()
@@ -94,7 +100,7 @@ NativeCode CodeHeap::Publish(std::span<const std::uint32_t> words,
             // Older units share this slab and must regain execute permission
             // even when this unpublished slice has an invalid relocation.
             if (!slab.mapping.SetExecutable()) Failed("native slab executable");
-            swift::ThrowError("invalid native link relocation");
+            swift::ThrowError("invalid native link relocation", ErrorKind::InvalidArgument);
         }
     }
     const bool synchronized_aliases = backend.synchronize_code != nullptr;

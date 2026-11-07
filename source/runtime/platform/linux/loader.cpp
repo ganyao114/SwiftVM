@@ -42,24 +42,15 @@ void ReadAt(int fd, void* destination, std::size_t size, u64 offset) {
         offset += static_cast<u64>(amount);
     }
 }
-}  // namespace
 
-LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
+template <typename Read> LoadedImage MapELF(execution::GuestMemory& memory,
+                                            const std::string& path,
+                                            u64 file_size,
+                                            Read read) {
     const auto page_size = memory.PageSize();
-    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    if (fd < 0) SystemError("open guest ELF");
-
-    struct File {
-        int fd;
-
-        ~File() { close(fd); }
-    } file{fd};
-    struct stat status{};
-    if (fstat(fd, &status)) SystemError("stat guest ELF");
-    if (status.st_size < static_cast<off_t>(sizeof(Elf64_Ehdr))) Error("invalid ELF file size");
-    const auto file_size = static_cast<u64>(status.st_size);
+    if (file_size < sizeof(Elf64_Ehdr)) Error("invalid ELF file size");
     Elf64_Ehdr header{};
-    ReadAt(fd, &header, sizeof(header), 0);
+    read(&header, sizeof(header), 0);
     if (std::memcmp(header.e_ident, ELFMAG, SELFMAG) || header.e_ident[EI_CLASS] != ELFCLASS64 ||
         header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_ident[EI_VERSION] != EV_CURRENT ||
         header.e_version != EV_CURRENT || header.e_machine != EM_X86_64 ||
@@ -70,7 +61,7 @@ LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
     if (header.e_phoff > file_size || table_size > file_size - header.e_phoff)
         Error("ELF program headers exceed file");
     std::vector<Elf64_Phdr> headers(header.e_phnum);
-    ReadAt(fd, headers.data(), table_size, header.e_phoff);
+    read(headers.data(), table_size, header.e_phoff);
     u64 low = UINT64_MAX, high{}, alignment = page_size;
     std::vector<Elf64_Phdr> loads;
     for (const auto& segment : headers) {
@@ -121,10 +112,9 @@ LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
         const auto end = Up(Add(actual(segment.p_vaddr), segment.p_memsz), page_size);
         if (memory.Protect(begin, static_cast<std::size_t>(end - begin), PROT_READ | PROT_WRITE))
             SystemError("populate guest ELF");
-        ReadAt(fd,
-               reinterpret_cast<void*>(actual(segment.p_vaddr)),
-               static_cast<std::size_t>(segment.p_filesz),
-               segment.p_offset);
+        read(reinterpret_cast<void*>(actual(segment.p_vaddr)),
+             static_cast<std::size_t>(segment.p_filesz),
+             segment.p_offset);
         // Anonymous pages start zero and actual segment byte extents do not overlap.
         boundaries.push_back(begin);
         boundaries.push_back(end);
@@ -155,10 +145,44 @@ LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
     if (memory.CodeAt(image.entry).empty()) Error("ELF entry is not executable/readable");
     memory.InitializeBrk(base + span, base + total);
     image.path = path;
+    image.file_size = file_size;
+    image.elf_type = header.e_type;
+    return image;
+}
+}  // namespace
+
+LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
+    const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) SystemError("open guest ELF");
+
+    struct File {
+        int fd;
+
+        ~File() { close(fd); }
+    } file{fd};
+    struct stat status{};
+    if (fstat(fd, &status)) SystemError("stat guest ELF");
+    if (status.st_size < 0) Error("invalid ELF file size");
+    auto image = MapELF(memory,
+                        path,
+                        static_cast<u64>(status.st_size),
+                        [&](void* destination, std::size_t size, u64 offset) {
+                            ReadAt(fd, destination, size, offset);
+                        });
     image.device = static_cast<u64>(status.st_dev);
     image.inode = static_cast<u64>(status.st_ino);
-    image.file_size = file_size;
     return image;
+}
+
+LoadedImage LoadELF(execution::GuestMemory& memory,
+                    std::span<const std::uint8_t> bytes,
+                    const std::string& display_path) {
+    return MapELF(memory,
+                  display_path,
+                  bytes.size(),
+                  [&](void* destination, std::size_t size, u64 offset) {
+                      std::memcpy(destination, bytes.data() + offset, size);
+                  });
 }
 
 u64 InitialStack(execution::GuestMemory& memory,

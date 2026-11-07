@@ -294,7 +294,7 @@ void Writer::HandleStoreUniformFamily(OpContext& ctx) {
         }
         StackAdjust(false);
         if (static_pc_valid)
-            TailJump(options.dispatcher, true, static_pc);
+            TailJump(HostSymbol::Dispatcher, options.dispatcher, true, static_pc);
         else
             DynamicDispatch();
         dispatch_emitted = true;
@@ -345,7 +345,8 @@ void Writer::HandleStoreUniformSelectImmFamily(OpContext& ctx) {
                 CompleteDeferredTest();    // Zero falls through and completes its own flags.
                 StackAdjust(false);
                 PublishPCAndJump(fallthrough);
-                TailJump(options.dispatcher,
+                TailJump(HostSymbol::Dispatcher,
+                         options.dispatcher,
                          true,
                          taken,
                          head);  // Unresolved/far self gate stays patchable.

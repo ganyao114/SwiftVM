@@ -7,6 +7,7 @@
 
 namespace swift::runtime::execution {
 class VM;
+struct CodeUnit;
 enum class CompileFailure : unsigned char { None, Unsupported, InvalidInput };
 
 enum class CompileStage : std::uint8_t { Source, Frontend, Optimize, Backend };
@@ -35,8 +36,13 @@ public:
     explicit CompileService(VM& vm) noexcept : vm(vm) {}
 
     backend::NativeCode Compile(ir::Scope);
+    backend::NativeCode Restore(const CodeUnit&, bool sources_verified = false);
+
+    std::span<const std::uint64_t> Continuations() const noexcept { return continuations; }
 
     const backend::CompileResult* LastOutput() const noexcept { return last; }
+
+    std::uint64_t EntryPC() const noexcept { return entry_pc; }
 
     CompileFailure Failure() const noexcept { return failure; }
 
@@ -49,8 +55,12 @@ private:
     VM& vm;
     ir::Program reusable;
     std::vector<std::uint64_t> optimizer_rows;
-    backend::CompileResult* last{};
+    const backend::CompileResult* last{};
+    std::uint64_t entry_pc{};
+    std::vector<SourceSpan> source_spans;
+    std::vector<std::uint64_t> continuations;
     CompileFailure failure{};
     CompileDiagnostic diagnostic;
+    backend::NativeCode Publish(const backend::CompileResult&, std::vector<backend::FaultSite>);
 };
 }  // namespace swift::runtime::execution

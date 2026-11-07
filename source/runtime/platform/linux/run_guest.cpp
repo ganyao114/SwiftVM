@@ -1,7 +1,10 @@
 #include "host_runtime.h"
 #include "runtime/execution/vm.h"
+#include "runtime/execution/timing.h"
+#include "aot/artifact.h"
 
 #include <chrono>
+#include <array>
 #include <exception>
 #include "base/error.h"
 #include "base/format.h"
@@ -28,7 +31,26 @@ RunResult RunGuest(const std::string& executable,
         stats.fault_service_ns += binding_ns;
         VM vm{options, stats, backend};
         try {
-            code = vm.Run(executable, argv, environment);
+            if (options.artifact_path.empty())
+                code = vm.Run(executable, argv, environment);
+            else {
+                aot::Artifact artifact;
+                {
+                    RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
+                    std::string reason;
+                    if (!aot::ReadArtifact(options.artifact_path, artifact, reason))
+                        swift::ThrowError(std::move(reason), ErrorKind::InvalidArgument);
+                }
+                const std::array default_arguments{artifact.guest_path};
+                const auto guest_arguments =
+                        argv.empty() ? std::span<const std::string>{default_arguments} : argv;
+                vm.PrepareGuest(artifact.guest_elf,
+                                artifact.guest_path,
+                                guest_arguments,
+                                environment,
+                                &artifact.code);
+                code = vm.RunPrepared();
+            }
         } catch (const std::exception& failure) {
             recorded.Capture(failure);
             error = failure.what();

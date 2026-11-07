@@ -1,6 +1,7 @@
 #pragma once
 
 #include "decode.h"
+#include "runtime/code_source.h"
 
 namespace swift::x86 {
 
@@ -71,6 +72,8 @@ struct DecodedFunction {
         DecodeLimits limits = {},
         DecodeTiming* timing = nullptr,
         ReadyEntryLookup ready = {},
-        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu);
+        runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu,
+        std::vector<runtime::SourceSpan>* source_spans = nullptr,
+        std::vector<std::uint64_t>* continuations = nullptr);
 
 }  // namespace swift::x86

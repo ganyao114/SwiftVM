@@ -2,12 +2,14 @@
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 
 #include "code_cache.h"
 #include "code_heap.h"
 #include "compile_service.h"
+#include "code_image.h"
 #include "guest_thread.h"
 #include "host_backend.h"
 #include "memory.h"
@@ -18,6 +20,7 @@
 #include "runtime/platform/linux/syscalls.h"
 
 namespace swift::runtime::execution {
+class DiskCache;
 
 class VM {
 public:
@@ -28,6 +31,28 @@ public:
     int Run(const std::string&,
             std::span<const std::string> argv,
             std::span<const std::string> environment);
+    void PrepareGuest(const std::string&,
+                      std::span<const std::string> argv = {},
+                      std::span<const std::string> environment = {});
+    void PrepareGuest(std::span<const std::uint8_t>,
+                      const std::string& display_path,
+                      std::span<const std::string> argv = {},
+                      std::span<const std::string> environment = {},
+                      const CodeImage* native = nullptr);
+    int RunPrepared();
+    void CallGuest(std::uint64_t pc, std::uint64_t stack_pointer, std::uint64_t stop_pc);
+    void RunUntilGuestStop(std::uint64_t stop_pc);
+
+    x86::GuestState& State() noexcept { return thread.native.state; }
+
+    GuestMemory& Memory() noexcept { return memory; }
+
+    void* HostPointer(std::uint64_t address, std::size_t size, bool write = false);
+    CodeImage Precompile(const std::string&, std::span<const std::uint64_t> entries, bool sweep);
+    CodeImage Precompile(std::span<const std::uint8_t>,
+                         const std::string& display_path,
+                         std::span<const std::uint64_t> entries,
+                         bool sweep);
     // Call after Run (also on failure). Remaining mappings stay in this VM
     // when Release reports a failure; no resource is transferred to a registry.
     MappingRelease Close() noexcept;
@@ -47,6 +72,11 @@ private:
     platform::LoadedImage image;
     platform::LinuxSyscalls syscalls;
     Smc smc;
+    std::unique_ptr<DiskCache> disk_cache;
+    CodeImageKey image_key;
+    CodeImage* offline_output{};
+    bool prepared{}, persistence_disabled{}, host_call_active{}, host_returned{};
+    std::uint64_t host_return_pc{};
     bool final_observed{}, closing{}, closed{};
     MappingRelease close_result;
 
@@ -56,6 +86,22 @@ private:
     void ObserveFinal() noexcept;
     void RefreshNative(NativeRunContext&) noexcept;
     void UpdateFPEnvironment();
+    void PrepareLoaded(std::span<const std::string>,
+                       std::span<const std::string>,
+                       const Digest* guest_identity,
+                       const CodeImage*);
+    void Execute();
+    void ExecuteHostCall(std::uint64_t stop_pc);
+    void InstallImage(const CodeImage&);
+    bool HashSource(SourceSpan, Digest&, std::uint8_t& mode) const;
+    bool SourcesMatch(std::span<const SourceRecord>) const;
+    bool CollectCode() const noexcept;
+    void RecordUnit(ir::Scope,
+                    const backend::CompileResult&,
+                    NativeCode,
+                    std::span<const SourceSpan>);
+    void FlushDisk() noexcept;
+    void DisablePersistence() noexcept;
     void Invalidate();
     std::uintptr_t Resolve(NativeRunContext&);
     static std::uintptr_t ResolveBridge(void*, NativeRunContext*) noexcept;

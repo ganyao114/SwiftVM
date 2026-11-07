@@ -1,6 +1,6 @@
+#include "base/logging.h"
 #include "options.h"
 #include "report.h"
-#include "base/logging.h"
 
 #include <cstdio>
 #include <exception>
@@ -22,8 +22,11 @@ int main(int argc, char** argv) {
         for (int i = options.guest_argument; i < argc; ++i) arguments.emplace_back(argv[i]);
         for (char** variable = environ; variable && *variable; ++variable)
             environment.emplace_back(*variable);
-        const auto result = runtime::execution::RunGuest(
-                arguments.front(), arguments, environment, options.runtime);
+        const auto result =
+                runtime::execution::RunGuest(arguments.empty() ? std::string{} : arguments.front(),
+                                             arguments,
+                                             environment,
+                                             options.runtime);
         if (!result) SVM_LOG(Error, Runtime, "guest execution stopped: {}", result.error);
         launcher::WriteReport(stderr, result, options.runtime);
         // Keep the guest's exit value in the report even if host cleanup failed.

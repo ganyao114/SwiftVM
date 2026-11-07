@@ -20,6 +20,14 @@ sse42::Block128 ExplicitString(u64 control, const sse42::Block128* arguments) no
 }
 }  // namespace
 
+std::uintptr_t ImplicitStringAddress() noexcept {
+    return reinterpret_cast<std::uintptr_t>(&ImplicitString);
+}
+
+std::uintptr_t ExplicitStringAddress() noexcept {
+    return reinterpret_cast<std::uintptr_t>(&ExplicitString);
+}
+
 void Writer::HandleStringFamily(OpContext& ctx) {
     if (ctx.width != 64) Reject(CompileError::UnsupportedType);
     const bool explicit_lengths = ctx.operation.opcode == OpCode::Sse42StrExplicit;
@@ -40,10 +48,11 @@ void Writer::HandleStringFamily(OpContext& ctx) {
     VectorMemory(false, temporary, 31, 2);
     __ add(v::x17, v::sp, Operand(0));
     Immediate(16, control);
-    Immediate(
+    HostAddress(
             0,
-            reinterpret_cast<std::uintptr_t>(explicit_lengths ? &ExplicitString : &ImplicitString));
-    Immediate(30, VectorHelperBridge());
+            reinterpret_cast<std::uintptr_t>(explicit_lengths ? &ExplicitString : &ImplicitString),
+            explicit_lengths ? HostSymbol::ArmStringExplicit : HostSymbol::ArmStringImplicit);
+    HostAddress(30, VectorHelperBridge(), HostSymbol::ArmVectorBridge);
     __ blr(v::x30);
     __ add(v::sp, v::sp, Operand(48));
     __ fmov(X(ctx.destination), D(0));

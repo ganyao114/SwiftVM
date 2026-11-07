@@ -106,6 +106,7 @@ struct CompileOptions {
     // Actual host Crypto Extension capabilities; all neutral crypto forms
     // retain their pure numerical helper fallback when the feature is absent.
     bool aes{}, pmull{}, sha256{};
+    bool relocatable{};  // Explicit persistence recording; ordinary JIT stays unchanged.
 };
 
 // Produces native words only; the caller owns W^X publication and cache flush.

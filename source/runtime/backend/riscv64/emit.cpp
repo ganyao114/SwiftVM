@@ -78,7 +78,7 @@ void Writer::Exit(u64 reason) {
     Restore();
     as.LI(a0, reason);
     if (options.dispatcher && options.exit_handler) {
-        as.LI(t6, options.exit_handler);
+        HostAddress(t6, options.exit_handler, HostSymbol::Exit);
         as.JR(t6);
     } else
         as.RET();
@@ -97,13 +97,39 @@ void Writer::StaticExit(u64 pc) {
     const auto data = static_cast<u32>(output.words.size() * 4);
     for (unsigned i = 0; i != 4; ++i) as.GetCodeBuffer().Emit32(0);
     const auto fallback = static_cast<u32>(output.words.size() * 4);
-    as.LI(t6, options.dispatcher);
+    HostAddress(t6, options.dispatcher, HostSymbol::Dispatcher);
     as.JR(t6);
     output.links.push_back({LinkKind::Static, data, branch, fallback, pc});
 }
 
-void Writer::Call(std::uintptr_t target) {
-    as.LI(t5, target);
+void Writer::HostAddress(GPR destination,
+                         std::uintptr_t address,
+                         HostSymbol symbol,
+                         std::int64_t addend) {
+    if (!options.relocatable) {
+        as.LI(destination, address);
+        return;
+    }
+    // The load and its aligned literal are local to this real address use.
+    // J skips the data, so no global literal pool or end-of-unit scan exists.
+    if (output.words.size() & 1) as.NOP();
+    const auto offset = static_cast<NativeOffset>(output.words.size() * 4 + 16);
+    as.AUIPC(destination, 0);
+    as.LD(destination, 16, destination);
+    as.J(16);
+    as.NOP();
+    as.GetCodeBuffer().Emit32(static_cast<u32>(address));
+    as.GetCodeBuffer().Emit32(static_cast<u32>(address >> 32));
+    if (symbol == HostSymbol::None) symbol = CallbackSymbol(address);
+    if (symbol == HostSymbol::None) output.relocatable = false;
+    if (output.relocatable)
+        output.relocations.push_back({offset, RelocationKind::Absolute64, symbol, addend});
+}
+
+void Writer::Call(std::uintptr_t target) { Call(target, HostSymbol::None); }
+
+void Writer::Call(std::uintptr_t target, HostSymbol symbol) {
+    HostAddress(t5, target, symbol);
     CallRegister(t5);
 }
 
@@ -171,7 +197,7 @@ void Writer::Terminal(const StoredTerminal& terminal) {
             if (options.flags_offset != UINT32_MAX) Store(s11, s1, options.flags_offset, 64);
             Restore();
             if (options.dispatcher && options.exit_handler) {
-                as.LI(t6, options.exit_handler);
+                HostAddress(t6, options.exit_handler, HostSymbol::Exit);
                 as.JR(t6);
             } else
                 as.RET();
@@ -189,7 +215,7 @@ void Writer::Terminal(const StoredTerminal& terminal) {
                 as.MV(a0, x0);
             Restore();
             if (options.dispatcher && options.exit_handler) {
-                as.LI(t6, options.dispatcher);
+                HostAddress(t6, options.dispatcher, HostSymbol::Dispatcher);
                 as.JR(t6);
             } else {
                 as.MV(a0, x0);

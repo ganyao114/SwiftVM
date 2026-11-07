@@ -2,6 +2,7 @@
 #include "runtime/arch/x86/state.h"
 #include "abi.h"
 #include "patch.h"
+#include "relocate.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 
@@ -52,6 +53,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         auto& self = *static_cast<Runtime*>(raw);
         auto policy = self.options;
         policy.entry_pc = request.entry_pc;
+        policy.relocatable = request.relocatable;
         policy.fault_locations = policy.recover_unaligned = request.fault_locations;
         policy.private_uniforms = request.private_state;
         policy.local_flags =
@@ -63,10 +65,17 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         backend::arm64::Compile(program, policy, self.output, self.allocation);
         return self.output;
     };
+    ops.relocate = [](void* raw,
+                      std::span<std::uint8_t> code,
+                      std::span<const backend::Relocation> relocations) noexcept {
+        return Relocate(code, relocations, static_cast<Runtime*>(raw)->options);
+    };
     ops.trim = [](void* raw) noexcept {
         auto& self = *static_cast<Runtime*>(raw);
         auto& out = self.output;
         if (out.words.capacity() > 1024u * 1024) std::vector<std::uint32_t>{}.swap(out.words);
+        if (out.relocations.capacity() > 4096)
+            std::vector<backend::Relocation>{}.swap(out.relocations);
         if (out.links.capacity() > 4096) std::vector<backend::LinkSite>{}.swap(out.links);
         if (out.entries.capacity() > 4096) std::vector<backend::EntryPoint>{}.swap(out.entries);
         if (self.allocation.homes.capacity() > 8u * 1024 * 1024 / sizeof(backend::arm64::Home))

@@ -17,6 +17,8 @@ crypto::Block128 ExecuteCrypto(u64 metadata, const crypto::Block128* arguments) 
 }
 }  // namespace
 
+std::uintptr_t CryptoAddress() noexcept { return reinterpret_cast<std::uintptr_t>(&ExecuteCrypto); }
+
 void Writer::HandleCryptoFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& cursor = ctx.cursor;
@@ -114,8 +116,8 @@ void Writer::HandleCryptoFamily(OpContext& ctx) {
         VectorMemory(false, first_temp, 31, 2);
         __ add(v::x17, v::sp, Operand(0));
         Immediate(16, static_cast<u64>(operation) | (immediate << 8));
-        Immediate(0, reinterpret_cast<std::uintptr_t>(&ExecuteCrypto));
-        Immediate(30, VectorHelperBridge());
+        HostAddress(0, reinterpret_cast<std::uintptr_t>(&ExecuteCrypto), HostSymbol::ArmCrypto);
+        HostAddress(30, VectorHelperBridge(), HostSymbol::ArmVectorBridge);
         __ blr(v::x30);
         __ add(v::sp, v::sp, Operand(48));
         VectorMove(ctx.destination, 0);

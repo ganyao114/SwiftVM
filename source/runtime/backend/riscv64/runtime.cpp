@@ -2,6 +2,7 @@
 #include "runtime/arch/x86/state.h"
 #include "abi_layout.inc"
 #include "patch.h"
+#include "relocate.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 
@@ -32,14 +33,22 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         auto& self = *static_cast<Runtime*>(raw);
         auto policy = self.options;
         policy.entry_pc = request.entry_pc;
+        policy.relocatable = request.relocatable;
         policy.fault_locations = request.fault_locations;
         backend::riscv64::Compile(program, policy, self.output, self.allocation);
         return self.output;
+    };
+    ops.relocate = [](void* raw,
+                      std::span<std::uint8_t> code,
+                      std::span<const backend::Relocation> relocations) noexcept {
+        return Relocate(code, relocations, static_cast<Runtime*>(raw)->options);
     };
     ops.trim = [](void* raw) noexcept {
         auto& self = *static_cast<Runtime*>(raw);
         if (self.output.words.capacity() > 1024u * 1024)
             std::vector<std::uint32_t>{}.swap(self.output.words);
+        if (self.output.relocations.capacity() > 4096)
+            std::vector<backend::Relocation>{}.swap(self.output.relocations);
         if (self.output.entries.capacity() > 4096)
             std::vector<backend::EntryPoint>{}.swap(self.output.entries);
         if (self.allocation.homes.capacity() > 8u * 1024 * 1024 / sizeof(backend::riscv64::Home))

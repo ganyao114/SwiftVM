@@ -1,6 +1,7 @@
 #include "compile_service.h"
 #include "vm.h"
 #include "timing.h"
+#include "disk_cache.h"
 #include "runtime/arch/x86/cpu.h"
 #include "runtime/ir/optimize.h"
 #include "runtime/frontend/x86/build_ir.h"
@@ -25,12 +26,33 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     auto& memory = vm.memory;
     auto& state = vm.thread.native.state;
     auto& faults = vm.thread.faults;
-    auto& native = vm.thread.native;
     diagnostic = {};
     diagnostic.scope = scope;
     diagnostic.pc = state.pc;
     last = nullptr;
+    entry_pc = state.pc;
     failure = CompileFailure::None;
+    continuations.clear();
+    if (vm.disk_cache && vm.disk_cache->Enabled()) {
+        RuntimeTimer load{stats.cache_load_ns};
+        if (const auto* saved = vm.disk_cache->Find(state.pc, vm.thread.fp_mode)) {
+            try {
+                if (auto restored = Restore(*saved); restored.entry) {
+                    ++stats.disk_cache_hits;
+                    return restored;
+                }
+            } catch (const swift::RuntimeError& error) {
+                // A rejected unpublished file record is a miss. Mapping,
+                // protection and synchronization failures remain host errors.
+                if (error.Kind() != ErrorKind::InvalidArgument) throw;
+            }
+            ++stats.disk_cache_rejects;
+            vm.DisablePersistence();
+        }
+        ++stats.disk_cache_misses;
+    }
+    entry_pc = state.pc;
+    const bool collect = vm.CollectCode();
     ++stats.compile_attempts;
     scope == ir::Scope::Function ? ++stats.function_attempts : ++stats.block_attempts;
     front::StateLayout layout;
@@ -99,7 +121,10 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                                            nullptr,
                                            options.decode_timing ? &stats.compile_decode : nullptr,
                                            &reusable,
-                                           ready);
+                                           ready,
+                                           x86::BaselineGuestCpu,
+                                           collect ? &source_spans : nullptr,
+                                           vm.offline_output ? &continuations : nullptr);
         } else {
             if (mutable_function) ++stats.smc_function_single_block_attempts;
             const front::BlockWindow window{state.pc, memory.CodeAt(state.pc)};
@@ -110,7 +135,10 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                                    nullptr,
                                    options.decode_timing ? &stats.compile_decode : nullptr,
                                    mutable_entry,
-                                   &reusable);
+                                   &reusable,
+                                   x86::BaselineGuestCpu,
+                                   collect ? &source_spans : nullptr,
+                                   vm.offline_output ? &continuations : nullptr);
         }
     }
     stats.emitted_instructions += built.instruction_count;
@@ -159,11 +187,13 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     backend::CompileResult* output;
     {
         RuntimeTimer backend_time{stats.backend_ns};
-        output = &vm.backend.compile(
-                vm.backend.context,
-                built.program,
-                HostCompileRequest{
-                        state.pc, vm.thread.fp_mode, faults.registered, private_guest_state});
+        output = &vm.backend.compile(vm.backend.context,
+                                     built.program,
+                                     HostCompileRequest{state.pc,
+                                                        vm.thread.fp_mode,
+                                                        faults.registered,
+                                                        private_guest_state,
+                                                        collect});
     }
     auto& compiled = *output;
     last = output;
@@ -185,42 +215,15 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                           : CompileFailure::Unsupported;
         return {};
     }
-    NativeCode code;
-    {
-        RuntimeTimer publish{stats.publication_ns};
-        code = vm.heap.Publish(
-                compiled.words,
-                std::move(compiled.faults),
-                compiled.links,
-                [](void* opaque, u64 pc, std::uintptr_t unit) noexcept -> std::uintptr_t {
-                    auto& owner = *static_cast<VM*>(opaque);
-                    if (const auto ready = owner.Cache().Find(pc))
-                        return reinterpret_cast<std::uintptr_t>(ready);
-                    return pc == owner.thread.native.state.pc ? unit : 0;
-                },
-                &vm);
-        ++stats.code_units_published;
-        if (options.decode_timing) stats.fault_sites += code.faults.size();
-        stats.native_bytes += code.bytes;
-        stats.peak_code_bytes =
-                std::max(stats.peak_code_bytes, static_cast<u64>(vm.heap.ReservedBytes()));
-        const auto slabs = vm.heap.Slabs(), dual_slabs = vm.heap.DualSlabs();
-        stats.peak_slabs = std::max(stats.peak_slabs, static_cast<u64>(slabs));
-        stats.peak_dual_slabs = std::max(stats.peak_dual_slabs, static_cast<u64>(dual_slabs));
-        stats.code_wx_fallback |= slabs != dual_slabs;
-        for (const auto& link : compiled.links) {
-            if (link.kind == backend::LinkKind::Static) ++stats.static_links;
-            if (!code.writable) continue;
-            if (link.kind == backend::LinkKind::Dynamic)
-                vm.Cache().AddIndirectSite(code, link);
-            else
-                vm.Cache().AddStaticLink(code, link);
-        }
-        // Function formation excludes mutable source regions, including RX
-        // mappings with shared writers. Entry requests keep Function RA but
-        // externalize every single-source-block edge.
-        if (mutable_entry) vm.smc.Arm(state.pc, built.decoded_bytes);
+    auto code = Publish(compiled, std::move(compiled.faults));
+    // Mutable entries remain one source block, even with Function allocation.
+    if (mutable_entry) {
+        if (collect) {
+            for (const auto& source : source_spans) vm.smc.Arm(source.pc, source.size);
+        } else
+            vm.smc.Arm(state.pc, built.decoded_bytes);
     }
+    if (collect) vm.RecordUnit(scope, compiled, code, source_spans);
     // Keep only the actual working buffers; no native metadata borrows
     // these. Oversized units finish normally without retaining their peak.
     if (built.program.ReservedBytes() <= 8u * 1024 * 1024) reusable = std::move(built.program);
@@ -228,10 +231,59 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     return code;
 }
 
+NativeCode CompileService::Publish(const backend::CompileResult& compiled,
+                                   std::vector<backend::FaultSite> faults) {
+    auto& stats = vm.stats;
+    RuntimeTimer publish{stats.publication_ns};
+    auto code = vm.heap.Publish(
+            compiled.words,
+            std::move(faults),
+            compiled.links,
+            [](void* opaque, u64 pc, std::uintptr_t unit) noexcept -> std::uintptr_t {
+                auto& owner = *static_cast<VM*>(opaque);
+                if (const auto ready = owner.Cache().Find(pc))
+                    return reinterpret_cast<std::uintptr_t>(ready);
+                return pc == owner.compiler.EntryPC() ? unit : 0;
+            },
+            &vm,
+            compiled.relocations);
+    ++stats.code_units_published;
+    if (vm.options.decode_timing) stats.fault_sites += code.faults.size();
+    stats.native_bytes += code.bytes;
+    stats.peak_code_bytes =
+            std::max(stats.peak_code_bytes, static_cast<u64>(vm.heap.ReservedBytes()));
+    const auto slabs = vm.heap.Slabs(), dual_slabs = vm.heap.DualSlabs();
+    stats.peak_slabs = std::max(stats.peak_slabs, static_cast<u64>(slabs));
+    stats.peak_dual_slabs = std::max(stats.peak_dual_slabs, static_cast<u64>(dual_slabs));
+    stats.code_wx_fallback |= slabs != dual_slabs;
+    for (const auto& link : compiled.links) {
+        if (link.kind == backend::LinkKind::Static) ++stats.static_links;
+        if (!code.writable) continue;
+        if (link.kind == backend::LinkKind::Dynamic)
+            vm.Cache().AddIndirectSite(code, link);
+        else
+            vm.Cache().AddStaticLink(code, link);
+    }
+    return code;
+}
+
+NativeCode CompileService::Restore(const CodeUnit& unit, bool sources_verified) {
+    if (!sources_verified && !vm.SourcesMatch(unit.sources)) return {};
+    entry_pc = unit.pc;
+    auto code = Publish(unit.code, unit.code.faults);
+    for (const auto& source : unit.sources)
+        if (source.mode == static_cast<std::uint8_t>(SourceMode::WatchedBlock))
+            vm.smc.Arm(source.span.pc, source.span.size);
+    last = &unit.code;
+    return code;
+}
+
 void CompileService::Release() noexcept {
     reusable = {};
     last = nullptr;
     std::vector<std::uint64_t>{}.swap(optimizer_rows);
+    std::vector<SourceSpan>{}.swap(source_spans);
+    std::vector<std::uint64_t>{}.swap(continuations);
     if (vm.backend.release) vm.backend.release(vm.backend.context);
 }
 

@@ -44,8 +44,14 @@ bool Writer::ShortBranch(Branch19 instruction, BlockId target) {
     return true;
 }
 
-void Writer::TailJump(std::uintptr_t destination, bool link, u64 target_pc, u32 conditional_head) {
-    if (!link && destination == options.dispatcher && dispatcher_literal != UINT32_MAX) {
+void Writer::TailJump(HostSymbol symbol,
+                      std::uintptr_t destination,
+                      bool link,
+                      u64 target_pc,
+                      u32 conditional_head) {
+    const bool is_dispatcher = options.relocatable ? symbol == HostSymbol::Dispatcher
+                                                   : destination == options.dispatcher;
+    if (!link && is_dispatcher && dispatcher_literal != UINT32_MAX) {
         const auto distance = static_cast<std::int64_t>(dispatcher_literal) -
                               static_cast<std::int64_t>(output.words.size());
         if (distance >= -(INT64_C(1) << 18) && distance < (INT64_C(1) << 18)) {
@@ -66,7 +72,9 @@ void Writer::TailJump(std::uintptr_t destination, bool link, u64 target_pc, u32 
     __ br(v::x16);
     if (padding) __ nop();
     masm.Data64(destination);
-    if (!link && destination == options.dispatcher) dispatcher_literal = pointer;
+    if (options.relocatable && !link)
+        RecordAddress(pointer * 4, RelocationKind::Absolute64, symbol);
+    if (!link && is_dispatcher) dispatcher_literal = pointer;
     if (link) {
         output.links.push_back({LinkKind::Static,
                                 pointer * 4,
@@ -85,7 +93,7 @@ void Writer::TailJump(std::uintptr_t destination, bool link, u64 target_pc, u32 
         // Resolved B26/far links bypass it; only cold dispatch needs PC.
         Immediate(0, target_pc);
         PCMemory(false);
-        TailJump(destination);  // No second relocation or frame retirement.
+        TailJump(symbol, destination);  // The cold dispatcher address owns its relocation.
     }
 }
 
@@ -101,7 +109,7 @@ void Writer::ContextMemory(bool load, unsigned value, int offset) {
 
 void Writer::DynamicDispatch() {
     if (options.dispatch_mode == DispatchMode::Callback) {
-        TailJump(options.dispatcher);
+        TailJump(HostSymbol::Dispatcher, options.dispatcher);
         return;
     }
     // The source frame is already retired and x0 holds the complete target.
@@ -198,7 +206,7 @@ void Writer::DynamicDispatch() {
         if (edge != UINT32_MAX) masm.Patch(edge, masm.Here());
     // A cold miss may repeat the lookup in the shared callback. Its actual
     // diagnostic probes are counted there too; only that owner resolves it.
-    TailJump(options.dispatcher);
+    TailJump(HostSymbol::Dispatcher, options.dispatcher);
 }
 
 void Writer::PublishPCAndJump(u64 target_pc) {
@@ -206,13 +214,13 @@ void Writer::PublishPCAndJump(u64 target_pc) {
         Immediate(0, target_pc);
         PCMemory(false);
     }
-    TailJump(options.dispatcher, true, target_pc);
+    TailJump(HostSymbol::Dispatcher, options.dispatcher, true, target_pc);
 }
 
 void Writer::Epilogue() {
     StackAdjust(false);
     if (Linked())
-        TailJump(options.exit_handler);
+        TailJump(HostSymbol::Exit, options.exit_handler);
     else {
         __ ldp(v::x19, v::x30, MemOperand(v::sp, 16, v::PostIndex));
         __ ret(v::x30);
@@ -269,7 +277,7 @@ void Writer::ConditionPC(unsigned condition, u64 taken, u64 fallthrough) {
         const auto head = static_cast<u32>(output.words.size());
         __ b(std::int64_t{0}, static_cast<v::Condition>(condition ^ (primary_yes ? 0u : 1u)));
         PublishPCAndJump(other);
-        TailJump(options.dispatcher, true, primary, head);
+        TailJump(HostSymbol::Dispatcher, options.dispatcher, true, primary, head);
         return;
     }
     const auto skip = static_cast<u32>(output.words.size());
@@ -352,14 +360,14 @@ void Writer::HandleDispatch() {
             const auto skip = static_cast<u32>(output.words.size());
             __ b(std::int64_t{0}, v::ne);
             RestoreCompareNZCV();
-            TailJump(options.dispatcher, true, static_pc);
+            TailJump(HostSymbol::Dispatcher, options.dispatcher, true, static_pc);
             masm.Patch(skip, masm.Here());
             RestoreCompareNZCV();
-            TailJump(options.dispatcher, true, alternate_pc);
+            TailJump(HostSymbol::Dispatcher, options.dispatcher, true, alternate_pc);
         } else {
             if (!options.deferred_pc || !static_pc_valid) PCMemory(true);
             if (static_pc_valid)
-                TailJump(options.dispatcher, true, static_pc);
+                TailJump(HostSymbol::Dispatcher, options.dispatcher, true, static_pc);
             else
                 DynamicDispatch();
         }

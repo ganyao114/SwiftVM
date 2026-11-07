@@ -144,6 +144,7 @@ void Smc::Clear() {
 }
 
 void Smc::Invalidate() {
+    vm.DisablePersistence();
     RuntimeTimer total{vm.stats.compile_request_ns}, release{vm.stats.code_release_ns};
     Clear();
     vm.thread.faults.smc_pending = 0;

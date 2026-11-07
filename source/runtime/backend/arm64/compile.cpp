@@ -10,6 +10,8 @@ void ClearCode(backend::CompileResult& result) noexcept {
     result.faults.clear();
     result.links.clear();
     result.entries.clear();
+    result.relocations.clear();
+    result.relocatable = false;
 }
 }  // namespace
 
@@ -22,12 +24,14 @@ void Compile(const ir::Program& program,
     result.block = {};
     result.frame_bytes = result.spill_slots = 0;
     ClearCode(result);
+    result.relocatable = options.relocatable;
     try {
         if (program.ScopeKind() == ir::Scope::Block)
             AllocateBlock(program, allocation, &options);
         else
             AllocateFunction(program, allocation, &options);
         if (!allocation) {
+            result.relocatable = false;
             result.error = allocation.error;
             result.node = allocation.node;
             result.block = allocation.block;
@@ -44,6 +48,7 @@ void Compile(const ir::Program& program,
             // and Allocation; fresh Writer state rebuilds every word-based
             // branch, fault and link location exactly once in the old form.
             ClearCode(result);
+            result.relocatable = options.relocatable;
             (void)detail::Writer(program, allocation, result, options, true).Run();
         }
     } catch (const detail::Rejected& failure) {

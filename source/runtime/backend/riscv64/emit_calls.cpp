@@ -21,7 +21,7 @@ void Writer::Handle(Op<OpCode::Div128>, OpContext& ctx) {
     Read(ctx.Arg(2), a2);
     as.LI(a3, bits | (sign << 8));
     Address(a4, sp, auxiliary);
-    Call(reinterpret_cast<std::uintptr_t>(&WideDivide));
+    Call(reinterpret_cast<std::uintptr_t>(&WideDivide), HostSymbol::RiscvWideDivide);
     FrameLoad(t0, auxiliary);
     Label valid;
     as.BNE(t0, x0, &valid);
@@ -91,9 +91,9 @@ void Writer::X87(OpContext& ctx) {
         as.LI(a3, guest_pc);
         Read(ctx.Arg(3), a4, true);
         as.LI(a5, ctx.Arg(4).Payload());
-        Call(reinterpret_cast<std::uintptr_t>(&CheckedX87));
+        Call(reinterpret_cast<std::uintptr_t>(&CheckedX87), HostSymbol::RiscvCheckedX87);
     } else
-        Call(reinterpret_cast<std::uintptr_t>(&SvmX87Execute));
+        Call(reinterpret_cast<std::uintptr_t>(&SvmX87Execute), HostSymbol::X87Execute);
     Label success;
     as.BEQ(a0, x0, &success);
     if (options.pc_offset != UINT32_MAX) {
@@ -135,10 +135,10 @@ void Writer::String(OpContext& ctx) {
     if (explicit_lengths) {
         ReadPair(ctx.Arg(2), a4, a5);
         as.LI(a6, control);
-        Call(reinterpret_cast<std::uintptr_t>(&sse42::CompareExplicit));
+        Call(reinterpret_cast<std::uintptr_t>(&sse42::CompareExplicit), HostSymbol::StringExplicit);
     } else {
         as.LI(a4, control);
-        Call(reinterpret_cast<std::uintptr_t>(&sse42::CompareImplicit));
+        Call(reinterpret_cast<std::uintptr_t>(&sse42::CompareImplicit), HostSymbol::StringImplicit);
     }
     as.MV(ctx.destination, a0);
 }
@@ -156,7 +156,15 @@ void Writer::Handle(Op<OpCode::CallLambda>, OpContext& ctx) {
     if (ctx.operation.type != Type::Void && !IntegerType(ctx.operation.type) &&
         ctx.operation.type != Type::V128)
         Reject(CompileError::UnsupportedType);
-    Read(ctx.Arg(1), t5, true);
+    const auto target = ctx.Arg(1);
+    if (options.relocatable && target.Kind() == OperandKind::Immediate)
+        HostAddress(t5, target.Payload(), HostSymbol::None);
+    else {
+        // A neutral value does not carry a host callback identity. Keep JIT
+        // execution available, but never persist an unrecorded host address.
+        if (options.relocatable) output.relocatable = false;
+        Read(target, t5, true);
+    }
     for (unsigned i = 2; i < ctx.count; ++i) {
         if (!IntegerType(View(ctx.Arg(i)))) Reject(CompileError::UnsupportedOperand);
         Read(ctx.Arg(i), GPR{10 + i - 2});

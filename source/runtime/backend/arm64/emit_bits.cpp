@@ -22,6 +22,14 @@ BitResult ExtractBitsCallback(u64 value, u64 mask) noexcept {
 }
 }  // namespace
 
+std::uintptr_t DepositBitsAddress() noexcept {
+    return reinterpret_cast<std::uintptr_t>(&DepositBitsCallback);
+}
+
+std::uintptr_t ExtractBitsAddress() noexcept {
+    return reinterpret_cast<std::uintptr_t>(&ExtractBitsCallback);
+}
+
 void Writer::HandleParallelBitsFamily(OpContext& ctx) {
     if (ctx.width != 32 && ctx.width != 64) Reject(CompileError::UnsupportedType);
     const auto value = ctx.cursor.Take(), mask = ctx.cursor.Take();
@@ -34,8 +42,11 @@ void Writer::HandleParallelBitsFamily(OpContext& ctx) {
     Memory(false, 64, 17, 31);
     const auto callback = ctx.operation.opcode == OpCode::ParallelBitDeposit ? &DepositBitsCallback
                                                                              : &ExtractBitsCallback;
-    Immediate(17, reinterpret_cast<std::uintptr_t>(callback));
-    Immediate(30, CpuidHelper());
+    HostAddress(17,
+                reinterpret_cast<std::uintptr_t>(callback),
+                ctx.operation.opcode == OpCode::ParallelBitDeposit ? HostSymbol::ArmDepositBits
+                                                                   : HostSymbol::ArmExtractBits);
+    HostAddress(30, CpuidHelper(), HostSymbol::ArmPairBridge);
     __ blr(v::x30);
     Memory(true, 64, 17, 31);
     __ add(v::sp, v::sp, Operand(16));
