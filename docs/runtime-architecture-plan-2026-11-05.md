@@ -244,7 +244,7 @@ MaterializeConstant(dst, value)              # 有界展开，只修改显式dst
 - `patch`：解释本 backend 的实际 link/fault 修补格式，调用同一 encoding 算式；不决定 guest target 或 cache membership。
 - `abi.h`、`abi_layout.inc` 与 Linux ARM64 bridge：唯一 pin、flags、FP、context offset 合同。静态汇编与动态发码从同一布局定义消费常量，并以 offsetof/static_assert 核对；不新增每边界状态复制。
 
-统一 native ABI 只保留 `x19 = &context.state`。Context 前部元数据实际占 152B，按 GuestState 的 16B 对齐使 state 位于 offset 160，完整对象为 1024B。元数据通过 `x19 + (offsetof(field) - 160)` 访问：单字段使用有符号字节位移的 `LDUR/STUR`，slots/mask 等相邻字段保持一条负偏移 `LDP`。Uniform IR 仍使用 state 内的原字段偏移；数值 helper 仍接收真实 state／子对象指针。根入口 `SvmRunNative(NativeRunContext*)` 从唯一 owner 建立这个基址，冷 resolver 才用一次 `SUB` 得到完整 context 地址。
+ARM64 native ABI 保留 `x19 = &context.state`，RV64 对应 `s1`。Context 的 state 仍在 offset 160，完整对象仍为 1024B；RV64 恢复时利用原 offset 152 的 8B 空余位置加入窄 atomic 资格回调，前部元数据现占 160B。元数据通过 `x19 + (offsetof(field) - 160)` 访问：单字段使用有符号字节位移的 `LDUR/STUR`，slots/mask 等相邻字段保持一条负偏移 `LDP`。Uniform IR 仍使用 state 内的原字段偏移；数值 helper 仍接收真实 state／子对象指针。根入口 `SvmRunNative(NativeRunContext*)` 从唯一 owner 建立这个基址，冷 resolver 才用一次 `SUB` 得到完整 context 地址。
 
 `x28` 不再持有 context，追加到 linked 模式的标量 SSA bank；pin16 下由 `x2..x7` 六个寄存器扩大为 `x2..x7, x28` 七个。16 个 GPR pin 与 XMM pin 映射不变；root 继续保存／恢复 host x28，数值 helper 遵守其 callee-saved 合同。Standalone 的普通 state 指针入口及原寄存器 bank 保持原约定。 对应布局、x28 实际执行回归和小规模 compile 对照见 [验证记录](evidence/unified-native-context-20261106/README.md)。
 
@@ -533,6 +533,7 @@ IR 优化仍按「首逆扫 → CFG 摘要传播及出口写入修正 → 唯一
 ```text
 source/runtime/
   externals/vixl/                   # 固定来源的受控fork；精确编码／单sink，删除隐式macro入口
+  externals/biscuit/                # 固定旧版来源；RV exact word sink，不启用自动寄存器／压缩选择
   arch/x86/
     state.h                         # 唯一 guest 状态布局
     flags.h                         # portable snapshot／RFLAGS codec
@@ -595,6 +596,22 @@ source/runtime/
       helper_calls.cpp             # 真实 C++ helper ABI 桥
       patch.h  patch.cpp           # 本 ISA 的 link/unaligned 修补逻辑
 
+    riscv64/
+      allocate.h allocate.cpp      # 当前Program的Block/Function固定GPR/pair/spill home
+      compile.h compile.cpp        # RV64G目标能力、单编译入口、实际输出复用
+      emit.h emit.cpp              # 一个Writer、typed Handle、schedule/入口/出口/fixup
+      scalar_ops.inc vector_ops.inc # 职责分派声明；不复制中立opcode/schema
+      emit_operand.cpp             # 原Cell视图、raw transport、地址表达式/home读取
+      emit_scalar.cpp emit_flags.cpp # 标量/位运算与s11 flags合同
+      emit_memory.cpp emit_atomic.cpp # Uniform/普通/TSO/AMO/LR-SC及CAS128窄入口
+      emit_control.cpp             # 条件、PC和marker
+      emit_calls.cpp               # 真实helper/callback ABI，不解释IR
+      emit_vector.cpp emit_float.cpp # GPR-pair整数向量和F/D数值发码
+      atomic_helpers.h .cpp        # libatomic128 kernel；加锁前先获真实访存资格
+      call_helpers.h .cpp          # 宽除法及x87数值/metadata提交
+      patch.h patch.cpp            # 原子发布/撤销真实静态边DATA target
+      abi_layout.inc               # RV C++/根汇编的同一context字段偏移
+
   execution/
     runtime.h  runtime.cpp         # 公共运行API／VM执行循环／实际DirectServices
     vm.h                          # VM真实owner组合及私有服务声明
@@ -618,7 +635,10 @@ source/runtime/
     syscalls.h  syscalls.cpp       # Linux x86-64 guest ABI 到现有服务
     signals.cpp                    # sigaction/TLS/原handler链的窄适配
     safe_access.h .cpp             # 受控process_vm_readv/writev；失败返回，不跨C++栈longjmp
+    host_runtime.h run_guest.cpp   # 已确认宿主的绑定选择及共用RunGuest生命周期
     arm64_runtime.h .cpp           # HostBackend绑定、HWCAP、FP／恢复桥
+    riscv64_runtime.h .cpp         # RV64G绑定、FCSR、fault恢复与Linux跨hart icache同步
+    riscv64_entry.S                # s1基址、s11 flags、同一PC目录的Root/Cold/Exit
     arm64_entry.S                  # 静态 Root/Cold/Exit，消费同一ABI常量
 ```
 
@@ -629,7 +649,7 @@ source/runtime/
 - `compile_service` 不产生 Prepared/Action；只协调现有 owner 和调用顺序。BackendOps 在 Linux 装配点绑定一次，编译器内部仍静态调用 encoder。
 - `code_link.cpp` 不定义独立管理器，不拥有另一份 unit／PC 表。
 - `mem_map.cpp` 是资源模块，可按当前平台选择实现；`signals.cpp` 和 syscall 的 Linux 细节不污染 encoder／decoder。
-- `arm64_runtime` 是当前 concrete host bridge；解释器可在满足 memory service 的 host 上独立构建。当前方案不宣称同时完成 Windows、一般多VM地址空间或其他 JIT backend。
+- `arm64_runtime` 与恢复后的 `riscv64_runtime` 分别绑定具体 host ABI；共用 RunGuest／VM／cache 所有权，解释器可在满足 memory service 的 host 上独立构建。RV64 使用当前 Program、独立 Block/Function home、GPR-pair SIMD/F+D 和既有数值 helper，未恢复旧 IR/HIR 或持久化层。当前方案不宣称完成 Windows 或一般多 VM 地址空间。
 - 按职责拆分的 semantics `.inc` 仅供同一个静态语义模板包含；不是第二套指令流或生成期微操作表。
 - `compile.cpp` 不承担逐条操作实现；`emit.cpp` 不积累指令族逻辑；`emit.h` 不成为另一份大实现文件。现有大 inline 编码移入 exact encoding，较复杂的 operand／状态逻辑归对应 `.cpp`，仅将必要的小访问器留在私有头。
 - 上述各 `emit_*.cpp` 实现同一个 Writer 的方法，不是一组 pass／manager；除去一个过大的 switch，不产生新的指令遍历或中间表。`emit_float` 中只含 host 发码，ext80共享数值服务仍归 `arch/x86/x87`；helper ABI桥只负责真实调用约定，不成为所有复杂 opcode 的收容文件。
@@ -688,3 +708,11 @@ P1 的 decoder 与 assembler 可独立施工；涉及 CodeCache/native ABI 的�
 已落地的部分：自有 decoded 记录和 DecodeOne、region 独立、typed exact encoding、同 buffer Assembler、单 Writer Handle 派发、VM／GuestThread 与代码资源 owner、Linux syscall／ABI边界、共享 flags/x87 状态、统一 SMC 撤销退休，以及静态共享语义的 IrSink／DirectSink。Volatile backing 不授持久 JIT 或未经支持的直接 fetch。可写多块与并发 SMC 仍需要后续真实执行合同。
 
 当前基准、历史回退及其证据继续保留：[五轮锚定](post-push-benchmark-2026-11-05.md)、[Function入口复用与拒绝尝试](function-entry-reuse-2026-11-05.md)、[原框架合同](compile-framework-contract-2026-11-02.md)。本轮实施已改变生产源码；固定 ELF、FEX 与重构前 runner 保留原身份，新结果单独记录，不覆盖历史成绩。
+
+### RV64 恢复的实现边界（2026-11-07）
+
+宿主已确认时由 `host_runtime.h` 选择具体绑定；前端 GPR/XMM 读写仍为 Uniform IR，RV 不需要知道旧 ARM64 物理 pin 布局。guest state 私有性由 VM 映射及故障服务合同决定，不能再用“是否有 pin”代替该事实，否则 Function 的完整外部入口和 ready 复用会无故失效。
+
+RV64 默认 RV64G/LP64D，9 个 callee-saved GPR 保存 SSA，V128 使用 pair 或 spill；flags 在 s11。普通 metadata 不产生逐 producer 快照，只有真实命名消费者和第二结果需要辅助槽。局部 Goto 的数值／spill 在边前提交，BindLabel 清分支内 PC 常量事实。静态边只原子更新 DATA target，动态边查同一 32B 目录；SMC 先撤链、后在冷 dispatcher 回收。
+
+CAS128 的 libatomic fallback 需要在加锁前检查稳定、完整 RW Anonymous 范围并解除 SMC 写监视；不能跨锁区 siglongjmp，也不能用只覆盖部分原子路径的锁冒充与硬件原子互斥。未自然对齐的原子访问及其它 backing 明确停止，当前不声明支持。完整文件职责、构建及覆盖边界见 [RV64 后端说明](../source/runtime/backend/riscv64/README.md)。

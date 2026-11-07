@@ -1,12 +1,13 @@
 # SwiftVM
 
 This branch replaces the former middle pipeline with compact Uniform IR,
-in-place optimization, separate Block/Function allocation and direct ARM64
+in-place optimization, separate Block/Function allocation and direct ARM64/RV64
 encoding. The runtime executes an implemented x86-64 subset from static Linux
-ELFs on ARM64 Linux or Android, with one guest thread.
+ELFs on ARM64 Linux/Android or RV64 Linux, with one guest thread.
 
-The former Android demo, Slang/AOT and RISC-V targets are retired on this branch;
-their implementations remain in Git history and the frozen original workspace.
+The former Android demo and Slang/AOT targets remain retired on this branch.
+The RV64 backend now consumes the rebuilt IR directly; the former backend's
+IR/HIR, cache and persistence layers remain in Git history and the frozen tree.
 Dynamic ELF, full ISA coverage and complete guest signals remain outside this
 checkpoint.
 
@@ -14,7 +15,7 @@ checkpoint.
 
 Host contracts and code-generation tools require CMake 3.22+, a C++20 compiler
 and a C compiler. Ninja is used below; diStorm, the controlled exact-encoding
-VIXL subset, SoftFloat and Cephes numerical dependencies are included.
+VIXL subset, the Biscuit word encoder, SoftFloat and Cephes are included.
 
 ```sh
 cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -22,9 +23,10 @@ cmake --build build/host -j4
 ctest --test-dir build/host --output-on-failure
 ```
 
-On ARM64 Linux this also builds `build/host/svm_rebuild_linux`. Native checks
-depend on the host's ARM64/Linux facilities; host-only results do not replace
-Android runtime qualification.
+On ARM64 or RV64 Linux this also builds `build/host/svm_rebuild_linux`. Native
+checks require the matching host ISA; compiling RV words on ARM64 does not
+execute them. See the [RV64 backend](source/runtime/backend/riscv64/README.md)
+for cross-building, execution coverage and current boundaries.
 
 For Android, set `ANDROID_NDK` to the NDK installation. The measured build used
 NDK 29.0.13846066, API28, Release/O3, static libc++ and ThinLTO.

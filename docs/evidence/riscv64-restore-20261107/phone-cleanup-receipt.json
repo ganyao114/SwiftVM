@@ -1,0 +1,10 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-riscv-restore-20261106",
+  "active_processes": [],
+  "open_files": [],
+  "remaining_bytes": 0,
+  "errors": [],
+  "allocated_bytes_removed": 134369280,
+  "df_actual_free_delta_bytes": 134406144,
+  "completed_at_utc": "2026-11-07T08:11:27.946382+00:00"
+}

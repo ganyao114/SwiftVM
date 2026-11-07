@@ -1,0 +1,86 @@
+[
+  {
+    "case": "int",
+    "scope": "block",
+    "exit": 0,
+    "valid": true,
+    "stdout": "int    0x105ad9f429eccccc\n"
+  },
+  {
+    "case": "int",
+    "scope": "function",
+    "exit": 0,
+    "valid": true,
+    "stdout": "int    0x105ad9f429eccccc\n"
+  },
+  {
+    "case": "fp",
+    "scope": "block",
+    "exit": 0,
+    "valid": true,
+    "stdout": "fp     0x532dfc3f44b15cbe\n"
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "exit": 0,
+    "valid": true,
+    "stdout": "fp     0x532dfc3f44b15cbe\n"
+  },
+  {
+    "case": "mem",
+    "scope": "block",
+    "exit": 0,
+    "valid": true,
+    "stdout": "mem    0x5eac156a4d4ce784\n"
+  },
+  {
+    "case": "mem",
+    "scope": "function",
+    "exit": 0,
+    "valid": true,
+    "stdout": "mem    0x5eac156a4d4ce784\n"
+  },
+  {
+    "case": "branch",
+    "scope": "block",
+    "exit": 0,
+    "valid": true,
+    "stdout": "branch 0xdb17d164f01bca6b\n"
+  },
+  {
+    "case": "branch",
+    "scope": "function",
+    "exit": 0,
+    "valid": true,
+    "stdout": "branch 0xdb17d164f01bca6b\n"
+  },
+  {
+    "case": "call",
+    "scope": "block",
+    "exit": 0,
+    "valid": true,
+    "stdout": "call   0xee79813b94536693\n"
+  },
+  {
+    "case": "call",
+    "scope": "function",
+    "exit": 0,
+    "valid": true,
+    "stdout": "call   0xee79813b94536693\n"
+  },
+  {
+    "case": "x87",
+    "scope": "block",
+    "exit": 0,
+    "valid": true,
+    "stdout": ""
+  },
+  {
+    "case": "x87",
+    "scope": "function",
+    "exit": 0,
+    "valid": true,
+    "stdout": ""
+  }
+]

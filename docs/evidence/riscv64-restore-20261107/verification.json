@@ -1,0 +1,20 @@
+{
+  "base_commit": "fb9c8e1f6e88be1c735cf5ec69f367759076a535",
+  "completed_at_utc": "2026-11-07T08:53:58.458758+00:00",
+  "worktree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "external_results": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106",
+  "host_tests_passed": 11,
+  "host_final_rv_contract_passed": true,
+  "redmagic_serial": "bf1359ff",
+  "redmagic_regressions_passed": 9,
+  "rv_native_compile_cases": 23,
+  "rv_kernel_results": "rv-kernel-results.json",
+  "rv_atomic_smc_fault_cases_passed": 12,
+  "rv_workload_smoke_cases_passed": 12,
+  "format_cpp_files_checked": 188,
+  "formal_rv_hardware_or_fex_performance_claim": false,
+  "arm64_compile_comparison": "arm64-compile-summary.json",
+  "source_files": 192,
+  "implementation_commit": "c06111419205948c9e3e8f43a7082685428a4755",
+  "encoder_dependency_commit": "6a561d66bb757b6e2049831ee7b750aeda3d4e23"
+}

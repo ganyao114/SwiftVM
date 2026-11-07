@@ -1,5 +1,47 @@
 # RV64 JIT 测试用 QEMU
 
+## 当前重建后端的入口
+
+在 Linux 构建机安装 GCC 13 的 `riscv64-linux-gnu` 交叉工具链、CMake 和 Ninja。
+脚本使用当前仓库根目录的 CMake，构建 `svm_rebuild_linux`、
+`svm_riscv64_compile_test` 与 `svm_runtime_engine_test`，不调用旧版目标。
+默认生成 RV64G／LP64D，优先选择带 `-13` 后缀的 GCC；也可用常规
+`CMAKE_C_COMPILER`／`CMAKE_CXX_COMPILER` 配置其他目标工具链。
+
+已有可用的 patched QEMU 时直接复用，不需要下载或重建。
+设置下面两个变量为构建机上的实际路径，然后在仓库根目录执行：
+
+```sh
+task_qemu=/path/to/patched/qemu-riscv64
+task_build=/path/to/build-riscv64
+sh scripts/build-riscv64-linux.sh "$task_build" \
+  -DSVM_RISCV_QEMU_EXECUTABLE="$task_qemu"
+ctest --test-dir "$task_build" \
+  -R '^(riscv64_compile_contract|runtime_engine_contract)$' \
+  --no-tests=error --output-on-failure
+```
+
+默认模拟器参数为 `-L /usr/riscv64-linux-gnu -cpu
+rv64,v=false,zba=false,zbb=false,zbs=false,zbc=false`。
+`SVM_RISCV_SYSROOT` 可更换运行时 loader 前缀；它不覆盖交叉编译器自身的 sysroot。
+`SVM_RISCV_QEMU_CPU` 可调整实际验证 CPU。不要强制 `c=false`：目标 libc 可能使用
+RV64GC，SwiftVM 生成的 RV64G 代码与 libc 的要求分别处理。
+
+也可直接传入完整模拟器列表，显式列表优先于上述派生参数：
+
+```sh
+sh scripts/build-riscv64-linux.sh "$task_build" \
+  "-DCMAKE_CROSSCOMPILING_EMULATOR=$task_qemu;-L;/usr/riscv64-linux-gnu;-cpu;rv64,v=false,zba=false,zbb=false,zbs=false,zbc=false"
+```
+
+未提供显式列表时，重新配置 `SVM_RISCV_QEMU_EXECUTABLE` 即可切换实际模拟器。
+QEMU 的路径、来源版本和补丁应随验证结果记录，功能执行通过不代表真机性能。
+
+## 旧版后端的模拟器验证记录
+
+以下为旧版后端的历史测试目标、用例与修复记录。它们解释为什么缓存别名测试需要
+可靠的 `flush_icache`，不构成当前重建后端的指令扩展覆盖声明；当前构建使用上一节入口。
+
 SwiftVM 通过 RW/RX 双映射发布代码，在 RV64 Linux 上使用
 `__builtin___clear_cache` / `riscv_flush_icache` 同步指令缓存。
 QEMU 8.0.4 的 linux-user 实现把这个 syscall 当作空操作；写 RW 别名不会使 RX

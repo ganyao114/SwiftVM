@@ -1,0 +1,28 @@
+{
+  "completed_at_utc": "2026-11-07T08:52:17.164050+00:00",
+  "binaries": {
+    "svm_runtime_engine_test": {
+      "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_runtime_engine_test",
+      "bytes": 2556920,
+      "sha256": "d720329f16d4269c13d6ed99044a1ff78e8a34e78f5b03c5a55a914cfb08ebc8"
+    },
+    "svm_riscv64_compile_test": {
+      "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_riscv64_compile_test",
+      "bytes": 399616,
+      "sha256": "0ca08f02125ec27781da5cb276895e3d97c5bb1299e80de99ece0c1001251a54"
+    },
+    "svm_rebuild_linux": {
+      "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_rebuild_linux",
+      "bytes": 2546872,
+      "sha256": "5b8147fed165612c5a510e36b045891b95b61725d99e68a5cee3bf6092a0f51d"
+    }
+  },
+  "frozen_container": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-final.cpio.gz",
+    "bytes": 6554685,
+    "sha256": "753b1c1e948760bc015c97fe5427255cd15d4b6980103112e3fbe15bb7e7b7e9"
+  },
+  "results_sha256": "8a56506d60a41d70565bf64ef3e3df01305520b8960fa363faf3fb9d334a8e16",
+  "console_sha256": "e6725f6d2db755ef10870359aa8ccdfe0715294784d43a6225bbca691b476971",
+  "no_physical_performance_claim": true
+}

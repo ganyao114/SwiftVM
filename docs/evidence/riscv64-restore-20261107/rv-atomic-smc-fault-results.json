@@ -1,0 +1,134 @@
+[
+  {
+    "case": "atomic128-smc",
+    "scope": "block",
+    "exit": 0,
+    "expected_exit": 0,
+    "valid": true,
+    "native_bytes": 3132,
+    "static_links": 9,
+    "cache_invalidations": 1,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "atomic128-smc",
+    "scope": "function",
+    "exit": 0,
+    "expected_exit": 0,
+    "valid": true,
+    "native_bytes": 3132,
+    "static_links": 9,
+    "cache_invalidations": 1,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "smc-recompile",
+    "scope": "block",
+    "exit": 0,
+    "expected_exit": 0,
+    "valid": true,
+    "native_bytes": 2056,
+    "static_links": 6,
+    "cache_invalidations": 1,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "smc-recompile",
+    "scope": "function",
+    "exit": 0,
+    "expected_exit": 0,
+    "valid": true,
+    "native_bytes": 2056,
+    "static_links": 6,
+    "cache_invalidations": 1,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "atomic-widths",
+    "scope": "block",
+    "exit": 0,
+    "expected_exit": 0,
+    "valid": true,
+    "native_bytes": 3600,
+    "static_links": 12,
+    "cache_invalidations": 4,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "atomic-widths",
+    "scope": "function",
+    "exit": 0,
+    "expected_exit": 0,
+    "valid": true,
+    "native_bytes": 3600,
+    "static_links": 12,
+    "cache_invalidations": 4,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "atomic128-fault",
+    "scope": "block",
+    "exit": 125,
+    "expected_exit": 125,
+    "valid": true,
+    "native_bytes": 1032,
+    "static_links": 0,
+    "cache_invalidations": 0,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "atomic128-fault",
+    "scope": "function",
+    "exit": 125,
+    "expected_exit": 125,
+    "valid": true,
+    "native_bytes": 1032,
+    "static_links": 0,
+    "cache_invalidations": 0,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "unaligned-atomic",
+    "scope": "block",
+    "exit": 125,
+    "expected_exit": 125,
+    "valid": true,
+    "native_bytes": 364,
+    "static_links": 0,
+    "cache_invalidations": 0,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "unaligned-atomic",
+    "scope": "function",
+    "exit": 125,
+    "expected_exit": 125,
+    "valid": true,
+    "native_bytes": 364,
+    "static_links": 0,
+    "cache_invalidations": 0,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "native-fault",
+    "scope": "block",
+    "exit": 125,
+    "expected_exit": 125,
+    "valid": true,
+    "native_bytes": 296,
+    "static_links": 0,
+    "cache_invalidations": 0,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "native-fault",
+    "scope": "function",
+    "exit": 125,
+    "expected_exit": 125,
+    "valid": true,
+    "native_bytes": 296,
+    "static_links": 0,
+    "cache_invalidations": 0,
+    "interpreted_steps": 0
+  }
+]

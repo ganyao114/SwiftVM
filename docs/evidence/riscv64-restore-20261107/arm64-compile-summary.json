@@ -1,0 +1,59 @@
+[
+  {
+    "scope": "block",
+    "samples_ns": {
+      "baseline": [
+        42038975,
+        43442713,
+        42854937
+      ],
+      "candidate": [
+        42729006,
+        42395368,
+        42297898
+      ]
+    },
+    "median_ns": {
+      "baseline": 42854937,
+      "candidate": 42395368
+    },
+    "candidate_over_baseline": 0.9892761713778742,
+    "native_bytes": {
+      "baseline": [
+        370240
+      ],
+      "candidate": [
+        369928,
+        370240
+      ]
+    }
+  },
+  {
+    "scope": "function",
+    "samples_ns": {
+      "baseline": [
+        51417713,
+        52254476,
+        51846517
+      ],
+      "candidate": [
+        52396919,
+        51292827,
+        51146442
+      ]
+    },
+    "median_ns": {
+      "baseline": 51846517,
+      "candidate": 51292827
+    },
+    "candidate_over_baseline": 0.9893205940912096,
+    "native_bytes": {
+      "baseline": [
+        377392
+      ],
+      "candidate": [
+        377392
+      ]
+    }
+  }
+]

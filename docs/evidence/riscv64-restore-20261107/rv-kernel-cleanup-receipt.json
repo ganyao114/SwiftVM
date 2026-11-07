@@ -1,0 +1,20 @@
+{
+  "completed_at_utc": "2026-11-07T08:52:17.163610+00:00",
+  "owned_qemu_pid": 52856,
+  "qemu_running": false,
+  "qemu_exit": 0,
+  "opened_rootfs_files": [],
+  "removed_paths": [
+    "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-expanded"
+  ],
+  "removed_allocated_bytes": 14594048,
+  "removed_logical_bytes": 14558333,
+  "rootfs_expanded_remaining_bytes": 0,
+  "observed_free_delta_bytes": 14598144,
+  "all_inputs_unchanged": true,
+  "final_three_elf_sources_unchanged": true,
+  "first_two_kernel_rounds_untouched": true,
+  "preserved_initrd": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-final.cpio.gz",
+  "preserved_console": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/console.log",
+  "errors": []
+}

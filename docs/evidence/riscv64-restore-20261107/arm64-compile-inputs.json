@@ -1,0 +1,14 @@
+{
+  "baseline": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/baseline-fb9c8e1f",
+    "sha256": "0440bbe7ed49cbe9e308a64f2af9e3c1759352f397e55705a6f1a2be984fecd4"
+  },
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "sha256": "fab220d72b1cbaf76a91ae85971346d552cd72a592d798ecb46e6750b142e8d1"
+  },
+  "coremark": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+    "sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba"
+  }
+}

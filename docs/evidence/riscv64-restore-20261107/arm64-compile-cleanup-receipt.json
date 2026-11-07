@@ -1,0 +1,9 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-riscv-compile-check-20261107",
+  "active_processes": [],
+  "open_files": [],
+  "remaining_bytes": 0,
+  "errors": [],
+  "allocated_bytes_removed": 46895104,
+  "df_actual_free_delta_bytes": 46907392
+}

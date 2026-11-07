@@ -1,0 +1,7 @@
+Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+    Start 11: riscv64_compile_contract
+1/1 Test #11: riscv64_compile_contract .........   Passed    0.36 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.36 sec
