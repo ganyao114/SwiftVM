@@ -4,9 +4,9 @@ The build links the rebuilt pipeline directly. It does not invoke the retired
 HIR, allocation plans, actions, certificates or legacy JIT services.
 
 ```text
-x86 bytes -> decode / region formation -> neutral Uniform IR
+x86 / AArch64 bytes -> decode / region formation -> neutral Uniform IR
           -> in-place common optimization
-          -> Block or Function allocation -> direct ARM64 / RV64 encoding
+          -> Block or Function allocation -> native ARM64 / RV64 / x64 / LA64 encoding
           -> executable slabs / links / one active PC directory -> native execution
 ```
 
@@ -14,6 +14,8 @@ x86 bytes -> decode / region formation -> neutral Uniform IR
 | --- | --- |
 | `source/runtime/ir/` | Sole Program/Builder owner, stable node IDs, 24B operations, 24B blocks and 8B operand words; O(1) Submit |
 | `source/runtime/frontend/x86/` | Owned decoded instructions, bounded region formation and shared Semantics for IR emission or direct interpretation; Known-target selection with Unknown/EarlyOff paths |
+| `source/runtime/frontend/{source,build_result,direct}.h` | Shared value contracts for source windows, build results and direct execution; no IR copies or runtime registries |
+| `source/runtime/frontend/arm64/` | One VIXL family selection per word, bounded region formation, shared templated scalar/memory/control/NEON/FP semantics and two sinks |
 | `source/runtime/ir/passes/` | Three walks over the same IR, flags demand, bounded rewrites, Uniform forwarding and DCE; one temporary u64/node table |
 | `source/base/` | Typed formatting, error delivery and filtered logging; no per-node compile state |
 | `source/runtime/ir/format.*` | Optional streaming IR diagnostics, separate from core storage |
@@ -21,11 +23,15 @@ x86 bytes -> decode / region formation -> neutral Uniform IR
 | `source/runtime/backend/arm64/allocate.*`, `allocation_selection.cpp` | Distinct Block/Function lifetimes, pin/NZCV/PC choices in the original reverse walk, real registers/spills and one 16B Home/node |
 | `source/runtime/backend/arm64/` | Typed Handle selection, exact controlled VIXL encoding, explicit scratch allocation, patching, helper ABI and actual fault/link metadata |
 | `source/runtime/backend/riscv64/` | Independent RV64G allocation and Handle emission into the same word buffer, exact Biscuit encoding and explicit helper calls |
-| `source/runtime/arch/x86/` | Sole guest state/flags definition, CPU model and portable x87/vector numerical semantics |
+| `source/runtime/backend/{x64,loongarch64}/` | Independent Block/Function homes, typed Handle emission, exact single-buffer encoders, native helper/entry ABI and relocation/link owners |
+| `source/runtime/arch/x86/` | x86 state/flags definition, CPU model and portable x87/vector numerical semantics |
+| `source/runtime/arch/arm64/` | ARM state, raw FPCR/FPSR and pure numerical leaves; no IR, frontend, allocation or execution dependencies |
+| `source/runtime/arch/guest.h`, `execution/guest_state.cpp` | Guest ISA/layout contract and one-time state/PC/stack/control binding for the chosen frontend; backends receive offsets and canonical numeric control |
+| `source/runtime/execution/frontend_service.cpp` | Selects one frontend per compile request, reuses the same Program storage and forwards actual source/continuation evidence |
 | `source/runtime/execution/` | VM/thread ownership, engine dispatch, compile service, guest memory, native mappings, slabs, directory/links, SMC and retirement |
 | `source/runtime/execution/code_image.*`, `disk_cache.*`, `code_persistence.cpp` | Shared native unit format, optional persistent data lookup and VM source/SMC policy; published code stays owned by CodeHeap/CodeCache |
 | `source/aot/` | Embedded-guest ELF container, offline candidate discovery, named SysV guest calls and explicit startup; uses ordinary compilation/publication |
-| `source/runtime/platform/` | ELF loading, Linux syscalls/signals/safe access and host ARM64 bridge |
+| `source/runtime/platform/` | ELF loading, Linux guest syscall ABI normalization, signals/safe access and host-specific signal-frame adapters |
 | `source/launcher/linux/` | Runner CLI and coarse diagnostics |
 | `source/tests/` | Catch cases, independent numerical expectations, and explicit compile/native execution entries |
 | `benchmarks/` | Fixed construction/compile workloads, budget diagnostics and guest input recipes |
@@ -35,13 +41,40 @@ The frontend owns logical versions; the backend owns pins and physical choices.
 Block remains a lightweight allocation path. Function computes real RPO and
 cross-block/loop lifetimes; failures and retries remain charged.
 
-The frontend's 64B Instruction is independent of the legacy parser. One
+The x86 frontend's 64B Instruction is independent of the legacy parser. One
 Semantics<Sink> implements instruction ordering for both IrSink and DirectSink;
 the interpreter creates no Program. VEX YMM operations use two V128 values and
 Uniform accesses to their low and high halves. Backend dispatch selects typed
 Handle methods whose implementations are grouped by responsibility. Its sole
 Assembler borrows the output words and uses a controlled VIXL subset without
 implicit scratch registers, literal pools, veneers or automatic extra code.
+
+The AArch64 instruction is 16 bytes and retains its decoder family. A reused
+thread-local VIXL decision graph selects that family once; both sinks execute
+the same family handler without another decode. Decode storage satisfies the
+Bionic ARM64 TLS alignment. Architectural FP and saturating operations that
+need exact NaN/rounding/FPSR/QC semantics call typed numerical leaves through
+the fixed `ExecuteNumeric(state, operation, pc)` ABI. These leaves do not
+interpret an IR Program or access guest memory. The generic CallLambda lowering
+owns live-home preservation, explicit arguments, flags and guest FP boundaries.
+
+`NativeRunContext` retains its 1024-byte layout with state at offset 160. The
+active union contains the x86 864-byte or ARM 816-byte state. Cold guest binding
+passes actual offsets to the backend once; PC, stack, faults, cache and runtime
+services use that active layout. Raw ARM FPCR is converted to the canonical
+IR numeric control at architectural writes, so backends need no guest-ISA FP
+interpretation. System calls normalize ARM x8/x0..5 or x86 syscall registers
+before sharing the Linux operation service; stat and initial-stack ABI stay
+guest-specific.
+
+X64 encodes bytes directly into the existing output vector, pads only its final
+size and records byte offsets for entries, faults and links. Declared MOVABS
+relocations may be unaligned. LA64 encodes fixed words and declares real literal
+addresses. Each native backend retains its own register allocation and explicit
+scratch ABI; the shared CFG scheduler creates no extra lowering representation.
+All four hosts publish through the same CodeHeap/CodeCache and use the same
+SMC retirement and persistent-unit contracts. SysV typed guest calls remain
+an x86 guest API; ordinary ARM guest JIT, direct execution and AOT use the VM.
 
 Packed SSE operations reuse the existing vector IR and direct encoders.
 Restartable REP STOS emits a count guard, one TSO store and progress publication

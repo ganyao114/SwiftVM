@@ -1,0 +1,40 @@
+{
+  "audited_at_utc": "2026-11-07T16:13:19.711098+00:00",
+  "retained_paths": {
+    "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64": "2244\t/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64": "105348\t/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/x64-deps": "14692\t/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/x64-deps"
+  },
+  "df_Data2": "Filesystem       Size    Used   Avail Capacity iused ifree %iused  Mounted on\n/dev/disk11s1   953Gi   878Gi    74Gi    93%     11M  778M    1%   /Volumes/Data2\n",
+  "owned_processes": [
+    {
+      "pid": 9628,
+      "ps_exit": 1,
+      "current_process": "",
+      "owned_qemu_active": false
+    },
+    {
+      "pid": 14717,
+      "ps_exit": 1,
+      "current_process": "",
+      "owned_qemu_active": false
+    },
+    {
+      "pid": 18036,
+      "ps_exit": 1,
+      "current_process": "",
+      "owned_qemu_active": false
+    },
+    {
+      "pid": 21794,
+      "ps_exit": 1,
+      "current_process": "",
+      "owned_qemu_active": false
+    }
+  ],
+  "all_owned_qemu_stopped": true,
+  "temporary_initrd_paths_remaining": [],
+  "temporary_expanded_directories_created": false,
+  "active_writers": false,
+  "errors": []
+}

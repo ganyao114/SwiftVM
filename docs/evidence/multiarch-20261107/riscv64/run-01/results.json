@@ -1,0 +1,137 @@
+{
+  "completed_at_utc": "2026-11-07T15:56:55.629608+00:00",
+  "elapsed_seconds": 2.4441255000419915,
+  "qemu_exit": 0,
+  "cases": [
+    {
+      "name": "block-jit",
+      "exit": 42,
+      "scope": "block",
+      "engine": "jit",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--engine",
+        "jit",
+        "--hot-threshold",
+        "2",
+        "/tests/armguest.elf"
+      ],
+      "actual_exit": 1,
+      "stats": {},
+      "stdout_exact": false,
+      "mechanism_valid": false,
+      "all_passed": false
+    },
+    {
+      "name": "block-interpreter",
+      "exit": 42,
+      "scope": "block",
+      "engine": "interpreter",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--engine",
+        "interpreter",
+        "--hot-threshold",
+        "2",
+        "/tests/armguest.elf"
+      ],
+      "actual_exit": 1,
+      "stats": {},
+      "stdout_exact": false,
+      "mechanism_valid": false,
+      "all_passed": false
+    },
+    {
+      "name": "block-mixed",
+      "exit": 42,
+      "scope": "block",
+      "engine": "mixed",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--engine",
+        "mixed",
+        "--hot-threshold",
+        "2",
+        "/tests/armguest.elf"
+      ],
+      "actual_exit": 1,
+      "stats": {},
+      "stdout_exact": false,
+      "mechanism_valid": false,
+      "all_passed": false
+    },
+    {
+      "name": "function-jit",
+      "exit": 42,
+      "scope": "function",
+      "engine": "jit",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--engine",
+        "jit",
+        "--hot-threshold",
+        "2",
+        "/tests/armguest.elf"
+      ],
+      "actual_exit": 1,
+      "stats": {},
+      "stdout_exact": false,
+      "mechanism_valid": false,
+      "all_passed": false
+    },
+    {
+      "name": "function-interpreter",
+      "exit": 42,
+      "scope": "function",
+      "engine": "interpreter",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--engine",
+        "interpreter",
+        "--hot-threshold",
+        "2",
+        "/tests/armguest.elf"
+      ],
+      "actual_exit": 1,
+      "stats": {},
+      "stdout_exact": false,
+      "mechanism_valid": false,
+      "all_passed": false
+    },
+    {
+      "name": "function-mixed",
+      "exit": 42,
+      "scope": "function",
+      "engine": "mixed",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--engine",
+        "mixed",
+        "--hot-threshold",
+        "2",
+        "/tests/armguest.elf"
+      ],
+      "actual_exit": 1,
+      "stats": {},
+      "stdout_exact": false,
+      "mechanism_valid": false,
+      "all_passed": false
+    }
+  ],
+  "all_passed": false,
+  "aslr_enabled": true,
+  "console_sha256": "ad714b718eef63d0960eafad5b723c2973dc382de2432a28193d0d5955f64dff",
+  "no_performance_claim": true
+}

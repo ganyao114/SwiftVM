@@ -1,0 +1,10 @@
+{
+  "owned_pid": 18036,
+  "running": false,
+  "qemu_exit": 0,
+  "deadline": false,
+  "temporary_initrd_removed_bytes": 12943658,
+  "temporary_initrd_remaining": false,
+  "expanded_rootfs_created": false,
+  "errors": []
+}

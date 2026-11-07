@@ -1,0 +1,10 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-multiarch-20261107",
+  "device": "bf1359ff",
+  "active_processes": [],
+  "open_files": [],
+  "errors": [],
+  "allocated_bytes_removed": 366594048,
+  "df_actual_free_delta_bytes": 366669824,
+  "remaining_bytes": 0
+}

@@ -1,0 +1,14 @@
+Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+    Start 16: x64_compile_contract
+1/2 Test #16: x64_compile_contract .............   Passed    0.75 sec
+    Start 28: aot_artifact_contract
+2/2 Test #28: aot_artifact_contract ............   Passed    0.52 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Label Time Summary:
+compile     =   1.27 sec*proc (2 tests)
+portable    =   1.27 sec*proc (2 tests)
+unit        =   1.27 sec*proc (2 tests)
+
+Total Test time (real) =   1.27 sec

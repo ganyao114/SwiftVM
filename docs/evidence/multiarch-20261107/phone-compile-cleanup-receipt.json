@@ -1,0 +1,9 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-multiarch-cost-20261107",
+  "active_processes": [],
+  "open_files": [],
+  "remaining_bytes": 0,
+  "errors": [],
+  "allocated_bytes_removed": 62386176,
+  "df_actual_free_delta_bytes": 62398464
+}

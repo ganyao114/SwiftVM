@@ -1,0 +1,12 @@
+Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+    Start 16: x64_compile_contract
+1/1 Test #16: x64_compile_contract .............   Passed    0.70 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Label Time Summary:
+compile     =   0.70 sec*proc (1 test)
+portable    =   0.70 sec*proc (1 test)
+unit        =   0.70 sec*proc (1 test)
+
+Total Test time (real) =   0.71 sec

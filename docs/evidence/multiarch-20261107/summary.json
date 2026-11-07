@@ -1,0 +1,383 @@
+{
+  "status": "implemented_and_functionally_validated",
+  "reference": {
+    "branch": "origin/master (no main branch)",
+    "commit": "42e9c2349718a9308f603ecf4ca6b41ba4449ccd"
+  },
+  "workspace": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "branch": "refactor/middle-pipeline-rebuild-parity",
+  "baseline_commit": "092d62e49320a576844e1f738757eb5df5220d8c",
+  "implementation": {
+    "arm64_frontend": "source/runtime/frontend/arm64",
+    "arm64_numerical_semantics": "source/runtime/arch/arm64",
+    "x64_backend": "source/runtime/backend/x64",
+    "loongarch64_backend": "source/runtime/backend/loongarch64",
+    "common_pipeline": "Compact Uniform IR, shared Semantics<Sink>, distinct Block/Function allocation, original output storage, unchanged ownership contracts",
+    "native_execution": "All backends emit native code. Specific numerical callbacks do not interpret IR."
+  },
+  "functional_checks": {
+    "host_portable": {
+      "eligible_suites": 19,
+      "passed": 19,
+      "wrong_isa_native_skipped": 9,
+      "method": "Initial full CTest plus targeted rerun of corrected x64 linking and updated AOT fixture; ARM frontend final 9-case test run separately."
+    },
+    "arm64_physical": {
+      "device": "RedMagic bf1359ff",
+      "frontend_cases": 9,
+      "frontend_assertions": 24,
+      "backend_native_cases": 39,
+      "runtime_native_cases": 5,
+      "aot_call_native_cases": 3,
+      "persistence_native_cases": 4,
+      "native_relocation_cases": 1,
+      "guest_modes": "Block/Function x JIT/direct/Mixed",
+      "precise_fault_combinations": 6,
+      "unsupported_fpcr_combinations": 6,
+      "smc_combinations": 4,
+      "warm_cache_and_embedded_aot": "Both scopes: zero compile attempts, no interpreter; original guest removed before AOT run"
+    },
+    "x64_kernel": {
+      "platform": "QEMU x64 two-CPU real Linux kernel",
+      "compile_groups": 17,
+      "backend_native_groups": 16,
+      "base_integration_cases_passed": 25,
+      "final_targeted_cases_passed": 3,
+      "final_arm_block_aot": {
+        "units": 39,
+        "compile_attempts": 0,
+        "interpreted_steps": 0,
+        "guest_exit": 42
+      },
+      "evidence": "x64/final-summary.json",
+      "staging_note": "Full 25-case phase predates the final static conditional-edge/ARM-known-target and cold FPCR validation changes. No claim that this whole phase was rerun on the later binary."
+    },
+    "loongarch64_kernel": {
+      "platform": "QEMU two-hart real Linux kernel, LA64D, 16 KiB pages, no LSX/LASX",
+      "compile_groups": 14,
+      "backend_native_groups": 14,
+      "shared_native_groups": 13,
+      "final_integration_invocations": 40,
+      "all_passed": true,
+      "warm_cache_and_embedded_aot": "Both guest ISAs, both scopes: zero extra compilation",
+      "evidence": "loongarch64/final-summary.json"
+    },
+    "riscv64_kernel": {
+      "platform": "QEMU two-hart RV64G real Linux kernel",
+      "arm_guest_mode_checks_passed": 6,
+      "evidence": "riscv64/summary.json",
+      "note": "This earlier semantic smoke predates final conditional-PC publication and cold FPCR checking; those changes are covered by later ARM/x64/LA tests."
+    }
+  },
+  "compile_regression_guard": {
+    "comparison": "before this feature vs feature build, existing x86 CoreMark guest on physical ARM64, full compile cost including decode",
+    "samples_per_scope_arm": 3,
+    "phone": [
+      {
+        "scope": "block",
+        "baseline_ms": 42.71121,
+        "candidate_ms": 42.638078,
+        "candidate_over_baseline": 0.9982877563056631,
+        "native_bytes": {
+          "baseline": [
+            370384,
+            370696
+          ],
+          "candidate": [
+            370384,
+            370696
+          ]
+        }
+      },
+      {
+        "scope": "function",
+        "baseline_ms": 52.386495,
+        "candidate_ms": 52.936613,
+        "candidate_over_baseline": 1.0105011415632978,
+        "native_bytes": {
+          "baseline": [
+            378008
+          ],
+          "candidate": [
+            378008
+          ]
+        }
+      }
+    ],
+    "host_microbenchmarks": [
+      {
+        "kind": "region",
+        "scope": "function",
+        "input": "automatic_region",
+        "median_ns_per_request": {
+          "baseline": 38707.1953125,
+          "candidate": 39022.62109375
+        },
+        "candidate_over_baseline": 1.008149021873154,
+        "samples_ns_per_request": {
+          "baseline": [
+            38468.5859375,
+            38684.5703125,
+            44475.5859375,
+            44568.1953125,
+            43872.39453125,
+            38667.80859375,
+            38692.54296875,
+            39073.5703125,
+            38707.1953125,
+            38789.38671875,
+            38676.43359375,
+            38643.71875,
+            39107.5859375,
+            38949.21875,
+            38256.671875
+          ],
+          "candidate": [
+            39133.46484375,
+            39186.84765625,
+            39131.99609375,
+            39389.6484375,
+            38323.40625,
+            39345.37890625,
+            38838.703125,
+            38633.13671875,
+            39139.16015625,
+            38636.71875,
+            38600.91015625,
+            38718.75,
+            38545.8984375,
+            39459.63671875,
+            39022.62109375
+          ]
+        },
+        "same_work_and_generated_shape": true,
+        "shape": {
+          "N_per_request": 170,
+          "E_per_request": 102,
+          "native_words_per_request": 435,
+          "spill_slots_per_request": 0,
+          "frame_bytes": 16,
+          "code_mix64": "16108104312467086438",
+          "entry_block": 33,
+          "ir_blocks_per_request": 34,
+          "operand_words_per_request": 271
+        }
+      },
+      {
+        "kind": "region",
+        "scope": "function",
+        "input": "provided_decoded",
+        "median_ns_per_request": {
+          "baseline": 29246.74609375,
+          "candidate": 29224.76953125
+        },
+        "candidate_over_baseline": 0.999248580938558,
+        "samples_ns_per_request": {
+          "baseline": [
+            28428.05859375,
+            28362.140625,
+            29465.65625,
+            30548.98828125,
+            29493.0,
+            29144.53125,
+            28563.640625,
+            29260.41796875,
+            28716.796875,
+            29306.96484375,
+            29336.265625,
+            29123.53515625,
+            29246.74609375,
+            29277.83203125,
+            28479.1640625
+          ],
+          "candidate": [
+            29359.86328125,
+            29423.828125,
+            29392.578125,
+            28670.24609375,
+            29224.9375,
+            29090.33203125,
+            28615.8828125,
+            28837.40234375,
+            29357.421875,
+            28903.3203125,
+            28938.640625,
+            29265.625,
+            28946.94140625,
+            29224.76953125,
+            29498.6953125
+          ]
+        },
+        "same_work_and_generated_shape": true,
+        "shape": {
+          "N_per_request": 170,
+          "E_per_request": 102,
+          "native_words_per_request": 435,
+          "spill_slots_per_request": 0,
+          "frame_bytes": 16,
+          "code_mix64": "16108104312467086438",
+          "entry_block": 33,
+          "ir_blocks_per_request": 34,
+          "operand_words_per_request": 271
+        }
+      },
+      {
+        "kind": "scalar",
+        "scope": "block",
+        "input": "IR",
+        "median_ns_per_request": {
+          "baseline": 47295.0859375,
+          "candidate": 42929.6875
+        },
+        "candidate_over_baseline": 0.9076986889659354,
+        "samples_ns_per_request": {
+          "baseline": [
+            46369.22265625,
+            46552.734375,
+            47437.744140625,
+            46922.52734375,
+            47732.5859375,
+            48603.921875,
+            48998.046875,
+            48881.91796875,
+            47295.0859375,
+            47436.1171875,
+            45902.912109375,
+            46492.513671875,
+            47340.658203125,
+            46344.80859375,
+            46473.470703125
+          ],
+          "candidate": [
+            42801.025390625,
+            44418.9453125,
+            48263.01953125,
+            40583.578125,
+            42929.6875,
+            41656.8203125,
+            38213.134765625,
+            41689.12890625,
+            47301.837890625,
+            47194.091796875,
+            43574.951171875,
+            42863.60546875,
+            42737.142578125,
+            43997.234375,
+            45820.474609375
+          ]
+        },
+        "same_work_and_generated_shape": true,
+        "shape": {
+          "N_per_request": 320,
+          "E_per_request": 320,
+          "native_words_per_request": 363,
+          "spill_slots_per_request": 18,
+          "frame_bytes": 160
+        }
+      },
+      {
+        "kind": "scalar",
+        "scope": "function",
+        "input": "IR",
+        "median_ns_per_request": {
+          "baseline": 48642.333984375,
+          "candidate": 44351.48046875
+        },
+        "candidate_over_baseline": 0.9117876720923113,
+        "samples_ns_per_request": {
+          "baseline": [
+            49795.654296875,
+            47024.576171875,
+            50044.26953125,
+            48642.333984375,
+            48093.83203125,
+            50981.36328125,
+            50904.62109375,
+            50464.76171875,
+            50357.013671875,
+            46838.21484375,
+            49898.76171875,
+            45934.5703125,
+            46865.234375,
+            44216.552734375,
+            44034.912109375
+          ],
+          "candidate": [
+            45377.197265625,
+            44860.759765625,
+            44704.99609375,
+            42898.84375,
+            49435.546875,
+            42802.166015625,
+            39646.240234375,
+            44952.3125,
+            51444.580078125,
+            50971.59765625,
+            43884.359375,
+            43706.94921875,
+            44000.40625,
+            44103.677734375,
+            44351.48046875
+          ]
+        },
+        "same_work_and_generated_shape": true,
+        "shape": {
+          "N_per_request": 320,
+          "E_per_request": 320,
+          "native_words_per_request": 363,
+          "spill_slots_per_request": 18,
+          "frame_bytes": 160
+        }
+      }
+    ],
+    "limits": "Small regression guard, not a new FEX comparison or a performance measurement of the new x64/LA hosts."
+  },
+  "resolved_issues": [
+    "Bionic 64-byte TLS alignment for reused ARM decoder",
+    "ARM native/direct division IR contracts",
+    "x64 RIP-relative indirect jump encoder form",
+    "Known-target ARM conditional-PC publication and two static x64 successors for AOT sweep",
+    "Unsupported FPCR rejected at existing cold environment boundary",
+    "AOT fixture separates writable data from text across 4/16/64 KiB host pages without weakening SMC policy"
+  ],
+  "boundaries": [
+    "Mainline-supported AArch64 user-mode subset, not all ARMv8 extensions",
+    "No LDXR/STXR reservation, SVE/SME/MTE/PAC or full guest exceptions/cache-maintenance instructions",
+    "Typed AotGuestEnv/GuestFn and startup-stop patch remain x86 SysV guest APIs",
+    "LoongArch baseline has no LSX/LASX/LBT acceleration claim; no physical x64/LoongArch performance claim",
+    "Unused legacy IR local/Phi/RSB/host-register shapes explicitly reject"
+  ],
+  "cleanup": {
+    "phone_functional": {
+      "namespace": "/data/local/tmp/swiftvm-multiarch-20261107",
+      "device": "bf1359ff",
+      "active_processes": [],
+      "open_files": [],
+      "errors": [],
+      "allocated_bytes_removed": 366594048,
+      "df_actual_free_delta_bytes": 366669824,
+      "remaining_bytes": 0
+    },
+    "phone_performance": {
+      "namespace": "/data/local/tmp/swiftvm-multiarch-cost-20261107",
+      "active_processes": [],
+      "open_files": [],
+      "remaining_bytes": 0,
+      "errors": [],
+      "allocated_bytes_removed": 62386176,
+      "df_actual_free_delta_bytes": 62398464
+    },
+    "x64": "x64/cleanup-audit.json",
+    "loongarch64": "loongarch64/cleanup-final.json",
+    "riscv64": "riscv64/summary.json",
+    "data_policy": "All large builds and temporary artifacts use Data2 and fixed build caches; no new files in the frozen original tree."
+  },
+  "formatting": {
+    "clang_format": 21,
+    "files_checked": 372,
+    "failures": 0
+  },
+  "source_manifest": "final-source-inputs.json",
+  "source_commit": "31f3ae796fa3d741b82f56cfd5c21f68eff4f8b2",
+  "measurement_snapshot_note": "Measurements retain their original build IDs and staged source snapshots; final implementation contents are committed at source_commit."
+}

@@ -1,0 +1,20 @@
+[
+  {
+    "name": "svm_runtime_engine_test",
+    "exit": 0,
+    "sha256": "96053f219a9c0245f4459a5664bf03feadb97b491d79dbabfa13282010865d96",
+    "summary": "Filters: [native]\nRandomness seeded to: 1275329971\n===============================================================================\nAll tests passed (5 assertions in 5 test cases)\n\n"
+  },
+  {
+    "name": "svm_aot_call_test",
+    "exit": 0,
+    "sha256": "b8de8d1cbe962cfa96dcd21b5e7eb78c105f0d117105554c7916b29c87c28c50",
+    "summary": "Filters: [native]\nRandomness seeded to: 1242046658\n===============================================================================\nAll tests passed (24 assertions in 3 test cases)\n\n"
+  },
+  {
+    "name": "svm_arm64_frontend_test",
+    "exit": 0,
+    "sha256": "cd74f458283df9f4f1debc70f17233ad99c1fa4e3ff990d16f1c8f6853b3f741",
+    "summary": "Filters: [compile]\nRandomness seeded to: 3817786146\n===============================================================================\nAll tests passed (24 assertions in 9 test cases)\n\n"
+  }
+]

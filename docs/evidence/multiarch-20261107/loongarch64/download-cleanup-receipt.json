@@ -1,0 +1,28 @@
+{
+  "reason": "Downloaded archive duplicates extracted reusable cross toolchain; downloaded stock ramdisk was never used (custom in-memory rootfs used). Both regenerable and confirmed closed.",
+  "removed": [
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/toolchain.tar.xz",
+      "bytes": 71313084,
+      "sha256": "94e1f7dba054ac8c13469567faffef032cf4420b048103931bbc8b3f12215b1f",
+      "lsof_open_handles": false
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/ramdisk",
+      "bytes": 27089249,
+      "sha256": "03d6fb6f8ee64ecac961120a0bdacf741f17b3bee2141f17fa01908c8baf176a",
+      "lsof_open_handles": false
+    }
+  ],
+  "removed_bytes": 98402333,
+  "preserved": [
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/toolchain-source.json",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/vmlinuz.efi",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/QEMU_EFI.fd",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/input-hashes.json"
+  ],
+  "df_before": "Filesystem    1024-blocks      Used Available Capacity  iused     ifree %iused  Mounted on\n/dev/disk11s1   999155012 921303776  77646848    93% 10569532 776468480    1%   /Volumes/Data2\n",
+  "df_after": "Filesystem    1024-blocks      Used Available Capacity  iused     ifree %iused  Mounted on\n/dev/disk11s1   999155012 921207688  77742936    93% 10569530 777429360    1%   /Volumes/Data2\n",
+  "errors": []
+}

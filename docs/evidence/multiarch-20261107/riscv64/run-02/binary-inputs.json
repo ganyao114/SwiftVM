@@ -1,0 +1,14 @@
+{
+  "runner": {
+    "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_rebuild_linux",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_rebuild_linux",
+    "bytes": 4919088,
+    "sha256": "e58feff8aba259c99bf9fa4db751ff7aed8969c1172f13b0058aa22125fcb0e1"
+  },
+  "arm_guest": {
+    "source": "/Volumes/Data2/swiftvm-frontends-cache/arm64_frontend_smoke.elf",
+    "resolved_path": "/Volumes/Data2/swiftvm-frontends-cache/arm64_frontend_smoke.elf",
+    "bytes": 2064,
+    "sha256": "dd625b89d7ff926609d97f724303e3e00af05c5d30884d0b9819373d12c5941c"
+  }
+}

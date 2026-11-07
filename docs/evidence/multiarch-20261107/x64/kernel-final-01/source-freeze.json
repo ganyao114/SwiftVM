@@ -1,0 +1,151 @@
+{
+  "head": "092d62e49320a576844e1f738757eb5df5220d8c",
+  "build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"c7d447b460e1404b23d5c8277d2715b687e7a917d08c6d1fbf2188c431d6c80d\"\n",
+  "backend_sources": {
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/helpers.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/helpers.cpp",
+      "bytes": 6111,
+      "sha256": "e47e75f3be346a0da9a11c7b77c4ce3e0624ceed851d41d4e189d48bee7c07e9"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_flags.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_flags.cpp",
+      "bytes": 8681,
+      "sha256": "f01a5109956af26c55a4d4c2b99f35e01d98f8e52528ef1578b04126ca4f8384"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_vector.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_vector.cpp",
+      "bytes": 22906,
+      "sha256": "57901b07a6b8b656011a6e1a1ac746c100f483608e25a6832b550a7ac01672e4"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_control.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_control.cpp",
+      "bytes": 3078,
+      "sha256": "300844e6011fe82cc571dc99b7b99e9a0e959a70a923861020f97ffa78ed07c0"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_atomic.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_atomic.cpp",
+      "bytes": 4384,
+      "sha256": "700f79ab57d8be0f64780a8c7e4c7701e366c1868efb43443fb4ba947dcd406c"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/relocate.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/relocate.cpp",
+      "bytes": 3267,
+      "sha256": "1ca1cbb5da821606caa385c7ab873aa42a00c8e8d650536030fc6703adb6602a"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/patch.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/patch.cpp",
+      "bytes": 1690,
+      "sha256": "96c10338af96febdbaca6bab2152d869a4fe2bb502bbaf1d4d775f2b5d2de987"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_crypto.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_crypto.cpp",
+      "bytes": 4620,
+      "sha256": "522757308340397ac52561146a42baca1fe5f68607f033928577cae4b9f0cf3c"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_operand.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_operand.cpp",
+      "bytes": 5945,
+      "sha256": "73dd5ea9ff761c4251dc3c0d0f11affd002db82ecf31598f5a0b1872a897b9a1"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/abi_layout.inc": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/abi_layout.inc",
+      "bytes": 379,
+      "sha256": "4a49b684cb39af0535e816fc8b99afe58c24f69d738b7b5c07d755e718df141b"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/runtime.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/runtime.h",
+      "bytes": 582,
+      "sha256": "73c496269d3868d3202bfca154159f483c5f07bee916c0286d196311d7da7a9b"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit.cpp",
+      "bytes": 9005,
+      "sha256": "759bdea4141499f6fee6ee3df6acd6fcbea7846bf0d3de1e75ddf36209a6c5e6"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/entry_elf.S": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/entry_elf.S",
+      "bytes": 3323,
+      "sha256": "1f97abde30228c71d5f4f25dfca29c70472efae379effc11a40644ee5e23f1ee"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_float.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_float.cpp",
+      "bytes": 12331,
+      "sha256": "00a1fa2d98a95b182cde3a4d08386390f09c168c642a7b2fad13735a1f2e6e9f"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/allocate.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/allocate.h",
+      "bytes": 875,
+      "sha256": "8c32f88f854a1441099c58f54bf2cb3bc17e881843a23872cbd4ee1d5aca445c"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/compile.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/compile.h",
+      "bytes": 1076,
+      "sha256": "125bd965ee868657c390d911938cc69c58f56217b03dfe605dee39e7f8f9952d"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/allocate.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/allocate.cpp",
+      "bytes": 11372,
+      "sha256": "3e5a637b68adb16063d5a75b0695d905bf1681d8f9fd330000633a27f085760e"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/compile.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/compile.cpp",
+      "bytes": 1987,
+      "sha256": "1b6d53b7d39de567b5be18d7f20e11112293b95c80a0f996576ebcdc0775bd2e"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_memory.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_memory.cpp",
+      "bytes": 3356,
+      "sha256": "237ebbc7274a812a38b8868e2b2945e4f89df75eb9b9d8989ab8f89c93d8d979"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/README.md": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/README.md",
+      "bytes": 3279,
+      "sha256": "86ad68b78bf833e3df70d62681db7ae71849b082cff4f64f765c63299cf72289"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_calls.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_calls.cpp",
+      "bytes": 7574,
+      "sha256": "ad30d8eea5c91116da38fea466b2cbf629c7673bb9074bbbdc4a83c7971ea79b"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/ops.inc": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/ops.inc",
+      "bytes": 4142,
+      "sha256": "98810b78fc4bbd010047d0ea56cf39cdd74f4f50ca52fad34db7971a3a5c0afd"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/patch.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/patch.h",
+      "bytes": 526,
+      "sha256": "c60e19d8119955aa12442de38080a7a054d7219f4746a50dd195453552c3e80a"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_scalar.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit_scalar.cpp",
+      "bytes": 9917,
+      "sha256": "883340f1a2632e856a85dd6221b6df4dbd2535b772ec1e7af1fd66a324fc5664"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/abi.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/abi.h",
+      "bytes": 347,
+      "sha256": "47f741d5266af586f875c0074dcbb6d7f95b6e3a9e747ebeca160e10bd1beeac"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/relocate.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/relocate.h",
+      "bytes": 348,
+      "sha256": "34e643cd4e53c204dd667363082c66a96acbf1a81cae0f88db02c1b9a138c61d"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/runtime.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/runtime.cpp",
+      "bytes": 4699,
+      "sha256": "f82d33c5e8510567608b4b6f28002750bdb5faebc179782145d57527c5c741fe"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/emit.h",
+      "bytes": 3689,
+      "sha256": "4a9bea6dd82deca1a179c2437b0e8854b1bef0590f812f78de90ce924bf8c59e"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/helpers.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64/helpers.h",
+      "bytes": 702,
+      "sha256": "28c5e0ea43fb650464415bb9a5bc62a5a4b2631a3e92b07af6c94c94bcd68609"
+    }
+  }
+}

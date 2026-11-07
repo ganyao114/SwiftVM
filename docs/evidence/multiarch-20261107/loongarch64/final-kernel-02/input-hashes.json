@@ -1,0 +1,158 @@
+{
+  "/opt/homebrew/bin/qemu-system-loongarch64": {
+    "path": "/opt/homebrew/bin/qemu-system-loongarch64",
+    "resolved": "/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-loongarch64",
+    "bytes": 11875584,
+    "sha256": "005eb22aecf9f2e028ee5f06cb5774a2f43c09d759bfa3d75083d2c1a610ca17"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/QEMU_EFI.fd": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/QEMU_EFI.fd",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/QEMU_EFI.fd",
+    "bytes": 4194304,
+    "sha256": "f55fbf5d92e885844631ae9bfa8887f659bbb4f6ef2beea9e9ff8bc0603b6697"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/vmlinuz.efi": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/vmlinuz.efi",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/kernel/vmlinuz.efi",
+    "bytes": 11395584,
+    "sha256": "08b88a45f48a5fd92260bae895be4e5175be2397481a6f7821b9f39b2965b79e"
+  },
+  "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/verify_integration.py": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/verify_integration.py",
+    "resolved": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/verify_integration.py",
+    "bytes": 12937,
+    "sha256": "6e1a9482a1097438fd694bca954af5c04b4cc4ab4fb46ee97dd398755bf67ace"
+  },
+  "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/init.c": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/init.c",
+    "resolved": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/init.c",
+    "bytes": 9353,
+    "sha256": "1ff83cd5bf7292b564b2a8cb7020ac862004ca08f85044d1e8ef83af9ac0b370"
+  },
+  "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/init": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/init",
+    "resolved": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/init",
+    "bytes": 1024496,
+    "sha256": "9b16317a0b0856809aa4e8f71eb3370dcacfbde8c753aa199f2012f5a588c862"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_rebuild_linux": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_rebuild_linux",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_rebuild_linux",
+    "bytes": 4332048,
+    "sha256": "8bbd315463b9c1b01f4e8e14e08a067ba63616d7f98bef88a3764f6b7fa818cd"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_aot": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_aot",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_aot",
+    "bytes": 4406088,
+    "sha256": "27c635240407d88b642a5744aaeb50b1c81588b8ebbc23b451e41dca9afa24a1"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_engine_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_engine_test",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_engine_test",
+    "bytes": 5360464,
+    "sha256": "cfe2de196337a87709ee6b7c9d458b07d08362d37fefc6df9a3e579c8f0a5a1a"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_persistence_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_persistence_test",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_persistence_test",
+    "bytes": 5361464,
+    "sha256": "3cb33be56c3b59d6c53f056120ec2eae1ea3bc9bb0e7ccd0203fa1f67dcd4ffe"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_aot_call_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_aot_call_test",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_aot_call_test",
+    "bytes": 5413440,
+    "sha256": "92d59c0a5e0aff0cf7ece519eba933348644f1744b69c59b05c66bb1f0ce4126"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_persistence_relocation_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_persistence_relocation_test",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_persistence_relocation_test",
+    "bytes": 2746456,
+    "sha256": "7cc687eaf3ba80ce7ce6d81f09f0bad6439a5f4db8ccccda02243261b9b4c8d6"
+  },
+  "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/aot-cache-20261107/rv-kernel/cache-guest.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/aot-cache-20261107/rv-kernel/cache-guest.elf",
+    "resolved": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/aot-cache-20261107/rv-kernel/cache-guest.elf",
+    "bytes": 9184,
+    "sha256": "2fc7776dce82320a875ae0bf44a9f33c0585381aab5ba43a1352b04659318449"
+  },
+  "/Volumes/Data2/swiftvm-frontends-cache/arm64_frontend_smoke.elf": {
+    "path": "/Volumes/Data2/swiftvm-frontends-cache/arm64_frontend_smoke.elf",
+    "resolved": "/Volumes/Data2/swiftvm-frontends-cache/arm64_frontend_smoke.elf",
+    "bytes": 2064,
+    "sha256": "dd625b89d7ff926609d97f724303e3e00af05c5d30884d0b9819373d12c5941c"
+  },
+  "/Volumes/Data2/SwiftVM/source/translator/linux/tests/func_tests_x86_64": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/func_tests_x86_64",
+    "resolved": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/func_tests_x86_64",
+    "bytes": 799168,
+    "sha256": "4740aad183296f458756a6ebb5abf42a2affb17dddd3b74d115a8e2f3266ae60"
+  },
+  "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/native-fault.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/native-fault.elf",
+    "resolved": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/native-fault.elf",
+    "bytes": 156,
+    "sha256": "38a7fdd06d24f698e5e99a81cbe3740e34e590b335d51f1a8948f4eb6e16bf0d"
+  },
+  "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/smc-recompile.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/smc-recompile.elf",
+    "resolved": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/smc-recompile.elf",
+    "bytes": 182,
+    "sha256": "2ababe306a793c942951303f77e39ab148cab67fd07e042f44b3ba0975d3c3dd"
+  },
+  "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/arm64-smc.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/arm64-smc.elf",
+    "resolved": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/arm64-smc.elf",
+    "bytes": 976,
+    "sha256": "f289c2a75caad556761e18c23c2bb8cceb3f49c627d7b24a711ee8f13c79a621"
+  },
+  "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/guest-fixture-latest.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/guest-fixture-latest.elf",
+    "resolved": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/guest-fixture-latest.elf",
+    "bytes": 66528,
+    "sha256": "487552377462586caec25ce743b4e0164c7cc7f18b4091c26f133df3c84835ed"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/ld-linux-loongarch-lp64d.so.1": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/ld-linux-loongarch-lp64d.so.1",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/ld-linux-loongarch-lp64d.so.1",
+    "bytes": 1238264,
+    "sha256": "873af8e9e2eabb944f5e941d9175c085daa632cfe6234489a2ad7700ce0ee751"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/libc.so.6": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/libc.so.6",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/libc.so.6",
+    "bytes": 12113216,
+    "sha256": "cb297c5ab85253ad4e7d4e1620e13952d8b9e504b41917b0c29c9ea64db5bd40"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/libm.so.6": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/libm.so.6",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib64/libm.so.6",
+    "bytes": 2548144,
+    "sha256": "2724b403c726668a6fc1339a8b2197983c9ace6e18cb6890b48ef27f83bf3124"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libstdc++.so.6": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libstdc++.so.6",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libstdc++.so.6.0.33",
+    "bytes": 14842368,
+    "sha256": "3a694696ec3512ab901c8c91a1cb3e9afb0dd964e727bbcfc81fe7fabadb6644"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libgcc_s.so.1": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libgcc_s.so.1",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libgcc_s.so.1",
+    "bytes": 2585112,
+    "sha256": "35cc786e264ed40f7af527893de65e11cc32245a072b1a14f2ce98263a8eff6c"
+  },
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libatomic.so.1": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libatomic.so.1",
+    "resolved": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/loongarch64-deps/loongarch64-unknown-linux-gnu/loongarch64-unknown-linux-gnu/sysroot/lib/libatomic.so.1.2.0",
+    "bytes": 128728,
+    "sha256": "83a2e59c0a58bcf98d51b1e35bfd840858f867fa7df1d8096e9ea23606d0dabc"
+  },
+  "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/rootfs.cpio.gz": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/rootfs.cpio.gz",
+    "resolved": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/guest-host-restore-20261107/loongarch64/final-kernel-02/rootfs.cpio.gz",
+    "bytes": 21780264,
+    "sha256": "728982033017dba8449b17c781c2ff82e045c7885dcb141b08be235766bfc7e9"
+  }
+}

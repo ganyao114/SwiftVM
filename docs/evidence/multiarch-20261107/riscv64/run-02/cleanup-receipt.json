@@ -1,0 +1,10 @@
+{
+  "owned_pid": 16877,
+  "running": false,
+  "qemu_returncode": 0,
+  "terminated_by_deadline": false,
+  "temporary_rootfs_removed_bytes": 5105860,
+  "temporary_rootfs_bytes_remaining": 0,
+  "expanded_directory_created": false,
+  "old_inputs_modified": false
+}

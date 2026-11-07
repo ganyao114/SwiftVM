@@ -1,0 +1,7 @@
+{
+  "classification": "Standalone fixture construction error; product correctly rejected before compiling or executing guest IR.",
+  "original_build_flags": "aarch64-linux-gnu-gcc -nostdlib -static -no-pie -Wl,--build-id=none,--omagic,-Ttext=0x400000",
+  "error": "ELF program headers must be covered by PT_LOAD",
+  "correction": "Own linker script arm64-smc.ld uses PT_LOAD FILEHDR PHDRS so the loader sees mapped PHDR bytes. No production source or SMC policy changed.",
+  "targeted_followup": "final-kernel-03: JIT Function and Direct Block both exit42, exact empty stdout; JIT invalidates once and executes no interpreter steps."
+}

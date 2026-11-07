@@ -1,0 +1,278 @@
+{
+  "all_passed": false,
+  "cases": [
+    {
+      "name": "x64-compile",
+      "expected_exit": 0,
+      "exit": 2,
+      "test_cases_passed": 0,
+      "checks": {
+        "exit": false,
+        "test_cases": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "x64-native",
+      "expected_exit": 0,
+      "exit": null,
+      "test_cases_passed": 0,
+      "checks": {
+        "exit": false,
+        "test_cases": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "runtime-native",
+      "expected_exit": 0,
+      "exit": null,
+      "test_cases_passed": 0,
+      "checks": {
+        "exit": false,
+        "test_cases": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "persistence-native",
+      "expected_exit": 0,
+      "exit": null,
+      "test_cases_passed": 0,
+      "checks": {
+        "exit": false,
+        "test_cases": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "relocation-native",
+      "expected_exit": 0,
+      "exit": null,
+      "test_cases_passed": 0,
+      "checks": {
+        "exit": false,
+        "test_cases": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "x86-mixed-block",
+      "expected_exit": 40,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "x86-func-block",
+      "expected_exit": 101,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "checksums": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "x86-core20-block",
+      "expected_exit": 0,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "crcfinal": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-jit-block",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-interpreter-block",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-mixed-block",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-cache-cold-block",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-cache-warm-block",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-aot-compile-block",
+      "expected_exit": 0,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "compiled_units": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-aot-run-block",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "x86-mixed-function",
+      "expected_exit": 40,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "x86-func-function",
+      "expected_exit": 101,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "checksums": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "x86-core20-function",
+      "expected_exit": 0,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "crcfinal": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-jit-function",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-interpreter-function",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-mixed-function",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-cache-cold-function",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-cache-warm-function",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-aot-compile-function",
+      "expected_exit": 0,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "compiled_units": false
+      },
+      "all_passed": false
+    },
+    {
+      "name": "arm-aot-run-function",
+      "expected_exit": 42,
+      "exit": null,
+      "checks": {
+        "exit": false,
+        "runtime_report": false,
+        "output": false
+      },
+      "all_passed": false
+    }
+  ],
+  "qemu_exit": 0,
+  "elapsed_seconds": 2.232392500154674,
+  "aslr_enabled": false,
+  "console_sha256": "177f79bc3f707aedbd3628520e963eb480b0ad036a067ce6c15d734562f57f8c"
+}

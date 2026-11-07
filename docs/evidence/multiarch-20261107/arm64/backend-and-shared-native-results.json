@@ -1,0 +1,54 @@
+[
+  {
+    "name": "svm_arm64_compile_test",
+    "argv": [
+      "adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cd /data/local/tmp/swiftvm-multiarch-20261107 && chmod 755 svm_arm64_compile_test && SVM_TEST_SCRATCH=/data/local/tmp/swiftvm-multiarch-20261107 taskset 10 timeout -k 2 60 ./svm_arm64_compile_test --native"
+    ],
+    "exit": 0,
+    "sha256": "ee1e1a4a0f4cf21f9189f2a223706f9abb047fd4420f1d1a6ee752291bcae064",
+    "summary": "Filters: [native]\nRandomness seeded to: 3973539500\n===============================================================================\nAll tests passed (39 assertions in 39 test cases)\n\n"
+  },
+  {
+    "name": "svm_runtime_engine_test",
+    "argv": [
+      "adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cd /data/local/tmp/swiftvm-multiarch-20261107 && chmod 755 svm_runtime_engine_test && SVM_TEST_SCRATCH=/data/local/tmp/swiftvm-multiarch-20261107 taskset 10 timeout -k 2 60 ./svm_runtime_engine_test --native"
+    ],
+    "exit": 0,
+    "sha256": "0dd55015f7ca2f32e275af145c0517f1f37275664878935cb9450072c837e685",
+    "summary": "Filters: [native]\nRandomness seeded to: 3488420006\n===============================================================================\nAll tests passed (3 assertions in 3 test cases)\n\n"
+  },
+  {
+    "name": "svm_runtime_persistence_test",
+    "argv": [
+      "adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cd /data/local/tmp/swiftvm-multiarch-20261107 && chmod 755 svm_runtime_persistence_test && SVM_TEST_SCRATCH=/data/local/tmp/swiftvm-multiarch-20261107 taskset 10 timeout -k 2 60 ./svm_runtime_persistence_test --native"
+    ],
+    "exit": 0,
+    "sha256": "118b1cb03aded6280aeba9c9ff78a47391df816642e5c36ecdbd67090a6ce663",
+    "summary": "Filters: [native]\nRandomness seeded to: 2349975363\n===============================================================================\nAll tests passed (45 assertions in 4 test cases)\n\n"
+  },
+  {
+    "name": "svm_persistence_relocation_test",
+    "argv": [
+      "adb",
+      "-s",
+      "bf1359ff",
+      "shell",
+      "cd /data/local/tmp/swiftvm-multiarch-20261107 && chmod 755 svm_persistence_relocation_test && SVM_TEST_SCRATCH=/data/local/tmp/swiftvm-multiarch-20261107 taskset 10 timeout -k 2 60 ./svm_persistence_relocation_test --native"
+    ],
+    "exit": 0,
+    "sha256": "f75cff55d9ad0f7590804f4ddc884a5b4eb560fe32a70ed77e29063682bb0b8c",
+    "summary": "Filters: [native]\nRandomness seeded to: 1026325495\n===============================================================================\ntest cases: 1 | 1 passed\nassertions: - none -\n\n"
+  }
+]

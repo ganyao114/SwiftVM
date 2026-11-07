@@ -1,0 +1,201 @@
+{
+  "status": "implemented_and_functionally_validated",
+  "workspace": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "head": "092d62e49320a576844e1f738757eb5df5220d8c",
+  "scope": "Native x86-64 backend restoration; no production tests or ADB after final-04. No commit/push by this worker.",
+  "native_abi": {
+    "host_isa": "x86_64 Linux SysV",
+    "target_id": "0x8664",
+    "state": "r12",
+    "packed_flags": "rbx",
+    "gpr_ssa": [
+      "r13",
+      "r14",
+      "r15",
+      "rbp",
+      "r8",
+      "r9"
+    ],
+    "xmm_ssa": "xmm2..xmm13",
+    "guest_gpr_pins": 0,
+    "guest_vector_pins": false,
+    "code_owner": "CompileResult.words direct Xbyak byte sink"
+  },
+  "source_directories": [
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/x64",
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/externals/xbyak"
+  ],
+  "source_test": "/Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/x64_compile_test.cpp",
+  "base_phase": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-final-02",
+    "results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-final-02/results-validated.json",
+    "original_results_retained": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-final-02/results.json",
+    "cases_passed": 25,
+    "x64_compile_groups": 17,
+    "x64_native_groups": 16,
+    "runtime_native_groups": 4,
+    "persistence_native_groups": 4,
+    "relocation_native_groups": 1,
+    "qemu_exit": 0,
+    "aslr_level": 1,
+    "note": "Full 25-case phase predates the final static conditional-edge/ARM-known-target and cold FPCR validation changes. No claim that this whole phase was rerun on the later binary."
+  },
+  "targeted_phase": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-final-04",
+    "results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-final-04/results.json",
+    "cases_passed": 3,
+    "new_runtime_group": "ARM guest unsupported FP controls: Block/Function x JIT/direct/Mixed, all six reject AHP",
+    "aot_block_units": 39,
+    "guest_source_removed_before_run": true,
+    "guest_exit": 42,
+    "stdout": "arm64 frontend ok\n",
+    "stats": {
+      "compile_attempts": 0,
+      "interpreted_steps": 0,
+      "native_bytes": 13888,
+      "aot_units_loaded": 39,
+      "static_links": 52,
+      "patched_links": 52
+    },
+    "qemu_exit": 0
+  },
+  "intermediate_evidence_retained": {
+    "kernel-final-01": "first strict compile-only link failure, clean QEMU exit; fixed Xbyak qword vs ptr indirect-jump annotation",
+    "kernel-static-aot-03": "new two-static-edge unit contract passed, AOT correctly exited42 but retained28 JIT attempts until frontend honored its existing known-target feature"
+  },
+  "fixtures": {
+    "x86_func": "all seven checksum lines match frozen native oracle; exit101",
+    "x86_coremark": "20-iteration smoke, crcfinal0x4983 exit0; no benchmark claim",
+    "x86_mixed": "Block31/Function29 interpreted steps, compile_attempts1, exit40",
+    "arm_guest": "enhanced division/CCMP/SDOT/QC/FPCR/sNaN/FP16 fixture; B/F JIT/direct/Mixed exit42; cache warm0 compile; Function AOT0 compile; final Block AOT0 compile"
+  },
+  "runtime_feature_evidence": "Both original kernel consoles contain /proc/cpuinfo and actual flags (SSE2/SSSE3/SSE4.1/SSE4.2/FMA/CX16/AES/PCLMUL/SHA). QEMU q35 cpu=max, two emulated CPUs; not physical hardware or performance evidence.",
+  "final_executed_binaries": {
+    "svm_rebuild_linux": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_rebuild_linux",
+      "bytes": 4109224,
+      "sha256": "4b031c6b496e92ba6488a321bd9865c8413fec8a4421fe91e3e8b195c34fe4e5"
+    },
+    "svm_aot": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_aot",
+      "bytes": 4192496,
+      "sha256": "2f4f642369b4e2b3f4564b50a54d1bda74bf7338b8ce08857d73584d000b0bc9"
+    },
+    "svm_runtime_engine_test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_engine_test",
+      "bytes": 5306016,
+      "sha256": "1971164faa0742ce625e868173e9332e51dd50a3d80e71ebe35c91fd28ed7b66"
+    }
+  },
+  "final_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"bf223119ca0cd772390b7f81c99876405d5c0ebbb2c9242432a8581e3e86e9eb\"\n",
+  "cleanup": {
+    "receipts": [
+      {
+        "stage": "kernel-final-01",
+        "owned_pid": 9628,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 12939941,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "errors": []
+      },
+      {
+        "stage": "kernel-final-02",
+        "owned_pid": 14717,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 12941128,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "errors": []
+      },
+      {
+        "stage": "kernel-static-aot-03",
+        "owned_pid": 18036,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 12943658,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "errors": []
+      },
+      {
+        "stage": "kernel-final-04",
+        "owned_pid": 21794,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 12946886,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "errors": []
+      }
+    ],
+    "independent_process_checks": [
+      {
+        "pid": 9628,
+        "ps_exit": 1,
+        "current_process": "",
+        "owned_qemu_active": false
+      },
+      {
+        "pid": 14717,
+        "ps_exit": 1,
+        "current_process": "",
+        "owned_qemu_active": false
+      },
+      {
+        "pid": 18036,
+        "ps_exit": 1,
+        "current_process": "",
+        "owned_qemu_active": false
+      },
+      {
+        "pid": 21794,
+        "ps_exit": 1,
+        "current_process": "",
+        "owned_qemu_active": false
+      }
+    ],
+    "all_owned_qemu_stopped": true,
+    "expanded_rootfs_created": false,
+    "temporary_initrd_removed_bytes": 51771613,
+    "additional_reproducible_binaries_removed": [
+      {
+        "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-final-01/kernel-init",
+        "bytes": 1235392,
+        "reason": "reproducible static PID1; SHA/source/compiler command retained"
+      },
+      {
+        "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-final-02/kernel-init",
+        "bytes": 1235392,
+        "reason": "reproducible static PID1; SHA/source/compiler command retained"
+      },
+      {
+        "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-static-aot-03/kernel-init",
+        "bytes": 1231352,
+        "reason": "reproducible static PID1; SHA/source/compiler command retained"
+      },
+      {
+        "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/kernel-final-04/kernel-init",
+        "bytes": 1231352,
+        "reason": "reproducible static PID1; SHA/source/compiler command retained"
+      },
+      {
+        "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/x64/link-encoding-debug",
+        "bytes": 67504,
+        "reason": "reproducible isolated assembler diagnostic binary; source retained"
+      }
+    ],
+    "errors": []
+  },
+  "claim_limits": [
+    "No physical x64 hardware performance claim.",
+    "No blanket all-IR support claim: legacy unused local/Phi/RSB/host-register and memory-copy/extend shapes explicitly reject.",
+    "Correctness is native machine code; numerical helpers are specific operations, not IR interpreter callbacks."
+  ]
+}

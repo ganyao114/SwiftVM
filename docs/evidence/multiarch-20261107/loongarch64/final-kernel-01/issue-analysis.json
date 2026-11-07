@@ -1,0 +1,16 @@
+{
+  "observed": {
+    "kernel_page_bytes": 16384,
+    "aot_text_address": "0x401000",
+    "aot_data_address": "0x402000",
+    "data_and_text_share_host_page": true,
+    "guest_call_cases": 3,
+    "guest_call_failed": "compile_attempts == 0 after successful numerical/call/global checks",
+    "runtime_native_cases_passed": 4,
+    "persistence_native_cases_passed": 4,
+    "relocation_native_case_passed": 1
+  },
+  "mechanism": "ELF segment host-page union makes this fixture text RWX on 16KiB pages. SMC conservatively watches this valid mutable source page; global writes invalidate its compiled units. Do not disable SMC or relax zero compile contract.",
+  "separate_harness_issue": "Check wrappers record no successful Catch assertions; accept Catch test cases:1|1passed report as success. NativeRoundTrip<Loongarch64> is present and native host gating matches GNU __loongarch64.",
+  "proposed_fix": "Separate fixture Data and Text by at least 64KiB while retaining each ELF byte/address contract and all zero-compile checks. Root owns shared fixture."
+}

@@ -1,0 +1,210 @@
+{
+  "head": "092d62e49320a576844e1f738757eb5df5220d8c",
+  "build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"7136917aaf1739268b28102a3794052620188517b3639caa7e8a712b5771b93a\"\n",
+  "runtime_test": {
+    "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/runtime_engine_test.cpp",
+    "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/runtime_engine_test.cpp",
+    "bytes": 14869,
+    "sha256": "7759a3698f20351cee01a5d36d3aef0a289003651b827fec359c05fea30e60e5"
+  },
+  "backend_sources": {
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/scalar_ops.inc": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/scalar_ops.inc",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/scalar_ops.inc",
+      "bytes": 3219,
+      "sha256": "832479c36014141290b8107cb359f78d03dd810558056ab9c692d362782f4015"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/assembler.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/assembler.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/assembler.h",
+      "bytes": 9143,
+      "sha256": "5537588beba93be889a95783770fb5218e8a9aacf8ae89e2586bb7c2d8917063"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/call_helpers.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/call_helpers.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/call_helpers.cpp",
+      "bytes": 2453,
+      "sha256": "6b7660d5bef7510ca2195f3a97fe6684f099da30cf8fbcb85e3c416818173da9"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/atomic_helpers.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/atomic_helpers.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/atomic_helpers.h",
+      "bytes": 641,
+      "sha256": "2f33e7a3181a1be7350213dfd04da25edc628c4f6e54622c2d6a44c810961f43"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_flags.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_flags.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_flags.cpp",
+      "bytes": 9707,
+      "sha256": "66f5c959681ddd7a801e40e45379d6a99fd999dc30805ec4c30aff2602a22803"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_vector.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_vector.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_vector.cpp",
+      "bytes": 22559,
+      "sha256": "065ce1e59993e52d56f11fbc6f5f6a5f330bdeca29d0d83db48d42d344221e1c"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_control.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_control.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_control.cpp",
+      "bytes": 2862,
+      "sha256": "d1d35d8f0431a90da8491ac729b1069bfbfa9ad9499187fb4447328f8359ed0a"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_atomic.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_atomic.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_atomic.cpp",
+      "bytes": 8783,
+      "sha256": "f95e7ddd296b6b27728cbc9d21ca5d5041350934fb81e12139f4daf98eeb126b"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/host_features.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/host_features.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/host_features.h",
+      "bytes": 2110,
+      "sha256": "e4062b91052c3d703d03bd281947ab9d4ab29e4734e0254af05ee4077dbf179d"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/vector_ops.inc": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/vector_ops.inc",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/vector_ops.inc",
+      "bytes": 2330,
+      "sha256": "a9033521b491216536cff50add45e4484faa5a691346a3e984276803d80088c8"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/relocate.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/relocate.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/relocate.cpp",
+      "bytes": 4432,
+      "sha256": "b59a0ba244ba5afb1d5565b9de420655b31cffddb56bf62918419bd1a4a3e93b"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/patch.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/patch.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/patch.cpp",
+      "bytes": 1882,
+      "sha256": "912997a15aaf241038d51647bb4a108b020d0ad7c1330ec1bcf97b4ec862939c"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_operand.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_operand.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_operand.cpp",
+      "bytes": 6174,
+      "sha256": "e96631e298e89b553d2fed0760a009902b5e79fb0d03dcc21a600001ee64d728"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/assembler.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/assembler.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/assembler.cpp",
+      "bytes": 4443,
+      "sha256": "c6f325de90f0dfc3d4b15498ed6388cf5b2031f2fcf59a0c4a28e2a376902ef2"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/abi_layout.inc": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/abi_layout.inc",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/abi_layout.inc",
+      "bytes": 816,
+      "sha256": "5050a5372e65c7d04b076dabd2ea915dc8de41a6c0a8fb63d9bad9db5be51a75"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/runtime.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/runtime.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/runtime.h",
+      "bytes": 689,
+      "sha256": "a434e85bd60c9406df3cd988792d58bd5fa21aa8d8162b5c8d3c97e67a0288b1"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit.cpp",
+      "bytes": 13110,
+      "sha256": "4bb702c70b7a936a94d3e73a8960777b13f60d4324cb41b872e9c8440f8dd4b1"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/entry_elf.S": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/entry_elf.S",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/entry_elf.S",
+      "bytes": 5125,
+      "sha256": "823682d64f97924596e7d8dd3abe4b676e8c63300c8d3e4a1d03646b8ccbac71"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_float.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_float.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_float.cpp",
+      "bytes": 16724,
+      "sha256": "7a6638aec1b3d9a102b7127655c4ea7909e1eff843a26435ebe21578aceac336"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/allocate.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/allocate.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/allocate.h",
+      "bytes": 1624,
+      "sha256": "1c7c8bc72d8e992c4ee0e6b0172c6293cb703dbd5564fe7fa5bb203333b2e747"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/compile.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/compile.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/compile.h",
+      "bytes": 1320,
+      "sha256": "1c3e541ed94a8df28690d4265f3ce7aed74ccc1b0527f96c89430f711282dfec"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/allocate.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/allocate.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/allocate.cpp",
+      "bytes": 10275,
+      "sha256": "44493e009fca8b3936b10bf32eec6bf35fbb488c3b7c1b1a818f5b57562d0c8e"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/compile.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/compile.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/compile.cpp",
+      "bytes": 2007,
+      "sha256": "60fb6b8e230dbd4f81be6911d18d182692e34750501938f53bfd2ed30d6c7fc2"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_memory.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_memory.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_memory.cpp",
+      "bytes": 6364,
+      "sha256": "3e3fec9bd667ab1ea7993020dae9c49b1226ee3e1fb9d0417cd90c0db78694e7"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/README.md": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/README.md",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/README.md",
+      "bytes": 2385,
+      "sha256": "6d59a610bdaf812b807dd82348df7e94f592799dd1229381be2dd2707e92bb66"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_calls.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_calls.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_calls.cpp",
+      "bytes": 7836,
+      "sha256": "79c5074df0d9bbfae63af783faec1e676c3373f9f12a1d63476040fdb25746cc"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/patch.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/patch.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/patch.h",
+      "bytes": 1091,
+      "sha256": "563d0077ea1ffbcbe809749826a467b7316c0dcc01ccbfc9ec943871abc7c6ed"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_scalar.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_scalar.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit_scalar.cpp",
+      "bytes": 12617,
+      "sha256": "7e4444cf31b64daa06868be45940d97c1aa416409b024cc799fac21c01bf3b39"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/call_helpers.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/call_helpers.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/call_helpers.h",
+      "bytes": 1135,
+      "sha256": "39e5100cae2073164a63b031edbd01ecefb63e754147afe020b9fdb2f633cb01"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/relocate.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/relocate.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/relocate.h",
+      "bytes": 444,
+      "sha256": "3b3c005784a95a7134d359e4e541287ded9f5e1a7c4535371c80527ddb7796db"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/runtime.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/runtime.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/runtime.cpp",
+      "bytes": 5547,
+      "sha256": "cb27a61f0d2e69fa972e6266c394894dbbb45493e5619ad81175435115ac0efb"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit.h": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit.h",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit.h",
+      "bytes": 3941,
+      "sha256": "72cad05be72936743beb89c3e565e8c54485db353c28d704a0af62c5f8fa8a82"
+    },
+    "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/atomic_helpers.cpp": {
+      "path": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/atomic_helpers.cpp",
+      "resolved": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/atomic_helpers.cpp",
+      "bytes": 1295,
+      "sha256": "b3b7e561d6c831e7379b37416fd0448ea6046027b22f6a04c0dc2dd8658e7884"
+    }
+  }
+}

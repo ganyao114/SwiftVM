@@ -1,0 +1,22 @@
+{
+  "all_passed": true,
+  "cases": [
+    {
+      "name": "compile",
+      "exit": 0,
+      "test_cases_passed": 14,
+      "all_passed": true
+    },
+    {
+      "name": "native",
+      "exit": 0,
+      "test_cases_passed": 14,
+      "all_passed": true
+    }
+  ],
+  "qemu_exit": 0,
+  "elapsed_seconds": 130.57243216689676,
+  "aslr_enabled": true,
+  "lsx_disabled": true,
+  "console_sha256": "2ddf5c113bb7220c2aae4c4df7d68ee6c03977377e2105f4c5e630fd83785d84"
+}

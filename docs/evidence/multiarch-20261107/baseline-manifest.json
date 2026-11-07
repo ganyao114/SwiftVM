@@ -1,0 +1,23 @@
+{
+  "base_commit": "092d62e49320a576844e1f738757eb5df5220d8c",
+  "files": [
+    {
+      "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+      "copy": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/baseline/submit-android-svm_rebuild_linux",
+      "bytes": 26284296,
+      "sha256": "6caab82d344e4538e0f85d0915ccf63c2411937e3fddeb241e98d13f731cac2f"
+    },
+    {
+      "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_ir_compile_bench",
+      "copy": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/baseline/submit-host-svm_ir_compile_bench",
+      "bytes": 652744,
+      "sha256": "730cc1abf3ccf5d0e3332555d9779df08cb79639d9c6c95a7738b576e4f25631"
+    },
+    {
+      "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_function_compile_bench",
+      "copy": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/multiarch-20261107/baseline/submit-host-svm_function_compile_bench",
+      "bytes": 1207832,
+      "sha256": "88b02642f9f11d3bc330d6d98d77c1b5ad21e25b44a20dd97cd10e24dc263ef0"
+    }
+  ]
+}

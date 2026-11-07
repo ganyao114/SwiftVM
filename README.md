@@ -1,9 +1,10 @@
 # SwiftVM
 
 This branch replaces the former middle pipeline with compact Uniform IR,
-in-place optimization, separate Block/Function allocation and direct ARM64/RV64
-encoding. The runtime executes an implemented x86-64 subset from static Linux
-ELFs on ARM64 Linux/Android or RV64 Linux, with one guest thread.
+in-place optimization, separate Block/Function allocation and native ARM64,
+RV64, x86-64 and LoongArch64 encoding. The runtime executes implemented x86-64
+and AArch64 subsets from static Linux ELFs, with one guest thread. Hosts are
+ARM64 Linux/Android and RV64, x86-64 or LoongArch64 Linux.
 
 The former Android demo and Slang targets remain retired on this branch.
 The RV64 backend now consumes the rebuilt IR directly; the former backend's
@@ -17,7 +18,8 @@ checkpoint.
 
 Host contracts and code-generation tools require CMake 3.22+, a C++20 compiler
 and a C compiler. Ninja is used below; diStorm, the controlled exact-encoding
-VIXL subset, the Biscuit word encoder, SoftFloat, Cephes and fmt are included.
+VIXL subset, Biscuit, controlled Xbyak/Xbyak-LoongArch encoders, SoftFloat,
+Cephes and fmt are included.
 Catch2 is vendored separately for tests; `-DBUILD_TESTING=OFF` excludes the
 test framework. `SVM_BUILD_IR_FORMAT` controls the optional IR text formatter
 and defaults to the test setting.
@@ -28,14 +30,17 @@ cmake --build build/host -j4
 ctest --test-dir build/host --output-on-failure
 ```
 
-On ARM64 or RV64 Linux this also builds `build/host/svm_rebuild_linux`. Native
+On the four supported Linux hosts this also builds `build/host/svm_rebuild_linux`. Native
 checks require the matching host ISA; compiling RV words on ARM64 does not
 execute them. CTest registers code-generation and native execution separately;
 unsupported native entries are marked skipped (exit 77). When invoking a test
 binary directly, select `--native` to execute its native cases; the default
 runs construction/encoding contracts. Catch case names and tags can filter a
 specific scenario. See the [RV64 backend](source/runtime/backend/riscv64/README.md)
-for cross-building, execution coverage and current boundaries.
+for cross-building, execution coverage and current boundaries. The
+[x64](source/runtime/backend/x64/README.md) and
+[LoongArch64](source/runtime/backend/loongarch64/README.md) backends describe
+their independent allocation, native ABI, encoding and numerical helper boundaries.
 
 For Android, set `ANDROID_NDK` to the NDK installation. The measured build used
 NDK 29.0.13846066, API28, Release/O3, static libc++ and ThinLTO.
@@ -77,7 +82,7 @@ failed formation and actual Block retries.
 
 ## AOT and disk cache
 
-Linux/Android also build `svm_aot`. Persistence currently accepts static x86-64
+Linux/Android also build `svm_aot`. Persistence accepts static x86-64 or AArch64
 `ET_EXEC` guests; ordinary JIT retains its existing static PIE support.
 
 ```sh
@@ -93,7 +98,7 @@ The cache directory is created with mode `0700`. AOT carries the complete guest
 ELF and runs after the original file is removed. Uncovered targets use the
 ordinary JIT. Emission options such as scope, optimization and decode diagnostics
 must match the artifact; incompatible explicit artifacts fail before execution.
-The C++ `AotGuestEnv` / `GuestFn` interface supports named calls, IFUNC resolution,
+For x86-64 guests, the C++ `AotGuestEnv` / `GuestFn` interface supports named calls, IFUNC resolution,
 FP, aggregates and typed guest pointers. See the
 [format, ownership and API documentation](docs/aot-code-cache-2026-11-07.md).
 
@@ -125,10 +130,35 @@ operations. Logging/errors and optional IR formatting use a small shared base
 layer, independently of code-generation storage.
 
 It supports JIT, direct interpretation and mixed execution, shared
-x86 semantics, explicit code mappings/cache/link/SMC ownership, and expanded
+x86 and AArch64 semantics, explicit code mappings/cache/link/SMC ownership, and expanded
 user-mode scalar, SSE, AVX/AVX2, MMX and x87 forms. EVEX/AVX-512 and complete PKU
 remain deferred. Source inventory is not full ISA/form coverage; see the
 [coverage implementation and boundaries](docs/instruction-coverage-implementation-2026-11-05.md).
+
+The AArch64 frontend ports the implemented `origin/master` visitor semantics
+(reference `42e9c234`) onto the current uniform IR. Its 16-byte instruction
+record stores a word, PC and selected decoder family; IR construction and direct
+interpretation share `Semantics<Sink>`. Scalar/SP/ZR/NZCV, memory/control,
+NEON/crypto and FP families are implemented; precise FP/QC operations use pure
+architectural numerical helpers through declared relocations. Exclusive
+LDXR/STXR reservation semantics, full ARMv8 extension coverage, complete guest
+signals and AAPCS64 typed host-to-guest calls remain outside this checkpoint.
+The LoongArch64 baseline requires LA64D; SIMD uses native scalar lanes and does
+not require or advertise LSX/LASX/LBT.
+
+ARM system-register coverage is NZCV, TPIDR_EL0/TPIDRRO_EL0, FPCR/FPSR and
+DCZID_EL0. TPIDR variants retain the old shared storage model. DMB/DSB issue
+barriers and ISB ends the block; guest DC/IC cache-maintenance instructions,
+CLREX, counters, SVE/SME/MTE and authenticated branches are unsupported. Hints
+retain the old no-op behavior. FPCR implements RMode/FZ/FZ16/DN; unsupported
+controls are rejected at the VM's FPCR service boundary, and FPSR sticky/QC does not imply guest
+FP exception delivery. BRK/HLT are rejected rather than exposed as host services.
+
+The [architecture restoration checks](docs/evidence/multiarch-20261107/summary.json)
+record physical RedMagic ARM64 tests, native x64/LoongArch64/RV64 execution
+under real Linux kernels in QEMU, cache/AOT/fault/SMC checks and the compile
+regression guard. The new host backends have functional validation; their
+physical hardware performance has not been measured.
 
 The latest full FEX compile comparison uses RedMagic NX729J CPU4 and fixed FEX
 `a156752f`, with five fresh launches per arm/input and 200 total observations.

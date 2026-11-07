@@ -1,0 +1,116 @@
+{
+  "all_passed": true,
+  "test_kind": "functional RV64G two-hart QEMU system + real Linux kernel, no performance claim",
+  "runner": {
+    "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_rebuild_linux",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_rebuild_linux",
+    "bytes": 4919088,
+    "sha256": "e58feff8aba259c99bf9fa4db751ff7aed8969c1172f13b0058aa22125fcb0e1"
+  },
+  "guest": {
+    "source": "/Volumes/Data2/swiftvm-frontends-cache/arm64_frontend_smoke.elf",
+    "resolved_path": "/Volumes/Data2/swiftvm-frontends-cache/arm64_frontend_smoke.elf",
+    "bytes": 2064,
+    "sha256": "dd625b89d7ff926609d97f724303e3e00af05c5d30884d0b9819373d12c5941c"
+  },
+  "source_sha256": "f523b20fdcb7cc152c4b209a2d0b079714cf334bdce2413dbcbe1921086ebbb1",
+  "code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"b6827ae48b8f552d7993aecb32ee64b1f905c6f19e96cba889821e5a3672ee5b\"\n",
+  "cases": [
+    {
+      "name": "block-jit",
+      "actual_exit": 42,
+      "stdout_exact": true,
+      "mechanism_valid": true,
+      "all_passed": true,
+      "compile_attempts": 38,
+      "interpreted_steps": 0,
+      "native_bytes": 14308,
+      "runtime_completed": true
+    },
+    {
+      "name": "block-interpreter",
+      "actual_exit": 42,
+      "stdout_exact": true,
+      "mechanism_valid": true,
+      "all_passed": true,
+      "compile_attempts": 0,
+      "interpreted_steps": 137,
+      "native_bytes": 0,
+      "runtime_completed": true
+    },
+    {
+      "name": "block-mixed",
+      "actual_exit": 42,
+      "stdout_exact": true,
+      "mechanism_valid": true,
+      "all_passed": true,
+      "compile_attempts": 1,
+      "interpreted_steps": 135,
+      "native_bytes": 308,
+      "runtime_completed": true
+    },
+    {
+      "name": "function-jit",
+      "actual_exit": 42,
+      "stdout_exact": true,
+      "mechanism_valid": true,
+      "all_passed": true,
+      "compile_attempts": 14,
+      "interpreted_steps": 0,
+      "native_bytes": 12744,
+      "runtime_completed": true
+    },
+    {
+      "name": "function-interpreter",
+      "actual_exit": 42,
+      "stdout_exact": true,
+      "mechanism_valid": true,
+      "all_passed": true,
+      "compile_attempts": 0,
+      "interpreted_steps": 137,
+      "native_bytes": 0,
+      "runtime_completed": true
+    },
+    {
+      "name": "function-mixed",
+      "actual_exit": 42,
+      "stdout_exact": true,
+      "mechanism_valid": true,
+      "all_passed": true,
+      "compile_attempts": 1,
+      "interpreted_steps": 130,
+      "native_bytes": 364,
+      "runtime_completed": true
+    }
+  ],
+  "first_run": "run-01 preserved loader CXXABI_1.3.15 failure before main",
+  "second_run": "run-02 uses matching GCC14 target libstdc++/libgcc/libatomic in its private initrd; base glibc unchanged",
+  "cleanup": {
+    "reproducible_runtime_library_archive_removed_bytes": 2273280,
+    "archive_remaining_bytes": 0,
+    "owned_containers": [],
+    "runs": [
+      {
+        "owned_pid": 15984,
+        "running": false,
+        "qemu_returncode": 0,
+        "terminated_by_deadline": false,
+        "temporary_rootfs_removed_bytes": 5107153,
+        "temporary_rootfs_bytes_remaining": 0,
+        "expanded_directory_created": false,
+        "old_inputs_modified": false
+      },
+      {
+        "owned_pid": 16877,
+        "running": false,
+        "qemu_returncode": 0,
+        "terminated_by_deadline": false,
+        "temporary_rootfs_removed_bytes": 5105860,
+        "temporary_rootfs_bytes_remaining": 0,
+        "expanded_directory_created": false,
+        "old_inputs_modified": false
+      }
+    ],
+    "data2_free_bytes": 79461564416
+  }
+}

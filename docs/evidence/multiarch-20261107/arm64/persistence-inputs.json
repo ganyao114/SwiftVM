@@ -1,0 +1,14 @@
+{
+  "svm_rebuild_linux": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "sha256": "a66d2dd778ebad36439d810797959050f98bb4ad5511aeb106a3ce8bef1ca7db"
+  },
+  "svm_aot": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_aot",
+    "sha256": "0461f3d5637707d641017b5ecdfd2d394197244be4ca983277ad3b5a3bb813b8"
+  },
+  "arm.elf": {
+    "path": "/Volumes/Data2/swiftvm-frontends-cache/arm64_frontend_smoke.elf",
+    "sha256": "dd625b89d7ff926609d97f724303e3e00af05c5d30884d0b9819373d12c5941c"
+  }
+}

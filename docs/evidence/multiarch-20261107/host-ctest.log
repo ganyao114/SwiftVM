@@ -1,0 +1,117 @@
+Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+      Start 23: ir_format_contract
+      Start 24: base_contract
+      Start 15: riscv64_compile_contract
+      Start 14: ir_direct_contract
+      Start  1: instruction_coverage
+      Start  5: x87_coverage
+ 1/28 Test #23: ir_format_contract ................   Passed    0.59 sec
+      Start  3: avx_coverage
+ 2/28 Test #24: base_contract .....................   Passed    1.12 sec
+      Start 28: aot_artifact_contract
+ 3/28 Test #15: riscv64_compile_contract ..........   Passed    1.95 sec
+      Start 13: x86_interpreter_contract
+ 4/28 Test #14: ir_direct_contract ................   Passed    2.90 sec
+      Start 25: code_image_contract
+ 5/28 Test  #1: instruction_coverage ..............   Passed    3.48 sec
+      Start  8: x86_construction_contract
+ 6/28 Test  #5: x87_coverage ......................   Passed    4.40 sec
+      Start 11: arm64_compile_contract
+ 7/28 Test  #3: avx_coverage ......................   Passed    4.88 sec
+      Start 10: ir_optimize_contract
+ 8/28 Test #28: aot_artifact_contract .............   Passed    4.88 sec
+      Start 12: compile_pipeline_contract
+ 9/28 Test #13: x86_interpreter_contract ..........   Passed    5.48 sec
+      Start  7: ir_construction_contract
+10/28 Test #25: code_image_contract ...............   Passed    5.06 sec
+      Start 26: persistence_relocation_contract
+11/28 Test  #8: x86_construction_contract .........   Passed    5.72 sec
+      Start  2: instruction_coverage_native
+12/28 Test  #2: instruction_coverage_native .......***Skipped   0.01 sec
+      Start  4: avx_coverage_native
+13/28 Test  #4: avx_coverage_native ...............***Skipped   0.02 sec
+      Start  6: x87_coverage_native
+14/28 Test  #6: x87_coverage_native ...............***Skipped   0.01 sec
+      Start  9: arm64_frontend_contract
+15/28 Test #11: arm64_compile_contract ............   Passed    5.58 sec
+      Start 16: x64_compile_contract
+16/28 Test #10: ir_optimize_contract ..............   Passed    5.09 sec
+      Start 17: x64_native_contract
+17/28 Test #12: compile_pipeline_contract .........   Passed    5.14 sec
+      Start 18: loongarch64_compile_contract
+18/28 Test  #7: ir_construction_contract ..........   Passed    5.10 sec
+      Start 19: loongarch64_native_contract
+19/28 Test #26: persistence_relocation_contract ...   Passed    5.25 sec
+      Start 20: arm64_native_contract
+20/28 Test #20: arm64_native_contract .............***Skipped   0.01 sec
+      Start 21: pipeline_native_contract
+21/28 Test #21: pipeline_native_contract ..........***Skipped   0.01 sec
+      Start 22: riscv64_native_contract
+22/28 Test #22: riscv64_native_contract ...........***Skipped   0.01 sec
+      Start 27: persistence_relocation_native
+23/28 Test #27: persistence_relocation_native .....***Skipped   0.01 sec
+24/28 Test  #9: arm64_frontend_contract ...........   Passed    4.88 sec
+25/28 Test #17: x64_native_contract ...............***Skipped   4.27 sec
+26/28 Test #16: x64_compile_contract ..............***Failed    4.84 sec
+Filters: [compile]
+Randomness seeded to: 3906314482
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+svm_x64_compile_test is a Catch2 v3.2.1 host application.
+Run with -? for options
+
+-------------------------------------------------------------------------------
+PersistentLinks
+-------------------------------------------------------------------------------
+/Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/x64_compile_test.cpp:1073
+...............................................................................
+
+/Volumes/Data2/SwiftVM-submit-20261104/source/tests/support/check.h:16: FAILED:
+  REQUIRE( condition )
+with expansion:
+  false
+with message:
+  /Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/x64_compile_test.
+  cpp:978: linked native unit records semantic MOVABS relocations: error=8
+  relocatable=0 links=0 relocs=0
+
+/Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/x64_compile_test.cpp:1073: FAILED:
+  CHECK_NOTHROW( PersistentLinks() )
+due to unexpected exception with messages:
+  /Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/x64_compile_test.
+  cpp:978: linked native unit records semantic MOVABS relocations: error=8
+  relocatable=0 links=0 relocs=0
+  Exception translation was disabled by CATCH_CONFIG_FAST_COMPILE
+
+===============================================================================
+test cases: 17 | 16 passed | 1 failed
+assertions: 18 | 16 passed | 2 failed
+
+
+27/28 Test #19: loongarch64_native_contract .......***Skipped   2.93 sec
+28/28 Test #18: loongarch64_compile_contract ......   Passed    4.31 sec
+
+96% tests passed, 1 tests failed out of 28
+
+Label Time Summary:
+compile     =  80.66 sec*proc (19 tests)
+native      =   7.29 sec*proc (9 tests)
+portable    =  80.66 sec*proc (19 tests)
+unit        =  87.95 sec*proc (28 tests)
+
+Total Test time (real) =  15.47 sec
+
+The following tests did not run:
+	  2 - instruction_coverage_native (Skipped)
+	  4 - avx_coverage_native (Skipped)
+	  6 - x87_coverage_native (Skipped)
+	 17 - x64_native_contract (Skipped)
+	 19 - loongarch64_native_contract (Skipped)
+	 20 - arm64_native_contract (Skipped)
+	 21 - pipeline_native_contract (Skipped)
+	 22 - riscv64_native_contract (Skipped)
+	 27 - persistence_relocation_native (Skipped)
+
+The following tests FAILED:
+	 16 - x64_compile_contract (Failed)                     compile portable unit
+Errors while running CTest

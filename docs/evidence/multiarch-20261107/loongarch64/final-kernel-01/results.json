@@ -1,0 +1,703 @@
+{
+  "all_passed": false,
+  "cases": [
+    {
+      "name": "relocation",
+      "argv": [
+        "/tests/svm_persistence_relocation_test",
+        "--native",
+        "--rng-seed",
+        "12345"
+      ],
+      "expected": 0,
+      "kind": "catch",
+      "count": 1,
+      "actual_exit": 0,
+      "passed_cases": null,
+      "all_passed": false
+    },
+    {
+      "name": "runtime",
+      "argv": [
+        "/tests/svm_runtime_engine_test",
+        "--native",
+        "--rng-seed",
+        "12345"
+      ],
+      "expected": 0,
+      "kind": "catch",
+      "count": 4,
+      "actual_exit": 0,
+      "passed_cases": 4,
+      "all_passed": true
+    },
+    {
+      "name": "persistence",
+      "argv": [
+        "/tests/svm_runtime_persistence_test",
+        "--native",
+        "--rng-seed",
+        "12345"
+      ],
+      "expected": 0,
+      "kind": "catch",
+      "count": 4,
+      "actual_exit": 0,
+      "passed_cases": 4,
+      "all_passed": true
+    },
+    {
+      "name": "guest-call",
+      "argv": [
+        "/tests/svm_aot_call_test",
+        "--native",
+        "--rng-seed",
+        "12345"
+      ],
+      "expected": 0,
+      "kind": "catch",
+      "count": 3,
+      "actual_exit": 3,
+      "passed_cases": null,
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-cache-write",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--cache-dir",
+        "/out/cache-x86-block",
+        "/tests/cache-guest.elf"
+      ],
+      "expected": 42,
+      "kind": "cache-write",
+      "guest": "x86",
+      "scope": "block",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-cache-read",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--cache-dir",
+        "/out/cache-x86-block",
+        "/tests/cache-guest.elf"
+      ],
+      "expected": 42,
+      "kind": "cache-read",
+      "guest": "x86",
+      "scope": "block",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-direct",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--engine",
+        "interpreter",
+        "/tests/cache-guest.elf"
+      ],
+      "expected": 42,
+      "kind": "direct",
+      "guest": "x86",
+      "scope": "block",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-aot-compile",
+      "argv": [
+        "/tests/svm_aot",
+        "compile",
+        "/tests/original-x86-block.elf",
+        "-o",
+        "/out/x86-block.aot",
+        "--scope",
+        "block"
+      ],
+      "expected": 0,
+      "kind": "aot-compile",
+      "guest": "x86",
+      "scope": "block",
+      "actual_exit": null,
+      "artifact_stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-remove-original",
+      "argv": [
+        "@unlink",
+        "/tests/original-x86-block.elf"
+      ],
+      "expected": 0,
+      "kind": "remove",
+      "guest": "x86",
+      "scope": "block",
+      "actual_exit": null,
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-aot-run",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--aot",
+        "/out/x86-block.aot",
+        "--scope",
+        "block"
+      ],
+      "expected": 42,
+      "kind": "aot",
+      "guest": "x86",
+      "scope": "block",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-call-sum7",
+      "argv": [
+        "/tests/svm_aot",
+        "call",
+        "/out/x86-block.aot",
+        "sum7",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7"
+      ],
+      "expected": 0,
+      "kind": "aot",
+      "guest": "x86",
+      "scope": "block",
+      "stdout": "28\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-call-choose",
+      "argv": [
+        "/tests/svm_aot",
+        "call",
+        "/out/x86-block.aot",
+        "choose"
+      ],
+      "expected": 0,
+      "kind": "aot",
+      "guest": "x86",
+      "scope": "block",
+      "stdout": "9\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-block-call-cpu",
+      "argv": [
+        "/tests/svm_aot",
+        "call",
+        "/out/x86-block.aot",
+        "cpu"
+      ],
+      "expected": 0,
+      "kind": "aot",
+      "guest": "x86",
+      "scope": "block",
+      "stdout": "7\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-cache-write",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--cache-dir",
+        "/out/cache-x86-function",
+        "/tests/cache-guest.elf"
+      ],
+      "expected": 42,
+      "kind": "cache-write",
+      "guest": "x86",
+      "scope": "function",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-cache-read",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--cache-dir",
+        "/out/cache-x86-function",
+        "/tests/cache-guest.elf"
+      ],
+      "expected": 42,
+      "kind": "cache-read",
+      "guest": "x86",
+      "scope": "function",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-direct",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--engine",
+        "interpreter",
+        "/tests/cache-guest.elf"
+      ],
+      "expected": 42,
+      "kind": "direct",
+      "guest": "x86",
+      "scope": "function",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-aot-compile",
+      "argv": [
+        "/tests/svm_aot",
+        "compile",
+        "/tests/original-x86-function.elf",
+        "-o",
+        "/out/x86-function.aot",
+        "--scope",
+        "function"
+      ],
+      "expected": 0,
+      "kind": "aot-compile",
+      "guest": "x86",
+      "scope": "function",
+      "actual_exit": null,
+      "artifact_stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-remove-original",
+      "argv": [
+        "@unlink",
+        "/tests/original-x86-function.elf"
+      ],
+      "expected": 0,
+      "kind": "remove",
+      "guest": "x86",
+      "scope": "function",
+      "actual_exit": null,
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-aot-run",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--aot",
+        "/out/x86-function.aot",
+        "--scope",
+        "function"
+      ],
+      "expected": 42,
+      "kind": "aot",
+      "guest": "x86",
+      "scope": "function",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-call-sum7",
+      "argv": [
+        "/tests/svm_aot",
+        "call",
+        "/out/x86-function.aot",
+        "sum7",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7"
+      ],
+      "expected": 0,
+      "kind": "aot",
+      "guest": "x86",
+      "scope": "function",
+      "stdout": "28\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-call-choose",
+      "argv": [
+        "/tests/svm_aot",
+        "call",
+        "/out/x86-function.aot",
+        "choose"
+      ],
+      "expected": 0,
+      "kind": "aot",
+      "guest": "x86",
+      "scope": "function",
+      "stdout": "9\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-function-call-cpu",
+      "argv": [
+        "/tests/svm_aot",
+        "call",
+        "/out/x86-function.aot",
+        "cpu"
+      ],
+      "expected": 0,
+      "kind": "aot",
+      "guest": "x86",
+      "scope": "function",
+      "stdout": "7\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-block-cache-write",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--cache-dir",
+        "/out/cache-arm-block",
+        "/tests/arm-smoke.elf"
+      ],
+      "expected": 42,
+      "kind": "cache-write",
+      "guest": "arm",
+      "scope": "block",
+      "stdout": "arm64 frontend ok\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-block-cache-read",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--cache-dir",
+        "/out/cache-arm-block",
+        "/tests/arm-smoke.elf"
+      ],
+      "expected": 42,
+      "kind": "cache-read",
+      "guest": "arm",
+      "scope": "block",
+      "stdout": "arm64 frontend ok\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-block-direct",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--engine",
+        "interpreter",
+        "/tests/arm-smoke.elf"
+      ],
+      "expected": 42,
+      "kind": "direct",
+      "guest": "arm",
+      "scope": "block",
+      "stdout": "arm64 frontend ok\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-block-aot-compile",
+      "argv": [
+        "/tests/svm_aot",
+        "compile",
+        "/tests/original-arm-block.elf",
+        "-o",
+        "/out/arm-block.aot",
+        "--scope",
+        "block"
+      ],
+      "expected": 0,
+      "kind": "aot-compile",
+      "guest": "arm",
+      "scope": "block",
+      "actual_exit": null,
+      "artifact_stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-block-remove-original",
+      "argv": [
+        "@unlink",
+        "/tests/original-arm-block.elf"
+      ],
+      "expected": 0,
+      "kind": "remove",
+      "guest": "arm",
+      "scope": "block",
+      "actual_exit": null,
+      "all_passed": false
+    },
+    {
+      "name": "arm-block-aot-run",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--aot",
+        "/out/arm-block.aot",
+        "--scope",
+        "block"
+      ],
+      "expected": 42,
+      "kind": "aot",
+      "guest": "arm",
+      "scope": "block",
+      "stdout": "arm64 frontend ok\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-function-cache-write",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--cache-dir",
+        "/out/cache-arm-function",
+        "/tests/arm-smoke.elf"
+      ],
+      "expected": 42,
+      "kind": "cache-write",
+      "guest": "arm",
+      "scope": "function",
+      "stdout": "arm64 frontend ok\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-function-cache-read",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--cache-dir",
+        "/out/cache-arm-function",
+        "/tests/arm-smoke.elf"
+      ],
+      "expected": 42,
+      "kind": "cache-read",
+      "guest": "arm",
+      "scope": "function",
+      "stdout": "arm64 frontend ok\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-function-direct",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "--engine",
+        "interpreter",
+        "/tests/arm-smoke.elf"
+      ],
+      "expected": 42,
+      "kind": "direct",
+      "guest": "arm",
+      "scope": "function",
+      "stdout": "arm64 frontend ok\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-function-aot-compile",
+      "argv": [
+        "/tests/svm_aot",
+        "compile",
+        "/tests/original-arm-function.elf",
+        "-o",
+        "/out/arm-function.aot",
+        "--scope",
+        "function"
+      ],
+      "expected": 0,
+      "kind": "aot-compile",
+      "guest": "arm",
+      "scope": "function",
+      "actual_exit": null,
+      "artifact_stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-function-remove-original",
+      "argv": [
+        "@unlink",
+        "/tests/original-arm-function.elf"
+      ],
+      "expected": 0,
+      "kind": "remove",
+      "guest": "arm",
+      "scope": "function",
+      "actual_exit": null,
+      "all_passed": false
+    },
+    {
+      "name": "arm-function-aot-run",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--aot",
+        "/out/arm-function.aot",
+        "--scope",
+        "function"
+      ],
+      "expected": 42,
+      "kind": "aot",
+      "guest": "arm",
+      "scope": "function",
+      "stdout": "arm64 frontend ok\n",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "func-block",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "/tests/func.elf"
+      ],
+      "expected": 101,
+      "kind": "func",
+      "scope": "block",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "func-function",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "/tests/func.elf"
+      ],
+      "expected": 101,
+      "kind": "func",
+      "scope": "function",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-native-fault",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "/tests/native-fault.elf"
+      ],
+      "expected": 125,
+      "kind": "fault",
+      "error": "guest memory/alignment fault",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "x86-smc",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "/tests/smc-recompile.elf"
+      ],
+      "expected": 0,
+      "kind": "smc",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-smc",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "function",
+        "/tests/arm-smc.elf"
+      ],
+      "expected": 42,
+      "kind": "smc",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    },
+    {
+      "name": "arm-smc-direct",
+      "argv": [
+        "/tests/svm_rebuild_linux",
+        "--scope",
+        "block",
+        "--engine",
+        "interpreter",
+        "/tests/arm-smc.elf"
+      ],
+      "expected": 42,
+      "kind": "direct",
+      "stdout": "",
+      "actual_exit": null,
+      "stats": {},
+      "all_passed": false
+    }
+  ],
+  "qemu_exit": 0,
+  "elapsed_seconds": 4.948128040879965,
+  "aslr_enabled": true,
+  "console_sha256": "4ec31c3c43c2dc6e923d3c4e7ec3a49ed0df864e32b90250e5fbe1e046e11b41"
+}
