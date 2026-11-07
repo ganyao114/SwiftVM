@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
-#include <stdexcept>
+#include "base/error.h"
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -14,12 +14,10 @@ namespace swift::runtime::execution {
 namespace {
 using u64 = std::uint64_t;
 
-[[noreturn]] void SystemError(const char* op) {
-    throw std::runtime_error(std::string(op) + ": " + std::strerror(errno));
-}
+[[noreturn]] void SystemError(const char* op) { swift::ThrowSystemError(op, errno); }
 
 u64 Add(u64 a, u64 b) {
-    if (b > UINT64_MAX - a) throw std::length_error("source range overflow");
+    if (b > UINT64_MAX - a) swift::ThrowError("source range overflow", ErrorKind::InvalidArgument);
     return a + b;
 }
 
@@ -62,7 +60,7 @@ void Smc::Arm(u64 address, std::size_t length) {
     CodeWriteRanges(vm.memory.Regions(), address, end, [&](u64 begin, u64 tail) {
         const auto count = ((tail - 1) / page_size) - (begin / page_size) + 1;
         if (count > pages.max_size() - pages.size() - candidate_pages)
-            throw std::length_error("guest code-write page capacity overflow");
+            swift::ThrowError("guest code-write page capacity overflow", ErrorKind::ResourceLimit);
         candidate_pages += static_cast<std::size_t>(count);
     });
     if (!candidate_pages) return;
@@ -106,7 +104,10 @@ bool Smc::Recover(std::uintptr_t address) noexcept {
     if (found == pages.end() || found->address != page || !found->armed) return false;
     const auto protection = vm.memory.PageProtection(page);
     if (protection < 0 || !(protection & PROT_WRITE)) return false;
-    if (syscall(SYS_mprotect, reinterpret_cast<void*>(page), page_size, protection)) return false;
+    if (syscall(SYS_mprotect, reinterpret_cast<void*>(page), page_size, protection)) {
+        vm.thread.bridge_failure.Set(ErrorKind::System, "remove native code-write watch", errno);
+        return false;
+    }
     found->armed = false;
     vm.thread.faults.smc_pending = 1;
     __atomic_store_n(&vm.thread.native.mask, u64{0}, __ATOMIC_RELAXED);
@@ -153,7 +154,7 @@ void Smc::Invalidate() {
     vm.thread.anchor = {};
     vm.RefreshNative(vm.thread.native);
     const auto released = vm.heap.Release();
-    if (!released.Complete()) throw std::runtime_error("cannot retire native code mapping");
+    if (!released.Complete()) swift::ThrowError("cannot retire native code mapping");
     ++vm.stats.cache_invalidations;
 }
 }  // namespace swift::runtime::execution

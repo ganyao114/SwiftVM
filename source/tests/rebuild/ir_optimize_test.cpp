@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/ir/optimize.h"
 #include "runtime/ir/builder.h"
 
@@ -8,17 +12,10 @@
 #include <utility>
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 using namespace swift::runtime::ir;
 using swift::runtime::ir::Optimize;
-
-void Check(bool condition, const char* expression, int line) {
-    if (!condition) {
-        std::fprintf(stderr, "IR optimize failed at %d: %s\n", line, expression);
-        throw std::runtime_error("IR optimize contract failed");
-    }
-}
-
-#define CHECK(x) Check(static_cast<bool>(x), #x, __LINE__)
 
 Value Emit(Builder& builder,
            OpCode opcode,
@@ -1300,25 +1297,72 @@ void ReusedRowsKeepOnlyCurrentRequest() {
 }
 }  // namespace
 
-int main() {
-    ReusedRowsKeepOnlyCurrentRequest();
-    FoldAndDeadCascade();
-    LowByteMaskWriteback();
-    CopyAndTerminalRoots();
-    MetadataSensitiveAndObservable();
-    UniformWindows();
-    ViewWidthAndShiftEdges();
-    BudgetAndUnsupported();
-    RawAliasesAndNormalizedUniforms();
-    LabelIdentityIsNotADataCopy();
-    UniformReadsObserveFlagWrites();
-    UniformReadForwardingKeepsFaultsAndAliases();
-    StreamingParamsRemainComplete();
-    CoveredMultiplyFlagsReleaseTheirInputs();
-    FlagsObserveFaultsAliasesAndBlockExits();
-    SingleNumericReadAbsorbsU32Normalizer();
-    ExtractShiftAlgebra();
-    SignedWidenMultiplyAlgebra();
-    OrderedLoadAddresses();
-    std::puts("IR optimize contracts passed");
+TEST_CASE("ReusedRowsKeepOnlyCurrentRequest", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(ReusedRowsKeepOnlyCurrentRequest());
+}
+
+TEST_CASE("FoldAndDeadCascade", "[compile][ir-optimize]") { CHECK_NOTHROW(FoldAndDeadCascade()); }
+
+TEST_CASE("LowByteMaskWriteback", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(LowByteMaskWriteback());
+}
+
+TEST_CASE("CopyAndTerminalRoots", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(CopyAndTerminalRoots());
+}
+
+TEST_CASE("MetadataSensitiveAndObservable", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(MetadataSensitiveAndObservable());
+}
+
+TEST_CASE("UniformWindows", "[compile][ir-optimize]") { CHECK_NOTHROW(UniformWindows()); }
+
+TEST_CASE("ViewWidthAndShiftEdges", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(ViewWidthAndShiftEdges());
+}
+
+TEST_CASE("BudgetAndUnsupported", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(BudgetAndUnsupported());
+}
+
+TEST_CASE("RawAliasesAndNormalizedUniforms", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(RawAliasesAndNormalizedUniforms());
+}
+
+TEST_CASE("LabelIdentityIsNotADataCopy", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(LabelIdentityIsNotADataCopy());
+}
+
+TEST_CASE("UniformReadsObserveFlagWrites", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(UniformReadsObserveFlagWrites());
+}
+
+TEST_CASE("UniformReadForwardingKeepsFaultsAndAliases", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(UniformReadForwardingKeepsFaultsAndAliases());
+}
+
+TEST_CASE("StreamingParamsRemainComplete", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(StreamingParamsRemainComplete());
+}
+
+TEST_CASE("CoveredMultiplyFlagsReleaseTheirInputs", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(CoveredMultiplyFlagsReleaseTheirInputs());
+}
+
+TEST_CASE("FlagsObserveFaultsAliasesAndBlockExits", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(FlagsObserveFaultsAliasesAndBlockExits());
+}
+
+TEST_CASE("SingleNumericReadAbsorbsU32Normalizer", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(SingleNumericReadAbsorbsU32Normalizer());
+}
+
+TEST_CASE("ExtractShiftAlgebra", "[compile][ir-optimize]") { CHECK_NOTHROW(ExtractShiftAlgebra()); }
+
+TEST_CASE("SignedWidenMultiplyAlgebra", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(SignedWidenMultiplyAlgebra());
+}
+
+TEST_CASE("OrderedLoadAddresses", "[compile][ir-optimize]") {
+    CHECK_NOTHROW(OrderedLoadAddresses());
 }

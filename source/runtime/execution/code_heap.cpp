@@ -3,15 +3,13 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
-#include <stdexcept>
+#include "base/error.h"
 
 #include "host_backend.h"
 
 namespace swift::runtime::execution {
 namespace {
-[[noreturn]] void Failed(const char* operation) {
-    throw std::runtime_error(std::string(operation) + ": " + std::strerror(errno));
-}
+[[noreturn]] void Failed(const char* operation) { swift::ThrowSystemError(operation, errno); }
 }  // namespace
 
 CodeHeap::CodeHeap(const HostBackendOps& backend, std::size_t page_size) noexcept
@@ -58,7 +56,7 @@ NativeCode CodeHeap::Publish(std::span<const std::uint32_t> words,
                              ReadyResolver ready,
                              void* opaque) {
     if (words.empty() || words.size() > (SIZE_MAX - 4096) / 4)
-        throw std::runtime_error("invalid native code size");
+        swift::ThrowError("invalid native code size");
     const auto bytes = words.size_bytes();
     std::span<const backend::FaultSite> sites;
     if (!faults.empty()) {
@@ -67,7 +65,8 @@ NativeCode CodeHeap::Publish(std::span<const std::uint32_t> words,
     }
     if (slabs.empty() || !slabs.back().mapping.Writable() ||
         bytes > slabs.back().mapping.Size() - ((slabs.back().used + 15) & ~std::size_t{15})) {
-        if (bytes > SIZE_MAX - page_size - 15) throw std::length_error("native slab size overflow");
+        if (bytes > SIZE_MAX - page_size - 15)
+            swift::ThrowError("native slab size overflow", ErrorKind::ResourceLimit);
         const auto size = (std::max(std::size_t{1} << 20, bytes + 15) + page_size - 1) / page_size *
                           page_size;
         // This row exists before any kernel mapping is acquired. A failed
@@ -95,13 +94,19 @@ NativeCode CodeHeap::Publish(std::span<const std::uint32_t> words,
             // Older units share this slab and must regain execute permission
             // even when this unpublished slice has an invalid relocation.
             if (!slab.mapping.SetExecutable()) Failed("native slab executable");
-            throw std::runtime_error("invalid native link relocation");
+            swift::ThrowError("invalid native link relocation");
         }
     }
-    const bool synchronized_aliases = slab.mapping.Dual() && backend.synchronize_code;
-    if (synchronized_aliases)
-        backend.synchronize_code(write, execute, bytes);
-    else
+    const bool synchronized_aliases = backend.synchronize_code != nullptr;
+    if (synchronized_aliases) {
+        const int error = backend.synchronize_code(write, execute, bytes);
+        if (error) {
+            // No entry or link can reach this candidate. The existing slab
+            // owner retains its mappings for the ordinary VM close path.
+            (void)slab.mapping.SetExecutable();
+            swift::ThrowSystemError("synchronize native code", error);
+        }
+    } else
         __builtin___clear_cache(reinterpret_cast<char*>(write),
                                 reinterpret_cast<char*>(write + bytes));
     if (!slab.mapping.SetExecutable()) Failed("native slab executable");

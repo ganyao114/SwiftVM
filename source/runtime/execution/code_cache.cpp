@@ -1,6 +1,6 @@
 #include "code_cache.h"
 
-#include <stdexcept>
+#include "base/error.h"
 #include <utility>
 
 namespace swift::runtime::execution {
@@ -46,7 +46,7 @@ void CodeCache::DisableCompilation(std::uint64_t pc) { Reserve(pc).jit_disabled 
 void CodeCache::InsertReady(std::uint64_t pc,
                             NativeCode code,
                             std::span<const backend::EntryPoint> extra) {
-    if (!code.entry) throw std::runtime_error("cannot cache an empty native entry");
+    if (!code.entry) swift::ThrowError("cannot cache an empty native entry");
     if (codes.size() >= UINT32_MAX) throw std::length_error("native unit capacity overflow");
     const auto capacity = codes.capacity();
     const auto id = static_cast<std::uint32_t>(codes.size());
@@ -59,7 +59,7 @@ void CodeCache::InsertReady(std::uint64_t pc,
     // fails. The VM aborts this resolver; it must revoke before heap release.
     BindReady(pc, id, code.entry);
     for (const auto& entry : extra) {
-        if (entry.offset >= code.bytes) throw std::runtime_error("entry outside native unit");
+        if (entry.offset >= code.bytes) swift::ThrowError("entry outside native unit");
         BindReady(entry.pc,
                   id,
                   reinterpret_cast<NativeCode::Function>(

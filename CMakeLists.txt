@@ -1,12 +1,36 @@
 cmake_minimum_required(VERSION 3.22)
 project(SwiftVMRebuild LANGUAGES C CXX ASM)
 
+include(CTest)
+set(FMT_DOC OFF CACHE BOOL "" FORCE)
+set(FMT_TEST OFF CACHE BOOL "" FORCE)
+set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
+set(FMT_OS OFF CACHE BOOL "" FORCE)
+set(FMT_SYSTEM_HEADERS ON CACHE BOOL "" FORCE)
+add_subdirectory(source/runtime/externals/fmt)
+add_library(svm_base STATIC source/base/error.cpp source/base/logging.cpp)
+target_include_directories(svm_base PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/source")
+target_compile_features(svm_base PUBLIC cxx_std_20)
+target_link_libraries(svm_base PUBLIC fmt::fmt)
+if(ANDROID)
+    target_link_libraries(svm_base PRIVATE log)
+endif()
+
 # Deliberately independent of the retired VM middle pipeline.
 add_library(svm_ir STATIC
     source/runtime/ir/program.cpp
     source/runtime/ir/builder.cpp)
 target_include_directories(svm_ir PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/source")
 target_compile_features(svm_ir PUBLIC cxx_std_20)
+
+option(SVM_BUILD_IR_FORMAT "Build the optional IR text formatter" ${BUILD_TESTING})
+if(SVM_BUILD_IR_FORMAT)
+    add_library(svm_ir_format STATIC source/runtime/ir/format.cpp)
+    target_link_libraries(svm_ir_format PUBLIC svm_ir PRIVATE svm_base)
+endif()
+
+add_library(svm_allocation STATIC source/runtime/backend/allocation_cfg.cpp)
+target_link_libraries(svm_allocation PUBLIC svm_ir)
 
 # The portable IR optimizer shares the IR contract, independently of execution
 # ownership and any backend. Files divide responsibilities, not extra walks.
@@ -51,12 +75,14 @@ target_link_libraries(svm_x87 PRIVATE svm_softfloat_ext80 svm_cephes)
 
 add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/allocate.cpp
+    source/runtime/backend/arm64/allocation_selection.cpp
     source/runtime/backend/arm64/helper_calls.cpp
     source/runtime/backend/arm64/assembler.cpp
     source/runtime/backend/arm64/patch.cpp
     source/runtime/backend/arm64/emit.cpp
     source/runtime/backend/arm64/emit_operand.cpp
     source/runtime/backend/arm64/emit_scalar.cpp
+    source/runtime/backend/arm64/emit_calls.cpp
     source/runtime/backend/arm64/emit_memory.cpp
     source/runtime/backend/arm64/emit_atomic.cpp
     source/runtime/backend/arm64/emit_control.cpp
@@ -70,7 +96,10 @@ add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/vector_helper.cpp
     source/runtime/backend/arm64/emit_float.cpp
     source/runtime/backend/arm64/compile.cpp)
-target_link_libraries(svm_arm64 PUBLIC svm_ir PRIVATE svm_x87)
+target_link_libraries(svm_arm64 PUBLIC svm_ir PRIVATE svm_x87 svm_allocation)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+    target_sources(svm_arm64 PRIVATE source/runtime/backend/arm64/helper_bridge.S)
+endif()
 
 # The controlled fork exposes exact encoding only: no MacroAssembler, scratch
 # allocator, literal/veneer pool, simulator or second code buffer is linked.
@@ -114,7 +143,7 @@ add_library(svm_riscv64 STATIC
     source/runtime/backend/riscv64/call_helpers.cpp
     source/runtime/backend/riscv64/emit_vector.cpp
     source/runtime/backend/riscv64/emit_float.cpp)
-target_link_libraries(svm_riscv64 PUBLIC svm_ir PRIVATE svm_biscuit_exact svm_x87)
+target_link_libraries(svm_riscv64 PUBLIC svm_ir PRIVATE svm_biscuit_exact svm_x87 svm_allocation)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(svm_riscv64 PRIVATE atomic)
 endif()
@@ -170,41 +199,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/platform/linux/safe_access.cpp
         source/runtime/platform/linux/signals.cpp
         source/runtime/platform/linux/run_guest.cpp)
-    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_ir_optimize)
+    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_ir_optimize PRIVATE svm_base)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64")
-        target_sources(svm_execution PRIVATE source/runtime/platform/linux/riscv64_runtime.cpp
-            source/runtime/platform/linux/riscv64_entry.S)
+        target_sources(svm_execution PRIVATE source/runtime/platform/linux/riscv64_host.cpp
+            source/runtime/backend/riscv64/runtime.cpp
+            source/runtime/backend/riscv64/entry_elf.S)
         target_link_libraries(svm_execution PUBLIC svm_riscv64)
     else()
-        target_sources(svm_execution PRIVATE source/runtime/platform/linux/arm64_runtime.cpp
-            source/runtime/platform/linux/arm64_entry.S)
+        target_sources(svm_execution PRIVATE source/runtime/platform/linux/arm64_host.cpp
+            source/runtime/backend/arm64/runtime.cpp
+            source/runtime/backend/arm64/entry_elf.S)
         target_link_libraries(svm_execution PUBLIC svm_arm64)
     endif()
-    add_executable(svm_rebuild_linux source/launcher/linux/main.cpp)
-    target_link_libraries(svm_rebuild_linux PRIVATE svm_execution)
-    add_executable(svm_runtime_engine_test source/tests/rebuild/runtime_engine_test.cpp)
-    target_link_libraries(svm_runtime_engine_test PRIVATE svm_execution)
+    add_executable(svm_rebuild_linux source/launcher/linux/main.cpp
+        source/launcher/linux/options.cpp source/launcher/linux/report.cpp)
+    target_link_libraries(svm_rebuild_linux PRIVATE svm_execution svm_base)
 endif()
-
-add_executable(svm_ir_construction_test source/tests/rebuild/ir_construction_test.cpp)
-target_link_libraries(svm_ir_construction_test PRIVATE svm_ir)
-add_executable(svm_x86_construction_test source/tests/rebuild/x86_construction_test.cpp)
-target_link_libraries(svm_x86_construction_test PRIVATE svm_x86_ir distorm)
-add_executable(svm_ir_optimize_test source/tests/rebuild/ir_optimize_test.cpp)
-target_link_libraries(svm_ir_optimize_test PRIVATE svm_ir_optimize)
-add_executable(svm_arm64_compile_test source/tests/rebuild/arm64_compile_test.cpp)
-target_link_libraries(svm_arm64_compile_test PRIVATE svm_arm64)
-if(TARGET svm_execution)
-    target_link_libraries(svm_arm64_compile_test PRIVATE svm_execution)
-endif()
-add_executable(svm_compile_pipeline_test source/tests/rebuild/compile_pipeline_test.cpp)
-target_link_libraries(svm_compile_pipeline_test PRIVATE svm_x86_ir svm_ir_optimize svm_arm64 distorm)
-add_executable(svm_ir_direct_test source/tests/rebuild/ir_direct_test.cpp)
-target_link_libraries(svm_ir_direct_test PRIVATE svm_ir_direct)
-add_executable(svm_riscv64_compile_test source/tests/rebuild/riscv64_compile_test.cpp)
-target_link_libraries(svm_riscv64_compile_test PRIVATE svm_riscv64)
-add_executable(svm_x86_interpreter_test source/tests/rebuild/x86_interpreter_test.cpp)
-target_link_libraries(svm_x86_interpreter_test PRIVATE svm_x86_ir)
 
 option(SVM_BUILD_IR_BENCHMARK "Build the IR construction/submission benchmark" ON)
 if(SVM_BUILD_IR_BENCHMARK)
@@ -221,43 +231,15 @@ if(SVM_BUILD_IR_BENCHMARK)
     target_link_libraries(svm_ir_compile_bench PRIVATE svm_ir_optimize svm_arm64)
     add_executable(svm_function_compile_bench benchmarks/function_compile_bench.cpp)
     target_link_libraries(svm_function_compile_bench PRIVATE svm_x86_ir svm_ir_optimize svm_arm64)
+    foreach(svm_bench IN ITEMS svm_ir_build_submit_bench svm_ir_static_build_submit_bench
+            svm_x86_build_submit_bench svm_ir_birth_replay_bench svm_ir_compile_bench
+            svm_function_compile_bench)
+        target_link_libraries(${svm_bench} PRIVATE svm_base)
+    endforeach()
 endif()
 
-foreach(svm_coverage IN ITEMS instruction avx x87)
-    add_executable(svm_${svm_coverage}_coverage_test source/tests/rebuild/${svm_coverage}_coverage_test.cpp)
-    target_link_libraries(svm_${svm_coverage}_coverage_test PRIVATE svm_x86_ir svm_ir_optimize svm_arm64)
-    if(TARGET svm_execution)
-        target_link_libraries(svm_${svm_coverage}_coverage_test PRIVATE svm_execution)
-    endif()
-endforeach()
-
-enable_testing()
-foreach(svm_coverage IN ITEMS instruction avx x87)
-    add_test(NAME ${svm_coverage}_coverage COMMAND svm_${svm_coverage}_coverage_test)
-    set_tests_properties(${svm_coverage}_coverage PROPERTIES ENVIRONMENT
-        "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;ASAN_OPTIONS=halt_on_error=1")
-endforeach()
-add_test(NAME ir_construction_contract COMMAND svm_ir_construction_test)
-add_test(NAME x86_construction_contract COMMAND svm_x86_construction_test)
-add_test(NAME ir_optimize_contract COMMAND svm_ir_optimize_test)
-add_test(NAME arm64_compile_contract COMMAND svm_arm64_compile_test)
-add_test(NAME compile_pipeline_contract COMMAND svm_compile_pipeline_test)
-add_test(NAME x86_interpreter_contract COMMAND svm_x86_interpreter_test)
-add_test(NAME ir_direct_contract COMMAND svm_ir_direct_test)
-add_test(NAME riscv64_compile_contract COMMAND svm_riscv64_compile_test)
-if(TARGET svm_runtime_engine_test)
-    add_test(NAME runtime_engine_contract COMMAND svm_runtime_engine_test)
-endif()
-
-# A recovering UBSan report must fail the contract run instead of being hidden
-# behind an otherwise successful process exit. These are inert without ASan/UBSan.
-set_tests_properties(ir_construction_contract x86_construction_contract
-    ir_optimize_contract arm64_compile_contract compile_pipeline_contract x86_interpreter_contract
-    ir_direct_contract PROPERTIES
-    ENVIRONMENT "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;ASAN_OPTIONS=halt_on_error=1")
-if(TARGET svm_runtime_engine_test)
-    set_tests_properties(runtime_engine_contract PROPERTIES
-        ENVIRONMENT "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;ASAN_OPTIONS=halt_on_error=1")
+if(BUILD_TESTING)
+    add_subdirectory(source/tests)
 endif()
 
 # Keep source ownership boundaries without imposing them on the JIT's host

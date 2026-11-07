@@ -4,7 +4,8 @@
 #include <atomic>
 #include <algorithm>
 #include <cerrno>
-#include <cstdio>
+#include "base/error.h"
+#include "base/format.h"
 #include <stdexcept>
 #include <sys/mman.h>
 
@@ -114,6 +115,7 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     native.fp_environment = 1;
     native.native_nzcv = backend.capabilities.native_nzcv;
     faults.lookup_native = LookupNative;
+    faults.host_failure = &thread.bridge_failure;
     faults.lookup_opaque = this;
     faults.recover_code_write = RecoverCodeWrite;
     faults.code_write_opaque = this;
@@ -177,7 +179,7 @@ MappingRelease VM::Close() noexcept {
 int VM::Run(const std::string& path,
             std::span<const std::string> argv,
             std::span<const std::string> environment) {
-    if (closing || closed) throw std::runtime_error("VM has been closed");
+    if (closing || closed) swift::ThrowError("VM has been closed", ErrorKind::InvalidState);
     image = platform::LoadELF(memory, path);
     thread.native.state.pc = image.entry;
     thread.native.state.gprs[x86::RSP] = platform::InitialStack(memory, image, argv, environment);
@@ -187,7 +189,8 @@ int VM::Run(const std::string& path,
         while (!thread.exited) Interpret(true);
         return thread.exit_code;
     }
-    if (!backend.compile) throw std::runtime_error("native backend is unavailable on this host");
+    if (!backend.compile)
+        swift::ThrowError("native backend is unavailable on this host", ErrorKind::Unsupported);
     {
         FaultScope registration{thread.faults, thread.native.state};
         stats.rcpc_loads = backend.capabilities.rcpc_loads;
@@ -202,58 +205,61 @@ int VM::Run(const std::string& path,
         // Native and its cold resolver end active before creating C++ owners.
         if (sigsetjmp(thread.faults.jump, 1)) {
             if (backend.restore_host_fp) backend.restore_host_fp(thread.native);
-            char message[256];
-            std::snprintf(message,
-                          sizeof(message),
-                          "guest memory/alignment fault signal=%d code=%d pc=0x%llx host_pc=0x%llx "
-                          "address=0x%llx",
-                          static_cast<int>(thread.faults.signal_number),
-                          static_cast<int>(thread.faults.signal_code),
-                          static_cast<unsigned long long>(thread.native.state.pc),
-                          static_cast<unsigned long long>(thread.faults.host_pc),
-                          static_cast<unsigned long long>(thread.faults.address));
-            throw std::runtime_error(message);
+            if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
+            swift::ThrowError(swift::Format("guest memory/alignment fault signal={} code={} "
+                                            "pc={:#x} host_pc={:#x} address={:#x}",
+                                            static_cast<int>(thread.faults.signal_number),
+                                            static_cast<int>(thread.faults.signal_code),
+                                            thread.native.state.pc,
+                                            thread.faults.host_pc.load(),
+                                            thread.faults.address.load()),
+                              ErrorKind::GuestFault);
         }
         while (!thread.exited) {
-            const auto reason = SvmRunNative(&thread.native);
+            const auto reason = static_cast<NativeExit>(SvmRunNative(&thread.native));
             thread.faults.active.store(nullptr);
-            if (reason == 1)
+            if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
+            if (reason == NativeExit::Syscall)
                 syscalls.Service();
-            else if (reason == 2) {
+            else if (reason == NativeExit::ResolveFailure) {
                 if (thread.interpret_requested) {
                     thread.interpret_requested = false;
                     Interpret(true);
                 } else
-                    throw std::runtime_error(thread.resolver_error ? thread.resolver_error
-                                                                   : thread.diagnostic);
-            } else if (reason == 3)
+                    swift::ThrowError(compiler.DescribeFailure(),
+                                      compiler.Failure() == CompileFailure::Unsupported
+                                              ? ErrorKind::Unsupported
+                                              : ErrorKind::InvalidState);
+            } else if (reason == NativeExit::FPEnvironment)
                 UpdateFPEnvironment();
-            else if (reason == 5)
+            else if (reason == NativeExit::StateService)
                 Interpret();
-            else if (reason == 4)
-                throw std::runtime_error("x87 unsupported command or unmasked exception");
-            else if (reason == 6)
-                throw std::runtime_error("native atomic access is unsupported");
-            else if (reason == 7)
-                throw std::runtime_error("guest integer division fault");
-            else if (reason == 8)
-                throw std::runtime_error("guest memory alignment fault");
-            else if (reason == 9)
-                throw std::runtime_error("guest memory access fault");
-            else if (reason != 0)
-                throw std::runtime_error("unknown native dispatch exit reason");
+            else if (reason == NativeExit::X87Fault)
+                swift::ThrowError("x87 unsupported command or unmasked exception");
+            else if (reason == NativeExit::UnsupportedAtomic)
+                swift::ThrowError("native atomic access is unsupported", ErrorKind::Unsupported);
+            else if (reason == NativeExit::DivideFault)
+                swift::ThrowError("guest integer division fault", ErrorKind::GuestFault);
+            else if (reason == NativeExit::AlignmentFault)
+                swift::ThrowError("guest memory alignment fault", ErrorKind::GuestFault);
+            else if (reason == NativeExit::MemoryFault)
+                swift::ThrowError("guest memory access fault", ErrorKind::GuestFault);
+            else if (reason != NativeExit::Continue)
+                swift::ThrowError("unknown native dispatch exit reason", ErrorKind::InvalidState);
         }
     }
     if (thread.faults.restore_error)
-        throw std::runtime_error("cannot restore previous native fault handlers or signal mask");
+        swift::ThrowSystemError("restore native fault handlers or signal mask",
+                                thread.faults.restore_error);
     return thread.exit_code;
 }
 
 void VM::UpdateFPEnvironment() {
     const auto mxcsr = thread.native.state.mxcsr;
-    if (mxcsr & ~u64{0xffff}) throw std::runtime_error("guest MXCSR contains reserved bits");
+    if (mxcsr & ~u64{0xffff})
+        swift::ThrowError("guest MXCSR contains reserved bits", ErrorKind::GuestFault);
     const auto daz = (mxcsr >> 6) & 1, ftz = (mxcsr >> 15) & 1;
-    thread.fp_mode = backend.capabilities.afp ? 0 : static_cast<std::uint8_t>(daz | (ftz << 1));
+    thread.fp_mode = backend.specializes_fp_flush ? static_cast<std::uint8_t>(daz | (ftz << 1)) : 0;
     if (backend.update_fp) backend.update_fp(backend.context, thread.native, mxcsr);
     RefreshNative(thread.native);
 }
@@ -272,17 +278,19 @@ bool VM::GuestWrite(u64 address, const void* source, std::size_t size) {
 
 std::uint64_t VM::PrepareAtomic(void* opaque, u64 address, std::size_t size) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
-    if (!vm.memory.Accessible(address, size, PROT_READ | PROT_WRITE)) return 1;
+    if (!vm.memory.Accessible(address, size, PROT_READ | PROT_WRITE))
+        return AtomicAccessValue(AtomicAccess::Fault);
     const auto end = address + size;
     for (const auto& region : vm.memory.Regions()) {
         if (region.address >= end) break;
         if (region.address + region.size > address && region.backing != BackingKind::Anonymous)
-            return 2;
+            return AtomicAccessValue(AtomicAccess::Unsupported);
     }
     // The single guest owns these stable anonymous mappings. Disarm actual
     // SMC watches before libatomic can enter a lock; retain the active unit
     // until its next dispatcher boundary rather than invalidating it here.
-    return vm.smc.PrepareWriteRange(address, size) ? 0 : 1;
+    return AtomicAccessValue(vm.smc.PrepareWriteRange(address, size) ? AtomicAccess::Allowed
+                                                                     : AtomicAccess::Fault);
 }
 
 void VM::FileChanged(int fd) {
@@ -311,7 +319,13 @@ front::CodeReadResult VM::Fetch(void* opaque,
         const auto source = vm.memory.CodeAt(pc + copied);
         if (source.empty()) break;
         const auto count = std::min(source.size(), destination.size() - copied);
-        if (!vm.memory.CopyIn(destination.data() + copied, pc + copied, count)) break;
+        errno = 0;
+        if (!vm.memory.CopyIn(destination.data() + copied, pc + copied, count)) {
+            if (errno && errno != EFAULT)
+                vm.thread.bridge_failure.Set(
+                        ErrorKind::System, "read guest instruction bytes", errno);
+            break;
+        }
         copied += count;
     }
     return {{copied == destination.size() ? front::AccessStatus::Completed
@@ -325,8 +339,12 @@ front::AccessResult VM::Read(void* opaque,
                              std::span<std::uint8_t> bytes,
                              bool ordered) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
-    if (!vm.memory.CopyIn(bytes.data(), address, bytes.size()))
+    errno = 0;
+    if (!vm.memory.CopyIn(bytes.data(), address, bytes.size())) {
+        if (errno && errno != EFAULT)
+            vm.thread.bridge_failure.Set(ErrorKind::System, "read guest bytes", errno);
         return {front::AccessStatus::Fault, address};
+    }
     if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
     return {};
 }
@@ -339,12 +357,19 @@ front::AccessResult VM::Write(void* opaque,
     try {
         const bool changed = vm.memory.WriteAffectsCode(address, bytes.size());
         if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
-        if (!vm.GuestWrite(address, bytes.data(), bytes.size()))
+        errno = 0;
+        if (!vm.GuestWrite(address, bytes.data(), bytes.size())) {
+            if (errno && errno != EFAULT)
+                vm.thread.bridge_failure.Set(ErrorKind::System, "write guest bytes", errno);
             return {front::AccessStatus::Fault, address};
+        }
         if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
         return {front::AccessStatus::Completed, 0, changed};
+    } catch (const std::exception& failure) {
+        vm.thread.bridge_failure.Capture(failure);
+        return {front::AccessStatus::Fault, address};
     } catch (...) {
-        vm.thread.access_error = "guest write failed while retiring native code";
+        vm.thread.bridge_failure.Set(ErrorKind::Runtime, "unknown guest write service failure");
         return {front::AccessStatus::Fault, address};
     }
 }
@@ -409,8 +434,11 @@ front::AccessResult VM::Atomic(void* opaque,
         }
         observed.high = 0;
         return {front::AccessStatus::Completed, 0, changed};
+    } catch (const std::exception& failure) {
+        vm.thread.bridge_failure.Capture(failure);
+        return {front::AccessStatus::Fault, request.address};
     } catch (...) {
-        vm.thread.access_error = "guest atomic write failed while retiring native code";
+        vm.thread.bridge_failure.Set(ErrorKind::Runtime, "unknown guest atomic service failure");
         return {front::AccessStatus::Fault, request.address};
     }
 }
@@ -421,7 +449,7 @@ front::CpuResult VM::Cpu(void*, std::uint32_t leaf, std::uint32_t subleaf) noexc
 }
 
 void VM::Interpret(bool block) {
-    thread.access_error = nullptr;
+    thread.bridge_failure.Clear();
     const front::ReadyEntryLookup ready{this, [](void* raw, std::uint64_t pc) noexcept {
                                             return bool(static_cast<VM*>(raw)->Cache().Find(pc));
                                         }};
@@ -429,32 +457,31 @@ void VM::Interpret(bool block) {
                                       thread.native.state, DirectServices(), 256, nullptr, ready)
                             : front::InterpretOne(thread.native.state, DirectServices());
     stats.interpreted_steps += step.instructions;
+    if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
     switch (step.kind) {
         case front::StepKind::Incomplete:
-            throw std::runtime_error("IR direct service unavailable after execution progress");
+            swift::ThrowError("IR direct service unavailable after execution progress");
         case front::StepKind::Completed:
             return;
         case front::StepKind::Service:
-            if (step.service == 1)
+            if (step.service == ExitValue(NativeExit::Syscall))
                 syscalls.Service();
-            else if (step.service == 3)
+            else if (step.service == ExitValue(NativeExit::FPEnvironment))
                 UpdateFPEnvironment();
-            else if (step.service == 4)
-                throw std::runtime_error("x87 unsupported command or unmasked exception");
+            else if (step.service == ExitValue(NativeExit::X87Fault))
+                swift::ThrowError("x87 unsupported command or unmasked exception");
             else
-                throw std::runtime_error("unknown interpreted service event");
+                swift::ThrowError("unknown interpreted service event", ErrorKind::InvalidState);
             return;
         default:
             break;
     }
-    if (thread.access_error) throw std::runtime_error(thread.access_error);
-    char message[192];
-    std::snprintf(message,
-                  sizeof(message),
-                  "x86 direct execution rejected pc=0x%llx kind=%u address=0x%llx",
-                  static_cast<unsigned long long>(step.pc),
-                  static_cast<unsigned>(step.kind),
-                  static_cast<unsigned long long>(step.fault_address));
-    throw std::runtime_error(message);
+    if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
+    swift::ThrowError(
+            swift::Format("x86 direct execution rejected pc={:#x} kind={} address={:#x}",
+                          step.pc,
+                          static_cast<unsigned>(step.kind),
+                          step.fault_address),
+            step.kind == front::StepKind::Fault ? ErrorKind::GuestFault : ErrorKind::Unsupported);
 }
 }  // namespace swift::runtime::execution

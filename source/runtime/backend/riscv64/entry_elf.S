@@ -1,6 +1,7 @@
 // Linked RV64G ABI. Only the root owns host callee-save and FP state.
 #include "runtime/backend/riscv64/abi_layout.inc"
 #include "runtime/backend/dispatch_layout.inc"
+#include "runtime/exit.inc"
 #if defined(__riscv) && __riscv_xlen == 64
 .text
 .option push
@@ -67,7 +68,7 @@ fence rw,w
 sd t1, 0(t0)
 jr a0
 95:
-li a0, 2
+li a0, SVM_NATIVE_EXIT_RESOLVE_FAILURE
 j SvmNativeExit
 .endm
 

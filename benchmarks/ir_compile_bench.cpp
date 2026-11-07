@@ -1,3 +1,5 @@
+#include "base/error.h"
+#include "base/logging.h"
 #include "runtime/backend/arm64/compile.h"
 #include "runtime/ir/optimize.h"
 #include "runtime/ir/builder.h"
@@ -30,7 +32,7 @@ struct Options {
 };
 
 void Require(bool okay) {
-    if (!okay) throw std::runtime_error("scalar compile benchmark rejected actual work");
+    if (!okay) swift::ThrowError("scalar compile benchmark rejected actual work");
 }
 
 Value ValueOf(AppendResult result) {
@@ -115,17 +117,17 @@ Options Arguments(int argc, char** argv) {
                     "[--flags on|off]");
             std::exit(0);
         }
-        if (++i == argc) throw std::runtime_error("missing option value");
+        if (++i == argc) swift::ThrowError("missing option value");
         const std::string_view text{argv[i]};
         unsigned value{};
         if (key == "--flags") {
-            if (text != "on" && text != "off") throw std::runtime_error("invalid flags mode");
+            if (text != "on" && text != "off") swift::ThrowError("invalid flags mode");
             options.flags = text == "on";
             continue;
         }
         const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
         if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-            throw std::runtime_error("invalid number");
+            swift::ThrowError("invalid number");
         if (key == "--requests")
             options.requests = value;
         else if (key == "--nodes")
@@ -135,16 +137,17 @@ Options Arguments(int argc, char** argv) {
         else if (key == "--warmup")
             options.warmup = value;
         else
-            throw std::runtime_error("unknown option");
+            swift::ThrowError("unknown option");
     }
     if (!options.requests || options.requests > 10000 || options.nodes < 4 ||
         options.nodes > 100000 || !options.samples || options.samples > 100 || options.warmup > 100)
-        throw std::runtime_error("option exceeds fixed limits");
+        swift::ThrowError("option exceeds fixed limits");
     return options;
 }
 }  // namespace
 
 int main(int argc, char** argv) {
+    swift::log::SetSink(&swift::log::StandardErrorSink());
     try {
         const auto options = Arguments(argc, argv);
         std::array<Counts, 2> expected;
@@ -207,7 +210,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
+        SVM_LOG(Error, Runtime, "{}", error.what());
         return 1;
     }
 }

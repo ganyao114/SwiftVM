@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/frontend/x86/interpreter.h"
 #include "runtime/frontend/x86/build_ir.h"
 #include "runtime/backend/arm64/compile.h"
@@ -22,18 +26,14 @@
 #endif
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 namespace front = swift::x86;
 namespace arch = swift::runtime::x86;
 namespace ir = swift::runtime::ir;
 namespace a64 = swift::runtime::backend::arm64;
 using u64 = std::uint64_t;
 
-void Check(bool condition, int line) {
-    if (!condition)
-        throw std::runtime_error("instruction coverage at line " + std::to_string(line));
-}
-
-#define CHECK(...) Check(bool(__VA_ARGS__), __LINE__)
 constexpr u64 reserved = UINT64_C(0x8501000000000000);
 
 front::StateLayout Layout() {
@@ -79,24 +79,26 @@ Compiled Admission(std::span<const std::uint8_t> bytes, u64 pc, bool native) {
     CHECK(code && !code.words.empty());
     Compiled result{std::move(code), {}};
 #if defined(__aarch64__) && !defined(__APPLE__)
-    if (native) {
-        namespace execution = swift::runtime::execution;
-        options.dispatcher = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatch);
-        options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
-        options.pc_offset = offsetof(arch::GuestState, pc);
-        options.fault_locations = true;
-        options.private_uniforms = true;
-        options.pinned_uniform_offset = 0;
-        options.pinned_uniform_slots = 16;
-        options.pinned_vector_offset = offsetof(arch::GuestState, xmm);
-        const auto caps = getauxval(AT_HWCAP);
-        options.aes = (caps & HWCAP_AES) != 0;
-        options.pmull = (caps & HWCAP_PMULL) != 0;
-        options.sha256 = (caps & HWCAP_SHA2) != 0;
-        // The packed linked ABI also exercises pin scratch8/9 on hosts that
-        // have no FlagM. Crypto capabilities remain actual host facts.
-        result.pinned = a64::Compile(built.program, options);
-        CHECK(result.pinned);
+    if (NativeMode()) {
+        if (native) {
+            namespace execution = swift::runtime::execution;
+            options.dispatcher = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatch);
+            options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
+            options.pc_offset = offsetof(arch::GuestState, pc);
+            options.fault_locations = true;
+            options.private_uniforms = true;
+            options.pinned_uniform_offset = 0;
+            options.pinned_uniform_slots = 16;
+            options.pinned_vector_offset = offsetof(arch::GuestState, xmm);
+            const auto caps = getauxval(AT_HWCAP);
+            options.aes = (caps & HWCAP_AES) != 0;
+            options.pmull = (caps & HWCAP_PMULL) != 0;
+            options.sha256 = (caps & HWCAP_SHA2) != 0;
+            // The packed linked ABI also exercises pin scratch8/9 on hosts that
+            // have no FlagM. Crypto capabilities remain actual host facts.
+            result.pinned = a64::Compile(built.program, options);
+            CHECK(result.pinned);
+        }
     }
 #else
     (void)native;
@@ -106,23 +108,9 @@ Compiled Admission(std::span<const std::uint8_t> bytes, u64 pc, bool native) {
 #if defined(__aarch64__) && !defined(__APPLE__)
 void Execute(const a64::CompileResult& compiled, arch::GuestState& state, bool pinned) {
     namespace execution = swift::runtime::execution;
-    const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
-    CHECK(page && page != static_cast<std::size_t>(-1));
-    const auto bytes = compiled.words.size() * 4, allocation = (bytes + page - 1) / page * page;
-    void* memory =
-            mmap(nullptr, allocation, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    CHECK(memory != MAP_FAILED);
-
-    struct Release {
-        void* memory;
-        std::size_t size;
-
-        ~Release() { munmap(memory, size); }
-    } release{memory, allocation};
-
-    std::memcpy(memory, compiled.words.data(), bytes);
-    CHECK(mprotect(memory, allocation, PROT_READ | PROT_EXEC) == 0);
-    __builtin___clear_cache(static_cast<char*>(memory), static_cast<char*>(memory) + bytes);
+    swift::tests::NativeCode published{compiled.words, swift::tests::NativeISA::Arm64};
+    void* memory = published.Entry();
+    const auto bytes = compiled.words.size() * 4;
     if (!pinned) {
         CHECK(reinterpret_cast<u64 (*)(std::uint8_t*)>(memory)(
                       reinterpret_cast<std::uint8_t*>(&state)) == 0);
@@ -229,13 +217,15 @@ struct Machine {
         const auto services = Services();
         const auto step = front::InterpretOne(state, services);
 #if defined(__aarch64__) && !defined(__APPLE__)
-        if (native) {
-            CHECK(step.kind == front::StepKind::Completed);
-            auto plain = initial, pinned = initial;
-            Execute(compiled.plain, plain, false);
-            Execute(compiled.pinned, pinned, true);
-            SameState(state, plain);
-            SameState(state, pinned);
+        if (NativeMode()) {
+            if (native) {
+                CHECK(step.kind == front::StepKind::Completed);
+                auto plain = initial, pinned = initial;
+                Execute(compiled.plain, plain, false);
+                Execute(compiled.pinned, pinned, true);
+                SameState(state, plain);
+                SameState(state, pinned);
+            }
         }
 #else
         (void)compiled;
@@ -511,16 +501,20 @@ void CryptoAndStringCompare() {
 }
 }  // namespace
 
-int main() {
-    try {
-        FlagsAndShifts();
-        FaultAndAddress();
-        ControlAndStrings();
-        BmiAndAdx();
-        CryptoAndStringCompare();
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
-    std::puts("instruction coverage contracts passed");
+TEST_CASE("FlagsAndShifts", "[compile][instruction-coverage][native]") {
+    CHECK_NOTHROW(FlagsAndShifts());
+}
+
+TEST_CASE("FaultAndAddress", "[compile][instruction-coverage][native]") {
+    CHECK_NOTHROW(FaultAndAddress());
+}
+
+TEST_CASE("ControlAndStrings", "[compile][instruction-coverage][native]") {
+    CHECK_NOTHROW(ControlAndStrings());
+}
+
+TEST_CASE("BmiAndAdx", "[compile][instruction-coverage][native]") { CHECK_NOTHROW(BmiAndAdx()); }
+
+TEST_CASE("CryptoAndStringCompare", "[compile][instruction-coverage][native]") {
+    CHECK_NOTHROW(CryptoAndStringCompare());
 }

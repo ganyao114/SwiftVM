@@ -1,24 +1,13 @@
 #include "runtime/execution/fault.h"
 #include <cerrno>
-#include <chrono>
-#include <stdexcept>
+#include "signal_time.h"
+#include "base/error.h"
 #include <sys/syscall.h>
 #include <unistd.h>
 
 namespace swift::runtime::execution {
 namespace {
 constexpr std::array signals{SIGSEGV, SIGBUS, SIGTRAP};
-
-struct ServiceTimer {
-    std::uint64_t& total;
-    std::chrono::steady_clock::time_point begin{std::chrono::steady_clock::now()};
-
-    ~ServiceTimer() {
-        total += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                                    std::chrono::steady_clock::now() - begin)
-                                                    .count());
-    }
-};
 
 std::atomic<FaultScope*> registered_scope{};  // One service, not a process directory.
 static_assert(std::atomic<FaultScope*>::is_always_lock_free &&
@@ -35,18 +24,19 @@ sigset_t ManagedSignals() noexcept {
 }  // namespace
 
 FaultScope::FaultScope(FaultContext& context, GuestState& state) : context(context) {
-    ServiceTimer elapsed{context.service_ns};
+    platform::SignalTimer elapsed{context.service_ns};
     const auto page_size = sysconf(_SC_PAGESIZE);
-    if (page_size <= 0) throw std::runtime_error("cannot get code page size for fault recovery");
+    if (page_size <= 0) swift::ThrowSystemError("get native fault page size", errno);
     context.page_size = static_cast<std::uintptr_t>(page_size);
     const auto managed = ManagedSignals();
     sigset_t saved;
     if (sigprocmask(SIG_BLOCK, &managed, &saved))
-        throw std::runtime_error("cannot block signals for fault service");
+        swift::ThrowSystemError("block native fault signals", errno);
     FaultScope* empty{};
     if (!registered_scope.compare_exchange_strong(empty, this)) {
         sigprocmask(SIG_SETMASK, &saved, nullptr);
-        throw std::runtime_error("only one guest fault service may be registered");
+        swift::ThrowError("only one guest fault service may be registered",
+                          ErrorKind::InvalidState);
     }
     context.state = &state;
     context.thread_id = static_cast<pid_t>(syscall(SYS_gettid));
@@ -58,26 +48,28 @@ FaultScope::FaultScope(FaultContext& context, GuestState& state) : context(conte
     for (; installed < signals.size(); ++installed)
         if (sigaction(signals[installed], &action, &previous[installed])) break;
     if (installed != signals.size()) {
+        const auto saved_error = errno;
         while (installed) {
             --installed;
             sigaction(signals[installed], &previous[installed], nullptr);
         }
         registered_scope.store(nullptr);
         sigprocmask(SIG_SETMASK, &saved, nullptr);
-        throw std::runtime_error("cannot install native guest fault handlers");
+        swift::ThrowSystemError("install native fault handlers", saved_error);
     }
     context.registered = true;
     if (sigprocmask(SIG_SETMASK, &saved, nullptr)) {
+        const auto saved_error = errno;
         context.registered = false;
         registered_scope.store(nullptr);
         for (std::size_t i = 0; i < signals.size(); ++i)
             sigaction(signals[i], &previous[i], nullptr);
-        throw std::runtime_error("cannot restore signal mask after fault registration");
+        swift::ThrowSystemError("restore signal mask after fault registration", saved_error);
     }
 }
 
 FaultScope::~FaultScope() {
-    ServiceTimer elapsed{context.service_ns};
+    platform::SignalTimer elapsed{context.service_ns};
     const auto managed = ManagedSignals();
     sigset_t saved;
     const bool blocked = sigprocmask(SIG_BLOCK, &managed, &saved) == 0;

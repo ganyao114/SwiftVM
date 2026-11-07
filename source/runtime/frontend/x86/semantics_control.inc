@@ -387,7 +387,10 @@ static void Mxcsr(Emitter& builder,
                                      {Operand::Uniform(layout.mxcsr_offset, Type::U32),
                                       Operand::ValueOf(value, Type::U32)}));
         StorePC(builder, layout, Constant(builder, next_pc));
-        EndDispatch(builder, 3);  // Root reloads the guest FP environment before re-entry.
+        EndDispatch(builder,
+                    runtime::ExitValue(
+                            runtime::NativeExit::FPEnvironment));  // Root reloads the guest FP
+                                                                   // environment before re-entry.
         ended = true;
     } else {
         const auto value = Require(
@@ -488,7 +491,7 @@ static void SystemCall(Emitter& builder,
     if (instruction.ops[0].type != GuestOperandKind::None) Unsupported();
     pending.Flush(builder);
     StorePC(builder, layout, Constant(builder, next_pc));
-    EndDispatch(builder, 1);
+    EndDispatch(builder, runtime::ExitValue(runtime::NativeExit::Syscall));
     ended = true;
 }
 

@@ -1,3 +1,5 @@
+#include "base/error.h"
+#include "base/logging.h"
 #include "tests/rebuild/x86_fixtures.h"
 
 #include <algorithm>
@@ -27,8 +29,7 @@ std::uint64_t Mix(std::uint64_t hash, std::uint64_t value) {
 
 Semantics ObserveProgram(const Program& p) {
 #if !defined(SVM_IR_BASELINE_LAYOUT) && !defined(SVM_IR_BASELINE_COMPACT)
-    if (p.EntryBlock().value != 0)
-        throw std::runtime_error("canonical_semantic_v1 requires entry 0");
+    if (p.EntryBlock().value != 0) swift::ThrowError("canonical_semantic_v1 requires entry 0");
 #endif
     Semantics out;
     auto& hash = out.checksum;
@@ -150,7 +151,7 @@ Options Parse(int argc, char** argv) {
                     "sequential|batch-diagnostic]");
             std::exit(0);
         }
-        if (++i == argc) throw std::runtime_error("missing option value");
+        if (++i == argc) swift::ThrowError("missing option value");
         const std::string value = argv[i];
         if (key == "--requests")
             out.requests = std::stoull(value);
@@ -163,11 +164,11 @@ Options Parse(int argc, char** argv) {
         else if (key == "--mode" && value == "batch-diagnostic")
             out.mode = Mode::BatchDiagnostic;
         else
-            throw std::runtime_error("invalid option");
+            swift::ThrowError("invalid option");
     }
     if (!out.requests || out.requests > 4096 || out.samples < 3 || out.samples > 1000 ||
         out.warmup > 1000)
-        throw std::runtime_error("invalid request/sample count");
+        swift::ThrowError("invalid request/sample count");
     return out;
 }
 
@@ -190,12 +191,11 @@ void UnsupportedRequest(Scope scope,
     if (result.error != swift::x86::BuildError::Unsupported || result.program ||
         result.instruction_count != (which == 1 ? 1u : 0u) ||
         result.decoded_bytes != (which == 1 ? 10u : 0u))
-        throw std::runtime_error("fixed negative changed outcome");
+        swift::ThrowError("fixed negative changed outcome");
     if (collected) {
         constexpr std::array<WorkCounts, negative_count> expected{
                 {{0, 0, 0, 1}, {2, 1, 4, 1}, {1, 0, 1, 1}}};
-        if (*collected != expected[which])
-            throw std::runtime_error("actual abandoned prefix differs");
+        if (*collected != expected[which]) swift::ThrowError("actual abandoned prefix differs");
     }
 }
 
@@ -218,7 +218,7 @@ Facts Verify(std::span<const swift::x86::BlockWindow> input,
     for (std::size_t i = 0; i < requests; ++i) {
         const auto result = swift::x86::BuildIR(input, scope, layout, target);
         if (!result || result.program.ScopeKind() != scope || result.program.Target() != target)
-            throw std::runtime_error("real-byte fixture rejected");
+            swift::ThrowError("real-byte fixture rejected");
         const auto observed = ObserveProgram(result.program);
         if (!i) {
             facts.semantics = observed;
@@ -228,7 +228,7 @@ Facts Verify(std::span<const swift::x86::BlockWindow> input,
             facts.storage = result.program.StorageBytes();
             facts.reserved = result.program.ReservedBytes();
         } else if (observed.checksum != facts.semantics.checksum)
-            throw std::runtime_error("untimed fixed sequence semantics differ");
+            swift::ThrowError("untimed fixed sequence semantics differ");
         facts.sequence_checksum = Mix(facts.sequence_checksum, observed.checksum);
     }
     for (std::size_t i = 0; i < negative_count; ++i) {
@@ -254,7 +254,7 @@ void Measure(const Options& options, Scope scope, TargetMode mode) {
     for (std::size_t sample = 0; sample < options.samples + options.warmup; ++sample) {
         std::size_t actual_N{}, actual_words{}, actual_bytes{}, actual_instructions{};
         const auto account = [&](const swift::x86::BuildResult& result) {
-            if (!result) throw std::runtime_error("timed real-byte request rejected");
+            if (!result) swift::ThrowError("timed real-byte request rejected");
 #ifdef SVM_IR_BASELINE_LAYOUT
             const auto words = result.program.FlatOperands().size() * 2;
 #elif defined(SVM_IR_BASELINE_COMPACT)
@@ -266,7 +266,7 @@ void Measure(const Options& options, Scope scope, TargetMode mode) {
             if (nodes != facts.N || words != facts.semantics.physical_words ||
                 result.decoded_bytes != facts.bytes ||
                 result.instruction_count != facts.instructions)
-                throw std::runtime_error("timed request differs from verified recipe");
+                swift::ThrowError("timed request differs from verified recipe");
             actual_N += nodes;
             actual_words += words;
             actual_bytes += result.decoded_bytes;
@@ -289,7 +289,7 @@ void Measure(const Options& options, Scope scope, TargetMode mode) {
             const auto built = Clock::now();
             for (const auto& slot : slots)
                 if (ObserveProgram(slot.program).checksum != facts.semantics.checksum)
-                    throw std::runtime_error("batch Program semantics differ");
+                    swift::ThrowError("batch Program semantics differ");
             const auto destroy_begin = Clock::now();
             for (auto& slot : slots) slot.program = Program{};
             const auto destroyed = Clock::now();
@@ -377,6 +377,7 @@ void Measure(const Options& options, Scope scope, TargetMode mode) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    swift::log::SetSink(&swift::log::StandardErrorSink());
     try {
         const auto options = Parse(argc, argv);
         const bool sequential = options.mode == Mode::Sequential;
@@ -415,7 +416,7 @@ int main(int argc, char** argv) {
         std::puts("]}");
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "x86 construction benchmark failed: %s\n", error.what());
+        SVM_LOG(Error, Runtime, "x86 construction benchmark failed: {}", error.what());
         return 1;
     }
 }

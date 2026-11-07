@@ -1,3 +1,5 @@
+#include "base/error.h"
+#include "base/logging.h"
 #include "runtime/backend/arm64/compile.h"
 #include "runtime/ir/optimize.h"
 #include "runtime/frontend/x86/build_ir.h"
@@ -30,7 +32,7 @@ struct Counts {
 };
 
 void Require(bool value) {
-    if (!value) throw std::runtime_error("function benchmark rejected actual work");
+    if (!value) swift::ThrowError("function benchmark rejected actual work");
 }
 
 template <bool audit> Counts Run(const swift::tests::function_region::Fixture& fixture,
@@ -77,12 +79,12 @@ Options Arguments(int argc, char** argv) {
                     "1]");
             std::exit(0);
         }
-        if (++i == argc) throw std::runtime_error("missing argument");
+        if (++i == argc) swift::ThrowError("missing argument");
         const std::string_view text{argv[i]};
         unsigned value{};
         const auto result = std::from_chars(text.data(), text.data() + text.size(), value);
         if (result.ec != std::errc{} || result.ptr != text.data() + text.size())
-            throw std::runtime_error("invalid number");
+            swift::ThrowError("invalid number");
         if (key == "--blocks")
             options.blocks = value;
         else if (key == "--requests")
@@ -92,16 +94,17 @@ Options Arguments(int argc, char** argv) {
         else if (key == "--warmup")
             options.warmup = value;
         else
-            throw std::runtime_error("unknown argument");
+            swift::ThrowError("unknown argument");
     }
     if (!options.blocks || options.blocks > 256 || !options.requests || options.requests > 10000 ||
         !options.samples || options.samples > 100 || options.warmup > 100)
-        throw std::runtime_error("arguments exceed fixed limits");
+        swift::ThrowError("arguments exceed fixed limits");
     return options;
 }
 }  // namespace
 
 int main(int argc, char** argv) {
+    swift::log::SetSink(&swift::log::StandardErrorSink());
     try {
         const auto options = Arguments(argc, argv);
         const swift::tests::function_region::Fixture fixture{options.blocks};
@@ -180,7 +183,7 @@ int main(int argc, char** argv) {
         }
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
+        SVM_LOG(Error, Runtime, "{}", error.what());
         return 1;
     }
 }

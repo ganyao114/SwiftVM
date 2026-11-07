@@ -1,3 +1,5 @@
+#include "base/error.h"
+#include "base/logging.h"
 #include "runtime/ir/builder.h"
 #include "runtime/ir/optimize.h"
 
@@ -25,7 +27,7 @@ constexpr u64 hash_seed = 14695981039346656037ULL;
 u64 Mix(u64 hash, u64 value) { return (hash ^ value) * 1099511628211ULL; }
 
 [[noreturn]] void Fail(std::size_t line, std::string_view message) {
-    throw std::runtime_error("line " + std::to_string(line) + ": " + std::string(message));
+    swift::ThrowError("line " + std::to_string(line) + ": " + std::string(message));
 }
 
 void Require(bool okay, std::size_t line, std::string_view message) {
@@ -71,7 +73,7 @@ struct Tokens {
 class Lines {
 public:
     explicit Lines(const std::string& path) : input(path) {
-        if (!input) throw std::runtime_error("cannot open input");
+        if (!input) swift::ThrowError("cannot open input");
     }
 
     bool Next() {
@@ -509,28 +511,26 @@ Options Arguments(int argc, char** argv) {
                     "[--pipeline writer|optimize] [--samples 5] [--warmup 1]");
             std::exit(0);
         }
-        if (++i == argc) throw std::runtime_error("missing option value");
+        if (++i == argc) swift::ThrowError("missing option value");
         const std::string_view value{argv[i]};
         if (key == "--input")
             options.path = value;
         else if (key == "--writer") {
-            if (value != "static" && value != "generic") throw std::runtime_error("unknown writer");
+            if (value != "static" && value != "generic") swift::ThrowError("unknown writer");
             options.static_writer = value == "static";
         } else if (key == "--pipeline") {
-            if (value != "writer" && value != "optimize")
-                throw std::runtime_error("unknown pipeline");
+            if (value != "writer" && value != "optimize") swift::ThrowError("unknown pipeline");
             options.optimize = value == "optimize";
         } else if (key == "--samples" || key == "--warmup") {
             Tokens field{value, 0};
             const auto number = field.Number<std::size_t>();
             field.End();
-            if (number > 1000 || (key == "--samples" && !number))
-                throw std::runtime_error("sample limit");
+            if (number > 1000 || (key == "--samples" && !number)) swift::ThrowError("sample limit");
             (key == "--samples" ? options.samples : options.warmup) = number;
         } else
-            throw std::runtime_error("unknown option");
+            swift::ThrowError("unknown option");
     }
-    if (options.path.empty()) throw std::runtime_error("--input is required");
+    if (options.path.empty()) swift::ThrowError("--input is required");
     return options;
 }
 
@@ -632,6 +632,7 @@ void Report(const std::vector<Request>& requests,
 }  // namespace
 
 int main(int argc, char** argv) {
+    swift::log::SetSink(&swift::log::StandardErrorSink());
     try {
         const auto options = Arguments(argc, argv);
         u64 text_checksum{};
@@ -658,7 +659,7 @@ int main(int argc, char** argv) {
         Report(requests, options, Scope::Function, samples[1], text_checksum, body_only);
         return 0;
     } catch (const std::exception& error) {
-        std::fprintf(stderr, "birth replay rejected: %s\n", error.what());
+        SVM_LOG(Error, Runtime, "birth replay rejected: {}", error.what());
         return 1;
     }
 }

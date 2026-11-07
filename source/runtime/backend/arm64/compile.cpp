@@ -1,6 +1,18 @@
 #include "emit.h"
+#include "allocation_detail.h"
+
+#include <algorithm>
 
 namespace swift::runtime::backend::arm64 {
+namespace {
+void ClearCode(backend::CompileResult& result) noexcept {
+    result.words.clear();
+    result.faults.clear();
+    result.links.clear();
+    result.entries.clear();
+}
+}  // namespace
+
 void Compile(const ir::Program& program,
              CompileOptions options,
              CompileResult& result,
@@ -9,10 +21,7 @@ void Compile(const ir::Program& program,
     result.node = {};
     result.block = {};
     result.frame_bytes = result.spill_slots = 0;
-    result.words.clear();
-    result.faults.clear();
-    result.links.clear();
-    result.entries.clear();
+    ClearCode(result);
     try {
         if (program.ScopeKind() == ir::Scope::Block)
             AllocateBlock(program, allocation, &options);
@@ -34,36 +43,21 @@ void Compile(const ir::Program& program,
             // No slice has been published. Keep the actual output capacity
             // and Allocation; fresh Writer state rebuilds every word-based
             // branch, fault and link location exactly once in the old form.
-            result.words.clear();
-            result.faults.clear();
-            result.links.clear();
-            result.entries.clear();
+            ClearCode(result);
             (void)detail::Writer(program, allocation, result, options, true).Run();
         }
     } catch (const detail::Rejected& failure) {
         result.error = failure.error;
         result.node = failure.node;
         result.block = failure.block;
-        result.words.clear();
-        result.faults.clear();
-        result.links.clear();
-        result.entries.clear();
+        ClearCode(result);
     } catch (...) {
         result.error = CompileError::InvalidProgram;
         result.node = {};
         result.block = {};
         result.frame_bytes = result.spill_slots = 0;
-        result.words.clear();
-        result.faults.clear();
-        result.links.clear();
-        result.entries.clear();
-        allocation.error = CompileError::InvalidProgram;
-        allocation.node = {};
-        allocation.block = {};
-        allocation.spill_bytes = 0;
-        allocation.publish_entry_pc = false;
-        allocation.homes.clear();
-        allocation.block_order.clear();
+        ClearCode(result);
+        detail::ResetAllocation(allocation, CompileError::InvalidProgram);
         throw;
     }
 }

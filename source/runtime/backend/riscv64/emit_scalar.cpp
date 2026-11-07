@@ -1,4 +1,5 @@
 #include "emit.h"
+#include "runtime/exit.h"
 
 #include "runtime/arch/x86/bit_operations.h"
 
@@ -175,7 +176,7 @@ void Writer::Handle(Op<OpCode::Div>, OpContext& ctx) {
     Expression(at, ctx.operands.end(), a1);
     Label nonzero;
     as.BNE(a1, x0, &nonzero);
-    Exit(7);
+    Exit(ExitValue(NativeExit::DivideFault));
     as.Bind(&nonzero);
     as.DIVU(ctx.destination, a0, a1);
     Mask(ctx.destination, ctx.width);
@@ -186,13 +187,13 @@ void Writer::Handle(Op<OpCode::SignedDiv64>, OpContext& ctx) {
     Read(ctx.Arg(1), a1);
     Label nonzero, valid;
     as.BNE(a1, x0, &nonzero);
-    Exit(7);
+    Exit(ExitValue(NativeExit::DivideFault));
     as.Bind(&nonzero);
     as.LI(t0, u64{1} << 63);
     as.BNE(a0, t0, &valid);
     as.LI(t0, UINT64_MAX);
     as.BNE(a1, t0, &valid);
-    Exit(7);
+    Exit(ExitValue(NativeExit::DivideFault));
     as.Bind(&valid);
     as.DIV(ctx.destination, a0, a1);
 }

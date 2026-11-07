@@ -3,6 +3,7 @@
 // Private declarations for one machine-code writer. Program, homes and
 // output remain borrowed from Compile; no intermediate program is created.
 #include "compile.h"
+#include "allocate.h"
 #include "abi.h"
 #include "assembler.h"
 
@@ -10,6 +11,8 @@
 #include <array>
 #include <bit>
 #include <limits>
+
+#define __ masm.exact.
 
 namespace swift::runtime::backend::arm64::detail {
 using namespace ir;
@@ -79,68 +82,21 @@ private:
     }
 
     void Dispatch(OpContext&);
+#define A64_EMIT_OP(name, family)                                                                  \
+    void Handle(Op<OpCode::name>, OpContext& ctx) { family(ctx); }
+#include "emit_ops.inc"
+
+#undef A64_EMIT_OP
     void HandleStringFamily(OpContext&);
     void HandleSse42FlagsFamily(OpContext&);
 
-    void Handle(Op<OpCode::Sse42Str>, OpContext& ctx) { HandleStringFamily(ctx); }
-
-    void Handle(Op<OpCode::Sse42StrExplicit>, OpContext& ctx) { HandleStringFamily(ctx); }
-
-    void Handle(Op<OpCode::PublishSse42StrFlags>, OpContext& ctx) { HandleSse42FlagsFamily(ctx); }
-
     void HandleCryptoFamily(OpContext&);
-
-    void Handle(Op<OpCode::VecAesEnc>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesEncLast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesDec>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesDecLast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesEncFast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesEncLastFast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesDecFast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesDecLastFast>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesImc>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAesKeygenAssist>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecPclMul>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecSha256Msg1>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecSha256Msg2>, OpContext& ctx) { HandleCryptoFamily(ctx); }
-
-    void Handle(Op<OpCode::VecSha256Rnds2>, OpContext& ctx) { HandleCryptoFamily(ctx); }
 
     void HandleMemoryLoadFenceFamily(OpContext&);
 
-    void Handle(Op<OpCode::MemoryLoadFence>, OpContext& ctx) { HandleMemoryLoadFenceFamily(ctx); }
-
-    void Handle(Op<OpCode::CpuYield>, OpContext& ctx) { HandleMemoryLoadFenceFamily(ctx); }
-
     void HandleParallelBitsFamily(OpContext&);
 
-    void Handle(Op<OpCode::ParallelBitDeposit>, OpContext& ctx) { HandleParallelBitsFamily(ctx); }
-
-    void Handle(Op<OpCode::ParallelBitExtract>, OpContext& ctx) { HandleParallelBitsFamily(ctx); }
-
     void HandleReadSystemFamily(OpContext&);
-
-    void Handle(Op<OpCode::ReadSystem>, OpContext& ctx) { HandleReadSystemFamily(ctx); }
-
-    void Handle(Op<OpCode::ReadSystemPair>, OpContext& ctx) { HandleReadSystemFamily(ctx); }
-
-    void Handle(Op<OpCode::X87Execute>, OpContext& ctx) { HandleX87OpFamily(ctx); }
-
-    void Handle(Op<OpCode::X87CommitMetadata>, OpContext& ctx) {
-        HandleX87CommitMetadataFamily(ctx);
-    }
 
     void ConvertFloatToInteger(unsigned destination,
                                unsigned raw,
@@ -150,13 +106,7 @@ private:
     void ConvertScalarFloat(unsigned destination, unsigned raw, unsigned source_bits);
     void HandleVecFMulAddFamily(OpContext&);
 
-    void Handle(Op<OpCode::VecFMulAdd>, OpContext& ctx) { HandleVecFMulAddFamily(ctx); }
-
     void HandleCompareAndSwap128Family(OpContext&);
-
-    void Handle(Op<OpCode::CompareAndSwap128>, OpContext& ctx) {
-        HandleCompareAndSwap128Family(ctx);
-    }
 
     template <OpCode Code> void Handle(Op<Code>, OpContext&) {
         Reject(CompileError::UnsupportedOpcode);
@@ -174,7 +124,12 @@ private:
     void HandleGetOperandFamily(OpContext&);
     void HandleBitCastFamily(OpContext&);
     void HandleZeroExtend32Family(OpContext&);
-    void HandleAddFamily(OpContext&);
+    void HandleBinaryALU(OpContext&);
+    bool TryFlagsOnlyALU(OpContext&, CellView input, CellView operand);
+    bool TryNarrowCompareALU(OpContext&, CellView input, CellView operand);
+    bool TryLogicalImmediateALU(OpContext&, CellView input, CellView operand);
+    bool TryArithmeticImmediateALU(OpContext&, CellView input, CellView operand);
+    void EmitRegisterALU(OpContext&, CellView input, CellView operand);
     void HandleNegFamily(OpContext&);
     void HandleAdcFamily(OpContext&);
     void HandleGetUniformAddressFamily(OpContext&);
@@ -239,345 +194,31 @@ private:
     void HandleVecShiftLeftImmFamily(OpContext&);
     void HandleVecByteShiftFamily(OpContext&);
 
-    void Handle(Op<OpCode::Zero>, OpContext& ctx) { HandleZeroFamily(ctx); }
-
-    void Handle(Op<OpCode::LoadImm>, OpContext& ctx) { HandleLoadImmFamily(ctx); }
-
-    void Handle(Op<OpCode::LoadMemory>, OpContext& ctx) { HandleLoadMemoryFamily(ctx); }
-
-    void Handle(Op<OpCode::LoadMemoryTSO>, OpContext& ctx) { HandleLoadMemoryFamily(ctx); }
-
-    void Handle(Op<OpCode::StoreMemory>, OpContext& ctx) { HandleStoreMemoryFamily(ctx); }
-
-    void Handle(Op<OpCode::StoreMemoryTSO>, OpContext& ctx) { HandleStoreMemoryFamily(ctx); }
-
-    void Handle(Op<OpCode::CompareAndSwap>, OpContext& ctx) { HandleCompareAndSwapFamily(ctx); }
-
-    void Handle(Op<OpCode::AtomicExchange>, OpContext& ctx) { HandleCompareAndSwapFamily(ctx); }
-
-    void Handle(Op<OpCode::AtomicFetchAdd>, OpContext& ctx) { HandleCompareAndSwapFamily(ctx); }
-
-    void Handle(Op<OpCode::AtomicRMW>, OpContext& ctx) { HandleCompareAndSwapFamily(ctx); }
-
-    void Handle(Op<OpCode::CheckMemoryAlignment>, OpContext& ctx) {
-        HandleCheckMemoryAlignmentFamily(ctx);
-    }
-
-    void Handle(Op<OpCode::MemoryBarrierTSO>, OpContext& ctx) { HandleMemoryBarrierTSOFamily(ctx); }
-
-    void Handle(Op<OpCode::MemoryStoreFence>, OpContext& ctx) { HandleMemoryStoreFenceFamily(ctx); }
-
-    void Handle(Op<OpCode::UniformBarrier>, OpContext& ctx) { HandleUniformBarrierFamily(ctx); }
-
-    void Handle(Op<OpCode::GetOperand>, OpContext& ctx) { HandleGetOperandFamily(ctx); }
-
-    void Handle(Op<OpCode::BitCast>, OpContext& ctx) { HandleBitCastFamily(ctx); }
-
-    void Handle(Op<OpCode::ZeroExtend32>, OpContext& ctx) { HandleZeroExtend32Family(ctx); }
-
-    void Handle(Op<OpCode::ZeroExtend32To64>, OpContext& ctx) { HandleZeroExtend32Family(ctx); }
-
-    void Handle(Op<OpCode::ZeroExtend64>, OpContext& ctx) { HandleZeroExtend32Family(ctx); }
-
-    void Handle(Op<OpCode::SignExtend>, OpContext& ctx) { HandleZeroExtend32Family(ctx); }
-
-    void Handle(Op<OpCode::Add>, OpContext& ctx) { HandleAddFamily(ctx); }
-
-    void Handle(Op<OpCode::Sub>, OpContext& ctx) { HandleAddFamily(ctx); }
-
-    void Handle(Op<OpCode::And>, OpContext& ctx) { HandleAddFamily(ctx); }
-
-    void Handle(Op<OpCode::Or>, OpContext& ctx) { HandleAddFamily(ctx); }
-
-    void Handle(Op<OpCode::Xor>, OpContext& ctx) { HandleAddFamily(ctx); }
-
-    void Handle(Op<OpCode::AndNot>, OpContext& ctx) { HandleAddFamily(ctx); }
-
-    void Handle(Op<OpCode::Neg>, OpContext& ctx) { HandleNegFamily(ctx); }
-
-    void Handle(Op<OpCode::Adc>, OpContext& ctx) { HandleAdcFamily(ctx); }
-
-    void Handle(Op<OpCode::Sbb>, OpContext& ctx) { HandleAdcFamily(ctx); }
-
-    void Handle(Op<OpCode::GetUniformAddress>, OpContext& ctx) {
-        HandleGetUniformAddressFamily(ctx);
-    }
-
-    void Handle(Op<OpCode::X87Op>, OpContext& ctx) { HandleX87OpFamily(ctx); }
-
-    void Handle(Op<OpCode::Div128>, OpContext& ctx) { HandleDiv128Family(ctx); }
-
-    void Handle(Op<OpCode::Div128Remainder>, OpContext& ctx) { HandleDiv128RemainderFamily(ctx); }
-
-    void Handle(Op<OpCode::Cpuid>, OpContext& ctx) { HandleCpuidFamily(ctx); }
-
-    void Handle(Op<OpCode::CpuidUpper>, OpContext& ctx) { HandleCpuidUpperFamily(ctx); }
-
-    void Handle(Op<OpCode::Mul>, OpContext& ctx) { HandleMulFamily(ctx); }
-
-    void Handle(Op<OpCode::MulHigh>, OpContext& ctx) { HandleMulHighFamily(ctx); }
-
-    void Handle(Op<OpCode::BitExtract>, OpContext& ctx) { HandleBitExtractFamily(ctx); }
-
-    void Handle(Op<OpCode::BitClear>, OpContext& ctx) { HandleBitExtractFamily(ctx); }
-
-    void Handle(Op<OpCode::BitInsert>, OpContext& ctx) { HandleBitInsertFamily(ctx); }
-
-    void Handle(Op<OpCode::Crc32c>, OpContext& ctx) { HandleCrc32cFamily(ctx); }
-
-    void Handle(Op<OpCode::ByteSwap>, OpContext& ctx) { HandleByteSwapFamily(ctx); }
-
-    void Handle(Op<OpCode::PopCount>, OpContext& ctx) { HandlePopCountFamily(ctx); }
-
-    void Handle(Op<OpCode::CountLeadingZeros32>, OpContext& ctx) {
-        HandleCountLeadingZeros32Family(ctx);
-    }
-
-    void Handle(Op<OpCode::CountLeadingZeros64>, OpContext& ctx) {
-        HandleCountLeadingZeros32Family(ctx);
-    }
-
-    void Handle(Op<OpCode::CountTrailingZeros32>, OpContext& ctx) {
-        HandleCountLeadingZeros32Family(ctx);
-    }
-
-    void Handle(Op<OpCode::CountTrailingZeros64>, OpContext& ctx) {
-        HandleCountLeadingZeros32Family(ctx);
-    }
-
-    void Handle(Op<OpCode::CondSet>, OpContext& ctx) { HandleCondSetFamily(ctx); }
-
-    void Handle(Op<OpCode::LocalCondSet>, OpContext& ctx) { HandleCondSetFamily(ctx); }
-
-    void Handle(Op<OpCode::CondSelect>, OpContext& ctx) { HandleCondSelectFamily(ctx); }
-
-    void Handle(Op<OpCode::Goto>, OpContext& ctx) { HandleGotoFamily(ctx); }
-
-    void Handle(Op<OpCode::NotGoto>, OpContext& ctx) { HandleGotoFamily(ctx); }
-
-    void Handle(Op<OpCode::BindLabel>, OpContext& ctx) { HandleBindLabelFamily(ctx); }
-
-    void Handle(Op<OpCode::Select>, OpContext& ctx) { HandleSelectFamily(ctx); }
-
-    void Handle(Op<OpCode::Not>, OpContext& ctx) { HandleNotFamily(ctx); }
-
-    void Handle(Op<OpCode::TestZero>, OpContext& ctx) { HandleTestZeroFamily(ctx); }
-
-    void Handle(Op<OpCode::TestNotZero>, OpContext& ctx) { HandleTestZeroFamily(ctx); }
-
-    void Handle(Op<OpCode::TestBit>, OpContext& ctx) { HandleTestBitFamily(ctx); }
-
-    void Handle(Op<OpCode::LslImm>, OpContext& ctx) { HandleLslImmFamily(ctx); }
-
-    void Handle(Op<OpCode::LslValue>, OpContext& ctx) { HandleLslImmFamily(ctx); }
-
-    void Handle(Op<OpCode::LsrImm>, OpContext& ctx) { HandleLslImmFamily(ctx); }
-
-    void Handle(Op<OpCode::LsrValue>, OpContext& ctx) { HandleLslImmFamily(ctx); }
-
-    void Handle(Op<OpCode::AsrImm>, OpContext& ctx) { HandleLslImmFamily(ctx); }
-
-    void Handle(Op<OpCode::AsrValue>, OpContext& ctx) { HandleLslImmFamily(ctx); }
-
-    void Handle(Op<OpCode::RorImm>, OpContext& ctx) { HandleLslImmFamily(ctx); }
-
-    void Handle(Op<OpCode::RorValue>, OpContext& ctx) { HandleLslImmFamily(ctx); }
-
-    void Handle(Op<OpCode::LoadUniform>, OpContext& ctx) { HandleLoadUniformFamily(ctx); }
-
-    void Handle(Op<OpCode::StoreUniform>, OpContext& ctx) { HandleStoreUniformFamily(ctx); }
-
-    void Handle(Op<OpCode::StoreUniformSelectImm>, OpContext& ctx) {
-        HandleStoreUniformSelectImmFamily(ctx);
-    }
-
-    void Handle(Op<OpCode::GetFlags>, OpContext& ctx) { HandleGetFlagsFamily(ctx); }
-
-    void Handle(Op<OpCode::RestoreFlags>, OpContext& ctx) { HandleRestoreFlagsFamily(ctx); }
-
-    void Handle(Op<OpCode::SaveFlags>, OpContext& ctx) { HandleSaveFlagsFamily(ctx); }
-
-    void Handle(Op<OpCode::ClearFlags>, OpContext& ctx) { HandleClearFlagsFamily(ctx); }
-
-    void Handle(Op<OpCode::PublishFCmpFlags>, OpContext& ctx) { HandlePublishFCmpFlagsFamily(ctx); }
-
-    void Handle(Op<OpCode::TestFlags>, OpContext& ctx) { HandleTestFlagsFamily(ctx); }
-
-    void Handle(Op<OpCode::TestNotFlags>, OpContext& ctx) { HandleTestFlagsFamily(ctx); }
-
-    void Handle(Op<OpCode::SetCarry>, OpContext& ctx) { HandleSetCarryFamily(ctx); }
-
-    void Handle(Op<OpCode::SetOverflow>, OpContext& ctx) { HandleSetCarryFamily(ctx); }
-
-    void Handle(Op<OpCode::InvertCarry>, OpContext& ctx) { HandleInvertCarryFamily(ctx); }
-
-    void Handle(Op<OpCode::LocalParitySet>, OpContext& ctx) { HandleLocalParitySetFamily(ctx); }
-
-    void Handle(Op<OpCode::VecSharedZero>, OpContext& ctx) { HandleVecSharedZeroFamily(ctx); }
-
-    void Handle(Op<OpCode::VecLoadConst>, OpContext& ctx) { HandleVecLoadConstFamily(ctx); }
-
-    void Handle(Op<OpCode::VecDup64>, OpContext& ctx) { HandleVecDup64Family(ctx); }
-
-    void Handle(Op<OpCode::VecFCvtIntToFloat>, OpContext& ctx) {
-        HandleVecFCvtIntToFloatFamily(ctx);
-    }
-
-    void Handle(Op<OpCode::VecFCvtFloatToInt>, OpContext& ctx) {
-        HandleVecFCvtFloatToIntFamily(ctx);
-    }
-
-    void Handle(Op<OpCode::VecFAdd>, OpContext& ctx) { HandleVecFAddFamily(ctx); }
-
-    void Handle(Op<OpCode::VecFSub>, OpContext& ctx) { HandleVecFAddFamily(ctx); }
-
-    void Handle(Op<OpCode::VecFMul>, OpContext& ctx) { HandleVecFAddFamily(ctx); }
-
-    void Handle(Op<OpCode::VecFDiv>, OpContext& ctx) { HandleVecFAddFamily(ctx); }
-
-    void Handle(Op<OpCode::VecFAddScalar64>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
-
-    void Handle(Op<OpCode::VecFSubScalar64>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
-
-    void Handle(Op<OpCode::VecFMulScalar64>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
-
-    void Handle(Op<OpCode::VecFDivScalar64>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
-
-    void Handle(Op<OpCode::VecFCmp>, OpContext& ctx) { HandleVecFCmpFamily(ctx); }
-
-    void Handle(Op<OpCode::VecFCvtPacked>, OpContext& ctx) { HandleVecFCvtPackedFamily(ctx); }
-
-    void Handle(Op<OpCode::VecFCmpMask>, OpContext& ctx) { HandleVecFCmpMaskFamily(ctx); }
-
-    void Handle(Op<OpCode::VecMin>, OpContext& ctx) { HandleVecMinFamily(ctx); }
-
-    void Handle(Op<OpCode::VecPack>, OpContext& ctx) { HandleVecPackFamily(ctx); }
-
-    void Handle(Op<OpCode::VecExtract64>, OpContext& ctx) { HandleVecExtract64Family(ctx); }
-
-    void Handle(Op<OpCode::VecExtract16>, OpContext& ctx) { HandleVecExtract64Family(ctx); }
-
-    void Handle(Op<OpCode::VecMovMask>, OpContext& ctx) { HandleVecMovMaskFamily(ctx); }
-
-    void Handle(Op<OpCode::VecExtend>, OpContext& ctx) { HandleVecExtendFamily(ctx); }
-
-    void Handle(Op<OpCode::VecXor>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAnd>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecOr>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAndNot>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecAdd>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecSub>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecMul>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecCmpEq>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecCmpGt>, OpContext& ctx) { HandleVecXorFamily(ctx); }
-
-    void Handle(Op<OpCode::VecZip>, OpContext& ctx) { HandleVecZipFamily(ctx); }
-
-    void Handle(Op<OpCode::VecUnzip>, OpContext& ctx) { HandleVecZipFamily(ctx); }
-
-    void Handle(Op<OpCode::VecSignedMulWidenLow>, OpContext& ctx) {
-        HandleVecSignedMulWidenLowFamily(ctx);
-    }
-
-    void Handle(Op<OpCode::VecMulWiden>, OpContext& ctx) { HandleVecMulWidenFamily(ctx); }
-
-    void Handle(Op<OpCode::VecMadd16>, OpContext& ctx) { HandleVecMadd16Family(ctx); }
-
-    void Handle(Op<OpCode::VecShuffle32TwoSrc>, OpContext& ctx) {
-        HandleVecShuffle32TwoSrcFamily(ctx);
-    }
-
-    void Handle(Op<OpCode::VecShuffle32>, OpContext& ctx) { HandleVecShuffle32Family(ctx); }
-
-    void Handle(Op<OpCode::VecShuffle16>, OpContext& ctx) { HandleVecShuffle32Family(ctx); }
-
-    void Handle(Op<OpCode::VecShiftLeftImm>, OpContext& ctx) { HandleVecShiftLeftImmFamily(ctx); }
-
-    void Handle(Op<OpCode::VecShiftRightImm>, OpContext& ctx) { HandleVecShiftLeftImmFamily(ctx); }
-
-    void Handle(Op<OpCode::VecShiftRightArithmeticImm>, OpContext& ctx) {
-        HandleVecShiftLeftImmFamily(ctx);
-    }
-
-    void Handle(Op<OpCode::VecByteShift>, OpContext& ctx) { HandleVecByteShiftFamily(ctx); }
-
-    void Handle(Op<OpCode::VecExtractBytes>, OpContext& ctx) { HandleVecByteShiftFamily(ctx); }
-
     void HandleVecAvgFamily(OpContext&);
-
-    void Handle(Op<OpCode::VecAvg>, OpContext& ctx) { HandleVecAvgFamily(ctx); }
 
     void HandleVecMaxFamily(OpContext&);
 
-    void Handle(Op<OpCode::VecMax>, OpContext& ctx) { HandleVecMaxFamily(ctx); }
-
     void HandleVecSatAddFamily(OpContext&);
-
-    void Handle(Op<OpCode::VecSatAdd>, OpContext& ctx) { HandleVecSatAddFamily(ctx); }
-
-    void Handle(Op<OpCode::VecSatSub>, OpContext& ctx) { HandleVecSatAddFamily(ctx); }
 
     void HandleVecMulHigh16Family(OpContext&);
 
-    void Handle(Op<OpCode::VecMulHigh16>, OpContext& ctx) { HandleVecMulHigh16Family(ctx); }
-
     void HandleVecAbsDiffSum8Family(OpContext&);
-
-    void Handle(Op<OpCode::VecAbsDiffSum8>, OpContext& ctx) { HandleVecAbsDiffSum8Family(ctx); }
 
     void HandleVecShiftLeftFamily(OpContext&);
 
-    void Handle(Op<OpCode::VecShiftLeft>, OpContext& ctx) { HandleVecShiftLeftFamily(ctx); }
-
-    void Handle(Op<OpCode::VecShiftRight>, OpContext& ctx) { HandleVecShiftLeftFamily(ctx); }
-
-    void Handle(Op<OpCode::VecShiftRightArithmetic>, OpContext& ctx) {
-        HandleVecShiftLeftFamily(ctx);
-    }
-
     void HandleVecDupPairs32Family(OpContext&);
-
-    void Handle(Op<OpCode::VecDupPairs32>, OpContext& ctx) { HandleVecDupPairs32Family(ctx); }
 
     void HandleVecInsert16Family(OpContext&);
 
-    void Handle(Op<OpCode::VecInsert16>, OpContext& ctx) { HandleVecInsert16Family(ctx); }
-
     void HandleVecTableLookup8Family(OpContext&);
-
-    void Handle(Op<OpCode::VecTableLookup8>, OpContext& ctx) { HandleVecTableLookup8Family(ctx); }
 
     void HandleVecFMinMaxFamily(OpContext&);
 
-    void Handle(Op<OpCode::VecFMinMax>, OpContext& ctx) { HandleVecFMinMaxFamily(ctx); }
-
     void HandleVecFUnaryFamily(OpContext&);
-
-    void Handle(Op<OpCode::VecFUnary>, OpContext& ctx) { HandleVecFUnaryFamily(ctx); }
 
     void HandleVecFCvtScalarFamily(OpContext&);
 
-    void Handle(Op<OpCode::VecFCvtScalar>, OpContext& ctx) { HandleVecFCvtScalarFamily(ctx); }
-
     void HandleVecFRoundIntFamily(OpContext&);
-
-    void Handle(Op<OpCode::VecFRoundInt>, OpContext& ctx) { HandleVecFRoundIntFamily(ctx); }
-
-    void Handle(Op<OpCode::VecFAddScalar32>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
-
-    void Handle(Op<OpCode::VecFSubScalar32>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
-
-    void Handle(Op<OpCode::VecFMulScalar32>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
-
-    void Handle(Op<OpCode::VecFDivScalar32>, OpContext& ctx) { HandleVecFAddScalar64Family(ctx); }
 
     const Program& source;
     const Allocation& allocation;
@@ -669,7 +310,7 @@ private:
 
     void CompleteCarry() {
         if (direct_carry) {
-            masm.exact.cfinv();
+            __ cfinv();
             direct_carry = false;
             packed_current = false;
         }
@@ -710,7 +351,7 @@ private:
     }
 
     void Move(unsigned to, unsigned from) {
-        if (to != from) masm.exact.orr(X(to), v::xzr, Operand(X(from)));
+        if (to != from) __ orr(X(to), v::xzr, Operand(X(from)));
     }
 
     void Immediate(unsigned reg, u64 bits) {
@@ -726,13 +367,12 @@ private:
         const auto first = std::min(parts - 1, static_cast<unsigned>(std::countr_zero(seed)) / 16);
         const auto target = R(reg, parts == 4 ? 64 : 32);
         if (invert)
-            masm.exact.movn(target, (seed >> (first * 16)) & 0xffffu, first * 16);
+            __ movn(target, (seed >> (first * 16)) & 0xffffu, first * 16);
         else
-            masm.exact.movz(target, (seed >> (first * 16)) & 0xffffu, first * 16);
+            __ movz(target, (seed >> (first * 16)) & 0xffffu, first * 16);
         for (unsigned part = 0; part < parts; ++part) {
             const auto word = static_cast<u32>((bits >> (part * 16)) & 0xffff);
-            if (part != first && word != (invert ? 0xffffu : 0u))
-                masm.exact.movk(target, word, part * 16);
+            if (part != first && word != (invert ? 0xffffu : 0u)) __ movk(target, word, part * 16);
         }
     }
 
@@ -742,17 +382,17 @@ private:
             return;
         }
         if (bits == 32 && !sign) {
-            masm.exact.orr(W(to), v::wzr, Operand(W(from)));
+            __ orr(W(to), v::wzr, Operand(W(from)));
             return;
         }
         if (sign)
-            masm.exact.sbfx(X(to), X(from), 0, bits);
+            __ sbfx(X(to), X(from), 0, bits);
         else
-            masm.exact.ubfx(X(to), X(from), 0, bits);
+            __ ubfx(X(to), X(from), 0, bits);
     }
 
     void Extract(unsigned to, unsigned from, unsigned first, unsigned count) {
-        masm.exact.ubfx(X(to), X(from), first, count);
+        __ ubfx(X(to), X(from), first, count);
     }
 
     void Insert(unsigned to,
@@ -760,7 +400,7 @@ private:
                 unsigned first,
                 unsigned count,
                 unsigned native_width = 64) {
-        masm.exact.bfi(R(to, native_width), R(from, native_width), first, count);
+        __ bfi(R(to, native_width), R(from, native_width), first, count);
     }
 
     void ShiftLeft(unsigned to, unsigned from, unsigned amount) {
@@ -768,7 +408,7 @@ private:
             Move(to, from);
             return;
         }
-        masm.exact.lsl(X(to), X(from), amount);
+        __ lsl(X(to), X(from), amount);
     }
 
     void StackAdjust(bool subtract);
@@ -778,19 +418,19 @@ private:
         const MemOperand memory{Base(address), static_cast<std::int64_t>(scaled) * (bits / 8)};
         if (bits == 8) {
             if (load)
-                masm.exact.ldrb(W(value), memory);
+                __ ldrb(W(value), memory);
             else
-                masm.exact.strb(W(value), memory);
+                __ strb(W(value), memory);
         } else if (bits == 16) {
             if (load)
-                masm.exact.ldrh(W(value), memory);
+                __ ldrh(W(value), memory);
             else
-                masm.exact.strh(W(value), memory);
+                __ strh(W(value), memory);
         } else if (bits == 32 || bits == 64) {
             if (load)
-                masm.exact.ldr(R(value, bits), memory);
+                __ ldr(R(value, bits), memory);
             else
-                masm.exact.str(R(value, bits), memory);
+                __ str(R(value, bits), memory);
         } else
             Reject(CompileError::UnsupportedType);
     }
@@ -799,16 +439,16 @@ private:
 
     void VectorMemory(bool load, unsigned value, unsigned address, u32 scaled = 0) {
         if (load)
-            masm.exact.ldr(Q(value), MemOperand(Base(address), scaled * 16));
+            __ ldr(Q(value), MemOperand(Base(address), scaled * 16));
         else
-            masm.exact.str(Q(value), MemOperand(Base(address), scaled * 16));
+            __ str(Q(value), MemOperand(Base(address), scaled * 16));
     }
 
     void OrderedMemory(
             bool load, unsigned bits, unsigned value, unsigned address, std::int32_t offset = 0);
 
     void VectorMove(unsigned to, unsigned from) {
-        if (to != from) masm.exact.orr(Lanes(to, 8), Lanes(from, 8), Lanes(from, 8));
+        if (to != from) __ orr(Lanes(to, 8), Lanes(from, 8), Lanes(from, 8));
     }
 
     void LoadMxcsrFlushControl();
@@ -969,14 +609,14 @@ private:
 
     void SnapshotCompareNZCV() {
         if (RawAF())
-            masm.exact.mrs(v::x30, v::NZCV);  // MRS x30,NZCV before reading scratch operands.
+            __ mrs(v::x30, v::NZCV);  // MRS x30,NZCV before reading scratch operands.
         else
             PackNZCV();
     }
 
     void RestoreCompareNZCV() {
         if (RawAF()) {
-            masm.exact.msr(v::NZCV, v::x30);
+            __ msr(v::NZCV, v::x30);
             packed_current = false;
         } else
             RestoreNZCV();
@@ -985,7 +625,7 @@ private:
     void Rmif(unsigned value, unsigned rotation, u32 mask) {
         // The local mask is the instruction's four-bit NZCV nibble; VIXL's
         // StatusFlags instead names the architectural PSTATE bit positions.
-        masm.exact.rmif(X(value), rotation, static_cast<v::StatusFlags>(mask << v::Flags_offset));
+        __ rmif(X(value), rotation, static_cast<v::StatusFlags>(mask << v::Flags_offset));
     }
 
     void PrepareNZCV(u64 mask) {
@@ -993,7 +633,7 @@ private:
         const auto preserved = nzcv_flags & ~mask & ~clobber;
         if (NativeNZCV() && (mask & nzcv_flags) && preserved) {
             if (preserved & carry) CompleteCarry();
-            masm.exact.mrs(v::x30, v::NZCV);  // MRS x30,NZCV: preserve the unwritten fields.
+            __ mrs(v::x30, v::NZCV);  // MRS x30,NZCV: preserve the unwritten fields.
         }
     }
 
@@ -1002,7 +642,7 @@ private:
         const auto clobber = RawAF() ? allocation.homes[node.value].nzcv_clobber : 0u;
         if (mask & carry) {
             direct_carry = invert_carry && CanDeferFlags();
-            if (invert_carry && !direct_carry) masm.exact.cfinv();  // CFINV.
+            if (invert_carry && !direct_carry) __ cfinv();  // CFINV.
         } else if (clobber & carry)
             direct_carry = false;
         if (const auto preserved = HostMask(nzcv_flags & ~mask & ~clobber) >> 28)
@@ -1018,14 +658,14 @@ private:
 
     void Predicate(unsigned destination, unsigned value, bool zero) {
         if (NativeNZCV()) {
-            masm.exact.clz(X(destination), X(value));  // CLZ Xd,Xn, including 64 for zero.
+            __ clz(X(destination), X(value));  // CLZ Xd,Xn, including 64 for zero.
             Extract(destination, destination, 6, 1);
-            if (!zero) masm.exact.eor(X(destination), X(destination), Operand(1));  // EOR Xd,Xd,#1.
+            if (!zero) __ eor(X(destination), X(destination), Operand(1));  // EOR Xd,Xd,#1.
             return;
         }
         nzcv_matches = 0;
-        masm.exact.cmp(X(value), Operand(0));                   // CMP Xn,#0
-        masm.exact.cset(X(destination), zero ? v::eq : v::ne);  // CSET EQ/NE
+        __ cmp(X(value), Operand(0));                   // CMP Xn,#0
+        __ cset(X(destination), zero ? v::eq : v::ne);  // CSET EQ/NE
         RestoreNZCV();
     }
 
@@ -1083,3 +723,5 @@ private:
 };
 
 }  // namespace swift::runtime::backend::arm64::detail
+
+#undef __

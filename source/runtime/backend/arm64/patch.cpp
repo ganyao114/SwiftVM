@@ -3,9 +3,6 @@
 #include "encoding.h"
 #include <algorithm>
 #include <cstring>
-#include <sys/mman.h>
-#include <sys/syscall.h>
-#include <unistd.h>
 
 namespace swift::runtime::backend::arm64 {
 
@@ -178,8 +175,8 @@ bool InitializeNativeLink(std::span<std::uint8_t> write,
 bool PatchOrderedFallback(const backend::NativeCode& code,
                           NativeOffset fast,
                           NativeOffset fallback,
-                          std::uintptr_t page_size) noexcept {
-    if (!page_size || (fast & 3) || (fallback & 3) || fast > code.bytes || code.bytes - fast < 4 ||
+                          std::uint8_t* write) noexcept {
+    if (!write || (fast & 3) || (fallback & 3) || fast > code.bytes || code.bytes - fast < 4 ||
         fallback > code.bytes || code.bytes - fallback < 12)
         return false;
     const auto fast_word = fast / 4, fallback_word = fallback / 4;
@@ -192,28 +189,11 @@ bool PatchOrderedFallback(const backend::NativeCode& code,
     const auto distance = static_cast<std::int64_t>(fallback_word) - fast_word;
     if (!ordered || distance < -(std::int64_t{1} << 25) || distance >= (std::int64_t{1} << 25))
         return false;
-    const auto address = reinterpret_cast<std::uintptr_t>(execute);
-    const auto page = address - address % page_size;
-    const auto protect = [&](int permissions) {
-#if defined(__linux__)
-        return syscall(SYS_mprotect, reinterpret_cast<void*>(page), page_size, permissions);
-#else
-        return mprotect(reinterpret_cast<void*>(page), page_size, permissions);
-#endif
-    };
-    if (!code.writable && protect(PROT_READ | PROT_WRITE)) return false;
-    auto* write = code.writable ? code.writable + std::size_t{fast_word} * 4 : execute;
     const auto branch = encoding::Branch(distance);
     // The complete half-barrier stub was published with this same code owner.
     // Only the actual fast instruction changes, in one aligned atomic write.
     __atomic_store_n(reinterpret_cast<std::uint32_t*>(write), branch, __ATOMIC_RELEASE);
-    if (code.writable) {
-        SynchronizeCode(write, execute, 4);
-        return true;
-    }
-    // Single-RX fallback retains its full synchronization before mprotect.
-    __builtin___clear_cache(reinterpret_cast<char*>(write), reinterpret_cast<char*>(write + 4));
-    if (protect(PROT_READ | PROT_EXEC)) return false;
+    SynchronizeCode(write, execute, 4);
     return true;
 }
 }  // namespace swift::runtime::backend::arm64

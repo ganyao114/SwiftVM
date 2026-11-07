@@ -40,14 +40,9 @@ std::uintptr_t VM::ResolveBridge(void* opaque, NativeRunContext* context) noexce
     try {
         return vm.Resolve(*context);
     } catch (const std::exception& error) {
-        try {
-            vm.thread.diagnostic = error.what();
-            vm.thread.resolver_error = nullptr;
-        } catch (...) {
-            vm.thread.resolver_error = "native resolver failed while recording its diagnostic";
-        }
+        vm.thread.bridge_failure.Capture(error);
     } catch (...) {
-        vm.thread.resolver_error = "unknown native resolver failure";
+        vm.thread.bridge_failure.Set(ErrorKind::Runtime, "unknown native resolver failure");
     }
     vm.ObserveCache();
     vm.RefreshNative(*context);
@@ -56,6 +51,7 @@ std::uintptr_t VM::ResolveBridge(void* opaque, NativeRunContext* context) noexce
 
 std::uintptr_t VM::Resolve(NativeRunContext& context) {
     thread.interpret_requested = false;
+    thread.bridge_failure.Clear();
     // All native/fault readers have left. SMC retained old ranges and links
     // until this exact point; no allocation is reclaimed in the handler.
     if (thread.faults.smc_pending) Invalidate();
@@ -101,7 +97,7 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
         ObserveCache();
     }
     thread.anchor = code;
-    thread.resolver_error = nullptr;
+    thread.bridge_failure.Clear();
     RefreshNative(context);
     return reinterpret_cast<std::uintptr_t>(entry);
 }

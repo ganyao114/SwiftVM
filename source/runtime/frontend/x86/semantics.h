@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtime/exit.h"
+
 #include <algorithm>
 #include <array>
 #include <bit>

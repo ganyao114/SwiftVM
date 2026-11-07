@@ -1,3 +1,4 @@
+#include "runtime/exit.h"
 #include "build_ir.h"
 
 #include <algorithm>
@@ -96,7 +97,7 @@ public:
                 Type::Void,
                 {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(at.GetValue())});
         if (!error) throw detail::Rejected{BuildError::IRRejected, error.error};
-        FinishDispatch(5);
+        FinishDispatch(runtime::ExitValue(runtime::NativeExit::StateService));
     }
 
 private:

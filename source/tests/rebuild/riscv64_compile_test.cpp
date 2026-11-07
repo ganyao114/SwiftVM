@@ -1,3 +1,9 @@
+#include "runtime/backend/riscv64/allocate.h"
+#include "tests/support/ir_builder.h"
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/backend/riscv64/compile.h"
 #include "runtime/arch/x86/cpu.h"
 #include "runtime/arch/x86/flags.h"
@@ -21,6 +27,11 @@
 #endif
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
+using swift::tests::ir_builder::Block;
+using swift::tests::ir_builder::Need;
+using swift::tests::ir_builder::Submit;
 using namespace swift::runtime::ir;
 namespace rv = swift::runtime::backend::riscv64;
 namespace flags = swift::runtime::x86::flags;
@@ -40,18 +51,6 @@ struct alignas(16) State {
 };
 
 const char* current_case = "setup";
-std::size_t cases{}, executed{};
-
-void Check(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(std::string(current_case) + ": " + message);
-}
-
-void Need(Error error) { Check(error == Error::None, "IR lifecycle"); }
-
-Value Need(AppendResult result) {
-    Check(bool(result), "IR append");
-    return result.GetValue();
-}
 
 Value Emit(Builder& builder,
            OpCode opcode,
@@ -61,19 +60,7 @@ Value Emit(Builder& builder,
     return Need(builder.Append(opcode, type, arguments, metadata));
 }
 
-BlockRef Block(Builder& builder) {
-    const auto result = builder.CreateBlock();
-    Check(bool(result), "block creation");
-    return result.block;
-}
-
 void Begin(Builder& builder) { Need(builder.BeginBlock(Block(builder))); }
-
-Program Submit(Builder& builder) {
-    auto result = builder.Submit();
-    Check(bool(result), "IR submit");
-    return std::move(result.program);
-}
 
 Program Return(Builder& builder, Value value = {}) {
     Need(builder.EndBlock(value ? Terminal::Return(value) : Terminal::Return()));
@@ -153,30 +140,8 @@ swift::runtime::backend::CompileResult Compile(const Program& program) {
 #if defined(__riscv) && __riscv_xlen == 64 && defined(__linux__)
 class NativeBlock {
 public:
-    explicit NativeBlock(const swift::runtime::backend::CompileResult& code) {
-        const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
-        size = (code.words.size() * 4 + page - 1) & ~(page - 1);
-        fd = static_cast<int>(syscall(SYS_memfd_create, "svm-rv64-test", MFD_CLOEXEC));
-        Check(fd >= 0 && ftruncate(fd, static_cast<off_t>(size)) == 0, "native backing");
-        write = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        execute = mmap(nullptr, size, PROT_READ | PROT_EXEC, MAP_SHARED, fd, 0);
-        Check(write != MAP_FAILED && execute != MAP_FAILED && write != execute,
-              "distinct writable and executable views");
-        std::memcpy(write, code.words.data(), code.words.size() * 4);
-        // Flags zero requests process-wide synchronization. Both aliases are
-        // covered; no QEMU-only weakening of the publication contract.
-        const auto flush = [&](void* view) {
-            return syscall(
-                    __NR_riscv_flush_icache, view, static_cast<std::uint8_t*>(view) + size, 0UL);
-        };
-        Check(flush(write) == 0 && flush(execute) == 0, "process-wide I-cache synchronization");
-    }
-
-    ~NativeBlock() {
-        if (write != MAP_FAILED) munmap(write, size);
-        if (execute != MAP_FAILED) munmap(execute, size);
-        if (fd >= 0) close(fd);
-    }
+    explicit NativeBlock(const swift::runtime::backend::CompileResult& source)
+            : code(source.words, swift::tests::NativeISA::Riscv64) {}
 
     u64 Run(State& state) const {
         u64 previous;
@@ -185,8 +150,7 @@ public:
         // The unit must select guest controls and restore this exact word.
         const u64 host = (3u << 5) | 0x11;
         asm volatile("fscsr %0" ::"r"(host));
-        const auto function = reinterpret_cast<u64 (*)(std::uint8_t*)>(execute);
-        const auto answer = function(reinterpret_cast<std::uint8_t*>(&state));
+        const auto answer = code.Run(reinterpret_cast<std::uint8_t*>(&state));
         u64 after;
         asm volatile("frcsr %0" : "=r"(after));
         asm volatile("fscsr %0" ::"r"(previous));
@@ -195,27 +159,24 @@ public:
     }
 
 private:
-    int fd{-1};
-    void* write{MAP_FAILED};
-    void* execute{MAP_FAILED};
-    std::size_t size{};
+    swift::tests::NativeCode code;
 };
 #endif
 
 bool Run(const swift::runtime::backend::CompileResult& code, State& state, u64 expected = 0) {
-    ++cases;
 #if defined(__riscv) && __riscv_xlen == 64 && defined(__linux__)
-    NativeBlock native{code};
-    const auto answer = native.Run(state);
-    Check(answer == expected, "native return value");
-    ++executed;
-    return true;
+    if (NativeMode()) {
+        NativeBlock native{code};
+        const auto answer = native.Run(state);
+        Check(answer == expected, "native return value");
+        return true;
+    }
 #else
     (void)code;
     (void)state;
     (void)expected;
-    return false;
 #endif
+    return false;  // Compile-only has no native numerical result.
 }
 
 void ArithmeticFlags() {
@@ -730,8 +691,10 @@ u64 helper_environment{};
 
 swift::runtime::x86::CpuQueryResult Query(u64 leaf, u64 subleaf) noexcept {
 #if defined(__riscv) && __riscv_xlen == 64 && defined(__linux__)
-    asm volatile("frcsr %0" : "=r"(helper_environment));
-    asm volatile("fscsr zero");
+    if (NativeMode()) {
+        asm volatile("frcsr %0" : "=r"(helper_environment));
+        asm volatile("fscsr zero");
+    }
 #endif
     return {leaf + subleaf, (leaf << 32) | subleaf};
 }
@@ -805,25 +768,40 @@ void FaultMetadata() {
 }
 }  // namespace
 
-int main() {
-    try {
-        ArithmeticFlags();
-        FunctionLoop();
-        PairSpills();
-        ShuffleBoundaries();
-        SaturationAndExtension();
-        WideIntegerEdges();
-        LocalControlResults();
-        DynamicRounding();
-        FlushModes();
-        NaNsAndFusedArithmetic();
-        HelperABI();
-        FaultMetadata();
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
-    std::printf(
-            "RV64 compile contracts passed: %zu cases, %zu native executions\n", cases, executed);
-    if (!executed) std::puts("RV64 native execution skipped on this host; compile checks only");
+TEST_CASE("ArithmeticFlags", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(ArithmeticFlags());
 }
+
+TEST_CASE("FunctionLoop", "[compile][riscv64-compile][native]") { CHECK_NOTHROW(FunctionLoop()); }
+
+TEST_CASE("PairSpills", "[compile][riscv64-compile][native]") { CHECK_NOTHROW(PairSpills()); }
+
+TEST_CASE("ShuffleBoundaries", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(ShuffleBoundaries());
+}
+
+TEST_CASE("SaturationAndExtension", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(SaturationAndExtension());
+}
+
+TEST_CASE("WideIntegerEdges", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(WideIntegerEdges());
+}
+
+TEST_CASE("LocalControlResults", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(LocalControlResults());
+}
+
+TEST_CASE("DynamicRounding", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(DynamicRounding());
+}
+
+TEST_CASE("FlushModes", "[compile][riscv64-compile][native]") { CHECK_NOTHROW(FlushModes()); }
+
+TEST_CASE("NaNsAndFusedArithmetic", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(NaNsAndFusedArithmetic());
+}
+
+TEST_CASE("HelperABI", "[compile][riscv64-compile][native]") { CHECK_NOTHROW(HelperABI()); }
+
+TEST_CASE("FaultMetadata", "[compile][riscv64-compile][native]") { CHECK_NOTHROW(FaultMetadata()); }

@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/frontend/x86/interpreter.h"
 #include "runtime/frontend/x86/build_ir.h"
 #include "runtime/arch/x86/state.h"
@@ -21,6 +25,8 @@
 #endif
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 namespace front = swift::x86;
 namespace runtime = swift::runtime;
 namespace arch = runtime::x86;
@@ -28,12 +34,6 @@ namespace a64 = runtime::backend::arm64;
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
 using Bytes = std::array<std::uint8_t, 32>;
-unsigned checks{};
-
-void Check(bool value, const char* message) {
-    ++checks;
-    if (!value) throw std::runtime_error(message);
-}
 
 std::vector<std::uint8_t> Hex(const char* text) {
     std::vector<std::uint8_t> out;
@@ -183,9 +183,12 @@ a64::CompileResult Compile(const Machine& m, bool pinned) {
         options.private_uniforms = true;
         options.fault_locations = true;
 #if defined(__aarch64__) && !defined(__APPLE__)
-        options.dispatcher =
-                reinterpret_cast<std::uintptr_t>(runtime::execution::SvmNativeDispatch);
-        options.exit_handler = reinterpret_cast<std::uintptr_t>(runtime::execution::SvmNativeExit);
+        if (NativeMode()) {
+            options.dispatcher =
+                    reinterpret_cast<std::uintptr_t>(runtime::execution::SvmNativeDispatch);
+            options.exit_handler =
+                    reinterpret_cast<std::uintptr_t>(runtime::execution::SvmNativeExit);
+        }
 #else
         // Host qualification checks linked emission without executing A64.
         options.dispatcher = 0x1000;
@@ -223,61 +226,57 @@ void Same(const arch::GuestState& actual, const arch::GuestState& expected) {
 void Native(const Machine& input, const arch::GuestState& expected, bool pinned) {
     const auto code = Compile(input, pinned);
 #if defined(__aarch64__) && !defined(__APPLE__)
-    const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
-    const auto size = (code.words.size() * 4 + page - 1) / page * page;
-    void* address = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    Check(address != MAP_FAILED, "AVX native mapping");
-    std::memcpy(address, code.words.data(), code.words.size() * 4);
-    Check(mprotect(address, size, PROT_READ | PROT_EXEC) == 0, "AVX native W-to-X publication");
-    __builtin___clear_cache(static_cast<char*>(address), static_cast<char*>(address) + size);
-    auto state = input.state;
-    runtime::platform::HostFloatScope environment(
-            static_cast<runtime::platform::FloatRounding>((state.mxcsr >> 13) & 3));
-    if (!pinned)
-        Check(reinterpret_cast<runtime::backend::NativeCode::Function>(address)(
-                      reinterpret_cast<std::uint8_t*>(&state)) == 0,
-              "standalone AVX dispatch result");
-    else {
-        struct Resolver {
-            std::uintptr_t entry;
-            unsigned calls{};
-        } resolver{reinterpret_cast<std::uintptr_t>(address)};
+    if (NativeMode()) {
+        swift::tests::NativeCode published{code.words, swift::tests::NativeISA::Arm64};
+        void* address = published.Entry();
+        auto state = input.state;
+        runtime::platform::HostFloatScope environment(
+                static_cast<runtime::platform::FloatRounding>((state.mxcsr >> 13) & 3));
+        if (!pinned)
+            Check(reinterpret_cast<runtime::backend::NativeCode::Function>(address)(
+                          reinterpret_cast<std::uint8_t*>(&state)) == 0,
+                  "standalone AVX dispatch result");
+        else {
+            struct Resolver {
+                std::uintptr_t entry;
+                unsigned calls{};
+            } resolver{reinterpret_cast<std::uintptr_t>(address)};
 
-        const runtime::backend::NativeCode owner{
-                reinterpret_cast<runtime::backend::NativeCode::Function>(address),
-                code.words.size() * sizeof(code.words[0]),
-                nullptr,
-                code.faults};
-        std::atomic<const runtime::backend::NativeCode*> active{};
-        runtime::execution::NativeRunContext context;
-        context.state = state;
-        context.opaque = &resolver;
-        context.active = &active;
-        context.anchor = &owner;
-        context.pinned_uniform_offset = offsetof(arch::GuestState, gprs);
-        context.pinned_uniform_slots = 16;
-        context.pinned_vector_offset = offsetof(arch::GuestState, xmm);
-        context.flags_offset = offsetof(arch::GuestState, packed_flags);
-        context.pc_offset = offsetof(arch::GuestState, pc);
-        context.resolve =
-                [](void* opaque,
-                   runtime::execution::NativeRunContext* current) noexcept -> std::uintptr_t {
-            auto& r = *static_cast<Resolver*>(opaque);
-            ++r.calls;
-            return current->state.pc == Machine::pc ? r.entry : 0;
-        };
-        const auto returned = runtime::execution::SvmRunNative(&context);
-        state = context.state;
-        if (returned != 2 || resolver.calls != 2)
-            std::fprintf(stderr,
-                         "AVX native pin=1 returned=%llu resolver_calls=%u\n",
-                         static_cast<unsigned long long>(returned),
-                         resolver.calls);
-        Check(returned == 2 && resolver.calls == 2,
-              "linked AVX pin16 leaves through the real cold boundary");
+            const runtime::backend::NativeCode owner{
+                    reinterpret_cast<runtime::backend::NativeCode::Function>(address),
+                    code.words.size() * sizeof(code.words[0]),
+                    nullptr,
+                    code.faults};
+            std::atomic<const runtime::backend::NativeCode*> active{};
+            runtime::execution::NativeRunContext context;
+            context.state = state;
+            context.opaque = &resolver;
+            context.active = &active;
+            context.anchor = &owner;
+            context.pinned_uniform_offset = offsetof(arch::GuestState, gprs);
+            context.pinned_uniform_slots = 16;
+            context.pinned_vector_offset = offsetof(arch::GuestState, xmm);
+            context.flags_offset = offsetof(arch::GuestState, packed_flags);
+            context.pc_offset = offsetof(arch::GuestState, pc);
+            context.resolve =
+                    [](void* opaque,
+                       runtime::execution::NativeRunContext* current) noexcept -> std::uintptr_t {
+                auto& r = *static_cast<Resolver*>(opaque);
+                ++r.calls;
+                return current->state.pc == Machine::pc ? r.entry : 0;
+            };
+            const auto returned = runtime::execution::SvmRunNative(&context);
+            state = context.state;
+            if (returned != 2 || resolver.calls != 2)
+                std::fprintf(stderr,
+                             "AVX native pin=1 returned=%llu resolver_calls=%u\n",
+                             static_cast<unsigned long long>(returned),
+                             resolver.calls);
+            Check(returned == 2 && resolver.calls == 2,
+                  "linked AVX pin16 leaves through the real cold boundary");
+        }
+        Same(state, expected);
     }
-    Same(state, expected);
-    Check(munmap(address, size) == 0, "AVX native mapping release");
 #else
     (void)expected;
 #endif
@@ -559,15 +558,12 @@ void MaskAndGatherFaults() {
 }
 }  // namespace
 
-int main() {
-    try {
-        NdsAndPermutes();
-        FusedGolden();
-        VexStrings();
-        MaskAndGatherFaults();
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "AVX coverage: %s\n", error.what());
-        return 1;
-    }
-    std::printf("AVX fixed coverage passed (%u checks)\n", checks);
+TEST_CASE("NdsAndPermutes", "[compile][avx-coverage][native]") { CHECK_NOTHROW(NdsAndPermutes()); }
+
+TEST_CASE("FusedGolden", "[compile][avx-coverage][native]") { CHECK_NOTHROW(FusedGolden()); }
+
+TEST_CASE("VexStrings", "[compile][avx-coverage][native]") { CHECK_NOTHROW(VexStrings()); }
+
+TEST_CASE("MaskAndGatherFaults", "[compile][avx-coverage][native]") {
+    CHECK_NOTHROW(MaskAndGatherFaults());
 }

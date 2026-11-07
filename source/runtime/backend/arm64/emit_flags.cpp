@@ -1,9 +1,8 @@
 #include "emit.h"
 
+#define __ masm.exact.
+
 namespace swift::runtime::backend::arm64 {
-std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
-std::uintptr_t CpuidHelper() noexcept;
-std::uintptr_t X87Helper() noexcept;
 
 namespace detail {
 bool Writer::DeferTest(const Operation& operation, Cursor& cursor) {
@@ -91,11 +90,11 @@ void Writer::CompleteDeferredTest() {
     // Each terminal edge establishes its own complete flags. This fixed
     // cold/zero emission must not change the other edge's bookkeeping.
     Move(1, deferred_test.value_register);
-    masm.exact.orr(v::w29,
-                   v::wzr,
-                   Operand(v::w1));  // MOV w29,w1: AF=(w29^w1).bit4 is zero and the tag is gone.
-    masm.exact.cmp(X(deferred_test.value_register),
-                   Operand(0));  // CMP actual next,#0; inverted C=1.
+    __ orr(v::w29,
+           v::wzr,
+           Operand(v::w1));  // MOV w29,w1: AF=(w29^w1).bit4 is zero and the tag is gone.
+    __ cmp(X(deferred_test.value_register),
+           Operand(0));  // CMP actual next,#0; inverted C=1.
 }
 
 void Writer::FlagsMemory(bool load, unsigned value) {
@@ -105,7 +104,7 @@ void Writer::FlagsMemory(bool load, unsigned value) {
     else {
         const unsigned address = value == 17 ? 30 : 17;
         Immediate(address, offset);
-        masm.exact.add(X(address), v::x19, Operand(X(address)));
+        __ add(X(address), v::x19, Operand(X(address)));
         Memory(load, 64, value, address);
     }
 }
@@ -129,12 +128,12 @@ void Writer::HelperFPEnvironment(bool guest) {
     if (!Linked() || !options.native_fp_environment) return;
     ContextMemory(
             true, 30, abi::ContextOffset(guest ? SVM_A64_CTX_GUEST_FPCR : SVM_A64_CTX_HOST_FPCR));
-    masm.exact.msr(v::FPCR, v::x30);  // MSR FPCR,x30.
+    __ msr(v::FPCR, v::x30);  // MSR FPCR,x30.
     if (guest)
-        masm.exact.msr(v::FPSR, v::xzr);  // MSR FPSR,xzr: no MXCSR sticky-state model.
+        __ msr(v::FPSR, v::xzr);  // MSR FPSR,xzr: no MXCSR sticky-state model.
     else {
         ContextMemory(true, 30, abi::ContextOffset(SVM_A64_CTX_HOST_FPSR));
-        masm.exact.msr(v::FPSR, v::x30);  // MSR FPSR,x30.
+        __ msr(v::FPSR, v::x30);  // MSR FPSR,x30.
     }
 }
 
@@ -147,15 +146,13 @@ void Writer::PackNZCV() {
         Move(0, 1);
         FlagsMemory(true, 1);
         Insert(1, 0, 0, 8);
-        masm.exact.eor(v::x17, v::x29, Operand(v::x0));
+        __ eor(v::x17, v::x29, Operand(v::x0));
         Extract(17, 17, 4, 1);
         Insert(1, 17, 26, 1);
     } else if (packed_current)
         return;
-    masm.exact.mrs(v::x17, v::NZCV);  // MRS x17,NZCV.
-    masm.exact.eor(v::x17,
-                   v::x17,
-                   Operand(u64{1} << 29));  // EOR x17,x17,#(1<<29): hardware C is inverted.
+    __ mrs(v::x17, v::NZCV);                        // MRS x17,NZCV.
+    __ eor(v::x17, v::x17, Operand(u64{1} << 29));  // EOR x17,x17,#(1<<29): hardware C is inverted.
     Extract(17, 17, 28, 4);
     Insert(1, 17, 28, 4);
     packed_current = true;
@@ -163,7 +160,7 @@ void Writer::PackNZCV() {
 
 void Writer::UnpackRawFlags() {
     Extract(29, 1, 22, 5);  // Packed AF becomes bit4 before the PF xor.
-    masm.exact.eor(v::w29, v::w29, Operand(v::w1));
+    __ eor(v::w29, v::w29, Operand(v::w1));
     Extract(1, 1, 0, 8);
     deferred_parity = 0;
     packed_current = false;
@@ -171,8 +168,8 @@ void Writer::UnpackRawFlags() {
 
 void Writer::RestoreNZCV() {
     if (!NativeNZCV()) return;
-    masm.exact.eor(v::x17, v::x1, Operand(u64{1} << 29));  // EOR x17,x1,#(1<<29).
-    masm.exact.msr(v::NZCV, v::x17);                       // MSR NZCV,x17.
+    __ eor(v::x17, v::x1, Operand(u64{1} << 29));  // EOR x17,x1,#(1<<29).
+    __ msr(v::NZCV, v::x17);                       // MSR NZCV,x17.
     direct_carry = false;
     if (RawAF())
         UnpackRawFlags();
@@ -188,8 +185,8 @@ void Writer::RestoreHelperNZCV() {
     // The helper preserves raw x1/x29; its real observer shadow was
     // committed before BLR. Restore PSTATE without changing either carrier.
     FlagsMemory(true, 17);
-    masm.exact.eor(v::x17, v::x17, Operand(u64{1} << 29));
-    masm.exact.msr(v::NZCV, v::x17);
+    __ eor(v::x17, v::x17, Operand(u64{1} << 29));
+    __ msr(v::NZCV, v::x17);
     deferred_parity = 0;
     direct_carry = false;
     packed_current = false;
@@ -214,8 +211,8 @@ void Writer::EnsureNZCV(unsigned condition) {
                                        0,
                                        0};
     if ((nzcv_matches & required[condition]) != required[condition]) {
-        masm.exact.msr(v::NZCV,
-                       v::x1);  // MSR NZCV,x1, only when this condition needs stale host bits.
+        __ msr(v::NZCV,
+               v::x1);  // MSR NZCV,x1, only when this condition needs stale host bits.
         nzcv_matches = nzcv_flags;
     }
 }
@@ -226,16 +223,15 @@ void Writer::ClearMask(u64 mask) {
     const auto nzcv = HostMask(mask);
     if (NativeNZCV() && nzcv) {
         Rmif(31, 0, nzcv >> 28);
-        if (mask & carry) masm.exact.cfinv();  // Guest C=0 means hardware C=1.
+        if (mask & carry) __ cfinv();  // Guest C=0 means hardware C=1.
         packed_current = false;
     }
     if (RawAF()) {
         if ((mask & parity) && !(mask & auxiliary))
-            masm.exact.eor(
-                    v::w29, v::w29, Operand(v::w1));  // Preserve AF while PF.bit4 becomes zero.
-        if (mask & parity) Immediate(1, 1);           // Odd raw byte represents cleared PF.
+            __ eor(v::w29, v::w29, Operand(v::w1));  // Preserve AF while PF.bit4 becomes zero.
+        if (mask & parity) Immediate(1, 1);          // Odd raw byte represents cleared PF.
         if (mask & auxiliary)
-            masm.exact.orr(v::w29, v::wzr, Operand(v::w1));  // AF=0: xor input matches PF.
+            __ orr(v::w29, v::wzr, Operand(v::w1));  // AF=0: xor input matches PF.
         packed_current = false;
         return;
     }
@@ -258,9 +254,9 @@ void Writer::ClearMask(u64 mask) {
 void Writer::MergeNZCV(u64 mask, bool flip_carry) {
     const auto host = HostMask(mask);
     if (!host) return;
-    masm.exact.mrs(v::x17, v::NZCV);  // MRS x17,NZCV; x1 remains the authoritative guest word.
+    __ mrs(v::x17, v::NZCV);  // MRS x17,NZCV; x1 remains the authoritative guest word.
     if (flip_carry && (mask & carry)) {
-        masm.exact.eor(v::x17, v::x17, Operand(u64{1} << 29));  // EOR x17,x17,#(1<<29).
+        __ eor(v::x17, v::x17, Operand(u64{1} << 29));  // EOR x17,x17,#(1<<29).
     }
     for (unsigned bit = 28; bit <= 31;) {
         if (!(host & (1u << bit))) {
@@ -277,10 +273,9 @@ void Writer::MergeNZCV(u64 mask, bool flip_carry) {
 
 void Writer::Parity(unsigned to, unsigned value) {
     Extract(to, value, 0, 8);
-    for (const unsigned shift : {4u, 2u, 1u})
-        masm.exact.eor(X(to), X(to), Operand(X(to), v::LSR, shift));
+    for (const unsigned shift : {4u, 2u, 1u}) __ eor(X(to), X(to), Operand(X(to), v::LSR, shift));
     Narrow(to, to, 1);
-    masm.exact.eor(X(to), X(to), Operand(1));  // EOR Xd,Xd,#1.
+    __ eor(X(to), X(to), Operand(1));  // EOR Xd,Xd,#1.
 }
 
 void Writer::Test(u64 mask, unsigned destination, bool inverse) {
@@ -289,11 +284,11 @@ void Writer::Test(u64 mask, unsigned destination, bool inverse) {
     bool first = true;
     if (const auto host = HostMask(mask)) {
         if (RawAF()) {
-            masm.exact.mrs(v::x16, v::NZCV);  // MRS x16,NZCV; raw PF/AF remain untouched.
-            if (mask & carry) masm.exact.eor(v::x16, v::x16, Operand(u64{1} << 29));
+            __ mrs(v::x16, v::NZCV);  // MRS x16,NZCV; raw PF/AF remain untouched.
+            if (mask & carry) __ eor(v::x16, v::x16, Operand(u64{1} << 29));
         }
         Immediate(17, host);
-        masm.exact.and_(v::x16, RawAF() ? X(16) : X(1), Operand(v::x17));
+        __ and_(v::x16, RawAF() ? X(16) : X(1), Operand(v::x17));
         Predicate(0, 16, false);
         first = false;
     }
@@ -302,23 +297,23 @@ void Writer::Test(u64 mask, unsigned destination, bool inverse) {
         if (first)
             Move(0, 16);
         else
-            masm.exact.and_(v::x0, v::x0, Operand(v::x16));
+            __ and_(v::x0, v::x0, Operand(v::x16));
         first = false;
     }
     if (mask & auxiliary) {
         if (RawAF()) {
-            masm.exact.eor(v::x16, v::x29, Operand(v::x1));
+            __ eor(v::x16, v::x29, Operand(v::x1));
             Extract(16, 16, 4, 1);
         } else
             Extract(16, 1, 26, 1);
         if (first)
             Move(0, 16);
         else
-            masm.exact.and_(v::x0, v::x0, Operand(v::x16));
+            __ and_(v::x0, v::x0, Operand(v::x16));
         first = false;
     }
     if (first) Immediate(0, 0);
-    if (inverse) masm.exact.eor(v::x0, v::x0, Operand(1));  // EOR x0,x0,#1.
+    if (inverse) __ eor(v::x0, v::x0, Operand(1));  // EOR x0,x0,#1.
     Move(destination, 0);
 }
 
@@ -406,8 +401,8 @@ void Writer::WriteParity(unsigned result, bool preserve_af) {
         }
         CompleteParity();
         if (preserve_af) {
-            masm.exact.eor(v::w29, v::w29, Operand(v::w1));
-            masm.exact.eor(v::w29, v::w29, Operand(W(result)));
+            __ eor(v::w29, v::w29, Operand(v::w1));
+            __ eor(v::w29, v::w29, Operand(W(result)));
         }
         Move(1, result);
         packed_current = false;
@@ -424,12 +419,12 @@ void Writer::ArithmeticFlags(unsigned result, u64 mask, bool canonical) {
             // it onto the retained PF source instead of this result.
             if (!(mask & parity)) {
                 CompleteParity();
-                masm.exact.eor(v::w29, v::w29, Operand(W(result)));
-                masm.exact.eor(v::w29, v::w29, Operand(v::w1));
+                __ eor(v::w29, v::w29, Operand(W(result)));
+                __ eor(v::w29, v::w29, Operand(v::w1));
             }
             packed_current = false;
         } else {
-            masm.exact.eor(v::x0, v::x0, Operand(X(result)));
+            __ eor(v::x0, v::x0, Operand(X(result)));
             Extract(0, 0, 4, 1);
             Insert(1, 0, 26, 1);
         }
@@ -461,7 +456,7 @@ void Writer::LogicalFlags(unsigned result,
     if (NativeNZCV()) {
         if (clear_af && (mask & auxiliary)) {
             if (RawAF()) {
-                masm.exact.orr(v::w29, v::wzr, Operand(v::w1));
+                __ orr(v::w29, v::wzr, Operand(v::w1));
                 packed_current = false;
             } else
                 Insert(1, 31, 26, 1);
@@ -474,8 +469,8 @@ void Writer::LogicalFlags(unsigned result,
                     value = 0;
                 }
                 PrepareNZCV(mask);
-                masm.exact.cmp(R(value, width == 32 ? 32 : 64),
-                               Operand(0));  // CMP sets the native inverted C=1.
+                __ cmp(R(value, width == 32 ? 32 : 64),
+                       Operand(0));  // CMP sets the native inverted C=1.
             }
             FinishNZCV(mask, nzcv_ready && invert_carry);  // Ready ANDS needs inversion; CMP/SUBS
                                                            // can already supply it.
@@ -492,10 +487,9 @@ void Writer::LogicalFlags(unsigned result,
                 value = 0;
             }
             nzcv_matches = 0;
-            masm.exact.tst(
-                    R(value, width == 32 ? 32 : 64),
-                    Operand(R(value,
-                              width == 32 ? 32 : 64)));  // TST at the architectural sign width.
+            __ tst(R(value, width == 32 ? 32 : 64),
+                   Operand(R(value,
+                             width == 32 ? 32 : 64)));  // TST at the architectural sign width.
         }
         MergeNZCV(mask & (negative | zero));
         nzcv_matches |=
@@ -575,8 +569,8 @@ void Writer::HandlePublishFCmpFlagsFamily(OpContext& ctx) {
     nzcv_matches = 0;
     if (NativeNZCV()) {
         Rmif(value, 63, 2);
-        masm.exact.cfinv();  // Guest CF bit0 becomes inverted hardware C.
-        Rmif(value, 0, 4);   // Guest ZF is neutral bit2.
+        __ cfinv();         // Guest CF bit0 becomes inverted hardware C.
+        Rmif(value, 0, 4);  // Guest ZF is neutral bit2.
         packed_current = false;
     } else {
         Extract(17, value, 0, 1);
@@ -585,7 +579,7 @@ void Writer::HandlePublishFCmpFlagsFamily(OpContext& ctx) {
         Insert(1, 17, 30, 1);
     }
     Extract(17, value, 1, 1);
-    masm.exact.eor(v::w17, v::w17, Operand(1));  // EOR W17,W17,#1: even raw byte means guest PF=1.
+    __ eor(v::w17, v::w17, Operand(1));  // EOR W17,W17,#1: even raw byte means guest PF=1.
     if (RawAF()) {
         Move(1, 17);
         Move(29, 31);
@@ -618,7 +612,7 @@ void Writer::HandleTestFlagsFamily(OpContext& ctx) {
                                 : mask == negative ? 4u
                                                    : 9u) ^
                                static_cast<unsigned>(inverse);
-        masm.exact.cset(X(destination), static_cast<v::Condition>(condition));
+        __ cset(X(destination), static_cast<v::Condition>(condition));
     } else
         Test(mask, destination, inverse);
 }
@@ -637,7 +631,7 @@ void Writer::HandleSetCarryFamily(OpContext& ctx) {
     if (NativeNZCV()) {
         const bool set_carry = operation.opcode == OpCode::SetCarry;
         Rmif(value, set_carry ? 63 : 0, set_carry ? 2 : 1);
-        if (set_carry) masm.exact.cfinv();
+        if (set_carry) __ cfinv();
         packed_current = false;
         return;
     }
@@ -650,10 +644,10 @@ void Writer::HandleInvertCarryFamily(OpContext& /*ctx*/) {
     RequireFlags();
     nzcv_matches &= ~carry;
     if (NativeNZCV()) {
-        masm.exact.cfinv();
+        __ cfinv();
         packed_current = false;
     } else
-        masm.exact.eor(v::x1, v::x1, Operand(u64{1} << 29));  // EOR x1,x1,#(1<<29).
+        __ eor(v::x1, v::x1, Operand(u64{1} << 29));  // EOR x1,x1,#(1<<29).
 }
 
 void Writer::HandleLocalParitySetFamily(OpContext& ctx) {
@@ -666,9 +660,11 @@ void Writer::HandleLocalParitySetFamily(OpContext& ctx) {
     Parity(destination, input);
     if (inverse.Payload()) {
         Immediate(17, 1);
-        masm.exact.eor(X(destination), X(destination), Operand(v::x17));
+        __ eor(X(destination), X(destination), Operand(v::x17));
     }
 }
 
 }  // namespace detail
 }  // namespace swift::runtime::backend::arm64
+
+#undef __

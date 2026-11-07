@@ -3,6 +3,7 @@
 // Private implementation surface for the one RV64 word writer. Handlers
 // consume the original Program and its fixed homes; no lowered IR is built.
 #include "compile.h"
+#include "allocate.h"
 
 #include <array>
 #include <type_traits>

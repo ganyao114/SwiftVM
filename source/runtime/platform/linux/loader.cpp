@@ -5,7 +5,7 @@
 #include <cstring>
 #include <elf.h>
 #include <fcntl.h>
-#include <stdexcept>
+#include "base/error.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -16,11 +16,11 @@ namespace {
 using u64 = std::uint64_t;
 constexpr auto failed = UINT64_MAX;
 
-[[noreturn]] void Error(const std::string& text) { throw std::runtime_error(text); }
-
-[[noreturn]] void SystemError(const char* op) {
-    Error(std::string(op) + ": " + std::strerror(errno));
+[[noreturn]] void Error(const std::string& text) {
+    swift::ThrowError(text, ErrorKind::InvalidArgument);
 }
+
+[[noreturn]] void SystemError(const char* op) { swift::ThrowSystemError(op, errno); }
 
 u64 Add(u64 a, u64 b) {
     if (b > UINT64_MAX - a) Error("guest address/size overflow");
@@ -35,7 +35,8 @@ void ReadAt(int fd, void* destination, std::size_t size, u64 offset) {
         const auto amount =
                 pread(fd, bytes, std::min(size, std::size_t{1} << 20), static_cast<off_t>(offset));
         if (amount < 0 && errno == EINTR) continue;
-        if (amount <= 0) Error("truncated/unreadable ELF file");
+        if (amount < 0) SystemError("read guest ELF");
+        if (!amount) Error("truncated ELF file");
         bytes += amount;
         size -= static_cast<std::size_t>(amount);
         offset += static_cast<u64>(amount);
@@ -54,8 +55,8 @@ LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
         ~File() { close(fd); }
     } file{fd};
     struct stat status{};
-    if (fstat(fd, &status) || status.st_size < static_cast<off_t>(sizeof(Elf64_Ehdr)))
-        Error("invalid ELF file size");
+    if (fstat(fd, &status)) SystemError("stat guest ELF");
+    if (status.st_size < static_cast<off_t>(sizeof(Elf64_Ehdr))) Error("invalid ELF file size");
     const auto file_size = static_cast<u64>(status.st_size);
     Elf64_Ehdr header{};
     ReadAt(fd, &header, sizeof(header), 0);

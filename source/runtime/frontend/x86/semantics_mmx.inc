@@ -615,8 +615,8 @@ static bool Mmx(Emitter& builder,
     if (group == 20) {
         if (source.type == GuestOperandKind::Immediate) {
             result = shift_left   ? Require(builder.VecShiftLeftImm(
-                                          Type::V128,
-                                          {Operand::ValueOf(previous),
+                                            Type::V128,
+                                            {Operand::ValueOf(previous),
                                              Operand::Immediate(immediate, Type::U8),
                                              lane}))
                      : arithmetic ? Require(builder.VecShiftRightArithmeticImm(

@@ -2,7 +2,7 @@
 
 #include <cerrno>
 #include <cstring>
-#include <stdexcept>
+#include "base/error.h"
 #include <string>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -11,9 +11,7 @@
 
 namespace swift::runtime::execution {
 namespace {
-[[noreturn]] void Failed(const char* operation) {
-    throw std::runtime_error(std::string(operation) + ": " + std::strerror(errno));
-}
+[[noreturn]] void Failed(const char* operation) { swift::ThrowSystemError(operation, errno); }
 }  // namespace
 
 void MemMap::MapNative(std::size_t bytes) {

@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/execution/runtime.h"
 #include "runtime/execution/vm.h"
 #include "runtime/platform/linux/host_runtime.h"
@@ -14,12 +18,10 @@
 #include <vector>
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 namespace execution = swift::runtime::execution;
 namespace backend = swift::runtime::backend;
-
-void Check(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
-}
 
 constexpr std::uint8_t exit_program[]{0xb8, 60, 0, 0, 0, 0xbf, 42, 0, 0, 0, 0x0f, 0x05};
 
@@ -240,20 +242,26 @@ void Mixed(const std::string& path, bool invalid) {
 #endif
 }  // namespace
 
-int main() {
-    try {
-        GuestFile guest;
-        SourceAdmission();
-        ColdDirectory();
-        Interpreter(guest.Path());
-#if defined(__aarch64__) || (defined(__linux__) && defined(__riscv) && __riscv_xlen == 64)
-        Tiered();
-        Mixed(guest.Path(), false);
-        Mixed(guest.Path(), true);
-#endif
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
-    std::puts("runtime engine contracts passed");
+TEST_CASE("SourceAdmission", "[compile][execution]") { CHECK_NOTHROW(SourceAdmission()); }
+
+TEST_CASE("ColdDirectory", "[compile][execution]") { CHECK_NOTHROW(ColdDirectory()); }
+
+TEST_CASE("InterpretOnly through runtime", "[compile][execution]") {
+    GuestFile guest;
+    CHECK_NOTHROW(Interpreter(guest.Path()));
 }
+
+#if defined(__aarch64__) || (defined(__linux__) && defined(__riscv) && __riscv_xlen == 64)
+
+TEST_CASE("Mixed hot promotion", "[native][execution]") { CHECK_NOTHROW(Tiered()); }
+
+TEST_CASE("Mixed unsupported fallback", "[native][execution]") {
+    GuestFile guest;
+    CHECK_NOTHROW(Mixed(guest.Path(), false));
+}
+
+TEST_CASE("Mixed rejects invalid producer", "[native][execution]") {
+    GuestFile guest;
+    CHECK_NOTHROW(Mixed(guest.Path(), true));
+}
+#endif

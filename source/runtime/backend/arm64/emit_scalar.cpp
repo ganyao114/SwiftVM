@@ -1,36 +1,10 @@
 #include "emit.h"
 
+#define __ masm.exact.
+
 namespace swift::runtime::backend::arm64 {
-std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
-std::uintptr_t CpuidHelper() noexcept;
-std::uintptr_t X87Helper() noexcept;
 
 namespace detail {
-void Writer::HandleReadSystemFamily(OpContext& ctx) {
-    const auto kind = IntegerImmediate(ctx.cursor.Take()),
-               callback = IntegerImmediate(ctx.cursor.Take());
-    if (!callback) Reject(CompileError::UnsupportedOperand);
-    Shadow(false);
-    PublishPinned();
-    HelperFPEnvironment(false);
-    if (kind == 1) masm.exact.dmb(v::InnerShareable, v::BarrierAll);
-    Immediate(0, kind);
-    Immediate(16, 0);
-    Immediate(17, callback);
-    Immediate(30, CpuidHelper());
-    masm.exact.blr(v::x30);
-    HelperFPEnvironment(true);
-    if (kind == 1) masm.exact.isb();
-    if (ctx.operation.opcode == OpCode::ReadSystemPair) {
-        if (ctx.operation.type != Type::V128) Reject(CompileError::UnsupportedType);
-        masm.exact.fmov(D(ctx.destination), v::x0);
-        masm.exact.ins(Lanes(ctx.destination, 64), 1, v::x16);
-    } else
-        Move(ctx.destination, 0);
-    nzcv_matches = 0;
-    RestoreHelperNZCV();
-}
-
 bool Writer::PartialByteStore(const Operation& operation, const Home& home) const {
     if (operation.type != Type::U8 || home.spilled || home.reg == 1 ||
         node.value + 1 >= source.Operations().size())
@@ -118,7 +92,7 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
         const auto source_bits = std::min(Width(View(input)), limit);
         const auto value = Read(input, destination, limit, false, 32);
         if (sign && source_bits < 32)
-            masm.exact.sbfx(W(destination), W(value), 0, source_bits);  // SXTB/SXTH W.
+            __ sbfx(W(destination), W(value), 0, source_bits);  // SXTB/SXTH W.
         else
             Narrow(destination, value, 32);
     } else {
@@ -127,31 +101,17 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
     }
 }
 
-void Writer::HandleAddFamily(OpContext& ctx) {
+[[gnu::always_inline]] inline bool Writer::TryFlagsOnlyALU(OpContext& ctx,
+                                                           CellView input,
+                                                           CellView operand) {
     const auto& operation = ctx.operation;
     const auto& metadata = ctx.metadata;
     auto& cursor = ctx.cursor;
     const auto& home = ctx.home;
-    const auto destination = ctx.destination;
     const auto width = ctx.width;
     const auto flag_mask = ctx.flag_mask;
     const auto legacy_mask = ctx.legacy_mask;
-    const auto test_prefix = ctx.test_prefix;
     auto& saved = ctx.saved;
-    const auto save_result = [&] { SaveResult(ctx); };
-    if (node == elided_consumer) {
-        cursor.Take();
-        cursor.Take();
-        elided_consumer = {};
-        return;
-    }
-    if (test_prefix && operation.opcode == OpCode::And && DeferTest(operation, cursor)) {
-        cursor.Done();
-        return;
-    }
-    const auto input = cursor.Take();
-    const auto operand = *cursor.at;
-    const auto native_width = width == 32 ? 32u : 64u;
     if (RawAF() && !legacy_mask && operation.opcode == OpCode::And && operation.type == Type::U64 &&
         flag_mask == all_flags && metadata.profile == FlagProfile::LogicalZeroCVA &&
         home.last_use == home.definition_position && !home.spilled &&
@@ -162,12 +122,11 @@ void Writer::HandleAddFamily(OpContext& ctx) {
         const auto value = Read(input, 16);
         nzcv_matches = 0;
         PrepareNZCV(all_flags);
-        masm.exact.subs(v::x1,
-                        X(value),
-                        Operand(0));  // SUBS x1,value,#0 also supplies inverted guest C=1.
+        __ subs(v::x1, X(value),
+                Operand(0));  // SUBS x1,value,#0 also supplies inverted guest C=1.
         LogicalFlags(1, 64, all_flags, true, /*nzcv_ready=*/true, /*invert_carry=*/false);
         saved = true;
-        return;
+        return true;
     }
     if (RawAF() && !legacy_mask && operation.opcode == OpCode::And && (width == 8 || width == 16) &&
         flag_mask == all_flags && home.last_use == home.definition_position && !home.spilled &&
@@ -185,7 +144,7 @@ void Writer::HandleAddFamily(OpContext& ctx) {
         Narrow(1, value, width, true);
         LogicalFlags(1, 64, all_flags, true);
         saved = true;
-        return;
+        return true;
     }
     if (NativeNZCV() && operation.opcode == OpCode::And &&
         (flag_mask == zero || flag_mask == (carry | zero)) && input.Kind() == OperandKind::Value &&
@@ -218,13 +177,27 @@ void Writer::HandleAddFamily(OpContext& ctx) {
             if (immediate_test)
                 mask.Emit(masm.exact, R(31, test_width), R(value, test_width), v::ANDS);
             else
-                masm.exact.tst(R(value, test_width), Operand(R(value, test_width)));
+                __ tst(R(value, test_width), Operand(R(value, test_width)));
             FinishNZCV(flag_mask,
                        true);  // TST's C=0 needs the native inverted guest carry.
             saved = true;      // No numerical reader exists, including a spill reader.
-            return;
+            return true;
         }
     }
+    return false;
+}
+
+[[gnu::always_inline]] inline bool Writer::TryNarrowCompareALU(OpContext& ctx,
+                                                               CellView input,
+                                                               CellView operand) {
+    const auto& operation = ctx.operation;
+    const auto& metadata = ctx.metadata;
+    auto& cursor = ctx.cursor;
+    const auto& home = ctx.home;
+    const auto width = ctx.width;
+    const auto flag_mask = ctx.flag_mask;
+    const auto legacy_mask = ctx.legacy_mask;
+    auto& saved = ctx.saved;
     if (NativeNZCV() && operation.opcode == OpCode::Sub && (width == 8 || width == 16) &&
         !legacy_mask && (flag_mask == zero || flag_mask == (carry | zero)) &&
         input.Kind() == OperandKind::Value && home.last_use == home.definition_position) {
@@ -257,15 +230,15 @@ void Writer::HandleAddFamily(OpContext& ctx) {
             nzcv_matches = 0;
             PrepareNZCV(flag_mask);
             if (operand.Kind() == OperandKind::Immediate)
-                masm.exact.cmp(W(left), Operand(literal));
+                __ cmp(W(left), Operand(literal));
             else
-                masm.exact.cmp(W(left), Operand(W(right)));
+                __ cmp(W(left), Operand(W(right)));
             // Zero-extended narrow inputs have the same C/Z as CMP W.
             // The ordinary flags path preserves N/V and the raw PF/AF.
             ArithmeticFlags(
                     31, flag_mask, metadata.profile == FlagProfile::ArithmeticCanonicalCarry);
             saved = true;
-            return;
+            return true;
         }
     }
     if (RawAF() && operation.opcode == OpCode::Sub && (width == 8 || width == 16) && !legacy_mask &&
@@ -284,30 +257,44 @@ void Writer::HandleAddFamily(OpContext& ctx) {
             const auto left = input_bits >= width
                                       ? RawValue(static_cast<u32>(input.Payload()), 16, true)
                                       : Read(input, 16, width, false, 32);
-            masm.exact.sbfx(v::w16, W(left), 0, width);  // SXTB/SXTH W16 also cuts dirty pins.
+            __ sbfx(v::w16, W(left), 0, width);  // SXTB/SXTH W16 also cuts dirty pins.
             // Raw AF only observes bit4. A W write also clears the TEST tag.
             if (literal & 16)
-                masm.exact.mvn(v::w29, Operand(v::w16));
+                __ mvn(v::w29, Operand(v::w16));
             else
-                masm.exact.mov(v::w29, v::w16);
+                __ mov(v::w29, v::w16);
             nzcv_matches = 0;
             PrepareNZCV(flag_mask);
             if (negative_literal)
-                masm.exact.adds(v::w1, v::w16, Operand(magnitude));
+                __ adds(v::w1, v::w16, Operand(magnitude));
             else
-                masm.exact.subs(v::w1, v::w16, Operand(magnitude));
+                __ subs(v::w1, v::w16, Operand(magnitude));
             // Signed narrow subtraction fits n+1 bits. SETF restores
             // N/Z/V from that result and preserves the correct unsigned C.
             if (width == 8)
-                masm.exact.setf8(v::w1);
+                __ setf8(v::w1);
             else
-                masm.exact.setf16(v::w1);
+                __ setf16(v::w1);
             ArithmeticFlags(
                     1, flag_mask, metadata.profile == FlagProfile::ArithmeticCanonicalCarry);
             saved = true;  // The raw PF carrier's high bits are not a numerical result.
-            return;
+            return true;
         }
     }
+    return false;
+}
+
+[[gnu::always_inline]] inline bool Writer::TryLogicalImmediateALU(OpContext& ctx,
+                                                                  CellView input,
+                                                                  CellView operand) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto destination = ctx.destination;
+    const auto width = ctx.width;
+    const auto flag_mask = ctx.flag_mask;
+    const auto legacy_mask = ctx.legacy_mask;
+    const auto save_result = [&] { SaveResult(ctx); };
+    const auto native_width = width == 32 ? 32u : 64u;
     if (operation.opcode == OpCode::And && operand.Kind() == OperandKind::Immediate &&
         (width == 8 || width == 16)) {
         const auto literal_bits = std::min(width, Width(operand.TypeView()));
@@ -326,7 +313,7 @@ void Writer::HandleAddFamily(OpContext& ctx) {
                 save_result();
                 LogicalFlags(destination, width, flag_mask, !legacy_mask);
             }
-            return;
+            return true;
         }
     }
     if (Logical(operation.opcode) && operand.Kind() == OperandKind::Immediate && width >= 32) {
@@ -358,9 +345,23 @@ void Writer::HandleAddFamily(OpContext& ctx) {
                 save_result();
                 LogicalFlags(destination, width, flag_mask, !legacy_mask, set_nzcv);
             }
-            return;
+            return true;
         }
     }
+    return false;
+}
+
+[[gnu::always_inline]] inline bool Writer::TryArithmeticImmediateALU(OpContext& ctx,
+                                                                     CellView input,
+                                                                     CellView operand) {
+    const auto& operation = ctx.operation;
+    const auto& metadata = ctx.metadata;
+    auto& cursor = ctx.cursor;
+    const auto& home = ctx.home;
+    const auto destination = ctx.destination;
+    const auto width = ctx.width;
+    const auto flag_mask = ctx.flag_mask;
+    const auto save_result = [&] { SaveResult(ctx); };
     if (Arithmetic(operation.opcode) && operand.Kind() == OperandKind::Immediate &&
         (width >= 32 || ((width == 8 || width == 16) && !flag_mask))) {
         auto literal = IntegerImmediate(operand);
@@ -391,11 +392,11 @@ void Writer::HandleAddFamily(OpContext& ctx) {
                 // Capture it before a destination pin overwrites left.
                 if (RawAF()) {
                     if (literal & 16)
-                        masm.exact.eor(v::w29, W(left), Operand(16));  // EOR W29,Wleft,#16.
+                        __ eor(v::w29, W(left), Operand(16));  // EOR W29,Wleft,#16.
                     else
-                        masm.exact.mov(v::w29, W(left));
+                        __ mov(v::w29, W(left));
                 } else if (literal & 16)
-                    masm.exact.eor(v::x0, X(left), Operand(16));  // EOR x0,left,#16.
+                    __ eor(v::x0, X(left), Operand(16));  // EOR x0,left,#16.
                 else
                     Move(0, left);
             }
@@ -408,22 +409,22 @@ void Writer::HandleAddFamily(OpContext& ctx) {
             auto source_reg = R(left, result.GetSizeInBits());
             if (split) {
                 if (subtract)
-                    masm.exact.sub(result, source_reg, Operand(literal & ~u64{4095}));
+                    __ sub(result, source_reg, Operand(literal & ~u64{4095}));
                 else
-                    masm.exact.add(result, source_reg, Operand(literal & ~u64{4095}));
+                    __ add(result, source_reg, Operand(literal & ~u64{4095}));
                 source_reg = result;
                 literal &= 4095;
             }
             if (subtract) {
                 if (set_nzcv)
-                    masm.exact.subs(result, source_reg, Operand(literal));
+                    __ subs(result, source_reg, Operand(literal));
                 else
-                    masm.exact.sub(result, source_reg, Operand(literal));
+                    __ sub(result, source_reg, Operand(literal));
             } else {
                 if (set_nzcv)
-                    masm.exact.adds(result, source_reg, Operand(literal));
+                    __ adds(result, source_reg, Operand(literal));
                 else
-                    masm.exact.add(result, source_reg, Operand(literal));
+                    __ add(result, source_reg, Operand(literal));
             }
             const bool partial_byte_store = !flag_mask && operation.type == Type::U8 &&
                                             metadata == OperationMetadata{} &&
@@ -436,9 +437,25 @@ void Writer::HandleAddFamily(OpContext& ctx) {
                         flag_mask,
                         subtract && metadata.profile == FlagProfile::ArithmeticCanonicalCarry);
             }
-            return;
+            return true;
         }
     }
+    return false;
+}
+
+[[gnu::always_inline]] inline void Writer::EmitRegisterALU(OpContext& ctx,
+                                                           CellView input,
+                                                           CellView operand) {
+    const auto& operation = ctx.operation;
+    const auto& metadata = ctx.metadata;
+    auto& cursor = ctx.cursor;
+    const auto& home = ctx.home;
+    const auto destination = ctx.destination;
+    const auto width = ctx.width;
+    const auto flag_mask = ctx.flag_mask;
+    const auto legacy_mask = ctx.legacy_mask;
+    const auto save_result = [&] { SaveResult(ctx); };
+    const auto native_width = width == 32 ? 32u : 64u;
     const bool logical_nzcv =
             (operation.opcode == OpCode::And || operation.opcode == OpCode::AndNot) &&
             width >= 32 && (flag_mask & (negative | zero));
@@ -487,13 +504,13 @@ void Writer::HandleAddFamily(OpContext& ctx) {
                                     metadata.profile == FlagProfile::LogicalZeroCVA &&
                                     PartialByteStore(operation, home);
     if (flag_mask & auxiliary && Arithmetic(operation.opcode))
-        masm.exact.eor(R(RawAF() ? 29 : 0, RawAF() ? 32 : 64),
-                       R(left, RawAF() ? 32 : 64),
-                       Operand(R(right, RawAF() ? 32 : 64)));
+        __ eor(R(RawAF() ? 29 : 0, RawAF() ? 32 : 64),
+               R(left, RawAF() ? 32 : 64),
+               Operand(R(right, RawAF() ? 32 : 64)));
     if (aligned) {
         // A W shift drops bits above the logical arithmetic width;
         // the RHS shift fits the actual ADDS/SUBS operand field.
-        masm.exact.lsl(v::w16, W(left), 32 - width);
+        __ lsl(v::w16, W(left), 32 - width);
         left = 16;
     }
     const auto alu_width = width == 32 || aligned ? 32u : 64u;
@@ -506,33 +523,33 @@ void Writer::HandleAddFamily(OpContext& ctx) {
     switch (operation.opcode) {
         case OpCode::Add:
             if (set_nzcv)
-                masm.exact.adds(result, left_reg, right_reg);
+                __ adds(result, left_reg, right_reg);
             else
-                masm.exact.add(result, left_reg, right_reg);
+                __ add(result, left_reg, right_reg);
             break;
         case OpCode::Sub:
             if (set_nzcv)
-                masm.exact.subs(result, left_reg, right_reg);
+                __ subs(result, left_reg, right_reg);
             else
-                masm.exact.sub(result, left_reg, right_reg);
+                __ sub(result, left_reg, right_reg);
             break;
         case OpCode::And:
             if (set_nzcv)
-                masm.exact.ands(result, left_reg, right_reg);
+                __ ands(result, left_reg, right_reg);
             else
-                masm.exact.and_(result, left_reg, right_reg);
+                __ and_(result, left_reg, right_reg);
             break;
         case OpCode::Or:
-            masm.exact.orr(result, left_reg, right_reg);
+            __ orr(result, left_reg, right_reg);
             break;
         case OpCode::Xor:
-            masm.exact.eor(result, left_reg, right_reg);
+            __ eor(result, left_reg, right_reg);
             break;
         case OpCode::AndNot:
             if (set_nzcv)
-                masm.exact.bics(result, left_reg, right_reg);
+                __ bics(result, left_reg, right_reg);
             else
-                masm.exact.bic(result, left_reg, right_reg);
+                __ bic(result, left_reg, right_reg);
             break;
         default:
             Reject(CompileError::UnsupportedOpcode);
@@ -554,6 +571,29 @@ void Writer::HandleAddFamily(OpContext& ctx) {
     }
 }
 
+void Writer::HandleBinaryALU(OpContext& ctx) {
+    const auto& operation = ctx.operation;
+    auto& cursor = ctx.cursor;
+    const auto test_prefix = ctx.test_prefix;
+    if (node == elided_consumer) {
+        cursor.Take();
+        cursor.Take();
+        elided_consumer = {};
+        return;
+    }
+    if (test_prefix && operation.opcode == OpCode::And && DeferTest(operation, cursor)) {
+        cursor.Done();
+        return;
+    }
+    const auto input = cursor.Take();
+    const auto operand = *cursor.at;
+    if (TryFlagsOnlyALU(ctx, input, operand)) return;
+    if (TryNarrowCompareALU(ctx, input, operand)) return;
+    if (TryLogicalImmediateALU(ctx, input, operand)) return;
+    if (TryArithmeticImmediateALU(ctx, input, operand)) return;
+    EmitRegisterALU(ctx, input, operand);
+}
+
 void Writer::HandleNegFamily(OpContext& ctx) {
     const auto& metadata = ctx.metadata;
     auto& cursor = ctx.cursor;
@@ -564,7 +604,7 @@ void Writer::HandleNegFamily(OpContext& ctx) {
     auto value = Read(cursor.Take(), 16, 64, false, width == 32 ? 32 : 64);
     if (flag_mask & auxiliary) {
         if (RawAF())
-            masm.exact.mov(v::w29, W(value));
+            __ mov(v::w29, W(value));
         else
             Move(0, value);
     }
@@ -581,9 +621,9 @@ void Writer::HandleNegFamily(OpContext& ctx) {
         PrepareNZCV(flag_mask);
     }
     if (set_nzcv)
-        masm.exact.negs(R(destination, alu_width), Operand(R(value, alu_width)));
+        __ negs(R(destination, alu_width), Operand(R(value, alu_width)));
     else
-        masm.exact.neg(R(destination, alu_width), Operand(R(value, alu_width)));
+        __ neg(R(destination, alu_width), Operand(R(value, alu_width)));
     if (aligned)
         Extract(destination, destination, 32 - width, width);
     else if (width != 32)
@@ -616,34 +656,34 @@ void Writer::HandleAdcFamily(OpContext& ctx) {
             left = 16;
             right = 17;
         }
-        if (flag_mask & auxiliary) masm.exact.eor(v::w29, W(left), Operand(W(right)));
+        if (flag_mask & auxiliary) __ eor(v::w29, W(left), Operand(W(right)));
         if (width < 32 && (flag_mask & overflow)) {
-            masm.exact.eor(v::x0, X(left), Operand(X(right)));
+            __ eor(v::x0, X(left), Operand(X(right)));
             Move(30, left);
         }
         const bool host_flags = width >= 32 && (flag_mask & nzcv_flags);
         if (host_flags) PrepareNZCV(flag_mask);
-        if (!subtract) masm.exact.cfinv();  // ADC consumes guest C, rather than its native inverse.
+        if (!subtract) __ cfinv();  // ADC consumes guest C, rather than its native inverse.
         if (subtract) {
             if (host_flags)
-                masm.exact.sbcs(R(destination, native_width),
-                                R(left, native_width),
-                                Operand(R(right, native_width)));
+                __ sbcs(R(destination, native_width),
+                        R(left, native_width),
+                        Operand(R(right, native_width)));
             else
-                masm.exact.sbc(R(destination, native_width),
-                               R(left, native_width),
-                               Operand(R(right, native_width)));
+                __ sbc(R(destination, native_width),
+                       R(left, native_width),
+                       Operand(R(right, native_width)));
         } else {
             if (host_flags)
-                masm.exact.adcs(R(destination, native_width),
-                                R(left, native_width),
-                                Operand(R(right, native_width)));
+                __ adcs(R(destination, native_width),
+                        R(left, native_width),
+                        Operand(R(right, native_width)));
             else
-                masm.exact.adc(R(destination, native_width),
-                               R(left, native_width),
-                               Operand(R(right, native_width)));
+                __ adc(R(destination, native_width),
+                       R(left, native_width),
+                       Operand(R(right, native_width)));
         }
-        if (!subtract && !host_flags) masm.exact.cfinv();
+        if (!subtract && !host_flags) __ cfinv();
         if (width < 32) {
             // Non-S ADC/SBC preserve incoming NZCV. Publish only
             // the requested narrow fields, without a packed bridge.
@@ -651,14 +691,14 @@ void Writer::HandleAdcFamily(OpContext& ctx) {
                 Extract(17, destination, subtract ? 63 : width, 1);
                 Rmif(17, 63, 2);
                 if (!subtract || metadata.profile == FlagProfile::ArithmeticCanonicalCarry)
-                    masm.exact.cfinv();
+                    __ cfinv();
             }
             if (flag_mask & overflow) {
-                masm.exact.eor(v::x30, v::x30, Operand(X(destination)));
+                __ eor(v::x30, v::x30, Operand(X(destination)));
                 if (subtract)
-                    masm.exact.and_(v::x30, v::x30, Operand(v::x0));
+                    __ and_(v::x30, v::x30, Operand(v::x0));
                 else
-                    masm.exact.bic(v::x30, v::x30, Operand(v::x0));
+                    __ bic(v::x30, v::x30, Operand(v::x0));
                 Extract(17, 30, width - 1, 1);
                 Rmif(17, 0, 1);
             }
@@ -682,49 +722,45 @@ void Writer::HandleAdcFamily(OpContext& ctx) {
     const auto input = cursor.Take();
     const auto right = Expression(cursor, 17, 16), left = Read(input, 16);
     if (subtract) {
-        masm.exact.eor(v::x0, v::x1, Operand(u64{1} << 29));  // EOR x0,x1,#(1<<29).
-        masm.exact.msr(v::NZCV, v::x0);                       // SBC consumes !borrow in host C.
+        __ eor(v::x0, v::x1, Operand(u64{1} << 29));  // EOR x0,x1,#(1<<29).
+        __ msr(v::NZCV, v::x0);                       // SBC consumes !borrow in host C.
     } else
-        masm.exact.msr(v::NZCV, v::x1);
+        __ msr(v::NZCV, v::x1);
     if ((flag_mask & auxiliary) || (width < 32 && (flag_mask & overflow)))
-        masm.exact.eor(v::x0, X(left), Operand(X(right)));
+        __ eor(v::x0, X(left), Operand(X(right)));
     if (width < 32 && (flag_mask & overflow)) Move(30, left);
     const bool host_flags = width >= 32 && (flag_mask & (carry | overflow | zero | negative));
     const auto alu_width = width == 32 ? 32u : 64u;
     if (subtract) {
         if (host_flags)
-            masm.exact.sbcs(
-                    R(destination, alu_width), R(left, alu_width), Operand(R(right, alu_width)));
+            __ sbcs(R(destination, alu_width), R(left, alu_width), Operand(R(right, alu_width)));
         else
-            masm.exact.sbc(
-                    R(destination, alu_width), R(left, alu_width), Operand(R(right, alu_width)));
+            __ sbc(R(destination, alu_width), R(left, alu_width), Operand(R(right, alu_width)));
     } else {
         if (host_flags)
-            masm.exact.adcs(
-                    R(destination, alu_width), R(left, alu_width), Operand(R(right, alu_width)));
+            __ adcs(R(destination, alu_width), R(left, alu_width), Operand(R(right, alu_width)));
         else
-            masm.exact.adc(
-                    R(destination, alu_width), R(left, alu_width), Operand(R(right, alu_width)));
+            __ adc(R(destination, alu_width), R(left, alu_width), Operand(R(right, alu_width)));
     }
     if (width < 32 && flag_mask) {
         if (flag_mask & carry) {
             Extract(17, destination, subtract ? 63 : width, 1);
             if (subtract && metadata.profile != FlagProfile::ArithmeticCanonicalCarry) {
-                masm.exact.mvn(v::x17, Operand(v::x17));  // MVN; only bit zero is inserted.
+                __ mvn(v::x17, Operand(v::x17));  // MVN; only bit zero is inserted.
             }
             Insert(1, 17, 29, 1);
         }
         if (flag_mask & overflow) {
-            masm.exact.eor(v::x30, v::x30, Operand(X(destination)));
+            __ eor(v::x30, v::x30, Operand(X(destination)));
             if (subtract)
-                masm.exact.and_(v::x30, v::x30, Operand(v::x0));
+                __ and_(v::x30, v::x30, Operand(v::x0));
             else
-                masm.exact.bic(v::x30, v::x30, Operand(v::x0));
+                __ bic(v::x30, v::x30, Operand(v::x0));
             Extract(17, 30, width - 1, 1);
             Insert(1, 17, 28, 1);
         }
         if (flag_mask & auxiliary) {
-            masm.exact.eor(v::x0, v::x0, Operand(X(destination)));
+            __ eor(v::x0, v::x0, Operand(X(destination)));
             Extract(0, 0, 4, 1);
             Insert(1, 0, 26, 1);
         }
@@ -743,76 +779,6 @@ void Writer::HandleAdcFamily(OpContext& ctx) {
     nzcv_matches = 0;  // Narrow C/V are synthesized separately; keep this case conservative.
     options.native_nzcv = native;
     RestoreNZCV();
-}
-
-void Writer::HandleDiv128Family(OpContext& ctx) {
-    auto& cursor = ctx.cursor;
-    const auto& home = ctx.home;
-    const auto destination = ctx.destination;
-    const auto high = cursor.Take(), low = cursor.Take(), divisor = cursor.Take();
-    const auto sign = IntegerImmediate(cursor.Take());
-    const auto bits = Width(View(high));
-    if ((bits != 8 && bits != 16 && bits != 32 && bits != 64) || Width(View(low)) != bits ||
-        Width(View(divisor)) != bits || sign > 1)
-        Reject(CompileError::UnsupportedOperand);
-    Shadow(false);
-    PublishPinned();
-    HelperFPEnvironment(false);
-    Move(0, Read(high, 0));
-    Move(16, Read(low, 16));
-    Move(17, Read(divisor, 17));
-    Immediate(30, DivisionHelper(bits, sign != 0));
-    masm.exact.blr(v::x30);  // BLR x30.
-    HelperFPEnvironment(true);
-    nzcv_matches = 0;
-    Memory(false, 64, 16, 31, home.extra_slot - 1);
-    Move(destination, 0);
-    RestoreHelperNZCV();
-}
-
-void Writer::HandleDiv128RemainderFamily(OpContext& ctx) {
-    auto& cursor = ctx.cursor;
-    const auto destination = ctx.destination;
-    const auto owner = cursor.Take();
-    if (owner.Kind() != OperandKind::Value ||
-        source.Operations()[owner.Payload()].opcode != OpCode::Div128)
-        Reject(CompileError::UnsupportedOperand);
-    Memory(true, 64, destination, 31, allocation.homes[owner.Payload()].extra_slot - 1);
-}
-
-void Writer::HandleCpuidFamily(OpContext& ctx) {
-    auto& cursor = ctx.cursor;
-    const auto& home = ctx.home;
-    const auto destination = ctx.destination;
-    const auto leaf = cursor.Take(), subleaf = cursor.Take();
-    const auto callback = IntegerImmediate(cursor.Take());
-    if (!callback) Reject(CompileError::UnsupportedOperand);
-    Shadow(false);
-    PublishPinned();
-    masm.exact.dmb(v::InnerShareable,
-                   v::BarrierAll);  // DMB ISH: prior guest memory precedes the serializing query.
-    HelperFPEnvironment(false);
-    Move(0, Read(leaf, 0));
-    Move(16, Read(subleaf, 16));
-    Immediate(17, callback);
-    Immediate(30, CpuidHelper());
-    masm.exact.blr(v::x30);  // BLR x30.
-    HelperFPEnvironment(true);
-    masm.exact.isb();  // ISB: following instructions start after the query.
-    nzcv_matches = 0;
-    Memory(false, 64, 16, 31, home.extra_slot - 1);
-    Move(destination, 0);
-    RestoreHelperNZCV();
-}
-
-void Writer::HandleCpuidUpperFamily(OpContext& ctx) {
-    auto& cursor = ctx.cursor;
-    const auto destination = ctx.destination;
-    const auto owner = cursor.Take();
-    if (owner.Kind() != OperandKind::Value ||
-        source.Operations()[owner.Payload()].opcode != OpCode::Cpuid)
-        Reject(CompileError::UnsupportedOperand);
-    Memory(true, 64, destination, 31, allocation.homes[owner.Payload()].extra_slot - 1);
 }
 
 void Writer::HandleMulFamily(OpContext& ctx) {
@@ -861,7 +827,7 @@ void Writer::HandleMulFamily(OpContext& ctx) {
                         const auto left = Read(input, 16, 64, false, 32);
                         const auto right = Read(operand, 17, 64, false, 32);
                         const auto addend = Read(accumulator, 16, 64, false, 32);
-                        masm.exact.madd(W(next_home.reg), W(left), W(right), W(addend));
+                        __ madd(W(next_home.reg), W(left), W(right), W(addend));
                         elided_consumer = consumer;
                         saved = true;
                         return;
@@ -873,7 +839,7 @@ void Writer::HandleMulFamily(OpContext& ctx) {
     const auto native_width = width <= 32 ? 32u : 64u;
     const auto right = Expression(cursor, 17, 16, native_width),
                left = Read(input, 16, 64, false, native_width);
-    masm.exact.mul(R(destination, native_width), R(left, native_width), R(right, native_width));
+    __ mul(R(destination, native_width), R(left, native_width), R(right, native_width));
     if (width < 32) Narrow(destination, destination, width);
 }
 
@@ -885,9 +851,9 @@ void Writer::HandleMulHighFamily(OpContext& ctx) {
     const auto sign = IntegerImmediate(cursor.Take());
     if (sign > 1) Reject(CompileError::UnsupportedOperand);
     if (sign)
-        masm.exact.smulh(X(destination), X(left), X(right));
+        __ smulh(X(destination), X(left), X(right));
     else
-        masm.exact.umulh(X(destination), X(left), X(right));
+        __ umulh(X(destination), X(left), X(right));
     Narrow(destination, destination, width);
 }
 
@@ -967,13 +933,13 @@ void Writer::HandleCrc32cFamily(OpContext& ctx) {
     // CRC32CB/CH/CW/CX: W accumulator and result, with X data
     // only for the 64-bit form. No NZCV or complement operation.
     if (bits == 8)
-        masm.exact.crc32cb(W(destination), W(initial), W(data));
+        __ crc32cb(W(destination), W(initial), W(data));
     else if (bits == 16)
-        masm.exact.crc32ch(W(destination), W(initial), W(data));
+        __ crc32ch(W(destination), W(initial), W(data));
     else if (bits == 32)
-        masm.exact.crc32cw(W(destination), W(initial), W(data));
+        __ crc32cw(W(destination), W(initial), W(data));
     else
-        masm.exact.crc32cx(W(destination), W(initial), X(data));
+        __ crc32cx(W(destination), W(initial), X(data));
 }
 
 void Writer::HandleByteSwapFamily(OpContext& ctx) {
@@ -984,9 +950,9 @@ void Writer::HandleByteSwapFamily(OpContext& ctx) {
     const auto swapped = IntegerImmediate(cursor.Take());
     if (swapped != 16 && swapped != 32 && swapped != 64) Reject(CompileError::UnsupportedOperand);
     if (swapped == 16)
-        masm.exact.rev16(W(destination), W(input));
+        __ rev16(W(destination), W(input));
     else
-        masm.exact.rev(R(destination, swapped), R(input, swapped));
+        __ rev(R(destination, swapped), R(input, swapped));
     const auto kept = std::min(width, static_cast<unsigned>(swapped));
     if (kept < 32 || (swapped == 64 && kept < 64)) Narrow(destination, destination, kept);
 }
@@ -998,10 +964,10 @@ void Writer::HandlePopCountFamily(OpContext& ctx) {
     const auto input = RawScalar(cursor.Take(), 16);
     // Both scalar and vector allocation reserve v0 as scratch;
     // it is never a value home.
-    masm.exact.fmov(v::d0, X(input));  // Raw bits, no FP conversion.
-    masm.exact.cnt(Lanes(0, 8, 64), Lanes(0, 8, 64));
-    masm.exact.addv(v::b0, Lanes(0, 8, 64));
-    masm.exact.umov(W(destination), Lanes(0, 8, 64), 0);
+    __ fmov(v::d0, X(input));  // Raw bits, no FP conversion.
+    __ cnt(Lanes(0, 8, 64), Lanes(0, 8, 64));
+    __ addv(v::b0, Lanes(0, 8, 64));
+    __ umov(W(destination), Lanes(0, 8, 64), 0);
     if (width < 7) Narrow(destination, destination, width);
 }
 
@@ -1018,10 +984,10 @@ void Writer::HandleCountLeadingZeros32Family(OpContext& ctx) {
     if (Width(View(input)) != (wide ? 64u : 32u)) Reject(CompileError::UnsupportedType);
     auto value = RawScalar(input, 16);
     if (trailing) {
-        masm.exact.rbit(R(destination, wide ? 64 : 32), R(value, wide ? 64 : 32));
+        __ rbit(R(destination, wide ? 64 : 32), R(value, wide ? 64 : 32));
         value = destination;
     }
-    masm.exact.clz(R(destination, wide ? 64 : 32), R(value, wide ? 64 : 32));
+    __ clz(R(destination, wide ? 64 : 32), R(value, wide ? 64 : 32));
     if (width < (wide ? 7u : 6u)) Narrow(destination, destination, width);
 }
 
@@ -1034,7 +1000,7 @@ void Writer::HandleNotFamily(OpContext& ctx) {
         Predicate(destination, Read(input, 16), true);
     else {
         const auto value = Expression(cursor, 16, 17);
-        masm.exact.mvn(X(destination), Operand(X(value)));
+        __ mvn(X(destination), Operand(X(value)));
     }
     Narrow(destination, destination, width);
 }
@@ -1137,11 +1103,11 @@ void Writer::HandleLslImmFamily(OpContext& ctx) {
                                                 : v::LSR,
                                           count};
                     if (next.opcode == OpCode::Xor)
-                        masm.exact.eor(X(next_home.reg), X(other), shifted);
+                        __ eor(X(next_home.reg), X(other), shifted);
                     else if (next.opcode == OpCode::And)
-                        masm.exact.and_(X(next_home.reg), X(other), shifted);
+                        __ and_(X(next_home.reg), X(other), shifted);
                     else
-                        masm.exact.orr(X(next_home.reg), X(other), shifted);
+                        __ orr(X(next_home.reg), X(other), shifted);
                     elided_consumer = consumer;
                     ctx.saved = true;
                     return;
@@ -1149,17 +1115,16 @@ void Writer::HandleLslImmFamily(OpContext& ctx) {
             }
         }
         if (ror) {
-            masm.exact.ror(R(destination, width), R(value, width), count);
+            __ ror(R(destination, width), R(value, width), count);
         } else if (asr) {
-            masm.exact.asr(
-                    R(destination, width == 32 ? 32 : 64), R(value, width == 32 ? 32 : 64), count);
+            __ asr(R(destination, width == 32 ? 32 : 64), R(value, width == 32 ? 32 : 64), count);
             if (width < 32) Narrow(destination, destination, width);
         } else {
             const auto register_width = width == 32 ? 32u : 64u;
-            masm.exact.ubfm(R(destination, register_width),
-                            R(value, register_width),
-                            lsl ? (register_width - count) % register_width : count,
-                            lsl ? width - count - 1 : width - 1);
+            __ ubfm(R(destination, register_width),
+                    R(value, register_width),
+                    lsl ? (register_width - count) % register_width : count,
+                    lsl ? width - count - 1 : width - 1);
         }
         return;
     }
@@ -1177,15 +1142,17 @@ void Writer::HandleLslImmFamily(OpContext& ctx) {
     const auto value = Read(input, 16, width, asr, width == 32 ? 32 : 64);
     const auto alu_width = width == 32 ? 32u : 64u;
     if (asr)
-        masm.exact.asrv(R(destination, alu_width), R(value, alu_width), R(count, alu_width));
+        __ asrv(R(destination, alu_width), R(value, alu_width), R(count, alu_width));
     else if (ror)
-        masm.exact.rorv(R(destination, alu_width), R(value, alu_width), R(count, alu_width));
+        __ rorv(R(destination, alu_width), R(value, alu_width), R(count, alu_width));
     else if (lsl)
-        masm.exact.lslv(R(destination, alu_width), R(value, alu_width), R(count, alu_width));
+        __ lslv(R(destination, alu_width), R(value, alu_width), R(count, alu_width));
     else
-        masm.exact.lsrv(R(destination, alu_width), R(value, alu_width), R(count, alu_width));
+        __ lsrv(R(destination, alu_width), R(value, alu_width), R(count, alu_width));
     if (width < 32) Narrow(destination, destination, width);
 }
 
 }  // namespace detail
 }  // namespace swift::runtime::backend::arm64
+
+#undef __

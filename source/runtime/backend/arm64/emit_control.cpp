@@ -1,9 +1,8 @@
 #include "emit.h"
 
+#define __ masm.exact.
+
 namespace swift::runtime::backend::arm64 {
-std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
-std::uintptr_t CpuidHelper() noexcept;
-std::uintptr_t X87Helper() noexcept;
 
 namespace detail {
 void Writer::StackAdjust(bool subtract) {
@@ -11,22 +10,22 @@ void Writer::StackAdjust(bool subtract) {
     const u32 high = spill_frame >> 12, low = spill_frame & 4095;
     if (high) {
         if (subtract)
-            masm.exact.sub(v::sp, v::sp, Operand(static_cast<u64>(high) << 12));
+            __ sub(v::sp, v::sp, Operand(static_cast<u64>(high) << 12));
         else
-            masm.exact.add(v::sp, v::sp, Operand(static_cast<u64>(high) << 12));
+            __ add(v::sp, v::sp, Operand(static_cast<u64>(high) << 12));
     }
     if (low) {
         if (subtract)
-            masm.exact.sub(v::sp, v::sp, Operand(low));
+            __ sub(v::sp, v::sp, Operand(low));
         else
-            masm.exact.add(v::sp, v::sp, Operand(low));
+            __ add(v::sp, v::sp, Operand(low));
     }
 }
 
 void Writer::Branch(BlockId target) {
     if (target.value >= masm.labels.size()) Reject(CompileError::InvalidProgram);
     masm.fixups.push_back({static_cast<u32>(output.words.size()), target.value});
-    masm.exact.b(std::int64_t{0});
+    __ b(std::int64_t{0});
 }
 
 bool Writer::ShortBranch(Branch19 instruction, BlockId target) {
@@ -50,8 +49,8 @@ void Writer::TailJump(std::uintptr_t destination, bool link, u64 target_pc, u32 
         const auto distance = static_cast<std::int64_t>(dispatcher_literal) -
                               static_cast<std::int64_t>(output.words.size());
         if (distance >= -(INT64_C(1) << 18) && distance < (INT64_C(1) << 18)) {
-            masm.exact.ldr(v::x16, distance);
-            masm.exact.br(v::x16);  // LDR x16,immutable dispatcher DATA; BR x16.
+            __ ldr(v::x16, distance);
+            __ br(v::x16);  // LDR x16,immutable dispatcher DATA; BR x16.
             return;
         }
     }
@@ -59,13 +58,13 @@ void Writer::TailJump(std::uintptr_t destination, bool link, u64 target_pc, u32 
     // before a resolved branch; the BR also skips padding on the far path.
     // A conditional head reaches this cold gate only when unresolved/far.
     // Its zero path already transfers elsewhere, so alignment here is cold.
-    if (conditional_head != UINT32_MAX && (output.words.size() & 1)) masm.exact.nop();
+    if (conditional_head != UINT32_MAX && (output.words.size() & 1)) __ nop();
     const auto branch = static_cast<u32>(output.words.size());
     const auto padding = branch & 1u;
     const auto pointer = branch + 2 + padding;
-    masm.exact.ldr(v::x16, static_cast<std::int64_t>(2 + padding));
-    masm.exact.br(v::x16);
-    if (padding) masm.exact.nop();
+    __ ldr(v::x16, static_cast<std::int64_t>(2 + padding));
+    __ br(v::x16);
+    if (padding) __ nop();
     masm.Data64(destination);
     if (!link && destination == options.dispatcher) dispatcher_literal = pointer;
     if (link) {
@@ -95,9 +94,9 @@ void Writer::TailJump(std::uintptr_t destination, bool link, u64 target_pc, u32 
 void Writer::ContextMemory(bool load, unsigned value, int offset) {
     const MemOperand field(v::x19, offset);
     if (load)
-        masm.exact.ldur(X(value), field);
+        __ ldur(X(value), field);
     else
-        masm.exact.stur(X(value), field);
+        __ stur(X(value), field);
 }
 
 void Writer::DynamicDispatch() {
@@ -112,27 +111,27 @@ void Writer::DynamicDispatch() {
         if (options.dispatch_mode != DispatchMode::InlineCounted) return;
         ContextMemory(true, 4, offset);
         if (decrement)
-            masm.exact.sub(v::x4, v::x4, Operand(1));
+            __ sub(v::x4, v::x4, Operand(1));
         else
-            masm.exact.add(v::x4, v::x4, Operand(1));  // SUB/ADD x4,x4,#1, non-S.
+            __ add(v::x4, v::x4, Operand(1));  // SUB/ADD x4,x4,#1, non-S.
         ContextMemory(false, 4, offset);
     };
     count(abi::ContextDispatchesOffset);
     u32 cache_pointer = UINT32_MAX;
     if (options.local_dispatch_cache) {
         const auto address = static_cast<u32>(output.words.size());
-        masm.exact.adr(v::x2, std::int64_t{0});  // ADR x2,local array.
+        __ adr(v::x2, std::int64_t{0});  // ADR x2,local array.
         Extract(5, 0, 2, std::countr_zero(abi::DynamicCacheEntries));
-        masm.exact.add(v::x2,
-                       v::x2,
-                       Operand(v::x5, v::LSL, 4));  // ADD x2,x2,x5,LSL #4: one sixteen-byte pair.
-        masm.exact.ldp(v::x4, v::x16, MemOperand(v::x2));  // LDP x4,x16,[x2]: tag,entry.
-        masm.exact.sub(v::x4, v::x4, Operand(v::x0));      // SUB x4,tag,x0, non-S.
+        __ add(v::x2,
+               v::x2,
+               Operand(v::x5, v::LSL, 4));         // ADD x2,x2,x5,LSL #4: one sixteen-byte pair.
+        __ ldp(v::x4, v::x16, MemOperand(v::x2));  // LDP x4,x16,[x2]: tag,entry.
+        __ sub(v::x4, v::x4, Operand(v::x0));      // SUB x4,tag,x0, non-S.
         const auto mismatch = static_cast<u32>(output.words.size());
-        masm.exact.cbnz(v::x4, std::int64_t{0});
+        __ cbnz(v::x4, std::int64_t{0});
         count(abi::ContextHitsOffset);
-        masm.exact.br(v::x16);
-        if (output.words.size() & 1) masm.exact.nop();  // Unreachable DATA alignment.
+        __ br(v::x16);
+        if (output.words.size() & 1) __ nop();  // Unreachable DATA alignment.
         cache_pointer = static_cast<u32>(output.words.size());
         for (unsigned i = 0; i < abi::DynamicCacheWords; ++i) masm.Data32(0);
         const auto fallback = static_cast<u32>(output.words.size());
@@ -143,58 +142,58 @@ void Writer::DynamicDispatch() {
         masm.Patch(address, cache_pointer);
         masm.Patch(mismatch, masm.Here());
     }
-    masm.exact.ldp(v::x2, v::x6, MemOperand(v::x19, abi::ContextSlotsOffset));
+    __ ldp(v::x2, v::x6, MemOperand(v::x19, abi::ContextSlotsOffset));
     u32 no_slots = UINT32_MAX;
     if (!options.callable_directory) {
         no_slots = static_cast<u32>(output.words.size());
-        masm.exact.cbz(v::x2, std::int64_t{0});
+        __ cbz(v::x2, std::int64_t{0});
     }
-    masm.exact.eor(v::x5,
-                   v::x0,
-                   Operand(v::x0, v::LSR, abi::DispatchHashShift));  // EOR x5,x0,x0,LSR #hash.
-    masm.exact.and_(v::x5, v::x5, Operand(v::x6));
+    __ eor(v::x5,
+           v::x0,
+           Operand(v::x0, v::LSR, abi::DispatchHashShift));  // EOR x5,x0,x0,LSR #hash.
+    __ and_(v::x5, v::x5, Operand(v::x6));
     const auto probe = static_cast<u32>(output.words.size());
     count(abi::ContextProbesOffset);
-    masm.exact.add(v::x3, v::x2, Operand(v::x5, v::LSL, abi::DispatchSlotShift));
-    masm.exact.ldp(v::x4, v::x16, MemOperand(v::x3));
-    masm.exact.sub(v::x4, v::x4, Operand(v::x0));  // SUB x4,tag,x0, non-S.
+    __ add(v::x3, v::x2, Operand(v::x5, v::LSL, abi::DispatchSlotShift));
+    __ ldp(v::x4, v::x16, MemOperand(v::x3));
+    __ sub(v::x4, v::x4, Operand(v::x0));  // SUB x4,tag,x0, non-S.
     const auto mismatch = static_cast<u32>(output.words.size());
-    masm.exact.cbnz(v::x4, std::int64_t{0});
+    __ cbnz(v::x4, std::int64_t{0});
     u32 pending = UINT32_MAX;
     if (!options.callable_directory) {
         pending = static_cast<u32>(output.words.size());
-        masm.exact.cbz(v::x16, std::int64_t{0});
+        __ cbz(v::x16, std::int64_t{0});
     }
     count(abi::ContextHitsOffset);
     u32 not_ready = UINT32_MAX, no_alias = UINT32_MAX;
     if (cache_pointer != UINT32_MAX) {
-        masm.exact.ldr(v::w4, MemOperand(v::x3, 16));  // LDR w4,[x3,#16]: actual ready code_id, not
-                                                       // callable pending payload.
-        masm.exact.add(v::w4, v::w4, Operand(1));  // ADD w4,w4,#1, non-S: UINT32_MAX becomes zero.
+        __ ldr(v::w4, MemOperand(v::x3, 16));  // LDR w4,[x3,#16]: actual ready code_id, not
+                                               // callable pending payload.
+        __ add(v::w4, v::w4, Operand(1));      // ADD w4,w4,#1, non-S: UINT32_MAX becomes zero.
         not_ready = static_cast<u32>(output.words.size());
-        masm.exact.cbz(v::w4, std::int64_t{0});
+        __ cbz(v::w4, std::int64_t{0});
         const auto alias = static_cast<u32>(output.words.size());
-        masm.exact.ldr(v::x2,
-                       static_cast<std::int64_t>(cache_pointer + abi::DynamicCacheWords - 2) -
-                               alias);  // LDR x2,RW-base.
+        __ ldr(v::x2,
+               static_cast<std::int64_t>(cache_pointer + abi::DynamicCacheWords - 2) -
+                       alias);  // LDR x2,RW-base.
         no_alias = static_cast<u32>(output.words.size());
-        masm.exact.cbz(v::x2, std::int64_t{0});
+        __ cbz(v::x2, std::int64_t{0});
         Extract(5, 0, 2, std::countr_zero(abi::DynamicCacheEntries));
-        masm.exact.add(v::x2, v::x2, Operand(v::x5, v::LSL, 4));  // ADD x2,x2,x5,LSL #4.
-        masm.exact.stp(v::x0, v::x16, MemOperand(v::x2));  // STP x0,x16,[x2]: replace only this
-                                                           // ready target's selected pair.
+        __ add(v::x2, v::x2, Operand(v::x5, v::LSL, 4));  // ADD x2,x2,x5,LSL #4.
+        __ stp(v::x0, v::x16, MemOperand(v::x2));         // STP x0,x16,[x2]: replace only this
+                                                          // ready target's selected pair.
     }
     for (const auto edge : {not_ready, no_alias})
         if (edge != UINT32_MAX) masm.Patch(edge, masm.Here());
-    masm.exact.br(v::x16);  // This source site's BR x16.
+    __ br(v::x16);  // This source site's BR x16.
     masm.Patch(mismatch, masm.Here());
-    masm.exact.ldrb(v::w4, MemOperand(v::x3, abi::DispatchOccupiedOffset));
+    __ ldrb(v::w4, MemOperand(v::x3, abi::DispatchOccupiedOffset));
     const auto empty = static_cast<u32>(output.words.size());
-    masm.exact.cbz(v::w4, std::int64_t{0});
-    masm.exact.add(v::x5, v::x5, Operand(1));  // ADD x5,x5,#1.
-    masm.exact.and_(v::x5, v::x5, Operand(v::x6));
+    __ cbz(v::w4, std::int64_t{0});
+    __ add(v::x5, v::x5, Operand(1));  // ADD x5,x5,#1.
+    __ and_(v::x5, v::x5, Operand(v::x6));
     const auto distance = static_cast<std::int64_t>(probe) - masm.Here();
-    masm.exact.b(distance);
+    __ b(distance);
     for (const auto edge : {no_slots, pending, empty})
         if (edge != UINT32_MAX) masm.Patch(edge, masm.Here());
     // A cold miss may repeat the lookup in the shared callback. Its actual
@@ -215,8 +214,8 @@ void Writer::Epilogue() {
     if (Linked())
         TailJump(options.exit_handler);
     else {
-        masm.exact.ldp(v::x19, v::x30, MemOperand(v::sp, 16, v::PostIndex));
-        masm.exact.ret(v::x30);
+        __ ldp(v::x19, v::x30, MemOperand(v::sp, 16, v::PostIndex));
+        __ ret(v::x30);
     }
 }
 
@@ -225,10 +224,10 @@ unsigned Writer::PrepareTerminalCondition(unsigned condition, bool& restore, boo
         SnapshotCompareNZCV();
         nzcv_matches = 0;
         if (RawAF()) {
-            masm.exact.eor(v::x16, v::x29, Operand(v::x1));
-            masm.exact.tst(v::x16, Operand(16));  // TST x16,#16: canonical AF is the xor's bit4.
+            __ eor(v::x16, v::x29, Operand(v::x1));
+            __ tst(v::x16, Operand(16));  // TST x16,#16: canonical AF is the xor's bit4.
         } else
-            masm.exact.tst(v::x1, Operand(u64{1} << 26));  // TST x1,#(1<<26).
+            __ tst(v::x1, Operand(u64{1} << 26));  // TST x1,#(1<<26).
         condition = condition == 16 ? 1u : 0u;
         restore = NativeNZCV();
     } else if (NativeNZCV()) {
@@ -237,7 +236,7 @@ unsigned Writer::PrepareTerminalCondition(unsigned condition, bool& restore, boo
         else if (condition == 2 || condition == 3)
             condition ^= 1u;
         else if (condition == 8 || condition == 9) {
-            masm.exact.cfinv();
+            __ cfinv();
             flip = true;
         }
     } else
@@ -247,7 +246,7 @@ unsigned Writer::PrepareTerminalCondition(unsigned condition, bool& restore, boo
 
 void Writer::RestoreTerminalCondition(bool restore, bool flip) {
     if (flip)
-        masm.exact.cfinv();
+        __ cfinv();
     else if (restore)
         RestoreCompareNZCV();
 }
@@ -268,14 +267,13 @@ void Writer::ConditionPC(unsigned condition, u64 taken, u64 fallthrough) {
         const auto primary = primary_yes ? taken : fallthrough;
         const auto other = primary_yes ? fallthrough : taken;
         const auto head = static_cast<u32>(output.words.size());
-        masm.exact.b(std::int64_t{0},
-                     static_cast<v::Condition>(condition ^ (primary_yes ? 0u : 1u)));
+        __ b(std::int64_t{0}, static_cast<v::Condition>(condition ^ (primary_yes ? 0u : 1u)));
         PublishPCAndJump(other);
         TailJump(options.dispatcher, true, primary, head);
         return;
     }
     const auto skip = static_cast<u32>(output.words.size());
-    masm.exact.b(std::int64_t{0}, static_cast<v::Condition>(condition ^ 1u));
+    __ b(std::int64_t{0}, static_cast<v::Condition>(condition ^ 1u));
     RestoreTerminalCondition(restore, flip);
     PublishPCAndJump(taken);
     masm.Patch(skip, masm.Here());
@@ -294,16 +292,15 @@ void Writer::ConditionEdges(unsigned condition, const StoredTerminal& terminal, 
     const auto skip = true_falls_through ? condition : condition ^ 1;
     if (restore || flip) {
         const auto at = static_cast<u32>(output.words.size());
-        masm.exact.b(std::int64_t{0}, static_cast<v::Condition>(skip));
+        __ b(std::int64_t{0}, static_cast<v::Condition>(skip));
         RestoreTerminalCondition(restore, flip);
         Branch(true_falls_through ? terminal.second : terminal.first);
         masm.Patch(at, masm.Here());
         RestoreTerminalCondition(restore, flip);
     } else if (!ShortBranch(Branch19::Flags(skip ^ 1u),
                             true_falls_through ? terminal.second : terminal.first)) {
-        masm.exact.b(
-                std::int64_t{2},
-                static_cast<v::Condition>(skip));  // B.cond +8: only the actual long edge uses B26.
+        __ b(std::int64_t{2},
+             static_cast<v::Condition>(skip));  // B.cond +8: only the actual long edge uses B26.
         Branch(true_falls_through ? terminal.second : terminal.first);
     }
     if (!true_falls_through && terminal.second != next) Branch(terminal.second);
@@ -351,9 +348,9 @@ void Writer::HandleDispatch() {
             SnapshotCompareNZCV();
             PCMemory(true);
             Immediate(17, static_pc);
-            masm.exact.cmp(v::x0, Operand(v::x17));
+            __ cmp(v::x0, Operand(v::x17));
             const auto skip = static_cast<u32>(output.words.size());
-            masm.exact.b(std::int64_t{0}, v::ne);
+            __ b(std::int64_t{0}, v::ne);
             RestoreCompareNZCV();
             TailJump(options.dispatcher, true, static_pc);
             masm.Patch(skip, masm.Here());
@@ -394,7 +391,7 @@ void Writer::HandleBranch(const StoredTerminal& terminal, BlockId next) {
         // not the nonzero entry snapshot, is known to be zero.
         Immediate(1, 0);
         Immediate(29, 0);
-        masm.exact.cmp(v::x1, Operand(0));  // CMP x1,#0: N0 Z1 !guestC1 V0.
+        __ cmp(v::x1, Operand(0));  // CMP x1,#0: N0 Z1 !guestC1 V0.
         shadow_dirty = true;
         packed_current = false;
         nzcv_matches = 0;
@@ -423,7 +420,7 @@ void Writer::HandleBranch(const StoredTerminal& terminal, BlockId next) {
 
 void Writer::HandleUnreachable() {
     Shadow(false);
-    masm.exact.brk(0);
+    __ brk(0);
 }
 
 void Writer::HandleCondSetFamily(OpContext& ctx) {
@@ -443,9 +440,9 @@ void Writer::HandleCondSetFamily(OpContext& ctx) {
         const bool flip = NativeNZCV() && (condition == 8 || condition == 9);
         const auto host =
                 NativeNZCV() && (condition == 2 || condition == 3) ? condition ^ 1 : condition;
-        if (flip) masm.exact.cfinv();
-        masm.exact.cset(X(destination), static_cast<v::Condition>(host));
-        if (flip) masm.exact.cfinv();
+        if (flip) __ cfinv();
+        __ cset(X(destination), static_cast<v::Condition>(host));
+        if (flip) __ cfinv();
     }
 }
 
@@ -466,12 +463,12 @@ void Writer::HandleCondSelectFamily(OpContext& ctx) {
     const bool flip = NativeNZCV() && (condition == 8 || condition == 9);
     const auto host =
             NativeNZCV() && (condition == 2 || condition == 3) ? condition ^ 1 : condition;
-    if (flip) masm.exact.cfinv();
-    masm.exact.csel(R(destination, native_width),
-                    R(yes, native_width),
-                    R(no, native_width),
-                    static_cast<v::Condition>(host));
-    if (flip) masm.exact.cfinv();
+    if (flip) __ cfinv();
+    __ csel(R(destination, native_width),
+            R(yes, native_width),
+            R(no, native_width),
+            static_cast<v::Condition>(host));
+    if (flip) __ cfinv();
     if (width != 32) Narrow(destination, destination, width);
 }
 
@@ -532,11 +529,13 @@ void Writer::HandleSelectFamily(OpContext& ctx) {
     const auto yes = Read(cursor.Take(), 16, 64, false, native_width),
                no = Read(cursor.Take(), 17, 64, false, native_width);
     nzcv_matches = 0;
-    masm.exact.cmp(X(check), Operand(0));
-    masm.exact.csel(R(destination, native_width), R(yes, native_width), R(no, native_width), v::ne);
+    __ cmp(X(check), Operand(0));
+    __ csel(R(destination, native_width), R(yes, native_width), R(no, native_width), v::ne);
     RestoreCompareNZCV();
     if (width != 32) Narrow(destination, destination, width);
 }
 
 }  // namespace detail
 }  // namespace swift::runtime::backend::arm64
+
+#undef __

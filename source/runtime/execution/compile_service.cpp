@@ -6,7 +6,7 @@
 #include "runtime/frontend/x86/build_ir.h"
 
 #include <algorithm>
-#include <cstdio>
+#include "base/format.h"
 #include <limits>
 #include <sys/mman.h>
 
@@ -17,17 +17,6 @@ namespace {
 using u64 = std::uint64_t;
 using x86::GuestState;
 
-const char* Name(ir::OpCode opcode) {
-    switch (opcode) {
-#define INST(name, ...)                                                                            \
-    case ir::OpCode::name:                                                                         \
-        return #name;
-#include "runtime/ir/opcodes.inc"
-#undef INST
-        default:
-            return "invalid";
-    }
-}
 }  // namespace
 
 NativeCode CompileService::Compile(ir::Scope scope) {
@@ -37,7 +26,9 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     auto& state = vm.thread.native.state;
     auto& faults = vm.thread.faults;
     auto& native = vm.thread.native;
-    auto& diagnostic = vm.thread.diagnostic;
+    diagnostic = {};
+    diagnostic.scope = scope;
+    diagnostic.pc = state.pc;
     last = nullptr;
     failure = CompileFailure::None;
     ++stats.compile_attempts;
@@ -68,12 +59,12 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                            static_cast<u64>(ir::TargetFeature::PrivateVectorState);
     const auto source_mode = memory.ClassifySource(state.pc);
     if (!source_mode) {
-        diagnostic = "guest instruction source is not readable/executable";
+        diagnostic.message = "guest instruction source is not readable/executable";
         failure = CompileFailure::InvalidInput;
         return {};
     }
     if (*source_mode == SourceMode::Volatile) {
-        diagnostic = "volatile guest executable backing is unsupported for persistent JIT";
+        diagnostic.message = "volatile guest executable backing is unsupported for persistent JIT";
         failure = CompileFailure::Unsupported;
         return {};
     }
@@ -125,18 +116,12 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     stats.emitted_instructions += built.instruction_count;
     stats.emitted_guest_bytes += built.decoded_bytes;
     if (!built) {
-        char message[256];
-        std::snprintf(message,
-                      sizeof(message),
-                      "x86 frontend rejected pc=0x%llx scope=%s error=%u ir_error=%u emitted=%zu "
-                      "bytes=%zu",
-                      static_cast<unsigned long long>(built.error_pc),
-                      scope == ir::Scope::Function ? "function" : "block",
-                      static_cast<unsigned>(built.error),
-                      static_cast<unsigned>(built.ir_error),
-                      built.instruction_count,
-                      built.decoded_bytes);
-        diagnostic = message;
+        diagnostic.stage = CompileStage::Frontend;
+        diagnostic.pc = built.error_pc;
+        diagnostic.frontend_error = built.error;
+        diagnostic.ir_error = built.ir_error;
+        diagnostic.instructions = built.instruction_count;
+        diagnostic.bytes = built.decoded_bytes;
         failure = built.error == front::BuildError::Unsupported ? CompileFailure::Unsupported
                                                                 : CompileFailure::InvalidInput;
         return {};
@@ -165,7 +150,8 @@ NativeCode CompileService::Compile(ir::Scope scope) {
         if (optimizer_rows.capacity() > 8u * 1024 * 1024 / sizeof(std::uint64_t))
             std::vector<std::uint64_t>{}.swap(optimizer_rows);
         if (!optimized) {
-            diagnostic = "IR optimization failed at the current compilation request";
+            diagnostic.stage = CompileStage::Optimize;
+            diagnostic.message = "IR optimization failed at the current compilation request";
             failure = CompileFailure::InvalidInput;
             return {};
         }
@@ -188,21 +174,12 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     }
     if (!compiled) {
         const auto nodes = built.program.Operations();
-        const char* opcode = compiled.node.value < nodes.size()
-                                     ? Name(nodes[compiled.node.value].opcode)
-                                     : "none";
-        char message[256];
-        std::snprintf(
-                message,
-                sizeof(message),
-                "native compiler rejected pc=0x%llx scope=%s error=%u node=%u block=%u opcode=%s",
-                static_cast<unsigned long long>(state.pc),
-                scope == ir::Scope::Function ? "function" : "block",
-                static_cast<unsigned>(compiled.error),
-                compiled.node.value,
-                compiled.block.value,
-                opcode);
-        diagnostic = message;
+        diagnostic.stage = CompileStage::Backend;
+        diagnostic.backend_error = compiled.error;
+        diagnostic.node = compiled.node;
+        diagnostic.block = compiled.block;
+        diagnostic.has_opcode = compiled.node.value < nodes.size();
+        if (diagnostic.has_opcode) diagnostic.opcode = nodes[compiled.node.value].opcode;
         failure = compiled.error == backend::CompileError::InvalidProgram
                           ? CompileFailure::InvalidInput
                           : CompileFailure::Unsupported;
@@ -257,4 +234,29 @@ void CompileService::Release() noexcept {
     std::vector<std::uint64_t>{}.swap(optimizer_rows);
     if (vm.backend.release) vm.backend.release(vm.backend.context);
 }
+
+std::string CompileService::DescribeFailure() const {
+    if (diagnostic.message) return diagnostic.message;
+    const auto scope = diagnostic.scope == ir::Scope::Function ? "function" : "block";
+    if (diagnostic.stage == CompileStage::Frontend)
+        return swift::Format(
+                "x86 frontend rejected pc={:#x} scope={} error={} ir_error={} emitted={} bytes={}",
+                diagnostic.pc,
+                scope,
+                static_cast<unsigned>(diagnostic.frontend_error),
+                static_cast<unsigned>(diagnostic.ir_error),
+                diagnostic.instructions,
+                diagnostic.bytes);
+    if (diagnostic.stage == CompileStage::Backend)
+        return swift::Format(
+                "native compiler rejected pc={:#x} scope={} error={} node={} block={} opcode={}",
+                diagnostic.pc,
+                scope,
+                static_cast<unsigned>(diagnostic.backend_error),
+                diagnostic.node.value,
+                diagnostic.block.value,
+                diagnostic.has_opcode ? ir::Name(diagnostic.opcode) : "none");
+    return "native resolver did not produce a runnable entry";
+}
+
 }  // namespace swift::runtime::execution

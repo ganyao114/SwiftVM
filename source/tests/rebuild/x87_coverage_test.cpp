@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/arch/x86/flags.h"
 #include "runtime/arch/x86/state.h"
 #include "runtime/frontend/x86/interpreter.h"
@@ -21,13 +25,11 @@
 #endif
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 namespace arch = swift::runtime::x86;
 namespace front = swift::x86;
 using u64 = std::uint64_t;
-
-void Check(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
-}
 
 u64 Call(arch::X87State& state, arch::X87Command command, unsigned index = 0, u64 raw = 0) {
     return SvmX87Execute(&state, arch::X87Encode(command, index), raw);
@@ -475,188 +477,189 @@ void BcdTransactions() {
 
 void NativeHelperABI() {
 #if defined(__aarch64__) && !defined(__APPLE__)
-    namespace a64 = swift::runtime::backend::arm64;
-    namespace ir = swift::runtime::ir;
-    namespace execution = swift::runtime::execution;
-    const std::uint8_t bytes[]{
-            0xd9, 0xfe,              // FSIN on exact 2^60 in the input stack.
-            0xf2, 0x0f, 0xd6, 0xd0,  // MOVDQ2Q MM2,XMM0.
-            0xf3, 0x0f, 0xd6, 0xda,  // MOVQ2DQ XMM3,MM2.
-            0x0f, 0x6f, 0x20,        // MOVQ MM4,[RAX].
-            0x0f, 0x68, 0xe1,        // PUNPCKHBW MM4,MM1.
-            0x0f, 0x77,              // EMMS.
-            0xdf, 0x60, 0x10,        // FBLD 18 exact digits from [RAX+16].
-            0xda, 0xc0,              // FCMOVB ST0,ST0 consumes the real guest CF.
-            0xdf, 0x70, 0x20,        // FBSTP [RAX+32] through its real 10B transaction.
-            0x0f, 0x05};             // Actual root service return1.
-    front::StateLayout layout{offsetof(arch::GuestState, gprs), offsetof(arch::GuestState, pc), 8};
-    layout.fprs_offset = offsetof(arch::GuestState, xmm);
-    layout.x87_offset = offsetof(arch::GuestState, x87);
-    layout.mxcsr_offset = offsetof(arch::GuestState, mxcsr);
-    layout.x87_ip_offset = offsetof(arch::GuestState, x87_ip);
-    layout.x87_dp_offset = offsetof(arch::GuestState, x87_dp);
-    layout.x87_opcode_offset = offsetof(arch::GuestState, x87_opcode);
-    auto target = a64::KnownTargetInfo();
-    target.features |= static_cast<u64>(ir::TargetFeature::PrivateGPRState);
-    const front::BlockWindow window{Machine::pc, bytes};
-    for (const bool pinned : {false, true}) {
-        auto built = front::BuildIR({&window, 1}, ir::Scope::Block, layout, target);
-        if (!built) {
-            std::fprintf(stderr,
-                         "native x87/MMX BuildIR: pinned=%u error=%u error_pc=0x%llx ir_error=%u "
-                         "instructions=%zu decoded_bytes=%zu source_bytes=",
-                         unsigned(pinned),
-                         unsigned(built.error),
-                         static_cast<unsigned long long>(built.error_pc),
-                         unsigned(built.ir_error),
-                         built.instruction_count,
-                         built.decoded_bytes);
-            for (const auto byte : bytes) std::fprintf(stderr, "%02x", unsigned(byte));
-            std::fputc('\n', stderr);
-        }
-        Check(bool(built), "native x87/MMX combined input forms real neutral IR");
-        auto optimized = swift::runtime::ir::Optimize(std::move(built.program));
-        Check(bool(optimized), "native x87/MMX input retains the normal optimizer contract");
-        a64::CompileOptions options{};
-        options.flags_offset = offsetof(arch::GuestState, packed_flags);
-        options.pc_offset = offsetof(arch::GuestState, pc);
-        options.entry_pc = Machine::pc;
-        options.fault_locations = true;
-        options.mxcsr_flush_offset = offsetof(arch::GuestState, mxcsr);
-        if (pinned) {
-            options.dispatcher = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatch);
-            options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
-            options.pinned_uniform_offset = offsetof(arch::GuestState, gprs);
-            options.pinned_uniform_slots = 16;
-            options.pinned_vector_offset = offsetof(arch::GuestState, xmm);
-            options.private_uniforms = true;
+    if (NativeMode()) {
+        namespace a64 = swift::runtime::backend::arm64;
+        namespace ir = swift::runtime::ir;
+        namespace execution = swift::runtime::execution;
+        const std::uint8_t bytes[]{
+                0xd9, 0xfe,              // FSIN on exact 2^60 in the input stack.
+                0xf2, 0x0f, 0xd6, 0xd0,  // MOVDQ2Q MM2,XMM0.
+                0xf3, 0x0f, 0xd6, 0xda,  // MOVQ2DQ XMM3,MM2.
+                0x0f, 0x6f, 0x20,        // MOVQ MM4,[RAX].
+                0x0f, 0x68, 0xe1,        // PUNPCKHBW MM4,MM1.
+                0x0f, 0x77,              // EMMS.
+                0xdf, 0x60, 0x10,        // FBLD 18 exact digits from [RAX+16].
+                0xda, 0xc0,              // FCMOVB ST0,ST0 consumes the real guest CF.
+                0xdf, 0x70, 0x20,        // FBSTP [RAX+32] through its real 10B transaction.
+                0x0f, 0x05};             // Actual root service return1.
+        front::StateLayout layout{
+                offsetof(arch::GuestState, gprs), offsetof(arch::GuestState, pc), 8};
+        layout.fprs_offset = offsetof(arch::GuestState, xmm);
+        layout.x87_offset = offsetof(arch::GuestState, x87);
+        layout.mxcsr_offset = offsetof(arch::GuestState, mxcsr);
+        layout.x87_ip_offset = offsetof(arch::GuestState, x87_ip);
+        layout.x87_dp_offset = offsetof(arch::GuestState, x87_dp);
+        layout.x87_opcode_offset = offsetof(arch::GuestState, x87_opcode);
+        auto target = a64::KnownTargetInfo();
+        target.features |= static_cast<u64>(ir::TargetFeature::PrivateGPRState);
+        const front::BlockWindow window{Machine::pc, bytes};
+        for (const bool pinned : {false, true}) {
+            auto built = front::BuildIR({&window, 1}, ir::Scope::Block, layout, target);
+            if (!built) {
+                std::fprintf(
+                        stderr,
+                        "native x87/MMX BuildIR: pinned=%u error=%u error_pc=0x%llx ir_error=%u "
+                        "instructions=%zu decoded_bytes=%zu source_bytes=",
+                        unsigned(pinned),
+                        unsigned(built.error),
+                        static_cast<unsigned long long>(built.error_pc),
+                        unsigned(built.ir_error),
+                        built.instruction_count,
+                        built.decoded_bytes);
+                for (const auto byte : bytes) std::fprintf(stderr, "%02x", unsigned(byte));
+                std::fputc('\n', stderr);
+            }
+            Check(bool(built), "native x87/MMX combined input forms real neutral IR");
+            auto optimized = swift::runtime::ir::Optimize(std::move(built.program));
+            Check(bool(optimized), "native x87/MMX input retains the normal optimizer contract");
+            a64::CompileOptions options{};
+            options.flags_offset = offsetof(arch::GuestState, packed_flags);
+            options.pc_offset = offsetof(arch::GuestState, pc);
+            options.entry_pc = Machine::pc;
+            options.fault_locations = true;
+            options.mxcsr_flush_offset = offsetof(arch::GuestState, mxcsr);
+            if (pinned) {
+                options.dispatcher =
+                        reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatch);
+                options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
+                options.pinned_uniform_offset = offsetof(arch::GuestState, gprs);
+                options.pinned_uniform_slots = 16;
+                options.pinned_vector_offset = offsetof(arch::GuestState, xmm);
+                options.private_uniforms = true;
 #ifdef HWCAP_FLAGM
-            options.native_nzcv = (getauxval(AT_HWCAP) & HWCAP_FLAGM) != 0;
+                options.native_nzcv = (getauxval(AT_HWCAP) & HWCAP_FLAGM) != 0;
 #endif
-        }
-        const auto compiled = a64::Compile(optimized.program, options);
-        if (!compiled)
-            std::fprintf(
-                    stderr,
-                    "x87 native compile pin=%u error=%u node=%u block=%u opcode=%u\n",
-                    unsigned(pinned),
-                    unsigned(compiled.error),
-                    compiled.node.value,
-                    compiled.block.value,
-                    compiled.node
-                            ? unsigned(optimized.program.Operations()[compiled.node.value].opcode)
-                            : 0);
-        Check(bool(compiled), "native x87/MMX combined input compiles in default and pinned ABI");
-        const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
-        const auto code_bytes = compiled.words.size() * sizeof(std::uint32_t),
-                   size = (code_bytes + page - 1) / page * page;
-        void* mapping =
-                mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        Check(mapping != MAP_FAILED, "native code RW allocation");
-        std::memcpy(mapping, compiled.words.data(), code_bytes);
-        if (mprotect(mapping, size, PROT_READ | PROT_EXEC)) {
-            munmap(mapping, size);
-            Check(false, "native code RX publication");
-        }
-        __builtin___clear_cache(static_cast<char*>(mapping),
-                                static_cast<char*>(mapping) + code_bytes);
-        arch::GuestState state;
-        alignas(16) std::array<std::uint8_t, 48> memory{};
-        const u64 mmx_source = UINT64_C(0x0807060504030201),
-                  bcd_source = UINT64_C(0x3456789012345678);
-        const std::uint16_t bcd_high = 0x0012;
-        std::memcpy(memory.data(), &mmx_source, 8);
-        std::memcpy(memory.data() + 16, &bcd_source, 8);
-        std::memcpy(memory.data() + 24, &bcd_high, 2);
-        state.gprs[arch::RAX] = reinterpret_cast<std::uintptr_t>(memory.data());
-        state.gprs[arch::R12] = UINT64_C(0x123456789abcdef0);
-        state.x87.tags = 0xfffc;
-        state.x87.registers[0] = {UINT64_C(0x8000000000000000), 0x403b, {}};
-        state.x87.registers[1].significand = UINT64_C(0x1716151413121110);
-        const u64 xmm[2]{UINT64_C(0xabcdef0123456789), UINT64_C(0x76543210fedcba98)};
-        std::memcpy(state.xmm[0], xmm, sizeof xmm);
-        state.packed_flags = arch::flags::FromRflags(0xad7);
-        state.pc = Machine::pc;
-        const auto function =
-                reinterpret_cast<swift::runtime::backend::NativeCode::Function>(mapping);
-        u64 host_fpcr{}, host_fpsr{};
-        asm volatile("mrs %0, fpcr\n mrs %1, fpsr" : "=r"(host_fpcr), "=r"(host_fpsr));
-        const auto run = [&]() -> u64 {
-            if (!pinned) return function(reinterpret_cast<std::uint8_t*>(&state));
-            swift::runtime::backend::NativeCode code{
-                    function, code_bytes, nullptr, compiled.faults};
-            std::atomic<const swift::runtime::backend::NativeCode*> active{};
-            execution::NativeRunContext context{};
-            context.state = state;
-            context.opaque = mapping;
-            context.resolve = [](void* entry, execution::NativeRunContext*) noexcept {
-                return reinterpret_cast<std::uintptr_t>(entry);
+            }
+            const auto compiled = a64::Compile(optimized.program, options);
+            if (!compiled)
+                std::fprintf(stderr,
+                             "x87 native compile pin=%u error=%u node=%u block=%u opcode=%u\n",
+                             unsigned(pinned),
+                             unsigned(compiled.error),
+                             compiled.node.value,
+                             compiled.block.value,
+                             compiled.node
+                                     ? unsigned(optimized.program.Operations()[compiled.node.value]
+                                                        .opcode)
+                                     : 0);
+            Check(bool(compiled),
+                  "native x87/MMX combined input compiles in default and pinned ABI");
+            swift::tests::NativeCode published{compiled.words, swift::tests::NativeISA::Arm64};
+            void* mapping = published.Entry();
+            const auto code_bytes = compiled.words.size() * sizeof(std::uint32_t);
+            arch::GuestState state;
+            alignas(16) std::array<std::uint8_t, 48> memory{};
+            const u64 mmx_source = UINT64_C(0x0807060504030201),
+                      bcd_source = UINT64_C(0x3456789012345678);
+            const std::uint16_t bcd_high = 0x0012;
+            std::memcpy(memory.data(), &mmx_source, 8);
+            std::memcpy(memory.data() + 16, &bcd_source, 8);
+            std::memcpy(memory.data() + 24, &bcd_high, 2);
+            state.gprs[arch::RAX] = reinterpret_cast<std::uintptr_t>(memory.data());
+            state.gprs[arch::R12] = UINT64_C(0x123456789abcdef0);
+            state.x87.tags = 0xfffc;
+            state.x87.registers[0] = {UINT64_C(0x8000000000000000), 0x403b, {}};
+            state.x87.registers[1].significand = UINT64_C(0x1716151413121110);
+            const u64 xmm[2]{UINT64_C(0xabcdef0123456789), UINT64_C(0x76543210fedcba98)};
+            std::memcpy(state.xmm[0], xmm, sizeof xmm);
+            state.packed_flags = arch::flags::FromRflags(0xad7);
+            state.pc = Machine::pc;
+            const auto function =
+                    reinterpret_cast<swift::runtime::backend::NativeCode::Function>(mapping);
+            u64 host_fpcr{}, host_fpsr{};
+            asm volatile("mrs %0, fpcr\n mrs %1, fpsr" : "=r"(host_fpcr), "=r"(host_fpsr));
+            const auto run = [&]() -> u64 {
+                if (!pinned) return function(reinterpret_cast<std::uint8_t*>(&state));
+                swift::runtime::backend::NativeCode code{
+                        function, code_bytes, nullptr, compiled.faults};
+                std::atomic<const swift::runtime::backend::NativeCode*> active{};
+                execution::NativeRunContext context{};
+                context.state = state;
+                context.opaque = mapping;
+                context.resolve = [](void* entry, execution::NativeRunContext*) noexcept {
+                    return reinterpret_cast<std::uintptr_t>(entry);
+                };
+                context.active = &active;
+                context.anchor = &code;
+                context.pinned_uniform_offset = options.pinned_uniform_offset;
+                context.pinned_uniform_slots = 16;
+                context.pinned_vector_offset = options.pinned_vector_offset;
+                context.native_nzcv = options.native_nzcv;
+                context.flags_offset = options.flags_offset;
+                context.pc_offset = options.pc_offset;
+                const auto result = execution::SvmRunNative(&context);
+                state = context.state;
+                return result;
             };
-            context.active = &active;
-            context.anchor = &code;
-            context.pinned_uniform_offset = options.pinned_uniform_offset;
-            context.pinned_uniform_slots = 16;
-            context.pinned_vector_offset = options.pinned_vector_offset;
-            context.native_nzcv = options.native_nzcv;
-            context.flags_offset = options.flags_offset;
-            context.pc_offset = options.pc_offset;
-            const auto result = execution::SvmRunNative(&context);
-            state = context.state;
-            return result;
-        };
-        const auto result = run();
-        u64 after_fpcr{}, after_fpsr{};
-        asm volatile("mrs %0, fpcr\n mrs %1, fpsr" : "=r"(after_fpcr), "=r"(after_fpsr));
-        u64 observed[2]{};
-        std::memcpy(observed, state.xmm[3], sizeof observed);
-        u64 bcd_output{};
-        std::uint16_t bcd_output_high{};
-        std::memcpy(&bcd_output, memory.data() + 32, 8);
-        std::memcpy(&bcd_output_high, memory.data() + 40, 2);
-        const bool correct_state =
-                state.x87.registers[0].significand == UINT64_C(0xd4a56d583332e140) &&
-                state.x87.registers[0].sign_exp == 0xbffe &&
-                state.x87.registers[2].significand == xmm[0] &&
-                state.x87.registers[2].sign_exp == 0xffff &&
-                state.x87.registers[4].significand == UINT64_C(0x1708160715061405) &&
-                state.x87.tags == 0xffff && observed[0] == xmm[0] && observed[1] == 0 &&
-                state.gprs[arch::R12] == UINT64_C(0x123456789abcdef0) && bcd_output == bcd_source &&
-                bcd_output_high == bcd_high;
-        state = arch::GuestState{};
-        state.pc = Machine::pc;
-        state.x87.control &= ~1u;
-        state.x87_ip = 0x777;
-        state.x87_dp = 0x999;
-        const auto failure = run();
-        const bool correct_error = failure == 4 && state.x87_ip == Machine::pc &&
-                                   state.x87_dp == 0x999 && state.x87_opcode == 0x1fe &&
-                                   (state.x87.status & 0x8041) == 0x8041;
-        Check(munmap(mapping, size) == 0, "native code release");
-        Check(result == 1 && host_fpcr == after_fpcr && host_fpsr == after_fpsr,
-              "general-register-only ext80/Cephes helper preserves the real host FP environment");
-        Check(correct_state,
-              "real native helper retains full GPR/XMM banks and commits MMX physical aliases");
-        Check(correct_error,
-              "native new unmasked status3 returns reason4 with actual FIP/FOP and preserved DP");
+            const auto result = run();
+            u64 after_fpcr{}, after_fpsr{};
+            asm volatile("mrs %0, fpcr\n mrs %1, fpsr" : "=r"(after_fpcr), "=r"(after_fpsr));
+            u64 observed[2]{};
+            std::memcpy(observed, state.xmm[3], sizeof observed);
+            u64 bcd_output{};
+            std::uint16_t bcd_output_high{};
+            std::memcpy(&bcd_output, memory.data() + 32, 8);
+            std::memcpy(&bcd_output_high, memory.data() + 40, 2);
+            const bool correct_state =
+                    state.x87.registers[0].significand == UINT64_C(0xd4a56d583332e140) &&
+                    state.x87.registers[0].sign_exp == 0xbffe &&
+                    state.x87.registers[2].significand == xmm[0] &&
+                    state.x87.registers[2].sign_exp == 0xffff &&
+                    state.x87.registers[4].significand == UINT64_C(0x1708160715061405) &&
+                    state.x87.tags == 0xffff && observed[0] == xmm[0] && observed[1] == 0 &&
+                    state.gprs[arch::R12] == UINT64_C(0x123456789abcdef0) &&
+                    bcd_output == bcd_source && bcd_output_high == bcd_high;
+            state = arch::GuestState{};
+            state.pc = Machine::pc;
+            state.x87.control &= ~1u;
+            state.x87_ip = 0x777;
+            state.x87_dp = 0x999;
+            const auto failure = run();
+            const bool correct_error = failure == 4 && state.x87_ip == Machine::pc &&
+                                       state.x87_dp == 0x999 && state.x87_opcode == 0x1fe &&
+                                       (state.x87.status & 0x8041) == 0x8041;
+            Check(result == 1 && host_fpcr == after_fpcr && host_fpsr == after_fpsr,
+                  "general-register-only ext80/Cephes helper preserves the real host FP "
+                  "environment");
+            Check(correct_state,
+                  "real native helper retains full GPR/XMM banks and commits MMX physical aliases");
+            Check(correct_error,
+                  "native new unmasked status3 returns reason4 with actual FIP/FOP and preserved "
+                  "DP");
+        }
     }
 #endif
 }
 }  // namespace
 
-int main() {
-    try {
-        ExactArithmeticAndTransactions();
-        MemoryPrecisionAndFault();
-        EnvironmentAndCompare();
-        QuadRange();
-        MmxAlias();
-        ConditionalMoves();
-        BcdTransactions();
-        NativeHelperABI();
-        std::puts("x87/MMX coverage passed");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "x87/MMX coverage: %s\n", error.what());
-        return 1;
-    }
+TEST_CASE("ExactArithmeticAndTransactions", "[compile][x87-coverage]") {
+    CHECK_NOTHROW(ExactArithmeticAndTransactions());
 }
+
+TEST_CASE("MemoryPrecisionAndFault", "[compile][x87-coverage]") {
+    CHECK_NOTHROW(MemoryPrecisionAndFault());
+}
+
+TEST_CASE("EnvironmentAndCompare", "[compile][x87-coverage]") {
+    CHECK_NOTHROW(EnvironmentAndCompare());
+}
+
+TEST_CASE("QuadRange", "[compile][x87-coverage]") { CHECK_NOTHROW(QuadRange()); }
+
+TEST_CASE("MmxAlias", "[compile][x87-coverage]") { CHECK_NOTHROW(MmxAlias()); }
+
+TEST_CASE("ConditionalMoves", "[compile][x87-coverage]") { CHECK_NOTHROW(ConditionalMoves()); }
+
+TEST_CASE("BcdTransactions", "[compile][x87-coverage]") { CHECK_NOTHROW(BcdTransactions()); }
+
+TEST_CASE("NativeHelperABI", "[native][x87-coverage]") { CHECK_NOTHROW(NativeHelperABI()); }

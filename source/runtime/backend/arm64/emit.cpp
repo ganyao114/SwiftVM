@@ -1,9 +1,8 @@
 #include "emit.h"
 
+#define __ masm.exact.
+
 namespace swift::runtime::backend::arm64 {
-std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
-std::uintptr_t CpuidHelper() noexcept;
-std::uintptr_t X87Helper() noexcept;
 
 namespace detail {
 bool Writer::Run() try {
@@ -271,6 +270,7 @@ void Writer::Dispatch(OpContext& ctx) {
     case OpCode::name:                                                                             \
         return Handle(Op<OpCode::name>{}, ctx);
 #include "runtime/ir/opcodes.inc"
+
 #undef INST
         default:
             Reject(CompileError::UnsupportedOpcode);
@@ -279,3 +279,5 @@ void Writer::Dispatch(OpContext& ctx) {
 
 }  // namespace detail
 }  // namespace swift::runtime::backend::arm64
+
+#undef __

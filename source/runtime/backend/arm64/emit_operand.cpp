@@ -1,9 +1,8 @@
 #include "emit.h"
 
+#define __ masm.exact.
+
 namespace swift::runtime::backend::arm64 {
-std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
-std::uintptr_t CpuidHelper() noexcept;
-std::uintptr_t X87Helper() noexcept;
 
 namespace detail {
 unsigned Writer::Expression(Cursor& cursor,
@@ -39,9 +38,9 @@ unsigned Writer::Expression(Cursor& cursor,
         if (field <= 4095) {
             const auto left = Read(base, first, 64, false, native_width);
             if (subtract)
-                masm.exact.sub(R(first, native_width), R(left, native_width), Operand(literal));
+                __ sub(R(first, native_width), R(left, native_width), Operand(literal));
             else
-                masm.exact.add(R(first, native_width), R(left, native_width), Operand(literal));
+                __ add(R(first, native_width), R(left, native_width), Operand(literal));
             return first;
         }
         if (literal <= 0xffffff && (literal >> 16) && (literal & 0xffff) &&
@@ -51,11 +50,11 @@ unsigned Writer::Expression(Cursor& cursor,
             const auto left = Read(base, first, 64, false, native_width);
             const auto result = R(first, native_width);
             if (subtract) {
-                masm.exact.sub(result, R(left, native_width), Operand(literal & ~u64{4095}));
-                masm.exact.sub(result, result, Operand(literal & 4095));
+                __ sub(result, R(left, native_width), Operand(literal & ~u64{4095}));
+                __ sub(result, result, Operand(literal & 4095));
             } else {
-                masm.exact.add(result, R(left, native_width), Operand(literal & ~u64{4095}));
-                masm.exact.add(result, result, Operand(literal & 4095));
+                __ add(result, R(left, native_width), Operand(literal & ~u64{4095}));
+                __ add(result, result, Operand(literal & 4095));
             }
             return first;
         }
@@ -70,9 +69,9 @@ unsigned Writer::Expression(Cursor& cursor,
             // materialize a zero-extended X temporary before address ADD.
             const Operand shifted_index{W(right), v::UXTW, input.ShiftAmount()};
             if (expression == OperandOp::Sub)
-                masm.exact.sub(X(first), X(left), shifted_index);
+                __ sub(X(first), X(left), shifted_index);
             else
-                masm.exact.add(X(first), X(left), shifted_index);
+                __ add(X(first), X(left), shifted_index);
             return first;
         }
     }
@@ -80,9 +79,9 @@ unsigned Writer::Expression(Cursor& cursor,
                right = Read(operand, second, 64, false, native_width);
     const Operand shifted_index{R(right, native_width), v::LSL, input.ShiftAmount()};
     if (expression == OperandOp::Sub)
-        masm.exact.sub(R(first, native_width), R(left, native_width), shifted_index);
+        __ sub(R(first, native_width), R(left, native_width), shifted_index);
     else
-        masm.exact.add(R(first, native_width), R(left, native_width), shifted_index);
+        __ add(R(first, native_width), R(left, native_width), shifted_index);
     return first;
 }
 
@@ -134,3 +133,5 @@ unsigned Writer::VectorValue(CellView cell, unsigned scratch) {
 
 }  // namespace detail
 }  // namespace swift::runtime::backend::arm64
+
+#undef __

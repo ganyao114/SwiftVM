@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/ir/direct/interpreter.h"
 
 #include <array>
@@ -7,6 +11,8 @@
 #include <stdexcept>
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 namespace ir = swift::runtime::ir;
 namespace direct = ir::direct;
 using direct::Operand;
@@ -14,13 +20,6 @@ using direct::Value;
 using ir::OpCode;
 using ir::Type;
 using u64 = std::uint64_t;
-
-unsigned checks{};
-
-void Check(bool condition, const char* message) {
-    ++checks;
-    if (!condition) throw std::runtime_error(message);
-}
 
 Value Need(direct::Result result) {
     Check(bool(result), "direct IR operation succeeds");
@@ -39,8 +38,7 @@ struct Machine {
     bool source_changed{};
 
     static bool InMemory(u64 address, std::size_t bytes) {
-        return address >= memory_base && address - memory_base <= 32 &&
-               bytes <= 32 - (address - memory_base);
+        return swift::tests::ContainsMemory(memory_base, 32, address, bytes);
     }
 
     direct::Services Services() {
@@ -267,21 +265,12 @@ void FaultKeepsCompletedEffects() {
 }
 }  // namespace
 
-int main() {
-    try {
-        NumericAndUniform();
-        MetadataAndRawViews();
-        SelectedMemory();
-        FaultKeepsCompletedEffects();
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    } catch (const direct::Exit& exit) {
-        std::fprintf(stderr,
-                     "unexpected direct exit kind=%u address=0x%llx\n",
-                     static_cast<unsigned>(exit.kind),
-                     static_cast<unsigned long long>(exit.address));
-        return 1;
-    }
-    std::printf("IR direct contracts passed (%u checks)\n", checks);
+TEST_CASE("NumericAndUniform", "[compile][ir-direct]") { CHECK_NOTHROW(NumericAndUniform()); }
+
+TEST_CASE("MetadataAndRawViews", "[compile][ir-direct]") { CHECK_NOTHROW(MetadataAndRawViews()); }
+
+TEST_CASE("SelectedMemory", "[compile][ir-direct]") { CHECK_NOTHROW(SelectedMemory()); }
+
+TEST_CASE("FaultKeepsCompletedEffects", "[compile][ir-direct]") {
+    CHECK_NOTHROW(FaultKeepsCompletedEffects());
 }

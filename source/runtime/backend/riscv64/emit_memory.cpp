@@ -1,4 +1,5 @@
 #include "emit.h"
+#include "runtime/exit.h"
 
 #include <algorithm>
 
@@ -108,7 +109,7 @@ void Writer::Handle(Op<OpCode::CheckMemoryAlignment>, OpContext& ctx) {
     as.AND(t0, a0, t0);
     Label aligned;
     as.BEQ(t0, x0, &aligned);
-    Exit(8);
+    Exit(ExitValue(NativeExit::AlignmentFault));
     as.Bind(&aligned);
 }
 

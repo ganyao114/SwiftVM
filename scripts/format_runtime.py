@@ -11,17 +11,18 @@ import sys
 
 
 REPO = Path(__file__).resolve().parents[1]
-ROOTS = ("source/runtime", "source/launcher", "source/tests/rebuild", "benchmarks")
+ROOTS = ("source/base", "source/runtime", "source/launcher", "source/tests", "benchmarks")
 TABLES = {
     "source/runtime/ir/opcodes.inc",
     "source/runtime/backend/riscv64/scalar_ops.inc",
+    "source/runtime/backend/arm64/emit_ops.inc",
     "source/runtime/backend/riscv64/vector_ops.inc",
     "source/runtime/frontend/x86/opcodes.inc",
     "source/runtime/frontend/x86/detail/vex_opcodes.inc",
 }
 TABLE_STYLE = (
     "{BasedOnStyle: InheritParentConfig, ColumnLimit: 0, "
-    "StatementMacros: [INST, X86_OP, X86_EXTRA_OP, VEX, RV_SCALAR_OP, RV_VECTOR_OP]}"
+    "StatementMacros: [INST, X86_OP, X86_EXTRA_OP, VEX, RV_SCALAR_OP, RV_VECTOR_OP, A64_EMIT_OP]}"
 )
 AVX_STYLE = (
     "{BasedOnStyle: InheritParentConfig, StatementMacros: "

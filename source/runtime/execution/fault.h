@@ -10,6 +10,10 @@
 #include "runtime/arch/x86/state.h"
 #include "runtime/backend/code.h"
 
+namespace swift {
+struct Failure;
+}
+
 namespace swift::runtime::execution {
 using x86::GuestState;
 using NativeCode = backend::NativeCode;
@@ -31,6 +35,8 @@ struct FaultContext {
     std::uint8_t pinned_uniform_slots{8};
     bool native_nzcv{};  // Linked raw PF/AF ABI; reserved bits remain in flags_offset's shadow.
     GuestState* state{};
+    // Borrowed fixed storage; signal adapters retain host failures without formatting.
+    swift::Failure* host_failure{};
     pid_t thread_id{};
     bool registered{};
     volatile sig_atomic_t signal_number{}, signal_code{};

@@ -1,7 +1,7 @@
 #pragma once
 
 #include <cstdint>
-#include <string>
+#include "base/error.h"
 
 #include "dispatch.h"
 #include "fault.h"
@@ -15,9 +15,7 @@ struct GuestThread {
     NativeRunContext native;
     backend::NativeCode anchor;
     std::uint8_t fp_mode{};
-    std::string diagnostic;
-    const char* resolver_error{};
-    const char* access_error{};
+    swift::Failure bridge_failure;
     std::uint64_t clear_child_tid{};
     bool exited{}, interpret_requested{};
     int exit_code{};

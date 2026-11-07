@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/frontend/x86/interpreter.h"
 #include "runtime/frontend/x86/build_ir.h"
 #include "runtime/arch/x86/state.h"
@@ -14,13 +18,11 @@
 #include <vector>
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 namespace front = swift::x86;
 namespace arch = swift::runtime::x86;
 using u64 = std::uint64_t;
-
-void Check(bool condition, const char* message) {
-    if (!condition) throw std::runtime_error(message);
-}
 
 struct Machine {
     static constexpr u64 code_pc = 0x1000, memory_pc = 0x8000;
@@ -37,8 +39,7 @@ struct Machine {
     }
 
     static bool InMemory(u64 address, std::size_t size) {
-        return address >= memory_pc && address - memory_pc <= 256 &&
-               size <= 256 - (address - memory_pc);
+        return swift::tests::ContainsMemory(memory_pc, 256, address, size);
     }
 
     front::DirectServices Services() {
@@ -371,21 +372,28 @@ void Floating() {
 }
 }  // namespace
 
-int main() {
-    try {
-        Model();
-        DecodedConsumers();
-        PartialServiceStop();
-        DirectBlockBoundaries();
-        FetchBoundary();
-        Scalar();
-        Control();
-        Repeat();
-        UnsupportedAndService();
-        Floating();
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
-    std::puts("x86 direct execution contracts passed");
+TEST_CASE("Model", "[compile][x86-interpreter]") { CHECK_NOTHROW(Model()); }
+
+TEST_CASE("DecodedConsumers", "[compile][x86-interpreter]") { CHECK_NOTHROW(DecodedConsumers()); }
+
+TEST_CASE("PartialServiceStop", "[compile][x86-interpreter]") {
+    CHECK_NOTHROW(PartialServiceStop());
 }
+
+TEST_CASE("DirectBlockBoundaries", "[compile][x86-interpreter]") {
+    CHECK_NOTHROW(DirectBlockBoundaries());
+}
+
+TEST_CASE("FetchBoundary", "[compile][x86-interpreter]") { CHECK_NOTHROW(FetchBoundary()); }
+
+TEST_CASE("Scalar", "[compile][x86-interpreter]") { CHECK_NOTHROW(Scalar()); }
+
+TEST_CASE("Control", "[compile][x86-interpreter]") { CHECK_NOTHROW(Control()); }
+
+TEST_CASE("Repeat", "[compile][x86-interpreter]") { CHECK_NOTHROW(Repeat()); }
+
+TEST_CASE("UnsupportedAndService", "[compile][x86-interpreter]") {
+    CHECK_NOTHROW(UnsupportedAndService());
+}
+
+TEST_CASE("Floating", "[compile][x86-interpreter]") { CHECK_NOTHROW(Floating()); }

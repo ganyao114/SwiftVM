@@ -1,9 +1,8 @@
 #include "emit.h"
 
+#define __ masm.exact.
+
 namespace swift::runtime::backend::arm64 {
-std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
-std::uintptr_t CpuidHelper() noexcept;
-std::uintptr_t X87Helper() noexcept;
 
 namespace detail {
 void Writer::PCMemory(bool load) {
@@ -16,7 +15,7 @@ void Writer::PCMemory(bool load) {
         Memory(load, 64, 0, 19, offset / 8);
     else {
         Immediate(17, offset);
-        masm.exact.add(v::x17, v::x19, Operand(v::x17));
+        __ add(v::x17, v::x19, Operand(v::x17));
         Memory(load, 64, 0, 17);
     }
 }
@@ -89,7 +88,7 @@ void Writer::Uniform(bool load, CellView uniform, unsigned value) {
         Memory(load, bits, value, 19, offset / size);
     else {
         Immediate(17, offset);
-        masm.exact.add(v::x17, v::x19, Operand(v::x17));
+        __ add(v::x17, v::x19, Operand(v::x17));
         Memory(load, bits, value, 17);
     }
     if (!load) VectorAlias(true, offset, size);
@@ -107,7 +106,7 @@ void Writer::PublishPinned() {
                        offset / 8 + i);
         } else {
             Immediate(17, offset);
-            masm.exact.add(v::x17, v::x19, Operand(v::x17));
+            __ add(v::x17, v::x19, Operand(v::x17));
             for (unsigned i = 0; i < options.pinned_uniform_slots; ++i)
                 Memory(false,
                        64,
@@ -148,7 +147,7 @@ void Writer::VectorAlias(bool reload, u32 offset, unsigned bytes) {
             VectorMemory(reload, reg, 19, static_cast<u32>(field / 16));
         else {
             Immediate(17, field);
-            masm.exact.add(v::x17, v::x19, Operand(v::x17));
+            __ add(v::x17, v::x19, Operand(v::x17));
             VectorMemory(reload, reg, 17);
         }
     }
@@ -172,7 +171,7 @@ void Writer::VectorUniform(bool load, CellView uniform, unsigned value) {
         VectorMemory(load, value, 19, offset / 16);
     else {
         Immediate(17, offset);
-        masm.exact.add(v::x17, v::x19, Operand(v::x17));
+        __ add(v::x17, v::x19, Operand(v::x17));
         VectorMemory(load, value, 17);
     }
     if (!load) VectorAlias(true, offset, 16);
@@ -180,7 +179,7 @@ void Writer::VectorUniform(bool load, CellView uniform, unsigned value) {
 
 void Writer::HandleUniformBarrierFamily(OpContext& /*ctx*/) {
     PublishPinned();
-    masm.exact.dmb(v::InnerShareable, v::BarrierAll);
+    __ dmb(v::InnerShareable, v::BarrierAll);
 }
 
 void Writer::HandleGetUniformAddressFamily(OpContext& ctx) {
@@ -191,10 +190,10 @@ void Writer::HandleGetUniformAddressFamily(OpContext& ctx) {
     if (operation.type != Type::U64 || offset > UINT32_MAX)
         Reject(CompileError::UnsupportedOperand);
     if (offset <= 4095)
-        masm.exact.add(X(destination), v::x19, Operand(offset));
+        __ add(X(destination), v::x19, Operand(offset));
     else {
         Immediate(destination, offset);
-        masm.exact.add(X(destination), v::x19, Operand(X(destination)));
+        __ add(X(destination), v::x19, Operand(X(destination)));
     }
 }
 
@@ -341,9 +340,9 @@ void Writer::HandleStoreUniformSelectImmFamily(OpContext& ctx) {
             Width(View(check));
             const auto head = static_cast<u32>(output.words.size());
             if (options.deferred_pc) {
-                masm.exact.cbnz(X(deferred_test.value_register),
-                                std::int64_t{0});  // Ready self edge patches this actual CBNZ.
-                CompleteDeferredTest();  // Zero falls through and completes its own flags.
+                __ cbnz(X(deferred_test.value_register),
+                        std::int64_t{0});  // Ready self edge patches this actual CBNZ.
+                CompleteDeferredTest();    // Zero falls through and completes its own flags.
                 StackAdjust(false);
                 PublishPCAndJump(fallthrough);
                 TailJump(options.dispatcher,
@@ -351,7 +350,7 @@ void Writer::HandleStoreUniformSelectImmFamily(OpContext& ctx) {
                          taken,
                          head);  // Unresolved/far self gate stays patchable.
             } else {
-                masm.exact.cbz(X(deferred_test.value_register), std::int64_t{0});
+                __ cbz(X(deferred_test.value_register), std::int64_t{0});
                 PublishPCAndJump(taken);  // Eager PC publication remains on the actual
                                           // selected edge.
                 masm.Patch(head, masm.Here());
@@ -379,7 +378,7 @@ void Writer::HandleStoreUniformSelectImmFamily(OpContext& ctx) {
             PublishPCAndJump(taken);
         else {
             const auto skip = static_cast<u32>(output.words.size());
-            masm.exact.cbz(v::x16, std::int64_t{0});  // CBZ x16,no.
+            __ cbz(v::x16, std::int64_t{0});  // CBZ x16,no.
             PublishPCAndJump(taken);
             masm.Patch(skip, masm.Here());
             PublishPCAndJump(fallthrough);
@@ -393,8 +392,8 @@ void Writer::HandleStoreUniformSelectImmFamily(OpContext& ctx) {
         Immediate(16, taken);
         Immediate(17, fallthrough);
         nzcv_matches = 0;
-        masm.exact.cmp(X(value), Operand(0));
-        masm.exact.csel(v::x16, v::x16, v::x17, v::ne);
+        __ cmp(X(value), Operand(0));
+        __ csel(v::x16, v::x16, v::x17, v::ne);
         RestoreCompareNZCV();
         Uniform(false, uniform, 16);
         if (overlap) Shadow(true);
@@ -403,3 +402,5 @@ void Writer::HandleStoreUniformSelectImmFamily(OpContext& ctx) {
 
 }  // namespace detail
 }  // namespace swift::runtime::backend::arm64
+
+#undef __

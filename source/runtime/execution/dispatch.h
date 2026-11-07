@@ -8,6 +8,7 @@
 #include "runtime/arch/x86/state.h"
 #include "runtime/backend/code.h"
 #include "runtime/backend/dispatch_layout.inc"
+#include "runtime/exit.h"
 
 namespace swift::runtime::execution {
 using x86::GuestState;

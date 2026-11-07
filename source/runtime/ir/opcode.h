@@ -13,6 +13,8 @@ enum class OpCode : std::uint16_t {
     Count,
 };
 
+const char* Name(OpCode) noexcept;
+
 enum class Signature : std::uint8_t {
     Value,
     IntValue,

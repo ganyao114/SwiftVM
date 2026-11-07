@@ -3,6 +3,15 @@
 #include <algorithm>
 
 namespace swift::runtime::backend::riscv64 {
+namespace {
+void ClearCode(backend::CompileResult& result) noexcept {
+    result.words.clear();
+    result.faults.clear();
+    result.links.clear();
+    result.entries.clear();
+}
+}  // namespace
+
 void Compile(const ir::Program& program,
              CompileOptions options,
              backend::CompileResult& result,
@@ -11,10 +20,7 @@ void Compile(const ir::Program& program,
     result.node = {};
     result.block = {};
     result.frame_bytes = result.spill_slots = 0;
-    result.words.clear();
-    result.faults.clear();
-    result.links.clear();
-    result.entries.clear();
+    ClearCode(result);
     if (program.ScopeKind() == ir::Scope::Block)
         AllocateBlock(program, allocation);
     else
@@ -35,10 +41,7 @@ void Compile(const ir::Program& program,
         result.error = error.error;
         result.node = error.node;
         result.block = error.block;
-        result.words.clear();
-        result.faults.clear();
-        result.links.clear();
-        result.entries.clear();
+        ClearCode(result);
     }
 }
 

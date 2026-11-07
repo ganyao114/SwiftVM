@@ -5,7 +5,7 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
-#include <stdexcept>
+#include "base/error.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -17,7 +17,7 @@ namespace {
 using u64 = std::uint64_t;
 constexpr u64 failed = UINT64_MAX;
 
-[[noreturn]] void Error(const std::string& message) { throw std::runtime_error(message); }
+[[noreturn]] void Error(const std::string& message) { swift::ThrowError(message); }
 
 [[noreturn]] void SystemError(const char* operation) {
     Error(std::string(operation) + ": " + std::strerror(errno));

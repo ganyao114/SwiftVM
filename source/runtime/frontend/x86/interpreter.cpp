@@ -1,3 +1,4 @@
+#include "runtime/exit.h"
 #include "interpreter.h"
 
 #include <algorithm>
@@ -50,7 +51,8 @@ public:
                                            static_cast<u64>(address.number.bits),
                                            static_cast<u64>(requested.number.bits)));
         state.pc = next_pc;
-        if ((kind & 255) == 1 || (kind & 255) == 3) exit_service = 3;
+        if ((kind & 255) == 1 || (kind & 255) == 3)
+            exit_service = runtime::ExitValue(runtime::NativeExit::FPEnvironment);
     }
 
     Value ReadGpr(u32 offset, unsigned, unsigned bits) {

@@ -1,4 +1,5 @@
 #include "emit.h"
+#include "runtime/exit.h"
 #include "atomic_helpers.h"
 #include "abi_layout.inc"
 
@@ -16,7 +17,7 @@ void CheckAlignment(Writer& writer, unsigned bytes) {
     // memory access. Runtime stops without guest-fault fabrication or
     // interpreter replay. A mutex+memcpy fallback cannot synchronize with
     // the ordinary hardware-atomic path and is deliberately not used.
-    writer.Exit(6);
+    writer.Exit(ExitValue(NativeExit::UnsupportedAtomic));
     writer.as.Bind(&aligned);
 }
 
@@ -199,9 +200,9 @@ void Writer::Handle(Op<OpCode::CompareAndSwap128>, OpContext& ctx) {
         as.LI(t0, 1);
         as.BEQ(a0, t0, &fault);
         as.Bind(&unsupported);
-        Exit(6);
+        Exit(ExitValue(NativeExit::UnsupportedAtomic));
         as.Bind(&fault);
-        Exit(9);
+        Exit(ExitValue(NativeExit::MemoryFault));
         as.Bind(&ready);
     }
     Read(ctx.Arg(0), a0);

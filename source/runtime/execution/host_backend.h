@@ -31,6 +31,8 @@ struct HostBackendOps {
     // Physical private-state banks belong to the selected native ABI.
     std::uint8_t pinned_uniform_slots{};
     bool pinned_vectors{};
+    // Only backends that bake software DAZ/FTZ into code need separate domains.
+    bool specializes_fp_flush{};
     backend::CompileResult& (*compile)(void*, const ir::Program&, HostCompileRequest){};
     void (*trim)(void*) noexcept {};
     void (*release)(void*) noexcept {};
@@ -40,7 +42,8 @@ struct HostBackendOps {
                             bool,
                             const backend::LinkSite&,
                             std::uintptr_t) noexcept {};
-    void (*synchronize_code)(std::uint8_t*, const std::uint8_t*, std::size_t) noexcept {};
+    // Zero succeeds; a failed host synchronization returns its saved error code.
+    int (*synchronize_code)(std::uint8_t*, const std::uint8_t*, std::size_t) noexcept {};
     void (*patch_link)(std::uintptr_t*,
                        const std::uintptr_t*,
                        std::uintptr_t,

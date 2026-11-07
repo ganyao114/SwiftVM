@@ -1,8 +1,14 @@
 #pragma once
 
-#include "allocate.h"
+#include "runtime/backend/code.h"
+
+namespace swift::runtime::ir {
+class Program;
+}
 
 namespace swift::runtime::backend::riscv64 {
+
+struct Allocation;
 
 constexpr ir::TargetInfo KnownTargetInfo() noexcept {
     return {ir::TargetMode::Known,

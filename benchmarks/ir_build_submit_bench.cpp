@@ -1,3 +1,5 @@
+#include "base/error.h"
+#include "base/logging.h"
 #include "runtime/ir/builder.h"
 
 #include <algorithm>
@@ -367,8 +369,7 @@ Semantics ObserveProgram(const Program& p) {
 #if !defined(SVM_IR_BASELINE_LAYOUT) && !defined(SVM_IR_BASELINE_COMPACT)
     // v1's fixtures have an implicit fixed entry. Do not apply that schema to
     // newly supported nonzero-entry programs without a new semantic identity.
-    if (p.EntryBlock().value != 0)
-        throw std::runtime_error("canonical_semantic_v1 requires entry 0");
+    if (p.EntryBlock().value != 0) swift::ThrowError("canonical_semantic_v1 requires entry 0");
 #endif
     Semantics out;
     auto& hash = out.checksum;
@@ -468,7 +469,7 @@ Semantics ObserveProgram(const Program& p) {
 Semantics Validate(const Program& p, const Fixture& f) {
     if (p.Operations().size() != f.nodes || p.Blocks().size() != f.blocks ||
         p.Target() != f.target || p.ScopeKind() != f.scope)
-        throw std::runtime_error("fixture output shape/metadata mismatch");
+        swift::ThrowError("fixture output shape/metadata mismatch");
     const auto observed = ObserveProgram(p);
 #ifdef SVM_IR_BASELINE_LAYOUT
     const auto expected_stored_cells = f.cells, expected_words = f.cells * 2;
@@ -478,7 +479,7 @@ Semantics Validate(const Program& p, const Fixture& f) {
     if (observed.values != f.value_uses || observed.terminals != f.terminal_uses ||
         observed.logical_cells != f.logical_cells ||
         observed.stored_cells != expected_stored_cells || observed.physical_words != expected_words)
-        throw std::runtime_error("fixture occurrence/storage count mismatch");
+        swift::ThrowError("fixture occurrence/storage count mismatch");
     return observed;
 }
 
@@ -512,7 +513,7 @@ Semantics RejectedPrefix(const Fixture& f, unsigned which, bool recover) {
     const auto prefix =
             Emit<OpCode::LoadImm>(builder, Type::Void, {Operand::Immediate(7, Type::U64)});
     Check(prefix.error, 0, 0);
-    if (prefix.node.value != 0) throw std::runtime_error("unexpected rejected-prefix identity");
+    if (prefix.node.value != 0) swift::ThrowError("unexpected rejected-prefix identity");
     auto foreign = prefix.GetValue();
     ++foreign.unit;
     const auto rejected = which == 0 ? builder.Append(OpCode::Count, Type::Void, {})
@@ -522,8 +523,7 @@ Semantics RejectedPrefix(const Fixture& f, unsigned which, bool recover) {
                                                        Operand::Expression(OperandOp::Identity),
                                                        Operand::ValueOf(foreign)});
     const auto expected = which == 0 ? Error::InvalidOpcode : Error::ForeignUnit;
-    if (rejected.error != expected)
-        throw std::runtime_error("fixed negative request changed outcome");
+    if (rejected.error != expected) swift::ThrowError("fixed negative request changed outcome");
     Semantics observed;
     if (recover) {
         Check(builder.EndBlock(Terminal::Unreachable()), 0, 0);
@@ -532,7 +532,7 @@ Semantics RejectedPrefix(const Fixture& f, unsigned which, bool recover) {
         observed = ObserveProgram(result.program);
         if (result.program.Operations().size() != 1 || observed.values || observed.terminals ||
             observed.logical_cells != 1)
-            throw std::runtime_error("rejected append changed its prefix");
+            swift::ThrowError("rejected append changed its prefix");
     }
     allocation::phase = allocation::Destruction;
     return observed;  // In the timed path this destroys the abandoned Builder.
@@ -550,7 +550,7 @@ VerifiedSequence VerifySequence(const Fixture& f, std::size_t requests) {
         if (!i)
             verified.positive = observed;
         else if (observed.checksum != verified.positive.checksum)
-            throw std::runtime_error("fixed sequence semantics differ");
+            swift::ThrowError("fixed sequence semantics differ");
         verified.checksum = Mix(verified.checksum, observed.checksum);
     }
     for (unsigned i = 0; i < 2; ++i) {
@@ -580,7 +580,7 @@ void AccountPublished(const Program& p,
 #endif
     const auto nodes = p.Operations().size();
     if (nodes != f.nodes || words != verified.positive.physical_words)
-        throw std::runtime_error("timed request shape differs from verified recipe");
+        swift::ThrowError("timed request shape differs from verified recipe");
     ++counts.attempted;
     ++counts.published;
     counts.published_N += nodes;
@@ -644,7 +644,7 @@ Sample Run(const Fixture& f, std::size_t requests, Mode mode, const VerifiedSequ
             // Every already-timed Program is checked outside diagnostic timers.
             for (const auto& program : programs)
                 if (Validate(*program, f).checksum != verified.positive.checksum)
-                    throw std::runtime_error("batch Program semantics differ");
+                    swift::ThrowError("batch Program semantics differ");
             sample.storage_bytes = programs.front()->StorageBytes();
             sample.reserved_bytes = programs.front()->ReservedBytes();
             allocation::phase = allocation::Destruction;
@@ -659,11 +659,10 @@ Sample Run(const Fixture& f, std::size_t requests, Mode mode, const VerifiedSequ
             sample.destruction = Ns(d, e);
             sample.rejected = Ns(e, g);
         }
-        if (allocation::counters.calls[allocation::Submit])
-            throw std::runtime_error("Submit allocated");
+        if (allocation::counters.calls[allocation::Submit]) swift::ThrowError("Submit allocated");
         sample.allocations = allocation::counters;
         allocation::enabled = false;
-        if (sample.allocations.live) throw std::runtime_error("core allocations remain live");
+        if (sample.allocations.live) swift::ThrowError("core allocations remain live");
     } catch (...) {
         for (auto& program : programs) program.reset();
         for (auto& builder : builders) builder.reset();
@@ -689,7 +688,7 @@ Options Parse(int argc, char** argv) {
                          "sequential|batch-diagnostic]\n";
             std::exit(0);
         }
-        if (++i == argc) throw std::runtime_error("missing option value");
+        if (++i == argc) swift::ThrowError("missing option value");
         const std::string value = argv[i];
         if (key == "--nodes") {
             options.nodes.clear();
@@ -713,17 +712,17 @@ Options Parse(int argc, char** argv) {
             else if (value == "batch-diagnostic")
                 options.mode = Mode::BatchDiagnostic;
             else
-                throw std::runtime_error("invalid mode");
+                swift::ThrowError("invalid mode");
         } else
-            throw std::runtime_error("unknown option");
+            swift::ThrowError("unknown option");
     }
     if (options.nodes.empty() || !options.blocks || options.blocks > max_blocks ||
         options.samples < 3 || options.samples > 1000 || options.warmup > 1000 ||
         !options.requests || options.requests > 4096)
-        throw std::runtime_error("invalid benchmark bounds");
+        swift::ThrowError("invalid benchmark bounds");
     for (const auto n : options.nodes)
         if (n < 2 * options.blocks || n > 10000000)
-            throw std::runtime_error("nodes must be >= 2*blocks and <= 10000000");
+            swift::ThrowError("nodes must be >= 2*blocks and <= 10000000");
     return options;
 }
 
@@ -892,6 +891,7 @@ void Print(const Options& options, const std::vector<Case>& cases, double timer_
 }  // namespace
 
 int main(int argc, char** argv) {
+    swift::log::SetSink(&swift::log::StandardErrorSink());
     try {
         const auto options = Parse(argc, argv);
         std::vector<double> timer_samples;
@@ -922,10 +922,14 @@ int main(int argc, char** argv) {
         Print(options, cases, timer_samples[50]);
         return 0;
     } catch (const Failure& failure) {
-        std::cerr << "IR fixture error=" << static_cast<unsigned>(failure.error)
-                  << " block=" << failure.block << " local=" << failure.local << '\n';
+        SVM_LOG(Error,
+                Compile,
+                "IR fixture error={} block={} local={}",
+                static_cast<unsigned>(failure.error),
+                failure.block,
+                failure.local);
     } catch (const std::exception& error) {
-        std::cerr << "benchmark failed: " << error.what() << '\n';
+        SVM_LOG(Error, Runtime, "benchmark failed: {}", error.what());
     }
     return 1;
 }

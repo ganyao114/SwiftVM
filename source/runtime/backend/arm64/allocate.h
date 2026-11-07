@@ -23,9 +23,9 @@ struct Home {
     bool terminal_only : 1 {};       // One final predicate/PC-literal consumer; no scalar is
                                      // materialized.
     std::uint8_t narrow_pin : 2 {};  // 0: canonical; 1/2/3: borrowed low8/16/32 pin.
-    std::uint8_t
-            nzcv_clobber : 4 {};  // Unobserved NZCV fields the actual local writer may clobber.
-    std::uint16_t extra_slot{};   // Div128 remainder: 8B slot index + 1; zero otherwise.
+    std::uint8_t nzcv_clobber
+            : 4 {};              // Unobserved NZCV fields the actual local writer may clobber.
+    std::uint16_t extra_slot{};  // Div128 remainder: 8B slot index + 1; zero otherwise.
 
     unsigned CarrierBits() const noexcept { return narrow_pin ? 4u << narrow_pin : 64u; }
 };

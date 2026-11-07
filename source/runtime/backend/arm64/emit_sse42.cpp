@@ -2,6 +2,8 @@
 #include "vector_helper.h"
 #include "runtime/arch/x86/sse42_string.h"
 
+#define __ masm.exact.
+
 namespace swift::runtime::backend::arm64::detail {
 namespace {
 namespace sse42 = ::swift::runtime::x86::sse42;
@@ -31,20 +33,20 @@ void Writer::HandleStringFamily(OpContext& ctx) {
     if (explicit_lengths)
         VectorMove(temporary, VectorValue(lengths, temporary));
     else
-        masm.exact.eor(Lanes(temporary, 8), Lanes(temporary, 8), Lanes(temporary, 8));
-    masm.exact.sub(v::sp, v::sp, Operand(48));
+        __ eor(Lanes(temporary, 8), Lanes(temporary, 8), Lanes(temporary, 8));
+    __ sub(v::sp, v::sp, Operand(48));
     VectorMemory(false, 0, 31, 0);
     VectorMemory(false, 1, 31, 1);
     VectorMemory(false, temporary, 31, 2);
-    masm.exact.add(v::x17, v::sp, Operand(0));
+    __ add(v::x17, v::sp, Operand(0));
     Immediate(16, control);
     Immediate(
             0,
             reinterpret_cast<std::uintptr_t>(explicit_lengths ? &ExplicitString : &ImplicitString));
     Immediate(30, VectorHelperBridge());
-    masm.exact.blr(v::x30);
-    masm.exact.add(v::sp, v::sp, Operand(48));
-    masm.exact.fmov(X(ctx.destination), D(0));
+    __ blr(v::x30);
+    __ add(v::sp, v::sp, Operand(48));
+    __ fmov(X(ctx.destination), D(0));
 }
 
 void Writer::HandleSse42FlagsFamily(OpContext& ctx) {
@@ -57,7 +59,7 @@ void Writer::HandleSse42FlagsFamily(OpContext& ctx) {
         if (mask & zero) Rmif(value, 23, 4);
         if (mask & carry) {
             Rmif(value, 25, 2);
-            masm.exact.cfinv();
+            __ cfinv();
         }
         if (mask & overflow) Rmif(value, 27, 1);
         packed_current = false;
@@ -76,3 +78,5 @@ void Writer::HandleSse42FlagsFamily(OpContext& ctx) {
     ClearMask(mask & (parity | auxiliary));
 }
 }  // namespace swift::runtime::backend::arm64::detail
+
+#undef __

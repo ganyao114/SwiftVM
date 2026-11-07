@@ -19,6 +19,16 @@ std::uint64_t NewUnitId() {
 }
 }  // namespace
 
+const char* Name(OpCode opcode) noexcept {
+    static constexpr const char* names[]{
+#define INST(name, ...) #name,
+#include "opcodes.inc"
+#undef INST
+    };
+    const auto index = static_cast<std::size_t>(opcode);
+    return index < std::size(names) ? names[index] : "unknown";
+}
+
 Program::Storage::Storage(Scope scope, TargetInfo target)
         : unit(NewUnitId()), scope(scope), target(target) {}
 

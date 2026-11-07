@@ -1,5 +1,6 @@
 // Static native ABI: publication, FP switches and cold lookup are explicit.
 #include "runtime/backend/arm64/abi_layout.inc"
+#include "runtime/exit.inc"
 #if defined(__aarch64__)
 .text
 
@@ -192,7 +193,7 @@ SVM_RESTORE_NATIVE_NZCV
 11:
 br x0
 3:
-mov x0, #2
+mov x0, #SVM_NATIVE_EXIT_RESOLVE_FAILURE
 b SvmNativeExit
 .endm
 

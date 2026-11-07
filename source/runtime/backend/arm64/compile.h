@@ -1,8 +1,14 @@
 #pragma once
 
-#include "allocate.h"
+#include "runtime/backend/code.h"
+
+namespace swift::runtime::ir {
+class Program;
+}
 
 namespace swift::runtime::backend::arm64 {
+
+struct Allocation;
 
 // These capabilities describe accepted neutral IR forms, not optional CPU
 // instructions. CompileOptions separately enables optional RCpc loads.

@@ -1,4 +1,5 @@
 #include "emit.h"
+#include "runtime/exit.h"
 #include "call_helpers.h"
 
 #include "runtime/arch/x86/sse42_string.h"
@@ -24,7 +25,8 @@ void Writer::Handle(Op<OpCode::Div128>, OpContext& ctx) {
     FrameLoad(t0, auxiliary);
     Label valid;
     as.BNE(t0, x0, &valid);
-    Exit(7);  // Explicit guest divide fault; no signal from a C++ helper.
+    Exit(ExitValue(
+            NativeExit::DivideFault));  // Explicit guest divide fault; no signal from a C++ helper.
     as.Bind(&valid);
     FrameStore(a1, auxiliary + 8);
     as.MV(ctx.destination, a0);
@@ -98,7 +100,8 @@ void Writer::X87(OpContext& ctx) {
         as.LI(t0, guest_pc);
         Store(t0, s1, options.pc_offset, 64);
     }
-    Exit(4);  // Unsupported/pending/new x87 exception; never replay the helper.
+    Exit(ExitValue(NativeExit::X87Fault));  // Unsupported/pending/new x87 exception; never replay
+                                            // the helper.
     as.Bind(&success);
     as.MV(ctx.destination, x0);
 }

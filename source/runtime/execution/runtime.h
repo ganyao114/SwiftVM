@@ -7,6 +7,7 @@
 #include "runtime/arch/x86/state.h"
 #include "runtime/frontend/x86/region.h"
 #include "runtime/ir/types.h"
+#include "base/error.h"
 
 namespace swift::runtime::execution {
 
@@ -70,6 +71,7 @@ struct RunResult {
     int exit_code;
     RuntimeStats stats;
     std::string error;
+    swift::Failure failure;  // Host/runtime failure, independent of a legitimate guest exit code.
 
     explicit operator bool() const noexcept { return error.empty(); }
 };

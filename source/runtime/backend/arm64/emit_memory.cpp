@@ -1,9 +1,8 @@
 #include "emit.h"
 
+#define __ masm.exact.
+
 namespace swift::runtime::backend::arm64 {
-std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
-std::uintptr_t CpuidHelper() noexcept;
-std::uintptr_t X87Helper() noexcept;
 
 namespace detail {
 void Writer::OrderedMemory(
@@ -17,7 +16,7 @@ void Writer::OrderedMemory(
             size && options.fault_locations && options.recover_unaligned && has_fault_location;
     if (size && !recover) {
         Extract(0, address, 0, size);
-        masm.exact.cbnz(v::x0, 3);
+        __ cbnz(v::x0, 3);
     }
     const bool imm9 = RcpcImm9();
     const MemOperand memory{Base(address), imm9 ? offset : 0};
@@ -25,40 +24,40 @@ void Writer::OrderedMemory(
         if (imm9) {
             if (load) {
                 if (bits == 8)
-                    masm.exact.ldapurb(W(value), memory);
+                    __ ldapurb(W(value), memory);
                 else if (bits == 16)
-                    masm.exact.ldapurh(W(value), memory);
+                    __ ldapurh(W(value), memory);
                 else
-                    masm.exact.ldapur(R(value, bits), memory);
+                    __ ldapur(R(value, bits), memory);
             } else {
                 if (bits == 8)
-                    masm.exact.stlurb(W(value), memory);
+                    __ stlurb(W(value), memory);
                 else if (bits == 16)
-                    masm.exact.stlurh(W(value), memory);
+                    __ stlurh(W(value), memory);
                 else
-                    masm.exact.stlur(R(value, bits), memory);
+                    __ stlur(R(value, bits), memory);
             }
         } else if (load && options.rcpc_loads) {
             if (bits == 8)
-                masm.exact.ldaprb(W(value), memory);
+                __ ldaprb(W(value), memory);
             else if (bits == 16)
-                masm.exact.ldaprh(W(value), memory);
+                __ ldaprh(W(value), memory);
             else
-                masm.exact.ldapr(R(value, bits), memory);
+                __ ldapr(R(value, bits), memory);
         } else if (load) {
             if (bits == 8)
-                masm.exact.ldarb(W(value), memory);
+                __ ldarb(W(value), memory);
             else if (bits == 16)
-                masm.exact.ldarh(W(value), memory);
+                __ ldarh(W(value), memory);
             else
-                masm.exact.ldar(R(value, bits), memory);
+                __ ldar(R(value, bits), memory);
         } else {
             if (bits == 8)
-                masm.exact.stlrb(W(value), memory);
+                __ stlrb(W(value), memory);
             else if (bits == 16)
-                masm.exact.stlrh(W(value), memory);
+                __ stlrh(W(value), memory);
             else
-                masm.exact.stlr(R(value, bits), memory);
+                __ stlr(R(value, bits), memory);
         }
     };
     if (recover) {
@@ -68,12 +67,12 @@ void Writer::OrderedMemory(
     }
     emit_ordered();
     if (!size) return;
-    masm.exact.b(3);
+    __ b(3);
     if (load) {
         Memory(true, bits, value, address);
-        masm.exact.dmb(v::InnerShareable, v::BarrierReads);
+        __ dmb(v::InnerShareable, v::BarrierReads);
     } else {
-        masm.exact.dmb(v::InnerShareable, v::BarrierAll);
+        __ dmb(v::InnerShareable, v::BarrierAll);
         Memory(false, bits, value, address);
     }
 }
@@ -92,7 +91,7 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
         if (!options.private_uniforms) Shadow(false);
         VectorMemory(true, destination, Expression(cursor, 16, 17));
         if (operation.opcode == OpCode::LoadMemoryTSO)
-            masm.exact.dmb(v::InnerShareable, v::BarrierReads);  // DMB ISHLD.
+            __ dmb(v::InnerShareable, v::BarrierReads);  // DMB ISHLD.
         return;
     }
     if (test_prefix) {
@@ -133,11 +132,11 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
                     // leaves its destination (including a guest pin) unchanged.
                     unaligned_word = static_cast<u32>(output.words.size());
                     if (width == 16)
-                        masm.exact.ldapursh(W(next_home.reg), MemOperand(Base(address), offset));
+                        __ ldapursh(W(next_home.reg), MemOperand(Base(address), offset));
                     else
-                        masm.exact.ldapursw(X(next_home.reg),
-                                            MemOperand(Base(address),
-                                                       offset));  // LDAPURSH W / LDAPURSW X.
+                        __ ldapursw(X(next_home.reg),
+                                    MemOperand(Base(address),
+                                               offset));  // LDAPURSH W / LDAPURSW X.
                     elided_consumer = consumer;
                     saved = true;
                     return;
@@ -182,8 +181,7 @@ void Writer::HandleStoreMemoryFamily(OpContext& ctx) {
             vector_input ? VectorValue(input, 0) : Read(input, 17, 64, false, bits == 32 ? 32 : 64);
     if (vector_input) {
         CompleteLocalFlags();
-        if (operation.opcode == OpCode::StoreMemoryTSO)
-            masm.exact.dmb(v::InnerShareable, v::BarrierAll);
+        if (operation.opcode == OpCode::StoreMemoryTSO) __ dmb(v::InnerShareable, v::BarrierAll);
         VectorMemory(false, value, address, static_cast<u32>(offset) / 16);
     } else {
         fault_parity = static_cast<std::uint8_t>(deferred_parity);
@@ -206,26 +204,28 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
         mask.Emit(masm.exact, v::x0, X(address), v::AND);
     else {
         Immediate(17, bits);
-        masm.exact.and_(v::x0, X(address), Operand(v::x17));
+        __ and_(v::x0, X(address), Operand(v::x17));
     }
-    masm.exact.cbz(v::x0, 2);
-    masm.exact.brk(0);  // CBZ x0,+8; BRK on a guest fault.
+    __ cbz(v::x0, 2);
+    __ brk(0);  // CBZ x0,+8; BRK on a guest fault.
 }
 
 void Writer::HandleMemoryBarrierTSOFamily(OpContext& /*ctx*/) {
-    masm.exact.dmb(v::InnerShareable, v::BarrierAll);
+    __ dmb(v::InnerShareable, v::BarrierAll);
 }
 
 void Writer::HandleMemoryStoreFenceFamily(OpContext& /*ctx*/) {
-    masm.exact.dmb(v::FullSystem, v::BarrierWrites);  // DMB ST.
+    __ dmb(v::FullSystem, v::BarrierWrites);  // DMB ST.
 }
 
 void Writer::HandleMemoryLoadFenceFamily(OpContext& ctx) {
     if (ctx.operation.opcode == OpCode::CpuYield)
-        masm.exact.hint(v::YIELD);
+        __ hint(v::YIELD);
     else
-        masm.exact.dmb(v::InnerShareable, v::BarrierReads);
+        __ dmb(v::InnerShareable, v::BarrierReads);
 }
 
 }  // namespace detail
 }  // namespace swift::runtime::backend::arm64
+
+#undef __

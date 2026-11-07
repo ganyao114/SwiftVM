@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/frontend/x86/detail/decoded.h"
 #include "runtime/backend/arm64/compile.h"
 #include "runtime/ir/optimize.h"
@@ -22,20 +26,11 @@
 #endif
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 using namespace swift::runtime;
 namespace a64 = backend::arm64;
 
-void Check(bool condition, int line) {
-    if (!condition) throw std::runtime_error("pipeline contract failed at " + std::to_string(line));
-}
-
-#define CHECK(x) Check(bool(x), __LINE__)
-
-#if defined(__aarch64__) && !defined(__APPLE__)
-constexpr bool executes_native = true;
-#else
-constexpr bool executes_native = false;
-#endif
 #if defined(__aarch64__) && !defined(__APPLE__) && defined(HWCAP_FLAGM)
 const bool native_flags_available = (getauxval(AT_HWCAP) & HWCAP_FLAGM) != 0;
 #else
@@ -43,28 +38,9 @@ constexpr bool native_flags_available = false;
 #endif
 
 std::uint64_t Execute(const a64::CompileResult& code, std::uint64_t* state) {
-#if defined(__aarch64__) && !defined(__APPLE__)
-    const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
-    CHECK(page && page != static_cast<std::size_t>(-1));
-    const auto bytes = code.words.size() * sizeof(code.words[0]);
-    const auto size = (bytes + page - 1) / page * page;
-    void* mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    CHECK(mapping != MAP_FAILED);
-    std::memcpy(mapping, code.words.data(), bytes);
-    if (mprotect(mapping, size, PROT_READ | PROT_EXEC)) {
-        munmap(mapping, size);
-        CHECK(false);
-    }
-    __builtin___clear_cache(static_cast<char*>(mapping), static_cast<char*>(mapping) + bytes);
-    const auto result = reinterpret_cast<std::uint64_t (*)(std::uint8_t*)>(mapping)(
-            reinterpret_cast<std::uint8_t*>(state));
-    CHECK(munmap(mapping, size) == 0);
-    return result;
-#else
-    (void)code;
-    (void)state;
-    return 0;
-#endif
+    Check(NativeMode(), "pipeline execution requires --native");
+    swift::tests::NativeCode native{code.words, swift::tests::NativeISA::Arm64};
+    return native.Run(reinterpret_cast<std::uint8_t*>(state));
 }
 
 swift::x86::BuildResult Build(std::span<const swift::x86::BlockWindow> windows,
@@ -190,8 +166,8 @@ void RunPipeline(ir::Scope scope, ir::TargetMode mode, bool optimize) {
                      code.block.value);
     }
     CHECK(code && !code.words.empty());
-    const auto result = Execute(code, state.data());
-    if constexpr (executes_native) {
+    if (NativeMode()) {
+        const auto result = Execute(code, state.data());
         CHECK(result == 0 && memory[3] == 3);
         CHECK(state[0] == address && state[1] == 3 && state[2] == address + 12 && state[3] == 3);
         CHECK(state[7] == (scope == ir::Scope::Function ? 3 : 0));
@@ -344,8 +320,8 @@ void FlagBranch(Alu operation,
     state[17] = original;
     const auto expected = Expected(operation, bits, left, right, original);
     const auto branch = BranchTaken(condition, expected);
-    CHECK(Execute(code, state.data()) == 0);
-    if constexpr (executes_native) {
+    if (NativeMode()) CHECK(Execute(code, state.data()) == 0);
+    if (NativeMode()) {
         const bool writes = operation != Alu::Compare && operation != Alu::Test;
         if (state[0] != (writes ? expected.result : left) || state[17] != expected.packed ||
             state[16] != (branch ? taken : fallthrough) + (scope == ir::Scope::Function ? 5 : 0)) {
@@ -443,8 +419,8 @@ void DeferredFlagsAndMemoryObservation() {
         state[17] = 0;
         const auto sum = Expected(Alu::Add, 32, UINT32_MAX, 1, 0);
         const auto final = Expected(Alu::Xor, 32, sum.result, 3, sum.packed);
-        CHECK(Execute(code, state.data()) == 0);
-        if constexpr (executes_native) {
+        if (NativeMode()) CHECK(Execute(code, state.data()) == 0);
+        if (NativeMode()) {
             CHECK(state[0] == 3 && state[17] == final.packed);
             if (observe) CHECK(state[2] == sum.packed);
         }
@@ -459,8 +435,8 @@ void DeferredFlagsAndMemoryObservation() {
     state[6] = reinterpret_cast<std::uintptr_t>(&state[17]);
     state[7] = u64{1} << 29;
     state[17] = 0;
-    CHECK(Execute(code, state.data()) == 0);
-    if constexpr (executes_native) CHECK(state[17] == state[7] && state[16] == 0x5025);
+    if (NativeMode()) CHECK(Execute(code, state.data()) == 0);
+    if (NativeMode()) CHECK(state[17] == state[7] && state[16] == 0x5025);
 }
 
 void MultiplyObservation() {
@@ -482,8 +458,8 @@ void MultiplyObservation() {
     state[3] = 0x40000000;
     constexpr u64 original = UINT64_C(0x5a5aa5a5110000a5);
     state[17] = original;
-    CHECK(Execute(code, state.data()) == 0);
-    if constexpr (executes_native) {
+    if (NativeMode()) CHECK(Execute(code, state.data()) == 0);
+    if (NativeMode()) {
         CHECK(state[0] == 0x80000000 && state[1] == 1 && state[2] == 1 && state[6] == 1 &&
               state[7] == 0x80000001);
         CHECK(state[17] == Expected(Alu::Add, 32, 0x80000000, 1, original).packed);
@@ -522,8 +498,8 @@ void AutomaticFunctions() {
                 CHECK(built && built.program.EntryBlock().value == decoded.entry_block);
                 auto code = Compile(built, true, true);
                 std::array<u64, 18> state{};
-                CHECK(Execute(code, state.data()) == 0);
-                if constexpr (executes_native) {
+                if (NativeMode()) CHECK(Execute(code, state.data()) == 0);
+                if (NativeMode()) {
                     CHECK(state[0] == blocks * fixture.cycles && state[1] == 0 &&
                           state[16] == fixture.exit);
                     CHECK((state[17] & (u64{15} << 28)) == (u64{1} << 30));
@@ -536,8 +512,8 @@ void AutomaticFunctions() {
         auto code = Compile(bounded, true, true);
         std::array<u64, 18> state{};
         state[0] = 99;
-        CHECK(Execute(code, state.data()) == 0);
-        if constexpr (executes_native)
+        if (NativeMode()) CHECK(Execute(code, state.data()) == 0);
+        if (NativeMode())
             CHECK(state[0] == 0 && state[1] == fixture.cycles && state[16] == fixture.entry + 10);
     }
     // One stream is decoded straight through first; its terminal then names
@@ -552,8 +528,8 @@ void AutomaticFunctions() {
     std::array<u64, 18> state{};
     state[0] = 7;
     state[1] = 3;
-    CHECK(Execute(code, state.data()) == 0);
-    if constexpr (executes_native) CHECK(state[0] == 8 && state[1] == 0 && state[16] == 0x602a);
+    if (NativeMode()) CHECK(Execute(code, state.data()) == 0);
+    if (NativeMode()) CHECK(state[0] == 8 && state[1] == 0 && state[16] == 0x602a);
 }
 
 void RepeatStorePipeline() {
@@ -563,15 +539,16 @@ void RepeatStorePipeline() {
     for (const auto scope : {ir::Scope::Block, ir::Scope::Function}) {
         auto built = swift::x86::BuildIR({&window, 1}, scope, {0, 128, 8}, a64::KnownTargetInfo());
         auto code = Compile(built, true, true);
-        if constexpr (executes_native) {
+        if (NativeMode()) {
             swift::runtime::x86::GuestState empty;
             empty.gprs[swift::runtime::x86::RDI] =
                     1;  // Unmapped and unaligned: count0 must not touch it.
             empty.packed_flags = 0xa5a50000bc00003cULL;
-            CHECK(Execute(code, reinterpret_cast<u64*>(&empty)) == 0 && empty.pc == 0x9003 &&
-                  empty.gprs[swift::runtime::x86::RDI] == 1 &&
-                  !empty.gprs[swift::runtime::x86::RCX] &&
-                  empty.packed_flags == 0xa5a50000bc00003cULL);
+            if (NativeMode())
+                CHECK(Execute(code, reinterpret_cast<u64*>(&empty)) == 0 && empty.pc == 0x9003 &&
+                      empty.gprs[swift::runtime::x86::RDI] == 1 &&
+                      !empty.gprs[swift::runtime::x86::RCX] &&
+                      empty.packed_flags == 0xa5a50000bc00003cULL);
             for (const bool reverse : {false, true}) {
                 alignas(16) std::array<u64, 3> memory{};
                 swift::runtime::x86::GuestState state;
@@ -584,7 +561,7 @@ void RepeatStorePipeline() {
                         (u64{0xa5a50000bc00003cULL} & ~u64{0x400}) | (reverse ? 0x400 : 0);
                 state.packed_flags = flags;
                 for (unsigned iteration = 0; iteration < 3; ++iteration) {
-                    CHECK(Execute(code, reinterpret_cast<u64*>(&state)) == 0);
+                    if (NativeMode()) CHECK(Execute(code, reinterpret_cast<u64*>(&state)) == 0);
                     CHECK(state.gprs[swift::runtime::x86::RCX] == 2 - iteration &&
                           state.pc == (iteration == 2 ? 0x9003 : 0x9000));
                 }
@@ -673,8 +650,8 @@ void ExtendedPrecisionPipeline() {
         auto built = swift::x86::BuildIR({&window, 1}, scope, layout, a64::KnownTargetInfo());
         auto code = Compile(built, true, false);
         swift::runtime::x86::GuestState state;
-        const auto reason = Execute(code, reinterpret_cast<u64*>(&state));
-        if constexpr (executes_native) {
+        if (NativeMode()) {
+            const auto reason = Execute(code, reinterpret_cast<u64*>(&state));
             CHECK(reason == 1 && state.gprs[swift::runtime::x86::RAX] == address);
             CHECK(state.x87.control == 0x037f && state.x87.tags == 0x0fff &&
                   state.x87.registers[6].sign_exp == 0x4000 &&
@@ -684,33 +661,33 @@ void ExtendedPrecisionPipeline() {
 }
 }  // namespace
 
-int main() {
-    try {
-        for (const auto scope : {ir::Scope::Block, ir::Scope::Function})
-            for (const auto mode :
-                 {ir::TargetMode::Known, ir::TargetMode::EarlyOff, ir::TargetMode::Unknown})
-                for (const bool optimize : {false, true}) RunPipeline(scope, mode, optimize);
-        const auto flag_paths = IntegerFlagBranches();
-        DeferredFlagsAndMemoryObservation();
-        MultiplyObservation();
-        AutomaticFunctions();
-        ExtendedPrecisionPipeline();
-        RepeatStorePipeline();
-#if defined(__aarch64__) && !defined(__APPLE__)
-        std::printf(
-                "12 base paths and %zu integer/flags/Jcc native pipeline paths passed; "
-                "native_nzcv=%s\n",
-                flag_paths,
-                native_flags_available ? "true" : "false");
-#else
-        std::printf(
-                "12 base paths and %zu integer/flags/Jcc pipeline paths passed; native execution "
-                "requires ARM64 Linux/Android\n",
-                flag_paths);
-#endif
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
+TEST_CASE("pipeline base variants", "[compile][compile-pipeline][native]") {
+    for (const auto scope : {ir::Scope::Block, ir::Scope::Function})
+        for (const auto mode :
+             {ir::TargetMode::Known, ir::TargetMode::EarlyOff, ir::TargetMode::Unknown})
+            for (const bool optimize : {false, true}) RunPipeline(scope, mode, optimize);
+}
+
+TEST_CASE("IntegerFlagBranches", "[compile][compile-pipeline][native]") {
+    CHECK_NOTHROW(IntegerFlagBranches());
+}
+
+TEST_CASE("DeferredFlagsAndMemoryObservation", "[compile][compile-pipeline][native]") {
+    CHECK_NOTHROW(DeferredFlagsAndMemoryObservation());
+}
+
+TEST_CASE("MultiplyObservation", "[compile][compile-pipeline][native]") {
+    CHECK_NOTHROW(MultiplyObservation());
+}
+
+TEST_CASE("AutomaticFunctions", "[compile][compile-pipeline][native]") {
+    CHECK_NOTHROW(AutomaticFunctions());
+}
+
+TEST_CASE("ExtendedPrecisionPipeline", "[compile][compile-pipeline][native]") {
+    CHECK_NOTHROW(ExtendedPrecisionPipeline());
+}
+
+TEST_CASE("RepeatStorePipeline", "[compile][compile-pipeline][native]") {
+    CHECK_NOTHROW(RepeatStorePipeline());
 }

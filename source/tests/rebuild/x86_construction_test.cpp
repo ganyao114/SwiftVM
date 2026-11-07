@@ -1,3 +1,8 @@
+#include "base/error.h"
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/frontend/x86/detail/decoded.h"
 #include "x86_fixtures.h"
 #include "runtime/externals/distorm/distorm.h"
@@ -14,19 +19,12 @@
 namespace {
 using swift::runtime::x86::X87Command;
 using swift::runtime::x86::X87Encode;
+using swift::tests::Check;
+using swift::tests::NativeMode;
 using namespace swift::runtime::ir;
 using namespace swift::tests::x86_ir;
 using swift::x86::BlockWindow;
 using swift::x86::BuildIR;
-
-void Check(bool condition, const char* expression, int line) {
-    if (!condition) {
-        std::fprintf(stderr, "x86 construction failed at %d: %s\n", line, expression);
-        throw std::runtime_error("x86 construction contract failed");
-    }
-}
-
-#define CHECK(x) Check(static_cast<bool>(x), #x, __LINE__)
 
 std::size_t CellCount(CellRange cells) {
     return static_cast<std::size_t>(std::distance(cells.begin(), cells.end()));
@@ -571,7 +569,7 @@ std::uint64_t BlockPC(const Program& p, const BlockRecord& block) {
         CHECK(value.opcode == OpCode::LoadImm);
         return p.Operands(value).front().Payload();
     }
-    throw std::runtime_error("block has no constant PC store");
+    swift::ThrowError("block has no constant PC store");
 }
 
 void ExternalEntriesAndReadyFrontiers() {
@@ -1250,7 +1248,7 @@ void MixedGPRViewsKeepParentCoverage() {
             if (field.Payload() == rax + slot * layout.stride && field.TypeView() == field_type)
                 return CellAt(args, 1);
         }
-        throw std::runtime_error("missing mixed-width publication");
+        swift::ThrowError("missing mixed-width publication");
     };
     // These complete snapshots retain the initial high half across all narrow reads.
     for (const auto slot : {2u, 8u, 10u}) {
@@ -1366,7 +1364,7 @@ void PendingPartialWritesKeepWholeParents() {
                 args.front().TypeView() == type)
                 return CellAt(args, 1);
         }
-        throw std::runtime_error("missing partial-parent publication");
+        swift::ThrowError("missing partial-parent publication");
     };
     const auto literal = [&](CellView value, std::uint64_t bits) {
         CHECK(value.Kind() == OperandKind::Value);
@@ -1813,33 +1811,86 @@ void X87WindowsKeepTheirFirstServicePC() {
 }
 }  // namespace
 
-int main() {
-    try {
-        RealBytesAndControl();
-        RejectedBytesCannotPublishAProgram();
-        QualificationCountsTheActualAbandonedPrefix();
-        RexExtensionRequiresTheFinalPrefixPosition();
-        KnownTargetEmitsOneShiftedAddress();
-        IntegerAluAndDeferredFlags();
-        EveryConditionalBranchAndRealExits();
-        ExternalEntriesAndReadyFrontiers();
-        ActualDecodedBufferAndRejectedFrontier();
-        BlockBackedgesSeparateThePrefixBeforeIRBirth();
-        ShortDecodeStorageGrowsWithoutChangingSlices();
-        AutomaticFunctionDiscoveryAndEntry();
-        AutomaticFunctionFailuresAndFrontiers();
-        NarrowMovesAndStackControlAreConstructible();
-        MixedGPRViewsKeepParentCoverage();
-        PendingPartialWritesKeepWholeParents();
-        PackedSseAndLandingHints();
-        PackedByteAndComparisonsAndRelativeCall();
-        RepeatStoreHasAZeroBypassAndARealFrontier();
-        HalfPackedSingleMemoryKeepsTheOtherHalf();
-        X87WindowsKeepTheirFirstServicePC();
-        std::puts("Real x86 decode/build/submit subset contracts passed");
-        return 0;
-    } catch (const std::exception& error) {
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
+TEST_CASE("RealBytesAndControl", "[compile][x86-construction]") {
+    CHECK_NOTHROW(RealBytesAndControl());
+}
+
+TEST_CASE("RejectedBytesCannotPublishAProgram", "[compile][x86-construction]") {
+    CHECK_NOTHROW(RejectedBytesCannotPublishAProgram());
+}
+
+TEST_CASE("QualificationCountsTheActualAbandonedPrefix", "[compile][x86-construction]") {
+    CHECK_NOTHROW(QualificationCountsTheActualAbandonedPrefix());
+}
+
+TEST_CASE("RexExtensionRequiresTheFinalPrefixPosition", "[compile][x86-construction]") {
+    CHECK_NOTHROW(RexExtensionRequiresTheFinalPrefixPosition());
+}
+
+TEST_CASE("KnownTargetEmitsOneShiftedAddress", "[compile][x86-construction]") {
+    CHECK_NOTHROW(KnownTargetEmitsOneShiftedAddress());
+}
+
+TEST_CASE("IntegerAluAndDeferredFlags", "[compile][x86-construction]") {
+    CHECK_NOTHROW(IntegerAluAndDeferredFlags());
+}
+
+TEST_CASE("EveryConditionalBranchAndRealExits", "[compile][x86-construction]") {
+    CHECK_NOTHROW(EveryConditionalBranchAndRealExits());
+}
+
+TEST_CASE("ExternalEntriesAndReadyFrontiers", "[compile][x86-construction]") {
+    CHECK_NOTHROW(ExternalEntriesAndReadyFrontiers());
+}
+
+TEST_CASE("ActualDecodedBufferAndRejectedFrontier", "[compile][x86-construction]") {
+    CHECK_NOTHROW(ActualDecodedBufferAndRejectedFrontier());
+}
+
+TEST_CASE("BlockBackedgesSeparateThePrefixBeforeIRBirth", "[compile][x86-construction]") {
+    CHECK_NOTHROW(BlockBackedgesSeparateThePrefixBeforeIRBirth());
+}
+
+TEST_CASE("ShortDecodeStorageGrowsWithoutChangingSlices", "[compile][x86-construction]") {
+    CHECK_NOTHROW(ShortDecodeStorageGrowsWithoutChangingSlices());
+}
+
+TEST_CASE("AutomaticFunctionDiscoveryAndEntry", "[compile][x86-construction]") {
+    CHECK_NOTHROW(AutomaticFunctionDiscoveryAndEntry());
+}
+
+TEST_CASE("AutomaticFunctionFailuresAndFrontiers", "[compile][x86-construction]") {
+    CHECK_NOTHROW(AutomaticFunctionFailuresAndFrontiers());
+}
+
+TEST_CASE("NarrowMovesAndStackControlAreConstructible", "[compile][x86-construction]") {
+    CHECK_NOTHROW(NarrowMovesAndStackControlAreConstructible());
+}
+
+TEST_CASE("MixedGPRViewsKeepParentCoverage", "[compile][x86-construction]") {
+    CHECK_NOTHROW(MixedGPRViewsKeepParentCoverage());
+}
+
+TEST_CASE("PendingPartialWritesKeepWholeParents", "[compile][x86-construction]") {
+    CHECK_NOTHROW(PendingPartialWritesKeepWholeParents());
+}
+
+TEST_CASE("PackedSseAndLandingHints", "[compile][x86-construction]") {
+    CHECK_NOTHROW(PackedSseAndLandingHints());
+}
+
+TEST_CASE("PackedByteAndComparisonsAndRelativeCall", "[compile][x86-construction]") {
+    CHECK_NOTHROW(PackedByteAndComparisonsAndRelativeCall());
+}
+
+TEST_CASE("RepeatStoreHasAZeroBypassAndARealFrontier", "[compile][x86-construction]") {
+    CHECK_NOTHROW(RepeatStoreHasAZeroBypassAndARealFrontier());
+}
+
+TEST_CASE("HalfPackedSingleMemoryKeepsTheOtherHalf", "[compile][x86-construction]") {
+    CHECK_NOTHROW(HalfPackedSingleMemoryKeepsTheOtherHalf());
+}
+
+TEST_CASE("X87WindowsKeepTheirFirstServicePC", "[compile][x86-construction]") {
+    CHECK_NOTHROW(X87WindowsKeepTheirFirstServicePC());
 }

@@ -3,6 +3,8 @@
 
 #include <chrono>
 #include <exception>
+#include "base/error.h"
+#include "base/format.h"
 
 namespace swift::runtime::execution {
 RunResult RunGuest(const std::string& executable,
@@ -13,6 +15,7 @@ RunResult RunGuest(const std::string& executable,
     RuntimeStats stats;
     int code = 125;
     std::string error;
+    swift::Failure recorded;
     const auto begin = Clock::now();
     try {
         const auto binding_begin = Clock::now();
@@ -27,17 +30,24 @@ RunResult RunGuest(const std::string& executable,
         try {
             code = vm.Run(executable, argv, environment);
         } catch (const std::exception& failure) {
+            recorded.Capture(failure);
             error = failure.what();
         }
         const auto released = vm.Close();
         if (!released.Complete()) {
             if (!error.empty()) error += "; ";
-            error += "native mapping release failed: remaining=" +
-                     std::to_string(released.remaining_views) +
-                     " unmap_errno=" + std::to_string(released.unmap_error) +
-                     " close_errno=" + std::to_string(released.close_error);
+            error += swift::Format(
+                    "native mapping release failed: remaining={} unmap_errno={} close_errno={}",
+                    released.remaining_views,
+                    released.unmap_error,
+                    released.close_error);
+            if (!recorded)
+                recorded.Set(ErrorKind::System,
+                             "native mapping release failed",
+                             released.unmap_error ? released.unmap_error : released.close_error);
         }
     } catch (const std::exception& failure) {
+        recorded.Capture(failure);
         error = failure.what();
     }
     stats.run_lifetime_ns = static_cast<std::uint64_t>(
@@ -47,10 +57,12 @@ RunResult RunGuest(const std::string& executable,
                 stats.compile_request_ns > stats.compile_decode.nanoseconds
                         ? stats.compile_request_ns - stats.compile_decode.nanoseconds
                         : 0;
-    return {code, stats, std::move(error)};
+    return {code, stats, std::move(error), recorded};
 }
 #if !defined(__aarch64__) && !(defined(__riscv) && __riscv_xlen == 64)
-extern "C" std::uint64_t SvmRunNative(NativeRunContext*) noexcept { return 2; }
+extern "C" std::uint64_t SvmRunNative(NativeRunContext*) noexcept {
+    return ExitValue(NativeExit::ResolveFailure);
+}
 
 extern "C" void SvmNativeDispatch() noexcept {}
 

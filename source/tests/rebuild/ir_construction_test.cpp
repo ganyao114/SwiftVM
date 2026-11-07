@@ -1,3 +1,7 @@
+#include "tests/support/check.h"
+#include "tests/support/test_mode.h"
+#include "tests/support/native_code.h"
+#include "tests/support/guest_memory.h"
 #include "runtime/ir/builder.h"
 
 #include <array>
@@ -11,6 +15,8 @@
 #include <utility>
 
 namespace {
+using swift::tests::Check;
+using swift::tests::NativeMode;
 thread_local bool count_allocations{};
 thread_local std::size_t failure_countdown{};
 thread_local std::size_t allocation_count{};
@@ -49,14 +55,6 @@ public:
         return allocation_count;
     }
 };
-
-void Check(bool condition, const char* expression, int line) {
-    if (condition) return;
-    std::fprintf(stderr, "IR construction contract failed at line %d: %s\n", line, expression);
-    throw std::runtime_error("IR construction contract failed");
-}
-
-#define CHECK(expression) Check(static_cast<bool>(expression), #expression, __LINE__)
 
 using namespace swift::runtime::ir;
 
@@ -1470,30 +1468,178 @@ void EntryBelongsToTheActualOwner() {
 
 }  // namespace
 
-int main() {
-    try {
-        BlockConstructionRoundtrip();
-        FunctionConstructionAndIncompleteSubmit();
-        RejectedInputIsAtomic();
-        ReusedCapacityHasFreshIdentity();
-        WidePayloadsAndCompoundBoundaries();
-        AllocationFailureIsAtomic();
-        MoveAndSubmittedOwnerLifetime();
-        StaticOpcodeWritesKeepTheConstructionContract();
-        ExplicitWorkAccounting();
-        OwnerLocalRewrites();
-        ZeroWordAnchorsSurviveTailEdits();
-        EditableViewsAndUnusedErase();
-        EditWordBudgetsAreAtomic();
-        TypedFlagAndConditionInputs();
-        MetadataUpdatesStayLocal();
-        EntryBelongsToTheActualOwner();
-        std::puts("IR construction contracts passed; successful Submit allocations: 0");
-        return 0;
-    } catch (const std::exception& error) {
-        count_allocations = false;
-        failure_countdown = 0;
-        std::fprintf(stderr, "%s\n", error.what());
-        return 1;
-    }
+TEST_CASE("BlockConstructionRoundtrip", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(BlockConstructionRoundtrip());
+}
+
+TEST_CASE("FunctionConstructionAndIncompleteSubmit", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(FunctionConstructionAndIncompleteSubmit());
+}
+
+TEST_CASE("RejectedInputIsAtomic", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(RejectedInputIsAtomic());
+}
+
+TEST_CASE("ReusedCapacityHasFreshIdentity", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(ReusedCapacityHasFreshIdentity());
+}
+
+TEST_CASE("WidePayloadsAndCompoundBoundaries", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(WidePayloadsAndCompoundBoundaries());
+}
+
+TEST_CASE("AllocationFailureIsAtomic", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(AllocationFailureIsAtomic());
+}
+
+TEST_CASE("MoveAndSubmittedOwnerLifetime", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(MoveAndSubmittedOwnerLifetime());
+}
+
+TEST_CASE("StaticOpcodeWritesKeepTheConstructionContract", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(StaticOpcodeWritesKeepTheConstructionContract());
+}
+
+TEST_CASE("ExplicitWorkAccounting", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(ExplicitWorkAccounting());
+}
+
+TEST_CASE("OwnerLocalRewrites", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(OwnerLocalRewrites());
+}
+
+TEST_CASE("ZeroWordAnchorsSurviveTailEdits", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(ZeroWordAnchorsSurviveTailEdits());
+}
+
+TEST_CASE("EditableViewsAndUnusedErase", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(EditableViewsAndUnusedErase());
+}
+
+TEST_CASE("EditWordBudgetsAreAtomic", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(EditWordBudgetsAreAtomic());
+}
+
+TEST_CASE("TypedFlagAndConditionInputs", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(TypedFlagAndConditionInputs());
+}
+
+TEST_CASE("MetadataUpdatesStayLocal", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(MetadataUpdatesStayLocal());
+}
+
+TEST_CASE("EntryBelongsToTheActualOwner", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(EntryBelongsToTheActualOwner());
 }

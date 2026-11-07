@@ -4,7 +4,7 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <cstdio>
+#include "base/logging.h"
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
@@ -390,10 +390,11 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
     }
     ++stats.unsupported_syscalls;
     if (options.decode_timing || !reported_unknown) {
-        std::fprintf(stderr,
-                     "unsupported x86-64 syscall %llu at pc=0x%llx; returning ENOSYS\n",
-                     static_cast<unsigned long long>(number),
-                     static_cast<unsigned long long>(state.pc));
+        SVM_LOG(Warning,
+                Syscall,
+                "unsupported guest syscall number={} pc={:#x}; returning ENOSYS",
+                number,
+                state.pc);
         reported_unknown = true;
     }
     return -ENOSYS;

@@ -38,6 +38,6 @@ bool InitializeNativeLink(std::span<std::uint8_t> write,
 bool PatchOrderedFallback(const backend::NativeCode&,
                           NativeOffset fast,
                           NativeOffset fallback,
-                          std::uintptr_t page_size) noexcept;
+                          std::uint8_t* writable_instruction) noexcept;
 
 }  // namespace swift::runtime::backend::arm64
