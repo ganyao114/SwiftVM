@@ -89,7 +89,7 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
     auto& memory = vm.memory;
     auto& stats = vm.stats;
     auto& options = vm.options;
-    auto& state = vm.thread.state;
+    auto& state = vm.thread.native.state;
     auto& clear_child_tid = vm.thread.clear_child_tid;
     auto& exited = vm.thread.exited;
     auto& exit_code = vm.thread.exit_code;
@@ -400,7 +400,7 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
 }
 
 void LinuxSyscalls::Service() {
-    auto& state = vm.thread.state;
+    auto& state = vm.thread.native.state;
     ++vm.stats.syscalls;
     const u64 arguments[6]{state.gprs[x86::RDI],
                            state.gprs[x86::RSI],

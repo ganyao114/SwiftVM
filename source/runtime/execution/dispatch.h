@@ -38,14 +38,13 @@ static_assert(offsetof(DispatchSlot, code_id) == 16 && offsetof(DispatchSlot, pe
 static_assert(sizeof(DispatchSlot) == (1u << SVM_DISPATCH_SLOT_SHIFT) &&
               offsetof(DispatchSlot, occupied) == SVM_DISPATCH_OCCUPIED_OFFSET);
 
-// One native run borrows this stable Process-owned context. The resolver is a
+// One guest thread owns its architectural state in this stable context. The resolver is a
 // normal ABI function: it catches every exception, refreshes slots/mask after
 // directory growth, and returns zero on failure. The host ABI retains x20..x29;
 // the thunks reload caller-saved pins after the callback: x12..x15 in pin12,
 // or x8..x15 in pin16. The default GPR pin8 mapping has no caller-saved GPRs;
 // an enabled XMM bank is always reloaded after the callback.
 struct NativeRunContext {
-    GuestState* state{};
     void* opaque{};
     std::uintptr_t (*resolve)(void*, NativeRunContext*) noexcept {};
     DispatchSlot* slots{};
@@ -66,33 +65,34 @@ struct NativeRunContext {
     // Linked XMM0..15 live in v16..v31. Cold C++ boundaries publish/reload
     // the complete bank; UINT32_MAX retains the ordinary memory ABI.
     std::uint64_t pinned_vector_offset{UINT32_MAX};
+    GuestState state;
 };
 
-static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 160);
+static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1024);
 static_assert(sizeof(std::atomic<const NativeCode*>) == 8 &&
               std::atomic<const NativeCode*>::is_always_lock_free);
-static_assert(offsetof(NativeRunContext, state) == 0 && offsetof(NativeRunContext, opaque) == 8);
-static_assert(offsetof(NativeRunContext, resolve) == 16 && offsetof(NativeRunContext, slots) == 24);
-static_assert(offsetof(NativeRunContext, mask) == 32 && offsetof(NativeRunContext, active) == 40);
-static_assert(offsetof(NativeRunContext, anchor) == 48 &&
-              offsetof(NativeRunContext, dispatcher_entries) == 56);
-static_assert(offsetof(NativeRunContext, cache_hits) == 64 &&
-              offsetof(NativeRunContext, pinned_uniform_offset) == 72);
-static_assert(offsetof(NativeRunContext, flags_offset) == 80 &&
-              offsetof(NativeRunContext, pc_offset) == 88);
-static_assert(offsetof(NativeRunContext, pinned_uniform_slots) == 96);
-static_assert(offsetof(NativeRunContext, native_nzcv) == 104);
-static_assert(offsetof(NativeRunContext, host_fpcr) == 112 &&
-              offsetof(NativeRunContext, host_fpsr) == 120);
-static_assert(offsetof(NativeRunContext, guest_fpcr) == 128 &&
-              offsetof(NativeRunContext, fp_environment) == 136);
-static_assert(offsetof(NativeRunContext, probe_steps) == 144);
-static_assert(offsetof(NativeRunContext, pinned_vector_offset) == 152);
+static_assert(offsetof(NativeRunContext, opaque) == 0 && offsetof(NativeRunContext, resolve) == 8);
+static_assert(offsetof(NativeRunContext, slots) == 16 && offsetof(NativeRunContext, mask) == 24);
+static_assert(offsetof(NativeRunContext, active) == 32 && offsetof(NativeRunContext, anchor) == 40);
+static_assert(offsetof(NativeRunContext, dispatcher_entries) == 48 &&
+              offsetof(NativeRunContext, cache_hits) == 56);
+static_assert(offsetof(NativeRunContext, pinned_uniform_offset) == 64 &&
+              offsetof(NativeRunContext, flags_offset) == 72);
+static_assert(offsetof(NativeRunContext, pc_offset) == 80 &&
+              offsetof(NativeRunContext, pinned_uniform_slots) == 88);
+static_assert(offsetof(NativeRunContext, native_nzcv) == 96);
+static_assert(offsetof(NativeRunContext, host_fpcr) == 104 &&
+              offsetof(NativeRunContext, host_fpsr) == 112);
+static_assert(offsetof(NativeRunContext, guest_fpcr) == 120 &&
+              offsetof(NativeRunContext, fp_environment) == 128);
+static_assert(offsetof(NativeRunContext, probe_steps) == 136);
+static_assert(offsetof(NativeRunContext, pinned_vector_offset) == 144);
+static_assert(offsetof(NativeRunContext, state) == 160);
 
 // Linked units enter/leave through these thunks. Only SvmNativeExit returns to C++;
 // the root frame owns the one save of x19..x30 and host d8..d15 across all
 // unit-to-unit jumps. Guest XMM pins remain live on warm edges.
-extern "C" std::uint64_t SvmRunNative(GuestState*, NativeRunContext*) noexcept;
+extern "C" std::uint64_t SvmRunNative(NativeRunContext*) noexcept;
 // All dispatcher entries take the actual GuestPC in x0. Deferred-PC callers
 // may leave state.pc stale on ready hits; a cold miss commits x0 before the
 // C++ resolver. Eager callers remain valid. Native variants retain raw PF/AF

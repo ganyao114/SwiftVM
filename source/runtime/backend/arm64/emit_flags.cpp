@@ -127,12 +127,13 @@ void Writer::Shadow(bool load) {
 
 void Writer::HelperFPEnvironment(bool guest) {
     if (!Linked() || !options.native_fp_environment) return;
-    Memory(true, 64, 30, 28, guest ? 16u : 14u);  // context guest/host FPCR.
-    masm.exact.msr(v::FPCR, v::x30);              // MSR FPCR,x30.
+    ContextMemory(
+            true, 30, abi::ContextOffset(guest ? SVM_A64_CTX_GUEST_FPCR : SVM_A64_CTX_HOST_FPCR));
+    masm.exact.msr(v::FPCR, v::x30);  // MSR FPCR,x30.
     if (guest)
         masm.exact.msr(v::FPSR, v::xzr);  // MSR FPSR,xzr: no MXCSR sticky-state model.
     else {
-        Memory(true, 64, 30, 28, 15u);    // context host FPSR.
+        ContextMemory(true, 30, abi::ContextOffset(SVM_A64_CTX_HOST_FPSR));
         masm.exact.msr(v::FPSR, v::x30);  // MSR FPSR,x30.
     }
 }

@@ -15,6 +15,7 @@ using backend::CompileError;
 // The one actual lifetime/location decision for each source node. A register
 // home stays fixed throughout the unit; spills are stored at the definition.
 // Scalar and V128 banks are disjoint; vector spills occupy aligned 16B.
+// Linked scalar banks append x28 to the requested baseline register set.
 struct Home {
     std::uint32_t definition_position{}, last_use{}, stack_offset{};
     std::uint8_t reg{};

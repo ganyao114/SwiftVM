@@ -355,7 +355,7 @@ RunResult RunGuest(const std::string& executable,
     return {code, stats, std::move(error)};
 }
 #if !defined(__aarch64__)
-extern "C" std::uint64_t SvmRunNative(GuestState*, NativeRunContext*) noexcept { return 2; }
+extern "C" std::uint64_t SvmRunNative(NativeRunContext*) noexcept { return 2; }
 
 extern "C" void SvmNativeDispatch() noexcept {}
 

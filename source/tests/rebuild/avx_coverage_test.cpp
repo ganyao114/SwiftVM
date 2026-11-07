@@ -250,7 +250,7 @@ void Native(const Machine& input, const arch::GuestState& expected, bool pinned)
                 code.faults};
         std::atomic<const runtime::backend::NativeCode*> active{};
         runtime::execution::NativeRunContext context;
-        context.state = &state;
+        context.state = state;
         context.opaque = &resolver;
         context.active = &active;
         context.anchor = &owner;
@@ -264,9 +264,10 @@ void Native(const Machine& input, const arch::GuestState& expected, bool pinned)
                    runtime::execution::NativeRunContext* current) noexcept -> std::uintptr_t {
             auto& r = *static_cast<Resolver*>(opaque);
             ++r.calls;
-            return current->state->pc == Machine::pc ? r.entry : 0;
+            return current->state.pc == Machine::pc ? r.entry : 0;
         };
-        const auto returned = runtime::execution::SvmRunNative(&state, &context);
+        const auto returned = runtime::execution::SvmRunNative(&context);
+        state = context.state;
         if (returned != 2 || resolver.calls != 2)
             std::fprintf(stderr,
                          "AVX native pin=1 returned=%llu resolver_calls=%u\n",

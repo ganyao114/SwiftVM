@@ -4,7 +4,7 @@
 .text
 
 .macro SVM_PUBLISH_PINNED
-ldr x16, [x28, #SVM_A64_CTX_PIN_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 1f
@@ -13,7 +13,7 @@ stp x20, x21, [x16]
 stp x22, x23, [x16, #16]
 stp x24, x25, [x16, #32]
 stp x26, x27, [x16, #48]
-ldr x17, [x28, #SVM_A64_CTX_PIN_SLOTS]
+ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_SLOTS)]
 cmp x17, #16
 b.eq 12f
 cmp x17, #12
@@ -30,12 +30,12 @@ stp x14, x15, [x16, #112]
 .endm
 
 .macro SVM_RELOAD_CALLER_PINNED
-ldr x16, [x28, #SVM_A64_CTX_PIN_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 8f
 add x16, x19, x16
-ldr x17, [x28, #SVM_A64_CTX_PIN_SLOTS]
+ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_SLOTS)]
 cmp x17, #16
 b.eq 13f
 cmp x17, #12
@@ -52,7 +52,7 @@ ldp x14, x15, [x16, #112]
 .endm
 
 .macro SVM_PUBLISH_VECTORS
-ldr x16, [x28, #SVM_A64_CTX_VECTOR_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_VECTOR_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 26f
@@ -69,7 +69,7 @@ stp q30, q31, [x16, #224]
 .endm
 
 .macro SVM_RELOAD_VECTORS
-ldr x16, [x28, #SVM_A64_CTX_VECTOR_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_VECTOR_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 27f
@@ -86,7 +86,7 @@ ldp q30, q31, [x16, #224]
 .endm
 
 .macro SVM_PUBLISH_FLAGS
-ldr x16, [x28, #SVM_A64_CTX_FLAGS_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FLAGS_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 7f
@@ -99,7 +99,7 @@ mrs x30, nzcv
 .endm
 
 .macro SVM_PACK_SAVED_NATIVE_NZCV
-ldr x16, [x28, #SVM_A64_CTX_FLAGS_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FLAGS_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 23f
@@ -127,27 +127,27 @@ ubfx x1, x1, #0, #8
 .endm
 
 .macro SVM_SAVE_HOST_FP
-ldr x16, [x28, #SVM_A64_CTX_FP_ENVIRONMENT]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
 cbz x16, 20f
 mrs x16, fpcr
 mrs x17, fpsr
-stp x16, x17, [x28, #SVM_A64_CTX_HOST_FPCR]
+stp x16, x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HOST_FPCR)]
 20:
 .endm
 
 .macro SVM_RESTORE_HOST_FP
-ldr x16, [x28, #SVM_A64_CTX_FP_ENVIRONMENT]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
 cbz x16, 21f
-ldp x16, x17, [x28, #SVM_A64_CTX_HOST_FPCR]
+ldp x16, x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HOST_FPCR)]
 msr fpcr, x16
 msr fpsr, x17
 21:
 .endm
 
 .macro SVM_INSTALL_GUEST_FP
-ldr x16, [x28, #SVM_A64_CTX_FP_ENVIRONMENT]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
 cbz x16, 22f
-ldr x16, [x28, #SVM_A64_CTX_GUEST_FPCR]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_GUEST_FPCR)]
 msr fpcr, x16
 msr fpsr, xzr
 22:
@@ -159,12 +159,12 @@ SVM_PUBLISH_PINNED
 SVM_PUBLISH_VECTORS
 
 SVM_PUBLISH_FLAGS
-ldr x16, [x28, #SVM_A64_CTX_ACTIVE]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ACTIVE)]
 stlr xzr, [x16]
 
 SVM_RESTORE_HOST_FP
-ldp x0, x16, [x28, #SVM_A64_CTX_OPAQUE]
-mov x1, x28
+ldp x0, x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_OPAQUE)]
+sub x1, x19, #SVM_A64_CTX_STATE
 blr x16
 
 SVM_RELOAD_CALLER_PINNED
@@ -173,10 +173,10 @@ SVM_RELOAD_VECTORS
 cbz x0, 3f
 
 SVM_INSTALL_GUEST_FP
-ldr x16, [x28, #SVM_A64_CTX_ACTIVE]
-ldr x17, [x28, #SVM_A64_CTX_ANCHOR]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ACTIVE)]
+ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ANCHOR)]
 stlr x17, [x16]
-ldr x16, [x28, #SVM_A64_CTX_FLAGS_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FLAGS_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 2f
@@ -185,7 +185,7 @@ b 10f
 2:
 mov x1, xzr
 10:
-ldr x17, [x28, #SVM_A64_CTX_NATIVE_NZCV]
+ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_NATIVE_NZCV)]
 cbz x17, 11f
 
 SVM_RESTORE_NATIVE_NZCV
@@ -197,28 +197,28 @@ b SvmNativeExit
 .endm
 
 .macro SVM_COUNT_DISPATCH
-ldr x4, [x28, #SVM_A64_CTX_DISPATCHES]
+ldur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_DISPATCHES)]
 add x4, x4, #1
-str x4, [x28, #SVM_A64_CTX_DISPATCHES]
+stur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_DISPATCHES)]
 .endm
 
 .macro SVM_COUNT_PROBE
-ldr x4, [x28, #SVM_A64_CTX_PROBES]
+ldur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PROBES)]
 add x4, x4, #1
-str x4, [x28, #SVM_A64_CTX_PROBES]
+stur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PROBES)]
 .endm
 
 .macro SVM_COUNT_HIT
-ldr x4, [x28, #SVM_A64_CTX_HITS]
+ldur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HITS)]
 add x4, x4, #1
-str x4, [x28, #SVM_A64_CTX_HITS]
+stur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HITS)]
 .endm
 
 .macro SVM_DISPATCH_BODY counted=0, native=0
 .if \counted
 SVM_COUNT_DISPATCH
 .endif
-ldp x2, x6, [x28, #SVM_A64_CTX_SLOTS]
+ldp x2, x6, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_SLOTS)]
 cbz x2, 5f
 eor x5, x0, x0, lsr #SVM_A64_DISPATCH_HASH_SHIFT
 and x5, x5, x6
@@ -244,7 +244,7 @@ add x5, x5, #1
 and x5, x5, x6
 b 4b
 5:
-ldr x16, [x28, #SVM_A64_CTX_PC_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PC_OFFSET)]
 str x0, [x19, x16]
 
 .if \native
@@ -269,14 +269,12 @@ stp d8, d9, [sp, #96]
 stp d10, d11, [sp, #112]
 stp d12, d13, [sp, #128]
 stp d14, d15, [sp, #144]
-mov x19, x0
-mov x28, x1
-str x19, [x28]
+add x19, x0, #SVM_A64_CTX_STATE
 
 SVM_SAVE_HOST_FP
-ldr x16, [x28, #SVM_A64_CTX_PC_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PC_OFFSET)]
 add x29, x19, x16
-ldr x16, [x28, #SVM_A64_CTX_PIN_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 1f
@@ -285,7 +283,7 @@ ldp x20, x21, [x16]
 ldp x22, x23, [x16, #16]
 ldp x24, x25, [x16, #32]
 ldp x26, x27, [x16, #48]
-ldr x17, [x28, #SVM_A64_CTX_PIN_SLOTS]
+ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_SLOTS)]
 cmp x17, #16
 b.eq 12f
 cmp x17, #12
@@ -301,7 +299,7 @@ ldp x14, x15, [x16, #112]
 1:
 
 SVM_RELOAD_VECTORS
-ldr x16, [x28, #SVM_A64_CTX_FLAGS_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FLAGS_OFFSET)]
 mov w17, #-1
 cmp x16, x17
 b.eq 8f
@@ -346,9 +344,9 @@ SVM_DISPATCH_BODY 1, 1
 .global SvmNativePending
 .type SvmNativePending, %function
 SvmNativePending:
-ldr x16, [x28, #SVM_A64_CTX_PC_OFFSET]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PC_OFFSET)]
 str x0, [x19, x16]
-ldr x17, [x28, #SVM_A64_CTX_NATIVE_NZCV]
+ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_NATIVE_NZCV)]
 cbz x17, 30f
 
 SVM_SAVE_NATIVE_NZCV
@@ -363,9 +361,9 @@ SVM_RESOLVE_AND_ENTER
 .global SvmNativePendingCounted
 .type SvmNativePendingCounted, %function
 SvmNativePendingCounted:
-ldr x4, [x28, #SVM_A64_CTX_HITS]
+ldur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HITS)]
 sub x4, x4, #1
-str x4, [x28, #SVM_A64_CTX_HITS]
+stur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HITS)]
 b SvmNativePending
 .size SvmNativePendingCounted, .-SvmNativePendingCounted
 
@@ -376,7 +374,7 @@ SvmNativeExit:
 SVM_PUBLISH_PINNED
 
 SVM_PUBLISH_VECTORS
-ldr x16, [x28, #SVM_A64_CTX_ACTIVE]
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ACTIVE)]
 stlr xzr, [x16]
 
 SVM_RESTORE_HOST_FP

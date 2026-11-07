@@ -941,6 +941,7 @@ private:
     void ObservePCStore(CellView uniform, CellView value);
     void FlagsMemory(bool load, unsigned value);
     void Shadow(bool load);
+    void ContextMemory(bool load, unsigned value, int offset);
     void HelperFPEnvironment(bool guest);
     bool OverlapsShadow(CellView uniform) const;
 

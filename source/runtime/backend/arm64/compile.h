@@ -32,9 +32,11 @@ struct CompileOptions {
     bool fault_locations{};
     bool recover_unaligned{};  // Caller owns SIGBUS recovery and the fast-instruction branch-patch
                                // service.
-    // Both callbacks enable the native ABI: x19=state, x1=flags,
-    // x28=context. With native_nzcv, x29 carries raw AF (bit4); otherwise it
-    // points to state.pc. Only the unit's spill area is adjusted.
+    // Both callbacks enable the native ABI: x19 points to the state embedded
+    // in NativeRunContext; metadata is addressed at fixed negative offsets.
+    // x1 carries flags; x28 is available for SSA values. With native_nzcv,
+    // x29 carries raw AF (bit4); otherwise it points to state.pc.
+    // Only the unit's spill area is adjusted.
     // Dispatcher tails pass the actual GuestPC in x0; deferred-PC tails
     // publish state.pc only at the cold dispatcher or a real observer.
     // exit_handler instead receives the unchanged Return reason in x0.
@@ -60,8 +62,8 @@ struct CompileOptions {
     bool rcpc_imm9{};    // Caller has checked actual FEAT_LRCPC2 (HWCAP_ILRCPC).
     bool lse_atomics{};  // Caller has checked actual FEAT_LSE (HWCAP_ATOMICS).
     bool crc32c{};       // Caller has checked actual FEAT_CRC32 (HWCAP_CRC32).
-    // Linked x28 points to the real NativeRunContext FP owner. Helpers run in
-    // its saved host environment and return to guest_fpcr with clear FPSR.
+    // Linked FP fields share x19's actual NativeRunContext prefix. Helpers
+    // run in its saved host environment and return to guest_fpcr with clear FPSR.
     bool native_fp_environment{};
     // Actual raw32 MXCSR field when independent input/output flush controls
     // are unavailable in hardware. It is separate from private pinned Uniform

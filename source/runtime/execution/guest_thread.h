@@ -11,7 +11,6 @@ namespace swift::runtime::execution {
 // The VM currently owns exactly one guest thread by value. Live host state
 // and recovery borrows never become shared code-cache ownership.
 struct GuestThread {
-    x86::GuestState state;
     FaultContext faults;
     NativeRunContext native;
     backend::NativeCode anchor;

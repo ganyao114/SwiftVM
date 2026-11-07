@@ -15,10 +15,16 @@ inline constexpr std::uint64_t PackedDynamicFlags = 0xf40000ff;
 inline constexpr unsigned DispatchSlotShift = SVM_A64_SLOT_SHIFT,
                           DispatchOccupiedOffset = SVM_A64_OCCUPIED_OFFSET,
                           DispatchHashShift = SVM_A64_DISPATCH_HASH_SHIFT;
-inline constexpr unsigned ContextSlotsOffset = SVM_A64_CTX_SLOTS,
-                          ContextDispatchesOffset = SVM_A64_CTX_DISPATCHES,
-                          ContextHitsOffset = SVM_A64_CTX_HITS,
-                          ContextProbesOffset = SVM_A64_CTX_PROBES;
+inline constexpr unsigned StateRegister = SVM_A64_STATE_REG, ExtraScalarRegister = 28;
+
+constexpr int ContextOffset(unsigned offset) noexcept {
+    return static_cast<int>(offset) - SVM_A64_CTX_STATE;
+}
+
+inline constexpr int ContextSlotsOffset = ContextOffset(SVM_A64_CTX_SLOTS),
+                     ContextDispatchesOffset = ContextOffset(SVM_A64_CTX_DISPATCHES),
+                     ContextHitsOffset = ContextOffset(SVM_A64_CTX_HITS),
+                     ContextProbesOffset = ContextOffset(SVM_A64_CTX_PROBES);
 // Per actual dynamic tail: sixteen (PC,entry) pairs plus one writable base alias.
 inline constexpr unsigned DynamicCacheEntries = 16, DynamicCacheWords = DynamicCacheEntries * 4 + 2;
 
@@ -35,6 +41,12 @@ constexpr unsigned PinnedUniformSlot(unsigned reg, unsigned count) noexcept {
 constexpr unsigned PinnedVectorRegister(unsigned slot) noexcept { return 16 + slot; }
 
 constexpr unsigned PinnedVectorSlot(unsigned reg) noexcept { return reg - 16; }
+
+// Linked units append x28 after the requested baseline scalar bank. Standalone
+// units use only its original x2-based slots and retain their save convention.
+constexpr unsigned ScalarHomeRegister(unsigned slot, unsigned base_registers) noexcept {
+    return slot == base_registers ? ExtraScalarRegister : slot + 2;
+}
 
 // Linked vector pins reserve v16..v31. v8/v9 are writer temporaries;
 // the root saves the host's d8..d15 and helpers retain all live Q lanes.

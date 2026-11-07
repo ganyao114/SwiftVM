@@ -34,7 +34,7 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     auto& stats = vm.stats;
     auto& options = vm.options;
     auto& memory = vm.memory;
-    auto& state = vm.thread.state;
+    auto& state = vm.thread.native.state;
     auto& faults = vm.thread.faults;
     auto& native = vm.thread.native;
     auto& diagnostic = vm.thread.diagnostic;
@@ -218,7 +218,7 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                     auto& owner = *static_cast<VM*>(opaque);
                     if (const auto ready = owner.Cache().Find(pc))
                         return reinterpret_cast<std::uintptr_t>(ready);
-                    return pc == owner.thread.state.pc ? unit : 0;
+                    return pc == owner.thread.native.state.pc ? unit : 0;
                 },
                 &vm);
         ++stats.code_units_published;

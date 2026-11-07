@@ -587,7 +587,7 @@ void NativeHelperABI() {
                     function, code_bytes, nullptr, compiled.faults};
             std::atomic<const swift::runtime::backend::NativeCode*> active{};
             execution::NativeRunContext context{};
-            context.state = &state;
+            context.state = state;
             context.opaque = mapping;
             context.resolve = [](void* entry, execution::NativeRunContext*) noexcept {
                 return reinterpret_cast<std::uintptr_t>(entry);
@@ -600,7 +600,9 @@ void NativeHelperABI() {
             context.native_nzcv = options.native_nzcv;
             context.flags_offset = options.flags_offset;
             context.pc_offset = options.pc_offset;
-            return execution::SvmRunNative(&state, &context);
+            const auto result = execution::SvmRunNative(&context);
+            state = context.state;
+            return result;
         };
         const auto result = run();
         u64 after_fpcr{}, after_fpsr{};

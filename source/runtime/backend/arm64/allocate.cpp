@@ -104,10 +104,12 @@ void Allocate(const Program& program,
         reject(CompileError::UnsupportedOperand);
         return;
     }
-    const unsigned scalar_registers = pinned ? 14u - (options->pinned_uniform_slots - 8u) : 14u;
+    const bool linked = options && options->dispatcher && options->exit_handler;
+    const unsigned base_scalar_registers =
+            pinned ? 14u - (options->pinned_uniform_slots - 8u) : 14u;
+    const unsigned scalar_registers = base_scalar_registers + (linked ? 1u : 0u);
     const bool borrow_pins = (pinned || vector_pinned) && options->private_uniforms;
-    const bool raw_flags =
-            options && options->native_nzcv && options->dispatcher && options->exit_handler;
+    const bool raw_flags = options && options->native_nzcv && linked;
     const bool deferred_pc = options && options->deferred_pc;
     // One fixed key space for actual Uniform slots, not another value table.
     // Scalar aliases of XMM fields are handled as byte-range accesses below.
@@ -624,7 +626,7 @@ void Allocate(const Program& program,
         }
     }
 
-    std::array<u32, 14> scalar_resident;
+    std::array<u32, 15> scalar_resident;
     std::array<u32, 20> vector_resident;
     scalar_resident.fill(NodeId::invalid);
     vector_resident.fill(NodeId::invalid);
@@ -677,9 +679,11 @@ void Allocate(const Program& program,
                     if (value.Kind() != OperandKind::Value) return;
                     const auto input_id = static_cast<u32>(value.Payload());
                     const auto& input_home = result.homes[input_id];
-                    const auto input_slot = vector && input_home.reg >= 10
-                                                    ? static_cast<unsigned>(input_home.reg) - 4u
-                                                    : static_cast<unsigned>(input_home.reg) - 2u;
+                    const unsigned reg = input_home.reg;
+                    const auto input_slot = vector ? reg - (reg >= 10 ? 4u : 2u)
+                                            : reg == abi::ExtraScalarRegister
+                                                    ? base_scalar_registers
+                                                    : reg - 2u;
                     // The actual input is consumed before this output replaces it.
                     if (input_home.last_use == result.homes[i].definition_position &&
                         input_slot < resident.size() && resident[input_slot] == input_id)
@@ -710,10 +714,11 @@ void Allocate(const Program& program,
             }
             // The explicit vector ABI reserves v16..v31 and v0/v1/v8/v9;
             // its dynamic bank is v2..v7,v10..v15. The default keeps its old
-            // twenty-register mapping. Scalars retain their requested bank.
+            // twenty-register mapping. Only linked scalar banks append x28.
             result.homes[i].reg = static_cast<std::uint8_t>(
                     vector ? abi::VectorHomeRegister(static_cast<unsigned>(slot), vector_pinned)
-                           : slot + 2);
+                           : abi::ScalarHomeRegister(static_cast<unsigned>(slot),
+                                                     base_scalar_registers));
             resident[slot] = i;
         }
     }

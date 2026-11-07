@@ -32,13 +32,13 @@ front::AccessResult VM::StateImage(void* opaque,
         return {front::AccessStatus::Fault, address};
     if (kind == StateImageKind::FxSave) {
         x86::ExportLegacyState(
-                vm.thread.state, std::span<std::uint8_t, 512>{image.data(), 512}, wide);
+                vm.thread.native.state, std::span<std::uint8_t, 512>{image.data(), 512}, wide);
         return write(0, 464);  // FXSAVE leaves the software-owned bytes 464..511 untouched.
     }
     if (kind == StateImageKind::FxRestore) {
         const auto loaded = read(0, 512);
         if (loaded.status != front::AccessStatus::Completed) return loaded;
-        if (!x86::ImportLegacyState(vm.thread.state,
+        if (!x86::ImportLegacyState(vm.thread.native.state,
                                     std::span<const std::uint8_t, 512>{image.data(), 512},
                                     3,
                                     wide))
@@ -57,7 +57,7 @@ front::AccessResult VM::StateImage(void* opaque,
             std::memcpy(&old_bv, image.data() + 512, 8);
         }
         x86::ExportLegacyState(
-                vm.thread.state, std::span<std::uint8_t, 512>{image.data(), 512}, wide);
+                vm.thread.native.state, std::span<std::uint8_t, 512>{image.data(), 512}, wide);
         const auto bv = (old_bv & ~selected) | selected;
         std::memcpy(image.data() + 512, &bv, 8);
         if (compact_save) {
@@ -80,7 +80,7 @@ front::AccessResult VM::StateImage(void* opaque,
             if (result.status != front::AccessStatus::Completed) return result;
         }
         if (selected & 4) {
-            std::memcpy(image.data() + 576, vm.thread.state.ymm_high, 256);
+            std::memcpy(image.data() + 576, vm.thread.native.state.ymm_high, 256);
             result = write(576, 256);
             if (result.status != front::AccessStatus::Completed) return result;
         }
@@ -126,7 +126,7 @@ front::AccessResult VM::StateImage(void* opaque,
     }
     // Complete every actual memory read and header validation before any
     // architectural restoration; INIT components do not read absent payload.
-    auto restored = vm.thread.state;
+    auto restored = vm.thread.native.state;
     if (!x86::ImportLegacyState(
                 restored, std::span<const std::uint8_t, 512>{image.data(), 512}, fetch & 3, wide))
         return {front::AccessStatus::Fault, address};
@@ -148,7 +148,7 @@ front::AccessResult VM::StateImage(void* opaque,
         if (mxcsr & ~x86::GuestMxcsrMask) return {front::AccessStatus::Fault, address};
         restored.mxcsr = mxcsr;
     }
-    vm.thread.state = restored;
+    vm.thread.native.state = restored;
     return {};
 }
 }  // namespace swift::runtime::execution

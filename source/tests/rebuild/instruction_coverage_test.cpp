@@ -138,7 +138,7 @@ void Execute(const a64::CompileResult& compiled, arch::GuestState& state, bool p
     execution::NativeCode owner{
             reinterpret_cast<execution::NativeCode::Function>(memory), bytes, nullptr, {}};
     std::atomic<const execution::NativeCode*> active{};
-    context.state = &state;
+    context.state = state;
     context.opaque = &scene;
     context.active = &active;
     context.anchor = &owner;
@@ -151,7 +151,8 @@ void Execute(const a64::CompileResult& compiled, arch::GuestState& state, bool p
         auto& current = *static_cast<Scene*>(opaque);
         return current.calls++ == 0 ? current.entry : 0;
     };
-    CHECK(execution::SvmRunNative(&state, &context) == 2 && scene.calls == 2);
+    CHECK(execution::SvmRunNative(&context) == 2 && scene.calls == 2);
+    state = context.state;
 }
 
 void SameState(const arch::GuestState& expected, const arch::GuestState& actual) {

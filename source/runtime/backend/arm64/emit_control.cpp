@@ -90,6 +90,16 @@ void Writer::TailJump(std::uintptr_t destination, bool link, u64 target_pc, u32 
     }
 }
 
+// x19 addresses the embedded state. Native context fields occupy its fixed
+// negative prefix, within the exact unscaled load/store displacement range.
+void Writer::ContextMemory(bool load, unsigned value, int offset) {
+    const MemOperand field(v::x19, offset);
+    if (load)
+        masm.exact.ldur(X(value), field);
+    else
+        masm.exact.stur(X(value), field);
+}
+
 void Writer::DynamicDispatch() {
     if (options.dispatch_mode == DispatchMode::Callback) {
         TailJump(options.dispatcher);
@@ -98,14 +108,14 @@ void Writer::DynamicDispatch() {
     // The source frame is already retired and x0 holds the complete target.
     // Each dynamic site gets its own indirect BR while sharing the original
     // table, probe rules and cold resolver. No flags or pinned state change.
-    const auto count = [&](unsigned offset, bool decrement = false) {
+    const auto count = [&](int offset, bool decrement = false) {
         if (options.dispatch_mode != DispatchMode::InlineCounted) return;
-        Memory(true, 64, 4, 28, offset / 8);
+        ContextMemory(true, 4, offset);
         if (decrement)
             masm.exact.sub(v::x4, v::x4, Operand(1));
         else
             masm.exact.add(v::x4, v::x4, Operand(1));  // SUB/ADD x4,x4,#1, non-S.
-        Memory(false, 64, 4, 28, offset / 8);
+        ContextMemory(false, 4, offset);
     };
     count(abi::ContextDispatchesOffset);
     u32 cache_pointer = UINT32_MAX;
@@ -133,7 +143,7 @@ void Writer::DynamicDispatch() {
         masm.Patch(address, cache_pointer);
         masm.Patch(mismatch, masm.Here());
     }
-    masm.exact.ldp(v::x2, v::x6, MemOperand(v::x28, abi::ContextSlotsOffset));
+    masm.exact.ldp(v::x2, v::x6, MemOperand(v::x19, abi::ContextSlotsOffset));
     u32 no_slots = UINT32_MAX;
     if (!options.callable_directory) {
         no_slots = static_cast<u32>(output.words.size());

@@ -100,7 +100,6 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
         , smc(*this) {
     auto& native = thread.native;
     auto& faults = thread.faults;
-    native.state = &thread.state;
     native.opaque = this;
     native.resolve = ResolveBridge;
     native.active = &faults.active;
@@ -178,8 +177,8 @@ int VM::Run(const std::string& path,
             std::span<const std::string> environment) {
     if (closing || closed) throw std::runtime_error("VM has been closed");
     image = platform::LoadELF(memory, path);
-    thread.state.pc = image.entry;
-    thread.state.gprs[x86::RSP] = platform::InitialStack(memory, image, argv, environment);
+    thread.native.state.pc = image.entry;
+    thread.native.state.gprs[x86::RSP] = platform::InitialStack(memory, image, argv, environment);
     UpdateFPEnvironment();
     if (options.mode == ExecutionMode::InterpretOnly ||
         (options.mode == ExecutionMode::Mixed && !backend.compile)) {
@@ -188,7 +187,7 @@ int VM::Run(const std::string& path,
     }
     if (!backend.compile) throw std::runtime_error("native backend is unavailable on this host");
     {
-        FaultScope registration{thread.faults, thread.state};
+        FaultScope registration{thread.faults, thread.native.state};
         stats.rcpc_loads = backend.capabilities.rcpc_loads;
         stats.rcpc_imm9 = backend.capabilities.rcpc_imm9;
         stats.fault_locations = stats.recover_unaligned = true;
@@ -206,13 +205,13 @@ int VM::Run(const std::string& path,
                           "address=0x%llx",
                           static_cast<int>(thread.faults.signal_number),
                           static_cast<int>(thread.faults.signal_code),
-                          static_cast<unsigned long long>(thread.state.pc),
+                          static_cast<unsigned long long>(thread.native.state.pc),
                           static_cast<unsigned long long>(thread.faults.host_pc),
                           static_cast<unsigned long long>(thread.faults.address));
             throw std::runtime_error(message);
         }
         while (!thread.exited) {
-            const auto reason = SvmRunNative(&thread.state, &thread.native);
+            const auto reason = SvmRunNative(&thread.native);
             thread.faults.active.store(nullptr);
             if (reason == 1)
                 syscalls.Service();
@@ -239,7 +238,7 @@ int VM::Run(const std::string& path,
 }
 
 void VM::UpdateFPEnvironment() {
-    const auto mxcsr = thread.state.mxcsr;
+    const auto mxcsr = thread.native.state.mxcsr;
     if (mxcsr & ~u64{0xffff}) throw std::runtime_error("guest MXCSR contains reserved bits");
     const auto daz = (mxcsr >> 6) & 1, ftz = (mxcsr >> 15) & 1;
     thread.fp_mode = backend.capabilities.afp ? 0 : static_cast<std::uint8_t>(daz | (ftz << 1));
@@ -396,7 +395,7 @@ front::CpuResult VM::Cpu(void*, std::uint32_t leaf, std::uint32_t subleaf) noexc
 
 void VM::Interpret() {
     thread.access_error = nullptr;
-    const auto step = front::InterpretOne(thread.state, DirectServices());
+    const auto step = front::InterpretOne(thread.native.state, DirectServices());
     switch (step.kind) {
         case front::StepKind::Completed:
             return;

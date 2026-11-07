@@ -2,6 +2,7 @@
 #include "runtime/backend/arm64/abi.h"
 #include "runtime/backend/arm64/patch.h"
 #include "runtime/arch/x86/x87.h"
+#include "runtime/arch/x86/state.h"
 #include "runtime/ir/builder.h"
 
 #include <algorithm>
@@ -163,6 +164,78 @@ u64 ReferenceArithmetic(OpCode op,
     set(Flag::AuxiliaryCarry, 26, ((left ^ right ^ result) & 16) != 0);
     if (mask & FlagBits(Flag::Parity)) previous = (previous & ~u64{255}) | (result & 255);
     return previous;
+}
+
+void SharedContextScalarRegister() {
+    using swift::runtime::x86::GuestState;
+    for (const auto scope : {Scope::Block, Scope::Function}) {
+        Builder builder{scope};
+        Need(builder.BeginBlock(Create(builder)));
+        std::array<Value, 7> inputs;
+        for (unsigned i = 0; i < inputs.size(); ++i)
+            inputs[i] = Load(builder, offsetof(GuestState, ymm_high) + i * 8);
+        const auto first = Need(builder.Emit<OpCode::Add>(
+                Type::U64, {Operand::ValueOf(inputs[6]), Operand::ValueOf(inputs[0])}));
+        auto sum = first;
+        for (unsigned i = 1; i < 6; ++i)
+            sum = Need(builder.Emit<OpCode::Add>(
+                    Type::U64, {Operand::ValueOf(sum), Operand::ValueOf(inputs[i])}));
+        Need(builder.EndBlock(Terminal::Return(sum)));
+        auto program = Submit(builder);
+        arm64::CompileOptions options;
+        options.pinned_uniform_offset = offsetof(GuestState, gprs);
+        options.pinned_uniform_slots = 16;
+        options.pc_offset = offsetof(GuestState, pc);
+        options.flags_offset = offsetof(GuestState, packed_flags);
+#if defined(__aarch64__) && defined(__ANDROID__)
+        namespace execution = swift::runtime::execution;
+        options.dispatcher = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatch);
+        options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
+#else
+        options.dispatcher = 0x1000;
+        options.exit_handler = 0x2000;
+#endif
+        const auto allocation = scope == Scope::Block ? arm64::AllocateBlock(program, &options)
+                                                      : arm64::AllocateFunction(program, &options);
+        Check(bool(allocation) && !allocation.spill_bytes &&
+                      allocation.homes[inputs[6].node.value].reg == 28 &&
+                      allocation.homes[first.node.value].reg == 28,
+              "shared context frees x28 for the seventh scalar and its read-before-write reuse");
+        const auto linked = arm64::Compile(program, options);
+        Check(bool(linked) && !linked.spill_slots, "linked pin16 retains seven live scalar values");
+#if defined(__aarch64__) && defined(__ANDROID__)
+        execution::CodeHeap heap{TestBackendOps(), static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
+        auto unit = heap.Publish(linked.words, linked.faults, linked.links);
+        std::atomic<const execution::NativeCode*> active{};
+        execution::NativeRunContext context;
+        context.opaque = &unit;
+        context.resolve = [](void* raw, execution::NativeRunContext*) noexcept {
+            return reinterpret_cast<std::uintptr_t>(
+                    static_cast<execution::NativeCode*>(raw)->entry);
+        };
+        context.active = &active;
+        context.anchor = &unit;
+        context.pinned_uniform_offset = options.pinned_uniform_offset;
+        context.pinned_uniform_slots = 16;
+        context.flags_offset = options.flags_offset;
+        for (unsigned i = 0; i < inputs.size(); ++i)
+            Write64(reinterpret_cast<std::uint8_t*>(context.state.ymm_high) + i * 8, i + 1);
+        context.state.gprs[0] = 0x1234;
+        Check(execution::SvmRunNative(&context) == 28 && context.state.gprs[0] == 0x1234 &&
+                      context.opaque == &unit && !active.load(),
+              "x28 values execute without corrupting shared context metadata or pinned GPRs");
+#endif
+        const auto standalone = scope == Scope::Block ? arm64::AllocateBlock(program)
+                                                      : arm64::AllocateFunction(program);
+        Check(bool(standalone) && std::none_of(standalone.homes.begin(),
+                                               standalone.homes.end(),
+                                               [](const auto& home) { return home.reg == 28; }),
+              "standalone scalar homes retain their original register ABI");
+        GuestState state;
+        for (unsigned i = 0; i < inputs.size(); ++i)
+            Write64(reinterpret_cast<std::uint8_t*>(state.ymm_high) + i * 8, i + 1);
+        Execute(Compile(program), reinterpret_cast<std::uint8_t*>(&state), 28);
+    }
 }
 
 void ArithmeticFlags() {
@@ -1699,10 +1772,12 @@ void CompleteAdditionalEntries() {
     namespace execution = swift::runtime::execution;
 
     struct State {
-        swift::runtime::x86::GuestState cpu;
+        execution::NativeRunContext native;
         std::array<u64, 20> inputs;
         u64 seen_pc{};
     };
+
+    constexpr auto state_offset = offsetof(execution::NativeRunContext, state);
 
     constexpr u64 first_pc = 0x4100, other_pc = 0x4200, flags = 0xa5a50000bc000085ULL;
     for (const bool native_nzcv : {false, true}) {
@@ -1719,7 +1794,7 @@ void CompleteAdditionalEntries() {
                                               {Operand::Immediate(other_pc, Type::U64)}));
         std::array<Value, 20> values;
         for (unsigned i = 0; i < values.size(); ++i)
-            values[i] = Load(builder, offsetof(State, inputs) + i * 8);
+            values[i] = Load(builder, offsetof(State, inputs) - state_offset + i * 8);
         auto sum = values.front();
         for (unsigned i = 1; i < values.size(); ++i)
             sum = Need(builder.Emit<OpCode::Add>(
@@ -1728,7 +1803,7 @@ void CompleteAdditionalEntries() {
               offsetof(swift::runtime::x86::GuestState, gprs) + swift::runtime::x86::R8 * 8,
               sum);
         Store(builder,
-              offsetof(State, seen_pc),
+              offsetof(State, seen_pc) - state_offset,
               Load(builder, offsetof(swift::runtime::x86::GuestState, pc)));
         Need(builder.EndBlock(Terminal::Return(Constant(builder, 42))));
         auto program = Submit(builder);
@@ -1760,8 +1835,8 @@ void CompleteAdditionalEntries() {
 
         State state;
         std::atomic<const execution::NativeCode*> active{};
-        execution::NativeRunContext context;
-        context.state = &state.cpu;
+        auto& context = state.native;
+        auto& cpu = context.state;
         context.opaque = &resolver;
         context.resolve = [](void* p, execution::NativeRunContext*) noexcept -> std::uintptr_t {
             auto& value = *static_cast<Resolver*>(p);
@@ -1776,17 +1851,18 @@ void CompleteAdditionalEntries() {
         context.pc_offset = options.pc_offset;
         context.native_nzcv = native_nzcv;
         for (const bool secondary : {false, true}) {
-            state = {};
-            state.cpu.pc = secondary ? other_pc : first_pc;
-            state.cpu.packed_flags = flags;
+            cpu = {};
+            state.seen_pc = 0;
+            cpu.pc = secondary ? other_pc : first_pc;
+            cpu.packed_flags = flags;
             for (unsigned i = 0; i < state.inputs.size(); ++i) state.inputs[i] = i + 1;
             resolver.entry = secondary ? alternate : unit.entry;
             resolver.calls = 0;
-            Check(execution::SvmRunNative(&state.cpu, &context) == 42 && resolver.calls == 1 &&
-                          state.cpu.gprs[swift::runtime::x86::R8] == 210 &&
+            Check(execution::SvmRunNative(&context) == 42 && resolver.calls == 1 &&
+                          cpu.gprs[swift::runtime::x86::R8] == 210 &&
                           state.seen_pc == (secondary ? other_pc : first_pc) &&
-                          state.cpu.gprs[swift::runtime::x86::RDX] == (secondary ? 0 : 123) &&
-                          state.cpu.packed_flags == flags,
+                          cpu.gprs[swift::runtime::x86::RDX] == (secondary ? 0 : 123) &&
+                          cpu.packed_flags == flags,
                   "external prologue and internal body edge preserve SP, own PC, values and "
                   "complete flags");
         }
@@ -1862,15 +1938,15 @@ void LinkedDynamicPC() {
         } resolver{&entry, &destination, entry, &ready};
 
         resolver.target_pc = next_pc;
-        swift::runtime::x86::GuestState state;
         std::atomic<const execution::NativeCode*> active{};
         execution::NativeRunContext context;
+        auto& state = context.state;
         context.opaque = &resolver;
         context.resolve = [](void* opaque,
                              execution::NativeRunContext* current) noexcept -> std::uintptr_t {
             auto& request = *static_cast<Resolver*>(opaque);
             const auto call = request.calls++;
-            const auto pc = current->state->pc;
+            const auto pc = current->state.pc;
             if (call < request.observed.size()) request.observed[call] = pc;
             if (call == 0 && pc == entry_pc) {
                 request.anchor = *request.first;
@@ -1905,7 +1981,7 @@ void LinkedDynamicPC() {
             state.gprs[swift::runtime::x86::RAX] = next_pc;
             resolver.calls = 0;
             resolver.observed = {};
-            Check(execution::SvmRunNative(&state, &context) == 42,
+            Check(execution::SvmRunNative(&context) == 42,
                   "dynamic Dispatch keeps its PC distinct from the target's Return reason");
             Check(resolver.observed[0] == entry_pc && resolver.calls == (warm ? 1u : 2u) &&
                           (warm || resolver.observed[1] == next_pc),
@@ -1973,7 +2049,7 @@ void LinkedDynamicPC() {
             resolver.target_pc = selected_pc;
             context.slots = nullptr;
             context.mask = 0;
-            const auto returned = execution::SvmRunNative(&state, &context);
+            const auto returned = execution::SvmRunNative(&context);
             const bool okay = returned == 42 && resolver.calls == 2 &&
                               resolver.observed[0] == entry_pc &&
                               resolver.observed[1] == selected_pc && state.pc == selected_pc &&
@@ -2107,7 +2183,7 @@ void LinkedDynamicPC() {
                     resolver.calls = 0;
                     resolver.observed = {};
                     const auto selected_pc = zero ? other_pc : next_pc;
-                    Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == 1 &&
+                    Check(execution::SvmRunNative(&context) == 42 && resolver.calls == 1 &&
                                   state.pc == selected_pc &&
                                   state.gprs[swift::runtime::x86::RCX] == selected_pc &&
                                   state.packed_flags == flags,
@@ -2198,7 +2274,7 @@ void LinkedDynamicPC() {
             resolver.observed = {};
             context.dispatcher_entries = context.probe_steps = 0;
             context.cache_hits = 37;
-            Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == 2 &&
+            Check(execution::SvmRunNative(&context) == 42 && resolver.calls == 2 &&
                           resolver.observed[0] == entry_pc && resolver.observed[1] == callable_pc &&
                           state.pc == callable_pc &&
                           state.gprs[swift::runtime::x86::RCX] == callable_pc &&
@@ -2266,7 +2342,7 @@ void LinkedDynamicPC() {
             resolver.observed = {};
             resolver.target_pc = target_pc;
             context.dispatcher_entries = context.probe_steps = context.cache_hits = 0;
-            Check(execution::SvmRunNative(&state, &context) == 42 && resolver.calls == calls &&
+            Check(execution::SvmRunNative(&context) == 42 && resolver.calls == calls &&
                           state.pc == target_pc &&
                           state.gprs[swift::runtime::x86::RCX] == target_pc &&
                           state.packed_flags == initial && context.dispatcher_entries == 1 &&
@@ -3260,11 +3336,12 @@ void LinkedRawAuxiliaryCarry() {
     namespace execution = swift::runtime::execution;
 
     struct ObservedState {
-        swift::runtime::x86::GuestState state;
+        execution::NativeRunContext native;
         std::array<u64, 17> comparisons{};
     };
 
-    constexpr auto comparisons = offsetof(ObservedState, comparisons);
+    constexpr auto comparisons =
+            offsetof(ObservedState, comparisons) - offsetof(execution::NativeRunContext, state);
     constexpr u64 entry_pc = 0x1000, next_pc = 0x2000, initial = 0xa5a50000bc00003cULL;
     constexpr u64 byte_carrier = 0x7fedcba987654380ULL, word_carrier = 0x12345678abcde100ULL;
     const OperationMetadata metadata{
@@ -3728,7 +3805,8 @@ void LinkedRawAuxiliaryCarry() {
         PatchLinkWords(
                 writable, executable, reinterpret_cast<std::uintptr_t>(ready.entry), back_words);
     ObservedState observed_state;
-    auto& state = observed_state.state;
+    auto& context = observed_state.native;
+    auto& state = context.state;
     state.pc = entry_pc;
     state.packed_flags = initial;
     state.gprs[9] = 0xbb;
@@ -3741,13 +3819,12 @@ void LinkedRawAuxiliaryCarry() {
     } resolver{&entry};
 
     std::atomic<const execution::NativeCode*> active{};
-    execution::NativeRunContext context;
     context.opaque = &resolver;
     context.resolve = [](void* opaque,
                          execution::NativeRunContext* current) noexcept -> std::uintptr_t {
         auto& request = *static_cast<Resolver*>(opaque);
         ++request.calls;
-        return request.calls == 1 && current->state->pc == entry_pc
+        return request.calls == 1 && current->state.pc == entry_pc
                        ? reinterpret_cast<std::uintptr_t>(request.entry->entry)
                        : 0;
     };
@@ -3760,7 +3837,7 @@ void LinkedRawAuxiliaryCarry() {
     context.pc_offset = options.pc_offset;
     context.pinned_uniform_slots = options.pinned_uniform_slots;
     context.native_nzcv = true;
-    Check(execution::SvmRunNative(&state, &context) == 16, "RawAF linked ADC numeric result");
+    Check(execution::SvmRunNative(&context) == 16, "RawAF linked ADC numeric result");
     Check(resolver.calls == 1 && context.dispatcher_entries == (writable ? 0u : 1u) &&
                   context.cache_hits == (writable ? 0u : 1u),
           "a resolved edge bypasses PC setup; W^X cold stub keeps the ordinary ready lookup");
@@ -3936,7 +4013,7 @@ void LinkedRawAuxiliaryCarry() {
         state.gprs[15] = word_carrier;
         resolver.calls = 0;
         context.dispatcher_entries = context.cache_hits = 0;
-        Check(execution::SvmRunNative(&state, &context) == 16 && resolver.calls == 1 &&
+        Check(execution::SvmRunNative(&context) == 16 && resolver.calls == 1 &&
                       context.dispatcher_entries == 1 && context.cache_hits == 1 &&
                       state.gprs[13] == next_pc && state.packed_flags == expected,
               "unlinked edge republishes its PC and preserves the raw ABI through the existing "
@@ -4025,7 +4102,6 @@ void FunctionDeferredTestFaults() {
     // State mutated by native code or siglongjmp lives outside its automatic
     // frame, just as the runtime's Process-owned contexts do.
     struct Scene {
-        swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
         execution::NativeRunContext native;
         const execution::NativeCode* code{};
@@ -4044,7 +4120,7 @@ void FunctionDeferredTestFaults() {
                                execution::NativeRunContext* context) noexcept -> std::uintptr_t {
         auto& value = *static_cast<Scene*>(opaque);
         ++value.resolves;
-        return value.resolves == 1 && context->state->pc == entry_pc
+        return value.resolves == 1 && context->state.pc == entry_pc
                        ? reinterpret_cast<std::uintptr_t>(value.code->entry)
                        : 0;
     };
@@ -4063,22 +4139,22 @@ void FunctionDeferredTestFaults() {
     };
     {
         BindFaultCallbacks(scene->faults);
-        execution::FaultScope scope(scene->faults, scene->state);
+        execution::FaultScope scope(scene->faults, scene->native.state);
         const auto run = [&](u64 input, u64 expected_pc, u64 expected_flags) {
-            scene->state = {};
-            scene->state.pc = entry_pc;
-            scene->state.packed_flags = initial;
-            scene->state.gprs[swift::runtime::x86::R10] = input;
+            scene->native.state = {};
+            scene->native.state.pc = entry_pc;
+            scene->native.state.packed_flags = initial;
+            scene->native.state.gprs[swift::runtime::x86::R10] = input;
             scene->resolves = 0;
             scene->faults.signal_number = 0;
             if (sigsetjmp(scene->faults.jump, 1) == 0) {
-                Check(execution::SvmRunNative(&scene->state, &scene->native) == 0 && !expected_pc,
+                Check(execution::SvmRunNative(&scene->native) == 0 && !expected_pc,
                       "zero TEST exit returns through the real native ABI");
             } else
                 Check(expected_pc && scene->faults.signal_number == SIGSEGV,
                       "tagged TEST faults return through the registered signal owner");
-            Check(scene->resolves == 1 && scene->state.packed_flags == expected_flags &&
-                          (!expected_pc || scene->state.pc == expected_pc),
+            Check(scene->resolves == 1 && scene->native.state.packed_flags == expected_flags &&
+                          (!expected_pc || scene->native.state.pc == expected_pc),
                   "TEST fault/exit publishes exact flags, reserved bits and PC");
         };
         run(missing, load_pc, test_flags(0));  // First entry is still Complete XOR-zero.
@@ -4086,13 +4162,13 @@ void FunctionDeferredTestFaults() {
         run(head, load_pc, test_flags(missing));
         Write64(memory, readonly);
         run(head, store_pc, test_flags(readonly));
-        Check(scene->state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault &&
-                      scene->state.gprs[swift::runtime::x86::R12] == readonly,
+        Check(scene->native.state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault &&
+                      scene->native.state.gprs[swift::runtime::x86::R12] == readonly,
               "store fault uses the entry snapshot after the load overwrote the current pin");
         Write64(memory, 0);
         run(head, 0, test_flags(0));
-        Check(scene->state.gprs[swift::runtime::x86::R10] == 0 &&
-                      scene->state.gprs[swift::runtime::x86::R11] == head,
+        Check(scene->native.state.gprs[swift::runtime::x86::R10] == 0 &&
+                      scene->native.state.gprs[swift::runtime::x86::R11] == head,
               "zero exit completes the current TEST rather than its old nonzero snapshot");
         // Patch both accesses at one writable unaligned node, then exercise
         // the same real recipes on faults from the resulting cold accesses.
@@ -4112,8 +4188,9 @@ void FunctionDeferredTestFaults() {
         Check(scene->faults.host_pc ==
                               reinterpret_cast<std::uintptr_t>(code.entry) +
                                       (WordOffset(compiled.faults[1].fallback_offset) + 1) * 4 &&
-                      scene->state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault &&
-                      scene->state.gprs[swift::runtime::x86::R12] == readonly,
+                      scene->native.state.gprs[swift::runtime::x86::R10] ==
+                              loaded_before_store_fault &&
+                      scene->native.state.gprs[swift::runtime::x86::R12] == readonly,
               "cold store faults use the entry snapshot after the load overwrites its destination "
               "pin");
     }
@@ -4232,7 +4309,6 @@ void BlockDeferredTestBoundaries() {
           "Block TEST boundary permissions");
 
     struct Scene {
-        swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
         execution::NativeRunContext native;
         std::array<execution::DispatchSlot, 2> slots{};
@@ -4340,11 +4416,11 @@ void BlockDeferredTestBoundaries() {
                                execution::NativeRunContext* context) noexcept -> std::uintptr_t {
         auto& value = *static_cast<Scene*>(opaque);
         ++value.resolves;
-        if (value.resolves == 1 && context->state->pc == entry_pc)
+        if (value.resolves == 1 && context->state.pc == entry_pc)
             return reinterpret_cast<std::uintptr_t>(value.code->entry);
         value.cold_published = value.expect_cold && value.resolves == 2 &&
-                               context->state->pc == entry_pc &&
-                               context->state->packed_flags == value.expected_flags;
+                               context->state.pc == entry_pc &&
+                               context->state.packed_flags == value.expected_flags;
         return 0;  // A real cold resolver may retire this old arena; never re-enter it here.
     };
     scene->native.mask = scene->slots.size() - 1;
@@ -4385,13 +4461,13 @@ void BlockDeferredTestBoundaries() {
     };
     {
         BindFaultCallbacks(scene->faults);
-        execution::FaultScope scope(scene->faults, scene->state);
+        execution::FaultScope scope(scene->faults, scene->native.state);
         const auto run =
                 [&](u64 input, u64 fault_pc, u64 flags, bool cold_stop = false, bool smc = false) {
-                    scene->state = {};
-                    scene->state.pc = entry_pc;
-                    scene->state.packed_flags = initial;
-                    scene->state.gprs[swift::runtime::x86::R10] = input;
+                    scene->native.state = {};
+                    scene->native.state.pc = entry_pc;
+                    scene->native.state.packed_flags = initial;
+                    scene->native.state.gprs[swift::runtime::x86::R10] = input;
                     scene->expected_flags = flags;
                     scene->resolves = 0;
                     scene->cold_published = false;
@@ -4403,17 +4479,16 @@ void BlockDeferredTestBoundaries() {
                     scene->native.slots = cold_stop ? nullptr : scene->slots.data();
                     scene->native.dispatcher_entries = scene->native.cache_hits = 0;
                     if (sigsetjmp(scene->faults.jump, 1) == 0) {
-                        const auto returned =
-                                execution::SvmRunNative(&scene->state, &scene->native);
+                        const auto returned = execution::SvmRunNative(&scene->native);
                         Check(!fault_pc && returned == (scene->expect_cold ? 2u : 0u),
                               "Block TEST reaches its actual zero/cold exit");
                     } else
                         Check(fault_pc && scene->faults.signal_number == SIGSEGV,
                               "Block TEST fault uses the actual signal owner");
-                    Check(scene->state.pc == (fault_pc             ? fault_pc
-                                              : scene->expect_cold ? entry_pc
-                                                                   : exit_pc) &&
-                                  scene->state.packed_flags == flags &&
+                    Check(scene->native.state.pc == (fault_pc             ? fault_pc
+                                                     : scene->expect_cold ? entry_pc
+                                                                          : exit_pc) &&
+                                  scene->native.state.packed_flags == flags &&
                                   scene->resolves == (scene->expect_cold ? 2u : 1u) &&
                                   (!scene->expect_cold || scene->cold_published),
                           "Block TEST boundaries publish exact flags/reserved bits and use the "
@@ -4424,13 +4499,13 @@ void BlockDeferredTestBoundaries() {
         run(head, load_pc, test_flags(missing));
         Write64(memory, readonly);
         run(head, store_pc, test_flags(readonly));
-        Check(scene->state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault &&
-                      scene->state.gprs[swift::runtime::x86::R12] == readonly,
+        Check(scene->native.state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault &&
+                      scene->native.state.gprs[swift::runtime::x86::R12] == readonly,
               "Block tagged store fault reads R12 after the load has already replaced R10");
         Write64(memory, 0);
         run(head, 0, test_flags(0));
-        Check(scene->state.gprs[swift::runtime::x86::R10] == 0 &&
-                      scene->state.gprs[swift::runtime::x86::R11] == head,
+        Check(scene->native.state.gprs[swift::runtime::x86::R10] == 0 &&
+                      scene->native.state.gprs[swift::runtime::x86::R11] == head,
               "Block zero edge completes the current zero TEST");
         Write64(memory + 15, 0);
         run(head + 15, 0, test_flags(0));
@@ -4448,8 +4523,9 @@ void BlockDeferredTestBoundaries() {
         Check(scene->smc_recovered && scene->faults.smc_write_faults == smc_before + 1 &&
                       !scene->native.slots && scene->native.dispatcher_entries == 1 &&
                       scene->native.cache_hits == 0 && Read64(memory + page) == head &&
-                      scene->state.gprs[swift::runtime::x86::R10] == loaded_before_store_fault &&
-                      scene->state.gprs[swift::runtime::x86::R12] == readonly,
+                      scene->native.state.gprs[swift::runtime::x86::R10] ==
+                              loaded_before_store_fault &&
+                      scene->native.state.gprs[swift::runtime::x86::R12] == readonly,
               "protected tagged store retries, retires the ready self edge and stops in the real "
               "cold resolver");
     }
@@ -4559,7 +4635,6 @@ void LocalFlagsFaults() {
     Write64(memory + 47, 0x80010001);
 
     struct Scene {
-        swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
         execution::NativeRunContext native;
         const execution::NativeCode* code{};
@@ -4578,7 +4653,7 @@ void LocalFlagsFaults() {
                                execution::NativeRunContext* context) noexcept -> std::uintptr_t {
         auto& value = *static_cast<Scene*>(opaque);
         ++value.resolves;
-        return value.resolves == 1 && context->state->pc == entry_pc
+        return value.resolves == 1 && context->state.pc == entry_pc
                        ? reinterpret_cast<std::uintptr_t>(value.code->entry)
                        : 0;
     };
@@ -4595,38 +4670,39 @@ void LocalFlagsFaults() {
             OpCode::Add, ~u64{}, 1, 64, metadata.profile, metadata.flag_outputs, initial);
     {
         BindFaultCallbacks(scene->faults);
-        execution::FaultScope scope(scene->faults, scene->state);
+        execution::FaultScope scope(scene->faults, scene->native.state);
         const auto run = [&](u64 first_address,
                              u64 second_address,
                              u64 third_address,
                              u64 fault_pc,
                              u64 expected_rax) {
-            scene->state = {};
-            scene->state.pc = entry_pc;
-            scene->state.packed_flags = initial;
-            scene->state.gprs[swift::runtime::x86::RAX] = ~u64{};
-            scene->state.gprs[swift::runtime::x86::RDX] = 0x1234567887654321ULL;
-            scene->state.gprs[swift::runtime::x86::RCX] = 0xabcdef0011223344ULL;
-            scene->state.gprs[swift::runtime::x86::R8] = first_address;
-            scene->state.gprs[swift::runtime::x86::R9] = second_address;
-            scene->state.gprs[swift::runtime::x86::R11] = third_address;
+            scene->native.state = {};
+            scene->native.state.pc = entry_pc;
+            scene->native.state.packed_flags = initial;
+            scene->native.state.gprs[swift::runtime::x86::RAX] = ~u64{};
+            scene->native.state.gprs[swift::runtime::x86::RDX] = 0x1234567887654321ULL;
+            scene->native.state.gprs[swift::runtime::x86::RCX] = 0xabcdef0011223344ULL;
+            scene->native.state.gprs[swift::runtime::x86::R8] = first_address;
+            scene->native.state.gprs[swift::runtime::x86::R9] = second_address;
+            scene->native.state.gprs[swift::runtime::x86::R11] = third_address;
             scene->resolves = 0;
             scene->faults.signal_number = 0;
             if (sigsetjmp(scene->faults.jump, 1) == 0) {
-                const auto returned = execution::SvmRunNative(&scene->state, &scene->native);
+                const auto returned = execution::SvmRunNative(&scene->native);
                 Check(!fault_pc && returned == 42,
                       "local flags complete before the real Return42 exit");
             } else
                 Check(fault_pc && scene->faults.signal_number == SIGSEGV,
                       "local PF/carry faults use the registered signal owner");
-            Check(scene->resolves == 1 && scene->state.pc == (fault_pc ? fault_pc : entry_pc) &&
-                          scene->state.gprs[swift::runtime::x86::RAX] == expected_rax &&
-                          scene->state.packed_flags == expected_flags &&
-                          scene->state.gprs[swift::runtime::x86::RDX] ==
+            Check(scene->resolves == 1 &&
+                          scene->native.state.pc == (fault_pc ? fault_pc : entry_pc) &&
+                          scene->native.state.gprs[swift::runtime::x86::RAX] == expected_rax &&
+                          scene->native.state.packed_flags == expected_flags &&
+                          scene->native.state.gprs[swift::runtime::x86::RDX] ==
                                   ((fault_pc == first_pc || fault_pc == second_pc)
                                            ? 0x1234567887654321ULL
                                            : 0xffff8001ULL) &&
-                          scene->state.gprs[swift::runtime::x86::RCX] ==
+                          scene->native.state.gprs[swift::runtime::x86::RCX] ==
                                   (fault_pc ? 0xabcdef0011223344ULL : 0xffffffff80010001ULL),
                   "local flags fault/exit preserves exact PC, current RAX, whole packed flags and "
                   "reserved bits");
@@ -4804,7 +4880,6 @@ void VectorPinBoundaries() {
           "vector boundary fault scene mapping");
 
     struct Scene {
-        swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
         execution::NativeRunContext native;
         execution::DispatchSlot slot;
@@ -4830,17 +4905,18 @@ void VectorPinBoundaries() {
                                execution::NativeRunContext* context) noexcept -> std::uintptr_t {
         auto& value = *static_cast<Scene*>(opaque);
         ++value.resolves;
-        if (value.resolves == 1 && context->state->pc == entry_pc) {
-            value.root_published =
-                    std::memcmp(value.state.xmm, value.initial.data(), sizeof(value.state.xmm)) ==
-                    0;
+        if (value.resolves == 1 && context->state.pc == entry_pc) {
+            value.root_published = std::memcmp(value.native.state.xmm,
+                                               value.initial.data(),
+                                               sizeof(value.native.state.xmm)) == 0;
             value.anchor = value.source;
             return reinterpret_cast<std::uintptr_t>(value.source.entry);
         }
-        if (value.resolves != 2 || context->state->pc != next_pc) return 0;
-        value.cold_published =
-                std::memcmp(value.state.xmm, value.expected.data(), sizeof(value.state.xmm)) == 0;
-        std::memcpy(value.state.xmm[0], value.replacement.data(), sizeof(Vector));
+        if (value.resolves != 2 || context->state.pc != next_pc) return 0;
+        value.cold_published = std::memcmp(value.native.state.xmm,
+                                           value.expected.data(),
+                                           sizeof(value.native.state.xmm)) == 0;
+        std::memcpy(value.native.state.xmm[0], value.replacement.data(), sizeof(Vector));
         value.expected[0] = value.replacement;
         asm volatile(
                 "movi v16.16b, #0xa1\n"
@@ -4862,16 +4938,16 @@ void VectorPinBoundaries() {
     scene->native.native_nzcv = true;
     {
         BindFaultCallbacks(scene->faults);
-        execution::FaultScope scope(scene->faults, scene->state);
+        execution::FaultScope scope(scene->faults, scene->native.state);
         for (unsigned mode = 0; mode < 3; ++mode) {
-            scene->state = {};
-            scene->state.pc = entry_pc;
-            scene->state.packed_flags = flags;
-            std::memcpy(scene->state.xmm, initial.data(), sizeof(scene->state.xmm));
-            scene->state.gprs[swift::runtime::x86::RAX] = next_pc;
-            scene->state.gprs[swift::runtime::x86::RDI] =
+            scene->native.state = {};
+            scene->native.state.pc = entry_pc;
+            scene->native.state.packed_flags = flags;
+            std::memcpy(scene->native.state.xmm, initial.data(), sizeof(scene->native.state.xmm));
+            scene->native.state.gprs[swift::runtime::x86::RAX] = next_pc;
+            scene->native.state.gprs[swift::runtime::x86::RDI] =
                     reinterpret_cast<std::uintptr_t>(scene->observed.data());
-            scene->state.gprs[swift::runtime::x86::R8] =
+            scene->native.state.gprs[swift::runtime::x86::R8] =
                     reinterpret_cast<std::uintptr_t>(memory + (mode ? 0 : page));
             scene->expected = expected;
             scene->observed = {};
@@ -4880,7 +4956,7 @@ void VectorPinBoundaries() {
             scene->root_published = scene->cold_published = false;
             scene->faults.signal_number = 0;
             if (sigsetjmp(scene->faults.jump, 1) == 0) {
-                const auto returned = execution::SvmRunNative(&scene->state, &scene->native);
+                const auto returned = execution::SvmRunNative(&scene->native);
                 Check(mode && returned == (mode == 2 ? 2u : 42u),
                       "vector pins survive cold success and failure Return reasons");
             } else
@@ -4888,11 +4964,12 @@ void VectorPinBoundaries() {
                       "vector pins recover through the actual fatal owner");
             Check(scene->root_published && scene->resolves == (mode ? 2u : 1u) &&
                           (!mode || scene->cold_published) &&
-                          scene->state.pc == (mode ? next_pc : fault_pc) &&
-                          scene->state.packed_flags == flags,
+                          scene->native.state.pc == (mode ? next_pc : fault_pc) &&
+                          scene->native.state.packed_flags == flags,
                   "root/cold/fatal boundaries publish the real PC and preserve whole packed flags");
-            Check(std::memcmp(scene->state.xmm, scene->expected.data(), sizeof(scene->state.xmm)) ==
-                          0,
+            Check(std::memcmp(scene->native.state.xmm,
+                              scene->expected.data(),
+                              sizeof(scene->native.state.xmm)) == 0,
                   "all XMM bits survive old SSA, partial/cross-slot aliases, helper clobbers and "
                   "cold reload");
             Check(scene->observed == live_bits,
@@ -4945,6 +5022,7 @@ int main() {
         ConstantsAndViews();
         StateAndMemory();
         Spills();
+        SharedContextScalarRegister();
         CrossingLoops();
         EmptyHeaderCollision();
         ReorderedBodies();
