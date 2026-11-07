@@ -4,6 +4,7 @@ static Value WholeFlags(Emitter& builder) {
     return Require(
             builder.GetFlags(Type::U64, {Operand::ValueOf(anchor), Operand::Flags(Flag::All)}));
 }
+
 static Value Extract(
         Emitter& builder, Value value, unsigned first, unsigned count, Type type = Type::U64) {
     return Require(builder.BitExtract(type,
@@ -11,6 +12,7 @@ static Value Extract(
                                        Operand::Immediate(first, Type::U8),
                                        Operand::Immediate(count, Type::U8)}));
 }
+
 static Value Insert(Emitter& builder, Value parent, Value value, unsigned first, unsigned count) {
     return Require(builder.BitInsert(Type::U64,
                                      {Operand::ValueOf(parent),
@@ -18,6 +20,7 @@ static Value Insert(Emitter& builder, Value parent, Value value, unsigned first,
                                       Operand::Immediate(first, Type::U8),
                                       Operand::Immediate(count, Type::U8)}));
 }
+
 static Value RflagsValue(Emitter& builder, bool low_byte = false) {
     auto result = Constant(builder, low_byte ? 2 : 0x202);
     const auto put = [&](Flag flag, unsigned bit) {
@@ -35,6 +38,7 @@ static Value RflagsValue(Emitter& builder, bool low_byte = false) {
     }
     return result;
 }
+
 static void ImportRflags(Emitter& builder, Value rflags, bool low_byte = false) {
     auto carrier = WholeFlags(builder);
     const auto put = [&](unsigned source, u64 portable) {
@@ -61,6 +65,7 @@ static void ImportRflags(Emitter& builder, Value rflags, bool low_byte = false) 
     }
     Require(builder.RestoreFlags(Type::Void, {Operand::ValueOf(carrier), Operand::Flags(mask)}));
 }
+
 static void FlagInstruction(Emitter& builder,
                             StateLayout layout,
                             const InstructionData& instruction,
@@ -126,6 +131,7 @@ static void FlagInstruction(Emitter& builder,
             Unsupported();
     }
 }
+
 static void SwapBytes(Emitter& builder,
                       StateLayout layout,
                       const InstructionData& instruction,
@@ -168,6 +174,7 @@ static void SwapBytes(Emitter& builder,
                     result,
                     destination.size);
 }
+
 static void LeadingCount(Emitter& builder,
                          StateLayout layout,
                          const InstructionData& instruction,
@@ -210,10 +217,12 @@ static void LeadingCount(Emitter& builder,
                FlagBits(Flag::Zero),
                {}};
 }
+
 static bool CounterConditional(Op opcode) {
     return opcode == Op::LOOP || opcode == Op::LOOPZ || opcode == Op::LOOPNZ ||
            opcode == Op::JRCXZ || opcode == Op::JECXZ || opcode == Op::JCXZ;
 }
+
 template <class Flow> static void CounterBranch(Emitter& builder,
                                                 StateLayout layout,
                                                 const InstructionData& instruction,
@@ -248,6 +257,7 @@ template <class Flow> static void CounterBranch(Emitter& builder,
     flow.branch(condition, next_pc + instruction.immediate, next_pc);
     ended = true;
 }
+
 static Value StringAddress(Emitter& builder,
                            StateLayout layout,
                            Value index,
@@ -267,6 +277,7 @@ static Value StringAddress(Emitter& builder,
             Require(builder.LoadUniform(Type::U64, {Operand::Uniform(offset, Type::U64)}));
     return Add(builder, address, Operand::ValueOf(base));
 }
+
 static void StringInstruction(Emitter& builder,
                               StateLayout layout,
                               const InstructionData& instruction,
@@ -388,6 +399,7 @@ static void StringInstruction(Emitter& builder,
         body();
     EndDispatch(builder);
 }
+
 static void BitString(Emitter& builder,
                       StateLayout layout,
                       const InstructionData& instruction,
@@ -487,6 +499,7 @@ static void BitString(Emitter& builder,
     const auto carry = Extract(builder, shifted, 0, 1);
     Require(builder.SetCarry(Type::Void, {Operand::ValueOf(carry)}));
 }
+
 static void DoubleShift(Emitter& builder,
                         StateLayout layout,
                         const InstructionData& instruction,
@@ -588,6 +601,7 @@ static void DoubleShift(Emitter& builder,
         Require(builder.SetOverflow(Type::Void, {Operand::ValueOf(of)}));
     });
 }
+
 static void CarryRotate(Emitter& builder,
                         StateLayout layout,
                         const InstructionData& instruction,
@@ -730,6 +744,7 @@ static void CarryRotate(Emitter& builder,
         Require(builder.SetOverflow(Type::Void, {Operand::ValueOf(of)}));
     });
 }
+
 static void EnterFrame(Emitter& builder,
                        StateLayout layout,
                        const InstructionData& instruction,

@@ -18,21 +18,26 @@ using namespace ir;
 namespace a64 = backend::arm64;
 using Clock = std::chrono::steady_clock;
 using u64 = std::uint64_t;
+
 struct Counts {
     WorkCounts input{};
     std::size_t words{}, spills{}, frame{};
 };
+
 struct Options {
     unsigned requests{128}, nodes{256}, samples{5}, warmup{1};
     bool flags{};
 };
+
 void Require(bool okay) {
     if (!okay) throw std::runtime_error("scalar compile benchmark rejected actual work");
 }
+
 Value ValueOf(AppendResult result) {
     Require(bool(result));
     return result.GetValue();
 }
+
 void Check(Error error) { Require(error == Error::None); }
 
 // Synthetic input intentionally depends on guest state. Arithmetic cannot be

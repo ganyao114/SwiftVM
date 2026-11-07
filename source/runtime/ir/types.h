@@ -11,14 +11,18 @@ namespace swift::runtime::ir {
 struct NodeId {
     static constexpr std::uint32_t invalid = std::numeric_limits<std::uint32_t>::max();
     std::uint32_t value{invalid};
+
     constexpr explicit operator bool() const noexcept { return value != invalid; }
+
     friend constexpr bool operator==(NodeId, NodeId) = default;
 };
 
 struct BlockId {
     static constexpr std::uint32_t invalid = std::numeric_limits<std::uint32_t>::max();
     std::uint32_t value{invalid};
+
     constexpr explicit operator bool() const noexcept { return value != invalid; }
+
     friend constexpr bool operator==(BlockId, BlockId) = default;
 };
 
@@ -27,13 +31,18 @@ struct BlockId {
 struct Value {
     std::uint64_t unit{};
     NodeId node{};
+
     constexpr explicit operator bool() const noexcept { return unit && bool(node); }
+
     friend constexpr bool operator==(Value, Value) = default;
 };
+
 struct BlockRef {
     std::uint64_t unit{};
     BlockId id{};
+
     constexpr explicit operator bool() const noexcept { return unit && bool(id); }
+
     friend constexpr bool operator==(BlockRef, BlockRef) = default;
 };
 
@@ -58,10 +67,13 @@ enum class Type : std::uint8_t {
     V128,
     V256,
 };
+
 constexpr bool ValidType(Type type) noexcept {
     return static_cast<unsigned>(type) <= static_cast<unsigned>(Type::V256);
 }
+
 constexpr bool IntegerType(Type type) noexcept { return type >= Type::Bool && type <= Type::S64; }
+
 constexpr unsigned TypeBits(Type type) noexcept {
     switch (type) {
         case Type::Bool:
@@ -117,15 +129,18 @@ enum class TargetFeature : std::uint64_t {
     // source blocks, sharing one native unit and its lifetime.
     ExternalEntries = UINT64_C(1) << 6,
 };
+
 // Immutable target capabilities, consumed by the frontend without a host-ISA
 // dependency. Unknown/EarlyOff preserve the bits but do not enable a feature.
 struct TargetInfo {
     TargetMode mode{TargetMode::Unknown};
     std::uint32_t target{};
     std::uint64_t features{};
+
     constexpr bool Has(TargetFeature feature) const noexcept {
         return mode == TargetMode::Known && (features & static_cast<std::uint64_t>(feature));
     }
+
     friend constexpr bool operator==(TargetInfo, TargetInfo) = default;
 };
 
@@ -196,10 +211,13 @@ enum class Flag : std::uint64_t {
     NZCV = 15,
     All = 95,
 };
+
 constexpr std::uint64_t FlagBits(Flag flags) noexcept { return static_cast<std::uint64_t>(flags); }
+
 constexpr Flag operator|(Flag first, Flag second) noexcept {
     return static_cast<Flag>(FlagBits(first) | FlagBits(second));
 }
+
 constexpr Flag operator&(Flag first, Flag second) noexcept {
     return static_cast<Flag>(FlagBits(first) & FlagBits(second));
 }
@@ -229,6 +247,7 @@ enum class FlagProfile : std::uint8_t {
     ArithmeticCanonicalCarry,
     LogicalZeroCVA,
 };
+
 struct OperationMetadata {
     std::uint64_t flag_outputs{};
     FlagProfile profile{FlagProfile::None};
@@ -247,35 +266,45 @@ struct Cell {
     static constexpr std::uint64_t wide_bit = std::uint64_t{1} << 55;
     std::uint64_t bits{};
 };
+
 static_assert(sizeof(Cell) == 8);
 
 class CellRange;
+
 class CellView {
 public:
     constexpr CellView() noexcept = default;
+
     constexpr OperandKind Kind() const noexcept {
         return static_cast<OperandKind>((header >> 48) & 0x7f);
     }
+
     constexpr Type TypeView() const noexcept { return static_cast<Type>(header >> 56); }
+
     constexpr std::uint64_t Payload() const noexcept {
         return Kind() == OperandKind::Expression || Kind() == OperandKind::Arguments ? 0 : payload;
     }
+
     constexpr std::uint32_t Count() const noexcept {
         return Kind() == OperandKind::Expression || Kind() == OperandKind::Arguments
                        ? static_cast<std::uint32_t>(header)
                        : 0;
     }
+
     constexpr std::uint16_t Code() const noexcept {
         return Kind() == OperandKind::Expression ? static_cast<std::uint16_t>(header >> 32) : 0;
     }
+
     constexpr OperandOp ExpressionOp() const noexcept {
         return static_cast<OperandOp>(Code() & 0xff);
     }
+
     constexpr std::uint8_t ShiftAmount() const noexcept { return Code() >> 8; }
 
 private:
     constexpr CellView(std::uint64_t header, std::uint64_t payload) noexcept
             : header(header), payload(payload) {}
+
     std::uint64_t header{}, payload{};
     friend class CellRange;
 };
@@ -291,21 +320,26 @@ public:
         using iterator_category = std::forward_iterator_tag;
         using iterator_concept = std::forward_iterator_tag;
         Iterator() noexcept = default;
+
         CellView operator*() const noexcept { return Read(current, end); }
+
         Iterator& operator++() noexcept {
             if (current != end)
                 current += (current->bits & Cell::wide_bit) && end - current >= 2 ? 2 : 1;
             return *this;
         }
+
         Iterator operator++(int) noexcept {
             auto old = *this;
             ++*this;
             return old;
         }
+
         friend bool operator==(Iterator, Iterator) = default;
 
     private:
         Iterator(const Cell* current, const Cell* end) noexcept : current(current), end(end) {}
+
         const Cell* current{};
         const Cell* end{};
         friend class CellRange;
@@ -313,18 +347,26 @@ public:
     };
 
     CellRange() noexcept = default;
+
     Iterator begin() const noexcept { return {words.data(), End()}; }
+
     Iterator end() const noexcept { return {End(), End()}; }
+
     const Cell* data() const noexcept { return words.data(); }
+
     bool empty() const noexcept { return words.empty(); }
+
     std::size_t WordCount() const noexcept { return words.size(); }  // O(1), physical words.
+
     CellView front() const noexcept { return Read(words.data(), End()); }
 
 private:
     explicit CellRange(std::span<const Cell> words) noexcept : words(words) {}
+
     const Cell* End() const noexcept {
         return words.empty() ? words.data() : words.data() + words.size();
     }
+
     static CellView Read(const Cell* at, const Cell* end) noexcept {
         if (at == end) return {};
         const auto header = at->bits;
@@ -334,6 +376,7 @@ private:
         }
         return {header, static_cast<std::uint32_t>(header)};
     }
+
     std::span<const Cell> words;
     friend class Program;
 };
@@ -356,6 +399,7 @@ struct Operand {
         out.type = view;
         return out;
     }
+
     static constexpr Operand Immediate(std::uint64_t bits, Type type) noexcept {
         Operand out;
         out.kind = OperandKind::Immediate;
@@ -363,6 +407,7 @@ struct Operand {
         out.type = type;
         return out;
     }
+
     static constexpr Operand Uniform(std::uint32_t offset, Type type) noexcept {
         Operand out;
         out.kind = OperandKind::Uniform;
@@ -370,6 +415,7 @@ struct Operand {
         out.type = type;
         return out;
     }
+
     static constexpr Operand Local(std::uint32_t slot, Type type) noexcept {
         Operand out;
         out.kind = OperandKind::Local;
@@ -377,22 +423,27 @@ struct Operand {
         out.type = type;
         return out;
     }
+
     static constexpr Operand Condition(std::uint32_t condition) noexcept {
         Operand out;
         out.kind = OperandKind::Condition;
         out.payload = condition;
         return out;
     }
+
     static constexpr Operand Condition(::swift::runtime::ir::Condition condition) noexcept {
         return Condition(static_cast<std::uint32_t>(condition));
     }
+
     static constexpr Operand Flags(std::uint64_t flags) noexcept {
         Operand out;
         out.kind = OperandKind::Flags;
         out.payload = flags;
         return out;
     }
+
     static constexpr Operand Flags(Flag flags) noexcept { return Flags(FlagBits(flags)); }
+
     // The existing 16-bit code word carries the operation and its shift.
     // Code() retains both bytes for lossless traces and semantic checksums.
     static constexpr Operand Expression(OperandOp operation,
@@ -404,12 +455,14 @@ struct Operand {
         out.count = atoms;
         return out;
     }
+
     static constexpr Operand Arguments(std::uint32_t cells) noexcept {
         Operand out;
         out.kind = OperandKind::Arguments;
         out.count = cells;
         return out;
     }
+
     static constexpr Operand Lambda(std::uint64_t traits = 0) noexcept {
         Operand out;
         out.kind = OperandKind::Lambda;
@@ -419,6 +472,7 @@ struct Operand {
 };
 
 enum class TerminalKind : std::uint8_t { Incomplete, Return, Jump, Branch, Unreachable, Dispatch };
+
 struct Terminal {
     TerminalKind kind{TerminalKind::Incomplete};
     bool value_present{};
@@ -431,6 +485,7 @@ struct Terminal {
         out.kind = TerminalKind::Return;
         return out;
     }
+
     static constexpr Terminal Return(Value value, Type view = Type::Void) noexcept {
         auto out = Return();
         out.value_present = true;
@@ -438,12 +493,14 @@ struct Terminal {
         out.value_type = view;
         return out;
     }
+
     static constexpr Terminal Jump(BlockRef target) noexcept {
         Terminal out;
         out.kind = TerminalKind::Jump;
         out.first = target;
         return out;
     }
+
     static constexpr Terminal Branch(Value condition,
                                      BlockRef yes,
                                      BlockRef no,
@@ -457,11 +514,13 @@ struct Terminal {
         out.value_type = view;
         return out;
     }
+
     static constexpr Terminal Unreachable() noexcept {
         Terminal out;
         out.kind = TerminalKind::Unreachable;
         return out;
     }
+
     static constexpr Terminal Dispatch() noexcept {
         Terminal out;
         out.kind = TerminalKind::Dispatch;

@@ -4,12 +4,14 @@ static bool VRegister(const DecodedOperand& operand) {
     return operand.type == GuestOperandKind::Register && operand.index >= Register::XMM0 &&
            operand.index <= Register::XMM15;
 }
+
 static u32 VOffset(StateLayout layout, const DecodedOperand& operand) {
     if (!VRegister(operand) || layout.fprs_offset == UINT32_MAX ||
         layout.fprs_offset > UINT32_MAX - 255)
         Unsupported();
     return layout.fprs_offset + (operand.index - Register::XMM0) * 16;
 }
+
 static bool AlignedLiteralAddress(const InstructionData& instruction,
                                   const DecodedOperand& operand,
                                   u64 next_pc) {
@@ -19,6 +21,7 @@ static bool AlignedLiteralAddress(const InstructionData& instruction,
     return operand.type == GuestOperandKind::Memory && operand.index == Register::RIP &&
            !((next_pc + instruction.disp) & 15);
 }
+
 static Value VRead(Emitter& builder,
                    StateLayout layout,
                    const InstructionData& instruction,
@@ -47,6 +50,7 @@ static Value VRead(Emitter& builder,
                 Type::Void, {Operand::ValueOf(address), Operand::Immediate(15, Type::U8)}));
     return LoadMemory(builder, Type::V128, address, displacement);
 }
+
 template <OpCode op = OpCode::StoreMemoryTSO> static void VWrite(Emitter& builder,
                                                                  StateLayout layout,
                                                                  const InstructionData& instruction,
@@ -77,6 +81,7 @@ template <OpCode op = OpCode::StoreMemoryTSO> static void VWrite(Emitter& builde
                 Type::Void, {Operand::ValueOf(address), Operand::Immediate(15, Type::U8)}));
     StoreMemory<op>(builder, address, value, 128, displacement);
 }
+
 static Value VScalarRead(Emitter& builder,
                          StateLayout layout,
                          const InstructionData& instruction,
@@ -101,6 +106,7 @@ static Value VScalarRead(Emitter& builder,
     PrepareFaultPC(builder, layout, pc, target);
     return ReadData(builder, layout, instruction, operand, next_pc, target);
 }
+
 static Value VLowScalar(Emitter& builder, Value scalar, unsigned bits) {
     if (bits == 32)
         scalar = Require(builder.ZeroExtend64(Type::U64, {Operand::ValueOf(scalar, Type::U32)}));
@@ -113,6 +119,7 @@ static Value VLowScalar(Emitter& builder, Value scalar, unsigned bits) {
                                          Operand::Immediate(8, Type::U8),
                                          Operand::Immediate(0, Type::U8)}));
 }
+
 static void ScalarDouble(Emitter& builder,
                          StateLayout layout,
                          const InstructionData& instruction,
@@ -319,6 +326,7 @@ static void ScalarDouble(Emitter& builder,
     }
     VWrite(builder, layout, instruction, destination, result, pc, next_pc, target);
 }
+
 static bool Vector(Emitter& builder,
                    StateLayout layout,
                    const InstructionData& instruction,

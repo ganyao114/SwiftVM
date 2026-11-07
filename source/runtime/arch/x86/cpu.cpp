@@ -5,10 +5,13 @@ namespace swift::runtime::x86 {
 namespace {
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
+
 constexpr CpuQueryResult Pack(u32 a, u32 b, u32 c, u32 d) {
     return {u64{a} | (u64{b} << 32), u64{c} | (u64{d} << 32)};
 }
+
 constexpr char brand[48] = "SwiftVM x86-64 baseline CPU";
+
 constexpr u32 BrandWord(unsigned offset) {
     u32 word{};
     for (unsigned i = 0; i < 4; ++i)

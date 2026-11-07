@@ -5,6 +5,7 @@ namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
 std::uintptr_t X87Helper() noexcept;
+
 namespace detail {
 using x86::X87Command;
 using x86::X87Encode;
@@ -13,6 +14,7 @@ using x86::X87MetadataOffset;
 using x86::X87MetadataOpcode;
 using x86::X87Result;
 using x86::X87State;
+
 void Writer::LoadMxcsrFlushControl() {
     if (options.mxcsr_flush_mode != UINT8_MAX) return;
     const auto offset = options.mxcsr_flush_offset;
@@ -81,9 +83,11 @@ void Writer::ConvertFloatToInteger(unsigned destination,
     masm.Patch(valid, masm.Here());
     if (integer_bits < 32) Narrow(destination, destination, integer_bits);
 }
+
 void Writer::TruncateDoubleToInteger(unsigned destination, unsigned raw, unsigned bits) {
     ConvertFloatToInteger(destination, raw, 64, bits, true);
 }
+
 void Writer::ConvertScalarFloat(unsigned destination, unsigned raw, unsigned source_bits) {
     const auto input = source_bits == 32 ? S(0) : D(0);
     const auto result_bits = source_bits == 32 ? 64u : 32u;
@@ -238,6 +242,7 @@ void Writer::HandleVecFCvtIntToFloatFamily(OpContext& ctx) {
     masm.exact.scvtf(fp, R(value, source_bits == 64 ? 64 : 32));
     masm.exact.fmov(R(ctx.destination, float_bits), fp);
 }
+
 void Writer::HandleVecFCvtFloatToIntFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto input = cursor.Take();
@@ -251,6 +256,7 @@ void Writer::HandleVecFCvtFloatToIntFamily(OpContext& ctx) {
     ConvertFloatToInteger(
             ctx.destination, RawScalar(input, 16), float_bits, integer_bits, truncate != 0);
 }
+
 void Writer::HandleVecFCvtScalarFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto input = cursor.Take();
@@ -461,6 +467,7 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
         masm.exact.ins(Lanes(ctx.destination, bits), 0, Lanes(destination, bits), 0);
     }
 }
+
 void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& c = ctx.cursor;
@@ -492,6 +499,7 @@ void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
     } else
         VectorMove(ctx.destination, result);
 }
+
 void Writer::HandleVecFUnaryFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& c = ctx.cursor;
@@ -546,6 +554,7 @@ void Writer::HandleVecFUnaryFamily(OpContext& ctx) {
     } else
         VectorMove(ctx.destination, value);
 }
+
 void Writer::HandleVecFRoundIntFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& c = ctx.cursor;
@@ -575,6 +584,7 @@ void Writer::HandleVecFRoundIntFamily(OpContext& ctx) {
     } else
         VectorMove(ctx.destination, value);
 }
+
 void Writer::HandleVecFMulAddFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& c = ctx.cursor;

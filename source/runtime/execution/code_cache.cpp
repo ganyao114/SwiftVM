@@ -6,6 +6,7 @@
 namespace swift::runtime::execution {
 CodeCache::CodeCache(NativeCode::Function pending, const HostBackendOps& backend) noexcept
         : backend(backend), empty{.entry = pending} {}
+
 NativeCode::Function CodeCache::Find(std::uint64_t pc, NativeCode* unit) const noexcept {
     if (slots.empty()) return {};
     auto at = Index(pc, slots.size() - 1);
@@ -19,6 +20,7 @@ NativeCode::Function CodeCache::Find(std::uint64_t pc, NativeCode* unit) const n
     }
     return {};
 }
+
 const NativeCode* CodeCache::FindHost(std::uintptr_t pc) const noexcept {
     // Exceptional-only borrow. The one guest is not executing while these
     // vectors grow, and retirement waits until its active borrow has ended.
@@ -28,6 +30,7 @@ const NativeCode* CodeCache::FindHost(std::uintptr_t pc) const noexcept {
     }
     return nullptr;
 }
+
 void CodeCache::InsertReady(std::uint64_t pc,
                             NativeCode code,
                             std::span<const backend::EntryPoint> extra) {
@@ -51,6 +54,7 @@ void CodeCache::InsertReady(std::uint64_t pc,
                           reinterpret_cast<std::uintptr_t>(code.entry) + entry.offset));
     }
 }
+
 void CodeCache::BindReady(std::uint64_t pc, std::uint32_t id, NativeCode::Function entry) {
     auto& slot = Reserve(pc);
     if (slot.code_id != UINT32_MAX) return;  // First ready entry owns this PC.
@@ -70,15 +74,18 @@ void CodeCache::BindReady(std::uint64_t pc, std::uint32_t id, NativeCode::Functi
     if (&slot != &slots[home] && slots[home].occupied && slots[home].code_id == UINT32_MAX)
         std::swap(slot, slots[home]);
 }
+
 std::size_t CodeCache::Index(std::uint64_t pc, std::size_t mask) noexcept {
     return DirectoryIndex(pc, mask);
 }
+
 std::size_t CodeCache::EmptyOrMatching(const std::vector<DispatchSlot>& table,
                                        std::uint64_t pc) noexcept {
     auto at = Index(pc, table.size() - 1);
     while (table[at].occupied && table[at].pc != pc) at = (at + 1) & (table.size() - 1);
     return at;
 }
+
 DispatchSlot& CodeCache::Reserve(std::uint64_t pc) {
     std::size_t at{};
     if (!slots.empty()) {
@@ -95,6 +102,7 @@ DispatchSlot& CodeCache::Reserve(std::uint64_t pc) {
     ++occupied;
     return slot;
 }
+
 void CodeCache::Grow() {
     if (slots.size() > slots.max_size() / 2) throw std::length_error("native PC capacity overflow");
     std::vector<DispatchSlot> next(slots.empty() ? 32 : slots.size() * 2, empty);
@@ -111,12 +119,14 @@ void CodeCache::Grow() {
     slots.swap(next);
     ++allocations;
 }
+
 void CodeCache::Clear() noexcept {
     for (auto& slot : slots) slot = empty;
     codes.clear();
     links.clear();
     entries = occupied = pending_count = pending_targets = 0;
 }
+
 void CodeCache::Release() noexcept {
     std::vector<DispatchSlot>{}.swap(slots);
     std::vector<NativeCode>{}.swap(codes);

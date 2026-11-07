@@ -7,9 +7,11 @@ extern "C" std::uint64_t SvmX87Execute(void*, std::uint64_t, std::uint64_t) noex
 namespace {
 using u64 = std::uint64_t;
 using u128 = unsigned __int128;
+
 struct DivisionResult {
     u64 quotient, remainder;
 };
+
 [[noreturn]] void DivisionFault() {
     std::raise(SIGFPE);
     std::abort();
@@ -181,11 +183,13 @@ __attribute__((naked)) static void ExecuteX87() {
 #endif
     );
 }
+
 #undef SVM_HELPER_SAVE_BANK
 #undef SVM_HELPER_RESTORE_BANK
 #else
 // Cross-host word-generation targets cannot execute this private ARM ABI.
 static void QueryCpuid() { std::abort(); }
+
 static void ExecuteX87() { std::abort(); }
 #endif
 
@@ -204,6 +208,8 @@ std::uintptr_t DivisionHelper(unsigned bits, bool sign) noexcept {
     return reinterpret_cast<std::uintptr_t>(&SvmArm64WideDivide);
 #endif
 }
+
 std::uintptr_t CpuidHelper() noexcept { return reinterpret_cast<std::uintptr_t>(&QueryCpuid); }
+
 std::uintptr_t X87Helper() noexcept { return reinterpret_cast<std::uintptr_t>(&ExecuteX87); }
 }  // namespace swift::runtime::backend::arm64

@@ -16,22 +16,29 @@ namespace swift::runtime::execution {
 namespace {
 using u64 = std::uint64_t;
 constexpr u64 failed = UINT64_MAX;
+
 [[noreturn]] void Error(const std::string& message) { throw std::runtime_error(message); }
+
 [[noreturn]] void SystemError(const char* operation) {
     Error(std::string(operation) + ": " + std::strerror(errno));
 }
+
 u64 Add(u64 left, u64 right) {
     if (right > UINT64_MAX - left) Error("guest address/size overflow");
     return left + right;
 }
+
 u64 Up(u64 value, u64 page) { return Add(value, page - 1) & ~(page - 1); }
+
 bool IsFile(const MemoryRegion& region) noexcept {
     return region.backing == BackingKind::FilePrivate || region.backing == BackingKind::FileShared;
 }
+
 bool SameFile(const MemoryRegion& left, const MemoryRegion& right) noexcept {
     return IsFile(left) && IsFile(right) && left.device == right.device &&
            left.inode == right.inode;
 }
+
 bool FileOverlap(const MemoryRegion& source,
                  const MemoryRegion& peer,
                  u64 first,
@@ -39,6 +46,7 @@ bool FileOverlap(const MemoryRegion& source,
     return SameFile(source, peer) && first < peer.file_offset + peer.size &&
            peer.file_offset < last;
 }
+
 const MemoryRegion* RegionAt(std::span<const MemoryRegion> regions, u64 address) noexcept {
     const auto next = std::upper_bound(
             regions.begin(), regions.end(), address, [](u64 value, const MemoryRegion& region) {
@@ -48,6 +56,7 @@ const MemoryRegion* RegionAt(std::span<const MemoryRegion> regions, u64 address)
     const auto& region = *std::prev(next);
     return address - region.address < region.size ? &region : nullptr;
 }
+
 MemoryRegion Slice(const MemoryRegion& region, u64 first, u64 last) noexcept {
     auto result = region;
     result.address = first;
@@ -55,6 +64,7 @@ MemoryRegion Slice(const MemoryRegion& region, u64 first, u64 last) noexcept {
     if (region.backing != BackingKind::Anonymous) result.file_offset += first - region.address;
     return result;
 }
+
 bool Coalescible(const MemoryRegion& left, const MemoryRegion& right) noexcept {
     return left.address + left.size == right.address && left.protection == right.protection &&
            left.backing == right.backing &&
@@ -70,7 +80,9 @@ GuestMemory::GuestMemory() {
     if (page <= 0 || (page & (page - 1))) Error("unsupported host page size");
     page_size = static_cast<std::size_t>(page);
 }
+
 GuestMemory::~GuestMemory() { (void)Release(); }
+
 MappingRelease GuestMemory::Release() noexcept {
     MappingRelease result;
     std::size_t kept{};
@@ -90,6 +102,7 @@ MappingRelease GuestMemory::Release() noexcept {
         }
     return result;
 }
+
 bool GuestMemory::Contains(u64 address, std::size_t size, int protection) const noexcept {
     if (!size) return true;
     if (size > UINT64_MAX - address) return false;
@@ -103,6 +116,7 @@ bool GuestMemory::Contains(u64 address, std::size_t size, int protection) const 
     }
     return size == 0;
 }
+
 bool GuestMemory::Accessible(u64 address, std::size_t size, int protection) const noexcept {
     if (!Contains(address, size, protection)) return false;
     if (!size) return true;
@@ -118,14 +132,17 @@ bool GuestMemory::Accessible(u64 address, std::size_t size, int protection) cons
     }
     return true;
 }
+
 bool GuestMemory::CopyIn(void* destination, u64 address, std::size_t size) const noexcept {
     return Accessible(address, size, PROT_READ) &&
            platform::ReadGuestBytes(destination, address, size);
 }
+
 bool GuestMemory::CopyOut(u64 address, const void* source, std::size_t size) const noexcept {
     return Accessible(address, size, PROT_WRITE) &&
            platform::WriteGuestBytes(address, source, size);
 }
+
 std::span<const std::uint8_t> GuestMemory::CodeAt(u64 pc) const noexcept {
     const auto* region = RegionAt(regions, pc);
     if (!region || region->backing == BackingKind::Other ||
@@ -146,6 +163,7 @@ std::span<const std::uint8_t> GuestMemory::CodeAt(u64 pc) const noexcept {
                                                    readable - offset}
                    : std::span<const std::uint8_t>{};
 }
+
 int GuestMemory::PageProtection(u64 address) const noexcept {
     const auto* region = RegionAt(regions, address);
     return region && region->size >= page_size &&
@@ -153,6 +171,7 @@ int GuestMemory::PageProtection(u64 address) const noexcept {
                    ? region->protection
                    : -1;
 }
+
 std::optional<SourceMode> GuestMemory::ClassifySource(u64 pc) const noexcept {
     const auto* source = RegionAt(regions, pc);
     if (!source || (source->protection & (PROT_READ | PROT_EXEC)) != (PROT_READ | PROT_EXEC))
@@ -166,6 +185,7 @@ std::optional<SourceMode> GuestMemory::ClassifySource(u64 pc) const noexcept {
             return SourceMode::WatchedBlock;
     return SourceMode::Immutable;
 }
+
 bool GuestMemory::WriteAffectsCode(u64 address, std::size_t length) const noexcept {
     if (!length) return false;
     if (length > UINT64_MAX - address) return true;
@@ -184,6 +204,7 @@ bool GuestMemory::WriteAffectsCode(u64 address, std::size_t length) const noexce
     }
     return false;
 }
+
 bool GuestMemory::RefreshFileMappings(int fd) {
     if (!file_regions) return false;  // Anonymous ELF/stdout needs no fstat.
     struct stat status{};
@@ -199,6 +220,7 @@ bool GuestMemory::RefreshFileMappings(int fd) {
         }
     return executable;
 }
+
 std::vector<MemoryRegion> GuestMemory::Replaced(u64 address,
                                                 std::size_t size,
                                                 int protection,
@@ -235,6 +257,7 @@ std::vector<MemoryRegion> GuestMemory::Replaced(u64 address,
     next.resize(kept);
     return next;
 }
+
 void GuestMemory::CommitRegions(std::vector<MemoryRegion>& next) noexcept {
     regions.swap(next);
     file_regions = executable_file_regions = 0;
@@ -332,6 +355,7 @@ u64 GuestMemory::Map(
     CommitRegions(next);
     return base;
 }
+
 int GuestMemory::Unmap(u64 address, std::size_t length) {
     if (!length || (address & (page_size - 1)) || length > SIZE_MAX - page_size) {
         errno = EINVAL;
@@ -355,6 +379,7 @@ int GuestMemory::Unmap(u64 address, std::size_t length) {
     CommitRegions(next);
     return 0;
 }
+
 int GuestMemory::Protect(u64 address, std::size_t length, int protection) {
     if ((address & (page_size - 1)) || length > SIZE_MAX - page_size) {
         errno = EINVAL;
@@ -371,6 +396,7 @@ int GuestMemory::Protect(u64 address, std::size_t length, int protection) {
     CommitRegions(next);
     return 0;
 }
+
 u64 GuestMemory::Brk(u64 requested) {
     if (!requested) return brk_current;
     if (requested < brk_start || requested > brk_limit) return brk_current;

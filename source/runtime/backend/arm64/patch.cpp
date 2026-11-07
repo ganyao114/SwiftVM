@@ -6,6 +6,7 @@
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+
 namespace swift::runtime::backend::arm64 {
 
 void SynchronizeCode(std::uint8_t* writable,
@@ -55,6 +56,7 @@ bool WriteLinkInstruction(std::uintptr_t* writable,
     __atomic_store_n(write, instruction, __ATOMIC_RELEASE);
     return true;
 }
+
 void SynchronizeLink(std::uintptr_t* writable,
                      const std::uintptr_t* executable,
                      std::uint32_t gate_back,

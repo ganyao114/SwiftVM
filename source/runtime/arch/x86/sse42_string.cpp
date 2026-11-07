@@ -6,6 +6,7 @@
 namespace swift::runtime::x86::sse42 {
 namespace {
 using Elements = std::array<std::int32_t, 16>;
+
 Elements Unpack(Block128 value, bool words, bool sign) {
     Elements result{};
     const unsigned bits = words ? 16 : 8, count = 128 / bits;
@@ -19,11 +20,13 @@ Elements Unpack(Block128 value, bool words, bool sign) {
     }
     return result;
 }
+
 unsigned Length(const Elements& input, unsigned count) {
     unsigned length{};
     while (length < count && input[length]) ++length;
     return length;
 }
+
 unsigned ExplicitLength(std::uint64_t input, bool wide, unsigned count) {
     std::uint64_t magnitude;
     if (wide)
@@ -34,6 +37,7 @@ unsigned ExplicitLength(std::uint64_t input, bool wide, unsigned count) {
     }
     return magnitude < count ? static_cast<unsigned>(magnitude) : count;
 }
+
 std::uint64_t Compare(const Elements& a,
                       const Elements& b,
                       unsigned length_a,
@@ -85,6 +89,7 @@ std::uint64_t CompareImplicit(Block128 left, Block128 right, std::uint8_t contro
                b = Unpack(right, control & 1, control & 2);
     return Compare(a, b, Length(a, count), Length(b, count), count, control);
 }
+
 std::uint64_t CompareExplicit(Block128 left,
                               Block128 right,
                               Block128 lengths,

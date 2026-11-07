@@ -15,15 +15,20 @@ namespace swift::runtime::platform {
 namespace {
 using u64 = std::uint64_t;
 constexpr auto failed = UINT64_MAX;
+
 [[noreturn]] void Error(const std::string& text) { throw std::runtime_error(text); }
+
 [[noreturn]] void SystemError(const char* op) {
     Error(std::string(op) + ": " + std::strerror(errno));
 }
+
 u64 Add(u64 a, u64 b) {
     if (b > UINT64_MAX - a) Error("guest address/size overflow");
     return a + b;
 }
+
 u64 Up(u64 a, u64 p) { return Add(a, p - 1) & ~(p - 1); }
+
 void ReadAt(int fd, void* destination, std::size_t size, u64 offset) {
     auto* bytes = static_cast<std::uint8_t*>(destination);
     while (size) {
@@ -42,8 +47,10 @@ LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
     const auto page_size = memory.PageSize();
     const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) SystemError("open guest ELF");
+
     struct File {
         int fd;
+
         ~File() { close(fd); }
     } file{fd};
     struct stat status{};

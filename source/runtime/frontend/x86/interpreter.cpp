@@ -31,40 +31,52 @@ struct DirectExit {
     StepKind kind;
     u64 address{}, service{};
 };
+
 struct Numeric {
     u128 bits{};
     u64 flags{}, extra{};
     Type type{Type::Void};
     bool raw_carry{};
     OperationMetadata metadata;
+
     explicit operator bool() const noexcept { return type != Type::Void; }
 };
+
 struct ConcreteValue {
     Numeric number;
+
     explicit operator bool() const noexcept { return bool(number); }
 };
+
 struct ConcreteOperand {
     OperandKind kind{};
     Type type{Type::Void};
     Numeric value;
     u64 payload{};
     unsigned count{}, code{};
+
     static ConcreteOperand ValueOf(ConcreteValue value, Type view = Type::Void) {
         return {OperandKind::Value, view, value.number};
     }
+
     static ConcreteOperand Immediate(u64 value, Type type = Type::U64) {
         return {OperandKind::Immediate, type, {}, value};
     }
+
     static ConcreteOperand Uniform(u32 offset, Type type) {
         return {OperandKind::Uniform, type, {}, offset};
     }
+
     static ConcreteOperand Flags(Flag value) {
         return {OperandKind::Flags, Type::Void, {}, FlagBits(value)};
     }
+
     static ConcreteOperand Flags(u64 value) { return {OperandKind::Flags, Type::Void, {}, value}; }
+
     static ConcreteOperand Condition(Condition value) {
         return {OperandKind::Condition, Type::Void, {}, static_cast<u64>(value)};
     }
+
     static ConcreteOperand Expression(OperandOp op, unsigned count, unsigned shift = 0) {
         return {OperandKind::Expression,
                 Type::Void,
@@ -74,20 +86,26 @@ struct ConcreteOperand {
                 static_cast<unsigned>(op) | (shift << 8)};
     }
 };
+
 struct ConcreteResult {
     Error error{Error::None};
     ConcreteValue value;
+
     explicit operator bool() const noexcept { return error == Error::None; }
+
     ConcreteValue GetValue() const { return value; }
 };
 
 constexpr u64 Mask(unsigned bits) { return bits >= 64 ? UINT64_MAX : (u64{1} << bits) - 1; }
+
 constexpr u128 WideMask(unsigned bits) { return bits >= 128 ? ~u128{} : (u128{1} << bits) - 1; }
+
 std::int64_t Signed(u64 bits, unsigned width) {
     if (width == 64) return std::bit_cast<std::int64_t>(bits);
     const auto sign = u64{1} << (width - 1);
     return static_cast<std::int64_t>((bits & Mask(width)) ^ sign) - static_cast<std::int64_t>(sign);
 }
+
 u64 SelectedFlags(u64 mask) {
     return ((mask & FlagBits(Flag::Carry)) ? arch::flags::Carry : 0) |
            ((mask & FlagBits(Flag::Overflow)) ? arch::flags::Overflow : 0) |
@@ -102,13 +120,19 @@ class DirectSink {
 public:
     using Value = ConcreteValue;
     using Producer = Numeric;  // A local numerical snapshot, never an identity/index.
+
     Producer ProducerOf(Value value) const { return value.number; }
+
     using Operand = ConcreteOperand;
     using Result = ConcreteResult;
+
     DirectSink(arch::GuestState& state, const DirectServices& services)
             : state(state), services(services) {}
+
     Type NaturalType(Value value) const { return value.number.type; }
+
     OperationMetadata Metadata(const Numeric& value) const { return value.metadata; }
+
     Error SetMetadata(Numeric& value, OperationMetadata metadata) {
         auto flags = value.flags;
         if (metadata.profile == FlagProfile::ArithmeticRaw)
@@ -117,12 +141,17 @@ public:
         value.metadata = metadata;
         return Error::None;
     }
+
     void PublishRegisters() {}
+
     void PublishGPRs(std::uint16_t = UINT16_MAX) {}
+
     template <class Body> void IfNonZero(Value value, Body&& body) {
         if (value.number.bits != 0) body();
     }
+
     void FinishDispatch(u64 service) { exit_service = service; }
+
     void StateMemory(unsigned kind, Value address, Value requested, u64, u64 next_pc) {
         if (!services.state_image) throw detail::Rejected{BuildError::Unsupported};
         Access(services.state_image(services.opaque,
@@ -132,27 +161,36 @@ public:
         state.pc = next_pc;
         if ((kind & 255) == 1 || (kind & 255) == 3) exit_service = 3;
     }
+
     Value ReadGpr(u32 offset, unsigned, unsigned bits) {
         return LoadUniform(ScalarType(bits), {Operand::Uniform(offset, ScalarType(bits))}).value;
     }
+
     void WriteGpr(u32 offset, unsigned, unsigned bits, Value value) {
         StoreUniform(Type::Void,
                      {Operand::Uniform(offset, bits == 32 ? Type::U64 : ScalarType(bits)),
                       Operand::ValueOf(value, ScalarType(bits))});
     }
+
     Value ReadAddressGpr(unsigned) { return {}; }
+
     Value ReadXmm(u32 offset, unsigned) {
         return LoadUniform(Type::V128, {Operand::Uniform(offset, Type::V128)}).value;
     }
+
     void WriteXmm(u32 offset, unsigned, Value value) {
         StoreUniform(Type::Void,
                      {Operand::Uniform(offset, Type::V128), Operand::ValueOf(value, Type::V128)});
     }
+
     void InvalidateXmm(unsigned) {}
+
     Value X87Zero() { return Number(0, Type::U64); }
+
     Value X87Address(u32 offset) {
         return Number(reinterpret_cast<std::uintptr_t>(&state) + offset, Type::U64);
     }
+
     std::pair<arch::X87Command, unsigned> X87Window(arch::X87Command command,
                                                     unsigned,
                                                     const InstructionData&,
@@ -160,20 +198,26 @@ public:
                                                     std::span<const std::uint8_t>) const {
         return {command, 1};
     }
+
     static Type ScalarType(unsigned bits) {
         return bits == 8 ? Type::U8 : bits == 16 ? Type::U16 : bits == 32 ? Type::U32 : Type::U64;
     }
+
     Value AddressExpression(Type type, std::initializer_list<Operand> operands) {
         return Apply<OpCode::GetOperand>(type, operands).value;
     }
+
     Value ShiftedAddress(TargetInfo, Type, Value, Value, std::uint8_t) { return {}; }
+
     void PrepareFault(StateLayout, u64 pc, TargetInfo, bool) { state.pc = pc; }
+
     template <OpCode op>
     Result Apply(Type type, std::initializer_list<Operand> input, OperationMetadata metadata = {}) {
         auto value = Compute<op>(type, {input.begin(), input.size()});
         if (metadata.flag_outputs) SetMetadata(value.number, metadata);
         return {Error::None, value};
     }
+
 #define INST(name, ...)                                                                            \
     Result name(                                                                                   \
             Type type, std::initializer_list<Operand> operands, OperationMetadata metadata = {}) { \
@@ -188,18 +232,23 @@ public:
 private:
     arch::GuestState& state;
     const DirectServices& services;
+
     static Type View(const Operand& operand) {
         return operand.type == Type::Void ? operand.value.type : operand.type;
     }
+
     static u128 Raw(const Operand& operand) {
         return operand.kind == OperandKind::Value ? operand.value.bits : operand.payload;
     }
+
     static u128 Read(const Operand& operand) {
         return Raw(operand) & WideMask(TypeBits(View(operand)));
     }
+
     static Value Number(u128 bits, Type type, bool raw = false) {
         return {{raw ? bits : bits & WideMask(TypeBits(type)), 0, 0, type, false, {}}};
     }
+
     static u128 Expression(std::span<const Operand> operands, std::size_t& at) {
         const auto cell = operands[at++];
         if (cell.kind != OperandKind::Expression) return Read(cell);
@@ -225,6 +274,7 @@ private:
                 throw detail::Rejected{BuildError::Unsupported};
         }
     }
+
     static bool ConditionValue(Condition condition, u64 f) {
         const bool c = arch::flags::GetCF(f), z = arch::flags::GetZF(f), n = arch::flags::GetSF(f),
                    v = arch::flags::GetOF(f);
@@ -263,6 +313,7 @@ private:
         }
         return false;
     }
+
     bool AnyFlags(u64 mask) const {
         const auto f = state.packed_flags;
         return ((mask & FlagBits(Flag::Carry)) && arch::flags::GetCF(f)) ||
@@ -272,10 +323,12 @@ private:
                ((mask & FlagBits(Flag::Parity)) && arch::flags::GetPF(f)) ||
                ((mask & FlagBits(Flag::AuxiliaryCarry)) && arch::flags::GetAF(f));
     }
+
     void MergeFlags(u64 flags, u64 selected) {
         const auto mask = SelectedFlags(selected);
         state.packed_flags = (state.packed_flags & ~mask) | (flags & mask);
     }
+
     void Access(AccessResult result) {
         if (result.status == AccessStatus::Fault)
             throw DirectExit{StepKind::Fault, result.fault_address};
@@ -283,6 +336,7 @@ private:
             throw detail::Rejected{BuildError::Unsupported};
         code_changed |= result.code_changed;
     }
+
     Value MemoryRead(u64 address, Type type, bool ordered) {
         if (!services.read) throw detail::Rejected{BuildError::Unsupported};
         u128 bits{};
@@ -292,6 +346,7 @@ private:
                              ordered));
         return Number(bits, type);
     }
+
     void MemoryWrite(u64 address, const Operand& value, bool ordered) {
         if (!services.write) throw detail::Rejected{BuildError::Unsupported};
         const auto bits = Read(value);
@@ -301,6 +356,7 @@ private:
                 {reinterpret_cast<const std::uint8_t*>(&bits), TypeBits(View(value)) / 8},
                 ordered));
     }
+
     static Value Arithmetic(OpCode opcode, Type type, u64 left, u64 right, bool carry) {
         const unsigned bits = TypeBits(type);
         const auto mask = Mask(bits), sign = u64{1} << (bits - 1);
@@ -397,10 +453,12 @@ StepResult InterpretOne(arch::GuestState& state,
     const auto branch = [&](ConcreteValue condition, u64 yes, u64 no) {
         finish(condition.number.bits ? yes : no);
     };
+
     struct Flow {
         decltype(finish)& finish;
         decltype(branch)& branch;
     } flow{finish, branch};
+
     bool ended{};
     try {
         if (!Sem::AllowedPrefixes(instruction, source))

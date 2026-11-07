@@ -16,9 +16,11 @@ namespace {
 namespace front = swift::x86;
 namespace arch = swift::runtime::x86;
 using u64 = std::uint64_t;
+
 void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
+
 struct Machine {
     static constexpr u64 code_pc = 0x1000, memory_pc = 0x8000;
     arch::GuestState state;
@@ -27,14 +29,17 @@ struct Machine {
     u64 denied_read{UINT64_MAX}, denied_write{UINT64_MAX};
     front::AccessStatus fetch_tail{front::AccessStatus::Completed};
     unsigned reads{}, writes{};
+
     explicit Machine(std::initializer_list<std::uint8_t> bytes) : code(bytes) {
         state.pc = code_pc;
         state.gprs[arch::RSP] = memory_pc + 128;
     }
+
     static bool InMemory(u64 address, std::size_t size) {
         return address >= memory_pc && address - memory_pc <= 256 &&
                size <= 256 - (address - memory_pc);
     }
+
     front::DirectServices Services() {
         return {this,
                 [](void* raw,
@@ -80,19 +85,23 @@ struct Machine {
                 },
                 nullptr};
     }
+
     front::StepResult Step() {
         const auto services = Services();
         return front::InterpretOne(state, services);
     }
+
     u64 Read64(u64 address) {
         u64 value;
         std::memcpy(&value, memory.data() + address - memory_pc, 8);
         return value;
     }
+
     void Write64(u64 address, u64 value) {
         std::memcpy(memory.data() + address - memory_pc, &value, 8);
     }
 };
+
 void Scalar() {
     Machine m{0xb8, 0xff, 0xff, 0xff, 0xff, 0x83, 0xc0, 1, 0xff, 0xc0, 0x0f, 0x92, 0xc3};
     Check(m.Step().kind == front::StepKind::Completed && m.state.gprs[arch::RAX] == UINT32_MAX,
@@ -111,6 +120,7 @@ void Scalar() {
                   load.state.gprs[arch::RAX] == 0x7000,
           "failed load does not commit destination or PC");
 }
+
 void Model() {
     constexpr std::uint8_t endbr[]{0xf3, 0x0f, 0x1e, 0xfa};
     const auto disabled = front::DecodeOne(endbr, Machine::code_pc);
@@ -119,6 +129,7 @@ void Model() {
                   enabled.error == front::DecodeError::UnsupportedGuestFeature,
           "CET belongs to the guest model; enabled unimplemented semantics cannot become a NOP");
 }
+
 void FetchBoundary() {
     Machine complete{0x90};
     complete.fetch_tail = front::AccessStatus::Fault;
@@ -155,6 +166,7 @@ void FetchBoundary() {
     Check(too_long.Step().kind == front::StepKind::InvalidEncoding,
           "a 15-byte prefix stream cannot request a sixteenth instruction byte");
 }
+
 void Control() {
     Machine call{0xff, 0xd0};
     call.state.gprs[arch::RAX] = 0x1234;
@@ -184,6 +196,7 @@ void Control() {
                   pop.Read64(sp + 16) == 0x12345678,
           "POP memory destination uses the new SP");
 }
+
 void Repeat() {
     Machine m{0xf3, 0xaa};
     m.state.gprs[arch::RCX] = 0;
@@ -206,6 +219,7 @@ void Repeat() {
                   m.state.gprs[arch::RDI] == Machine::memory_pc + 1 && m.memory[0] == 0x5a,
           "REP fault retains successful prefix only");
 }
+
 void UnsupportedAndService() {
     Machine segment_move{0x8e, 0x20};
     segment_move.state.gprs[arch::RAX] = Machine::memory_pc;
@@ -239,6 +253,7 @@ void UnsupportedAndService() {
                   (x87.state.x87.status & 0x41) == 0x41 && x87.state.pc == Machine::code_pc,
           "unmasked x87 is a service with committed status, never unsupported fallback");
 }
+
 void Floating() {
     for (const bool scalar : {false, true}) {
         Machine m{static_cast<std::uint8_t>(scalar ? 0xf2 : 0x66), 0x0f, 0x58, 0xc1};
@@ -282,6 +297,7 @@ void Floating() {
 #endif
 }
 }  // namespace
+
 int main() {
     try {
         Model();

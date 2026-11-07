@@ -71,6 +71,7 @@ static void ExtendedMove(Emitter& builder,
                               {Operand::ValueOf(source_value, ScalarType(source.size))}));
     WriteRegister(builder, layout, destination, value);
 }
+
 static void Complement(Emitter& builder,
                        StateLayout layout,
                        const InstructionData& instruction,
@@ -105,6 +106,7 @@ static void Complement(Emitter& builder,
     else
         WriteRegister(builder, layout, destination, result);
 }
+
 static void Exchange(Emitter& builder,
                      StateLayout layout,
                      const InstructionData& instruction,
@@ -137,6 +139,7 @@ static void Exchange(Emitter& builder,
         WriteRegister(builder, layout, right, a);
     }
 }
+
 static Value Widen(Emitter& builder, Value value, unsigned bits, bool sign) {
     if (bits == 64) return value;
     return sign ? Require(builder.SignExtend(Type::U64,
@@ -144,6 +147,7 @@ static Value Widen(Emitter& builder, Value value, unsigned bits, bool sign) {
                 : Require(builder.ZeroExtend64(Type::Void,
                                                {Operand::ValueOf(value, ScalarType(bits))}));
 }
+
 static void ExtendAccumulator(Emitter& builder,
                               StateLayout layout,
                               const InstructionData& instruction) {
@@ -186,12 +190,14 @@ static void ExtendAccumulator(Emitter& builder,
                                                           {Operand::ValueOf(source)}));
     WriteRegister(builder, layout, Gpr(high ? 2 : 0, destination_bits), result);
 }
+
 struct PendingFlags {
     Producer producer;
     FlagProfile profile{FlagProfile::None};
     // Only the still-unobserved bits of this one real producer remain pending.
     // Published bits live in its actual metadata, not a second demand table.
     u64 outputs{FlagBits(Flag::All)};
+
     struct Recipe {
         Value left, right, result, high;
         unsigned bits{}, constant{};
@@ -276,6 +282,7 @@ struct PendingFlags {
                                          {Operand::ValueOf(chosen), Operand::Flags(Flag::All)}));
         }
     }
+
     void PublishMultiply(Emitter& builder) {
         const auto& [left, right, low, data_high, bits, constant, opcode, wide_product] = recipe;
         const bool sign = opcode == Op::IMUL;
@@ -315,6 +322,7 @@ struct PendingFlags {
         Require(builder.SetCarry(Type::Void, {Operand::ValueOf(overflow)}));
         Require(builder.SetOverflow(Type::Void, {Operand::ValueOf(overflow)}));
     }
+
     void Observe(Emitter& builder, u64 needed) {
         if (recipe.result && needed) {
             const bool multiply = recipe.opcode == Op::MUL || recipe.opcode == Op::IMUL;
@@ -336,6 +344,7 @@ struct PendingFlags {
         }
         if (!outputs) producer = {};
     }
+
     void Observe(Emitter& builder, const InstructionData& instruction) {
         // The actual trusted decoder record already describes this consumer's
         // EFLAGS inputs. Reuse it rather than duplicate its condition table.
@@ -348,6 +357,7 @@ struct PendingFlags {
                         (flags & GuestFlag::Sign ? FlagBits(Flag::Negate) : 0) |
                         (flags & GuestFlag::Overflow ? FlagBits(Flag::Overflow) : 0));
     }
+
     void Flush(Emitter& builder) { Observe(builder, FlagBits(Flag::All)); }
 };
 
@@ -737,10 +747,12 @@ template <OpCode op>
 static Value Binary(Emitter& builder, Value left, Operand right, Type type = Type::U64) {
     return Require(builder.template Apply<op>(type, {Operand::ValueOf(left), right}));
 }
+
 static Value Bit(Emitter& builder, Value value, unsigned bit) {
     return Require(builder.TestBit(Type::Void,
                                    {Operand::ValueOf(value), Operand::Immediate(bit, Type::U8)}));
 }
+
 static void BitTest(Emitter& builder, StateLayout layout, const InstructionData& instruction) {
     const auto& source = instruction.ops[0];
     const auto& index = instruction.ops[1];
@@ -765,6 +777,7 @@ static void BitTest(Emitter& builder, StateLayout layout, const InstructionData&
     }
     Require(builder.SetCarry(Type::Void, {Operand::ValueOf(carry)}));
 }
+
 static void Shift(Emitter& builder,
                   StateLayout layout,
                   const InstructionData& instruction,

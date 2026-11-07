@@ -3,15 +3,18 @@
 
 namespace swift::runtime::backend::arm64 {
 std::uintptr_t CpuidHelper() noexcept;
+
 namespace detail {
 namespace {
 // Same pair-return C ABI as CpuidHelper, with no CPU/state observation.
 struct BitResult {
     u64 low, high;
 };
+
 BitResult DepositBitsCallback(u64 value, u64 mask) noexcept {
     return {x86::ParallelBitDeposit(value, mask), 0};
 }
+
 BitResult ExtractBitsCallback(u64 value, u64 mask) noexcept {
     return {x86::ParallelBitExtract(value, mask), 0};
 }

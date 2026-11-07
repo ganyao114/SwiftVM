@@ -46,7 +46,9 @@ struct Fixture {
         Word(entry_offset + 6, cycles);  // mov ecx,cycles
         Relative(entry_offset + 10, 0xe9, base);
     }
+
     x86::BlockWindow Window() const { return {base, bytes}; }
+
     x86::DecodeLimits Limits() const { return {blocks * 2 + 5, blocks + 2}; }
 
 private:
@@ -54,6 +56,7 @@ private:
         for (unsigned i = 0; i < 4; ++i)
             bytes[at + i] = static_cast<std::uint8_t>(value >> (i * 8));
     }
+
     void Relative(unsigned at, std::uint8_t opcode, std::uint64_t target) {
         bytes[at] = opcode;
         Word(at + 1, static_cast<std::uint32_t>(target - (base + at + 5)));

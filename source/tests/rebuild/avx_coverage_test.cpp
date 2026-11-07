@@ -29,10 +29,12 @@ using u64 = std::uint64_t;
 using u32 = std::uint32_t;
 using Bytes = std::array<std::uint8_t, 32>;
 unsigned checks{};
+
 void Check(bool value, const char* message) {
     ++checks;
     if (!value) throw std::runtime_error(message);
 }
+
 std::vector<std::uint8_t> Hex(const char* text) {
     std::vector<std::uint8_t> out;
     const auto digit = [](char c) {
@@ -42,27 +44,32 @@ std::vector<std::uint8_t> Hex(const char* text) {
         out.push_back(static_cast<std::uint8_t>(digit(text[i]) * 16 + digit(text[i + 1])));
     return out;
 }
+
 Bytes Words(std::initializer_list<u32> words) {
     Bytes out{};
     std::memcpy(out.data(), words.begin(), words.size() * sizeof(u32));
     return out;
 }
+
 void Set(arch::GuestState& state, unsigned reg, const Bytes& bytes) {
     std::memcpy(state.xmm[reg], bytes.data(), 16);
     std::memcpy(state.ymm_high[reg], bytes.data() + 16, 16);
 }
+
 void SetHex(arch::GuestState& state, unsigned reg, const char* text) {
     const auto bytes = Hex(text);
     Check(bytes.size() == 32, "fixed golden vector is 256 bits");
     std::memcpy(state.xmm[reg], bytes.data(), 16);
     std::memcpy(state.ymm_high[reg], bytes.data() + 16, 16);
 }
+
 Bytes Get(const arch::GuestState& state, unsigned reg) {
     Bytes out{};
     std::memcpy(out.data(), state.xmm[reg], 16);
     std::memcpy(out.data() + 16, state.ymm_high[reg], 16);
     return out;
 }
+
 struct Machine {
     static constexpr u64 pc = 0x1000, memory_pc = 0x8000;
     arch::GuestState state;
@@ -71,6 +78,7 @@ struct Machine {
     u64 memory_address{memory_pc};
     u64 denied{UINT64_MAX};
     unsigned reads{}, writes{};
+
     explicit Machine(const char* bytes) : code(Hex(bytes)) {
         state.pc = pc;
         state.packed_flags = UINT64_C(0x123456789abc00d5);
@@ -89,6 +97,7 @@ struct Machine {
             std::memcpy(memory.data() + i * 4, &word, 4);
         }
     }
+
     front::DirectServices Services() {
         return {this,
                 [](void* opaque,
@@ -129,8 +138,10 @@ struct Machine {
                 nullptr,
                 nullptr};
     }
+
     front::StepResult Step() { return front::InterpretOne(state, Services()); }
 };
+
 front::StateLayout Layout() {
     front::StateLayout layout;
     layout.gprs_offset = offsetof(arch::GuestState, gprs);
@@ -140,6 +151,7 @@ front::StateLayout Layout() {
     layout.ymm_high_offset = offsetof(arch::GuestState, ymm_high);
     return layout;
 }
+
 a64::CompileResult Compile(const Machine& m, bool pinned) {
     auto target = a64::KnownTargetInfo();
     if (pinned)
@@ -196,6 +208,7 @@ a64::CompileResult Compile(const Machine& m, bool pinned) {
     Check(bool(code), "AVX program has a real ARM64 lowering");
     return code;
 }
+
 void Same(const arch::GuestState& actual, const arch::GuestState& expected) {
     Check(actual.pc == expected.pc, "AVX native PC commit");
     Check(actual.packed_flags == expected.packed_flags,
@@ -206,6 +219,7 @@ void Same(const arch::GuestState& actual, const arch::GuestState& expected) {
     for (unsigned reg = 0; reg < 16; ++reg)
         Check(Get(actual, reg) == Get(expected, reg), "AVX native full low/high vector state");
 }
+
 void Native(const Machine& input, const arch::GuestState& expected, bool pinned) {
     const auto code = Compile(input, pinned);
 #if defined(__aarch64__) && !defined(__APPLE__)
@@ -228,6 +242,7 @@ void Native(const Machine& input, const arch::GuestState& expected, bool pinned)
             std::uintptr_t entry;
             unsigned calls{};
         } resolver{reinterpret_cast<std::uintptr_t>(address)};
+
         const runtime::backend::NativeCode owner{
                 reinterpret_cast<runtime::backend::NativeCode::Function>(address),
                 code.words.size() * sizeof(code.words[0]),
@@ -266,6 +281,7 @@ void Native(const Machine& input, const arch::GuestState& expected, bool pinned)
     (void)expected;
 #endif
 }
+
 void Golden(Machine input, const Bytes& answer, unsigned reads = 0) {
     auto direct = input;
     const auto result = direct.Step();
@@ -280,6 +296,7 @@ void Golden(Machine input, const Bytes& answer, unsigned reads = 0) {
     Native(input, expected, false);
     Native(input, expected, true);
 }
+
 void NdsAndPermutes() {
     for (const bool wide : {false, true}) {
         Machine m(wide ? "c5f5fec2" : "c5f1fec2");
@@ -300,12 +317,14 @@ void NdsAndPermutes() {
     Set(variable.state, 2, Words({10, 20, 30, 40, 50, 60, 70, 80}));
     Golden(variable, Words({80, 10, 60, 30, 70, 20, 50, 40}));
 }
+
 void FusedGolden() {
     // Literal byte/result rows from the pre-existing Rosetta hardware oracle:
     // source/tests/fuzz/avx_fma_rosetta_ref.inc in the frozen original tree.
     constexpr const char* a = "0000004000004040000080400000a0400000c0400000e0400000004100001041";
     constexpr const char* b = "000040400000a0400000e0400000104100003041000050410000704100008841";
     constexpr const char* c = "0000a04000000040000080bf000080c00000e0c0000020c1000050c1000080c1";
+
     const struct {
         const char* bytes;
         const char* answer;
@@ -314,6 +333,7 @@ void FusedGolden() {
             {"c4e271a8c2", "000050410000304100004040000030c100000000000000000000000000000000"},
             {"c4e275b8c2", "00003041000088410000d8410000244200006c420000a2420000d64200000943"},
     };
+
     for (const auto& row : order) {
         Machine m(row.bytes);
         SetHex(m.state, 0, c);
@@ -335,6 +355,7 @@ void FusedGolden() {
     SetHex(scalar.state, 0, "000040403303c07f3303c07f3303c07f00004040000040403303c07f000080ff");
     Golden(scalar, Words({0x7fc00111, 0x7fc00333, 0x7fc00333, 0x7fc00333}));
 }
+
 void VexStrings() {
     // Equal-any over {'a','b'} and {'x','b','a'} has IntRes2=6.
     // W0 takes signed EAX=-2, while W1 distinguishes the positive full
@@ -352,6 +373,7 @@ void VexStrings() {
             {"c4e3f961ca00", true, false, false, true, UINT64_C(0xfffffffe), 0},
             {"c4e3f960ca40", true, true, true, false, UINT64_MAX - 1, 0},
     };
+
     const auto flags_for = [](u64 previous, bool full_a) {
         return (previous & ~arch::flags::Arithmetic) | arch::flags::Carry | arch::flags::Zero |
                (full_a ? arch::flags::Overflow : arch::flags::Sign) | u64{1};
@@ -422,6 +444,7 @@ void VexStrings() {
               "VEX string encodings reject L=1 and non-reserved vvvv");
     }
 }
+
 void MaskAndGatherFaults() {
     Machine mask("c4e26d2c07");  // vmaskmovps ymm0,ymm2,[rdi]
     mask.state.gprs[arch::RDI] = Machine::memory_pc;
@@ -534,6 +557,7 @@ void MaskAndGatherFaults() {
     (void)Compile(address32, true);
 }
 }  // namespace
+
 int main() {
     try {
         NdsAndPermutes();

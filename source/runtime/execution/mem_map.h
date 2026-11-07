@@ -8,6 +8,7 @@ namespace swift::runtime::execution {
 struct MappingRelease {
     std::size_t remaining_views{};
     int unmap_error{}, close_error{};
+
     bool Complete() const noexcept { return !remaining_views && !unmap_error && !close_error; }
 };
 
@@ -27,10 +28,15 @@ public:
     void MapNative(std::size_t bytes);
 
     std::uint8_t* Writable() const noexcept { return write; }
+
     std::uint8_t* Executable() const noexcept { return execute; }
+
     std::size_t Size() const noexcept { return size; }
+
     std::size_t ReservedBytes() const noexcept { return write ? size * (dual ? 2 : 1) : 0; }
+
     bool Dual() const noexcept { return dual; }
+
     bool SetWritable() noexcept;
     bool SetExecutable() noexcept;
     MappingRelease Release() noexcept;

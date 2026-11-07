@@ -21,6 +21,7 @@ void CodeCache::AddStaticLink(const NativeCode& owner, const backend::LinkSite& 
     slot.pending_head = static_cast<std::uint32_t>(links.size() - 1);
     ++pending_count;
 }
+
 void CodeCache::AddIndirectSite(const NativeCode& owner, const backend::LinkSite& site) {
     if (!owner.writable) return;
     links.push_back(
@@ -31,12 +32,14 @@ void CodeCache::AddIndirectSite(const NativeCode& owner, const backend::LinkSite
              0,
              backend::LinkKind::Dynamic});
 }
+
 void CodeCache::Patch(const Relocation& link, NativeCode::Function entry) noexcept {
     const auto target = reinterpret_cast<std::uintptr_t>(entry);
     if (__atomic_load_n(link.writable, __ATOMIC_RELAXED) != target)
         backend.patch_link(link.writable, link.executable, target, link.branch_back_bytes);
     ++patched;
 }
+
 void CodeCache::ResetLinks() noexcept {
     for (const auto& link : links) {
         if (link.kind == backend::LinkKind::Static)

@@ -12,6 +12,7 @@ namespace swift::runtime::execution {
 
 enum class BackingKind : std::uint32_t { Anonymous, FilePrivate, FileShared, Other };
 enum class SourceMode : std::uint8_t { Immutable, WatchedBlock, Volatile };
+
 struct MemoryRegion {
     std::uint64_t address;
     std::size_t size;
@@ -19,6 +20,7 @@ struct MemoryRegion {
     BackingKind backing{BackingKind::Anonymous};
     std::uint64_t device{}, inode{}, file_offset{}, file_size{};
 };
+
 static_assert(sizeof(MemoryRegion) == 56);
 
 // The one directory/owner of guest==host mappings, including reserved holes,
@@ -29,10 +31,12 @@ public:
     ~GuestMemory();
     GuestMemory(const GuestMemory&) = delete;
     GuestMemory& operator=(const GuestMemory&) = delete;
+
     void InitializeBrk(std::uint64_t start, std::uint64_t limit) noexcept {
         brk_start = brk_current = start;
         brk_limit = limit;
     }
+
     std::uint64_t Map(std::uint64_t address,
                       std::size_t length,
                       int protection,
@@ -47,9 +51,13 @@ public:
     bool CopyIn(void*, std::uint64_t address, std::size_t) const noexcept;
     bool CopyOut(std::uint64_t address, const void*, std::size_t) const noexcept;
     MappingRelease Release() noexcept;
+
     std::span<const MemoryRegion> Regions() const noexcept { return regions; }
+
     std::span<const std::uint8_t> CodeAt(std::uint64_t pc) const noexcept;
+
     std::size_t PageSize() const noexcept { return page_size; }
+
     // One admission decision from the actual region ledger. Missing means no
     // readable/executable mapping. Device/unknown backing is Volatile and has
     // neither persistent-JIT nor direct-fetch qualification in this service.

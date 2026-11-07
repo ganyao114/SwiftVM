@@ -13,6 +13,7 @@ struct GuestState;
 namespace swift::x86 {
 
 enum class AccessStatus : std::uint8_t { Completed, Fault, UnsupportedBeforeAccess };
+
 struct AccessResult {
     AccessStatus status{AccessStatus::Completed};
     std::uint64_t fault_address{};
@@ -20,12 +21,14 @@ struct AccessResult {
     // after its architectural register/PC commit. It is never retried as a miss.
     bool code_changed{};
 };
+
 struct CodeReadResult {
     AccessResult access;
     // A readable prefix is useful even when the following page is inaccessible.
     // The decoder, not the fetch service, determines the instruction length.
     std::size_t bytes{};
 };
+
 struct AtomicValue {
     std::uint64_t low{}, high{};
 };
@@ -43,6 +46,7 @@ enum class AtomicOperation : std::uint8_t {
     SubBorrow,
     CompareExchange128,
 };
+
 struct AtomicRequest {
     std::uint64_t address{};
     AtomicOperation operation{};
@@ -50,6 +54,7 @@ struct AtomicRequest {
     AtomicValue expected, desired;
     bool carry{};
 };
+
 struct CpuResult {
     std::uint64_t lower{}, upper{};
 };
@@ -82,6 +87,7 @@ enum class StepKind : std::uint8_t {
     InvalidEncoding,
     Truncated,
 };
+
 struct StepResult {
     StepKind kind{StepKind::Completed};
     std::uint64_t pc{}, next_pc{}, fault_address{};

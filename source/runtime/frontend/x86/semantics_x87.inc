@@ -49,21 +49,25 @@ static unsigned X87RegisterWindow(Emitter& builder,
 static Value X87Query(Emitter& builder, const StateLayout& layout, unsigned field, Type type) {
     return Require(builder.LoadUniform(type, {Operand::Uniform(layout.x87_offset + field, type)}));
 }
+
 static void X87Field(Emitter& builder, u32 offset, Type type, Value value) {
     Require(builder.StoreUniform(Type::Void,
                                  {Operand::Uniform(offset, type), Operand::ValueOf(value, type)}));
 }
+
 static void X87Call(Emitter& builder, Value state, u64 command, Value raw) {
     Require(builder.X87Op(Type::U64,
                           {Operand::ValueOf(state),
                            Operand::Immediate(command, Type::U64),
                            Operand::ValueOf(raw)}));
 }
+
 static unsigned X87Opcode(const InstructionData& instruction, std::span<const std::uint8_t> bytes) {
     for (unsigned i = 0; i + 1 < instruction.size && i + 1 < bytes.size(); ++i)
         if (bytes[i] >= 0xd8 && bytes[i] <= 0xdf) return ((bytes[i] & 7) << 8) | bytes[i + 1];
     return 0;
 }
+
 static u64 X87MetadataEncoding(const StateLayout& layout,
                                unsigned opcode,
                                bool has_dp,
@@ -80,6 +84,7 @@ static u64 X87MetadataEncoding(const StateLayout& layout,
                                            has_dp,
                                            commit_success);
 }
+
 static bool X87CheckedCall(Emitter& builder,
                            const StateLayout& layout,
                            const InstructionData& instruction,
@@ -110,6 +115,7 @@ static bool X87CheckedCall(Emitter& builder,
                                 Operand::Immediate(metadata, Type::U64)}));
     return commit_success;
 }
+
 static void X87Metadata(
         Emitter& builder, const StateLayout& layout, u64 pc, unsigned opcode, Value address = {}) {
     if (layout.x87_ip_offset != UINT32_MAX && layout.x87_dp_offset != UINT32_MAX &&

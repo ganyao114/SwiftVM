@@ -3,6 +3,7 @@ static u32 AvxHighOffset(StateLayout layout, const DecodedOperand& reg) {
     if (!VRegister(reg) || layout.ymm_high_offset > UINT32_MAX - 255) Unsupported();
     return layout.ymm_high_offset + (reg.index - Register::XMM0) * 16;
 }
+
 static std::array<Value, 2> AvxRead(Emitter& builder,
                                     StateLayout layout,
                                     const InstructionData& instruction,
@@ -43,6 +44,7 @@ static std::array<Value, 2> AvxRead(Emitter& builder,
     }
     return values;
 }
+
 template <OpCode store = OpCode::StoreMemoryTSO>
 static void AvxWrite(Emitter& builder,
                      StateLayout layout,
@@ -81,6 +83,7 @@ static void AvxWrite(Emitter& builder,
     StoreMemory<store>(builder, address, values[0], 128, displacement);
     if (bytes == 32) StoreMemory<store>(builder, address, values[1], 128, displacement + 16);
 }
+
 static Value AvxReplicate(Emitter& builder, Value scalar, unsigned bits) {
     auto value =
             Require(builder.ZeroExtend64(Type::U64, {Operand::ValueOf(scalar, ScalarType(bits))}));
@@ -93,6 +96,7 @@ static Value AvxReplicate(Emitter& builder, Value scalar, unsigned bits) {
     }
     return Require(builder.VecDup64(Type::V128, {Operand::ValueOf(value)}));
 }
+
 static Value AvxLane(Emitter& builder,
                      StateLayout layout,
                      Op opcode,
@@ -591,6 +595,7 @@ static Value AvxLane(Emitter& builder,
             Unsupported();
     }
 }
+
 static bool AvxFmaInfo(Op opcode, unsigned& bits, unsigned& order, unsigned& flags) {
     switch (opcode) {
 #define AVX_FMA_ONE(name, width, permutation, controls)                                            \
@@ -629,6 +634,7 @@ static bool AvxFmaInfo(Op opcode, unsigned& bits, unsigned& order, unsigned& fla
             return false;
     }
 }
+
 static Value AvxPermute32(Emitter& builder,
                           const std::array<Value, 2>& source,
                           Value indices,
@@ -672,6 +678,7 @@ static Value AvxPermute32(Emitter& builder,
             Type::V128, {Operand::ValueOf(source[1]), Operand::ValueOf(high_indices)}));
     return Require(builder.VecOr(Type::V128, {Operand::ValueOf(low), Operand::ValueOf(upper)}));
 }
+
 static bool Avx(Emitter& builder,
                 StateLayout layout,
                 const InstructionData& instruction,

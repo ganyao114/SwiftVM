@@ -26,6 +26,7 @@ enum GPR : unsigned {
     R14,
     R15
 };
+
 struct GuestState {
     std::uint64_t gprs[16]{};
     std::uint64_t pc{}, packed_flags{1}, fs_base{}, gs_base{};
@@ -38,6 +39,7 @@ struct GuestState {
     std::uint16_t x87_opcode{};
     alignas(16) std::uint8_t ymm_high[16][16]{};
 };
+
 static_assert(offsetof(GuestState, pc) == 128 && offsetof(GuestState, packed_flags) == 136);
 static_assert(offsetof(GuestState, fs_base) == 144 && offsetof(GuestState, gs_base) == 152);
 static_assert(offsetof(GuestState, xmm) == 160 && offsetof(GuestState, mxcsr) == 416);

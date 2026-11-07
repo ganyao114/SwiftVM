@@ -16,13 +16,19 @@ inline constexpr std::uint64_t Direction = UINT64_C(1) << 10;
 inline constexpr std::uint64_t Arithmetic = Carry | Zero | Sign | Overflow | Auxiliary | 255;
 
 constexpr bool GetCF(std::uint64_t value) noexcept { return (value & Carry) != 0; }
+
 constexpr bool GetPF(std::uint64_t value) noexcept {
     return (std::popcount(static_cast<unsigned>(value & 255)) & 1) == 0;
 }
+
 constexpr bool GetAF(std::uint64_t value) noexcept { return (value & Auxiliary) != 0; }
+
 constexpr bool GetZF(std::uint64_t value) noexcept { return (value & Zero) != 0; }
+
 constexpr bool GetSF(std::uint64_t value) noexcept { return (value & Sign) != 0; }
+
 constexpr bool GetOF(std::uint64_t value) noexcept { return (value & Overflow) != 0; }
+
 constexpr bool GetDF(std::uint64_t value) noexcept { return (value & Direction) != 0; }
 
 constexpr std::uint64_t ToRflags(std::uint64_t value) noexcept {

@@ -18,10 +18,12 @@ struct HostCompileRequest {
     std::uint8_t fp_mode{};
     bool fault_locations{}, private_state{};
 };
+
 struct HostCapabilities {
     bool rcpc_loads{}, rcpc_imm9{}, native_nzcv{}, lse_atomics{}, crc32c{}, afp{}, aes{}, pmull{},
             sha256{};
 };
+
 struct HostBackendOps {
     void* context{};
     ir::TargetInfo target;

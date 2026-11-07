@@ -9,6 +9,7 @@ namespace swift::runtime::x86::crypto {
 struct Block128 {
     std::uint64_t low{}, high{};
 };
+
 static_assert(sizeof(Block128) == 16);
 enum class Operation : std::uint8_t {
     AesEncrypt,

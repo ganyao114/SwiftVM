@@ -13,6 +13,7 @@ public:
     explicit DecodeSample(DecodeTiming* timing) : timing(timing) {
         if (timing) begin = std::chrono::steady_clock::now();
     }
+
     ~DecodeSample() {
         if (timing) {
             timing->nanoseconds +=

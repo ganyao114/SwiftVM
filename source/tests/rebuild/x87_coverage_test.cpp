@@ -24,16 +24,21 @@ namespace {
 namespace arch = swift::runtime::x86;
 namespace front = swift::x86;
 using u64 = std::uint64_t;
+
 void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
+
 u64 Call(arch::X87State& state, arch::X87Command command, unsigned index = 0, u64 raw = 0) {
     return SvmX87Execute(&state, arch::X87Encode(command, index), raw);
 }
+
 unsigned Top(const arch::X87State& state) { return (state.status >> 11) & 7; }
+
 const arch::X87Value& St(const arch::X87State& state, unsigned index = 0) {
     return state.registers[(Top(state) + index) & 7];
 }
+
 bool SameRegisters(const arch::X87State& a, const arch::X87State& b) {
     for (unsigned i = 0; i < 8; ++i)
         if (a.registers[i].significand != b.registers[i].significand ||
@@ -41,6 +46,7 @@ bool SameRegisters(const arch::X87State& a, const arch::X87State& b) {
             return false;
     return true;
 }
+
 struct Machine {
     static constexpr u64 pc = 0x1000, data = 0x8000;
     arch::GuestState state;
@@ -48,10 +54,13 @@ struct Machine {
     std::array<std::uint8_t, 256> memory{};
     u64 denied_read{UINT64_MAX}, denied_write{UINT64_MAX};
     unsigned reads{}, writes{};
+
     explicit Machine(std::initializer_list<std::uint8_t> bytes) : code(bytes) { state.pc = pc; }
+
     static bool Contains(u64 address, std::size_t bytes) {
         return address >= data && address - data <= 256 && bytes <= 256 - (address - data);
     }
+
     front::DirectServices Services() {
         return {this,
                 [](void* opaque,
@@ -86,10 +95,13 @@ struct Machine {
                 nullptr,
                 nullptr};
     }
+
     front::StepResult Step() { return front::InterpretOne(state, Services()); }
+
     template <class T> void Put(unsigned offset, T value) {
         std::memcpy(memory.data() + offset, &value, sizeof value);
     }
+
     template <class T> T Get(unsigned offset) const {
         T value;
         std::memcpy(&value, memory.data() + offset, sizeof value);

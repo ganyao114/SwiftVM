@@ -13,24 +13,30 @@ namespace {
     throw std::runtime_error(std::string(operation) + ": " + std::strerror(errno));
 }
 }  // namespace
+
 CodeHeap::CodeHeap(const HostBackendOps& backend, std::size_t page_size) noexcept
         : backend(backend), page_size(page_size) {}
+
 CodeHeap::~CodeHeap() { (void)Release(); }
+
 std::size_t CodeHeap::Slabs() const noexcept {
     return static_cast<std::size_t>(std::count_if(slabs.begin(), slabs.end(), [](const auto& slab) {
         return slab.mapping.Writable() != nullptr;
     }));
 }
+
 std::size_t CodeHeap::DualSlabs() const noexcept {
     return static_cast<std::size_t>(std::count_if(slabs.begin(), slabs.end(), [](const auto& slab) {
         return slab.mapping.Writable() && slab.mapping.Dual();
     }));
 }
+
 std::size_t CodeHeap::ReservedBytes() const noexcept {
     std::size_t total{};
     for (const auto& slab : slabs) total += slab.mapping.ReservedBytes();
     return total;
 }
+
 MappingRelease CodeHeap::Release() noexcept {
     MappingRelease result;
     for (auto& slab : slabs) {
@@ -45,6 +51,7 @@ MappingRelease CodeHeap::Release() noexcept {
     }
     return result;
 }
+
 NativeCode CodeHeap::Publish(std::span<const std::uint32_t> words,
                              std::vector<backend::FaultSite> faults,
                              std::span<const backend::LinkSite> links,

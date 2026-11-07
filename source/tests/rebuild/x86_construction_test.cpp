@@ -25,11 +25,13 @@ void Check(bool condition, const char* expression, int line) {
         throw std::runtime_error("x86 construction contract failed");
     }
 }
+
 #define CHECK(x) Check(static_cast<bool>(x), #x, __LINE__)
 
 std::size_t CellCount(CellRange cells) {
     return static_cast<std::size_t>(std::distance(cells.begin(), cells.end()));
 }
+
 // Explicitly linear, used only for small expected rows in this test binary.
 CellView CellAt(CellRange cells, std::size_t index) {
     auto at = cells.begin();
@@ -1423,6 +1425,7 @@ void PendingPartialWritesKeepWholeParents() {
               merges[4].value);
     }
 }
+
 void PackedSseAndLandingHints() {
     const std::array<std::uint8_t, 84> bytes{
             0xf3, 0x0f, 0x1e, 0xfa, 0xf3, 0x0f, 0x1e, 0xfb,  // ENDBR64/32, no guest IBT.
@@ -1518,6 +1521,7 @@ void PackedSseAndLandingHints() {
     const BlockWindow partial{0x7400, std::span{other_group}.first(4)};
     CHECK(!BuildIR({&partial, 1}, Scope::Block, vector_layout).program);
 }
+
 void PackedByteAndComparisonsAndRelativeCall() {
     std::vector<std::uint8_t> bytes{0x66, 0x41, 0x0f, 0x67, 0xe8};  // PACKUSWB xmm5,xmm8.
     for (std::uint8_t condition = 0; condition < 8; ++condition)
@@ -1586,6 +1590,7 @@ void PackedByteAndComparisonsAndRelativeCall() {
     const BlockWindow indirect{0x9100, addr32_indirect};
     CHECK(BuildIR({&indirect, 1}, Scope::Block, layout).program);
 }
+
 void RepeatStoreHasAZeroBypassAndARealFrontier() {
     const std::array<std::uint8_t, 4> bytes{
             0xf3, 0x48, 0xab, 0x90};  // REP STOSQ; next guest instruction.
@@ -1656,6 +1661,7 @@ void RepeatStoreHasAZeroBypassAndARealFrontier() {
     const BlockWindow wrapping_store{0xa100, addr32};
     CHECK(BuildIR({&wrapping_store, 1}, Scope::Block, layout, target).program);
 }
+
 void HalfPackedSingleMemoryKeepsTheOtherHalf() {
     const std::array<std::uint8_t, 27> bytes{
             0x0f, 0x28, 0xc1,        // MOVAPS xmm0,xmm1: pending full value.

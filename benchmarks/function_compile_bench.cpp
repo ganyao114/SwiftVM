@@ -16,9 +16,11 @@ using namespace swift::runtime;
 namespace a64 = backend::arm64;
 using u64 = std::uint64_t;
 using Clock = std::chrono::steady_clock;
+
 struct Options {
     unsigned blocks{32}, requests{128}, samples{5}, warmup{1};
 };
+
 struct Counts {
     ir::WorkCounts input{};
     std::size_t native_words{}, frame{}, spills{};
@@ -26,6 +28,7 @@ struct Counts {
     u64 code_mix{14695981039346656037ULL};
     friend bool operator==(const Counts&, const Counts&) = default;
 };
+
 void Require(bool value) {
     if (!value) throw std::runtime_error("function benchmark rejected actual work");
 }

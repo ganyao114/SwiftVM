@@ -22,6 +22,7 @@ inline Op DecodeOpcode(std::uint16_t opcode) noexcept {
             return Op::Unsupported;
     }
 }
+
 [[gnu::always_inline]] inline std::uint8_t DecodeRegister(std::uint8_t reg) noexcept {
     // The adapter translates contiguous vendor banks into independently owned
     // guest banks. No vendor identifier escapes this function.
@@ -51,6 +52,7 @@ inline Op DecodeOpcode(std::uint16_t opcode) noexcept {
             return Register::Other;
     }
 }
+
 inline GuestOperandKind DecodeOperand(std::uint8_t type) noexcept {
     switch (type) {
         case O_NONE:
@@ -77,6 +79,7 @@ inline GuestOperandKind DecodeOperand(std::uint8_t type) noexcept {
             return GuestOperandKind::Other;
     }
 }
+
 inline FlowKind DecodeFlow(std::uint8_t meta) noexcept {
     switch (META_GET_FC(meta)) {
         case FC_CND_BRANCH:
@@ -94,6 +97,7 @@ inline FlowKind DecodeFlow(std::uint8_t meta) noexcept {
             return FlowKind::Linear;
     }
 }
+
 inline std::uint16_t DecodeFlags(std::uint16_t flags) noexcept {
     // Both sides describe actual guest RFLAGS positions. Validate that fact
     // here rather than repeating eight conditional translations per mask.
@@ -105,6 +109,7 @@ inline std::uint16_t DecodeFlags(std::uint16_t flags) noexcept {
            (GuestFlag::Carry | GuestFlag::Parity | GuestFlag::Auxiliary | GuestFlag::Zero |
             GuestFlag::Sign | GuestFlag::Interrupt | GuestFlag::Direction | GuestFlag::Overflow);
 }
+
 // Width corrections for known parser differences are applied once, before
 // the owned semantic record is published. The byte scan remains outside the
 // timed vendor call. Trusted parser fixtures may omit bytes and use its mode.
@@ -196,12 +201,14 @@ inline void CorrectWidths(InstructionData& out, std::span<const std::uint8_t> by
             break;
     }
 }
+
 struct DecoderAccess {
     static Instruction Own(const InstructionData& data) noexcept {
         Instruction out;
         out.data = data;
         return out;
     }
+
     static Instruction Own(const _DInst& raw, std::span<const std::uint8_t> bytes = {}) noexcept {
         Instruction owned;
         auto& out = owned.data;
@@ -265,6 +272,7 @@ struct DecoderAccess {
         return owned;
     }
 };
+
 // Trusted hand-made vendor fixtures explicitly normalize once. Production
 // callers pass their existing vector<Instruction> directly, with no copy.
 inline std::vector<Instruction> FixtureNormalize(std::span<const _DInst> records) {

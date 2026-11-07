@@ -12,9 +12,11 @@
 
 namespace swift::runtime::execution {
 namespace front = ::swift::x86;
+
 namespace {
 using u64 = std::uint64_t;
 using x86::GuestState;
+
 const char* Name(ir::OpCode opcode) {
     switch (opcode) {
 #define INST(name, ...)                                                                            \
@@ -27,6 +29,7 @@ const char* Name(ir::OpCode opcode) {
     }
 }
 }  // namespace
+
 NativeCode CompileService::Compile(ir::Scope scope) {
     auto& stats = vm.stats;
     auto& options = vm.options;
@@ -247,6 +250,7 @@ NativeCode CompileService::Compile(ir::Scope scope) {
 
     return code;
 }
+
 void CompileService::Release() noexcept {
     reusable = {};
     last = nullptr;

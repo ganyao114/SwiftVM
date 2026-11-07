@@ -6,11 +6,13 @@
 namespace swift::runtime::execution {
 class VM;
 }
+
 namespace swift::runtime::platform {
 
 class LinuxSyscalls {
 public:
     explicit LinuxSyscalls(execution::VM& vm) noexcept : vm(vm) {}
+
     void Service();
 
 private:

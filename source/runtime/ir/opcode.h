@@ -63,12 +63,15 @@ enum class Effect : std::uint16_t {
     Location = 16384,
     Unknown = 32768,
 };
+
 constexpr Effect operator|(Effect left, Effect right) noexcept {
     return static_cast<Effect>(static_cast<unsigned>(left) | static_cast<unsigned>(right));
 }
+
 constexpr bool HasAnyEffect(Effect effects, Effect requested) noexcept {
     return (static_cast<unsigned>(effects) & static_cast<unsigned>(requested)) != 0;
 }
+
 struct Schema {
     ResultPolicy result;
     Type fixed_type;
@@ -150,6 +153,7 @@ constexpr Effect EffectsFor(OpCode op, OperationMetadata metadata = {}) noexcept
     if (metadata.flag_outputs) effects = effects | Effect::WriteFlags;
     return effects;
 }
+
 constexpr bool IsPure(Effect effects) noexcept { return effects == Effect::None; }
 
 }  // namespace swift::runtime::ir

@@ -15,6 +15,7 @@ struct LoadedImage {
     std::string path;
     std::uint64_t device{}, inode{}, file_size{};
 };
+
 LoadedImage LoadELF(execution::GuestMemory&, const std::string&);
 std::uint64_t InitialStack(execution::GuestMemory&,
                            const LoadedImage&,

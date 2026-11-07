@@ -14,6 +14,7 @@ namespace swift::runtime::compile {
 struct UniformRange {
     std::uint32_t offset{}, bytes{};
 };
+
 struct UniformPolicy {
     std::optional<UniformRange> flags;
     // Actual execution ownership: valid guest-memory addresses cannot name
@@ -38,6 +39,7 @@ struct OptimizeResult {
     // partly optimized owner with CapacityOverflow. Every completed edit is
     // equivalent; no clone or all-program rollback is performed.
     bool allocation_failed{};
+
     explicit operator bool() const noexcept { return error == ir::Error::None; }
 };
 

@@ -24,9 +24,11 @@
 namespace {
 using namespace swift::runtime;
 namespace a64 = backend::arm64;
+
 void Check(bool condition, int line) {
     if (!condition) throw std::runtime_error("pipeline contract failed at " + std::to_string(line));
 }
+
 #define CHECK(x) Check(bool(x), __LINE__)
 
 #if defined(__aarch64__) && !defined(__APPLE__)
@@ -203,10 +205,12 @@ void RunPipeline(ir::Scope scope, ir::TargetMode mode, bool optimize) {
 
 using u64 = std::uint64_t;
 enum class Alu { Add, Sub, Compare, And, Or, Xor, Test, Negate };
+
 struct ExpectedFlags {
     u64 result{}, packed{};
     bool carry{}, overflow{}, zero{}, negative{}, parity{};
 };
+
 ExpectedFlags Expected(Alu operation, unsigned bits, u64 left, u64 right, u64 previous) {
     const auto mask = bits == 64 ? UINT64_MAX : u64{UINT32_MAX};
     const auto sign = u64{1} << (bits - 1);
@@ -254,6 +258,7 @@ ExpectedFlags Expected(Alu operation, unsigned bits, u64 left, u64 right, u64 pr
                  (out.result & 255);
     return out;
 }
+
 bool BranchTaken(unsigned condition, const ExpectedFlags& f) {
     switch (condition) {
         case 0:
@@ -550,6 +555,7 @@ void AutomaticFunctions() {
     CHECK(Execute(code, state.data()) == 0);
     if constexpr (executes_native) CHECK(state[0] == 8 && state[1] == 0 && state[16] == 0x602a);
 }
+
 void RepeatStorePipeline() {
     const std::uint8_t bytes[]{0xf3, 0x48, 0xab};  // REP STOSQ.
     const swift::x86::BlockWindow window{0x9000, bytes};

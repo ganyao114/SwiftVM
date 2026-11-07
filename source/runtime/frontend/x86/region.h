@@ -8,22 +8,27 @@ struct BlockWindow {
     std::uint64_t pc{};
     std::span<const std::uint8_t> bytes;
 };
+
 struct DecodedBlock {
     std::uint64_t pc{};
     std::uint32_t first_instruction{}, instruction_count{};
 };
+
 static_assert(sizeof(DecodedBlock) == 16);
 
 struct DecodeLimits {
     std::uint32_t max_instructions{4096}, max_blocks{256};
 };
+
 // A cold, read-only borrow of actual callable entries in the current execution
 // domain. Pending keys are not ready. No directory or code owner is copied.
 struct ReadyEntryLookup {
     void* opaque{};
     bool (*ready)(void*, std::uint64_t) noexcept {};
+
     bool Contains(std::uint64_t pc) const noexcept { return ready && ready(opaque, pc); }
 };
+
 struct DecodedFunction {
     DecodeError error{DecodeError::None};
     std::uint64_t error_pc{};
@@ -34,6 +39,7 @@ struct DecodedFunction {
     // splits counts accepted late entries inside already decoded slices.
     // budget_exits counts actual edge/body-frontier decisions, not unique PCs.
     std::size_t decoded_bytes{}, decode_calls{}, splits{}, budget_exits{};
+
     explicit operator bool() const noexcept { return error == DecodeError::None; }
 };
 

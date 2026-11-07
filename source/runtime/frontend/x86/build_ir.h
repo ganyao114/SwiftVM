@@ -42,12 +42,14 @@ enum class BuildError : std::uint8_t {
     IRRejected,
     FormationRejected,
 };
+
 struct BuildResult {
     BuildError error{BuildError::None};
     std::uint64_t error_pc{};
     std::size_t decoded_bytes{}, instruction_count{};
     runtime::ir::Error ir_error{runtime::ir::Error::None};
     runtime::ir::Program program;
+
     explicit operator bool() const noexcept { return error == BuildError::None && bool(program); }
 };
 

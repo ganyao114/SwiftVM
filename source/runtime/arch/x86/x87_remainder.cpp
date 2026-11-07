@@ -6,16 +6,19 @@ struct Magnitude {
     u64 significand;
     int exponent;
 };
+
 Magnitude Align(extFloat80_t value) {
     auto exponent = static_cast<int>(value.signExp & 0x7fff);
     if (!exponent) exponent = 1;
     const auto shift = static_cast<int>(std::countl_zero(value.signif));
     return {value.signif << shift, exponent - shift};
 }
+
 struct Quotient {
     u64 low;
     bool rounded_up;
 };
+
 Quotient Divide(extFloat80_t a, extFloat80_t b, bool nearest) {
     const auto left = Align(a), right = Align(b);
     const auto difference = left.exponent - right.exponent;
@@ -40,6 +43,7 @@ Quotient Divide(extFloat80_t a, extFloat80_t b, bool nearest) {
     const bool up = nearest && (twice > denominator || (twice == denominator && (quotient & 1)));
     return {quotient + up, up};
 }
+
 extFloat80_t ScaleEncoding(extFloat80_t value, int amount) {
     const auto magnitude = Align(value);
     const auto exponent = magnitude.exponent + amount;
@@ -47,6 +51,7 @@ extFloat80_t ScaleEncoding(extFloat80_t value, int amount) {
         return {magnitude.significand, static_cast<u16>((value.signExp & 0x8000) | exponent)};
     return {magnitude.significand >> (1 - exponent), static_cast<u16>(value.signExp & 0x8000)};
 }
+
 X87Result RequirePair(X87State& s) {
     s.status &= ~c1;
     if (Missing(s, 0) || Missing(s, 1)) {

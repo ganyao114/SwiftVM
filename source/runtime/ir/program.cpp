@@ -58,7 +58,9 @@ Program::Program() noexcept = default;
 Program::~Program() = default;
 Program::Program(Program&&) noexcept = default;
 Program& Program::operator=(Program&&) noexcept = default;
+
 Program::Program(std::unique_ptr<Storage> input) noexcept : storage(std::move(input)) {}
+
 CellRange Program::Operands(const Operation& op) const noexcept {
     if (!storage || storage->operations.empty()) return {};
     const auto address = reinterpret_cast<std::uintptr_t>(&op);
@@ -69,16 +71,19 @@ CellRange Program::Operands(const Operation& op) const noexcept {
         return {};
     return Operands(NodeId{static_cast<std::uint32_t>(offset / sizeof(Operation))});
 }
+
 bool Program::Contains(Value value) const noexcept {
     Type type;
     return storage && storage->ReadType(value, Type::Void, type) == Error::None;
 }
+
 std::size_t Program::StorageBytes() const noexcept {
     return storage ? sizeof(Storage) + storage->operations.size() * sizeof(Operation) +
                              storage->operands.size() * sizeof(Cell) +
                              storage->blocks.size() * sizeof(BlockRecord)
                    : 0;
 }
+
 std::size_t Program::ReservedBytes() const noexcept {
     return storage ? sizeof(Storage) + storage->operations.capacity() * sizeof(Operation) +
                              storage->operands.capacity() * sizeof(Cell) +

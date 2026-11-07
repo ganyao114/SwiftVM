@@ -4,6 +4,7 @@ namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
 std::uintptr_t X87Helper() noexcept;
+
 namespace detail {
 void Writer::HandleCompareAndSwap128Family(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
@@ -50,6 +51,7 @@ void Writer::HandleCompareAndSwap128Family(OpContext& ctx) {
     SaveResult(ctx);
     if (!options.private_uniforms) Shadow(true);
 }
+
 namespace {
 void EmitLseAtomic(v::Assembler& sink,
                    AtomicRMWOp kind,

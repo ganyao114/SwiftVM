@@ -25,9 +25,12 @@ struct Home {
     std::uint8_t
             nzcv_clobber : 4 {};  // Unobserved NZCV fields the actual local writer may clobber.
     std::uint16_t extra_slot{};   // Div128 remainder: 8B slot index + 1; zero otherwise.
+
     unsigned CarrierBits() const noexcept { return narrow_pin ? 4u << narrow_pin : 64u; }
 };
+
 static_assert(sizeof(Home) == 16);
+
 struct Allocation {
     CompileError error{CompileError::None};
     ir::NodeId node{};
@@ -36,6 +39,7 @@ struct Allocation {
     std::vector<std::uint32_t> block_order;  // One actual CFG reverse-postorder schedule.
     std::uint32_t spill_bytes{};
     bool publish_entry_pc{};  // This unit needs canonical incoming PC at entry.
+
     explicit operator bool() const noexcept { return error == CompileError::None; }
 };
 

@@ -8,6 +8,7 @@ void Writer::HandleVecAvgFamily(OpContext& ctx) {
     LaneSize(bits, false);
     masm.exact.urhadd(Lanes(ctx.destination, bits), Lanes(left, bits), Lanes(right, bits));
 }
+
 void Writer::HandleVecSatAddFamily(OpContext& ctx) {
     auto& c = ctx.cursor;
     const auto left = VectorValue(c.Take(), 0), right = VectorValue(c.Take(), 1);
@@ -27,6 +28,7 @@ void Writer::HandleVecSatAddFamily(OpContext& ctx) {
             masm.exact.uqadd(out, a, b);
     }
 }
+
 void Writer::HandleVecMulHigh16Family(OpContext& ctx) {
     auto& c = ctx.cursor;
     const auto left = VectorValue(c.Take(), 0), right = VectorValue(c.Take(), 1);
@@ -45,6 +47,7 @@ void Writer::HandleVecMulHigh16Family(OpContext& ctx) {
     masm.exact.shrn(Lanes(ctx.destination, 16, 64), Lanes(lo, 32), 16);
     masm.exact.shrn2(Lanes(ctx.destination, 16), Lanes(hi, 32), 16);
 }
+
 void Writer::HandleVecAbsDiffSum8Family(OpContext& ctx) {
     auto& c = ctx.cursor;
     const auto left = VectorValue(c.Take(), 0), right = VectorValue(c.Take(), 1),
@@ -54,6 +57,7 @@ void Writer::HandleVecAbsDiffSum8Family(OpContext& ctx) {
     masm.exact.uaddlp(Lanes(temp, 32), Lanes(temp, 16));
     masm.exact.uaddlp(Lanes(ctx.destination, 64), Lanes(temp, 32));
 }
+
 void Writer::HandleVecShiftLeftFamily(OpContext& ctx) {
     auto& c = ctx.cursor;
     const auto input = VectorValue(c.Take(), 0);
@@ -103,6 +107,7 @@ void Writer::HandleVecShiftLeftFamily(OpContext& ctx) {
         masm.exact.ushl(Lanes(ctx.destination, bits), Lanes(input, bits), Lanes(1, bits));
     if (done != UINT32_MAX) masm.Patch(done, masm.Here());
 }
+
 void Writer::HandleVecDupPairs32Family(OpContext& ctx) {
     auto& c = ctx.cursor;
     const auto input = VectorValue(c.Take(), 0);
@@ -113,6 +118,7 @@ void Writer::HandleVecDupPairs32Family(OpContext& ctx) {
     else
         masm.exact.trn1(Lanes(ctx.destination, 32), Lanes(input, 32), Lanes(input, 32));
 }
+
 void Writer::HandleVecInsert16Family(OpContext& ctx) {
     auto& c = ctx.cursor;
     const auto input = VectorValue(c.Take(), 0), value = Read(c.Take(), 16, 16);
@@ -121,6 +127,7 @@ void Writer::HandleVecInsert16Family(OpContext& ctx) {
     VectorMove(ctx.destination, input);
     masm.exact.ins(Lanes(ctx.destination, 16), lane, W(value));
 }
+
 void Writer::HandleVecTableLookup8Family(OpContext& ctx) {
     auto& c = ctx.cursor;
     const auto input = VectorValue(c.Take(), 0), indices = VectorValue(c.Take(), 1);

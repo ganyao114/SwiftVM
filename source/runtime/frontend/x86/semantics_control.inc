@@ -5,6 +5,7 @@ static void StorePC(Emitter& builder, StateLayout layout, Value pc) {
     Require(builder.StoreUniform(
             Type::Void, {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(pc)}));
 }
+
 static void PrepareFaultPC(Emitter& builder,
                            StateLayout layout,
                            u64 pc,
@@ -12,14 +13,18 @@ static void PrepareFaultPC(Emitter& builder,
                            bool external_helper = false) {
     builder.PrepareFault(layout, pc, target, external_helper);
 }
+
 static void EndDispatch(Emitter& builder, u64 reason = 0) { builder.FinishDispatch(reason); }
+
 static unsigned StackBits(const InstructionData& instruction) {
     return instruction.operand_bits == 16 ? 16 : 64;
 }
+
 static void WriteStack(Emitter& builder, StateLayout layout, Value stack) {
     WriteRegister(
             builder, layout, DecodedOperand{GuestOperandKind::Register, Register::RSP, 64}, stack);
 }
+
 static void Push(Emitter& builder,
                  StateLayout layout,
                  const InstructionData& instruction,
@@ -42,6 +47,7 @@ static void Push(Emitter& builder,
     StoreMemory(builder, changed, value, bits);
     WriteStack(builder, layout, changed);
 }
+
 static void Pop(Emitter& builder,
                 StateLayout layout,
                 const InstructionData& instruction,
@@ -72,6 +78,7 @@ static void Pop(Emitter& builder,
     if (destination.type == GuestOperandKind::Register)
         builder.WriteGpr(destination_offset, destination_slot, bits, value);
 }
+
 static void Leave(Emitter& builder, StateLayout layout, const InstructionData& instruction) {
     if (instruction.ops[0].type != GuestOperandKind::None) Unsupported();
     const auto bits = StackBits(instruction);
@@ -127,6 +134,7 @@ static bool Conditional(Op opcode) {
             return false;
     }
 }
+
 static bool Direct(const InstructionData& instruction) {
     return instruction.ops[0].type == GuestOperandKind::Relative &&
            instruction.ops[1].type == GuestOperandKind::None &&
@@ -134,6 +142,7 @@ static bool Direct(const InstructionData& instruction) {
            instruction.ops[3].type == GuestOperandKind::None &&
            (instruction.ops[0].size == 8 || instruction.ops[0].size == 32);
 }
+
 static void RepeatStore(Emitter& builder,
                         StateLayout layout,
                         const InstructionData& instruction,
@@ -262,6 +271,7 @@ static void ConditionalSet(Emitter& builder,
                     condition,
                     8);
 }
+
 static void ConditionalMove(Emitter& builder,
                             StateLayout layout,
                             const InstructionData& instruction,
@@ -320,6 +330,7 @@ static void Call(Emitter& builder,
     EndDispatch(builder);
     ended = true;
 }
+
 static void Return(Emitter& builder,
                    StateLayout layout,
                    const InstructionData& instruction,
@@ -353,6 +364,7 @@ static void Return(Emitter& builder,
     EndDispatch(builder);
     ended = true;
 }
+
 static void Mxcsr(Emitter& builder,
                   StateLayout layout,
                   const InstructionData& instruction,
@@ -386,6 +398,7 @@ static void Mxcsr(Emitter& builder,
         StoreMemory(builder, address, value, 32, displacement);
     }
 }
+
 static void CpuQuery(Emitter& builder,
                      StateLayout layout,
                      const InstructionData& instruction,
@@ -418,6 +431,7 @@ static void CpuQuery(Emitter& builder,
     EndDispatch(builder);  // Never turn serialization into an internal Function edge.
     ended = true;
 }
+
 static void Lea(Emitter& builder,
                 StateLayout layout,
                 const InstructionData& instruction,
@@ -445,6 +459,7 @@ static void Lea(Emitter& builder,
         address = Require(builder.ZeroExtend64(Type::U64, {Operand::ValueOf(address, Type::U32)}));
     WriteRegister(builder, layout, instruction.ops[0], address);
 }
+
 static void NonTemporalVectorStore(Emitter& builder,
                                    StateLayout layout,
                                    const InstructionData& instruction,
@@ -463,6 +478,7 @@ static void NonTemporalVectorStore(Emitter& builder,
     VWrite<OpCode::StoreMemory>(
             builder, layout, instruction, destination, value, pc, next_pc, target, true);
 }
+
 static void SystemCall(Emitter& builder,
                        StateLayout layout,
                        const InstructionData& instruction,

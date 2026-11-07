@@ -41,7 +41,9 @@ public:
         allocation_count = 0;
         count_allocations = true;
     }
+
     ~AllocationCount() { count_allocations = false; }
+
     std::size_t Stop() {
         count_allocations = false;
         return allocation_count;
@@ -53,6 +55,7 @@ void Check(bool condition, const char* expression, int line) {
     std::fprintf(stderr, "IR construction contract failed at line %d: %s\n", line, expression);
     throw std::runtime_error("IR construction contract failed");
 }
+
 #define CHECK(expression) Check(static_cast<bool>(expression), #expression, __LINE__)
 
 using namespace swift::runtime::ir;
@@ -69,6 +72,7 @@ std::size_t LiveCellCount(const Program& program) {
 std::size_t CellCount(CellRange cells) {
     return static_cast<std::size_t>(std::distance(cells.begin(), cells.end()));
 }
+
 // Explicitly linear, used only for small expected rows in this test binary.
 CellView CellAt(CellRange cells, std::size_t index) {
     auto at = cells.begin();
@@ -148,20 +152,31 @@ SubmitResult SubmitWithoutAllocation(Builder& builder) {
 }  // namespace
 
 void* operator new(std::size_t size) { return Allocate(size); }
+
 void* operator new[](std::size_t size) { return Allocate(size); }
+
 void* operator new(std::size_t size, std::align_val_t alignment) {
     return AllocateAligned(size, static_cast<std::size_t>(alignment));
 }
+
 void* operator new[](std::size_t size, std::align_val_t alignment) {
     return AllocateAligned(size, static_cast<std::size_t>(alignment));
 }
+
 void operator delete(void* pointer) noexcept { std::free(pointer); }
+
 void operator delete[](void* pointer) noexcept { std::free(pointer); }
+
 void operator delete(void* pointer, std::size_t) noexcept { std::free(pointer); }
+
 void operator delete[](void* pointer, std::size_t) noexcept { std::free(pointer); }
+
 void operator delete(void* pointer, std::align_val_t) noexcept { std::free(pointer); }
+
 void operator delete[](void* pointer, std::align_val_t) noexcept { std::free(pointer); }
+
 void operator delete(void* pointer, std::size_t, std::align_val_t) noexcept { std::free(pointer); }
+
 void operator delete[](void* pointer, std::size_t, std::align_val_t) noexcept {
     std::free(pointer);
 }

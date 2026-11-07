@@ -4,6 +4,7 @@
 
 namespace swift::runtime::execution {
 namespace front = ::swift::x86;
+
 front::AccessResult VM::StateImage(void* opaque,
                                    unsigned raw_kind,
                                    std::uint64_t address,

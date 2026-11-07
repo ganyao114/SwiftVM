@@ -19,6 +19,7 @@ enum class Op : std::uint16_t {
 #undef X86_OP
 #undef X86_EXTRA_OP
 };
+
 // Architectural register identifiers owned here, not a parser's register bank.
 // Consecutive GPR widths permit the same guest slot arithmetic in both sinks.
 enum Register : std::uint8_t {
@@ -133,6 +134,7 @@ enum Register : std::uint8_t {
     Other = 255,
 };
 enum class RegisterClass : std::uint8_t { None, Gpr, Vector, X87, Mmx, Other };
+
 struct RegisterView {
     RegisterClass kind{RegisterClass::None};
     std::uint8_t index{}, first_bit{};
@@ -152,18 +154,22 @@ enum class GuestOperandKind : std::uint8_t {
     FarPointer,
     Other,
 };
+
 struct DecodedOperand {
     GuestOperandKind type{};
     std::uint8_t index{Register::None};
     std::uint16_t size{};
 };
+
 static_assert(sizeof(DecodedOperand) == 4);
+
 struct OperandView {
     GuestOperandKind kind{};
     RegisterView reg;
     std::uint16_t bits{};
 };
 enum class FlowKind : std::uint8_t { Linear, Conditional, Jump, Call, Return, Service };
+
 enum InstructionFlag : std::uint16_t {
     Locked = 1,
     Repeat = 2,
@@ -172,6 +178,7 @@ enum InstructionFlag : std::uint16_t {
     Invalid = 16,
     Privileged = 32,
 };
+
 // These are guest RFLAGS bit positions, independent of both parser and backend.
 enum GuestFlag : std::uint16_t {
     Carry = 1,
@@ -183,6 +190,7 @@ enum GuestFlag : std::uint16_t {
     Direction = 1024,
     Overflow = 2048,
 };
+
 struct PrefixView {
     bool locked{}, repeat{}, repeat_not_zero{};
     std::uint8_t address_bits{}, operand_bits{};
@@ -202,9 +210,11 @@ struct InstructionData {
     std::uint8_t vector_bytes{};  // 0=legacy, 16/32=effective VEX vector length.
     std::array<std::uint8_t, 5> reserved{};
 };
+
 static_assert(sizeof(InstructionData) == 64);
 
 class InstructionView;
+
 class Instruction {
 public:
     InstructionView View() const noexcept;
@@ -214,19 +224,28 @@ private:
     friend struct detail::DecoderAccess;
     friend class InstructionView;
 };
+
 static_assert(sizeof(Instruction) == 64);
 
 class InstructionView {
 public:
     InstructionView() = default;
+
     const InstructionData& Record() const noexcept { return record->data; }
+
     std::uint64_t PC() const noexcept { return Record().addr; }
+
     std::uint8_t Size() const noexcept { return Record().size; }
+
     Op Opcode() const noexcept { return Record().opcode; }
+
     OperandView Operand(unsigned) const noexcept;
     PrefixView Prefixes() const noexcept;
+
     FlowKind Flow() const noexcept { return Record().flow; }
+
     bool UnitBoundary() const noexcept { return Record().unit_boundary; }
+
     bool RelativeTarget(std::uint64_t& target) const noexcept {
         if (Record().ops[0].type != GuestOperandKind::Relative) return false;
         target = Record().addr + Record().size + Record().immediate;
@@ -235,10 +254,12 @@ public:
 
 private:
     const Instruction* record{};
+
     explicit InstructionView(const Instruction* record) : record(record) {}
     friend class Instruction;
     friend class InstructionRange;
 };
+
 inline InstructionView Instruction::View() const noexcept { return InstructionView{this}; }
 
 inline OperandView InstructionView::Operand(unsigned index) const noexcept {
@@ -280,6 +301,7 @@ inline OperandView InstructionView::Operand(unsigned index) const noexcept {
         reg.kind = RegisterClass::Other;
     return out;
 }
+
 inline PrefixView InstructionView::Prefixes() const noexcept {
     return {bool(Record().flags & InstructionFlag::Locked),
             bool(Record().flags & InstructionFlag::Repeat),
@@ -292,13 +314,19 @@ inline PrefixView InstructionView::Prefixes() const noexcept {
 class InstructionRange {
 public:
     InstructionRange() = default;
+
     InstructionRange(std::span<const Instruction> records) noexcept
             : records(records.data()), count(records.size()) {}
+
     InstructionRange(const std::vector<Instruction>& records) noexcept
             : InstructionRange(std::span<const Instruction>{records}) {}
+
     InstructionView operator[](std::size_t i) const noexcept { return records[i].View(); }
+
     std::size_t size() const noexcept { return count; }
+
     bool empty() const noexcept { return !count; }
+
     InstructionRange subspan(std::size_t first, std::size_t size) const noexcept {
         return {std::span{records + first, size}};
     }

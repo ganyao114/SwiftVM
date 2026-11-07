@@ -12,15 +12,18 @@
 
 namespace swift::runtime::execution {
 namespace front = ::swift::x86;
+
 namespace {
 using u64 = std::uint64_t;
 constexpr std::uint8_t pinned_uniform_slots = 16;
+
 MappingRelease Merge(MappingRelease a, MappingRelease b) noexcept {
     a.remaining_views += b.remaining_views;
     if (!a.unmap_error) a.unmap_error = b.unmap_error;
     if (!a.close_error) a.close_error = b.close_error;
     return a;
 }
+
 template <typename T> std::uint64_t AtomicModify(const front::AtomicRequest& request) noexcept {
     auto* pointer = reinterpret_cast<T*>(request.address);
     auto old = __atomic_load_n(pointer, __ATOMIC_SEQ_CST);
@@ -70,6 +73,7 @@ template <typename T> std::uint64_t AtomicModify(const front::AtomicRequest& req
     }
 }
 }  // namespace
+
 VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
         : options(options)
         , stats(stats)
@@ -121,7 +125,9 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     faults.native_nzcv = backend.capabilities.native_nzcv;
     RefreshNative(native);
 }
+
 VM::~VM() { (void)Close(); }
+
 void VM::ObserveFinal() noexcept {
     if (final_observed) return;
     final_observed = true;
@@ -142,6 +148,7 @@ void VM::ObserveFinal() noexcept {
         stats.link_relocation_capacity += cache.LinkCapacity();
     }
 }
+
 MappingRelease VM::Close() noexcept {
     if (closed) return close_result;
     if (thread.faults.registered || thread.faults.active.load()) return {1, EBUSY, 0};
@@ -165,6 +172,7 @@ MappingRelease VM::Close() noexcept {
     closed = !close_result.remaining_views;
     return close_result;
 }
+
 int VM::Run(const std::string& path,
             std::span<const std::string> argv,
             std::span<const std::string> environment) {
@@ -229,6 +237,7 @@ int VM::Run(const std::string& path,
         throw std::runtime_error("cannot restore previous native fault handlers or signal mask");
     return thread.exit_code;
 }
+
 void VM::UpdateFPEnvironment() {
     const auto mxcsr = thread.state.mxcsr;
     if (mxcsr & ~u64{0xffff}) throw std::runtime_error("guest MXCSR contains reserved bits");
@@ -237,26 +246,32 @@ void VM::UpdateFPEnvironment() {
     if (backend.update_fp) backend.update_fp(backend.context, thread.native, mxcsr);
     RefreshNative(thread.native);
 }
+
 void VM::Invalidate() { smc.Invalidate(); }
+
 bool VM::PrepareGuestWrite(u64 address, std::size_t size) {
     if (!memory.Accessible(address, size, PROT_WRITE)) return false;
     if (size && memory.WriteAffectsCode(address, size)) Invalidate();
     return true;
 }
+
 bool VM::GuestWrite(u64 address, const void* source, std::size_t size) {
     return PrepareGuestWrite(address, size) && memory.CopyOut(address, source, size);
 }
+
 void VM::FileChanged(int fd) {
     if (memory.RefreshFileMappings(fd)) {
         ++stats.smc_file_write_invalidations;
         Invalidate();
     }
 }
+
 front::DirectServices VM::DirectServices() noexcept {
     front::DirectServices services{this, Fetch, Read, Write, Atomic, Cpu};
     services.state_image = StateImage;
     return services;
 }
+
 front::CodeReadResult VM::Fetch(void* opaque,
                                 u64 pc,
                                 std::span<std::uint8_t> destination) noexcept {
@@ -278,6 +293,7 @@ front::CodeReadResult VM::Fetch(void* opaque,
              pc + copied},
             copied};
 }
+
 front::AccessResult VM::Read(void* opaque,
                              u64 address,
                              std::span<std::uint8_t> bytes,
@@ -288,6 +304,7 @@ front::AccessResult VM::Read(void* opaque,
     if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
     return {};
 }
+
 front::AccessResult VM::Write(void* opaque,
                               u64 address,
                               std::span<const std::uint8_t> bytes,
@@ -305,6 +322,7 @@ front::AccessResult VM::Write(void* opaque,
         return {front::AccessStatus::Fault, address};
     }
 }
+
 front::AccessResult VM::Atomic(void* opaque,
                                const front::AtomicRequest& request,
                                front::AtomicValue& observed) noexcept {
@@ -370,10 +388,12 @@ front::AccessResult VM::Atomic(void* opaque,
         return {front::AccessStatus::Fault, request.address};
     }
 }
+
 front::CpuResult VM::Cpu(void*, std::uint32_t leaf, std::uint32_t subleaf) noexcept {
     const auto result = x86::QueryGuestCpu(leaf, subleaf);
     return {result.lower, result.upper};
 }
+
 void VM::Interpret() {
     thread.access_error = nullptr;
     const auto step = front::InterpretOne(thread.state, DirectServices());

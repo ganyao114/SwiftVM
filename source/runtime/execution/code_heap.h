@@ -40,6 +40,7 @@ private:
         MemMap mapping;
         std::size_t used{};
     };
+
     const HostBackendOps& backend;
     std::size_t page_size;
     std::vector<Slab> slabs;

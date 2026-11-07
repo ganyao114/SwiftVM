@@ -9,14 +9,17 @@ constexpr float128_t qpi{UINT64_C(0x8469898cc51701b8), UINT64_C(0x4000921fb54442
 constexpr float128_t qhalfpi{UINT64_C(0x8469898cc51701b8), UINT64_C(0x3fff921fb54442d1)};
 constexpr float128_t qquarterpi{UINT64_C(0x8469898cc51701b8), UINT64_C(0x3ffe921fb54442d1)};
 constexpr float128_t qln2{UINT64_C(0xf35793c7673007e6), UINT64_C(0x3ffe62e42fefa39e)};
+
 float128_t Negate(float128_t value) {
     value.v[1] ^= UINT64_C(0x8000000000000000);
     return value;
 }
+
 float128_t WithSign(float128_t value, bool negative) {
     value.v[1] = (value.v[1] & UINT64_C(0x7fffffffffffffff)) | (u64{negative} << 63);
     return value;
 }
+
 float128_t Integer(softfloat_state& env, unsigned value) {
     return extF80_to_f128(&env, FromSigned(value, 32));
 }
@@ -25,6 +28,7 @@ struct Reduced {
     float128_t argument;
     unsigned quadrant;
 };
+
 Reduced Reduce(softfloat_state& env, extFloat80_t input) {
     const bool negative = (input.signExp & 0x8000) != 0;
     const auto exponent = static_cast<int>(input.signExp & 0x7fff) - 0x3fff;
@@ -99,6 +103,7 @@ float128_t ExpMinusOne(softfloat_state& env, float128_t x) {
     }
     return sum;
 }
+
 float128_t LogPlusOne(softfloat_state& env, float128_t x, bool small) {
     if (!small) return cephes_f128_log2l(f128_add(&env, qone, x));
     auto power = x, sum = x;
@@ -111,6 +116,7 @@ float128_t LogPlusOne(softfloat_state& env, float128_t x, bool small) {
     }
     return f128_div(&env, sum, qln2);
 }
+
 float128_t ArcTan(softfloat_state& env, extFloat80_t x, extFloat80_t y) {
     const bool sx = (x.signExp & 0x8000) != 0, sy = (y.signExp & 0x8000) != 0;
     if (IsZero(y)) return WithSign(sx ? qpi : qzero, sy);

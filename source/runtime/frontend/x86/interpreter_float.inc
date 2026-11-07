@@ -3,6 +3,7 @@ u64 FlushFloat(u64 bits, unsigned width, bool flush) {
     const auto exponent = width == 64 ? UINT64_C(0x7ff0000000000000) : UINT64_C(0x7f800000);
     return flush && !(bits & exponent) ? bits & (u64{1} << (width - 1)) : bits & Mask(width);
 }
+
 u64 ConvertFloatInteger(
         u64 bits, unsigned float_width, unsigned integer_width, bool truncate, bool daz) {
     bits = FlushFloat(bits, float_width, !truncate && daz);

@@ -19,6 +19,7 @@ static bool BmiMnemonic(Op opcode) {
             return false;
     }
 }
+
 static bool BmiInstruction(Emitter& builder,
                            StateLayout layout,
                            const InstructionData& instruction,

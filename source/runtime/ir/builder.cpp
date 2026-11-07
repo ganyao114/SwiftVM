@@ -9,10 +9,12 @@ namespace {
 constexpr auto limit = std::size_t{NodeId::invalid};
 
 bool Empty(Value value) noexcept { return !value.unit && !value.node; }
+
 bool Empty(BlockRef block) noexcept { return !block.unit && !block.id; }
 }  // namespace
 
 Builder::Builder(Scope scope, TargetInfo target) : Builder(scope, target, Program{}) {}
+
 Builder::Builder(Scope scope, TargetInfo target, Program reusable)
         : storage(std::move(reusable.storage)) {
     if ((scope != Scope::Block && scope != Scope::Function) ||
@@ -23,11 +25,14 @@ Builder::Builder(Scope scope, TargetInfo target, Program reusable)
     else
         storage = std::make_unique<Program::Storage>(scope, target);
 }
+
 Builder::~Builder() = default;
 Builder::Builder(Builder&&) noexcept = default;
 Builder& Builder::operator=(Builder&&) noexcept = default;
+
 Builder::Builder(std::unique_ptr<Program::Storage> input, std::size_t max_words) noexcept
         : storage(std::move(input)), edit_only(true), max_operand_words(max_words) {}
+
 Builder Builder::Edit(Program&& program, std::size_t max_words) noexcept {
     return Builder{std::move(program.storage), max_words};
 }

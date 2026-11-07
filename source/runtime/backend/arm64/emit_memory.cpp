@@ -4,6 +4,7 @@ namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
 std::uintptr_t X87Helper() noexcept;
+
 namespace detail {
 void Writer::OrderedMemory(
         bool load, unsigned bits, unsigned value, unsigned address, std::int32_t offset) {

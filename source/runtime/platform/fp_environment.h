@@ -29,7 +29,9 @@ public:
         constexpr int modes[] = {FE_TONEAREST, FE_DOWNWARD, FE_UPWARD, FE_TOWARDZERO};
         std::fesetround(modes[static_cast<unsigned>(rounding)]);
     }
+
     ~HostFloatScope() { std::fesetenv(&previous); }
+
     HostFloatScope(const HostFloatScope&) = delete;
     HostFloatScope& operator=(const HostFloatScope&) = delete;
 

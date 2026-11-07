@@ -15,6 +15,7 @@
 namespace swift::x86 {
 // Internal byte-decoder helper defined in decode.cpp; not a new IR API.
 std::uint8_t DisabledCetHintSize(std::span<const std::uint8_t> bytes) noexcept;
+
 namespace {
 using namespace runtime::ir;
 using u64 = std::uint64_t;
@@ -27,16 +28,22 @@ public:
     using Value = runtime::ir::Value;
     using NodeId = runtime::ir::NodeId;
     using Producer = NodeId;
+
     Producer ProducerOf(Value value) const { return value.node; }
+
     using Operand = runtime::ir::Operand;
     using Result = AppendResult;
+
     Type NaturalType(Value value) const { return Operations()[value.node.value].type; }
+
     OperationMetadata Metadata(NodeId node) const { return Operations()[node.value].Metadata(); }
+
     template <OpCode op> Result Apply(Type type,
                                       std::initializer_list<Operand> inputs,
                                       OperationMetadata metadata = {}) {
         return Emit<op>(type, inputs, metadata);
     }
+
 #define INST(name, ...)                                                                            \
     Result name(                                                                                   \
             Type type, std::initializer_list<Operand> inputs, OperationMetadata metadata = {}) {   \
@@ -44,6 +51,7 @@ public:
     }
 #include "runtime/ir/opcodes.inc"
 #undef INST
+
     template <class Body> void IfNonZero(Value count, Body&& body) {
         const auto skip = Emit<OpCode::NotGoto>(Type::U64, {Operand::ValueOf(count)});
         if (!skip) throw detail::Rejected{BuildError::IRRejected, skip.error};
@@ -51,11 +59,13 @@ public:
         const auto bind = Emit<OpCode::BindLabel>(Type::Void, {Operand::ValueOf(skip.GetValue())});
         if (!bind) throw detail::Rejected{BuildError::IRRejected, bind.error};
     }
+
     Emitter(Scope scope, TargetInfo target, StateLayout layout, Program reusable)
             : Builder(scope, target, std::move(reusable))
             , layout(layout)
             , private_gprs(target.Has(TargetFeature::PrivateGPRState))
             , private_vectors(target.Has(TargetFeature::PrivateVectorState)) {}
+
     Error BeginBlock(BlockRef block) {
         const auto error = Builder::BeginBlock(block);
         if (error == Error::None) {
@@ -69,16 +79,20 @@ public:
         }
         return error;
     }
+
     Error EndBlock(Terminal terminal) {
         PublishRegisters();
         return Builder::EndBlock(terminal);
     }
+
     void PublishGPRs(std::uint16_t slots = UINT16_MAX);
     void PublishVectors();
+
     void PublishRegisters() {
         PublishGPRs();
         PublishVectors();
     }
+
     void StateMemory(unsigned, Value, Value, u64 pc, u64) {
         if (!layout.runtime_state_services) throw detail::Rejected{BuildError::Unsupported};
         PublishRegisters();
@@ -111,11 +125,13 @@ private:
     Value ShiftedAddress(TargetInfo target, Type type, Value base, Value index, std::uint8_t shift);
     void PrepareFault(StateLayout layout, u64 pc, TargetInfo target, bool external_helper);
     void MaterializeGPR(unsigned slot);
+
     struct CachedGPR {
         NodeId value, view;
         std::uint8_t view_first{};
         Type field_type{Type::Void};
     };
+
     static_assert(sizeof(CachedGPR) == 12);
     std::array<CachedGPR, 16> gprs;
     // Whole-parent coverage is independent of dirty: a U32 read lacks high32,
@@ -131,13 +147,16 @@ private:
 
 using Sem = detail::Semantics<Emitter>;
 using detail::Rejected;
+
 Value Require(AppendResult result) {
     if (!result) throw Rejected{BuildError::IRRejected, result.error};
     return result.GetValue();
 }
+
 void Require(Error error) {
     if (error != Error::None) throw Rejected{BuildError::IRRejected, error};
 }
+
 Value Emitter::AddressExpression(Type type, std::initializer_list<Operand> inputs) {
     const bool cache = private_gprs && inputs.size() <= 4;
     if (cache && last_address) {
@@ -169,6 +188,7 @@ Value Emitter::AddressExpression(Type type, std::initializer_list<Operand> input
     last_address = cache ? value.node : NodeId{};
     return value;
 }
+
 Value Emitter::ShiftedAddress(
         TargetInfo target, Type type, Value base, Value index, std::uint8_t shift) {
     if (!target.Has(TargetFeature::ShiftedAddress)) return {};
@@ -177,6 +197,7 @@ Value Emitter::ShiftedAddress(
                               Operand::ValueOf(base, type == Type::U32 ? Type::U32 : Type::Void),
                               Operand::ValueOf(index, type == Type::U32 ? Type::U32 : Type::Void)});
 }
+
 void Emitter::PrepareFault(StateLayout layout, u64 pc, TargetInfo target, bool external_helper) {
     PublishRegisters();
     if (target.Has(TargetFeature::FaultLocations)) {
@@ -186,6 +207,7 @@ void Emitter::PrepareFault(StateLayout layout, u64 pc, TargetInfo target, bool e
     // External C++ helpers do not fault inside a native FaultSite span.
     Sem::StorePC(*this, layout, Sem::Constant(*this, pc));
 }
+
 void Emitter::MaterializeGPR(unsigned slot) {
     const auto bit = static_cast<std::uint16_t>(1u << slot);
     if (!(pending_gprs & bit)) return;
@@ -207,6 +229,7 @@ void Emitter::MaterializeGPR(unsigned slot) {
     cached.field_type = Type::Void;
     pending_gprs = static_cast<std::uint16_t>(pending_gprs & ~bit);
 }
+
 void Emitter::PublishGPRs(std::uint16_t slots) {
     auto publish = static_cast<std::uint16_t>(dirty_gprs & slots);
     dirty_gprs = static_cast<std::uint16_t>(dirty_gprs & ~slots);
@@ -222,6 +245,7 @@ void Emitter::PublishGPRs(std::uint16_t slots) {
                  Operand::ValueOf({UnitId(), node}, type)}));
     }
 }
+
 void Emitter::PublishVectors() {
     auto publish = dirty_vectors;
     dirty_vectors = 0;
@@ -234,6 +258,7 @@ void Emitter::PublishVectors() {
                  Operand::ValueOf({UnitId(), vectors[slot]}, Type::V128)}));
     }
 }
+
 [[noreturn]] void Unsupported() { throw Rejected{BuildError::Unsupported}; }
 
 struct DecodeFailure {
@@ -313,6 +338,7 @@ Value Emitter::ReadGpr(u32 offset, unsigned slot, unsigned bits) {
     }
     return value;
 }
+
 void Emitter::WriteGpr(u32 offset, unsigned slot, unsigned bits, Value value) {
     auto& builder = *this;
 
@@ -368,6 +394,7 @@ void Emitter::WriteGpr(u32 offset, unsigned slot, unsigned bits, Value value) {
                                  {Operand::Uniform(offset, bits == 32 ? Type::U64 : type),
                                   Operand::ValueOf(value, type)}));
 }
+
 bool ValidRequest(std::size_t blocks, Scope scope, StateLayout layout, TargetInfo target) {
     if (!blocks || blocks > BlockId::invalid ||
         (scope != Scope::Block && scope != Scope::Function) ||
@@ -389,6 +416,7 @@ bool ValidRequest(std::size_t blocks, Scope scope, StateLayout layout, TargetInf
     }
     return true;
 }
+
 bool ValidSources(std::span<const BlockWindow> windows) {
     if (windows.empty()) return false;
     for (std::size_t i = 0; i < windows.size(); ++i)
@@ -398,11 +426,13 @@ bool ValidSources(std::span<const BlockWindow> windows) {
             return false;
     return true;
 }
+
 Value Emitter::ReadAddressGpr(unsigned slot) {
     if (!private_gprs || !(valid_gprs & (1u << slot))) return {};
     MaterializeGPR(slot);
     return {UnitId(), gprs[slot].value};
 }
+
 Value Emitter::ReadXmm(u32 offset, unsigned slot) {
     const auto bit = static_cast<std::uint16_t>(1u << slot);
     if (private_vectors && (valid_vectors & bit)) return {UnitId(), vectors[slot]};
@@ -413,6 +443,7 @@ Value Emitter::ReadXmm(u32 offset, unsigned slot) {
     }
     return value;
 }
+
 void Emitter::WriteXmm(u32 offset, unsigned slot, Value value) {
     if (private_vectors) {
         const auto bit = static_cast<std::uint16_t>(1u << slot);
@@ -425,21 +456,25 @@ void Emitter::WriteXmm(u32 offset, unsigned slot, Value value) {
             Type::Void,
             {Operand::Uniform(offset, Type::V128), Operand::ValueOf(value, Type::V128)}));
 }
+
 void Emitter::InvalidateXmm(unsigned slot) {
     const auto bit = static_cast<std::uint16_t>(1u << slot);
     valid_vectors = static_cast<std::uint16_t>(valid_vectors & ~bit);
     dirty_vectors = static_cast<std::uint16_t>(dirty_vectors & ~bit);
 }
+
 Value Emitter::X87Zero() {
     if (!x87_zero) x87_zero = Sem::Constant(*this, 0).node;
     return {UnitId(), x87_zero};
 }
+
 Value Emitter::X87Address(u32 offset) {
     if (!x87_state)
         x87_state =
                 Require(GetUniformAddress(Type::U64, {Operand::Immediate(offset, Type::U32)})).node;
     return {UnitId(), x87_state};
 }
+
 std::pair<runtime::x86::X87Command, unsigned> Emitter::X87Window(
         runtime::x86::X87Command command,
         unsigned index,
@@ -486,6 +521,7 @@ std::pair<runtime::x86::X87Command, unsigned> Emitter::X87Window(
     }
     return {command, consumed};
 }
+
 void Emitter::FinishDispatch(u64 reason) {
     Require(EndBlock(reason ? Terminal::Return(Sem::Constant(*this, reason))
                             : Terminal::Dispatch()));
@@ -622,10 +658,12 @@ BuildResult EmitDecoded(InstructionRange instructions,
                 Require(builder.EndBlock(
                         Terminal::Branch(condition, target_block(taken), target_block(next_pc))));
         };
+
         struct Flow {
             decltype(finish)& finish;
             decltype(branch)& branch;
         } cfg_flow{finish, branch};
+
         std::size_t source{};
         for (std::size_t block = 0; block < blocks.size(); ++block) {
             const auto& slice = blocks[block];

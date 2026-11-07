@@ -82,6 +82,7 @@ static void WideCompareExchange(Emitter& builder,
                FlagBits(Flag::Zero),
                {}};
 }
+
 static bool SystemInstruction(Emitter& builder,
                               StateLayout layout,
                               const InstructionData& instruction,

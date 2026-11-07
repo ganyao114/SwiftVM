@@ -17,6 +17,7 @@ void Check(bool condition, const char* expression, int line) {
         throw std::runtime_error("IR optimize contract failed");
     }
 }
+
 #define CHECK(x) Check(static_cast<bool>(x), #x, __LINE__)
 
 Value Emit(Builder& builder,
@@ -28,20 +29,24 @@ Value Emit(Builder& builder,
     CHECK(emitted);
     return emitted.GetValue();
 }
+
 Value Literal(Builder& builder, std::uint64_t bits, Type type = Type::U64) {
     return Emit(builder, OpCode::LoadImm, type, {Operand::Immediate(bits, type)});
 }
+
 void Store(Builder& builder, std::uint32_t offset, Value value, Type type = Type::U64) {
     Emit(builder,
          OpCode::StoreUniform,
          Type::Void,
          {Operand::Uniform(offset, type), Operand::ValueOf(value, type)});
 }
+
 Program Submit(Builder& builder) {
     auto submitted = builder.Submit();
     CHECK(submitted);
     return std::move(submitted.program);
 }
+
 std::uint64_t Immediate(const Program& program, Value value, Type type) {
     CHECK(program.Operations()[value.node.value].opcode == OpCode::LoadImm);
     CHECK(program.Operations()[value.node.value].type == type);
@@ -1269,6 +1274,7 @@ void OrderedLoadAddresses() {
     CHECK(result.program.Operations()[widened.node.value].opcode == OpCode::Add);
     CHECK(result.program.Operands(fifth.node).front().Payload() == widened.node.value);
 }
+
 void ReusedRowsKeepOnlyCurrentRequest() {
     std::vector<std::uint64_t> rows(256, ~std::uint64_t{});
     Program reusable;

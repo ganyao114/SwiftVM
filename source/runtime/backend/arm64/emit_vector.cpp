@@ -4,6 +4,7 @@ namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
 std::uintptr_t X87Helper() noexcept;
+
 namespace detail {
 void Writer::HandleVecSharedZeroFamily(OpContext& ctx) {
     const auto destination = ctx.destination;
@@ -70,6 +71,7 @@ void Writer::HandleVecMinFamily(OpContext& ctx) {
             masm.exact.umin(Lanes(ctx.destination, bits), Lanes(left, bits), Lanes(right, bits));
     }
 }
+
 void Writer::HandleVecMaxFamily(OpContext& ctx) { HandleVecMinFamily(ctx); }
 
 void Writer::HandleVecPackFamily(OpContext& ctx) {

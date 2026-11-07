@@ -49,7 +49,9 @@ private:
     Smc smc;
     bool final_observed{}, closing{}, closed{};
     MappingRelease close_result;
+
     CodeCache& Cache() noexcept { return caches[thread.fp_mode]; }
+
     void ObserveCache() noexcept;
     void ObserveFinal() noexcept;
     void RefreshNative(NativeRunContext&) noexcept;

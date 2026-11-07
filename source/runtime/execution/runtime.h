@@ -19,6 +19,7 @@ struct RuntimeOptions {
     ::swift::x86::DecodeLimits function_limits{};
     bool decode_timing{};
 };
+
 struct RuntimeStats {
     // Diagnostic-only actual native dispatcher lookups/ready hits. Ordinary
     // execution does not count. Probe steps count actual directory slot reads;
@@ -57,10 +58,12 @@ struct RuntimeStats {
     // and IR construction. Only decode_timing runs expose a perturbed
     // compile_without_byte_decode_ns; formation/buffer work stays charged.
 };
+
 struct RunResult {
     int exit_code;
     RuntimeStats stats;
     std::string error;
+
     explicit operator bool() const noexcept { return error.empty(); }
 };
 

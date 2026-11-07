@@ -5,6 +5,7 @@
 namespace swift::runtime::backend::arm64::detail {
 namespace {
 namespace crypto = ::swift::runtime::x86::crypto;
+
 crypto::Block128 ExecuteCrypto(u64 metadata, const crypto::Block128* arguments) noexcept {
     return crypto::Execute(static_cast<crypto::Operation>(metadata & 255),
                            arguments[0],

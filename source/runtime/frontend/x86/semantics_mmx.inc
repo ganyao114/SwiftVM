@@ -5,10 +5,12 @@ static bool MmxRegister(const DecodedOperand& operand) {
     return operand.type == GuestOperandKind::Register && operand.index >= Register::MM0 &&
            operand.index <= Register::MM7;
 }
+
 static u32 MmxOffset(StateLayout layout, const DecodedOperand& operand) {
     if (!MmxRegister(operand) || layout.x87_offset == UINT32_MAX) Unsupported();
     return layout.x87_offset + (operand.index - Register::MM0) * sizeof(runtime::x86::X87Value);
 }
+
 static void MmxEnter(Emitter& builder, StateLayout layout) {
     using State = runtime::x86::X87State;
     const auto status = X87Query(builder, layout, offsetof(State, status), Type::U16);
@@ -20,6 +22,7 @@ static void MmxEnter(Emitter& builder, StateLayout layout) {
              Type::U16,
              Constant(builder, 0, Type::U16));
 }
+
 static Value MmxRead(Emitter& builder,
                      StateLayout layout,
                      const InstructionData& instruction,
@@ -34,6 +37,7 @@ static Value MmxRead(Emitter& builder,
     PrepareFaultPC(builder, layout, pc, target);
     return ReadData(builder, layout, instruction, operand, next_pc, target);
 }
+
 static void MmxWrite(Emitter& builder,
                      StateLayout layout,
                      const DecodedOperand& operand,

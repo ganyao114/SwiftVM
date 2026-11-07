@@ -34,6 +34,7 @@ typedef uint64_t CORE_TICKS;
 typedef struct CORE_PORTABLE_S {
     ee_u8 portable_id;
 } core_portable;
+
 extern ee_u32 default_num_contexts;
 void portable_init(core_portable*, int*, char*[]);
 void portable_fini(core_portable*);

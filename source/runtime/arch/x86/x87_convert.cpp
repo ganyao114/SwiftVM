@@ -4,17 +4,22 @@ namespace swift::runtime::x86::detail {
 bool IsNaN(extFloat80_t v) noexcept {
     return (v.signExp & 0x7fff) == 0x7fff && (v.signif & ~integer_bit);
 }
+
 bool IsSignaling(extFloat80_t v) noexcept { return IsNaN(v) && !(v.signif & (integer_bit >> 1)); }
+
 bool IsInfinity(extFloat80_t v) noexcept {
     return (v.signExp & 0x7fff) == 0x7fff && v.signif == integer_bit;
 }
+
 bool IsZero(extFloat80_t v) noexcept { return !(v.signExp & 0x7fff) && !v.signif; }
+
 extFloat80_t CanonicalOperand(extFloat80_t v) noexcept {
     // Pseudo-denormals denote the same value as exponent one. Keeping this
     // normalization local preserves the actual 80-bit register payload.
     if (!(v.signExp & 0x7fff) && (v.signif & integer_bit)) v.signExp |= 1;
     return v;
 }
+
 bool MagnitudeGreater(extFloat80_t after, extFloat80_t before) noexcept {
     if (IsNaN(after) || IsNaN(before)) return false;
     after = CanonicalOperand(after);
@@ -22,6 +27,7 @@ bool MagnitudeGreater(extFloat80_t after, extFloat80_t before) noexcept {
     const auto a = after.signExp & 0x7fff, b = before.signExp & 0x7fff;
     return a > b || (a == b && after.signif > before.signif);
 }
+
 extFloat80_t FromSigned(u64 raw, unsigned bits) noexcept {
     if (bits < 64) {
         const auto mask = (u64{1} << bits) - 1;
@@ -34,6 +40,7 @@ extFloat80_t FromSigned(u64 raw, unsigned bits) noexcept {
     const auto shift = static_cast<unsigned>(std::countl_zero(magnitude));
     return {magnitude << shift, static_cast<u16>((negative ? 0x8000 : 0) | (0x403e - shift))};
 }
+
 extFloat80_t FromMemory(softfloat_state& env, X87Format format, u64 raw, u16& extra) noexcept {
     switch (format) {
         case X87Format::Float32:

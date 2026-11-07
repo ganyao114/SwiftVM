@@ -17,6 +17,7 @@ constexpr u64 live_bit = u64{1} << 62, pin_bit = u64{1} << 63, count_mask = live
 constexpr std::size_t local_cells = 16;
 
 bool Metadata(const Operation& op) { return op.Metadata() != OperationMetadata{}; }
+
 constexpr u64 all_flags = FlagBits(Flag::All);
 constexpr auto flag_observers =
         Effect::MayFault | Effect::Unknown | Effect::External | Effect::Control;
@@ -24,6 +25,7 @@ constexpr auto uniform_access = Effect::ReadGuestState | Effect::WriteGuestState
 constexpr auto flag_inputs = flag_observers | uniform_access | Effect::ReadFlags;
 constexpr std::array<u64, 6> flag_bits{1, 2, 4, 8, 16, 64};
 enum class FlagWriteKind { None, Metadata, Mask, Fixed, Opaque };
+
 struct FlagWrite {
     u64 mask{};
     FlagWriteKind kind{FlagWriteKind::None};
@@ -76,12 +78,14 @@ FlagWrite FlagWrites(const Builder& editor,
             return {0, FlagWriteKind::Opaque};
     }
 }
+
 bool Observable(Effect effects, FlagWrite write) {
     constexpr auto reads =
             static_cast<unsigned>(Effect::ReadGuestState | Effect::ReadLocal |
                                   Effect::ReadHostState | Effect::ReadFlags | Effect::WriteFlags);
     return write.kind == FlagWriteKind::Opaque || (static_cast<unsigned>(effects) & ~reads);
 }
+
 bool FlagsUniform(OpCode opcode, CellRange inputs, const UniformPolicy& policy) {
     if (opcode != OpCode::LoadUniform && opcode != OpCode::StoreUniform &&
         opcode != OpCode::StoreUniformSelectImm)
@@ -93,6 +97,7 @@ bool FlagsUniform(OpCode opcode, CellRange inputs, const UniformPolicy& policy) 
     return !bytes || (field.Payload() < u64{policy.flags->offset} + policy.flags->bytes &&
                       u64{policy.flags->offset} < field.Payload() + bytes);
 }
+
 u64 FlagReads(OpCode opcode, Effect effects, CellRange inputs, const UniformPolicy& policy) {
     if (HasAnyEffect(effects, flag_observers) ||
         (HasAnyEffect(effects, uniform_access) && FlagsUniform(opcode, inputs, policy)))
@@ -163,6 +168,7 @@ u64 KeptFlags(FlagWrite write, u64 needed) {
     // the original operation if any output is needed; never synthesize one.
     return write.kind == FlagWriteKind::Fixed && keep ? write.mask : keep;
 }
+
 Error TrimFlags(Builder& editor,
                 NodeId id,
                 const Operation& op,
@@ -193,6 +199,7 @@ Error TrimFlags(Builder& editor,
     inputs[write.argument] = Operand::Flags(keep);
     return editor.Rewrite(id, op.opcode, op.type, {inputs.data(), count});
 }
+
 bool Sensitive(OpCode opcode, Effect effects) {
     switch (opcode) {
         case OpCode::GetFlags:
@@ -211,28 +218,34 @@ bool Sensitive(OpCode opcode, Effect effects) {
             return HasAnyEffect(effects, Effect::Unknown);
     }
 }
+
 bool AddUse(std::vector<u64>& rows, std::uint32_t id, bool pin = false) {
     if (id >= rows.size() || (rows[id] & count_mask) == count_mask) return false;
     rows[id] = (rows[id] | live_bit | (pin ? pin_bit : 0)) + 1;
     return true;
 }
+
 bool DropUse(std::vector<u64>& rows, std::uint32_t id) {
     if (id >= rows.size() || !(rows[id] & count_mask)) return false;
     --rows[id];
     return true;
 }
+
 u64 Mask(unsigned bits) { return bits == 64 ? ~u64{} : bits ? (u64{1} << bits) - 1 : 0; }
+
 Type ReadType(const Operand& cell, std::span<const Operation> operations) {
     return cell.kind == OperandKind::Value && cell.type == Type::Void
                    ? operations[static_cast<std::size_t>(cell.payload)].type
                    : cell.type;
 }
+
 bool Scalar(Type type) { return IntegerType(type) && TypeBits(type) <= 64; }
 
 struct Constant {
     u64 bits{};
     Type type{Type::Void};
 };
+
 bool ReadConstant(const Builder& editor,
                   std::span<const Operation> operations,
                   const Operand& input,
@@ -739,12 +752,14 @@ struct UniformEntry {
     Type type{Type::Void};
     Operand value;
 };
+
 class UniformCache {
 public:
     void Clear() {
         valid = 0;
         next = 0;
     }
+
     const Operand* Find(std::uint32_t offset, std::uint32_t bytes, Type type) const {
         const Operand* wide{};
         for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -758,6 +773,7 @@ public:
         }
         return wide;
     }
+
     void Invalidate(std::uint32_t offset, std::uint32_t bytes) {
         for (std::size_t i = 0; i < entries.size(); ++i) {
             const auto& entry = entries[i];
@@ -766,6 +782,7 @@ public:
                 valid &= ~(1u << i);
         }
     }
+
     void Add(std::uint32_t offset, std::uint32_t bytes, Type type, Operand value) {
         auto slot = entries.size();
         for (std::size_t i = 0; i < entries.size(); ++i) {
@@ -791,6 +808,7 @@ private:
     std::size_t next{};
     unsigned valid{};
 };
+
 std::uint32_t CachedBytes(Type type) {
     return type == Type::U32 || type == Type::U64 || type == Type::V128 ? TypeBits(type) / 8 : 0;
 }

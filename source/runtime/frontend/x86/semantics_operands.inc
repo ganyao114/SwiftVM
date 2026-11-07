@@ -2,9 +2,11 @@
 static Value Constant(Emitter& builder, u64 bits, Type type = Type::U64) {
     return Require(builder.LoadImm(Type::Void, {Operand::Immediate(bits, type)}));
 }
+
 static Value Add(Emitter& builder, Value left, Operand right) {
     return Require(builder.Add(Type::Void, {Operand::ValueOf(left), right}));
 }
+
 static Type ScalarType(unsigned bits) {
     switch (bits) {
         case 8:
@@ -19,6 +21,7 @@ static Type ScalarType(unsigned bits) {
             Unsupported();
     }
 }
+
 static u32 RegisterOffset(StateLayout layout, unsigned reg, unsigned bits, unsigned& slot) {
     unsigned byte{};
     if (bits == 8) {
@@ -43,11 +46,13 @@ static u32 RegisterOffset(StateLayout layout, unsigned reg, unsigned bits, unsig
     }
     return layout.gprs_offset + slot * layout.stride + byte;
 }
+
 static Value ReadRegister(Emitter& builder, StateLayout layout, unsigned reg, unsigned bits) {
     unsigned slot{};
     const auto offset = RegisterOffset(layout, reg, bits, slot);
     return builder.ReadGpr(offset, slot, bits);
 }
+
 static void WriteRegister(Emitter& builder,
                           StateLayout layout,
                           const DecodedOperand& reg,
@@ -56,6 +61,7 @@ static void WriteRegister(Emitter& builder,
     const auto offset = RegisterOffset(layout, reg.index, reg.size, slot);
     builder.WriteGpr(offset, slot, reg.size, value);
 }
+
 static bool Memory(const DecodedOperand& operand) {
     return operand.type == GuestOperandKind::Memory ||
            operand.type == GuestOperandKind::IndexedMemory ||
@@ -170,6 +176,7 @@ static u64 ImmediateBits(const InstructionData& instruction, unsigned bits) {
     const u64 value = instruction.immediate;
     return bits == 64 ? value : value & ((u64{1} << bits) - 1);
 }
+
 static Value LoadMemory(Emitter& builder, Type type, Value address, u64 displacement = 0) {
     if (displacement)
         return Require(builder.LoadMemoryTSO(type,
@@ -178,6 +185,7 @@ static Value LoadMemory(Emitter& builder, Type type, Value address, u64 displace
                                               Operand::Immediate(displacement, Type::U64)}));
     return Require(builder.LoadMemoryTSO(type, {Operand::ValueOf(address)}));
 }
+
 static Value ReadData(Emitter& builder,
                       StateLayout layout,
                       const InstructionData& instruction,
@@ -200,6 +208,7 @@ static Value ReadData(Emitter& builder,
                                  materialize_address ? nullptr : &displacement);
     return LoadMemory(builder, type, address, displacement);
 }
+
 template <OpCode op = OpCode::StoreMemoryTSO> static void StoreMemory(
         Emitter& builder, Value address, Value value, unsigned bits, u64 displacement = 0) {
     const auto type = bits == 128 ? Type::V128 : ScalarType(bits);
@@ -251,6 +260,7 @@ static bool LockedMemoryForm(const InstructionData& instruction) {
             return false;
     }
 }
+
 // Prefix permission is an opcode/form property, not a second semantic pass.
 static unsigned MandatoryRepeatPrefixes(Op opcode) {
     switch (opcode) {
@@ -331,6 +341,7 @@ static unsigned MandatoryRepeatPrefixes(Op opcode) {
             return 0;
     }
 }
+
 static bool AllowedPrefixes(const InstructionData& instruction,
                             std::span<const std::uint8_t> bytes) {
     if (instruction.opcode == Op::NOP && bytes[0] == 0xf3 &&
@@ -359,6 +370,7 @@ static bool AllowedPrefixes(const InstructionData& instruction,
     }
     return false;
 }
+
 static DecodedOperand Gpr(unsigned slot, unsigned bits) {
     const auto base = bits == 64   ? Register::RAX
                       : bits == 32 ? Register::EAX

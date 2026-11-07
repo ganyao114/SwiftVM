@@ -12,6 +12,7 @@ struct X87Value {
     std::uint16_t sign_exp{};
     std::uint8_t reserved[6]{};
 };
+
 static_assert(sizeof(X87Value) == 16 && offsetof(X87Value, sign_exp) == 8);
 
 struct alignas(16) X87State {
@@ -21,6 +22,7 @@ struct alignas(16) X87State {
     // The helper always returns X87Result; raw64 data uses this separate word.
     std::uint64_t result{};
 };
+
 static_assert(sizeof(X87State) == 144 && alignof(X87State) == 16);
 static_assert(offsetof(X87State, control) == 128 && offsetof(X87State, result) == 136);
 
@@ -100,6 +102,7 @@ enum class X87Transcendental : std::uint8_t {
     YLog2XPlusOne,
     TwoToXMinusOne
 };
+
 enum X87Option : std::uint64_t {
     X87Pop = UINT64_C(1) << 16,
     X87Reverse = UINT64_C(1) << 17,
@@ -152,13 +155,17 @@ constexpr std::uint64_t X87EncodeMetadata(std::int16_t ip_offset,
            (std::uint64_t{static_cast<std::uint16_t>(opcode & 0x7ff)} << 48) |
            (std::uint64_t{has_dp} << 59) | (std::uint64_t{commit_success} << 60);
 }
+
 constexpr std::int16_t X87MetadataOffset(std::uint64_t encoded, unsigned field) noexcept {
     return static_cast<std::int16_t>((encoded >> (field * 16)) & 0xffff);
 }
+
 constexpr std::uint16_t X87MetadataOpcode(std::uint64_t encoded) noexcept {
     return (encoded >> 48) & 0x7ff;
 }
+
 constexpr bool X87MetadataHasDP(std::uint64_t encoded) noexcept { return (encoded >> 59) & 1; }
+
 constexpr bool X87MetadataCommitsSuccess(std::uint64_t encoded) noexcept {
     return (encoded >> 60) & 1;
 }

@@ -12,9 +12,13 @@ enum class CompileFailure : unsigned char { None, Unsupported, InvalidInput };
 class CompileService {
 public:
     explicit CompileService(VM& vm) noexcept : vm(vm) {}
+
     backend::NativeCode Compile(ir::Scope);
+
     const backend::CompileResult* LastOutput() const noexcept { return last; }
+
     CompileFailure Failure() const noexcept { return failure; }
+
     void Release() noexcept;
 
 private:

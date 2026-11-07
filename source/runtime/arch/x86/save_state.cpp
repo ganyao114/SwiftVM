@@ -6,12 +6,14 @@ namespace {
 template <class T> void Put(std::span<std::uint8_t> out, std::size_t at, T value) {
     std::memcpy(out.data() + at, &value, sizeof value);
 }
+
 template <class T> T Get(std::span<const std::uint8_t> in, std::size_t at) {
     T value;
     std::memcpy(&value, in.data() + at, sizeof value);
     return value;
 }
 }  // namespace
+
 void ExportLegacyState(const GuestState& state,
                        std::span<std::uint8_t, 512> out,
                        bool wide) noexcept {
@@ -37,6 +39,7 @@ void ExportLegacyState(const GuestState& state,
     }
     std::memcpy(out.data() + 160, state.xmm, sizeof state.xmm);
 }
+
 bool ImportLegacyState(GuestState& state,
                        std::span<const std::uint8_t, 512> in,
                        std::uint64_t components,

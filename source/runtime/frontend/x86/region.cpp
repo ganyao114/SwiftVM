@@ -26,6 +26,7 @@ bool Valid(std::span<const BlockWindow> windows, DecodeLimits limits) {
     }
     return true;
 }
+
 auto ReadableAt(std::span<const BlockWindow> windows, u64 pc) {
     auto next = std::upper_bound(
             windows.begin(), windows.end(), pc, [](u64 address, const BlockWindow& window) {
@@ -35,6 +36,7 @@ auto ReadableAt(std::span<const BlockWindow> windows, u64 pc) {
     const auto found = std::prev(next);
     return pc - found->pc < found->bytes.size() ? found : windows.end();
 }
+
 // This is the actual sparse block directory while discovery is open. Only its
 // final slices are moved to the returned contiguous block list; no per-record
 // address/index table or copy of decoded operands is produced.

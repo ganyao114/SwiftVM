@@ -13,15 +13,18 @@ namespace {
 using namespace swift::runtime::ir;
 using namespace swift::tests::x86_ir;
 using Clock = std::chrono::steady_clock;
+
 // Keep canonical_semantic_v1 identical in both benchmark translation units.
 // This read-only diagnostic shim is also compiled against the saved baseline.
 struct Semantics {
     std::uint64_t checksum{1469598103934665603ull};
     std::size_t stored_cells{}, logical_cells{}, physical_words{}, values{}, terminals{};
 };
+
 std::uint64_t Mix(std::uint64_t hash, std::uint64_t value) {
     return (hash ^ value) * 1099511628211ull;
 }
+
 Semantics ObserveProgram(const Program& p) {
 #if !defined(SVM_IR_BASELINE_LAYOUT) && !defined(SVM_IR_BASELINE_COMPACT)
     if (p.EntryBlock().value != 0)
@@ -124,16 +127,19 @@ Semantics ObserveProgram(const Program& p) {
 double Nanoseconds(Clock::time_point begin, Clock::time_point end) {
     return std::chrono::duration<double, std::nano>(end - begin).count();
 }
+
 void Numbers(const std::vector<double>& values) {
     std::putchar('[');
     for (std::size_t i = 0; i < values.size(); ++i) std::printf("%s%.3f", i ? "," : "", values[i]);
     std::putchar(']');
 }
 enum class Mode { Sequential, BatchDiagnostic };
+
 struct Options {
     std::size_t requests{32}, samples{9}, warmup{1};
     Mode mode{Mode::Sequential};
 };
+
 Options Parse(int argc, char** argv) {
     Options out;
     for (int i = 1; i < argc; ++i) {
@@ -164,7 +170,9 @@ Options Parse(int argc, char** argv) {
         throw std::runtime_error("invalid request/sample count");
     return out;
 }
+
 constexpr std::size_t negative_count = 3;
+
 void UnsupportedRequest(Scope scope,
                         TargetInfo target,
                         std::size_t which,
@@ -190,15 +198,18 @@ void UnsupportedRequest(Scope scope,
             throw std::runtime_error("actual abandoned prefix differs");
     }
 }
+
 void RejectedSequence(Scope scope, TargetInfo target) {
     for (std::size_t i = 0; i < negative_count; ++i) UnsupportedRequest(scope, target, i);
 }
+
 struct Facts {
     Semantics semantics;
     std::uint64_t sequence_checksum{1469598103934665603ull};
     std::size_t N{}, bytes{}, instructions{}, storage{}, reserved{};
     std::array<WorkCounts, negative_count> abandoned{};
 };
+
 Facts Verify(std::span<const swift::x86::BlockWindow> input,
              Scope scope,
              TargetInfo target,
@@ -230,6 +241,7 @@ Facts Verify(std::span<const swift::x86::BlockWindow> input,
     }
     return facts;
 }
+
 void Measure(const Options& options, Scope scope, TargetMode mode) {
     const auto input = scope == Scope::Block ? std::span{windows}.first(1) : std::span{windows};
     const TargetInfo target{mode, 0xa64, 0x42};

@@ -6,6 +6,7 @@ namespace swift::runtime::x86::sse42 {
 struct Block128 {
     std::uint64_t low{}, high{};
 };
+
 inline constexpr unsigned MaskShift = 0, IndexShift = 16;
 inline constexpr unsigned SignBit = 24, ZeroBit = 25, CarryBit = 26, OverflowBit = 27;
 

@@ -23,10 +23,12 @@ using runtime::x86::X87Encode;
 using runtime::x86::X87Result;
 using u64 = std::uint64_t;
 using u32 = std::uint32_t;
+
 struct Rejected {
     BuildError error;
     Error detail{Error::None};
 };
+
 using ::swift::x86::DisabledCetHintSize;
 
 template <class Sink> struct Semantics {
@@ -34,13 +36,16 @@ template <class Sink> struct Semantics {
     using Value = typename Sink::Value;
     using Producer = typename Sink::Producer;
     using Operand = typename Sink::Operand;
+
     static Value Require(typename Sink::Result result) {
         if (!result) throw Rejected{BuildError::IRRejected, result.error};
         return result.GetValue();
     }
+
     static void Require(Error error) {
         if (error != Error::None) throw Rejected{BuildError::IRRejected, error};
     }
+
     [[noreturn]] static void Unsupported() { throw Rejected{BuildError::Unsupported}; }
 
 #include "semantics_operands.inc"

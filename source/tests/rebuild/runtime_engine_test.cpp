@@ -16,9 +16,11 @@
 namespace {
 namespace execution = swift::runtime::execution;
 namespace backend = swift::runtime::backend;
+
 void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
+
 class GuestFile {
 public:
     GuestFile() {
@@ -57,12 +59,15 @@ public:
         Check(written == static_cast<ssize_t>(image.size()) && closed == 0,
               "cannot write engine-test guest");
     }
+
     ~GuestFile() { unlink(path.data()); }
+
     std::string Path() const { return path.data(); }
 
 private:
     std::array<char, 64> path{"/data/local/tmp/swiftvm-engine-test-XXXXXX"};
 };
+
 void Interpreter(const std::string& path) {
     execution::RuntimeOptions options;
     options.mode = execution::ExecutionMode::InterpretOnly;
@@ -73,6 +78,7 @@ void Interpreter(const std::string& path) {
                   result.stats.native_bytes == 0 && result.stats.peak_slabs == 0,
           "InterpretOnly executes through safe memory without constructing native code");
 }
+
 void SourceAdmission() {
     execution::GuestMemory memory;
     const auto size = memory.PageSize();
@@ -143,6 +149,7 @@ void Mixed(const std::string& path, bool invalid) {
 }
 #endif
 }  // namespace
+
 int main() {
     try {
         GuestFile guest;

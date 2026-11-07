@@ -4,6 +4,7 @@ namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
 std::uintptr_t X87Helper() noexcept;
+
 namespace detail {
 void Writer::HandleReadSystemFamily(OpContext& ctx) {
     const auto kind = IntegerImmediate(ctx.cursor.Take()),
@@ -29,6 +30,7 @@ void Writer::HandleReadSystemFamily(OpContext& ctx) {
     nzcv_matches = 0;
     RestoreHelperNZCV();
 }
+
 bool Writer::PartialByteStore(const Operation& operation, const Home& home) const {
     if (operation.type != Type::U8 || home.spilled || home.reg == 1 ||
         node.value + 1 >= source.Operations().size())

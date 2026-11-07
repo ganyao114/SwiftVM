@@ -4,6 +4,7 @@ namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
 std::uintptr_t X87Helper() noexcept;
+
 namespace detail {
 bool Writer::DeferTest(const Operation& operation, Cursor& cursor) {
     const auto& body = source.Blocks()[block.value];

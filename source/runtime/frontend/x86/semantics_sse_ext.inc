@@ -3,6 +3,7 @@ static Value VConstant(Emitter& builder, u64 low, u64 high) {
     return Require(builder.VecLoadConst(
             Type::V128, {Operand::Immediate(low, Type::U64), Operand::Immediate(high, Type::U64)}));
 }
+
 static Value VLane(Emitter& builder, Value vector, unsigned bits, unsigned lane) {
     auto value = Require(builder.VecExtract64(
             Type::U64, {Operand::ValueOf(vector), Operand::Immediate(lane * bits / 64, Type::U8)}));
@@ -13,6 +14,7 @@ static Value VLane(Emitter& builder, Value vector, unsigned bits, unsigned lane)
                                             Operand::Immediate(bits, Type::U8)}));
     return value;
 }
+
 static Value VReplaceLane(
         Emitter& builder, Value previous, Value scalar, unsigned bits, unsigned lane) {
     const auto qword = lane * bits / 64;
@@ -33,6 +35,7 @@ static Value VReplaceLane(
                                    Operand::Immediate(64, Type::U8),
                                    Operand::Immediate(qword ? 0 : 1, Type::U8)}));
 }
+
 static Value VBlend(Emitter& builder, Value left, Value right, Value mask) {
     const auto a = Require(
             builder.VecAndNot(Type::V128, {Operand::ValueOf(left), Operand::ValueOf(mask)}));
@@ -40,6 +43,7 @@ static Value VBlend(Emitter& builder, Value left, Value right, Value mask) {
             Require(builder.VecAnd(Type::V128, {Operand::ValueOf(right), Operand::ValueOf(mask)}));
     return Require(builder.VecOr(Type::V128, {Operand::ValueOf(a), Operand::ValueOf(b)}));
 }
+
 static Value VLaneMask(Emitter& builder, unsigned bits, unsigned control) {
     u64 low{}, high{};
     for (unsigned i = 0; i < 128 / bits; ++i)
@@ -49,6 +53,7 @@ static Value VLaneMask(Emitter& builder, unsigned bits, unsigned control) {
         }
     return VConstant(builder, low, high);
 }
+
 static Value VMultiplyAddBytes(Emitter& builder, Value a, Value b) {
     std::array<Value, 2> product{};
     const auto zero = Require(builder.VecSharedZero(Type::V128, {}));
@@ -97,6 +102,7 @@ static Value VMultiplyAddBytes(Emitter& builder, Value a, Value b) {
                                       Operand::Immediate(16, Type::U8),
                                       Operand::Immediate(1, Type::U8)}));
 }
+
 static Value VSadWindow(Emitter& builder,
                         Value window_source,
                         Value needle_source,
@@ -133,6 +139,7 @@ static Value VSadWindow(Emitter& builder,
     }
     return result;
 }
+
 static bool SseExtended(Emitter& builder,
                         StateLayout layout,
                         const InstructionData& instruction,

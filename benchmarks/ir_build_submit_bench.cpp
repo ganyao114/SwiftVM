@@ -22,15 +22,18 @@
 // bookkeeping. The benchmark and the core execute on one thread.
 namespace allocation {
 enum Phase : unsigned { Construction, Submit, Destruction };
+
 struct Counters {
     std::array<std::uint64_t, 3> calls{}, bytes{};
     std::uint64_t live{}, peak{}, unit_floor{}, unit_peak{};
 };
+
 struct Header {
     void* raw;
     std::size_t bytes;
     std::uint64_t epoch;
 };
+
 constinit Counters counters{};
 constinit std::uint64_t epoch{};
 constinit bool enabled{};
@@ -56,6 +59,7 @@ void* Allocate(std::size_t bytes, std::size_t alignment) {
     }
     return reinterpret_cast<void*>(address);
 }
+
 void Free(void* pointer) noexcept {
     if (!pointer) return;
     const auto* header = static_cast<Header*>(pointer) - 1;
@@ -65,6 +69,7 @@ void Free(void* pointer) noexcept {
     }
     std::free(header->raw);
 }
+
 void Begin() noexcept {
     counters = {};
     if (++epoch == 0) std::abort();
@@ -76,13 +81,17 @@ void Begin() noexcept {
 void* operator new(std::size_t size) {
     return allocation::Allocate(size, alignof(std::max_align_t));
 }
+
 void* operator new[](std::size_t size) { return ::operator new(size); }
+
 void* operator new(std::size_t size, std::align_val_t align) {
     return allocation::Allocate(size, static_cast<std::size_t>(align));
 }
+
 void* operator new[](std::size_t size, std::align_val_t align) {
     return ::operator new(size, align);
 }
+
 void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
     try {
         return ::operator new(size);
@@ -90,9 +99,11 @@ void* operator new(std::size_t size, const std::nothrow_t&) noexcept {
         return nullptr;
     }
 }
+
 void* operator new[](std::size_t size, const std::nothrow_t& tag) noexcept {
     return ::operator new(size, tag);
 }
+
 void* operator new(std::size_t size, std::align_val_t align, const std::nothrow_t&) noexcept {
     try {
         return ::operator new(size, align);
@@ -100,22 +111,35 @@ void* operator new(std::size_t size, std::align_val_t align, const std::nothrow_
         return nullptr;
     }
 }
+
 void* operator new[](std::size_t size, std::align_val_t align, const std::nothrow_t& tag) noexcept {
     return ::operator new(size, align, tag);
 }
+
 void operator delete(void* p) noexcept { allocation::Free(p); }
+
 void operator delete[](void* p) noexcept { allocation::Free(p); }
+
 void operator delete(void* p, std::size_t) noexcept { allocation::Free(p); }
+
 void operator delete[](void* p, std::size_t) noexcept { allocation::Free(p); }
+
 void operator delete(void* p, std::align_val_t) noexcept { allocation::Free(p); }
+
 void operator delete[](void* p, std::align_val_t) noexcept { allocation::Free(p); }
+
 void operator delete(void* p, std::size_t, std::align_val_t) noexcept { allocation::Free(p); }
+
 void operator delete[](void* p, std::size_t, std::align_val_t) noexcept { allocation::Free(p); }
+
 void operator delete(void* p, const std::nothrow_t&) noexcept { allocation::Free(p); }
+
 void operator delete[](void* p, const std::nothrow_t&) noexcept { allocation::Free(p); }
+
 void operator delete(void* p, std::align_val_t, const std::nothrow_t&) noexcept {
     allocation::Free(p);
 }
+
 void operator delete[](void* p, std::align_val_t, const std::nothrow_t&) noexcept {
     allocation::Free(p);
 }
@@ -124,25 +148,31 @@ namespace {
 using namespace swift::runtime::ir;
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t max_blocks = 256;
+
 struct Failure {
     Error error;
     std::size_t block{}, local{};
 };
+
 void Check(Error error, std::size_t block, std::size_t local) {
     if (error != Error::None) throw Failure{error, block, local};
 }
+
 struct Fixture {
     std::size_t nodes{}, blocks{}, cells{}, logical_cells{}, value_uses{}, terminal_uses{};
     Scope scope{};
     TargetInfo target{};
     bool reserve{};
 };
+
 std::size_t BlockSize(const Fixture& f, std::size_t b) {
     return f.nodes / f.blocks + (b < f.nodes % f.blocks);
 }
+
 bool BranchBlock(const Fixture& f, std::size_t b) {
     return f.scope == Scope::Function && b % 3 == 0 && b + 2 < f.blocks;
 }
+
 // Recipe counting is outside the timed region. It creates no IR/operand array.
 Fixture MakeFixture(
         std::size_t nodes, std::size_t blocks, Scope scope, TargetMode mode, bool reserve) {
@@ -170,6 +200,7 @@ Fixture MakeFixture(
     }
     return f;
 }
+
 // Same fixture and actual storage; only the opcode's binding time differs.
 template <OpCode opcode> AppendResult Emit(Builder& builder,
                                            Type result,
@@ -181,6 +212,7 @@ template <OpCode opcode> AppendResult Emit(Builder& builder,
     return builder.Append(opcode, result, operands, metadata);
 #endif
 }
+
 std::size_t ReserveOperandUnits(const Fixture& f) {
 #ifdef SVM_IR_BASELINE_LAYOUT
     return f.cells;  // Baseline Reserve counts 16-byte stored cells.
@@ -189,6 +221,7 @@ std::size_t ReserveOperandUnits(const Fixture& f) {
     return f.logical_cells;
 #endif
 }
+
 void Build(Builder& builder, const Fixture& f) {
     if (f.reserve) Check(builder.Reserve(f.nodes, ReserveOperandUnits(f), f.blocks), 0, 0);
     std::array<BlockRef, max_blocks> blocks{};
@@ -325,9 +358,11 @@ struct Semantics {
     std::uint64_t checksum{1469598103934665603ull};
     std::size_t stored_cells{}, logical_cells{}, physical_words{}, values{}, terminals{};
 };
+
 std::uint64_t Mix(std::uint64_t hash, std::uint64_t value) {
     return (hash ^ value) * 1099511628211ull;
 }
+
 Semantics ObserveProgram(const Program& p) {
 #if !defined(SVM_IR_BASELINE_LAYOUT) && !defined(SVM_IR_BASELINE_COMPACT)
     // v1's fixtures have an implicit fixed entry. Do not apply that schema to
@@ -428,6 +463,7 @@ Semantics ObserveProgram(const Program& p) {
     }
     return out;
 }
+
 // All semantic traversal is outside construction, Submit and destruction.
 Semantics Validate(const Program& p, const Fixture& f) {
     if (p.Operations().size() != f.nodes || p.Blocks().size() != f.blocks ||
@@ -445,20 +481,24 @@ Semantics Validate(const Program& p, const Fixture& f) {
         throw std::runtime_error("fixture occurrence/storage count mismatch");
     return observed;
 }
+
 double Ns(Clock::time_point a, Clock::time_point b) {
     return std::chrono::duration<double, std::nano>(b - a).count();
 }
 enum class Mode { Sequential, BatchDiagnostic };
+
 struct Counts {
     std::size_t attempted{}, published{}, failed{}, abandoned{};
     std::size_t published_N{}, published_words{}, E_from_verified_recipe{};
     std::size_t abandoned_N{}, abandoned_words_from_verified_recipe{};
 };
+
 struct VerifiedSequence {
     Semantics positive;
     std::uint64_t checksum{1469598103934665603ull};
     std::array<Semantics, 2> rejected_prefixes{};
 };
+
 // A rejected request is a workload outcome, not a benchmark process failure.
 // Recovery below is used only by the separate untimed semantic pass.
 Semantics RejectedPrefix(const Fixture& f, unsigned which, bool recover) {
@@ -497,6 +537,7 @@ Semantics RejectedPrefix(const Fixture& f, unsigned which, bool recover) {
     allocation::phase = allocation::Destruction;
     return observed;  // In the timed path this destroys the abandoned Builder.
 }
+
 VerifiedSequence VerifySequence(const Fixture& f, std::size_t requests) {
     VerifiedSequence verified;
     // Every request in the fixed sequence is replayed and checked, not front().
@@ -518,12 +559,14 @@ VerifiedSequence VerifySequence(const Fixture& f, std::size_t requests) {
     }
     return verified;
 }
+
 struct Sample {
     double sequence{}, construction{}, submit{}, destruction{}, rejected{};
     allocation::Counters allocations{};
     Counts counts;
     std::size_t storage_bytes{}, reserved_bytes{};
 };
+
 void AccountPublished(const Program& p,
                       const Fixture& f,
                       const VerifiedSequence& verified,
@@ -546,6 +589,7 @@ void AccountPublished(const Program& p,
     // traversal of the timed Program. O(1) request accounting is timed.
     counts.E_from_verified_recipe += verified.positive.values + verified.positive.terminals;
 }
+
 void RunRejected(const Fixture& f, const VerifiedSequence& verified, Counts& counts) {
     for (unsigned i = 0; i < 2; ++i) {
         RejectedPrefix(f, i, false);
@@ -556,6 +600,7 @@ void RunRejected(const Fixture& f, const VerifiedSequence& verified, Counts& cou
         counts.abandoned_words_from_verified_recipe += verified.rejected_prefixes[i].physical_words;
     }
 }
+
 Sample Run(const Fixture& f, std::size_t requests, Mode mode, const VerifiedSequence& verified) {
     Sample sample;
     // Only the explicit batch diagnostic allocates harness slots.
@@ -627,11 +672,13 @@ Sample Run(const Fixture& f, std::size_t requests, Mode mode, const VerifiedSequ
     }
     return sample;
 }
+
 struct Options {
     std::vector<std::size_t> nodes{1024, 16384, 262144};
     std::size_t blocks{32}, samples{9}, warmup{2}, requests{32};
     Mode mode{Mode::Sequential};
 };
+
 Options Parse(int argc, char** argv) {
     Options options;
     for (int i = 1; i < argc; ++i) {
@@ -679,11 +726,13 @@ Options Parse(int argc, char** argv) {
             throw std::runtime_error("nodes must be >= 2*blocks and <= 10000000");
     return options;
 }
+
 struct Case {
     Fixture fixture;
     VerifiedSequence verified;
     std::vector<Sample> samples;
 };
+
 void Numbers(const std::vector<double>& values) {
     std::cout << '[';
     for (std::size_t i = 0; i < values.size(); ++i) {
@@ -692,6 +741,7 @@ void Numbers(const std::vector<double>& values) {
     }
     std::cout << ']';
 }
+
 void Stats(std::vector<double> values) {
     const auto raw = values;
     std::sort(values.begin(), values.end());
@@ -703,6 +753,7 @@ void Stats(std::vector<double> values) {
     Numbers(raw);
     std::cout << '}';
 }
+
 void Print(const Options& options, const std::vector<Case>& cases, double timer_floor) {
 #ifdef SVM_IR_STATIC_WRITER
     constexpr const char* writer = "compile_time_opcode";

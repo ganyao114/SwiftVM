@@ -5,10 +5,12 @@
 namespace swift::runtime::backend::arm64::detail {
 namespace {
 namespace sse42 = ::swift::runtime::x86::sse42;
+
 sse42::Block128 ImplicitString(u64 control, const sse42::Block128* arguments) noexcept {
     return {sse42::CompareImplicit(arguments[0], arguments[1], static_cast<std::uint8_t>(control)),
             0};
 }
+
 sse42::Block128 ExplicitString(u64 control, const sse42::Block128* arguments) noexcept {
     return {sse42::CompareExplicit(
                     arguments[0], arguments[1], arguments[2], static_cast<std::uint16_t>(control)),
@@ -44,6 +46,7 @@ void Writer::HandleStringFamily(OpContext& ctx) {
     masm.exact.add(v::sp, v::sp, Operand(48));
     masm.exact.fmov(X(ctx.destination), D(0));
 }
+
 void Writer::HandleSse42FlagsFamily(OpContext& ctx) {
     CompleteLocalFlags();
     RequireFlags();

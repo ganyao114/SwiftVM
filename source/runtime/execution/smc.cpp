@@ -13,20 +13,25 @@
 namespace swift::runtime::execution {
 namespace {
 using u64 = std::uint64_t;
+
 [[noreturn]] void SystemError(const char* op) {
     throw std::runtime_error(std::string(op) + ": " + std::strerror(errno));
 }
+
 u64 Add(u64 a, u64 b) {
     if (b > UINT64_MAX - a) throw std::length_error("source range overflow");
     return a + b;
 }
+
 bool IsFile(const MemoryRegion& r) noexcept {
     return r.backing == BackingKind::FilePrivate || r.backing == BackingKind::FileShared;
 }
+
 bool FileOverlap(const MemoryRegion& a, const MemoryRegion& b, u64 first, u64 last) noexcept {
     return IsFile(a) && IsFile(b) && a.device == b.device && a.inode == b.inode &&
            first < b.file_offset + b.size && b.file_offset < last;
 }
+
 template <typename Visit>
 void CodeWriteRanges(std::span<const MemoryRegion> regions, u64 address, u64 end, Visit visit) {
     for (const auto& source : regions) {
@@ -90,6 +95,7 @@ void Smc::Arm(u64 address, std::size_t length) {
         page.armed = true;
     }
 }
+
 bool Smc::Recover(std::uintptr_t address) noexcept {
     const auto page_size = vm.memory.PageSize();
     const auto page = address & ~(u64{page_size} - 1);
@@ -108,6 +114,7 @@ bool Smc::Recover(std::uintptr_t address) noexcept {
     for (auto& cache : vm.caches) cache.ResetLinks();
     return true;
 }
+
 void Smc::Clear() {
     const auto page_size = vm.memory.PageSize();
     for (auto& page : pages)
@@ -122,6 +129,7 @@ void Smc::Clear() {
         }
     pages.clear();  // Retain actual page-record capacity.
 }
+
 void Smc::Invalidate() {
     RuntimeTimer total{vm.stats.compile_request_ns}, release{vm.stats.code_release_ns};
     Clear();

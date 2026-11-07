@@ -34,20 +34,24 @@ struct FaultSite {
     // Backend-owned recovery description. Generic lookup only matches ranges.
     std::array<std::uint8_t, 8> recovery{};
 };
+
 static_assert(sizeof(FaultSite) == 32);
 
 enum class LinkKind : std::uint8_t { Static, Dynamic };
+
 struct LinkSite {
     LinkKind kind{LinkKind::Static};
     NativeOffset data_offset{}, branch_offset{}, fallback_offset{};
     std::uint64_t target_pc{};  // Only Static links carry a guest target.
 };
+
 static_assert(sizeof(LinkSite) == 24);
 
 struct EntryPoint {
     std::uint64_t pc{};
     NativeOffset offset{};
 };
+
 static_assert(sizeof(EntryPoint) == 16);
 
 // A borrowed view. The code heap owns mappings and recovery buffers; every
@@ -59,6 +63,7 @@ struct NativeCode {
     std::uint8_t* writable{};
     std::span<const FaultSite> faults;
 };
+
 static_assert(sizeof(NativeCode) == 40 && std::is_trivially_destructible_v<NativeCode>);
 
 struct CompileResult {
@@ -67,7 +72,9 @@ struct CompileResult {
     ir::BlockId block{};
     std::vector<std::uint32_t> words;
     std::uint32_t frame_bytes{}, spill_slots{};
+
     explicit operator bool() const noexcept { return error == CompileError::None; }
+
     std::vector<FaultSite> faults;
     std::vector<LinkSite> links;
     std::vector<EntryPoint> entries;

@@ -84,10 +84,12 @@ inline bool WideOperand(const Operand& input) noexcept {
             input.kind == OperandKind::Lambda) &&
            input.payload > UINT32_MAX;
 }
+
 inline bool IdentityOperand(const Operand& input) noexcept {
     return input.kind == OperandKind::Expression &&
            input.code == static_cast<unsigned>(OperandOp::Identity);
 }
+
 inline std::uint64_t OperandHeader(const Operand& input, bool wide) noexcept {
     const bool counted =
             input.kind == OperandKind::Expression || input.kind == OperandKind::Arguments;
@@ -330,6 +332,7 @@ template <OpCode known_op> AppendResult Builder::AppendImpl(OpCode op,
         std::vector<Cell>& cells;
         const std::size_t first;
         bool committed{};
+
         ~OperandRollback() noexcept {
             if (!committed) cells.resize(first);
         }

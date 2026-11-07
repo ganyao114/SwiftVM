@@ -19,6 +19,7 @@ constexpr Byte Multiply(Byte left, Byte right) {
     }
     return result;
 }
+
 constexpr Byte Substitute(Byte value) {
     Byte power = 1, base = value;
     for (unsigned exponent = 254; exponent; exponent >>= 1) {
@@ -28,6 +29,7 @@ constexpr Byte Substitute(Byte value) {
     return static_cast<Byte>(power ^ std::rotl(power, 1) ^ std::rotl(power, 2) ^
                              std::rotl(power, 3) ^ std::rotl(power, 4) ^ 0x63);
 }
+
 constexpr auto Substitution = [] {
     std::array<Byte, 256> table{};
     for (unsigned i = 0; i < table.size(); ++i) table[i] = Substitute(static_cast<Byte>(i));
@@ -38,6 +40,7 @@ constexpr auto InverseSubstitution = [] {
     for (unsigned i = 0; i < table.size(); ++i) table[Substitution[i]] = static_cast<Byte>(i);
     return table;
 }();
+
 Bytes Unpack(Block128 value) {
     Bytes result{};
     for (unsigned i = 0; i < 8; ++i) {
@@ -46,6 +49,7 @@ Bytes Unpack(Block128 value) {
     }
     return result;
 }
+
 Block128 Pack(const Bytes& bytes) {
     Block128 result;
     for (unsigned i = 0; i < 8; ++i) {
@@ -54,22 +58,26 @@ Block128 Pack(const Bytes& bytes) {
     }
     return result;
 }
+
 Words UnpackWords(Block128 value) {
     return {static_cast<Word>(value.low),
             static_cast<Word>(value.low >> 32),
             static_cast<Word>(value.high),
             static_cast<Word>(value.high >> 32)};
 }
+
 Block128 PackWords(const Words& value) {
     return {std::uint64_t{value[0]} | (std::uint64_t{value[1]} << 32),
             std::uint64_t{value[2]} | (std::uint64_t{value[3]} << 32)};
 }
+
 void ShiftRows(Bytes& value, bool inverse) {
     const auto input = value;
     for (unsigned column = 0; column < 4; ++column)
         for (unsigned row = 0; row < 4; ++row)
             value[column * 4 + row] = input[((column + (inverse ? 4 - row : row)) & 3) * 4 + row];
 }
+
 void MixColumns(Bytes& value, bool inverse) {
     constexpr Byte forward[4]{2, 3, 1, 1}, backward[4]{14, 11, 13, 9};
     const auto* factors = inverse ? backward : forward;
@@ -83,9 +91,13 @@ void MixColumns(Bytes& value, bool inverse) {
         }
     }
 }
+
 Word Small0(Word value) { return std::rotr(value, 7) ^ std::rotr(value, 18) ^ (value >> 3); }
+
 Word Small1(Word value) { return std::rotr(value, 17) ^ std::rotr(value, 19) ^ (value >> 10); }
+
 Word Big0(Word value) { return std::rotr(value, 2) ^ std::rotr(value, 13) ^ std::rotr(value, 22); }
+
 Word Big1(Word value) { return std::rotr(value, 6) ^ std::rotr(value, 11) ^ std::rotr(value, 25); }
 }  // namespace
 

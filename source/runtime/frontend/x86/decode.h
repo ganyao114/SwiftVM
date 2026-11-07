@@ -24,11 +24,14 @@ enum class DecodeError : std::uint8_t {
     OverlappingTarget,  // Region formation only; never emitted by DecodeOne.
     UnsupportedGuestFeature,
 };
+
 struct DecodeOneResult {
     DecodeError error{DecodeError::None};
     Instruction instruction{};
+
     explicit operator bool() const noexcept { return error == DecodeError::None; }
 };
+
 [[nodiscard]] DecodeOneResult DecodeOne(
         std::span<const std::uint8_t> bytes,
         std::uint64_t pc,

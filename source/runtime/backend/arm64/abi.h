@@ -33,6 +33,7 @@ constexpr unsigned PinnedUniformSlot(unsigned reg, unsigned count) noexcept {
 }
 
 constexpr unsigned PinnedVectorRegister(unsigned slot) noexcept { return 16 + slot; }
+
 constexpr unsigned PinnedVectorSlot(unsigned reg) noexcept { return reg - 16; }
 
 // Linked vector pins reserve v16..v31. v8/v9 are writer temporaries;

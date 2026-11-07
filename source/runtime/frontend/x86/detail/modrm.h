@@ -10,8 +10,10 @@ struct ByteCursor {
     std::span<const std::uint8_t> bytes;
     std::size_t at{};
     DecodeError error{};
+
     explicit ByteCursor(std::span<const std::uint8_t> bytes)
             : bytes(bytes.first(std::min<std::size_t>(bytes.size(), 15))) {}
+
     std::uint8_t Take() noexcept {
         if (at == bytes.size()) {
             error = bytes.size() == 15 ? DecodeError::InvalidEncoding : DecodeError::Truncated;
@@ -19,16 +21,19 @@ struct ByteCursor {
         }
         return bytes[at++];
     }
+
     std::uint32_t Word32() noexcept {
         const auto a = Take(), b = Take(), c = Take(), d = Take();
         return std::uint32_t{a} | (std::uint32_t{b} << 8) | (std::uint32_t{c} << 16) |
                (std::uint32_t{d} << 24);
     }
 };
+
 struct EncodingPrefix {
     std::uint8_t rex{}, mandatory{}, segment{Register::None};
     bool address32{}, locked{}, word{}, repeat{}, repeat_not_equal{};
 };
+
 inline EncodingPrefix ReadPrefixes(ByteCursor& cursor) noexcept {
     EncodingPrefix prefix;
     while (cursor.at < cursor.bytes.size()) {
@@ -83,6 +88,7 @@ inline EncodingPrefix ReadPrefixes(ByteCursor& cursor) noexcept {
     }
     return prefix;
 }
+
 inline DecodedOperand RegisterOperand(unsigned slot, unsigned bits, bool vector = false) noexcept {
     const auto first = vector       ? Register::XMM0
                        : bits == 64 ? Register::RAX
@@ -93,11 +99,13 @@ inline DecodedOperand RegisterOperand(unsigned slot, unsigned bits, bool vector 
             static_cast<std::uint8_t>(first + slot),
             static_cast<std::uint16_t>(bits)};
 }
+
 struct ModRM {
     std::uint8_t reg{}, rm{}, extension{}, mod{};
     bool sib{};
     DecodedOperand memory{};
 };
+
 inline ModRM ReadModRM(ByteCursor& cursor,
                        InstructionData& out,
                        unsigned r,
@@ -148,6 +156,7 @@ inline ModRM ReadModRM(ByteCursor& cursor,
                 static_cast<std::int64_t>(static_cast<std::int8_t>(cursor.Take())));
     return fields;
 }
+
 inline DecodedOperand RmOperand(const ModRM& fields,
                                 unsigned bits,
                                 bool vector = false,
@@ -158,11 +167,13 @@ inline DecodedOperand RmOperand(const ModRM& fields,
     operand.size = static_cast<std::uint16_t>(bits);
     return operand;
 }
+
 struct ExtendedDecodeResult {
     InstructionData instruction{};
     DecodeError error{};
     bool handled{};
 };
+
 ExtendedDecodeResult DecodeExtended(std::span<const std::uint8_t>,
                                     std::uint64_t,
                                     DecodeTiming*) noexcept;

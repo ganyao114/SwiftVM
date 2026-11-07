@@ -27,10 +27,12 @@ namespace arch = swift::runtime::x86;
 namespace ir = swift::runtime::ir;
 namespace a64 = swift::runtime::backend::arm64;
 using u64 = std::uint64_t;
+
 void Check(bool condition, int line) {
     if (!condition)
         throw std::runtime_error("instruction coverage at line " + std::to_string(line));
 }
+
 #define CHECK(...) Check(bool(__VA_ARGS__), __LINE__)
 constexpr u64 reserved = UINT64_C(0x8501000000000000);
 
@@ -44,9 +46,11 @@ front::StateLayout Layout() {
     layout.system_query = reinterpret_cast<std::uintptr_t>(&arch::QueryGuestSystem);
     return layout;
 }
+
 struct Compiled {
     a64::CompileResult plain, pinned;
 };
+
 Compiled Admission(std::span<const std::uint8_t> bytes, u64 pc, bool native) {
     const auto decoded = front::DecodeOne(bytes, pc);
     CHECK(decoded);
@@ -108,11 +112,14 @@ void Execute(const a64::CompileResult& compiled, arch::GuestState& state, bool p
     void* memory =
             mmap(nullptr, allocation, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     CHECK(memory != MAP_FAILED);
+
     struct Release {
         void* memory;
         std::size_t size;
+
         ~Release() { munmap(memory, size); }
     } release{memory, allocation};
+
     std::memcpy(memory, compiled.words.data(), bytes);
     CHECK(mprotect(memory, allocation, PROT_READ | PROT_EXEC) == 0);
     __builtin___clear_cache(static_cast<char*>(memory), static_cast<char*>(memory) + bytes);
@@ -121,10 +128,12 @@ void Execute(const a64::CompileResult& compiled, arch::GuestState& state, bool p
                       reinterpret_cast<std::uint8_t*>(&state)) == 0);
         return;
     }
+
     struct Scene {
         std::uintptr_t entry;
         unsigned calls{};
     } scene{reinterpret_cast<std::uintptr_t>(memory)};
+
     execution::NativeRunContext context;
     execution::NativeCode owner{
             reinterpret_cast<execution::NativeCode::Function>(memory), bytes, nullptr, {}};
@@ -144,6 +153,7 @@ void Execute(const a64::CompileResult& compiled, arch::GuestState& state, bool p
     };
     CHECK(execution::SvmRunNative(&state, &context) == 2 && scene.calls == 2);
 }
+
 void SameState(const arch::GuestState& expected, const arch::GuestState& actual) {
     CHECK(std::memcmp(expected.gprs, actual.gprs, sizeof(expected.gprs)) == 0);
     CHECK(expected.pc == actual.pc && arch::flags::ToRflags(expected.packed_flags) ==
@@ -159,15 +169,18 @@ struct Machine {
     std::array<std::uint8_t, 256> memory{};
     u64 denied_read{UINT64_MAX}, denied_write{UINT64_MAX};
     unsigned reads{}, writes{};
+
     Machine(std::initializer_list<std::uint8_t> bytes) : code(bytes) {
         state.pc = code_pc;
         state.gprs[arch::RSP] = memory_pc + 224;
         state.packed_flags = arch::flags::FromRflags(0x202, reserved);
     }
+
     static bool Contains(u64 address, std::size_t bytes) {
         return address >= memory_pc && address - memory_pc <= 256 &&
                bytes <= 256 - (address - memory_pc);
     }
+
     front::DirectServices Services() {
         front::DirectServices services;
         services.opaque = this;
@@ -206,6 +219,7 @@ struct Machine {
         };
         return services;
     }
+
     front::StepResult Step(bool native = false) {
         CHECK(state.pc >= code_pc && state.pc - code_pc < code.size());
         const auto compiled = Admission(
@@ -227,14 +241,17 @@ struct Machine {
 #endif
         return step;
     }
+
     void Done(bool native = false) {
         CHECK(Step(native).kind == front::StepKind::Completed);
         CHECK((state.packed_flags & reserved) == reserved);
     }
+
     void SetVector(unsigned index, u64 low, u64 high = 0) {
         std::memcpy(state.xmm[index], &low, 8);
         std::memcpy(state.xmm[index] + 8, &high, 8);
     }
+
     u64 Vector(unsigned index, unsigned half = 0) const {
         u64 value{};
         std::memcpy(&value, state.xmm[index] + half * 8, 8);
@@ -290,6 +307,7 @@ void FlagsAndShifts() {
     rotate.Done(true);
     CHECK(rotate.state.gprs[arch::RAX] == 0x80 && arch::flags::GetCF(rotate.state.packed_flags));
 }
+
 void FaultAndAddress() {
     Machine bit{0x48, 0x0f, 0xab, 0x0b, 0x48, 0x0f, 0xb3, 0x0b};  // BTS/BTR [RBX],RCX, negative
                                                                   // bit-string offset.
@@ -335,6 +353,7 @@ void FaultAndAddress() {
     CHECK(seed.state.gprs[arch::RAX] <= UINT32_MAX &&
           (arch::flags::GetCF(seed.state.packed_flags) || seed.state.gprs[arch::RAX] == 0));
 }
+
 void ControlAndStrings() {
     Machine loop{0xe2, 0xfe};
     loop.state.gprs[arch::RCX] = 3;
@@ -381,6 +400,7 @@ void ControlAndStrings() {
     CHECK(compare.state.pc == Machine::code_pc + 2 && compare.state.gprs[arch::RCX] == 1 &&
           !arch::flags::GetZF(compare.state.packed_flags));
 }
+
 void BmiAndAdx() {
     // Fixed VEX encodings use RCX as vvvv and RSI as r/m, matching the old
     // Rosetta-reference generator's low-register assignment.
@@ -427,6 +447,7 @@ void BmiAndAdx() {
     CHECK(adx.state.gprs[arch::RAX] == 1 && arch::flags::GetCF(adx.state.packed_flags) &&
           !arch::flags::GetOF(adx.state.packed_flags));
 }
+
 void CryptoAndStringCompare() {
     Machine aes{0x66, 0x0f, 0x38, 0xdc, 0xc1};
     aes.Done(true);

@@ -49,6 +49,7 @@ enum Form : std::uint8_t {
     VariableBlend,
     Mxcsr,
 };
+
 enum Policy : unsigned {
     Any = 0,
     ReservedV = 1,
@@ -60,11 +61,13 @@ enum Policy : unsigned {
     MemOnly = 64,
     RegOnly = 128
 };
+
 struct Descriptor {
     Op narrow{}, wide{};
     Form form{};
     unsigned bits{}, policy{};
 };
+
 Descriptor Describe(unsigned map, unsigned pp, unsigned opcode) noexcept {
     switch ((map << 10) | (pp << 8) | opcode) {
 #define VEX(map, pp, code, narrow, wide, form, bits, policy)                                       \
@@ -76,6 +79,7 @@ Descriptor Describe(unsigned map, unsigned pp, unsigned opcode) noexcept {
             return {};
     }
 }
+
 bool Immediate(Form form) noexcept {
     switch (form) {
         case BinaryImm:
@@ -96,6 +100,7 @@ bool Immediate(Form form) noexcept {
             return false;
     }
 }
+
 // The BMI opcodes share the encoding reader, not vector register semantics.
 bool Bmi(InstructionData& out,
          const ModRM& mod,

@@ -30,6 +30,7 @@ namespace {
 using namespace swift::runtime::ir;
 namespace arm64 = swift::runtime::backend::arm64;
 using u64 = std::uint64_t;
+
 constexpr std::uint32_t WordOffset(swift::runtime::backend::NativeOffset offset) noexcept {
     return offset == swift::runtime::backend::NoNativeOffset ? UINT32_MAX : offset / 4;
 }
@@ -39,58 +40,72 @@ const swift::runtime::execution::HostBackendOps& TestBackendOps() {
     static const auto operations = binding.Bind();
     return operations;
 }
+
 void BindFaultCallbacks(swift::runtime::execution::FaultContext& context) {
     context.patch_ordered = TestBackendOps().patch_fault;
     context.recover_native = TestBackendOps().recover_native;
 }
+
 void PatchLinkWords(std::uintptr_t* write,
                     const std::uintptr_t* execute,
                     std::uintptr_t target,
                     std::uint32_t back) {
     arm64::PatchNativeLink(write, execute, target, back * 4);
 }
+
 void UnlinkWords(std::uintptr_t* write, const std::uintptr_t* execute, std::uint32_t back) {
     arm64::UnlinkNativeLink(write, execute, back * 4);
 }
 #endif
 
 std::size_t checks{};
+
 void Check(bool okay, const char* message) {
     ++checks;
     if (!okay) throw std::runtime_error(message);
 }
+
 void Need(Error error) { Check(error == Error::None, "IR lifecycle rejected"); }
+
 Value Need(AppendResult result) {
     Check(bool(result), "IR append rejected");
     return result.GetValue();
 }
+
 BlockRef Create(Builder& builder) {
     const auto result = builder.CreateBlock();
     Check(bool(result), "block creation rejected");
     return result.block;
 }
+
 Program Submit(Builder& builder) {
     auto result = builder.Submit();
     Check(bool(result), "Submit rejected");
     return std::move(result.program);
 }
+
 Value Constant(Builder& builder, u64 value) {
     return Need(builder.Emit<OpCode::LoadImm>(Type::U64, {Operand::Immediate(value, Type::U64)}));
 }
+
 Value Load(Builder& builder, std::uint32_t offset) {
     return Need(
             builder.Emit<OpCode::LoadUniform>(Type::U64, {Operand::Uniform(offset, Type::U64)}));
 }
+
 void Store(Builder& builder, std::uint32_t offset, Value value) {
     Need(builder.Emit<OpCode::StoreUniform>(
             Type::Void, {Operand::Uniform(offset, Type::U64), Operand::ValueOf(value)}));
 }
+
 [[maybe_unused]] u64 Read64(const void* data) {
     u64 value;
     std::memcpy(&value, data, sizeof(value));
     return value;
 }
+
 void Write64(void* data, u64 value) { std::memcpy(data, &value, sizeof(value)); }
+
 arm64::CompileResult Compile(const Program& program, arm64::CompileOptions options = {}) {
     auto result = arm64::Compile(program, options);
     Check(bool(result) && !result.words.empty(), "native writer rejected supported IR");
@@ -103,10 +118,12 @@ arm64::CompileResult Compile(const Program& program, arm64::CompileOptions optio
 }
 
 void Execute(const arm64::CompileResult&, std::uint8_t*, u64);
+
 Value Snapshot(Builder& builder, Value anchor) {
     return Need(builder.Emit<OpCode::GetFlags>(
             Type::U64, {Operand::ValueOf(anchor), Operand::Flags(Flag::All)}));
 }
+
 u64 ReferenceArithmetic(OpCode op,
                         u64 left,
                         u64 right,
@@ -156,6 +173,7 @@ void ArithmeticFlags() {
         FlagProfile profile;
         u64 mask;
     };
+
     const std::array cases{
             Case{OpCode::Add, 64, ~u64{}, 1, FlagProfile::ArithmeticRaw, FlagBits(Flag::All)},
             Case{OpCode::Sub, 64, 0, 1, FlagProfile::ArithmeticRaw, FlagBits(Flag::All)},
@@ -471,11 +489,14 @@ void Execute(const arm64::CompileResult& code, std::uint8_t* state, u64 expected
     void* address =
             mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     Check(address != MAP_FAILED, "native publication mmap");
+
     struct Mapping {
         void* address;
         std::size_t bytes;
+
         ~Mapping() { munmap(address, bytes); }
     } mapping{address, bytes};
+
     std::memcpy(address, code.words.data(), code.words.size() * 4);
     Check(mprotect(address, bytes, PROT_READ | PROT_EXEC) == 0, "native publication W^X");
     __builtin___clear_cache(static_cast<char*>(address),
@@ -870,6 +891,7 @@ void ExplicitEntry() {
 }
 
 u64 Mask(unsigned bits) { return bits == 64 ? ~u64{} : bits ? (u64{1} << bits) - 1 : 0; }
+
 void StoreCarrier(Builder& builder, std::uint32_t offset, Value value) {
     Need(builder.Emit<OpCode::StoreUniform>(
             Type::Void, {Operand::Uniform(offset, Type::U64), Operand::ValueOf(value, Type::U64)}));
@@ -933,10 +955,12 @@ void PureIntegers() {
                    Type::U16,
                    {Operand::ValueOf(alias, Type::Bool), Operand::Immediate(1, Type::U8)})),
            (raw & 1) + 1);
+
     struct Field {
         unsigned first, count;
         Type result;
     };
+
     const std::array fields{
             Field{0, 0, Type::U64},
             Field{63, 0, Type::U16},
@@ -1031,10 +1055,12 @@ void PureIntegers() {
 
 void X87StatusResultUses() {
     namespace x86 = swift::runtime::x86;
+
     struct State {
         x86::X87State fpu;
         u64 initialized{~u64{}}, poison{};
     };
+
     Builder builder{Scope::Block};
     Need(builder.BeginBlock(Create(builder)));
     const auto state = Need(builder.Emit<OpCode::GetUniformAddress>(
@@ -1522,11 +1548,13 @@ void DeferredPCLinks() {
         const auto& site = layout->links.front();
         const auto back_words = WordOffset(site.data_offset) - WordOffset(site.branch_offset);
         const auto entry = reinterpret_cast<std::uintptr_t>(published.entry);
+
         struct Ready {
             u64 pc;
             std::uintptr_t entry;
             unsigned calls{};
         } ready{site.target_pc, entry};
+
         const auto lookup = [](void* opaque, u64 pc, std::uintptr_t) noexcept -> std::uintptr_t {
             auto& target = *static_cast<Ready*>(opaque);
             ++target.calls;
@@ -1603,11 +1631,13 @@ void DeferredPCLinks() {
     const auto incoming = arena.Publish(code.words, {}, code.links);
     self_cache.InsertReady(options.entry_pc, incoming, {});
     self_cache.AddStaticLink(incoming, self_site);
+
     struct SelfLookup {
         execution::CodeCache& cache;
         u64 pc;
         unsigned calls{};
     } self_lookup{self_cache, self_site.target_pc};
+
     const auto self = arena.Publish(
             code.words,
             {},
@@ -1667,11 +1697,13 @@ void DeferredPCLinks() {
 void CompleteAdditionalEntries() {
 #if defined(__aarch64__) && defined(__ANDROID__)
     namespace execution = swift::runtime::execution;
+
     struct State {
         swift::runtime::x86::GuestState cpu;
         std::array<u64, 20> inputs;
         u64 seen_pc{};
     };
+
     constexpr u64 first_pc = 0x4100, other_pc = 0x4200, flags = 0xa5a50000bc000085ULL;
     for (const bool native_nzcv : {false, true}) {
         if (native_nzcv && !(getauxval(AT_HWCAP) & HWCAP_FLAGM)) continue;
@@ -1720,10 +1752,12 @@ void CompleteAdditionalEntries() {
         const auto alternate = reinterpret_cast<execution::NativeCode::Function>(
                 reinterpret_cast<std::uintptr_t>(unit.entry) +
                 std::uintptr_t{WordOffset(compiled.entries[0].offset)} * 4);
+
         struct Resolver {
             execution::NativeCode::Function entry;
             unsigned calls{};
         } resolver{};
+
         State state;
         std::atomic<const execution::NativeCode*> active{};
         execution::NativeRunContext context;
@@ -1816,6 +1850,7 @@ void LinkedDynamicPC() {
         slots[home].pc = next_pc + 4;
         slots[home].occupied = true;
         auto& ready = slots[(home + 1) & (slots.size() - 1)];
+
         struct Resolver {
             const execution::NativeCode* first;
             const execution::NativeCode* second;
@@ -1825,6 +1860,7 @@ void LinkedDynamicPC() {
             std::array<u64, 2> observed{};
             u64 target_pc{};
         } resolver{&entry, &destination, entry, &ready};
+
         resolver.target_pc = next_pc;
         swift::runtime::x86::GuestState state;
         std::atomic<const execution::NativeCode*> active{};
@@ -2042,11 +2078,13 @@ void LinkedDynamicPC() {
                 slots[at].pc = other_pc;
                 slots[at].entry = other_destination.entry;
                 slots[at].occupied = true;
+
                 struct ReadyTargets {
                     std::uintptr_t no, yes;
                     unsigned calls{};
                 } targets{reinterpret_cast<std::uintptr_t>(destination.entry),
                           reinterpret_cast<std::uintptr_t>(other_destination.entry)};
+
                 const auto predicate_entry = arena.Publish(
                         predicate_code.words,
                         {},
@@ -2542,11 +2580,13 @@ void NarrowLogicalImmediates() {
 
 void VectorSignedWidenMultiply() {
     using Vector = std::array<u64, 2>;
+
     struct Case {
         unsigned bits;
         Vector left, right, expected;
         bool square;
     };
+
     constexpr std::array cases{
             Case{8,
                  {0x7f80ff010200feffULL, 0x1111222233334444ULL},
@@ -2623,6 +2663,7 @@ void PackedFloatingArithmetic() {
     const auto singles = [](std::uint32_t a, std::uint32_t b, std::uint32_t c, std::uint32_t d) {
         return Vector{u64{a} | (u64{b} << 32), u64{c} | (u64{d} << 32)};
     };
+
     struct State {
         u64 flags;
         std::uint32_t mxcsr, padding{};
@@ -2635,6 +2676,7 @@ void PackedFloatingArithmetic() {
         std::array<Vector, 2> pack_inputs;
         Vector minimum{};
     } state{};
+
     constexpr u64 initial = 0xa5a50000bc00003cULL;
     state.flags = initial;
     state.mxcsr = 0x1f81;  // Raw sticky bit is software-owned and preserved.
@@ -2791,8 +2833,10 @@ void PackedFloatingArithmetic() {
     // it explicitly; the separate runtime Root owns its guest/host switches.
     struct RestoreFP {
         u64 fpcr{}, fpsr{};
+
         ~RestoreFP() { asm volatile("msr fpcr,%0\nmsr fpsr,%1" ::"r"(fpcr), "r"(fpsr) : "memory"); }
     } restore;
+
     asm volatile("mrs %0,fpcr\nmrs %1,fpsr" : "=r"(restore.fpcr), "=r"(restore.fpsr));
     asm volatile("msr fpcr,xzr\nmsr fpsr,xzr" ::: "memory");
 #endif
@@ -2950,6 +2994,7 @@ void VectorLaneMasks() {
 struct QueryPair {
     u64 lower, upper;
 };
+
 QueryPair QueryPairFixture(u64 leaf, u64 subleaf) noexcept {
     return {leaf | (subleaf << 32), (leaf + 1) | ((subleaf + 1) << 32)};
 }
@@ -3213,10 +3258,12 @@ void LinkedRawAuxiliaryCarry() {
 #if defined(__aarch64__) && defined(__ANDROID__)
     if (!(getauxval(AT_HWCAP) & HWCAP_FLAGM)) return;
     namespace execution = swift::runtime::execution;
+
     struct ObservedState {
         swift::runtime::x86::GuestState state;
         std::array<u64, 17> comparisons{};
     };
+
     constexpr auto comparisons = offsetof(ObservedState, comparisons);
     constexpr u64 entry_pc = 0x1000, next_pc = 0x2000, initial = 0xa5a50000bc00003cULL;
     constexpr u64 byte_carrier = 0x7fedcba987654380ULL, word_carrier = 0x12345678abcde100ULL;
@@ -3687,10 +3734,12 @@ void LinkedRawAuxiliaryCarry() {
     state.gprs[9] = 0xbb;
     state.gprs[14] = byte_carrier;
     state.gprs[15] = word_carrier;
+
     struct Resolver {
         const execution::NativeCode* entry;
         unsigned calls{};
     } resolver{&entry};
+
     std::atomic<const execution::NativeCode*> active{};
     execution::NativeRunContext context;
     context.opaque = &resolver;
@@ -3972,6 +4021,7 @@ void FunctionDeferredTestFaults() {
     Check(mprotect(memory + page, page, PROT_READ) == 0 &&
                   mprotect(memory + page * 2, page, PROT_NONE) == 0,
           "TEST fault scene permissions");
+
     // State mutated by native code or siglongjmp lives outside its automatic
     // frame, just as the runtime's Process-owned contexts do.
     struct Scene {
@@ -3982,6 +4032,7 @@ void FunctionDeferredTestFaults() {
         execution::DispatchSlot slot;
         unsigned resolves{};
     };
+
     auto scene = std::make_unique<Scene>();
     scene->code = &code;
     scene->faults.pinned_uniform_offset = options.pinned_uniform_offset;
@@ -4179,6 +4230,7 @@ void BlockDeferredTestBoundaries() {
     Check(mprotect(memory + page, page, PROT_READ) == 0 &&
                   mprotect(memory + page * 2, page, PROT_NONE) == 0,
           "Block TEST boundary permissions");
+
     struct Scene {
         swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
@@ -4194,18 +4246,21 @@ void BlockDeferredTestBoundaries() {
         unsigned resolves{};
         bool expect_cold{}, cold_published{};
         volatile sig_atomic_t smc_enabled{}, smc_recovered{};
+
         bool ProtectCode(bool write) const noexcept {
             return code->writable ||
                    mprotect(reinterpret_cast<void*>(code_page),
                             code_pages,
                             write ? PROT_READ | PROT_WRITE : PROT_READ | PROT_EXEC) == 0;
         }
+
         bool UnlinkSelf() const noexcept {
             if (!ProtectCode(true)) return false;
             UnlinkWords(self_write, self_execute, self_back_words);
             return ProtectCode(false);
         }
     };
+
     auto scene = std::make_unique<Scene>();
     scene->code = &code;
     scene->page = page;
@@ -4502,6 +4557,7 @@ void LocalFlagsFaults() {
     Write64(memory + 15, 0x8001);
     Write64(memory + 32, 0x80010001);
     Write64(memory + 47, 0x80010001);
+
     struct Scene {
         swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
@@ -4510,6 +4566,7 @@ void LocalFlagsFaults() {
         execution::DispatchSlot slot;
         unsigned resolves{};
     };
+
     auto scene = std::make_unique<Scene>();
     scene->code = &code;
     scene->faults.pinned_uniform_offset = options.pinned_uniform_offset;
@@ -4745,6 +4802,7 @@ void VectorPinBoundaries() {
             mmap(nullptr, page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
     Check(memory != MAP_FAILED && mprotect(memory + page, page, PROT_NONE) == 0,
           "vector boundary fault scene mapping");
+
     struct Scene {
         swift::runtime::x86::GuestState state;
         execution::FaultContext faults;
@@ -4757,6 +4815,7 @@ void VectorPinBoundaries() {
         unsigned resolves{};
         bool fail_next{}, root_published{}, cold_published{};
     };
+
     auto scene = std::make_unique<Scene>();
     scene->source = scene->anchor = code;
     scene->target = target_entry;

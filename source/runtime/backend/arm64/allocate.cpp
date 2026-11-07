@@ -145,9 +145,11 @@ void Allocate(const Program& program,
     else {
         rank.resize(blocks.size());
         starts.resize(blocks.size());
+
         struct Frame {
             u32 block, edge;
         };
+
         std::vector<Frame> stack;
         stack.reserve(blocks.size());
         result.block_order.reserve(blocks.size());
@@ -735,16 +737,19 @@ void AllocateBlock(const ir::Program& program,
                    const CompileOptions* options) {
     Allocate(program, ir::Scope::Block, options, allocation);
 }
+
 void AllocateFunction(const ir::Program& program,
                       Allocation& allocation,
                       const CompileOptions* options) {
     Allocate(program, ir::Scope::Function, options, allocation);
 }
+
 Allocation AllocateBlock(const ir::Program& program, const CompileOptions* options) {
     Allocation result;
     AllocateBlock(program, result, options);
     return result;
 }
+
 Allocation AllocateFunction(const ir::Program& program, const CompileOptions* options) {
     Allocation result;
     AllocateFunction(program, result, options);

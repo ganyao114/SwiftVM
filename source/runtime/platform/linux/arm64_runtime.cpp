@@ -18,12 +18,15 @@
 
 namespace swift::runtime::platform {
 using execution::NativeRunContext;
+
 namespace {
 using execution::FaultContext;
 using execution::NativeCode;
+
 struct ServiceTimer {
     std::uint64_t& total;
     std::chrono::steady_clock::time_point begin{std::chrono::steady_clock::now()};
+
     ~ServiceTimer() {
         total += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                     std::chrono::steady_clock::now() - begin)
@@ -353,12 +356,19 @@ RunResult RunGuest(const std::string& executable,
 }
 #if !defined(__aarch64__)
 extern "C" std::uint64_t SvmRunNative(GuestState*, NativeRunContext*) noexcept { return 2; }
+
 extern "C" void SvmNativeDispatch() noexcept {}
+
 extern "C" void SvmNativeDispatchCounted() noexcept {}
+
 extern "C" void SvmNativeDispatchNZCV() noexcept {}
+
 extern "C" void SvmNativeDispatchNZCVCounted() noexcept {}
+
 extern "C" void SvmNativePending() noexcept {}
+
 extern "C" void SvmNativePendingCounted() noexcept {}
+
 extern "C" void SvmNativeExit() noexcept {}
 #endif
 }  // namespace swift::runtime::execution

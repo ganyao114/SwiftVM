@@ -21,11 +21,13 @@ using u64 = std::uint64_t;
 using u32 = std::uint32_t;
 constexpr std::size_t max_requests = 100000, max_events = 2000000, max_atoms = 8000000;
 constexpr u64 hash_seed = 14695981039346656037ULL;
+
 u64 Mix(u64 hash, u64 value) { return (hash ^ value) * 1099511628211ULL; }
 
 [[noreturn]] void Fail(std::size_t line, std::string_view message) {
     throw std::runtime_error("line " + std::to_string(line) + ": " + std::string(message));
 }
+
 void Require(bool okay, std::size_t line, std::string_view message) {
     if (!okay) Fail(line, message);
 }
@@ -33,6 +35,7 @@ void Require(bool okay, std::size_t line, std::string_view message) {
 struct Tokens {
     std::string_view rest;
     std::size_t line;
+
     std::string_view Take() {
         const auto first = rest.find_first_not_of(" \t");
         if (first == std::string_view::npos) Fail(line, "missing field");
@@ -42,9 +45,11 @@ struct Tokens {
         rest.remove_prefix(token.size());
         return token;
     }
+
     void End() const {
         Require(rest.find_first_not_of(" \t") == std::string_view::npos, line, "extra field");
     }
+
     template <class T> T Number() {
         auto token = Take();
         int base = 10;
@@ -68,6 +73,7 @@ public:
     explicit Lines(const std::string& path) : input(path) {
         if (!input) throw std::runtime_error("cannot open input");
     }
+
     bool Next() {
         if (!input.getline(buffer.data(), static_cast<std::streamsize>(buffer.size()))) {
             if (input.eof() && !input.gcount()) return false;
@@ -84,9 +90,13 @@ public:
         checksum = Mix(checksum, '\n');
         return true;
     }
+
     Tokens Fields() const { return {text, number}; }
+
     std::string_view Text() const { return text; }
+
     std::size_t Number() const { return number; }
+
     u64 Checksum() const { return checksum; }
 
 private:
@@ -112,6 +122,7 @@ constexpr auto type_names = std::to_array({
 });
 #undef TYPE_NAME
 static_assert(type_names.size() == static_cast<unsigned>(Type::V256) + 1);
+
 template <class Range> auto Named(Tokens& fields, const Range& names) {
     const auto text = fields.Take();
     for (const auto& [name, value] : names)
@@ -120,6 +131,7 @@ template <class Range> auto Named(Tokens& fields, const Range& names) {
 }
 
 enum class Kind { Create, Begin, Instruction, Terminal };
+
 struct Event {
     Kind kind{};
     std::size_t line{};
@@ -130,6 +142,7 @@ struct Event {
     std::vector<Operand> atoms;
     Terminal terminal;
 };
+
 struct Request {
     u64 id{};
     Scope scope{};
@@ -485,6 +498,7 @@ struct Options {
     std::size_t samples{5}, warmup{1};
     bool static_writer{true}, optimize{};
 };
+
 Options Arguments(int argc, char** argv) {
     Options options;
     for (int i = 1; i < argc; ++i) {
@@ -526,6 +540,7 @@ void PrintSamples(const std::vector<double>& values, double divisor = 1) {
         std::printf("%s%.3f", i ? "," : "", values[i] / divisor);
     std::putchar(']');
 }
+
 void Report(const std::vector<Request>& requests,
             const Options& options,
             Scope scope,

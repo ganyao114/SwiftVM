@@ -69,6 +69,7 @@ PenaltyExcessCharacter: 1000000
 PenaltyReturnTypeOnItsOwnLine: 200
 PointerAlignment: Left
 ReflowComments:  true
+SeparateDefinitionBlocks: Always
 SortIncludes: CaseInsensitive
 SpaceAfterCStyleCast: false
 SpaceAfterTemplateKeyword: true
@@ -156,6 +157,7 @@ PenaltyExcessCharacter: 1000000
 PenaltyReturnTypeOnItsOwnLine: 200
 PointerAlignment: Left
 ReflowComments:  true
+SeparateDefinitionBlocks: Always
 SortIncludes: CaseInsensitive
 SpaceAfterCStyleCast: false
 SpaceAfterTemplateKeyword: true

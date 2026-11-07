@@ -7,6 +7,7 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -49,8 +50,24 @@ def main() -> int:
             command.append("--style=" + TABLE_STYLE)
         elif path.name == "semantics_avx.inc":
             command.append("--style=" + AVX_STYLE)
-        command += ["--dry-run", "--Werror"] if args.check else ["-i"]
-        failures += subprocess.run(command + [str(path)], check=False).returncode != 0
+        if args.check:
+            # clang-format 21 can report net-zero replacements for function-try
+            # blocks in dry-run mode. Check the actual formatted bytes instead.
+            original = path.read_bytes()
+            formatted = subprocess.run(
+                command + [str(path)], stdout=subprocess.PIPE, check=False
+            )
+            if formatted.returncode:
+                print(
+                    f"{path.relative_to(REPO)}: clang-format exited {formatted.returncode}",
+                    file=sys.stderr,
+                )
+                failures += 1
+            elif formatted.stdout != original:
+                print(f"{path.relative_to(REPO)}: formatting differs", file=sys.stderr)
+                failures += 1
+        else:
+            failures += subprocess.run(command + ["-i", str(path)], check=False).returncode != 0
     print(
         f"{'Checked' if args.check else 'Formatted'} {len(files)} C++ files; {failures} failures"
     )

@@ -67,13 +67,17 @@ MemMap::MemMap(MemMap&& other) noexcept
         , size(std::exchange(other.size, 0))
         , dual(other.dual)
         , close_error(std::exchange(other.close_error, 0)) {}
+
 MemMap::~MemMap() { (void)Release(); }
+
 bool MemMap::SetWritable() noexcept {
     return dual || !write || mprotect(write, size, PROT_READ | PROT_WRITE) == 0;
 }
+
 bool MemMap::SetExecutable() noexcept {
     return dual || !execute || mprotect(execute, size, PROT_READ | PROT_EXEC) == 0;
 }
+
 MappingRelease MemMap::Release() noexcept {
     if (write && munmap(write, size * (dual ? 2 : 1)))
         return {dual ? std::size_t{2} : std::size_t{1}, errno, close_error};

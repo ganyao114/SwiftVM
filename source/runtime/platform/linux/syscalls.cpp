@@ -27,7 +27,9 @@ namespace {
 using u64 = std::uint64_t;
 using s64 = std::int64_t;
 using namespace ::swift::runtime::x86;
+
 s64 Result(s64 result) { return result < 0 ? -errno : result; }
+
 struct GuestStat {
     u64 device, inode, links;
     std::uint32_t mode, uid, gid, padding;
@@ -40,9 +42,11 @@ struct GuestStat {
     u64 ctime_nsec;
     s64 unused[3];
 };
+
 static_assert(sizeof(GuestStat) == 144);
 
 }  // namespace
+
 bool LinuxSyscalls::ReadString(u64 address, std::string& value) const {
     const auto& memory = vm.memory;
     value.clear();
@@ -55,6 +59,7 @@ bool LinuxSyscalls::ReadString(u64 address, std::string& value) const {
     }
     return false;
 }
+
 s64 LinuxSyscalls::Stat(int fd, u64 output, const char* path, int flags) {
     struct stat status{};
     const auto result = path ? fstatat(fd, path, &status, flags) : fstat(fd, &status);
@@ -79,6 +84,7 @@ s64 LinuxSyscalls::Stat(int fd, u64 output, const char* path, int flags) {
                           {0, 0, 0}};
     return vm.GuestWrite(output, &guest, sizeof(guest)) ? 0 : -EFAULT;
 }
+
 s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
     auto& memory = vm.memory;
     auto& stats = vm.stats;
@@ -392,6 +398,7 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
     }
     return -ENOSYS;
 }
+
 void LinuxSyscalls::Service() {
     auto& state = vm.thread.state;
     ++vm.stats.syscalls;

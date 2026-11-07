@@ -13,6 +13,7 @@ void SynchronizeCode(std::uint8_t* writable,
 struct FaultRecovery {
     std::uint8_t test_bits{}, test_register{}, parity_register{}, carry_direct{};
 };
+
 constexpr FaultRecovery DecodeFaultRecovery(const backend::FaultSite& site) noexcept {
     return {site.recovery[0], site.recovery[1], site.recovery[2], site.recovery[3]};
 }

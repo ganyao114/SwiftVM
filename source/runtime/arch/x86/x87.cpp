@@ -4,49 +4,65 @@
 
 namespace swift::runtime::x86::detail {
 unsigned Top(const X87State& s) { return (s.status >> 11) & 7; }
+
 unsigned Physical(const X87State& s, unsigned i) { return (Top(s) + i) & 7; }
+
 unsigned Tag(const X87State& s, unsigned physical) { return (s.tags >> (physical * 2)) & 3; }
+
 void SetTop(X87State& s, unsigned top) { s.status = (s.status & ~top_mask) | ((top & 7) << 11); }
+
 void SetTag(X87State& s, unsigned physical, unsigned tag) {
     const auto shift = physical * 2;
     s.tags = (s.tags & ~(3u << shift)) | (tag << shift);
 }
+
 bool Pending(X87State& s) {
     const bool pending = (s.status & ~s.control & 0x3f) != 0;
     s.status = (s.status & ~summary) | (pending ? summary : 0);
     return pending;
 }
+
 bool Raise(X87State& s, u16 flags) {
     s.status |= flags;
     return Pending(s);
 }
+
 extFloat80_t Read(const X87State& s, unsigned i) {
     const auto& v = s.registers[Physical(s, i)];
     return {v.significand, v.sign_exp};
 }
+
 bool Denormal(extFloat80_t v) {
     return !(v.signExp & 0x7fff) && v.signif && !(v.signif & integer_bit);
 }
+
 bool UnsupportedValue(extFloat80_t v) { return (v.signExp & 0x7fff) && !(v.signif & integer_bit); }
+
 unsigned Classify(extFloat80_t v) {
     const auto exponent = v.signExp & 0x7fff;
     if (!exponent && !v.signif) return 1;
     return !exponent || exponent == 0x7fff || !(v.signif & integer_bit) ? 2 : 0;
 }
+
 void WritePhysical(X87State& s, unsigned physical, extFloat80_t v) {
     s.registers[physical] = {v.signif, v.signExp, {}};
     SetTag(s, physical, Classify(v));
 }
+
 void Write(X87State& s, unsigned i, extFloat80_t v) { WritePhysical(s, Physical(s, i), v); }
+
 void Pop(X87State& s) {
     SetTag(s, Top(s), 3);
     SetTop(s, Top(s) + 1);
 }
+
 bool StackFault(X87State& s, bool overflow) {
     s.status = (s.status & ~c1) | (overflow ? c1 : 0);
     return Raise(s, invalid | stack_fault);
 }
+
 bool Missing(const X87State& s, unsigned i) { return Tag(s, Physical(s, i)) == 3; }
+
 X87Result Push(X87State& s, extFloat80_t v) {
     const auto destination = (Top(s) - 1) & 7;
     if (Tag(s, destination) != 3) {
@@ -58,6 +74,7 @@ X87Result Push(X87State& s, extFloat80_t v) {
     WritePhysical(s, destination, v);
     return X87Result::Ok;
 }
+
 softfloat_state Environment(const X87State& s) {
     softfloat_state env{};
     env.detectTininess = softfloat_tininess_afterRounding;
@@ -71,11 +88,13 @@ softfloat_state Environment(const X87State& s) {
                                        : softfloat_round_minMag;
     return env;
 }
+
 u16 Exceptions(unsigned flags) {
     return (flags & softfloat_flag_invalid ? 1 : 0) | (flags & softfloat_flag_infinite ? 4 : 0) |
            (flags & softfloat_flag_overflow ? 8 : 0) | (flags & softfloat_flag_underflow ? 16 : 0) |
            (flags & softfloat_flag_inexact ? 32 : 0);
 }
+
 extFloat80_t Calculate(softfloat_state& env, X87Command command, extFloat80_t a, extFloat80_t b) {
     switch (command) {
         case X87Command::Add:
@@ -88,6 +107,7 @@ extFloat80_t Calculate(softfloat_state& env, X87Command command, extFloat80_t a,
             return extF80_sqrt(&env, a);
     }
 }
+
 X87Result Arithmetic(X87State& s, X87Command command, unsigned index) {
     s.status &= ~c1;
     if (Missing(s, 0) || (command != X87Command::Sqrt && Missing(s, index))) {
@@ -112,6 +132,7 @@ X87Result Arithmetic(X87State& s, X87Command command, unsigned index) {
     Write(s, 0, result);
     return X87Result::Ok;
 }
+
 X87Result Execute(X87State& s, X87Command command, unsigned index, u64 raw) {
     if (command == X87Command::Init) {
         // FNINIT empties the stack through tags; physical register payloads
@@ -254,6 +275,7 @@ std::uint8_t X87AbridgedTag(const X87State& state) noexcept {
         if (detail::Tag(state, i) != 3) result |= std::uint8_t(1u << i);
     return result;
 }
+
 void X87RestoreAbridgedTags(X87State& state, std::uint8_t present) noexcept {
     for (unsigned i = 0; i < 8; ++i) {
         const auto& value = state.registers[i];

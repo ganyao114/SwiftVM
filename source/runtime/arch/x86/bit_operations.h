@@ -13,6 +13,7 @@ inline std::uint64_t ParallelBitDeposit(std::uint64_t value, std::uint64_t mask)
     }
     return result;
 }
+
 inline std::uint64_t ParallelBitExtract(std::uint64_t value, std::uint64_t mask) noexcept {
     std::uint64_t result{}, result_bit = 1;
     while (mask) {

@@ -35,14 +35,18 @@ public:
     // invalidate them. Reacquire operand ranges after structural writes;
     // ReplaceValueUse preserves their positions and logical boundaries.
     std::uint64_t UnitId() const noexcept { return storage ? storage->unit : 0; }
+
     BlockId EntryBlock() const noexcept { return storage ? storage->entry : BlockId{}; }
+
     std::span<const Operation> Operations() const noexcept {
         return storage ? std::span<const Operation>{storage->operations}
                        : std::span<const Operation>{};
     }
+
     CellRange Operands(NodeId local) const noexcept {
         return storage ? storage->Operands(local) : CellRange{};
     }
+
     std::span<const BlockRecord> Blocks() const noexcept {
         return storage ? std::span<const BlockRecord>{storage->blocks}
                        : std::span<const BlockRecord>{};
@@ -56,12 +60,14 @@ public:
     Error SetEntry(BlockRef) noexcept;
     Error BeginBlock(BlockRef);
     AppendResult Append(OpCode, Type result, std::span<const Operand>, OperationMetadata = {});
+
     AppendResult Append(OpCode op,
                         Type result,
                         std::initializer_list<Operand> operands,
                         OperationMetadata metadata = {}) {
         return Append(op, result, {operands.begin(), operands.size()}, metadata);
     }
+
     // The same declaration and transaction as Append, with its logical
     // signature/result policy fixed by the caller's compile-time opcode.
     template <OpCode op> AppendResult Emit(Type result,
@@ -70,11 +76,13 @@ public:
         static_assert(static_cast<std::size_t>(op) < static_cast<std::size_t>(OpCode::Count));
         return AppendImpl<op>(op, result, operands, metadata);
     }
+
     template <OpCode op> AppendResult Emit(Type result,
                                            std::initializer_list<Operand> operands,
                                            OperationMetadata metadata = {}) {
         return Emit<op>(result, {operands.begin(), operands.size()}, metadata);
     }
+
     Error EndBlock(Terminal);
     // Update only the original record's flag metadata, in either construction
     // or Edit. No operand/use walk, allocation or backend semantic admission.
@@ -100,6 +108,7 @@ public:
     // free-list, compaction or promise of reclaiming arbitrary edit history.
     // Effects/equivalence are caller duties; insertion is not provided.
     Error Rewrite(NodeId local, OpCode, Type, std::span<const Operand>, OperationMetadata = {});
+
     Error Rewrite(NodeId local,
                   OpCode op,
                   Type type,
@@ -107,6 +116,7 @@ public:
                   OperationMetadata metadata = {}) {
         return Rewrite(local, op, type, {operands.begin(), operands.size()}, metadata);
     }
+
     // Only an Edit owner may erase. The caller must already have removed every
     // data, flag and terminal use; this function does not discover global uses.
     // Effects/flag outputs are checked locally. The record becomes Nop/Void,

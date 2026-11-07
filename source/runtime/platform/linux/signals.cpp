@@ -8,20 +8,24 @@
 namespace swift::runtime::execution {
 namespace {
 constexpr std::array signals{SIGSEGV, SIGBUS, SIGTRAP};
+
 struct ServiceTimer {
     std::uint64_t& total;
     std::chrono::steady_clock::time_point begin{std::chrono::steady_clock::now()};
+
     ~ServiceTimer() {
         total += static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                                     std::chrono::steady_clock::now() - begin)
                                                     .count());
     }
 };
+
 std::atomic<FaultScope*> registered_scope{};  // One service, not a process directory.
 static_assert(std::atomic<FaultScope*>::is_always_lock_free &&
               std::atomic<const NativeCode*>::is_always_lock_free &&
               std::atomic<std::uintptr_t>::is_always_lock_free &&
               std::atomic<std::uint64_t>::is_always_lock_free);
+
 sigset_t ManagedSignals() noexcept {
     sigset_t set;
     sigemptyset(&set);

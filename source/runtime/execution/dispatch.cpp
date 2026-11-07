@@ -10,14 +10,17 @@ const NativeCode* VM::LookupNative(void* opaque, std::uintptr_t host_pc) noexcep
         if (const auto* code = cache.FindHost(host_pc)) return code;
     return nullptr;
 }
+
 bool VM::RecoverCodeWrite(void* opaque, std::uintptr_t address) noexcept {
     return static_cast<VM*>(opaque)->smc.Recover(address);
 }
+
 void VM::RefreshNative(NativeRunContext& context) noexcept {
     context.mask = thread.faults.smc_pending ? 0 : Cache().Mask();
     context.slots = thread.faults.smc_pending ? Cache().EmptyData() : Cache().Data();
     context.anchor = &thread.anchor;
 }
+
 void VM::ObserveCache() noexcept {
     std::uint64_t entries{}, occupied{}, slots{}, allocations{};
     for (const auto& cache : caches) {
@@ -31,6 +34,7 @@ void VM::ObserveCache() noexcept {
     stats.peak_cache_slots = std::max(stats.peak_cache_slots, slots);
     stats.cache_table_allocations = allocations;
 }
+
 std::uintptr_t VM::ResolveBridge(void* opaque, NativeRunContext* context) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
     try {
@@ -49,6 +53,7 @@ std::uintptr_t VM::ResolveBridge(void* opaque, NativeRunContext* context) noexce
     vm.RefreshNative(*context);
     return 0;
 }
+
 std::uintptr_t VM::Resolve(NativeRunContext& context) {
     thread.interpret_requested = false;
     // All native/fault readers have left. SMC retained old ranges and links

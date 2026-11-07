@@ -11,16 +11,25 @@ using v::Operand;
 using v::Register;
 using v::Shift;
 using v::VRegister;
+
 inline Register X(unsigned code) { return Register(code, 64); }
+
 inline Register W(unsigned code) { return Register(code, 32); }
+
 inline Register R(unsigned code, unsigned bits) { return bits == 32 ? W(code) : X(code); }
+
 inline Register Base(unsigned code) { return code == 31 ? Register(v::sp) : X(code); }
+
 inline VRegister V(unsigned code, unsigned bits, unsigned lanes = 1) {
     return VRegister(code, bits, lanes);
 }
+
 inline VRegister Q(unsigned code) { return V(code, 128); }
+
 inline VRegister D(unsigned code) { return V(code, 64); }
+
 inline VRegister S(unsigned code) { return V(code, 32); }
+
 inline VRegister Lanes(unsigned code, unsigned lane_bits, unsigned bits = 128) {
     return V(code, bits, bits / lane_bits);
 }
@@ -40,10 +49,12 @@ enum class CryptoTernary : std::uint32_t {
     Sha256Hash2 = 0x5e005000,
     Sha256Schedule1 = 0x5e006000,
 };
+
 inline void Crypto(v::Assembler& sink, CryptoUnary operation, VRegister result, VRegister source) {
     VIXL_ASSERT(result.Is128Bits() && source.Is128Bits());
     sink.dc32(static_cast<std::uint32_t>(operation) | (source.GetCode() << 5) | result.GetCode());
 }
+
 inline void Crypto(v::Assembler& sink,
                    CryptoTernary operation,
                    VRegister result,
@@ -53,33 +64,41 @@ inline void Crypto(v::Assembler& sink,
     sink.dc32(static_cast<std::uint32_t>(operation) | (right.GetCode() << 16) |
               (left.GetCode() << 5) | result.GetCode());
 }
+
 // A real encoded A64 immediate. Selection and emission share the one VIXL
 // decode; it is never stored beside IR nodes or passed across compile calls.
 struct LogicalMask {
     unsigned n, s, r;
+
     bool Encode(std::uint64_t value, unsigned width) {
         return v::Assembler::IsImmLogical(value, width, &n, &s, &r);
     }
+
     void Emit(v::Assembler& sink, Register result, Register input, v::LogicalOp op) const {
         sink.LogicalImmediate(result, input, n, s, r, op);
     }
 };
+
 // Runtime patching uses the same exact VIXL fields as normal emission. No
 // temporary assembler, allocation, implicit label or pool exists on this path.
 inline std::uint32_t Branch(std::int64_t words) {
     return v::B | v::Assembler::ImmUncondBranch(words);
 }
+
 inline std::uint32_t LoadLiteral16(std::int64_t words) {
     return v::LDR_x_lit | v::Assembler::ImmLLiteral(words) | v::Assembler::Rt(v::x16);
 }
+
 inline std::uint32_t Retarget19(std::uint32_t instruction, std::int64_t words) {
     return (instruction & ~v::ImmCondBranch_mask) | v::Assembler::ImmCondBranch(words);
 }
+
 inline bool Imm19(std::uint32_t instruction) {
     return (instruction & v::CompareBranchFMask) == v::CompareBranchFixed ||
            (instruction & v::ConditionalBranchFMask) == v::ConditionalBranchFixed;
 }
 enum class OrderedKind { None, Load, Store };
+
 inline OrderedKind OrderedAccess(std::uint32_t word) {
     const auto* instruction = v::Instruction::Cast(&word);
     if (instruction->Mask(v::LoadStoreRCpcUnscaledOffsetFMask) ==
@@ -115,6 +134,7 @@ inline OrderedKind OrderedAccess(std::uint32_t word) {
             return OrderedKind::None;
     }
 }
+
 // Decode only an actual ordered access emitted by this backend. The cold
 // access uses the same registers, signedness and byte displacement; VIXL
 // remains the sole instruction encoder.
@@ -182,14 +202,18 @@ inline void PlainOrderedAccess(v::Assembler& sink, std::uint32_t word) {
             sink.str(R(rt, bits), memory, v::RequireScaledOffset);
     }
 }
+
 struct Branch19 {
     Condition condition{v::al};
     Register value{v::xzr};
     bool compare{}, nonzero{};
+
     static Branch19 Flags(unsigned condition) {
         return {static_cast<Condition>(condition), v::xzr, false, false};
     }
+
     static Branch19 Zero(Register value, bool nonzero) { return {v::al, value, true, nonzero}; }
+
     Branch19 Inverse() const {
         auto result = *this;
         if (compare)
@@ -198,6 +222,7 @@ struct Branch19 {
             result.condition = static_cast<Condition>(condition ^ 1);
         return result;
     }
+
     void Emit(v::Assembler& sink, std::int64_t words) const {
         if (!compare)
             sink.b(words, condition);

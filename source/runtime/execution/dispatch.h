@@ -28,6 +28,7 @@ struct alignas(32) DispatchSlot {
     std::uint32_t pending_head{UINT32_MAX};
     bool occupied{};
 };
+
 static_assert(std::is_standard_layout_v<DispatchSlot> && sizeof(DispatchSlot) == 32 &&
               alignof(DispatchSlot) == 32);
 static_assert(offsetof(DispatchSlot, pc) == 0 && offsetof(DispatchSlot, entry) == 8);
@@ -66,6 +67,7 @@ struct NativeRunContext {
     // the complete bank; UINT32_MAX retains the ordinary memory ABI.
     std::uint64_t pinned_vector_offset{UINT32_MAX};
 };
+
 static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 160);
 static_assert(sizeof(std::atomic<const NativeCode*>) == 8 &&
               std::atomic<const NativeCode*>::is_always_lock_free);
