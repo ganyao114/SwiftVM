@@ -1,0 +1,5 @@
+{
+  "submit-host": "#pragma once\n#define SVM_CODE_BUILD_ID \"8a2f2a57bb37ae3550c57714a167db3bf14aff2d07a3626f78bd2d930f3d2c9b\"",
+  "submit-android": "#pragma once\n#define SVM_CODE_BUILD_ID \"245db385c72b2dcfde4e0e36cbf30fdba4bfeda652d109473f6218f85c1089d5\"",
+  "submit-riscv64": "#pragma once\n#define SVM_CODE_BUILD_ID \"12ac52e9a4dd3ae38af683b19f24a19c57d828f026573152cef207920ce9570b\""
+}

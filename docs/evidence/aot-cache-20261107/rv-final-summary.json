@@ -1,0 +1,116 @@
+{
+  "final_build_id": "12ac52e9a4dd3ae38af683b19f24a19c57d828f026573152cef207920ce9570b",
+  "final_run": "frozen-run-02",
+  "all_passed": true,
+  "suite_steps": 18,
+  "native_catch_cases": 7,
+  "aslr_enabled": true,
+  "qemu_exit": 0,
+  "full_earlier_run": {
+    "path": "frozen-run-01/results.json",
+    "build_id": "50eafcda2ed4dd7a26bf98d9e4200fcf84968aae6d9001890ab768d98de7d5d4",
+    "suite_steps": 25,
+    "catch_cases": 39,
+    "all_passed": true
+  },
+  "cache": [
+    {
+      "case": "cache-block-write",
+      "compile_attempts": 2,
+      "disk_cache_hits": 0,
+      "disk_cache_writes": 1,
+      "disk_cache_rejects": 0,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "cache-block-read",
+      "compile_attempts": 0,
+      "disk_cache_hits": 2,
+      "disk_cache_writes": 0,
+      "disk_cache_rejects": 0,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "cache-function-write",
+      "compile_attempts": 2,
+      "disk_cache_hits": 0,
+      "disk_cache_writes": 1,
+      "disk_cache_rejects": 0,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "cache-function-read",
+      "compile_attempts": 0,
+      "disk_cache_hits": 2,
+      "disk_cache_writes": 0,
+      "disk_cache_rejects": 0,
+      "interpreted_steps": 0
+    }
+  ],
+  "aot": [
+    {
+      "case": "aot-block-run",
+      "stdout": "",
+      "exit": 42,
+      "compile_attempts": 0,
+      "aot_units_loaded": 13,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "aot-block-call-sum7",
+      "stdout": "28\n",
+      "exit": 0,
+      "compile_attempts": 0,
+      "aot_units_loaded": 13,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "aot-block-call-choose",
+      "stdout": "9\n",
+      "exit": 0,
+      "compile_attempts": 0,
+      "aot_units_loaded": 13,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "aot-block-call-cpu",
+      "stdout": "7\n",
+      "exit": 0,
+      "compile_attempts": 0,
+      "aot_units_loaded": 13,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "aot-function-run",
+      "stdout": "",
+      "exit": 42,
+      "compile_attempts": 0,
+      "aot_units_loaded": 13,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "aot-function-call-sum7",
+      "stdout": "28\n",
+      "exit": 0,
+      "compile_attempts": 0,
+      "aot_units_loaded": 13,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "aot-function-call-choose",
+      "stdout": "9\n",
+      "exit": 0,
+      "compile_attempts": 0,
+      "aot_units_loaded": 13,
+      "interpreted_steps": 0
+    },
+    {
+      "case": "aot-function-call-cpu",
+      "stdout": "7\n",
+      "exit": 0,
+      "compile_attempts": 0,
+      "aot_units_loaded": 13,
+      "interpreted_steps": 0
+    }
+  ]
+}

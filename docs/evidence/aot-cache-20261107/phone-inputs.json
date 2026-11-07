@@ -1,0 +1,82 @@
+{
+  "svm_rebuild_linux": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 26284296,
+    "sha256": "6caab82d344e4538e0f85d0915ccf63c2411937e3fddeb241e98d13f731cac2f"
+  },
+  "svm_aot": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_aot",
+    "bytes": 27394376,
+    "sha256": "6830a3a8c99c55f25bb4b35dd1e6a6ddab0921d8704020085c33bd2335e27aa3"
+  },
+  "svm_code_image_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_code_image_test",
+    "bytes": 20374440,
+    "sha256": "bb5e0c041540ade963e41a0cf86c2fdfcc460fb1ff4ef94ab5061ccd0915549c"
+  },
+  "svm_persistence_relocation_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_persistence_relocation_test",
+    "bytes": 28947928,
+    "sha256": "41c2a66759f9ca252be0dc8b4cdd6772b10c982adbc6dea80a1c63f5c9f3423e"
+  },
+  "svm_aot_artifact_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_aot_artifact_test",
+    "bytes": 19057352,
+    "sha256": "498e0ee6ac81fbd3d611c05fc2a7371b558747b73252245edf14b6fd5eb764d5"
+  },
+  "svm_aot_call_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_aot_call_test",
+    "bytes": 39953128,
+    "sha256": "6e861ef9d9ffd9099fd7e8ca21fa95e2385d25333b2b11367ec735068db0e6e2"
+  },
+  "svm_runtime_persistence_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_persistence_test",
+    "bytes": 39501512,
+    "sha256": "37d62a9039b5c0a4f0306851c96efbf57dff59d1df90ce16c4432f7472cb00be"
+  },
+  "svm_runtime_engine_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_engine_test",
+    "bytes": 38000184,
+    "sha256": "57cc3d9ffbabe8c0dc79b9a70858f45368b7f3df81cd1b7104ef990424bef994"
+  },
+  "svm_arm64_compile_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_arm64_compile_test",
+    "bytes": 29848616,
+    "sha256": "46512bdf3501a86d92ed5da5f751aa85ed451d2bc69244d50160ac9d74e5a9d7"
+  },
+  "svm_compile_pipeline_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_compile_pipeline_test",
+    "bytes": 31676160,
+    "sha256": "bedfefd8a226fde828da30ec6e2aad7c3db0b96d1e09f8e5a4d958d90d6b09ec"
+  },
+  "svm_x87_coverage_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_x87_coverage_test",
+    "bytes": 34334664,
+    "sha256": "f6db2b2a2b94ef256c8372056f66f0b61158014275838fd7a20a5d857c84847d"
+  },
+  "svm_avx_coverage_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_avx_coverage_test",
+    "bytes": 34372000,
+    "sha256": "492e521657ed4aa9414c8b03a8e9901286a2d502480c6433db95262a019fed12"
+  },
+  "svm_instruction_coverage_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_instruction_coverage_test",
+    "bytes": 33911096,
+    "sha256": "ac3898267b5aebace3b1ee3c38b22e3edf9cddc9855afce213c75bd806af56bc"
+  },
+  "calls.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/aot-cache-20261107/calls.elf",
+    "bytes": 9152,
+    "sha256": "6f4b12155a25123b88fe0ae41df8e661001a47acb42e955271347cc5100e8c91"
+  },
+  "helper.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/aot-cache-20261107/helper.elf",
+    "bytes": 150,
+    "sha256": "7c59dba9428d044a2df5b0dc8ad67a0c8923ad9561b8fe1c547249812da8fcbc"
+  },
+  "func.elf": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/func_tests_x86_64",
+    "bytes": 799168,
+    "sha256": "4740aad183296f458756a6ebb5abf42a2affb17dddd3b74d115a8e2f3266ae60"
+  }
+}

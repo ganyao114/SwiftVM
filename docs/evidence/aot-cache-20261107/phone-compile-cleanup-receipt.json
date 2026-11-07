@@ -1,0 +1,9 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-aot-cost-20261107",
+  "active_processes": [],
+  "open_files": [],
+  "remaining_bytes": 0,
+  "errors": [],
+  "allocated_bytes_removed": 52617216,
+  "df_actual_free_delta_bytes": 52629504
+}

@@ -6,7 +6,7 @@ HIR, allocation plans, actions, certificates or legacy JIT services.
 ```text
 x86 bytes -> decode / region formation -> neutral Uniform IR
           -> in-place common optimization
-          -> Block or Function allocation -> direct ARM64 encoding
+          -> Block or Function allocation -> direct ARM64 / RV64 encoding
           -> executable slabs / links / one active PC directory -> native execution
 ```
 
@@ -14,14 +14,17 @@ x86 bytes -> decode / region formation -> neutral Uniform IR
 | --- | --- |
 | `source/runtime/ir/` | Sole Program/Builder owner, stable node IDs, 24B operations, 24B blocks and 8B operand words; O(1) Submit |
 | `source/runtime/frontend/x86/` | Owned decoded instructions, bounded region formation and shared Semantics for IR emission or direct interpretation; Known-target selection with Unknown/EarlyOff paths |
-| `source/runtime/compile/` | Three walks over the same IR, flags demand, bounded rewrites, Uniform forwarding and DCE; one temporary u64/node table |
+| `source/runtime/ir/passes/` | Three walks over the same IR, flags demand, bounded rewrites, Uniform forwarding and DCE; one temporary u64/node table |
 | `source/base/` | Typed formatting, error delivery and filtered logging; no per-node compile state |
 | `source/runtime/ir/format.*` | Optional streaming IR diagnostics, separate from core storage |
 | `source/runtime/backend/allocation_cfg.*` | Shared schedule/backedge mathematics, no node facts table |
 | `source/runtime/backend/arm64/allocate.*`, `allocation_selection.cpp` | Distinct Block/Function lifetimes, pin/NZCV/PC choices in the original reverse walk, real registers/spills and one 16B Home/node |
 | `source/runtime/backend/arm64/` | Typed Handle selection, exact controlled VIXL encoding, explicit scratch allocation, patching, helper ABI and actual fault/link metadata |
+| `source/runtime/backend/riscv64/` | Independent RV64G allocation and Handle emission into the same word buffer, exact Biscuit encoding and explicit helper calls |
 | `source/runtime/arch/x86/` | Sole guest state/flags definition, CPU model and portable x87/vector numerical semantics |
 | `source/runtime/execution/` | VM/thread ownership, engine dispatch, compile service, guest memory, native mappings, slabs, directory/links, SMC and retirement |
+| `source/runtime/execution/code_image.*`, `disk_cache.*`, `code_persistence.cpp` | Shared native unit format, optional persistent data lookup and VM source/SMC policy; published code stays owned by CodeHeap/CodeCache |
+| `source/aot/` | Embedded-guest ELF container, offline candidate discovery, named SysV guest calls and explicit startup; uses ordinary compilation/publication |
 | `source/runtime/platform/` | ELF loading, Linux syscalls/signals/safe access and host ARM64 bridge |
 | `source/launcher/linux/` | Runner CLI and coarse diagnostics |
 | `source/tests/` | Catch cases, independent numerical expectations, and explicit compile/native execution entries |
@@ -54,6 +57,15 @@ full-PC/entry array in its native DATA. The existing relocation owner resets
 all entries to that site's callable directory fallback before retirement;
 all mode variants participate in SMC invalidation. RW/RX aliases occupy one
 reserved range and retire with one unmap.
+
+Persistence is off by default. Opt-in emitters record semantic host-symbol
+relocations at the actual address slots, without scanning machine code or
+ordinary guest constants. AOT and disk cache save canonical words and the same
+fault/link/entry records. Load binds the current process's addresses before
+normal publication; source spans and source policy are checked before reuse.
+An SMC event disables persistent reads/writes for the current guest lifetime.
+See the [AOT/cache contract](docs/aot-code-cache-2026-11-07.md) for format,
+compatibility, ownership and the current static ET_EXEC boundary.
 
 CompileService consumes and resets the previous Program::Storage, retaining its
 three vector capacities and the optimizer's one u64/node work array. Arm64Runtime

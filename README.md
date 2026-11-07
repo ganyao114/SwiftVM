@@ -5,9 +5,11 @@ in-place optimization, separate Block/Function allocation and direct ARM64/RV64
 encoding. The runtime executes an implemented x86-64 subset from static Linux
 ELFs on ARM64 Linux/Android or RV64 Linux, with one guest thread.
 
-The former Android demo and Slang/AOT targets remain retired on this branch.
+The former Android demo and Slang targets remain retired on this branch.
 The RV64 backend now consumes the rebuilt IR directly; the former backend's
-IR/HIR, cache and persistence layers remain in Git history and the frozen tree.
+IR/HIR and persistence implementation remain in Git history and the frozen tree.
+The current pipeline provides native AOT artifacts and an optional disk cache
+using the same compilation, relocation and publication contracts as JIT.
 Dynamic ELF, full ISA coverage and complete guest signals remain outside this
 checkpoint.
 
@@ -72,6 +74,28 @@ entry keeps interpreting until source invalidation permits a fresh attempt.
 `--decode-timing` enables intrusive compile diagnostics and counted dispatch;
 leave it off for ordinary runtime measurements. Requested Function cost includes
 failed formation and actual Block retries.
+
+## AOT and disk cache
+
+Linux/Android also build `svm_aot`. Persistence currently accepts static x86-64
+`ET_EXEC` guests; ordinary JIT retains its existing static PIE support.
+
+```sh
+./svm_rebuild_linux --cache-dir ./private-cache guest.elf
+./svm_rebuild_linux --cache-dir ./private-cache guest.elf
+./svm_aot compile guest.elf -o guest.aot --scope function
+./svm_aot info guest.aot
+./svm_aot run --aot guest.aot --scope function
+./svm_aot call guest.aot function_name 1 2
+```
+
+The cache directory is created with mode `0700`. AOT carries the complete guest
+ELF and runs after the original file is removed. Uncovered targets use the
+ordinary JIT. Emission options such as scope, optimization and decode diagnostics
+must match the artifact; incompatible explicit artifacts fail before execution.
+The C++ `AotGuestEnv` / `GuestFn` interface supports named calls, IFUNC resolution,
+FP, aggregates and typed guest pointers. See the
+[format, ownership and API documentation](docs/aot-code-cache-2026-11-07.md).
 
 ## Formatting
 
