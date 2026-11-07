@@ -1,0 +1,77 @@
+{
+  "svm_base_test": {
+    "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_base_test",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_base_test",
+    "bytes": 1268536,
+    "sha256": "5d1bc8c0cc81c9a0927368f8ce0fe9805dfc006b883cfd7404084bd387de0ca1"
+  },
+  "svm_ir_format_test": {
+    "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_ir_format_test",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_ir_format_test",
+    "bytes": 1321744,
+    "sha256": "d530f5a080605e202e02e932af277fc24b71c9cddf615f8d098c60505a46296c"
+  },
+  "svm_riscv64_compile_test": {
+    "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_riscv64_compile_test",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_riscv64_compile_test",
+    "bytes": 1662056,
+    "sha256": "167a912cd9156113cd2af806ac095b2f1ee7b124f6a6b2bce6e57b6827fc7389"
+  },
+  "svm_runtime_engine_test": {
+    "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_runtime_engine_test",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_runtime_engine_test",
+    "bytes": 3858936,
+    "sha256": "c7ffbd58a2ce85b4048badfd1b2e3a606371c549d82c056afa7c51d84b8ae2a8"
+  },
+  "svm_rebuild_linux": {
+    "source": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_rebuild_linux",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_rebuild_linux",
+    "bytes": 2712064,
+    "sha256": "88c0b79ce418c91a52726be4114285a20de3781fed353875e04931615fd58cb4"
+  },
+  "atomic128-smc.elf": {
+    "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/atomic128-smc.elf",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/atomic128-smc.elf",
+    "bytes": 240,
+    "sha256": "f000c122d3b9a64495806c8b32f53bf2489284d55bd0bdc1c98d1cc828ada037"
+  },
+  "smc-recompile.elf": {
+    "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/smc-recompile.elf",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/smc-recompile.elf",
+    "bytes": 182,
+    "sha256": "2ababe306a793c942951303f77e39ab148cab67fd07e042f44b3ba0975d3c3dd"
+  },
+  "atomic128-fault.elf": {
+    "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/atomic128-fault.elf",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/atomic128-fault.elf",
+    "bytes": 164,
+    "sha256": "fe9d52bbf37af274dbaf3554d5e4fb497a5b2bab372dac7e75186125c2c7e520"
+  },
+  "native-fault.elf": {
+    "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/native-fault.elf",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/native-fault.elf",
+    "bytes": 156,
+    "sha256": "38a7fdd06d24f698e5e99a81cbe3740e34e590b335d51f1a8948f4eb6e16bf0d"
+  },
+  "divide-zero.elf": {
+    "source": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/divide-zero.elf",
+    "resolved_path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/divide-zero.elf",
+    "bytes": 148,
+    "sha256": "d020e87afa6032253ea04e799eba3ec3b7f0c08a1b1b87292520eb3d6ffe0fa9"
+  },
+  "func_tests_x86_64": {
+    "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-final.cpio.gz:tests/func_tests_x86_64",
+    "bytes": 799168,
+    "sha256": "4740aad183296f458756a6ebb5abf42a2affb17dddd3b74d115a8e2f3266ae60"
+  },
+  "coremark-O2-x86_64": {
+    "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-final.cpio.gz:tests/coremark-O2-x86_64",
+    "bytes": 1921016,
+    "sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba"
+  },
+  "tier-loop.elf": {
+    "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-final.cpio.gz:tests/tier-loop.elf",
+    "bytes": 141,
+    "sha256": "5366bd15efa4ffe126c2532eb75f5364ddf2795d5de45f350cfbf886e5da7cdf"
+  }
+}

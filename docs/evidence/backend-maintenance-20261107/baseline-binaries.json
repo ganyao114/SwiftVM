@@ -1,0 +1,20 @@
+[
+  {
+    "file": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/baseline/submit-android-svm_rebuild_linux",
+    "sha256": "fab220d72b1cbaf76a91ae85971346d552cd72a592d798ecb46e6750b142e8d1",
+    "bytes": 22487176,
+    "cached_source_head": "7c10a7dd43569c73f7d348af6f7263a856b9f29f"
+  },
+  {
+    "file": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/baseline/submit-host-svm_ir_compile_bench",
+    "sha256": "44d7ec1827edb5135d996ea63e31f4bba8f8d215027de09c41f56d9df2917065",
+    "bytes": 544600,
+    "cached_source_head": "7c10a7dd43569c73f7d348af6f7263a856b9f29f"
+  },
+  {
+    "file": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/baseline/submit-host-svm_function_compile_bench",
+    "sha256": "310904f8baa57ba9893fe303780fdc14871e4b316aa16bdf361ca38b3cbaa13c",
+    "bytes": 1098984,
+    "cached_source_head": "7c10a7dd43569c73f7d348af6f7263a856b9f29f"
+  }
+]

@@ -1,0 +1,85 @@
+{
+  "started_at_utc": "2026-11-07T10:32:33.830727+00:00",
+  "command": [
+    "/opt/homebrew/bin/qemu-system-riscv64",
+    "-machine",
+    "virt",
+    "-cpu",
+    "rv64,v=false,zba=false,zbb=false,zbs=false,zbc=false",
+    "-smp",
+    "2",
+    "-m",
+    "1024",
+    "-accel",
+    "tcg,thread=multi",
+    "-nographic",
+    "-no-reboot",
+    "-bios",
+    "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/opensbi-fw_dynamic.bin",
+    "-kernel",
+    "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/Image",
+    "-initrd",
+    "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/rootfs-maintenance.cpio.gz",
+    "-append",
+    "console=ttyS0 rdinit=/init loglevel=4 panic=1"
+  ],
+  "qemu_version": "QEMU emulator version 10.2.0\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers\n",
+  "inputs": {
+    "/opt/homebrew/bin/qemu-system-riscv64": {
+      "source": "/opt/homebrew/bin/qemu-system-riscv64",
+      "resolved_path": "/opt/homebrew/Cellar/qemu/10.2.0/bin/qemu-system-riscv64",
+      "bytes": 13088688,
+      "sha256": "4f523702fcdcecd4486092339035fe4b307d9b491897b36d2da2dc5453cf37e0"
+    },
+    "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/Image": {
+      "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/Image",
+      "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/Image",
+      "bytes": 31166464,
+      "sha256": "bd2ed2805f33aa7583e0194869e0dddb11e15883af6861995af169d2fb25388e"
+    },
+    "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/opensbi-fw_dynamic.bin": {
+      "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/opensbi-fw_dynamic.bin",
+      "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/opensbi-fw_dynamic.bin",
+      "bytes": 272504,
+      "sha256": "0e6f495e3313e6e2a6e7d5a5dd613a76623bc65c230b6058bb60c372331ef12c"
+    },
+    "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/kernel.config": {
+      "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/kernel.config",
+      "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-rv64-execution-20261024-v6-kernel-artifacts/kernel.config",
+      "bytes": 259000,
+      "sha256": "6f4c34c7ca87b3d359680fbeb972c94f689e012d5ee656407f1cf946ff796078"
+    },
+    "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-final.cpio.gz": {
+      "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-final.cpio.gz",
+      "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/rootfs-final.cpio.gz",
+      "bytes": 6554685,
+      "sha256": "753b1c1e948760bc015c97fe5427255cd15d4b6980103112e3fbe15bb7e7b7e9"
+    },
+    "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/func-oracle.txt": {
+      "source": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/func-oracle.txt",
+      "resolved_path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/riscv64-restore-20261106/kernel-native/final/func-oracle.txt",
+      "bytes": 177,
+      "sha256": "3ccbe1fc6cbcf98802e5c39f25004b591afce41038a78f89e3c23ce083c4395b"
+    },
+    "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/init": {
+      "source": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/init",
+      "resolved_path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/init",
+      "bytes": 3207,
+      "sha256": "62ed4a9e9ac6a716561c01fd3554bd1b3080ff590b5afca809b2706ab360da79"
+    },
+    "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/rootfs-maintenance.cpio.gz": {
+      "source": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/rootfs-maintenance.cpio.gz",
+      "resolved_path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/rootfs-maintenance.cpio.gz",
+      "bytes": 8648960,
+      "sha256": "75a40a9e4fb25ca2092b24414ee13e19b363bfaf4105c5477cb3f5a1c0db5a9b"
+    },
+    "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/verify_kernel.py": {
+      "source": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/verify_kernel.py",
+      "resolved_path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/rv-kernel/verify_kernel.py",
+      "bytes": 16306,
+      "sha256": "cc9a509767262af8f165fc9ba8bd992c1e0d43b6e81876009b61097ddda8ebe2"
+    }
+  },
+  "scope": "Functional verification under two emulated RV64G harts and a real guest Linux kernel. No physical hardware or performance claim.",
+  "rootfs_method": "In-memory newc replacement; no expanded filesystem was created."
+}

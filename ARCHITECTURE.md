@@ -15,13 +15,16 @@ x86 bytes -> decode / region formation -> neutral Uniform IR
 | `source/runtime/ir/` | Sole Program/Builder owner, stable node IDs, 24B operations, 24B blocks and 8B operand words; O(1) Submit |
 | `source/runtime/frontend/x86/` | Owned decoded instructions, bounded region formation and shared Semantics for IR emission or direct interpretation; Known-target selection with Unknown/EarlyOff paths |
 | `source/runtime/compile/` | Three walks over the same IR, flags demand, bounded rewrites, Uniform forwarding and DCE; one temporary u64/node table |
-| `source/runtime/backend/arm64/allocate.*` | Distinct Block/Function lifetimes, pin affinity, real registers/spills and one 16B Home/node |
+| `source/base/` | Typed formatting, error delivery and filtered logging; no per-node compile state |
+| `source/runtime/ir/format.*` | Optional streaming IR diagnostics, separate from core storage |
+| `source/runtime/backend/allocation_cfg.*` | Shared schedule/backedge mathematics, no node facts table |
+| `source/runtime/backend/arm64/allocate.*`, `allocation_selection.cpp` | Distinct Block/Function lifetimes, pin/NZCV/PC choices in the original reverse walk, real registers/spills and one 16B Home/node |
 | `source/runtime/backend/arm64/` | Typed Handle selection, exact controlled VIXL encoding, explicit scratch allocation, patching, helper ABI and actual fault/link metadata |
 | `source/runtime/arch/x86/` | Sole guest state/flags definition, CPU model and portable x87/vector numerical semantics |
 | `source/runtime/execution/` | VM/thread ownership, engine dispatch, compile service, guest memory, native mappings, slabs, directory/links, SMC and retirement |
 | `source/runtime/platform/` | ELF loading, Linux syscalls/signals/safe access and host ARM64 bridge |
 | `source/launcher/linux/` | Runner CLI and coarse diagnostics |
-| `source/tests/rebuild/` | Construction, optimizer, allocation/encoding and native pipeline contracts |
+| `source/tests/` | Catch cases, independent numerical expectations, and explicit compile/native execution entries |
 | `benchmarks/` | Fixed construction/compile workloads, budget diagnostics and guest input recipes |
 
 GPR/XMM architecture accesses retain neutral LoadUniform/StoreUniform semantics.

@@ -528,10 +528,12 @@ native active 非空时，region、unit 目录和被借用的 fault buffers 保�
 
 IR 优化仍按「首逆扫 → CFG 摘要传播及出口写入修正 → 唯一前向改写 → 按需末逆扫」执行；拆文件不增加全 IR 扫描、IR 副本、use 表或 pass 注册层。小型高频谓词继续内联，Release IPO 保持跨源文件优化。 本次源码整理的回归结果与小规模 compile 对照见 [验证记录](evidence/source-cleanup-20261106/README.md)。
 
-以下是实际实施结构。`.h/.cpp` 配对属于同一个模块；按所有权／语义分组，不是一个文件等于一个 pass。IR 优化归属 `ir`，文件按分析、改写和局部折叠职责组织；tests 与 externals 未列部分保持当前布局。
+以下是实际实施结构。`.h/.cpp` 配对属于同一个模块；按所有权／语义分组，不是一个文件等于一个 pass。IR 优化归属 `ir`，文件按分析、改写和局部折叠职责组织；基础诊断、formatter 与测试框架按下述独立支持层组织，生产 IR/发码目标不依赖测试框架。
 
 ```text
 source/runtime/
+  exit.h exit.inc                  # 前端、后端、runtime与汇编共用的窄退出/原子资格常量
+  externals/fmt/                   # 从冻结树复用的格式化库，独立compiled target
   externals/vixl/                   # 固定来源的受控fork；精确编码／单sink，删除隐式macro入口
   externals/biscuit/                # 固定旧版来源；RV exact word sink，不启用自动寄存器／压缩选择
   arch/x86/
@@ -557,6 +559,7 @@ source/runtime/
     interpreter.h interpreter.cpp  # x86薄DirectSink、InterpretDecoded和fetch/decode便利入口
 
   ir/                              # 唯一 Program/Builder/CellRange，跨前后端的 IR 合同
+    format.h format.cpp            # 可选文本输出，直接流式遍历Program/CellRange
     optimize.h                     # 通用 IR 优化入口、Uniform 语义策略和结果统计
     direct/
       services.h                   # IR执行的访存／原子／CPU查询结果及服务
@@ -574,18 +577,22 @@ source/runtime/
 
   backend/
     code.h                         # 真实 native range／entry／link／fault 契约
+    allocation_cfg.h .cpp          # 实际RPO与回边闭包数学，不创建节点facts或额外N遍历
     dispatch_layout.inc            # 唯一目录hash／slot布局常量，供ABI与静态汇编消费
     arm64/
       encoding.h                   # 定制VIXL的typed exact门面／已知patch格式
       assembler.h  assembler.cpp   # 借 words、labels、fixups、data 定位
       abi.h                        # pins、flags、context layout 事实
       abi_layout.inc               # C++与静态汇编共用的布局常量
-      allocate.h  allocate.cpp     # Block/Function Home 与实际 schedule
+      allocate.h  allocate.cpp     # Block/Function入口、定义坐标与最终register/spill决策
+      allocation_detail.h          # 私有借用上下文、块内状态与小型内联谓词
+      allocation_selection.cpp     # 同一次逆扫中的use/pin/NZCV/PC选择
       compile.h  compile.cpp       # 一次主编译入口、实际资源输出、重发边界
-      emit.h                       # 单 Writer 私有状态、Handle重载与必要小工具声明
+      emit.h emit_ops.inc          # 单Writer私有状态、typed Handle映射与热工具
       emit.cpp                     # 一次schedule遍历、公共前后处理、薄opcode派发
       emit_operand.cpp             # Cell/值视图读取、Home访问、显式地址／spill读取工具
-      emit_scalar.cpp              # 标量整数／位运算Handle
+      emit_scalar.cpp              # 标量整数／位运算Handle与有界选码helper
+      emit_calls.cpp               # 宽除法、Cpuid和x87等实际helper调用Handle
       emit_memory.cpp              # 普通／TSO标量及向量访存Handle、实际fault点
       emit_atomic.cpp              # CAS/RMW等Handle、LSE与LL/SC显式选码
       emit_control.cpp             # 控制IR与terminal Handle、边／entry/exit／local16
@@ -593,7 +600,10 @@ source/runtime/
       emit_flags.cpp               # flags Handle、NZCV/PF/AF载体与物化工具
       emit_vector.cpp              # SIMD整数／位运算／shuffle等Handle
       emit_float.cpp               # SIMD/scalar FP与转换、x87原生快路径Handle
-      helper_calls.cpp             # 真实 C++ helper ABI 桥
+      helper_calls.cpp             # 宽除法等C++数值helper与实际入口选择
+      helper_bridge.S              # naked寄存器保存/恢复桥，保留GPR-only闭包
+      entry_elf.S                  # ELF宿主Root/Cold/Exit，消费唯一ABI布局
+      runtime.h runtime.cpp        # 编译绑定/复用owner、寄存器/flags/FP恢复；由execution集成
       patch.h  patch.cpp           # 本 ISA 的 link/unaligned 修补逻辑
 
     riscv64/
@@ -611,6 +621,8 @@ source/runtime/
       call_helpers.h .cpp          # 宽除法及x87数值/metadata提交
       patch.h patch.cpp            # 原子发布/撤销真实静态边DATA target
       abi_layout.inc               # RV C++/根汇编的同一context字段偏移
+      entry_elf.S                  # ELF/LP64D Root/Cold/Exit
+      runtime.h runtime.cpp        # RV编译绑定/复用owner与寄存器/FP恢复
 
   execution/
     runtime.h  runtime.cpp         # 公共运行API／VM执行循环／实际DirectServices
@@ -636,10 +648,8 @@ source/runtime/
     signals.cpp                    # sigaction/TLS/原handler链的窄适配
     safe_access.h .cpp             # 受控process_vm_readv/writev；失败返回，不跨C++栈longjmp
     host_runtime.h run_guest.cpp   # 已确认宿主的绑定选择及共用RunGuest生命周期
-    arm64_runtime.h .cpp           # HostBackend绑定、HWCAP、FP／恢复桥
-    riscv64_runtime.h .cpp         # RV64G绑定、FCSR、fault恢复与Linux跨hart icache同步
-    riscv64_entry.S                # s1基址、s11 flags、同一PC目录的Root/Cold/Exit
-    arm64_entry.S                  # 静态 Root/Cold/Exit，消费同一ABI常量
+    arm64_host.h .cpp              # HWCAP、Linux ucontext、页面权限的窄适配
+    riscv64_host.h .cpp            # Linux ucontext、跨hart I-cache syscall
 ```
 
 文件职责补充：
@@ -649,7 +659,7 @@ source/runtime/
 - `compile_service` 不产生 Prepared/Action；只协调现有 owner 和调用顺序。BackendOps 在 Linux 装配点绑定一次，编译器内部仍静态调用 encoder。
 - `code_link.cpp` 不定义独立管理器，不拥有另一份 unit／PC 表。
 - `mem_map.cpp` 是资源模块，可按当前平台选择实现；`signals.cpp` 和 syscall 的 Linux 细节不污染 encoder／decoder。
-- `arm64_runtime` 与恢复后的 `riscv64_runtime` 分别绑定具体 host ABI；共用 RunGuest／VM／cache 所有权，解释器可在满足 memory service 的 host 上独立构建。RV64 使用当前 Program、独立 Block/Function home、GPR-pair SIMD/F+D 和既有数值 helper，未恢复旧 IR/HIR 或持久化层。当前方案不宣称完成 Windows 或一般多 VM 地址空间。
+- `backend/arm64/runtime` 与 `backend/riscv64/runtime` 分别绑定具体 host ABI；Linux host 文件提供实际OS能力；共用 RunGuest／VM／cache 所有权，解释器可在满足 memory service 的 host 上独立构建。RV64 使用当前 Program、独立 Block/Function home、GPR-pair SIMD/F+D 和既有数值 helper，未恢复旧 IR/HIR 或持久化层。当前方案不宣称完成 Windows 或一般多 VM 地址空间。
 - 按职责拆分的 semantics `.inc` 仅供同一个静态语义模板包含；不是第二套指令流或生成期微操作表。
 - `compile.cpp` 不承担逐条操作实现；`emit.cpp` 不积累指令族逻辑；`emit.h` 不成为另一份大实现文件。现有大 inline 编码移入 exact encoding，较复杂的 operand／状态逻辑归对应 `.cpp`，仅将必要的小访问器留在私有头。
 - 上述各 `emit_*.cpp` 实现同一个 Writer 的方法，不是一组 pass／manager；除去一个过大的 switch，不产生新的指令遍历或中间表。`emit_float` 中只含 host 发码，ext80共享数值服务仍归 `arch/x86/x87`；helper ABI桥只负责真实调用约定，不成为所有复杂 opcode 的收容文件。
@@ -670,6 +680,33 @@ source/runtime/
 | memory.cpp 的 ELF 与 code-write policy | ELF到loader；write-watch到SMC；guest mapping事实保memory |
 | runtime.cpp 大型 syscall switch | linux/syscalls；VM只服务装配与执行循环 |
 | guest_state、guest_cpu、ir/x87 state | arch/x86；不复制第二套状态 |
+
+### 9.1 基础设施与边界收敛（2026-11-07）
+
+```text
+source/base/
+  format.h                        # 类型安全格式化的薄入口
+  error.h error.cpp               # RuntimeError及无分配Failure记录，原领域错误保留
+  logging.h logging.cpp           # level/channel过滤、可注入sink、stderr/Android输出
+source/launcher/linux/
+  main.cpp                        # 接入与进程退出码
+  options.h options.cpp           # CLI参数与帮助
+  report.h report.cpp             # 原统计JSON协议，字段和值相邻
+source/tests/
+  CMakeLists.txt                  # BUILD_TESTING边界及一致注册属性
+  externals/catch/                # 复用旧Catch2，仅测试目标依赖
+  support/                       # 薄构造/内存/发布支持与显式compile/native运行入口
+```
+
+分配器拆文件不拆扫描：Arm64保持出生、反向选择、最终寄存器选择三次实际node walk；RV保持现有四次walk。Block与无图Function不构建CFG。两后端只共用RPO与回边区间数学，各自保留Home、bank、pin、pair及辅助槽语义。所有选择直接落最终Home，不增加中间决策表。
+
+`__`只作为私有实现中的exact encoder缩写，成对定义/撤销；它不提供寄存器分配、scratch或隐式指令扩展。typed Handle派发不变，选码helper不消费失败分支的cursor或发码，也不新建preparation/actions流程。
+
+entry文件按宿主ABI选取：架构归属不意味着ELF汇编可直接用于Mach-O/Windows。codegen目标不引入Linux头；恢复桥先由平台取得寄存器view，再交后端解释。页权限与跨hart cache同步由平台实现；同步失败在尚未发布的冷边界报告，不能abort或发布不完整入口。
+
+普通错误由RuntimeError携带类别和原始errno；noexcept桥用固定Failure记录，在安全边界格式化。signal只记录既定固定字段，不调用普通logger/fmt，也不抛异常。前端、IR和后端的typed rejection继续使用原结果；只有最终请求失败才构造诊断文本。guest退出码与宿主失败分开，宿主失败的launcher退出码为125，不能因guest先返回0而报告成功。
+
+formatter为可选目标，直接沿现有CellRange输出类型/view、嵌套参数、flags和terminal；默认JIT不增加dump walk。Catch只管理注册和报告，测试数值输入/预期保留。compile、native、direct结果明确区分；缺原生执行资格返回77并由CTest记为跳过，不返回伪native值。分配注入窗口内成功Check仍不进入会分配的报告路径。
 
 ## 10. 防止再次膨胀的验收约束
 

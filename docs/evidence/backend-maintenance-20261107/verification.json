@@ -1,0 +1,37 @@
+{
+  "base_commit": "7c10a7dd43569c73f7d348af6f7263a856b9f29f",
+  "worktree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "source_state": "committed implementation, identified by source-manifest.json",
+  "completed_at_utc": "2026-11-07T10:41:30.888507+00:00",
+  "external_results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107",
+  "builds_passed": [
+    "macOS-arm64",
+    "Android-arm64-v8a-api28",
+    "Linux-rv64g-lp64d"
+  ],
+  "host_contracts_passed": 13,
+  "host_native_isa_skipped": 6,
+  "host_evidence": [
+    "host-tests-final.log.gz",
+    "host-tests-fix.log.gz"
+  ],
+  "host_note": "Original matrix passed all existing/base contracts; the formatter and the test-only exception wrapping were then corrected and passed their targeted rerun. No remaining failure.",
+  "redmagic_serial": "bf1359ff",
+  "phone_cases_passed": 18,
+  "phone_native_targets": 6,
+  "rv_kernel_cases_passed": 16,
+  "rv_native_catch_groups": 12,
+  "rv_actual_hardware": false,
+  "formatted_owned_cpp_files": 227,
+  "owned_cpp_and_asm_files": 232,
+  "phone_compile_pairs_per_scope": 3,
+  "phone_cpu_affinity": "taskset 10 (CPU4)",
+  "phone_cpu4_max_khz_before": 1171200,
+  "phone_cpu4_max_khz_after": 1171200,
+  "phone_thermal_zone0_before": 27749,
+  "phone_thermal_zone0_after": 27744,
+  "formal_runtime_pmu_or_fex_comparison": false,
+  "cleanup_errors": [],
+  "implementation_commit": "0a03793387bbd16a17330213ff31169e3409b5da",
+  "dependency_commit": "99d13b394cddf71eccb08c39f58115faa8f0f984"
+}

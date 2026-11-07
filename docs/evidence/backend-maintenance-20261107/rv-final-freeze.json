@@ -1,0 +1,58 @@
+{
+  "frozen_at_utc": "2026-11-07T10:33:35.194015+00:00",
+  "all_passed": true,
+  "case_count": 16,
+  "qemu_owned_pid": 82080,
+  "qemu_running": false,
+  "scope": "Functional emulation with a real guest Linux kernel on two RV64G harts; no physical performance claim.",
+  "files": {
+    "binary-inputs.json": {
+      "bytes": 4714,
+      "sha256": "f228c473c35405eb22fa62e393ffea01c6850b29a64f80f72304125a9e70d10c"
+    },
+    "case-inputs.json": {
+      "bytes": 4047,
+      "sha256": "b6736af7bacdebc9c1e08b9afc780f7b33e17d639a66c70bd0d8d04e5a46a13e"
+    },
+    "native-qualification-inputs.json": {
+      "bytes": 1738,
+      "sha256": "a5c4f83b966e3f007393ce117b30d481b8cf2c1820224f09b94f94e1a34dd7b5"
+    },
+    "execution-inputs.json": {
+      "bytes": 5812,
+      "sha256": "460a0c1cd6249c3e28ce849321781faa187371e91bec35e77c61692365981d3a"
+    },
+    "rootfs-inputs.json": {
+      "bytes": 6243,
+      "sha256": "bc937e95e44364911ce616e1abeca5337e856fea30cd3dcfebf6e89c4849d41d"
+    },
+    "results.json": {
+      "bytes": 34757,
+      "sha256": "b00a7b0a13e6ae6b606d8f114fa6be583cb44f04164e89cb9e4ac5a3fa55c98d"
+    },
+    "console.log": {
+      "bytes": 28920,
+      "sha256": "322a185e1123d02a4b87c3b5b5e5512c3f3a6b75ec67d6619bda8e97cf339b6e"
+    },
+    "console.log.gz": {
+      "bytes": 4342,
+      "sha256": "27784be3d2cc8241f624b4819a5055add28fc8b447e554df99faab82939fcd87"
+    },
+    "init": {
+      "bytes": 3207,
+      "sha256": "62ed4a9e9ac6a716561c01fd3554bd1b3080ff590b5afca809b2706ab360da79"
+    },
+    "verify_kernel.py": {
+      "bytes": 16306,
+      "sha256": "cc9a509767262af8f165fc9ba8bd992c1e0d43b6e81876009b61097ddda8ebe2"
+    },
+    "rootfs-maintenance.cpio.gz": {
+      "bytes": 8648960,
+      "sha256": "75a40a9e4fb25ca2092b24414ee13e19b363bfaf4105c5477cb3f5a1c0db5a9b"
+    },
+    "cleanup-receipt.json": {
+      "bytes": 3231,
+      "sha256": "1c31e27042b434f4ce345ce172defcfd4d8d71a5897874666a8fd5ddb5d7500f"
+    }
+  }
+}

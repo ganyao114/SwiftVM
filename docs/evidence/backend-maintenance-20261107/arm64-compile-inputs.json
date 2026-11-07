@@ -1,0 +1,14 @@
+{
+  "baseline": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/backend-maintenance-20261107/baseline/submit-android-svm_rebuild_linux",
+    "sha256": "fab220d72b1cbaf76a91ae85971346d552cd72a592d798ecb46e6750b142e8d1"
+  },
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "sha256": "08ff7cf6974aa688a7ef31b0174eb448bd1fe2e08f87af81555fac1a5f7de1a4"
+  },
+  "coremark": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+    "sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba"
+  }
+}

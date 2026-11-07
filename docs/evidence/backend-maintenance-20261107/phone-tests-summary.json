@@ -1,0 +1,99 @@
+[
+  {
+    "case": "svm_base_test",
+    "exit": 0,
+    "native": false
+  },
+  {
+    "case": "svm_ir_format_test",
+    "exit": 0,
+    "native": false
+  },
+  {
+    "case": "svm_ir_direct_test",
+    "exit": 0,
+    "native": false
+  },
+  {
+    "case": "svm_ir_optimize_test",
+    "exit": 0,
+    "native": false
+  },
+  {
+    "case": "svm_x86_interpreter_test",
+    "exit": 0,
+    "native": false
+  },
+  {
+    "case": "svm_arm64_compile_test",
+    "exit": 0,
+    "native": true
+  },
+  {
+    "case": "svm_compile_pipeline_test",
+    "exit": 0,
+    "native": true
+  },
+  {
+    "case": "svm_instruction_coverage_test",
+    "exit": 0,
+    "native": true
+  },
+  {
+    "case": "svm_avx_coverage_test",
+    "exit": 0,
+    "native": true
+  },
+  {
+    "case": "svm_x87_coverage_test",
+    "exit": 0,
+    "native": true
+  },
+  {
+    "case": "svm_runtime_engine_test",
+    "exit": 0,
+    "native": true
+  },
+  {
+    "case": "division-block-jit",
+    "exit": 125,
+    "runtime_completed": false,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "division-block-mixed",
+    "exit": 125,
+    "runtime_completed": false,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "func-block",
+    "exit": 101,
+    "runtime_completed": true,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "division-function-jit",
+    "exit": 125,
+    "runtime_completed": false,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "division-function-mixed",
+    "exit": 125,
+    "runtime_completed": false,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "func-function",
+    "exit": 101,
+    "runtime_completed": true,
+    "interpreted_steps": 0
+  },
+  {
+    "case": "missing-guest",
+    "exit": 125,
+    "runtime_completed": false,
+    "interpreted_steps": 0
+  }
+]

@@ -1,0 +1,147 @@
+{
+  "elapsed_seconds": 3.6490253750234842,
+  "qemu_exit": 0,
+  "all_passed": true,
+  "console_sha256": "322a185e1123d02a4b87c3b5b5e5512c3f3a6b75ec67d6619bda8e97cf339b6e",
+  "cases": [
+    {
+      "name": "base",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": false,
+      "native_qualification": "Compile/direct-only; no native claim",
+      "test_cases_passed": 4
+    },
+    {
+      "name": "ir-format",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": false,
+      "native_qualification": "Compile/direct-only; no native claim",
+      "test_cases_passed": 3
+    },
+    {
+      "name": "rv-native",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Explicit --native with host RV64 ISA gate and native publisher guard",
+      "test_cases_passed": 12
+    },
+    {
+      "name": "runtime-compile",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": false,
+      "native_qualification": "Compile/direct-only; no native claim",
+      "test_cases_passed": 3
+    },
+    {
+      "name": "runtime-native",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Explicit --native with host RV64 ISA gate and native publisher guard",
+      "test_cases_passed": 3
+    },
+    {
+      "name": "mixed-block",
+      "actual_exit": 40,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 628,
+      "interpreted_steps": 31
+    },
+    {
+      "name": "mixed-function",
+      "actual_exit": 40,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 564,
+      "interpreted_steps": 29
+    },
+    {
+      "name": "func-block",
+      "actual_exit": 101,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 667068,
+      "interpreted_steps": 0
+    },
+    {
+      "name": "func-function",
+      "actual_exit": 101,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 1031364,
+      "interpreted_steps": 0
+    },
+    {
+      "name": "coremark-block",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 1310188,
+      "interpreted_steps": 0
+    },
+    {
+      "name": "coremark-function",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 1659732,
+      "interpreted_steps": 0
+    },
+    {
+      "name": "atomic128-smc",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 3132,
+      "interpreted_steps": 0
+    },
+    {
+      "name": "smc-recompile",
+      "actual_exit": 0,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 2056,
+      "interpreted_steps": 0
+    },
+    {
+      "name": "atomic128-fault",
+      "actual_exit": 125,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 1024,
+      "interpreted_steps": 0
+    },
+    {
+      "name": "native-fault",
+      "actual_exit": 125,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 296,
+      "interpreted_steps": 0
+    },
+    {
+      "name": "divide-zero",
+      "actual_exit": 125,
+      "all_passed": true,
+      "native": true,
+      "native_qualification": "Runner JIT/Mixed reported actual native bytes, no interpreter replay",
+      "native_bytes": 652,
+      "interpreted_steps": 0
+    }
+  ]
+}

@@ -15,7 +15,10 @@ checkpoint.
 
 Host contracts and code-generation tools require CMake 3.22+, a C++20 compiler
 and a C compiler. Ninja is used below; diStorm, the controlled exact-encoding
-VIXL subset, the Biscuit word encoder, SoftFloat and Cephes are included.
+VIXL subset, the Biscuit word encoder, SoftFloat, Cephes and fmt are included.
+Catch2 is vendored separately for tests; `-DBUILD_TESTING=OFF` excludes the
+test framework. `SVM_BUILD_IR_FORMAT` controls the optional IR text formatter
+and defaults to the test setting.
 
 ```sh
 cmake -S . -B build/host -G Ninja -DCMAKE_BUILD_TYPE=Release
@@ -25,7 +28,11 @@ ctest --test-dir build/host --output-on-failure
 
 On ARM64 or RV64 Linux this also builds `build/host/svm_rebuild_linux`. Native
 checks require the matching host ISA; compiling RV words on ARM64 does not
-execute them. See the [RV64 backend](source/runtime/backend/riscv64/README.md)
+execute them. CTest registers code-generation and native execution separately;
+unsupported native entries are marked skipped (exit 77). When invoking a test
+binary directly, select `--native` to execute its native cases; the default
+runs construction/encoding contracts. Catch case names and tags can filter a
+specific scenario. See the [RV64 backend](source/runtime/backend/riscv64/README.md)
 for cross-building, execution coverage and current boundaries.
 
 For Android, set `ANDROID_NDK` to the NDK installation. The measured build used
@@ -83,14 +90,23 @@ the formatted-source identity and host/Android regression results.
 
 ## Current checkpoint
 
+The [backend maintenance record](docs/backend-maintenance-2026-11-07.md) describes
+the allocator/ABI/logging/test cleanup and its compile regression checks. It does
+not replace the full FEX comparison below.
+
 The runtime now separates guest architecture, execution ownership and platform
-services. It supports JIT, direct interpretation and mixed execution, shared
+services. ELF entry assembly and private helper bridges live with each backend;
+Linux host adapters own capability probing, signal-frame views and OS memory/cache
+operations. Logging/errors and optional IR formatting use a small shared base
+layer, independently of code-generation storage.
+
+It supports JIT, direct interpretation and mixed execution, shared
 x86 semantics, explicit code mappings/cache/link/SMC ownership, and expanded
 user-mode scalar, SSE, AVX/AVX2, MMX and x87 forms. EVEX/AVX-512 and complete PKU
 remain deferred. Source inventory is not full ISA/form coverage; see the
 [coverage implementation and boundaries](docs/instruction-coverage-implementation-2026-11-05.md).
 
-The latest compile measurement uses RedMagic NX729J CPU4 and fixed FEX
+The latest full FEX compile comparison uses RedMagic NX729J CPU4 and fixed FEX
 `a156752f`, with five fresh launches per arm/input and 200 total observations.
 Only actual byte-parser calls are removed. Formation, IR construction,
 optimization, allocation, encoding, failures/retries, publication and release
