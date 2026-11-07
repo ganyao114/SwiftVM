@@ -1,0 +1,291 @@
+#include <bit>
+#include "runtime/frontend/arm64/build_ir.h"
+#include "tests/support/arm64_guest_fixture.h"
+
+namespace {
+namespace front = swift::arm64;
+namespace ir = swift::runtime::ir;
+using State = swift::runtime::arm64::GuestState;
+using namespace swift::tests::arm_guest;
+using namespace vixl::aarch64;
+using U64 = std::uint64_t;
+
+void Build(const Code& code, ir::Scope scope = ir::Scope::Block) {
+    const std::array<front::BlockWindow, 1> windows{{{CodeBase, code.View()}}};
+    for (const auto mode : {ir::TargetMode::Known, ir::TargetMode::Unknown}) {
+        ir::TargetInfo target;
+        target.mode = mode;
+        target.target = 0xa64;
+        const auto result = scope == ir::Scope::Function
+                                    ? front::BuildFunctionIR(windows, CodeBase, {}, {}, target)
+                                    : front::BuildIR(windows, scope, {}, target);
+        INFO(static_cast<unsigned>(result.error));
+        INFO(static_cast<unsigned>(result.ir_error));
+        INFO(result.error_pc);
+        REQUIRE(bool(result));
+        CHECK(!result.program.Operations().empty());
+    }
+}
+
+template <class T> T Lane(const State& s, unsigned r, unsigned lane = 0) {
+    T out;
+    std::memcpy(&out, s.q[r] + lane * sizeof(T), sizeof(T));
+    return out;
+}
+
+template <class T> void Set(State& s, unsigned r, T value, unsigned lane = 0) {
+    std::memcpy(s.q[r] + lane * sizeof(T), &value, sizeof(value));
+}
+}  // namespace
+
+TEST_CASE("ARM frontend preserves SP ZR W writes and canonical no-borrow flags",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.subs(x2, x0, Operand(x1));
+        a.adc(x3, xzr, Operand(xzr));
+        a.sbc(x4, xzr, Operand(xzr));
+        a.movz(xzr, 0x1234);
+        a.add(sp, sp, Operand(16));
+        a.svc(0);
+    }};
+    Build(code);
+    for (bool equal : {false, true}) {
+        State state;
+        state.pc = CodeBase;
+        state.gprs[0] = equal ? 7 : 0;
+        state.gprs[1] = equal ? 7 : 1;
+        state.gprs[31] = DataBase + 32;
+        Memory memory{code};
+        const auto result = Run(state, memory);
+        CHECK(result.kind == front::StepKind::Service);
+        CHECK(result.service == 1);
+        CHECK(state.gprs[2] == (equal ? 0 : UINT64_MAX));
+        CHECK(state.gprs[3] == U64(equal));
+        CHECK(state.gprs[4] == (equal ? 0 : UINT64_MAX));
+        CHECK(state.gprs[31] == DataBase + 48);
+        CHECK(bool(state.packed_flags & (U64{1} << 29)) == equal);
+        CHECK(bool(state.packed_flags & (U64{1} << 30)) == equal);
+    }
+    const Code narrow{[](auto& a) {
+        a.movz(w0, 0x1234);
+        a.svc(0);
+    }};
+    Build(narrow);
+    State state;
+    state.pc = CodeBase;
+    state.gprs[0] = UINT64_MAX;
+    Memory memory{narrow};
+    Run(state, memory);
+    CHECK(state.gprs[0] == 0x1234);
+}
+
+TEST_CASE("ARM conditional compare shares local control in both sinks", "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.ccmp(x0, Operand(2), NCFlag, eq);
+        a.svc(0);
+    }};
+    Build(code);
+    for (bool condition : {false, true}) {
+        State state;
+        state.pc = CodeBase;
+        state.gprs[0] = 2;
+        state.packed_flags = 1 | (condition ? (U64{1} << 30) : 0);
+        Memory memory{code};
+        const auto result = Run(state, memory);
+        CHECK(result.kind == front::StepKind::Service);
+        INFO(condition);
+        INFO(state.packed_flags);
+        CHECK(bool(state.packed_flags & (U64{1} << 31)) == !condition);
+        CHECK(bool(state.packed_flags & (U64{1} << 30)) == condition);
+        CHECK(bool(state.packed_flags & (U64{1} << 29)));
+    }
+}
+
+TEST_CASE("ARM division handles architectural zero and signed overflow",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.udiv(x2, x0, x1);
+        a.sdiv(x3, x0, x1);
+        a.sdiv(w4, w0, w1);
+        a.svc(0);
+    }};
+    Build(code);
+    for (U64 divisor : {U64{0}, UINT64_MAX}) {
+        State state;
+        state.pc = CodeBase;
+        state.gprs[0] = U64{1} << 63;
+        state.gprs[1] = divisor;
+        Memory memory{code};
+        const auto result = Run(state, memory);
+        CHECK(result.kind == front::StepKind::Service);
+        CHECK(state.gprs[2] == 0);
+        CHECK(state.gprs[3] == (divisor ? U64{1} << 63 : 0));
+        CHECK(state.gprs[4] == 0);
+    }
+}
+
+TEST_CASE("ARM memory writeback follows successful exact-width access", "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.str(x0, MemOperand(sp, -8, PreIndex));
+        a.ldr(x1, MemOperand(sp, 8, PostIndex));
+        a.svc(0);
+    }};
+    Build(code);
+    State state;
+    state.pc = CodeBase;
+    state.gprs[0] = 0x12345678;
+    state.gprs[31] = DataBase + 64;
+    Memory memory{code};
+    CHECK(Run(state, memory).kind == front::StepKind::Service);
+    CHECK(state.gprs[1] == 0x12345678);
+    CHECK(state.gprs[31] == DataBase + 64);
+    CHECK(memory.reads == 1 && memory.writes == 1);
+    State fault;
+    fault.pc = CodeBase;
+    fault.gprs[31] = DataBase;
+    Memory other{code};
+    const auto result = front::InterpretOne(fault, other.Services());
+    CHECK(result.kind == front::StepKind::Fault);
+    CHECK(fault.gprs[31] == DataBase);
+    CHECK(fault.pc == CodeBase);
+    CHECK(other.writes == 0);
+}
+
+TEST_CASE("ARM region formation handles conditional edges and direct loop backedges",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.subs(x0, x0, Operand(1));
+        a.b(std::int64_t{-1}, ne);
+        a.svc(0);
+    }};
+    Build(code, ir::Scope::Function);
+    State state;
+    state.pc = CodeBase;
+    state.gprs[0] = 4;
+    Memory memory{code};
+    CHECK(Run(state, memory).kind == front::StepKind::Service);
+    CHECK(state.gprs[0] == 0);
+    const std::array<front::BlockWindow, 1> window{{{CodeBase, code.View()}}};
+    std::vector<swift::runtime::SourceSpan> sources;
+    const auto result = front::BuildFunctionIR(
+            window, CodeBase, {}, {}, {}, nullptr, nullptr, nullptr, {}, &sources);
+    REQUIRE(bool(result));
+    CHECK(result.program.Blocks().size() == 2);
+    CHECK(sources.size() == 2);
+    for (const auto mode :
+         {ir::TargetMode::Known, ir::TargetMode::Unknown, ir::TargetMode::EarlyOff}) {
+        const ir::TargetInfo target{
+                mode, 0xa64, std::uint64_t(ir::TargetFeature::ConditionalUniformStore)};
+        const auto branch = front::BuildIR(window, ir::Scope::Block, {}, target);
+        REQUIRE(bool(branch));
+        bool literal_successors{};
+        for (const auto& operation : branch.program.Operations())
+            literal_successors |= operation.opcode == ir::OpCode::StoreUniformSelectImm;
+        CHECK(literal_successors == (mode == ir::TargetMode::Known));
+    }
+    // A not-taken branch still ends a direct block; it must not consume SVC.
+    State fallthrough;
+    fallthrough.pc = CodeBase;
+    fallthrough.gprs[0] = 1;
+    front::DecodeTiming timing;
+    const auto block = front::InterpretBlock(fallthrough, memory.Services(), 16, &timing);
+    CHECK(block.kind == front::StepKind::Completed);
+    CHECK(block.instructions == 2 && block.decoded_bytes == 8);
+    CHECK(block.next_pc == CodeBase + 8 && timing.calls == 2);
+}
+
+TEST_CASE("ARM NEON arithmetic and dot preserve lane shape and overlap",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.add(v0.V16B(), v1.V16B(), v2.V16B());
+        a.rev64(v3.V16B(), v0.V16B());
+        a.sdot(v4.V4S(), v1.V16B(), v2.V16B());
+        a.svc(0);
+    }};
+    Build(code);
+    State state;
+    state.pc = CodeBase;
+    std::memset(state.q[1], 1, 16);
+    std::memset(state.q[2], 2, 16);
+    Memory memory{code};
+    CHECK(Run(state, memory).kind == front::StepKind::Service);
+    for (unsigned i = 0; i < 16; ++i) {
+        CHECK(state.q[0][i] == 3);
+        CHECK(state.q[3][i] == 3);
+    }
+    for (unsigned i = 0; i < 4; ++i) CHECK(Lane<std::uint32_t>(state, 4, i) == 8);
+}
+
+TEST_CASE("ARM saturating multiply reports sticky QC without old IR extensions",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.sqrdmulh(v0.V8H(), v1.V8H(), v2.V8H());
+        a.svc(0);
+    }};
+    Build(code);
+    State state;
+    state.pc = CodeBase;
+    for (unsigned i = 0; i < 8; ++i) {
+        Set(state, 1, std::uint16_t{0x8000}, i);
+        Set(state, 2, std::uint16_t{0x8000}, i);
+    }
+    Memory memory{code};
+    CHECK(Run(state, memory).kind == front::StepKind::Service);
+    for (unsigned i = 0; i < 8; ++i) CHECK(Lane<std::uint16_t>(state, 0, i) == 0x7fff);
+    CHECK(state.fpsr & (1u << 27));
+}
+
+TEST_CASE("ARM FP helper uses ARM controls NaN payload and independent flags",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.fadd(d0, d1, d2);
+        a.fcmp(d1, d2);
+        a.svc(0);
+    }};
+    Build(code);
+    State state;
+    state.pc = CodeBase;
+    Set(state, 1, 1.5);
+    Set(state, 2, 2.25);
+    Memory memory{code};
+    CHECK(Run(state, memory).kind == front::StepKind::Service);
+    CHECK(Lane<double>(state, 0) == 3.75);
+    CHECK(Lane<U64>(state, 0, 1) == 0);
+    CHECK(state.packed_flags & (U64{1} << 31));
+    CHECK(!(state.packed_flags & (U64{1} << 29)));
+    State nan;
+    nan.pc = CodeBase;
+    Set(nan, 1, UINT64_C(0x7ff0000000000042));
+    Set(nan, 2, 1.0);
+    Memory other{code};
+    CHECK(front::InterpretOne(nan, other.Services()).kind == front::StepKind::Completed);
+    CHECK(Lane<U64>(nan, 0) == UINT64_C(0x7ff8000000000042));
+    CHECK(nan.fpsr & 1);
+}
+
+TEST_CASE("ARM system writes stop at FP rebinding and invalid stops do not execute",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.msr(FPCR, x0);
+        a.svc(0);
+    }};
+    Build(code);
+    State state;
+    state.pc = CodeBase;
+    state.gprs[0] = 1u << 24;
+    Memory memory{code};
+    const auto result = front::InterpretOne(state, memory.Services());
+    CHECK(result.kind == front::StepKind::Service);
+    CHECK(result.service == 3);
+    CHECK(state.fpcr == (1u << 24));
+    CHECK(state.pc == CodeBase + 4);
+    const Code illegal{[](auto& a) { a.brk(0); }};
+    State bad;
+    bad.pc = CodeBase;
+    Memory other{illegal};
+    CHECK(front::InterpretOne(bad, other.Services()).kind == front::StepKind::Unsupported);
+    const std::array<front::BlockWindow, 1> w{{{CodeBase, illegal.View()}}};
+    CHECK(!front::BuildIR(w, ir::Scope::Block));
+    CHECK(!front::DecodeOne(illegal.View(), CodeBase + 1));
+    CHECK(!front::DecodeOne(illegal.View().first(3), CodeBase));
+}

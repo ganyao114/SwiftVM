@@ -32,6 +32,10 @@ enum class AtomicOperation : std::uint8_t {
     AddCarry,
     SubBorrow,
     CompareExchange128,
+    SignedMax,
+    SignedMin,
+    UnsignedMax,
+    UnsignedMin,
 };
 
 struct AtomicRequest {

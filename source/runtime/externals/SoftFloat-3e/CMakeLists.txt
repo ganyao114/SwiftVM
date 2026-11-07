@@ -66,6 +66,36 @@ add_library(svm_softfloat_ext80 STATIC
     src/s_approxRecipSqrt_1Ks.c
     src/s_shiftRightJam128.c
     src/softfloat_raiseFlags.c
+    src/extF80_eq.c
+    src/extF80_le.c
+    src/extF80_lt.c
+    src/extF80_to_ui64.c
+    src/f128_eq_signaling.c
+    src/f128_isSignalingNaN.c
+    src/f128_le_quiet.c
+    src/f128_lt_quiet.c
+    src/f128_mulAdd.c
+    src/f128_rem.c
+    src/f128_sqrt.c
+    src/f128_to_f16.c
+    src/f128_to_f32.c
+    src/f128_to_f64.c
+    src/f128_to_i64.c
+    src/f128_to_ui32.c
+    src/f128_to_ui64.c
+    src/f32_to_f128.c
+    src/i32_to_extF80.c
+    src/s_commonNaNToF16UI.c
+    src/s_countLeadingZeros32.c
+    src/s_countLeadingZeros8.c
+    src/s_mul64ByShifted32To128.c
+    src/s_mul64To128.c
+    src/s_roundPackToF16.c
+    src/s_roundToUI64.c
+    src/s_shiftRightJam32.c
+    src/s_shortShiftRightJam64.c
+    src/s_shortShiftRightJam64Extra.c
+    src/ui64_to_extF80.c
 )
 target_include_directories(svm_softfloat_ext80 PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include

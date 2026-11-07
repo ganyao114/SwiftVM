@@ -17,18 +17,24 @@ TABLES = {
     "source/runtime/backend/riscv64/scalar_ops.inc",
     "source/runtime/backend/arm64/emit_ops.inc",
     "source/runtime/backend/riscv64/vector_ops.inc",
+    "source/runtime/backend/x64/ops.inc",
+    "source/runtime/backend/loongarch64/scalar_ops.inc",
+    "source/runtime/backend/loongarch64/vector_ops.inc",
+    "source/runtime/frontend/arm64/instruction_families.inc",
     "source/runtime/frontend/x86/opcodes.inc",
     "source/runtime/frontend/x86/detail/vex_opcodes.inc",
 }
 TABLE_STYLE = (
     "{BasedOnStyle: InheritParentConfig, ColumnLimit: 0, "
-    "StatementMacros: [INST, X86_OP, X86_EXTRA_OP, VEX, RV_SCALAR_OP, RV_VECTOR_OP, A64_EMIT_OP]}"
+    "StatementMacros: [INST, X86_OP, X86_EXTRA_OP, VEX, RV_SCALAR_OP, RV_VECTOR_OP, "
+    "A64_EMIT_OP, X64_OP, LA_SCALAR_OP, LA_VECTOR_OP, ARM_FAMILY]}"
 )
 AVX_STYLE = (
     "{BasedOnStyle: InheritParentConfig, StatementMacros: "
     "[AVX_BINARY, AVX_LANE, AVX_SIGNED, AVX_SCALAR, AVX_FMA_ONE, "
     "AVX_FMA_ORDER, AVX_FMA_KIND, AVX_FMA_ALTERNATE]}"
 )
+ARM_STYLE = "{BasedOnStyle: InheritParentConfig, StatementMacros: [ARM_OP, MODE]}"
 
 
 def main() -> int:
@@ -53,6 +59,11 @@ def main() -> int:
             command.append("--style=" + TABLE_STYLE)
         elif path.name == "semantics_avx.inc":
             command.append("--style=" + AVX_STYLE)
+        elif path.relative_to(REPO).as_posix() in {
+            "source/runtime/frontend/arm64/semantics.h",
+            "source/runtime/arch/arm64/simd_numeric.cpp",
+        }:
+            command.append("--style=" + ARM_STYLE)
         if args.check:
             # clang-format 21 can report net-zero replacements for function-try
             # blocks in dry-run mode. Check the actual formatted bytes instead.

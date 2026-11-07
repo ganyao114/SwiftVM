@@ -53,10 +53,11 @@ template <typename Read> LoadedImage MapELF(execution::GuestMemory& memory,
     read(&header, sizeof(header), 0);
     if (std::memcmp(header.e_ident, ELFMAG, SELFMAG) || header.e_ident[EI_CLASS] != ELFCLASS64 ||
         header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_ident[EI_VERSION] != EV_CURRENT ||
-        header.e_version != EV_CURRENT || header.e_machine != EM_X86_64 ||
+        header.e_version != EV_CURRENT ||
+        (header.e_machine != EM_X86_64 && header.e_machine != EM_AARCH64) ||
         (header.e_type != ET_EXEC && header.e_type != ET_DYN) || header.e_ehsize < sizeof(header) ||
         header.e_phentsize != sizeof(Elf64_Phdr) || !header.e_phnum || header.e_phnum > 1024)
-        Error("expected a little-endian x86-64 ET_EXEC/ET_DYN ELF");
+        Error("expected a little-endian x86-64/AArch64 ET_EXEC/ET_DYN ELF");
     const auto table_size = std::size_t{header.e_phnum} * sizeof(Elf64_Phdr);
     if (header.e_phoff > file_size || table_size > file_size - header.e_phoff)
         Error("ELF program headers exceed file");
@@ -147,6 +148,7 @@ template <typename Read> LoadedImage MapELF(execution::GuestMemory& memory,
     image.path = path;
     image.file_size = file_size;
     image.elf_type = header.e_type;
+    image.isa = static_cast<GuestISA>(header.e_machine);
     return image;
 }
 }  // namespace
@@ -203,8 +205,8 @@ u64 InitialStack(execution::GuestMemory& memory,
         std::memcpy(reinterpret_cast<void*>(top), data, size);
         return top;
     };
-    const char platform[] = "x86_64";
-    const auto platform_at = push(platform, sizeof(platform));
+    const char* platform = image.isa == GuestISA::Arm64 ? "aarch64" : "x86_64";
+    const auto platform_at = push(platform, std::strlen(platform) + 1);
     std::uint8_t random[16];
     const auto fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (fd < 0) SystemError("open AT_RANDOM source");

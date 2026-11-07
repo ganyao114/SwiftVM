@@ -103,7 +103,8 @@ bool ScopeValid(ir::Scope scope) {
     return scope == ir::Scope::Block || scope == ir::Scope::Function;
 }
 
-void Validate(const CodeUnit& unit) {
+void Validate(const CodeUnit& unit, bool byte_code) {
+    const auto instruction_mask = byte_code ? 0u : 3u;
     const auto& code = unit.code;
     const auto size = code.words.size() * sizeof(std::uint32_t);
     Require(ScopeValid(unit.scope) && unit.fp_mode < 4, "invalid code unit scope or FP domain");
@@ -120,38 +121,47 @@ void Validate(const CodeUnit& unit) {
     Require(owns_entry, "code unit entry is outside its source dependencies");
     for (const auto& site : code.faults) {
         Require(site.first_offset < site.last_offset && site.last_offset <= size &&
-                        !(site.first_offset & 3) && !(site.last_offset & 3),
+                        !(site.first_offset & instruction_mask) &&
+                        !(site.last_offset & instruction_mask),
                 "invalid native fault range");
         Require(site.unaligned_offset == backend::NoNativeOffset ||
-                        (!(site.unaligned_offset & 3) &&
+                        (!(site.unaligned_offset & instruction_mask) &&
                          site.unaligned_offset >= site.first_offset &&
                          site.unaligned_offset < site.last_offset),
                 "invalid unaligned fault offset");
         Require(site.fallback_offset == backend::NoNativeOffset ||
-                        (!(site.fallback_offset & 3) && size >= 12 &&
+                        (!(site.fallback_offset & instruction_mask) && size >= 12 &&
                          site.fallback_offset <= size - 12),
                 "invalid fault fallback offset");
     }
     for (const auto& link : code.links) {
         Require(link.kind == backend::LinkKind::Static || link.kind == backend::LinkKind::Dynamic,
                 "invalid native link kind");
-        const bool branch = link.kind == backend::LinkKind::Dynamic
-                                    ? link.branch_offset == backend::NoNativeOffset
-                                    : !(link.branch_offset & 3) && link.branch_offset < size;
+        const bool branch =
+                link.kind == backend::LinkKind::Dynamic
+                        ? link.branch_offset == backend::NoNativeOffset
+                        : !(link.branch_offset & instruction_mask) && link.branch_offset < size;
         Require(!(link.data_offset & 7) && size >= 8 && link.data_offset <= size - 8 && branch &&
-                        !(link.fallback_offset & 3) && link.fallback_offset < size,
+                        !(link.fallback_offset & instruction_mask) && link.fallback_offset < size,
                 "invalid native link offsets");
     }
     for (const auto& entry : code.entries)
-        Require(!(entry.offset & 3) && entry.offset < size, "invalid native entry offset");
+        Require(!(entry.offset & instruction_mask) && entry.offset < size,
+                "invalid native entry offset");
     std::size_t previous_end{};
     for (const auto& relocation : code.relocations) {
-        const auto width = relocation.kind == backend::RelocationKind::Absolute64        ? 8u
+        const auto width = (relocation.kind == backend::RelocationKind::Absolute64 ||
+                            relocation.kind == backend::RelocationKind::X64Immediate64)
+                                   ? 8u
                            : relocation.kind == backend::RelocationKind::Arm64MoveWide64 ? 16u
                                                                                          : 0u;
         Require(width && relocation.symbol != backend::HostSymbol::None &&
-                        !(relocation.offset & (width == 8 ? 7u : 3u)) && width <= size &&
-                        relocation.offset <= size - width && relocation.offset >= previous_end,
+                        !(relocation.offset &
+                          (relocation.kind == backend::RelocationKind::X64Immediate64 ? 0u
+                           : width == 8                                               ? 7u
+                                                                                      : 3u)) &&
+                        width <= size && relocation.offset <= size - width &&
+                        relocation.offset >= previous_end,
                 "invalid or overlapping native relocation");
         previous_end = relocation.offset + width;
     }
@@ -175,12 +185,14 @@ CodeImageKey Key(Reader& in) {
     key.host_isa = in.U32();
     key.requested_scope = static_cast<ir::Scope>(in.U8());
     Require(ScopeValid(key.requested_scope), "invalid image scope");
-    Require(key.host_isa == 0xa64 || key.host_isa == 0x64, "invalid image host ISA");
+    Require(key.host_isa == 0xa64 || key.host_isa == 0x64 || key.host_isa == 0x8664 ||
+                    key.host_isa == 0x1a64,
+            "invalid image host ISA");
     return key;
 }
 
-void Unit(Writer& out, const CodeUnit& unit, const std::uint64_t* text_offset) {
-    Validate(unit);
+void Unit(Writer& out, const CodeUnit& unit, const std::uint64_t* text_offset, bool byte_code) {
+    Validate(unit, byte_code);
     const auto& code = unit.code;
     out.U64(unit.pc);
     out.U8(unit.fp_mode);
@@ -234,7 +246,8 @@ void Unit(Writer& out, const CodeUnit& unit, const std::uint64_t* text_offset) {
 CodeUnit Unit(Reader& in,
               std::span<const std::uint8_t> text,
               bool external,
-              std::uint64_t& previous_text_end) {
+              std::uint64_t& previous_text_end,
+              bool byte_code) {
     CodeUnit unit;
     unit.pc = in.U64();
     unit.fp_mode = in.U8();
@@ -298,7 +311,7 @@ CodeUnit Unit(Reader& in,
         source.digest = in.Hash();
         source.mode = in.U8();
     }
-    Validate(unit);
+    Validate(unit, byte_code);
     return unit;
 }
 
@@ -325,7 +338,7 @@ std::vector<std::uint8_t> Encode(const CodeImage& image,
     }
     payload.U32(static_cast<std::uint32_t>(image.units.size()));
     for (std::size_t i = 0; i < image.units.size(); ++i)
-        Unit(payload, image.units[i], text ? &offsets[i] : nullptr);
+        Unit(payload, image.units[i], text ? &offsets[i] : nullptr, image.key.host_isa == 0x8664);
     Require(payload.bytes.size() <= maximum_bytes - 56, "code image exceeds its size limit");
     Writer result;
     result.Bytes(magic);
@@ -368,7 +381,7 @@ bool Decode(std::span<const std::uint8_t> bytes,
         image.units.reserve(count);
         std::uint64_t end{};
         for (std::uint32_t i = 0; i < count; ++i)
-            image.units.push_back(Unit(in, text, external, end));
+            image.units.push_back(Unit(in, text, external, end, image.key.host_isa == 0x8664));
         Require(in.Empty(), "trailing code image metadata");
         output = std::move(image);
         error.clear();

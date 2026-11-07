@@ -47,6 +47,14 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     ops.pinned_uniform_slots = 16;
     ops.pinned_vectors = true;
     ops.specializes_fp_flush = !capabilities.afp;
+    ops.configure = [](void* raw, const GuestLayout& layout) noexcept {
+        auto& self = *static_cast<Runtime*>(raw);
+        self.options.flags_offset = layout.flags_offset;
+        self.options.pc_offset = layout.pc_offset;
+        self.options.pinned_uniform_offset = layout.gprs_offset;
+        self.vector_offset = layout.vectors_offset;
+        if (!self.capabilities.afp) self.options.mxcsr_flush_offset = layout.numeric_control_offset;
+    };
     ops.compile = [](void* raw,
                      const ir::Program& program,
                      execution::HostCompileRequest request) -> backend::CompileResult& {
@@ -59,8 +67,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         policy.local_flags =
                 request.private_state && request.fault_locations && self.capabilities.native_nzcv;
         policy.deferred_pc = request.private_state && request.fault_locations;
-        policy.pinned_vector_offset =
-                request.private_state ? offsetof(x86::GuestState, xmm) : UINT32_MAX;
+        policy.pinned_vector_offset = request.private_state ? self.vector_offset : UINT32_MAX;
         if (!self.capabilities.afp) policy.mxcsr_flush_mode = request.fp_mode;
         backend::arm64::Compile(program, policy, self.output, self.allocation);
         return self.output;

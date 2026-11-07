@@ -11,6 +11,8 @@ bool PatchGuestStopByte(const std::string& guest_path,
                         std::string& error) {
     try {
         auto bytes = runtime::platform::ReadArtifactFile(guest_path);
+        if (elf::View{bytes}.FileHeader().machine != elf::X86)
+            ThrowError("startup byte patching requires an x86-64 guest", ErrorKind::Unsupported);
         const auto symbols = DiscoverSymbols(bytes);
         const Symbol* selected{};
         for (const auto& symbol : symbols) {

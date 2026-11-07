@@ -27,12 +27,12 @@ CodeImage VM::Precompile(std::span<const std::uint8_t> bytes,
         PrepareGuest(bytes, display_path);
         output.key = image_key;
         {
-            FaultScope registration{thread.faults, thread.native.state};
-            const auto initial_mxcsr = thread.native.state.mxcsr;
+            FaultScope registration{thread.faults, uniform_data, PC()};
+            const auto initial_mxcsr = NumericControl();
             const unsigned domains = backend.specializes_fp_flush ? 4 : 1;
             for (unsigned domain = 0; domain < domains; ++domain) {
-                thread.native.state.mxcsr = (initial_mxcsr & ~UINT32_C(0x8040)) |
-                                            ((domain & 1u) << 6) | ((domain >> 1) << 15);
+                NumericControl() = (initial_mxcsr & ~UINT32_C(0x8040)) | ((domain & 1u) << 6) |
+                                   ((domain >> 1) << 15);
                 UpdateFPEnvironment();
                 std::set<std::uint64_t> pending(entries.begin(), entries.end()), attempted;
                 pending.insert(image.entry);
@@ -42,7 +42,7 @@ CodeImage VM::Precompile(std::span<const std::uint8_t> bytes,
                     if (!attempted.insert(pc).second || Cache().Find(pc) ||
                         memory.CodeAt(pc).empty())
                         continue;
-                    thread.native.state.pc = pc;
+                    PC() = pc;
                     RuntimeTimer total{stats.compile_request_ns};
                     auto code = compiler.Compile(options.scope);
                     if (!code.entry && options.scope == ir::Scope::Function) {
@@ -62,8 +62,8 @@ CodeImage VM::Precompile(std::span<const std::uint8_t> bytes,
                     if (backend.trim) backend.trim(backend.context);
                 }
             }
-            thread.native.state.mxcsr = initial_mxcsr;
-            thread.native.state.pc = image.entry;
+            NumericControl() = initial_mxcsr;
+            PC() = image.entry;
             UpdateFPEnvironment();
         }
         if (thread.faults.restore_error)

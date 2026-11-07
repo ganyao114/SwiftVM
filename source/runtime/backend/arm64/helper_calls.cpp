@@ -53,11 +53,14 @@ void SvmArm64Div32S() noexcept;
 void SvmArm64Div64S() noexcept;
 void SvmArm64QueryCpuid() noexcept;
 void SvmArm64ExecuteX87() noexcept;
+void SvmArm64CallLambda() noexcept;
 }
 #else
 static void SvmArm64QueryCpuid() { std::abort(); }
 
 static void SvmArm64ExecuteX87() { std::abort(); }
+
+static void SvmArm64CallLambda() { std::abort(); }
 #endif
 
 namespace swift::runtime::backend::arm64 {
@@ -82,5 +85,9 @@ std::uintptr_t CpuidHelper() noexcept {
 
 std::uintptr_t X87Helper() noexcept {
     return reinterpret_cast<std::uintptr_t>(&SvmArm64ExecuteX87);
+}
+
+std::uintptr_t LambdaHelper() noexcept {
+    return reinterpret_cast<std::uintptr_t>(&SvmArm64CallLambda);
 }
 }  // namespace swift::runtime::backend::arm64

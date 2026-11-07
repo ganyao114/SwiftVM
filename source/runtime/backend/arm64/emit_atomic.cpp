@@ -87,6 +87,34 @@ void EmitLseAtomic(v::Assembler& sink,
             sink.ldeoralh(value, previous, memory);
         else
             sink.ldeoral(value, previous, memory);
+    } else if (kind == AtomicRMWOp::SignedMax) {
+        if (bits == 8)
+            sink.ldsmaxalb(value, previous, memory);
+        else if (bits == 16)
+            sink.ldsmaxalh(value, previous, memory);
+        else
+            sink.ldsmaxal(value, previous, memory);
+    } else if (kind == AtomicRMWOp::SignedMin) {
+        if (bits == 8)
+            sink.ldsminalb(value, previous, memory);
+        else if (bits == 16)
+            sink.ldsminalh(value, previous, memory);
+        else
+            sink.ldsminal(value, previous, memory);
+    } else if (kind == AtomicRMWOp::UnsignedMax) {
+        if (bits == 8)
+            sink.ldumaxalb(value, previous, memory);
+        else if (bits == 16)
+            sink.ldumaxalh(value, previous, memory);
+        else
+            sink.ldumaxal(value, previous, memory);
+    } else if (kind == AtomicRMWOp::UnsignedMin) {
+        if (bits == 8)
+            sink.lduminalb(value, previous, memory);
+        else if (bits == 16)
+            sink.lduminalh(value, previous, memory);
+        else
+            sink.lduminal(value, previous, memory);
     } else {
         if (bits == 8)
             sink.ldaddalb(value, previous, memory);
@@ -95,6 +123,31 @@ void EmitLseAtomic(v::Assembler& sink,
         else
             sink.ldaddal(value, previous, memory);
     }
+}
+
+void SelectMinMax(v::Assembler& sink, AtomicRMWOp kind, unsigned bits) {
+    const v::Register old = bits == 64 ? v::Register(v::x16) : v::Register(v::w16);
+    const v::Register input = bits == 64 ? v::Register(v::x17) : v::Register(v::w17);
+    const bool sign = kind == AtomicRMWOp::SignedMax || kind == AtomicRMWOp::SignedMin;
+    const bool maximum = kind == AtomicRMWOp::SignedMax || kind == AtomicRMWOp::UnsignedMax;
+    // This new comparison must leave the live guest flags and observed old
+    // value intact, including narrow signed operations.
+    sink.mrs(v::x30, v::NZCV);
+    sink.fmov(v::d0, v::x30);
+    if (sign && bits < 32) {
+        if (bits == 8) {
+            sink.sxtb(old, old);
+            sink.sxtb(input, input);
+        } else {
+            sink.sxth(old, old);
+            sink.sxth(input, input);
+        }
+    }
+    sink.cmp(old, v::Operand(input));
+    sink.csel(input, old, input, sign ? (maximum ? v::gt : v::lt) : (maximum ? v::hi : v::lo));
+    if (sign && bits < 32) sink.ubfx(old, old, 0, bits);
+    sink.fmov(v::x30, v::d0);
+    sink.msr(v::NZCV, v::x30);
 }
 }  // namespace
 
@@ -111,7 +164,7 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
     auto kind = AtomicRMWOp::Add;
     if (operation.opcode == OpCode::AtomicRMW) {
         const auto input = IntegerImmediate(cursor.Take());
-        if (input > static_cast<u64>(AtomicRMWOp::SubBorrow))
+        if (input > static_cast<u64>(AtomicRMWOp::UnsignedMin))
             Reject(CompileError::UnsupportedOperand);
         kind = static_cast<AtomicRMWOp>(input);
     }
@@ -208,6 +261,11 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
                         break;
                     case AtomicRMWOp::Neg:
                         break;  // Uses the shared exclusive loop below.
+                    case AtomicRMWOp::SignedMax:
+                    case AtomicRMWOp::SignedMin:
+                    case AtomicRMWOp::UnsignedMax:
+                    case AtomicRMWOp::UnsignedMin:
+                        break;
                 }
             // Exact byte/halfword/register forms; the shared address
             // and acquire/release ordering are unchanged.
@@ -254,6 +312,12 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
                         break;
                     case AtomicRMWOp::Neg:
                         __ neg(R(17, native_width), Operand(R(16, native_width)));
+                        break;
+                    case AtomicRMWOp::SignedMax:
+                    case AtomicRMWOp::SignedMin:
+                    case AtomicRMWOp::UnsignedMax:
+                    case AtomicRMWOp::UnsignedMin:
+                        SelectMinMax(masm.exact, kind, width);
                         break;
                 }
             if (kind == AtomicRMWOp::AddCarry)

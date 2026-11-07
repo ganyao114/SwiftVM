@@ -17,6 +17,7 @@ public:
 
 private:
     execution::HostCapabilities capabilities;
+    std::uint32_t vector_offset{160};
     CompileOptions options;
     backend::CompileResult output;
     Allocation allocation;

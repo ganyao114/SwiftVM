@@ -14,6 +14,10 @@ NativeISA HostISA() noexcept {
     return NativeISA::Arm64;
 #elif defined(__riscv) && __riscv_xlen == 64 && defined(__linux__)
     return NativeISA::Riscv64;
+#elif defined(__x86_64__) && defined(__linux__)
+    return NativeISA::X64;
+#elif defined(__loongarch64) && defined(__linux__)
+    return NativeISA::LoongArch64;
 #else
     return NativeISA::None;
 #endif

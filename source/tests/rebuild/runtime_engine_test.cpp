@@ -28,7 +28,8 @@ constexpr std::uint8_t exit_program[]{0xb8, 60, 0, 0, 0, 0xbf, 42, 0, 0, 0, 0x0f
 class GuestFile {
 public:
     explicit GuestFile(std::span<const std::uint8_t> instructions = exit_program,
-                       std::uint32_t permissions = PF_R | PF_W | PF_X) {
+                       std::uint32_t permissions = PF_R | PF_W | PF_X,
+                       std::uint16_t machine = EM_X86_64) {
         const int fd = mkstemp(path.data());
         Check(fd >= 0, "cannot create engine-test guest");
         Elf64_Ehdr header{};
@@ -37,7 +38,7 @@ public:
         header.e_ident[EI_DATA] = ELFDATA2LSB;
         header.e_ident[EI_VERSION] = EV_CURRENT;
         header.e_type = ET_EXEC;
-        header.e_machine = EM_X86_64;
+        header.e_machine = machine;
         header.e_version = EV_CURRENT;
         header.e_entry = 0x400000 + sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr);
         header.e_phoff = sizeof(Elf64_Ehdr);
@@ -142,7 +143,8 @@ void ColdDirectory() {
           "release starts fresh heat and unsupported state");
 }
 
-#if defined(__aarch64__) || (defined(__linux__) && defined(__riscv) && __riscv_xlen == 64)
+#if defined(__linux__) && (defined(__aarch64__) || (defined(__riscv) && __riscv_xlen == 64) ||     \
+                           defined(__x86_64__) || defined(__loongarch64))
 void Tiered() {
     // The first request includes one loop iteration. Its taken edge enters
     // the independently hot body; the exit remains a cold block in Block mode.
@@ -239,6 +241,70 @@ void Mixed(const std::string& path, bool invalid) {
                       stats.interpreted_steps == 3,
               "mixed executes the unsupported entry fragment once from actual guest PC/state");
 }
+
+void ArmGuestFaultState() {
+    // MOV X0,17; MOV X19,0x313; MOV X1,0; LDR X2,[X1]; exit(17).
+    // X0 can be pinned while X19 remains a normal Uniform location.
+    constexpr std::array<std::uint32_t, 6> instructions{
+            0xd2800220, 0xd2806273, 0xd2800001, 0xf9400022, 0xd2800ba8, 0xd4000001};
+    const std::span<const std::uint8_t> bytes{
+            reinterpret_cast<const std::uint8_t*>(instructions.data()), sizeof(instructions)};
+    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+    const std::array argv{guest.Path()};
+    for (const auto scope :
+         {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function}) {
+        for (const auto mode : {execution::ExecutionMode::JitOnly,
+                                execution::ExecutionMode::InterpretOnly,
+                                execution::ExecutionMode::Mixed}) {
+            swift::runtime::platform::HostRuntime host{false};
+            execution::RuntimeOptions options;
+            options.scope = scope;
+            options.mode = mode;
+            options.hot_threshold = 0;
+            execution::RuntimeStats stats;
+            execution::VM vm{options, stats, host.Bind()};
+            bool guest_fault{};
+            try {
+                (void)vm.Run(guest.Path(), argv, {});
+            } catch (const swift::RuntimeError& error) {
+                guest_fault = error.Kind() == swift::ErrorKind::GuestFault;
+            }
+            Check(guest_fault && vm.ISA() == swift::runtime::GuestISA::Arm64 &&
+                          vm.ArmState().pc ==
+                                  0x400000 + sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr) + 12 &&
+                          vm.ArmState().gprs[0] == 17 && vm.ArmState().gprs[19] == 0x313 &&
+                          vm.ArmState().gprs[2] == 0,
+                  "ARM guest faults retain exact PC and committed Uniform/pinned state");
+            Check(vm.Close().Complete(), "ARM fault VM releases its actual owners");
+        }
+    }
+}
+
+void ArmUnsupportedFPControl() {
+    // MOV X0,1<<26; MSR FPCR,X0 (AHP); MOV X8,93; SVC 0.
+    constexpr std::array<std::uint32_t, 4> instructions{
+            0xd2a08000, 0xd51b4400, 0xd2800ba8, 0xd4000001};
+    const std::span<const std::uint8_t> bytes{
+            reinterpret_cast<const std::uint8_t*>(instructions.data()), sizeof(instructions)};
+    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+    const std::array argv{guest.Path()};
+    for (const auto scope :
+         {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function}) {
+        for (const auto mode : {execution::ExecutionMode::JitOnly,
+                                execution::ExecutionMode::InterpretOnly,
+                                execution::ExecutionMode::Mixed}) {
+            execution::RuntimeOptions options;
+            options.scope = scope;
+            options.mode = mode;
+            options.hot_threshold = 0;
+            const auto result = execution::RunGuest(guest.Path(), argv, {}, options);
+            Check(!result && result.failure.kind == swift::ErrorKind::Unsupported &&
+                          result.stats.syscalls == 0 &&
+                          result.error.find("FPCR") != std::string::npos,
+                  "all ARM engines reject unsupported controls at the FPCR service boundary");
+        }
+    }
+}
 #endif
 }  // namespace
 
@@ -251,7 +317,8 @@ TEST_CASE("InterpretOnly through runtime", "[compile][execution]") {
     CHECK_NOTHROW(Interpreter(guest.Path()));
 }
 
-#if defined(__aarch64__) || (defined(__linux__) && defined(__riscv) && __riscv_xlen == 64)
+#if defined(__linux__) && (defined(__aarch64__) || (defined(__riscv) && __riscv_xlen == 64) ||     \
+                           defined(__x86_64__) || defined(__loongarch64))
 
 TEST_CASE("Mixed hot promotion", "[native][execution]") { CHECK_NOTHROW(Tiered()); }
 
@@ -263,5 +330,13 @@ TEST_CASE("Mixed unsupported fallback", "[native][execution]") {
 TEST_CASE("Mixed rejects invalid producer", "[native][execution]") {
     GuestFile guest;
     CHECK_NOTHROW(Mixed(guest.Path(), true));
+}
+
+TEST_CASE("ARM guest exact fault state", "[native][execution][arm64-guest]") {
+    CHECK_NOTHROW(ArmGuestFaultState());
+}
+
+TEST_CASE("ARM guest unsupported FP controls", "[native][execution][arm64-guest]") {
+    CHECK_NOTHROW(ArmUnsupportedFPControl());
 }
 #endif

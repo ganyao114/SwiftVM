@@ -55,6 +55,8 @@ bool AotGuestEnv::Init(const std::string& guest_path,
             ThrowError("AOT call environment is already initialized", ErrorKind::InvalidState);
         Artifact artifact;
         if (!ReadArtifact(artifact_path, artifact, error)) return false;
+        if (elf::View{artifact.guest_elf}.FileHeader().machine != elf::X86)
+            ThrowError("GuestFn currently uses the x86-64 SysV guest ABI", ErrorKind::Unsupported);
         if (!guest_path.empty() && HashBytes(runtime::platform::ReadArtifactFile(guest_path)) !=
                                            artifact.code.key.guest_id)
             ThrowError("supplied guest does not match AOT artifact", ErrorKind::InvalidArgument);

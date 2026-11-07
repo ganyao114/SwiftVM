@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "runtime/arch/x86/state.h"
+#include "runtime/arch/arm64/state.h"
 #include "runtime/backend/code.h"
 #include "runtime/backend/dispatch_layout.inc"
 #include "runtime/exit.h"
@@ -75,7 +76,11 @@ struct NativeRunContext {
     // Cold qualification for native atomics implemented by a fault-intolerant
     // helper: 0=allowed, 1=guest access fault, 2=unsupported backing.
     std::uint64_t (*prepare_atomic)(void*, std::uint64_t, std::size_t) noexcept {};
-    GuestState state;
+
+    union {
+        GuestState state{};
+        arm64::GuestState arm_state;
+    };
 };
 
 static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1024);

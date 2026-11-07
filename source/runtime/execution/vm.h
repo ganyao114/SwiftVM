@@ -16,6 +16,7 @@
 #include "runtime.h"
 #include "smc.h"
 #include "runtime/frontend/x86/interpreter.h"
+#include "runtime/frontend/arm64/interpreter.h"
 #include "runtime/platform/linux/loader.h"
 #include "runtime/platform/linux/syscalls.h"
 
@@ -44,6 +45,10 @@ public:
     void RunUntilGuestStop(std::uint64_t stop_pc);
 
     x86::GuestState& State() noexcept { return thread.native.state; }
+
+    arm64::GuestState& ArmState() noexcept { return thread.native.arm_state; }
+
+    GuestISA ISA() const noexcept { return layout.isa; }
 
     GuestMemory& Memory() noexcept { return memory; }
 
@@ -74,6 +79,8 @@ private:
     Smc smc;
     std::unique_ptr<DiskCache> disk_cache;
     CodeImageKey image_key;
+    GuestLayout layout;
+    void* uniform_data{};
     CodeImage* offline_output{};
     bool prepared{}, persistence_disabled{}, host_call_active{}, host_returned{};
     std::uint64_t host_return_pc{};
@@ -82,10 +89,32 @@ private:
 
     CodeCache& Cache() noexcept { return caches[thread.fp_mode]; }
 
+    std::uint64_t& PC() noexcept {
+        return *reinterpret_cast<std::uint64_t*>(static_cast<std::uint8_t*>(uniform_data) +
+                                                 layout.pc_offset);
+    }
+
+    std::uint64_t& SP() noexcept {
+        return *reinterpret_cast<std::uint64_t*>(static_cast<std::uint8_t*>(uniform_data) +
+                                                 layout.stack_offset);
+    }
+
+    std::uint64_t& Flags() noexcept {
+        return *reinterpret_cast<std::uint64_t*>(static_cast<std::uint8_t*>(uniform_data) +
+                                                 layout.flags_offset);
+    }
+
+    std::uint32_t& NumericControl() noexcept {
+        return *reinterpret_cast<std::uint32_t*>(static_cast<std::uint8_t*>(uniform_data) +
+                                                 layout.numeric_control_offset);
+    }
+
+    void ConfigureGuest(GuestISA);
+
     void ObserveCache() noexcept;
     void ObserveFinal() noexcept;
     void RefreshNative(NativeRunContext&) noexcept;
-    void UpdateFPEnvironment();
+    void UpdateFPEnvironment(bool architectural_write = false);
     void PrepareLoaded(std::span<const std::string>,
                        std::span<const std::string>,
                        const Digest* guest_identity,

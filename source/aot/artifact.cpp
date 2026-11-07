@@ -51,12 +51,26 @@ struct Reader {
 std::uint16_t Machine(std::uint32_t isa) {
     if (isa == 0xa64) return elf::Arm64;
     if (isa == 0x64) return elf::Riscv64;
+    if (isa == 0x8664) return elf::X86;
+    if (isa == 0x1a64) return elf::LoongArch64;
     Invalid("unsupported AOT host ISA");
 }
 
+std::array<std::uint32_t, 2> FailureStub(std::uint16_t machine) {
+    if (machine == elf::Arm64) return {0xd42140e0u, 0};
+    if (machine == elf::X86) return {0xcccc0b0fu, 0xccccccccu};
+    if (machine == elf::LoongArch64) return {0x002a0000u, 0};
+    return {0x00100073u, 0};
+}
+
+std::uint32_t HostFlags(std::uint16_t machine) {
+    return machine == elf::Riscv64 ? 4u : machine == elf::LoongArch64 ? 0x43u : 0u;
+}
+
 void ValidateGuest(const elf::View& guest) {
-    if (guest.FileHeader().machine != elf::X86 || guest.FileHeader().type != elf::ExecutableFile)
-        Invalid("AOT supports static x86-64 ET_EXEC guests only");
+    if ((guest.FileHeader().machine != elf::X86 && guest.FileHeader().machine != elf::Arm64) ||
+        guest.FileHeader().type != elf::ExecutableFile)
+        Invalid("AOT supports static x86-64/AArch64 ET_EXEC guests only");
     for (const auto& section : guest.Sections())
         if (guest.Name(section).starts_with(".svmaot."))
             Invalid("guest ELF uses reserved AOT section names");
@@ -224,9 +238,9 @@ Bytes EncodeArtifact(const Artifact& input) {
         Invalid("AOT guest content/key mismatch");
     if (input.guest_path.size() > UINT32_MAX) Invalid("AOT guest path is too long");
     const auto machine = Machine(input.code.key.host_isa);
-    const std::uint32_t stub_words[]{machine == elf::Arm64 ? 0xd42140e0u : 0x00100073u, 0};
+    const auto stub_words = FailureStub(machine);
     const auto stub_bytes =
-            std::span{reinterpret_cast<const std::uint8_t*>(stub_words), sizeof(stub_words)};
+            std::span{reinterpret_cast<const std::uint8_t*>(stub_words.data()), sizeof(stub_words)};
     Bytes text;
     const auto metadata = runtime::execution::EncodeCodeMetadata(input.code, text, stub_bytes);
     const auto offsets = runtime::execution::CodeUnitTextOffsets(input.code);
@@ -333,7 +347,7 @@ Bytes EncodeArtifact(const Artifact& input) {
     header.type = elf::SharedFile;
     header.machine = machine;
     header.version = 1;
-    header.flags = machine == elf::Riscv64 ? 4 : 0;
+    header.flags = HostFlags(machine);
     header.phoff = sizeof(header);
     header.phnum = static_cast<std::uint16_t>(segments.size());
     header.ehsize = sizeof(header);
@@ -396,12 +410,12 @@ bool DecodeArtifact(std::span<const std::uint8_t> bytes, Artifact& output, std::
         const auto machine = Machine(artifact.code.key.host_isa);
         if (container.FileHeader().type != elf::SharedFile ||
             container.FileHeader().machine != machine ||
-            (machine == elf::Riscv64 && container.FileHeader().flags != 4) ||
+            container.FileHeader().flags != HostFlags(machine) ||
             text_section->address != CodeVirtualAddress || text_section->type != elf::Progbits ||
             text_section->flags != (elf::Alloc | elf::Executable))
             Invalid("AOT host ELF contract mismatch");
-        const std::uint32_t stub[]{machine == elf::Arm64 ? 0xd42140e0u : 0x00100073u, 0};
-        if (std::memcmp(text.data() + text.size() - sizeof(stub), stub, sizeof(stub)))
+        const auto stub = FailureStub(machine);
+        if (std::memcmp(text.data() + text.size() - sizeof(stub), stub.data(), sizeof(stub)))
             Invalid("invalid AOT failure stub");
         artifact.guest_elf.assign(guest.begin(), guest.end());
         const auto declared = artifact.stats;

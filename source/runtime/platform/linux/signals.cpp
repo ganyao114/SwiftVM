@@ -23,7 +23,10 @@ sigset_t ManagedSignals() noexcept {
 }
 }  // namespace
 
-FaultScope::FaultScope(FaultContext& context, GuestState& state) : context(context) {
+FaultScope::FaultScope(FaultContext& context, GuestState& state)
+        : FaultScope(context, &state, state.pc) {}
+
+FaultScope::FaultScope(FaultContext& context, void* state, std::uint64_t& pc) : context(context) {
     platform::SignalTimer elapsed{context.service_ns};
     const auto page_size = sysconf(_SC_PAGESIZE);
     if (page_size <= 0) swift::ThrowSystemError("get native fault page size", errno);
@@ -38,7 +41,8 @@ FaultScope::FaultScope(FaultContext& context, GuestState& state) : context(conte
         swift::ThrowError("only one guest fault service may be registered",
                           ErrorKind::InvalidState);
     }
-    context.state = &state;
+    context.state = state;
+    context.guest_pc = &pc;
     context.thread_id = static_cast<pid_t>(syscall(SYS_gettid));
     struct sigaction action{};
     action.sa_sigaction = Handle;

@@ -2,9 +2,7 @@
 #include "vm.h"
 #include "timing.h"
 #include "disk_cache.h"
-#include "runtime/arch/x86/cpu.h"
 #include "runtime/ir/optimize.h"
-#include "runtime/frontend/x86/build_ir.h"
 
 #include <algorithm>
 #include "base/format.h"
@@ -12,11 +10,10 @@
 #include <sys/mman.h>
 
 namespace swift::runtime::execution {
-namespace front = ::swift::x86;
+namespace front = frontend;
 
 namespace {
 using u64 = std::uint64_t;
-using x86::GuestState;
 
 }  // namespace
 
@@ -24,18 +21,18 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     auto& stats = vm.stats;
     auto& options = vm.options;
     auto& memory = vm.memory;
-    auto& state = vm.thread.native.state;
+    auto& pc = vm.PC();
     auto& faults = vm.thread.faults;
     diagnostic = {};
     diagnostic.scope = scope;
-    diagnostic.pc = state.pc;
+    diagnostic.pc = pc;
     last = nullptr;
-    entry_pc = state.pc;
+    entry_pc = pc;
     failure = CompileFailure::None;
     continuations.clear();
     if (vm.disk_cache && vm.disk_cache->Enabled()) {
         RuntimeTimer load{stats.cache_load_ns};
-        if (const auto* saved = vm.disk_cache->Find(state.pc, vm.thread.fp_mode)) {
+        if (const auto* saved = vm.disk_cache->Find(pc, vm.thread.fp_mode)) {
             try {
                 if (auto restored = Restore(*saved); restored.entry) {
                     ++stats.disk_cache_hits;
@@ -51,26 +48,10 @@ NativeCode CompileService::Compile(ir::Scope scope) {
         }
         ++stats.disk_cache_misses;
     }
-    entry_pc = state.pc;
+    entry_pc = pc;
     const bool collect = vm.CollectCode();
     ++stats.compile_attempts;
     scope == ir::Scope::Function ? ++stats.function_attempts : ++stats.block_attempts;
-    front::StateLayout layout;
-    layout.gprs_offset = offsetof(GuestState, gprs);
-    layout.pc_offset = offsetof(GuestState, pc);
-    layout.stride = 8;
-    layout.fprs_offset = offsetof(GuestState, xmm);
-    layout.mxcsr_offset = offsetof(GuestState, mxcsr);
-    layout.x87_offset = offsetof(GuestState, x87);
-    layout.x87_ip_offset = offsetof(GuestState, x87_ip);
-    layout.x87_dp_offset = offsetof(GuestState, x87_dp);
-    layout.x87_opcode_offset = offsetof(GuestState, x87_opcode);
-    layout.ymm_high_offset = offsetof(GuestState, ymm_high);
-    layout.fs_base_offset = offsetof(GuestState, fs_base);
-    layout.gs_base_offset = offsetof(GuestState, gs_base);
-    layout.cpu_query = reinterpret_cast<std::uintptr_t>(&x86::QueryGuestCpu);
-    layout.system_query = reinterpret_cast<std::uintptr_t>(&x86::QueryGuestSystem);
-    layout.runtime_state_services = true;
     // The VM's guest mappings and owned state are disjoint regardless of
     // whether this backend keeps architectural fields in physical registers.
     const bool private_guest_state = faults.registered;
@@ -79,7 +60,7 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     if (private_guest_state)
         target.features |= static_cast<u64>(ir::TargetFeature::PrivateGPRState) |
                            static_cast<u64>(ir::TargetFeature::PrivateVectorState);
-    const auto source_mode = memory.ClassifySource(state.pc);
+    const auto source_mode = memory.ClassifySource(pc);
     if (!source_mode) {
         diagnostic.message = "guest instruction source is not readable/executable";
         failure = CompileFailure::InvalidInput;
@@ -91,55 +72,10 @@ NativeCode CompileService::Compile(ir::Scope scope) {
         return {};
     }
     const bool mutable_entry = *source_mode == SourceMode::WatchedBlock;
-    const bool mutable_function = scope == ir::Scope::Function && mutable_entry;
     front::BuildResult built;
     {
         RuntimeTimer front_time{stats.frontend_ns};
-        if (scope == ir::Scope::Function && !mutable_function) {
-            if (private_guest_state)
-                target.features |= static_cast<u64>(ir::TargetFeature::ExternalEntries);
-            const auto ready =
-                    private_guest_state
-                            ? front::ReadyEntryLookup{&vm.Cache(),
-                                                      [](void* cache, u64 pc) noexcept {
-                                                          return bool(static_cast<CodeCache*>(cache)
-                                                                              ->Find(pc));
-                                                      }}
-                            : front::ReadyEntryLookup{};
-            std::vector<front::BlockWindow> windows;
-            for (const auto& region : memory.Regions())
-                if ((region.protection & (PROT_READ | PROT_EXEC)) == (PROT_READ | PROT_EXEC) &&
-                    memory.ClassifySource(region.address) == SourceMode::Immutable) {
-                    const auto bytes = memory.CodeAt(region.address);
-                    if (!bytes.empty()) windows.push_back({region.address, bytes});
-                }
-            built = front::BuildFunctionIR(windows,
-                                           state.pc,
-                                           layout,
-                                           options.function_limits,
-                                           target,
-                                           nullptr,
-                                           options.decode_timing ? &stats.compile_decode : nullptr,
-                                           &reusable,
-                                           ready,
-                                           x86::BaselineGuestCpu,
-                                           collect ? &source_spans : nullptr,
-                                           vm.offline_output ? &continuations : nullptr);
-        } else {
-            if (mutable_function) ++stats.smc_function_single_block_attempts;
-            const front::BlockWindow window{state.pc, memory.CodeAt(state.pc)};
-            built = front::BuildIR({&window, 1},
-                                   scope,
-                                   layout,
-                                   target,
-                                   nullptr,
-                                   options.decode_timing ? &stats.compile_decode : nullptr,
-                                   mutable_entry,
-                                   &reusable,
-                                   x86::BaselineGuestCpu,
-                                   collect ? &source_spans : nullptr,
-                                   vm.offline_output ? &continuations : nullptr);
-        }
+        built = BuildFrontend(scope, target, mutable_entry, private_guest_state, collect);
     }
     stats.emitted_instructions += built.instruction_count;
     stats.emitted_guest_bytes += built.decoded_bytes;
@@ -164,9 +100,9 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                 std::move(built.program),
                 optimizer_rows,
                 std::numeric_limits<std::size_t>::max(),
-                ir::UniformPolicy{.flags = ir::UniformRange{offsetof(GuestState, packed_flags),
-                                                            sizeof(state.packed_flags)},
-                                  .guest_memory_disjoint = private_guest_state});
+                ir::UniformPolicy{
+                        .flags = ir::UniformRange{vm.layout.flags_offset, sizeof(std::uint64_t)},
+                        .guest_memory_disjoint = private_guest_state});
         if (options.decode_timing) {
             stats.optimized_erased += optimized.stats.erased;
             stats.optimized_uniform_forwarded += optimized.stats.uniform_forwarded;
@@ -187,13 +123,11 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     backend::CompileResult* output;
     {
         RuntimeTimer backend_time{stats.backend_ns};
-        output = &vm.backend.compile(vm.backend.context,
-                                     built.program,
-                                     HostCompileRequest{state.pc,
-                                                        vm.thread.fp_mode,
-                                                        faults.registered,
-                                                        private_guest_state,
-                                                        collect});
+        output = &vm.backend.compile(
+                vm.backend.context,
+                built.program,
+                HostCompileRequest{
+                        pc, vm.thread.fp_mode, faults.registered, private_guest_state, collect});
     }
     auto& compiled = *output;
     last = output;
@@ -221,7 +155,7 @@ NativeCode CompileService::Compile(ir::Scope scope) {
         if (collect) {
             for (const auto& source : source_spans) vm.smc.Arm(source.pc, source.size);
         } else
-            vm.smc.Arm(state.pc, built.decoded_bytes);
+            vm.smc.Arm(pc, built.decoded_bytes);
     }
     if (collect) vm.RecordUnit(scope, compiled, code, source_spans);
     // Keep only the actual working buffers; no native metadata borrows
@@ -292,7 +226,8 @@ std::string CompileService::DescribeFailure() const {
     const auto scope = diagnostic.scope == ir::Scope::Function ? "function" : "block";
     if (diagnostic.stage == CompileStage::Frontend)
         return swift::Format(
-                "x86 frontend rejected pc={:#x} scope={} error={} ir_error={} emitted={} bytes={}",
+                "guest frontend rejected pc={:#x} scope={} error={} ir_error={} emitted={} "
+                "bytes={}",
                 diagnostic.pc,
                 scope,
                 static_cast<unsigned>(diagnostic.frontend_error),

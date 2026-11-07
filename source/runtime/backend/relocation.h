@@ -19,6 +19,7 @@ enum class HostSymbol : std::uint16_t {
     ArmPairBridge = 16,
     ArmX87Bridge = 17,
     ArmVectorBridge = 18,
+    ArmLambdaBridge = 19,
     ArmDivideU8 = 20,
     ArmDivideU16 = 21,
     ArmDivideU32 = 22,
@@ -41,11 +42,21 @@ enum class HostSymbol : std::uint16_t {
     CompareExchange128 = 54,
     DepositBits = 55,
     ExtractBits = 56,
+    X64WideDivide = 64,
+    X64CheckedX87 = 65,
+    X64CompareExchange128 = 66,
+    X64RoundIntegral = 67,
+    X64FusedMultiplyAdd = 68,
+    LoongWideDivide = 80,
+    LoongCheckedX87 = 81,
+    LoongCompareExchange128 = 82,
+    ArmGuestFP = 96,
 };
 
 enum class RelocationKind : std::uint16_t {
     Absolute64 = 1,       // An actual aligned 8-byte literal in the unit.
     Arm64MoveWide64 = 2,  // Four fixed MOVZ/MOVK instructions, shifts 0/16/32/48.
+    X64Immediate64 = 3,   // Eight immediate bytes in a recorded MOVABS instruction.
 };
 
 struct Relocation {

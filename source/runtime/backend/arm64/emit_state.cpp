@@ -118,6 +118,23 @@ void Writer::PublishPinned() {
     if (VectorPinned()) VectorAlias(false, options.pinned_vector_offset, 256);
 }
 
+void Writer::ReloadPinned() {
+    if (Pinned()) {
+        const auto offset = options.pinned_uniform_offset;
+        for (unsigned i = 0; i < options.pinned_uniform_slots; ++i) {
+            const auto reg = abi::PinnedUniformRegister(i, options.pinned_uniform_slots);
+            if (!(offset & 7) && (u64{offset} + i * 8) / 8 <= 4095)
+                Memory(true, 64, reg, 19, offset / 8 + i);
+            else {
+                Immediate(17, u64{offset} + i * 8);
+                __ add(v::x17, v::x19, Operand(v::x17));
+                Memory(true, 64, reg, 17);
+            }
+        }
+    }
+    if (VectorPinned()) VectorAlias(true, options.pinned_vector_offset, 256);
+}
+
 bool Writer::OverlapsShadow(CellView uniform) const {
     if (!Enabled()) return false;
     const auto bytes = TypeBits(uniform.TypeView()) / 8;

@@ -34,7 +34,8 @@ struct FaultContext {
     std::uint32_t pinned_uniform_offset{UINT32_MAX}, flags_offset{UINT32_MAX};
     std::uint8_t pinned_uniform_slots{8};
     bool native_nzcv{};  // Linked raw PF/AF ABI; reserved bits remain in flags_offset's shadow.
-    GuestState* state{};
+    void* state{};
+    std::uint64_t* guest_pc{};
     // Borrowed fixed storage; signal adapters retain host failures without formatting.
     swift::Failure* host_failure{};
     pid_t thread_id{};
@@ -67,6 +68,7 @@ struct FaultContext {
 class FaultScope {
 public:
     FaultScope(FaultContext&, GuestState&);
+    FaultScope(FaultContext&, void* uniforms, std::uint64_t& pc);
     ~FaultScope();
     FaultScope(const FaultScope&) = delete;
     FaultScope& operator=(const FaultScope&) = delete;

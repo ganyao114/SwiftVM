@@ -7,15 +7,14 @@
 
 #include "instruction.h"
 #include "runtime/arch/x86/cpu.h"
+#include "runtime/frontend/source.h"
 
 namespace swift::x86 {
 
 // Optional diagnostic accumulator over actual selected byte-decoder calls,
 // including unsuccessful attempts. The caller owns/resets this accumulator;
 // formation, allocation, buffer writes and validation remain outside it.
-struct DecodeTiming {
-    std::uint64_t nanoseconds{}, calls{};
-};
+using runtime::frontend::DecodeTiming;
 enum class DecodeError : std::uint8_t {
     None,
     InvalidInput,

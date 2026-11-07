@@ -98,6 +98,7 @@ private:
     void HandleParallelBitsFamily(OpContext&);
 
     void HandleReadSystemFamily(OpContext&);
+    void HandleCallLambdaFamily(OpContext&);
 
     void ConvertFloatToInteger(unsigned destination,
                                unsigned raw,
@@ -142,6 +143,7 @@ private:
     void HandleCpuidFamily(OpContext&);
     void HandleCpuidUpperFamily(OpContext&);
     void HandleMulFamily(OpContext&);
+    void HandleDivFamily(OpContext&);
     void HandleMulHighFamily(OpContext&);
     void HandleBitExtractFamily(OpContext&);
     void HandleBitInsertFamily(OpContext&);
@@ -604,6 +606,7 @@ private:
     }
 
     void PublishPinned();
+    void ReloadPinned();
     bool ConstantPC(CellView value, u64& pc) const;
     void ObservePCStore(CellView uniform, CellView value);
     void FlagsMemory(bool load, unsigned value);

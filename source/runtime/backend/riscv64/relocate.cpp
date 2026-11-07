@@ -4,6 +4,7 @@
 #include "call_helpers.h"
 #include "runtime/arch/x86/bit_operations.h"
 #include "runtime/arch/x86/cpu.h"
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/sse42_string.h"
 #include "runtime/arch/x86/vector_crypto.h"
 #include "runtime/arch/x86/x87.h"
@@ -14,6 +15,8 @@
 
 namespace swift::runtime::backend::riscv64 {
 HostSymbol CallbackSymbol(std::uintptr_t address) noexcept {
+    if (address == reinterpret_cast<std::uintptr_t>(&::swift::runtime::arm64::ExecuteNumeric))
+        return HostSymbol::ArmGuestFP;
     if (address == reinterpret_cast<std::uintptr_t>(&x86::QueryGuestCpu))
         return HostSymbol::GuestCpuQuery;
     if (address == reinterpret_cast<std::uintptr_t>(&x86::QueryGuestSystem))
@@ -23,6 +26,8 @@ HostSymbol CallbackSymbol(std::uintptr_t address) noexcept {
 
 std::uintptr_t ResolveSymbol(HostSymbol symbol, const CompileOptions& options) noexcept {
     switch (symbol) {
+        case HostSymbol::ArmGuestFP:
+            return reinterpret_cast<std::uintptr_t>(&::swift::runtime::arm64::ExecuteNumeric);
         case HostSymbol::Dispatcher:
             return options.dispatcher;
         case HostSymbol::Exit:

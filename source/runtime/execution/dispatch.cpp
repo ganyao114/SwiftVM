@@ -55,16 +55,16 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
     // All native/fault readers have left. SMC retained old ranges and links
     // until this exact point; no allocation is reclaimed in the handler.
     if (thread.faults.smc_pending) Invalidate();
-    if (host_call_active && context.state.pc == host_return_pc) {
+    if (host_call_active && PC() == host_return_pc) {
         host_returned = true;
         RefreshNative(context);
         return 0;
     }
     NativeCode code;
-    auto entry = Cache().Find(thread.native.state.pc, &code);
+    auto entry = Cache().Find(PC(), &code);
     if (!entry) {
         if (options.mode == ExecutionMode::Mixed &&
-            Cache().DeferCompilation(thread.native.state.pc, options.hot_threshold)) {
+            Cache().DeferCompilation(PC(), options.hot_threshold)) {
             thread.interpret_requested = true;
             // Counting a new cold PC may grow the actual directory. Refresh
             // this borrow even though no native code was constructed.
@@ -84,7 +84,7 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
         if (!code.entry) {
             if (options.mode == ExecutionMode::Mixed &&
                 compiler.Failure() == CompileFailure::Unsupported) {
-                Cache().DisableCompilation(thread.native.state.pc);
+                Cache().DisableCompilation(PC());
                 thread.interpret_requested = true;
             }
             ObserveCache();
@@ -98,7 +98,7 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
         // Registration has consumed extra entries; only now may the backend
         // trim its oversized output capacities. All work remains charged.
         if (backend.trim) backend.trim(backend.context);
-        entry = Cache().Find(thread.native.state.pc, &code);
+        entry = Cache().Find(PC(), &code);
         if (!entry)
             swift::ThrowError("native unit does not export the requested guest entry",
                               ErrorKind::InvalidState);

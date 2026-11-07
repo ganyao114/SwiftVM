@@ -4,8 +4,7 @@
 #include <span>
 #include <string>
 
-#include "runtime/arch/x86/state.h"
-#include "runtime/frontend/x86/region.h"
+#include "runtime/frontend/source.h"
 #include "runtime/ir/types.h"
 #include "base/error.h"
 
@@ -21,7 +20,7 @@ struct RuntimeOptions {
     bool optimize{true};
     // Mixed defers this many entry visits; 0 requests compilation immediately.
     std::uint16_t hot_threshold{8};
-    ::swift::x86::DecodeLimits function_limits{};
+    frontend::DecodeLimits function_limits{};
     bool decode_timing{};
     // Empty keeps persistence entirely disabled.
     std::string cache_directory;
@@ -44,7 +43,7 @@ struct RuntimeStats {
     std::uint64_t cache_load_ns{}, cache_write_ns{};
     std::uint64_t disk_cache_hits{}, disk_cache_misses{}, disk_cache_rejects{}, disk_cache_writes{},
             aot_units_loaded{};
-    ::swift::x86::DecodeTiming
+    frontend::DecodeTiming
             compile_decode;  // Opt-in diagnostic; ordinary runs read no per-instruction clocks.
     std::uint64_t compile_without_byte_decode_ns{};
     // O(1) existing-result observations, enabled with decode_timing. IR sizes

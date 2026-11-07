@@ -7,7 +7,7 @@ namespace swift::runtime::execution {
                                   int code,
                                   std::uintptr_t host_pc,
                                   std::uintptr_t address) noexcept {
-    context.state->pc = site.guest_pc;
+    *context.guest_pc = site.guest_pc;
     context.signal_number = signal;
     context.signal_code = code;
     context.host_pc = host_pc;

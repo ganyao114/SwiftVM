@@ -1,0 +1,74 @@
+#include "relocate.h"
+#include "helpers.h"
+#include "runtime/arch/x86/cpu.h"
+#include "runtime/arch/x86/x87.h"
+#include "runtime/arch/x86/sse42_string.h"
+#include "runtime/arch/x86/vector_crypto.h"
+#include "runtime/arch/arm64/numeric.h"
+#include <cstring>
+
+namespace swift::runtime::backend::x64 {
+HostSymbol CallbackSymbol(std::uintptr_t p) noexcept {
+    if (p == reinterpret_cast<std::uintptr_t>(&runtime::x86::QueryGuestCpu))
+        return HostSymbol::GuestCpuQuery;
+    if (p == reinterpret_cast<std::uintptr_t>(&runtime::x86::QueryGuestSystem))
+        return HostSymbol::GuestSystemQuery;
+    if (p == reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric))
+        return HostSymbol::ArmGuestFP;
+    return HostSymbol::None;
+}
+
+std::uintptr_t ResolveSymbol(HostSymbol s, const CompileOptions& o) noexcept {
+    switch (s) {
+        case HostSymbol::Dispatcher:
+            return o.dispatcher;
+        case HostSymbol::Exit:
+            return o.exit_handler;
+        case HostSymbol::GuestCpuQuery:
+            return reinterpret_cast<std::uintptr_t>(&runtime::x86::QueryGuestCpu);
+        case HostSymbol::GuestSystemQuery:
+            return reinterpret_cast<std::uintptr_t>(&runtime::x86::QueryGuestSystem);
+        case HostSymbol::ArmGuestFP:
+            return reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric);
+        case HostSymbol::X64WideDivide:
+            return reinterpret_cast<std::uintptr_t>(&WideDivide);
+        case HostSymbol::X64CheckedX87:
+            return reinterpret_cast<std::uintptr_t>(&CheckedX87);
+        case HostSymbol::X64CompareExchange128:
+            return reinterpret_cast<std::uintptr_t>(&CompareExchange128);
+        case HostSymbol::X64RoundIntegral:
+            return reinterpret_cast<std::uintptr_t>(&RoundIntegral);
+        case HostSymbol::X64FusedMultiplyAdd:
+            return reinterpret_cast<std::uintptr_t>(&FusedMultiplyAdd);
+        case HostSymbol::X87Execute:
+            return reinterpret_cast<std::uintptr_t>(&SvmX87Execute);
+        case HostSymbol::StringImplicit:
+            return reinterpret_cast<std::uintptr_t>(&runtime::x86::sse42::CompareImplicit);
+        case HostSymbol::StringExplicit:
+            return reinterpret_cast<std::uintptr_t>(&runtime::x86::sse42::CompareExplicit);
+        case HostSymbol::Crypto:
+            return reinterpret_cast<std::uintptr_t>(&runtime::x86::crypto::Execute);
+        default:
+            return 0;
+    }
+}
+
+bool Relocate(std::span<std::uint8_t> w,
+              std::span<const Relocation> rs,
+              const CompileOptions& o) noexcept {
+    std::size_t end{};
+    for (const auto& r : rs) {
+        if (r.kind != RelocationKind::X64Immediate64 || r.offset < 2 || r.offset < end ||
+            r.offset > w.size() || w.size() - r.offset < 8)
+            return false;
+        const auto rex = w[r.offset - 2], op = w[r.offset - 1];
+        if ((rex & 0xfe) != 0x48 || (op & 0xf8) != 0xb8) return false;
+        std::uintptr_t address;
+        if (!backend::detail::RelocationAddress(ResolveSymbol(r.symbol, o), r.addend, address))
+            return false;
+        std::memcpy(w.data() + r.offset, &address, 8);
+        end = r.offset + 8;
+    }
+    return true;
+}
+}  // namespace swift::runtime::backend::x64

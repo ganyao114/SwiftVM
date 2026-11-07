@@ -5,6 +5,10 @@
 #include "runtime/backend/riscv64/compile.h"
 #include "runtime/backend/riscv64/relocate.h"
 #include "runtime/backend/riscv64/patch.h"
+#include "runtime/backend/x64/compile.h"
+#include "runtime/backend/x64/relocate.h"
+#include "runtime/backend/loongarch64/compile.h"
+#include "runtime/backend/loongarch64/relocate.h"
 #include "tests/support/check.h"
 #include "tests/support/ir_builder.h"
 #include "tests/support/native_code.h"
@@ -90,6 +94,36 @@ struct Riscv64 {
 
     static bool InitializeLink(std::span<std::uint8_t> code, const backend::LinkSite& site) {
         return rv::InitializeNativeLink(code, 0x100000, site, 0, false);
+    }
+};
+
+struct X64 {
+    using Options = backend::x64::CompileOptions;
+    static constexpr auto isa = swift::tests::NativeISA::X64;
+
+    static CompileResult Compile(const Program& program, Options options) {
+        return backend::x64::Compile(program, options);
+    }
+
+    static bool Relocate(std::span<std::uint8_t> bytes,
+                         std::span<const Relocation> rows,
+                         const Options& options) {
+        return backend::x64::Relocate(bytes, rows, options);
+    }
+};
+
+struct Loongarch64 {
+    using Options = backend::loongarch64::CompileOptions;
+    static constexpr auto isa = swift::tests::NativeISA::LoongArch64;
+
+    static CompileResult Compile(const Program& program, Options options) {
+        return backend::loongarch64::Compile(program, options);
+    }
+
+    static bool Relocate(std::span<std::uint8_t> bytes,
+                         std::span<const Relocation> rows,
+                         const Options& options) {
+        return backend::loongarch64::Relocate(bytes, rows, options);
     }
 };
 
@@ -328,4 +362,6 @@ TEST_CASE("Unknown callbacks retain JIT execution without persistence",
 TEST_CASE("Rebound helpers execute natively", "[native][persistence-relocation]") {
     NativeRoundTrip<Arm64>();
     NativeRoundTrip<Riscv64>();
+    NativeRoundTrip<X64>();
+    NativeRoundTrip<Loongarch64>();
 }

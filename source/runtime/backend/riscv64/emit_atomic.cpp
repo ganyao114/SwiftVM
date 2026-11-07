@@ -6,7 +6,19 @@
 namespace swift::runtime::backend::riscv64::detail {
 namespace {
 
-enum class AtomicKind { Compare, Exchange, Add, And, Or, Xor, Neg };
+enum class AtomicKind {
+    Compare,
+    Exchange,
+    Add,
+    And,
+    Or,
+    Xor,
+    Neg,
+    SignedMax,
+    SignedMin,
+    UnsignedMax,
+    UnsignedMin
+};
 
 void CheckAlignment(Writer& writer, unsigned bytes) {
     if (bytes == 1) return;
@@ -44,12 +56,24 @@ void EmitAmo(Assembler& as, AtomicKind kind, unsigned bits) {
         case AtomicKind::Xor:
             emit(&Assembler::AMOXOR_W, &Assembler::AMOXOR_D);
             break;
+        case AtomicKind::SignedMax:
+            emit(&Assembler::AMOMAX_W, &Assembler::AMOMAX_D);
+            break;
+        case AtomicKind::SignedMin:
+            emit(&Assembler::AMOMIN_W, &Assembler::AMOMIN_D);
+            break;
+        case AtomicKind::UnsignedMax:
+            emit(&Assembler::AMOMAXU_W, &Assembler::AMOMAXU_D);
+            break;
+        case AtomicKind::UnsignedMin:
+            emit(&Assembler::AMOMINU_W, &Assembler::AMOMINU_D);
+            break;
         default:
             break;  // Compare and Neg use the reservation loop.
     }
 }
 
-void Replacement(Assembler& as, AtomicKind kind, Label& write) {
+void Replacement(Assembler& as, AtomicKind kind, unsigned bits, Label& write) {
     switch (kind) {
         case AtomicKind::Compare:
             as.MV(t2, t0);
@@ -74,6 +98,30 @@ void Replacement(Assembler& as, AtomicKind kind, Label& write) {
         case AtomicKind::Neg:
             as.NEG(t2, t0);
             break;
+        case AtomicKind::SignedMax:
+        case AtomicKind::SignedMin:
+        case AtomicKind::UnsignedMax:
+        case AtomicKind::UnsignedMin: {
+            as.MV(t2, t0);
+            auto left = t0, right = a1;
+            const bool sign = kind == AtomicKind::SignedMax || kind == AtomicKind::SignedMin;
+            if (sign && bits < 64) {
+                as.SLLI(t3, t0, 64 - bits);
+                as.SRAI(t3, t3, 64 - bits);
+                as.SLLI(t6, a1, 64 - bits);
+                as.SRAI(t6, t6, 64 - bits);
+                left = t3;
+                right = t6;
+            }
+            if (kind == AtomicKind::SignedMin || kind == AtomicKind::UnsignedMin)
+                std::swap(left, right);
+            if (sign)
+                as.BGE(left, right, &write);
+            else
+                as.BGEU(left, right, &write);
+            as.MV(t2, a1);
+            break;
+        }
     }
 }
 
@@ -101,7 +149,7 @@ void EmitReservation(Writer& writer, AtomicKind kind, unsigned bits) {
         as.SRL(t0, t1, t5);
         as.AND(t0, t0, t4);
     }
-    Replacement(as, kind, write);
+    Replacement(as, kind, bits, write);
     as.Bind(&write);
     if (bits < 32) {
         as.AND(t2, t2, t4);
@@ -135,6 +183,14 @@ AtomicKind PrepareRmw(Writer& writer, AtomicRMWOp kind) {
             return AtomicKind::Xor;
         case AtomicRMWOp::Neg:
             return AtomicKind::Neg;
+        case AtomicRMWOp::SignedMax:
+            return AtomicKind::SignedMax;
+        case AtomicRMWOp::SignedMin:
+            return AtomicKind::SignedMin;
+        case AtomicRMWOp::UnsignedMax:
+            return AtomicKind::UnsignedMax;
+        case AtomicRMWOp::UnsignedMin:
+            return AtomicKind::UnsignedMin;
         default:
             return AtomicKind::Add;
     }
@@ -148,7 +204,7 @@ void Writer::Atomic(OpContext& ctx) {
     if (ctx.width != 8 && ctx.width != 16 && ctx.width != 32 && ctx.width != 64)
         Reject(CompileError::UnsupportedType);
     const auto raw_kind = rmw ? ctx.Arg(0).Payload() : 0;
-    if (rmw && raw_kind > static_cast<u64>(AtomicRMWOp::SubBorrow))
+    if (rmw && raw_kind > static_cast<u64>(AtomicRMWOp::UnsignedMin))
         Reject(CompileError::UnsupportedOperand);
     Read(ctx.Arg(rmw ? 1 : 0), a0);
     Read(ctx.Arg(rmw ? 2 : 1), a1);

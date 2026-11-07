@@ -1,0 +1,4 @@
+https://github.com/herumi/xbyak
+df112862583c2d327c1d9782fd28f53aa675f11d
+Only the header-only exact assembler is consumed. No executable allocator or CPU detection is used.
+Controlled local change: CodeArray/CodeGenerator optionally write bytes directly to an externally owned vector<uint32_t>; no private machine-code allocation, executable allocator, final copy or page protection in this path. Label/fixup positions remain byte offsets in the same owner.

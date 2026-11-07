@@ -10,7 +10,9 @@
 #include <vector>
 
 namespace swift::tests::aot_fixture {
-inline constexpr std::uint64_t Base = 0x400000, Text = Base + 0x1000, Data = Base + 0x2000;
+// Keep mutable data off executable pages on 4/16/64 KiB Linux hosts.
+inline constexpr std::uint64_t Base = 0x400000, Text = Base + 0x1000, Data = Base + 0x10000;
+inline constexpr std::uint64_t DataOffset = Data - Base;
 inline constexpr std::uint64_t Sum7 = Text + 0x40, FloatAdd = Text + 0x80, Mixed = Text + 0xa0,
                                Big = Text + 0xc0, Variadic = Text + 0x100, Increment = Text + 0x120,
                                Resolver = Text + 0x160, Nine = Text + 0x180, Cpu = Text + 0x1a0,
@@ -18,7 +20,7 @@ inline constexpr std::uint64_t Sum7 = Text + 0x40, FloatAdd = Text + 0x80, Mixed
 
 inline std::vector<std::uint8_t> Guest() {
     namespace elf = ::swift::aot::elf;
-    std::vector<std::uint8_t> bytes(0x2008);
+    std::vector<std::uint8_t> bytes(DataOffset + 8);
     const auto code = [&](std::uint64_t address, std::initializer_list<std::uint8_t> input) {
         std::copy(input.begin(),
                   input.end(),
@@ -48,7 +50,7 @@ inline std::vector<std::uint8_t> Guest() {
     code(Unsupported, {0x0f, 0x0b});
     code(Main, {0xc3});
     const std::uint64_t initial = 40;
-    std::memcpy(bytes.data() + 0x2000, &initial, sizeof(initial));
+    std::memcpy(bytes.data() + DataOffset, &initial, sizeof(initial));
 
     std::vector<std::uint8_t> strings{0};
     std::vector<elf::Symbol> symbols(1);
@@ -85,8 +87,9 @@ inline std::vector<std::uint8_t> Guest() {
     };
     std::array<elf::Section, 7> sections{};
     sections[1] = {section_name(".text"), elf::Progbits, 6, Text, 0x1000, 0x221, 0, 0, 16, 0};
-    sections[2] = {section_name(".data"), elf::Progbits, 3, Data, 0x2000, 8, 0, 0, 8, 0};
-    sections[3] = {section_name(".bss"), elf::Nobits, 3, Data + 8, 0x2008, 0xff8, 0, 0, 8, 0};
+    sections[2] = {section_name(".data"), elf::Progbits, 3, Data, DataOffset, 8, 0, 0, 8, 0};
+    sections[3] = {
+            section_name(".bss"), elf::Nobits, 3, Data + 8, DataOffset + 8, 0xff8, 0, 0, 8, 0};
     const auto append = [&](const void* data, std::size_t size, std::size_t align = 1) {
         bytes.resize((bytes.size() + align - 1) & ~(align - 1));
         const auto offset = bytes.size();
@@ -141,7 +144,7 @@ inline std::vector<std::uint8_t> Guest() {
     header.shstrndx = 6;
     header.shoff = append(sections.data(), sizeof(sections), 8);
     const elf::ProgramHeader segments[]{{elf::Load, 5, 0, Base, Base, 0x1800, 0x1800, 4096},
-                                        {elf::Load, 6, 0x2000, Data, Data, 8, 0x1000, 4096}};
+                                        {elf::Load, 6, DataOffset, Data, Data, 8, 0x1000, 4096}};
     std::memcpy(bytes.data(), &header, sizeof(header));
     std::memcpy(bytes.data() + header.phoff, segments, sizeof(segments));
     return bytes;

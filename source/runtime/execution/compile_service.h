@@ -2,7 +2,8 @@
 
 #include "runtime/backend/code.h"
 #include "runtime/ir/program.h"
-#include "runtime/frontend/x86/build_ir.h"
+#include "runtime/frontend/build_result.h"
+#include "runtime/code_source.h"
 #include <string>
 
 namespace swift::runtime::execution {
@@ -18,7 +19,7 @@ struct CompileDiagnostic {
     CompileStage stage{};
     ir::Scope scope{};
     std::uint64_t pc{};
-    ::swift::x86::BuildError frontend_error{};
+    frontend::BuildError frontend_error{};
     ir::Error ir_error{};
     backend::CompileError backend_error{};
     ir::NodeId node{};
@@ -62,5 +63,7 @@ private:
     CompileFailure failure{};
     CompileDiagnostic diagnostic;
     backend::NativeCode Publish(const backend::CompileResult&, std::vector<backend::FaultSite>);
+    frontend::BuildResult BuildFrontend(
+            ir::Scope, ir::TargetInfo, bool mutable_entry, bool private_state, bool collect);
 };
 }  // namespace swift::runtime::execution

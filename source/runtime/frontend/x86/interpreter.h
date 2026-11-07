@@ -6,6 +6,7 @@
 
 #include "region.h"
 #include "runtime/ir/direct/services.h"
+#include "runtime/frontend/direct.h"
 
 namespace swift::runtime::x86 {
 struct GuestState;
@@ -22,12 +23,7 @@ using runtime::ir::direct::AtomicRequest;
 using runtime::ir::direct::AtomicValue;
 using runtime::ir::direct::CpuResult;
 
-struct CodeReadResult {
-    AccessResult access;
-    // A readable prefix is useful even when the following page is inaccessible.
-    // The decoder, not the fetch service, determines the instruction length.
-    std::size_t bytes{};
-};
+using runtime::frontend::CodeReadResult;
 
 // Actual execution services, bound once by the VM. All accesses report failure
 // without unwinding across guest code. Read/write buffers carry exactly the
@@ -49,24 +45,9 @@ struct DirectServices {
                                 std::uint64_t address,
                                 std::uint64_t requested) noexcept {};
 };
-enum class StepKind : std::uint8_t {
-    Completed,
-    Service,
-    Fault,
-    Unsupported,
-    Incomplete,  // A required service became unavailable after observable progress; never replay.
-    InvalidEncoding,
-    Truncated,
-};
 
-struct StepResult {
-    StepKind kind{StepKind::Completed};
-    std::uint64_t pc{}, next_pc{}, fault_address{};
-    // Existing runtime exits: 1=syscall, 3=MXCSR rebind, 4=x87 exception.
-    std::uint64_t service{};
-    std::size_t instructions{}, decoded_bytes{};
-    bool code_changed{};
-};
+using runtime::frontend::StepKind;
+using runtime::frontend::StepResult;
 
 // Consume the same owned DecodeOne record and original bytes accepted by the
 // IR builder. This path executes neutral IR operations immediately: no fetch,

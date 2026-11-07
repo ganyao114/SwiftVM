@@ -1,4 +1,5 @@
 #include "emit.h"
+#include "runtime/exit.h"
 
 #define __ masm.exact.
 
@@ -841,6 +842,46 @@ void Writer::HandleMulFamily(OpContext& ctx) {
                left = Read(input, 16, 64, false, native_width);
     __ mul(R(destination, native_width), R(left, native_width), R(right, native_width));
     if (width < 32) Narrow(destination, destination, width);
+}
+
+void Writer::HandleDivFamily(OpContext& ctx) {
+    // ARM guest semantics select safe operands before submitting this IR.
+    // The neutral IR itself retains its divide-fault contract on every host.
+    Shadow(false);
+    const auto input = ctx.cursor.Take();
+    const auto right = Expression(ctx.cursor, 17, 16);
+    const auto left = Read(input, 16);
+    const bool sign = ctx.operation.opcode == OpCode::SignedDiv64;
+    const auto nonzero = masm.Here();
+    if (sign)
+        __ cbz(X(right), std::int64_t{0});
+    else
+        __ cbnz(X(right), std::int64_t{0});
+    u32 ordinary = UINT32_MAX, nonoverflow = UINT32_MAX;
+    if (sign) {
+        __ eor(v::x30, X(left), Operand(u64{1} << 63));
+        ordinary = masm.Here();
+        __ cbnz(v::x30, std::int64_t{0});
+        __ add(v::x30, X(right), Operand(1));
+        nonoverflow = masm.Here();
+        __ cbnz(v::x30, std::int64_t{0});
+        masm.Patch(nonzero, masm.Here());
+    }
+    if (has_fault_location && options.pc_offset != UINT32_MAX) {
+        Immediate(0, fault_location);
+        PCMemory(false);
+    }
+    Immediate(0, ExitValue(NativeExit::DivideFault));
+    Epilogue();
+    if (sign) {
+        masm.Patch(ordinary, masm.Here());
+        masm.Patch(nonoverflow, masm.Here());
+        __ sdiv(X(ctx.destination), X(left), X(right));
+    } else {
+        masm.Patch(nonzero, masm.Here());
+        __ udiv(X(ctx.destination), X(left), X(right));
+    }
+    Narrow(ctx.destination, ctx.destination, ctx.width);
 }
 
 void Writer::HandleMulHighFamily(OpContext& ctx) {

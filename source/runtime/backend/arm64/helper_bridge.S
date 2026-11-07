@@ -108,6 +108,17 @@ mov x16, x1
 SVM_HELPER_RESTORE_BANK
 SVM_END_FUNCTION SVM_SYMBOL(SvmArm64QueryCpuid)
 
+// Fixed integer helper ABI: x1=callback, x0/x16/x17=three arguments.
+// The caller stages its original packed-flags register before borrowing x1.
+SVM_FUNCTION SVM_SYMBOL(SvmArm64CallLambda)
+SVM_HELPER_SAVE_BANK
+mov x30, x1
+mov x1, x16
+mov x2, x17
+blr x30
+SVM_HELPER_RESTORE_BANK
+SVM_END_FUNCTION SVM_SYMBOL(SvmArm64CallLambda)
+
 SVM_FUNCTION SVM_SYMBOL(SvmArm64ExecuteX87)
 #if SVM_X87_GPR_ONLY
 sub sp, sp, #144

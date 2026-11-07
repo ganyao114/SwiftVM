@@ -53,7 +53,7 @@ void VM::RecordUnit(ir::Scope scope,
     if (!compiled.relocatable || sources.empty()) return;
     const auto capture = [&] {
         CodeUnit unit;
-        unit.pc = thread.native.state.pc;
+        unit.pc = PC();
         unit.fp_mode = thread.fp_mode;
         unit.scope = scope;
         unit.code = compiled;
@@ -122,19 +122,19 @@ void VM::InstallImage(const CodeImage& native) {
             swift::ThrowError("AOT source bytes or source policy mismatch",
                               ErrorKind::InvalidArgument);
     }
-    const auto initial_pc = thread.native.state.pc;
-    const auto initial_mxcsr = thread.native.state.mxcsr;
+    const auto initial_pc = PC();
+    const auto initial_mxcsr = NumericControl();
     for (const auto& unit : native.units) {
-        thread.native.state.pc = unit.pc;
-        thread.native.state.mxcsr = (initial_mxcsr & ~UINT32_C(0x8040)) |
-                                    ((unit.fp_mode & 1u) << 6) | ((unit.fp_mode >> 1) << 15);
+        PC() = unit.pc;
+        NumericControl() = (initial_mxcsr & ~UINT32_C(0x8040)) | ((unit.fp_mode & 1u) << 6) |
+                           ((unit.fp_mode >> 1) << 15);
         UpdateFPEnvironment();
         auto code = compiler.Restore(unit, true);
         Cache().InsertReady(unit.pc, code, unit.code.entries);
         ++stats.aot_units_loaded;
     }
-    thread.native.state.pc = initial_pc;
-    thread.native.state.mxcsr = initial_mxcsr;
+    PC() = initial_pc;
+    NumericControl() = initial_mxcsr;
     UpdateFPEnvironment();
     ObserveCache();
 }

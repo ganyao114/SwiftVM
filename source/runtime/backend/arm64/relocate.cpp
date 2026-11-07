@@ -3,6 +3,7 @@
 #include "encoding.h"
 #include "vector_helper.h"
 #include "runtime/arch/x86/cpu.h"
+#include "runtime/arch/arm64/numeric.h"
 
 #include <cstring>
 
@@ -10,8 +11,11 @@ namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
 std::uintptr_t X87Helper() noexcept;
+std::uintptr_t LambdaHelper() noexcept;
 
 HostSymbol CallbackSymbol(std::uintptr_t address) noexcept {
+    if (address == reinterpret_cast<std::uintptr_t>(&::swift::runtime::arm64::ExecuteNumeric))
+        return HostSymbol::ArmGuestFP;
     if (address == reinterpret_cast<std::uintptr_t>(&x86::QueryGuestCpu))
         return HostSymbol::GuestCpuQuery;
     if (address == reinterpret_cast<std::uintptr_t>(&x86::QueryGuestSystem))
@@ -21,6 +25,8 @@ HostSymbol CallbackSymbol(std::uintptr_t address) noexcept {
 
 std::uintptr_t ResolveSymbol(HostSymbol symbol, const CompileOptions& options) noexcept {
     switch (symbol) {
+        case HostSymbol::ArmGuestFP:
+            return reinterpret_cast<std::uintptr_t>(&::swift::runtime::arm64::ExecuteNumeric);
         case HostSymbol::Dispatcher:
             return options.dispatcher;
         case HostSymbol::Exit:
@@ -33,6 +39,8 @@ std::uintptr_t ResolveSymbol(HostSymbol symbol, const CompileOptions& options) n
             return CpuidHelper();
         case HostSymbol::ArmX87Bridge:
             return X87Helper();
+        case HostSymbol::ArmLambdaBridge:
+            return LambdaHelper();
         case HostSymbol::ArmVectorBridge:
             return VectorHelperBridge();
         case HostSymbol::ArmDivideU8:

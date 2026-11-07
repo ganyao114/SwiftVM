@@ -4,6 +4,7 @@
 #include "runtime/platform/linux/artifact_file.h"
 
 #include <atomic>
+#include <bit>
 #include <algorithm>
 #include <cerrno>
 #include <elf.h>
@@ -13,6 +14,7 @@
 #include <sys/mman.h>
 
 #include "runtime/arch/x86/cpu.h"
+#include "runtime/arch/arm64/numeric.h"
 
 namespace swift::runtime::execution {
 namespace front = ::swift::x86;
@@ -65,6 +67,24 @@ template <typename T> std::uint64_t AtomicModify(const front::AtomicRequest& req
             case front::AtomicOperation::SubBorrow:
                 value = static_cast<T>(old - input - request.carry);
                 break;
+            case front::AtomicOperation::SignedMax:
+                value = std::bit_cast<std::make_signed_t<T>>(old) >
+                                        std::bit_cast<std::make_signed_t<T>>(input)
+                                ? old
+                                : input;
+                break;
+            case front::AtomicOperation::SignedMin:
+                value = std::bit_cast<std::make_signed_t<T>>(old) <
+                                        std::bit_cast<std::make_signed_t<T>>(input)
+                                ? old
+                                : input;
+                break;
+            case front::AtomicOperation::UnsignedMax:
+                value = std::max(old, input);
+                break;
+            case front::AtomicOperation::UnsignedMin:
+                value = std::min(old, input);
+                break;
             default:
                 __builtin_unreachable();  // Rejected before the first access.
         }
@@ -108,13 +128,7 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     native.prepare_atomic = PrepareAtomic;
     native.active = &faults.active;
     native.anchor = &thread.anchor;
-    native.pinned_uniform_offset =
-            backend.pinned_uniform_slots ? offsetof(x86::GuestState, gprs) : UINT32_MAX;
     native.pinned_uniform_slots = backend.pinned_uniform_slots;
-    native.pinned_vector_offset =
-            backend.pinned_vectors ? offsetof(x86::GuestState, xmm) : UINT32_MAX;
-    native.flags_offset = offsetof(x86::GuestState, packed_flags);
-    native.pc_offset = offsetof(x86::GuestState, pc);
     native.fp_environment = 1;
     native.native_nzcv = backend.capabilities.native_nzcv;
     faults.lookup_native = LookupNative;
@@ -124,11 +138,9 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     faults.code_write_opaque = this;
     faults.patch_ordered = backend.patch_fault;
     faults.recover_native = backend.recover_native;
-    faults.pinned_uniform_offset = native.pinned_uniform_offset;
     faults.pinned_uniform_slots = backend.pinned_uniform_slots;
-    faults.pinned_vector_offset = native.pinned_vector_offset;
-    faults.flags_offset = offsetof(x86::GuestState, packed_flags);
     faults.native_nzcv = backend.capabilities.native_nzcv;
+    ConfigureGuest(GuestISA::X86_64);
     RefreshNative(native);
 }
 
@@ -231,10 +243,10 @@ void VM::PrepareLoaded(std::span<const std::string> argv,
                        std::span<const std::string> environment,
                        const Digest* guest_identity,
                        const CodeImage* native) {
-    auto& state = thread.native.state;
-    state.pc = image.entry;
-    state.gprs[x86::RSP] = platform::InitialStack(memory, image, argv, environment);
-    UpdateFPEnvironment();
+    ConfigureGuest(image.isa);
+    PC() = image.entry;
+    SP() = platform::InitialStack(memory, image, argv, environment);
+    UpdateFPEnvironment(true);
     if (guest_identity) {
         RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
         image_key = MakeCodeImageKey(*guest_identity, image.load_bias, backend, options);
@@ -257,7 +269,7 @@ void VM::PrepareLoaded(std::span<const std::string> argv,
         }
     }
     if (native) {
-        FaultScope registration{thread.faults, state};
+        FaultScope registration{thread.faults, uniform_data, PC()};
         RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
         InstallImage(*native);
     }
@@ -268,6 +280,7 @@ int VM::RunPrepared() {
     if (!prepared || closing || closed)
         swift::ThrowError("guest image is not available for execution", ErrorKind::InvalidState);
     host_returned = false;
+    UpdateFPEnvironment(true);
     Execute();
     FlushDisk();
     return thread.exit_code;
@@ -286,8 +299,8 @@ void VM::CallGuest(std::uint64_t pc, std::uint64_t stack_pointer, std::uint64_t 
     if (!memory.CodeAt(stop_pc).empty())
         swift::ThrowError("guest call return sentinel must not be executable",
                           ErrorKind::InvalidArgument);
-    thread.native.state.pc = pc;
-    thread.native.state.gprs[x86::RSP] = stack_pointer;
+    PC() = pc;
+    SP() = stack_pointer;
     ExecuteHostCall(stop_pc);
 }
 
@@ -326,7 +339,7 @@ void VM::Execute() {
     if (options.mode == ExecutionMode::InterpretOnly ||
         (options.mode == ExecutionMode::Mixed && !backend.compile)) {
         while (!thread.exited && !host_returned) {
-            if (host_call_active && thread.native.state.pc == host_return_pc) {
+            if (host_call_active && PC() == host_return_pc) {
                 host_returned = true;
                 break;
             }
@@ -337,7 +350,7 @@ void VM::Execute() {
     if (!backend.compile)
         swift::ThrowError("native backend is unavailable on this host", ErrorKind::Unsupported);
     {
-        FaultScope registration{thread.faults, thread.native.state};
+        FaultScope registration{thread.faults, uniform_data, PC()};
         stats.rcpc_loads = backend.capabilities.rcpc_loads;
         stats.rcpc_imm9 = backend.capabilities.rcpc_imm9;
         stats.fault_locations = true;
@@ -355,7 +368,7 @@ void VM::Execute() {
                                             "pc={:#x} host_pc={:#x} address={:#x}",
                                             static_cast<int>(thread.faults.signal_number),
                                             static_cast<int>(thread.faults.signal_code),
-                                            thread.native.state.pc,
+                                            PC(),
                                             thread.faults.host_pc.load(),
                                             thread.faults.address.load()),
                               ErrorKind::GuestFault);
@@ -377,7 +390,7 @@ void VM::Execute() {
                                               ? ErrorKind::Unsupported
                                               : ErrorKind::InvalidState);
             } else if (reason == NativeExit::FPEnvironment)
-                UpdateFPEnvironment();
+                UpdateFPEnvironment(true);
             else if (reason == NativeExit::StateService)
                 Interpret();
             else if (reason == NativeExit::X87Fault)
@@ -399,8 +412,20 @@ void VM::Execute() {
                                 thread.faults.restore_error);
 }
 
-void VM::UpdateFPEnvironment() {
-    const auto mxcsr = thread.native.state.mxcsr;
+void VM::UpdateFPEnvironment(bool architectural_write) {
+    if (ISA() == GuestISA::Arm64) {
+        const auto fpcr = thread.native.arm_state.fpcr;
+        // Numeric leaves run only under the supported architectural profile.
+        // Check at the existing FPCR service boundary, not at every FP operation.
+        if (!arm64::IsSupportedFPCR(fpcr))
+            swift::ThrowError("guest FPCR contains unsupported controls", ErrorKind::Unsupported);
+        if (architectural_write) {
+            constexpr unsigned rounding[]{0, 2, 1, 3};
+            NumericControl() = 0x1f80u | (rounding[(fpcr >> 22) & 3] << 13) |
+                               ((fpcr & (1u << 24)) ? 0x8040u : 0u);
+        }
+    }
+    const auto mxcsr = NumericControl();
     if (mxcsr & ~u64{0xffff})
         swift::ThrowError("guest MXCSR contains reserved bits", ErrorKind::GuestFault);
     const auto daz = (mxcsr >> 6) & 1, ftz = (mxcsr >> 15) & 1;
@@ -527,7 +552,8 @@ front::AccessResult VM::Atomic(void* opaque,
             request.bits == 128 && request.operation == front::AtomicOperation::CompareExchange128;
     if ((!wide && request.bits != 8 && request.bits != 16 && request.bits != 32 &&
          request.bits != 64) ||
-        (!wide && request.operation > front::AtomicOperation::SubBorrow) ||
+        (!wide && (request.operation == front::AtomicOperation::CompareExchange128 ||
+                   request.operation > front::AtomicOperation::UnsignedMin)) ||
         (request.address & (request.bits / 8 - 1)))
         return {front::AccessStatus::UnsupportedBeforeAccess};
     const auto bytes = request.bits / 8;
@@ -601,9 +627,17 @@ void VM::Interpret(bool block) {
                 return (owner.host_call_active && pc == owner.host_return_pc) ||
                        bool(static_cast<VM*>(raw)->Cache().Find(pc));
             }};
-    const auto step = block ? front::InterpretBlock(
-                                      thread.native.state, DirectServices(), 256, nullptr, ready)
-                            : front::InterpretOne(thread.native.state, DirectServices());
+    frontend::StepResult step;
+    if (ISA() == GuestISA::Arm64) {
+        const ::swift::arm64::DirectServices services{this, Fetch, Read, Write, Atomic};
+        step = block ? ::swift::arm64::InterpretBlock(
+                               thread.native.arm_state, services, 256, nullptr, ready)
+                     : ::swift::arm64::InterpretOne(thread.native.arm_state, services);
+    } else {
+        step = block ? front::InterpretBlock(
+                               thread.native.state, DirectServices(), 256, nullptr, ready)
+                     : front::InterpretOne(thread.native.state, DirectServices());
+    }
     stats.interpreted_steps += step.instructions;
     if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
     switch (step.kind) {
@@ -615,7 +649,7 @@ void VM::Interpret(bool block) {
             if (step.service == ExitValue(NativeExit::Syscall))
                 syscalls.Service();
             else if (step.service == ExitValue(NativeExit::FPEnvironment))
-                UpdateFPEnvironment();
+                UpdateFPEnvironment(true);
             else if (step.service == ExitValue(NativeExit::X87Fault))
                 swift::ThrowError("x87 unsupported command or unmasked exception");
             else
@@ -626,7 +660,8 @@ void VM::Interpret(bool block) {
     }
     if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
     swift::ThrowError(
-            swift::Format("x86 direct execution rejected pc={:#x} kind={} address={:#x}",
+            swift::Format("{} direct execution rejected pc={:#x} kind={} address={:#x}",
+                          ISA() == GuestISA::Arm64 ? "AArch64" : "x86",
                           step.pc,
                           static_cast<unsigned>(step.kind),
                           step.fault_address),

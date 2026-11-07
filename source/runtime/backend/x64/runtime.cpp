@@ -1,0 +1,122 @@
+#include "runtime.h"
+#include "abi.h"
+#include "abi_layout.inc"
+#include "patch.h"
+#include "relocate.h"
+#include "runtime/execution/dispatch.h"
+#include "runtime/execution/fault.h"
+#include <cstring>
+#if defined(__x86_64__)
+#include <cpuid.h>
+#endif
+namespace swift::runtime::backend::x64 {
+Runtime::Runtime(bool diagnostic) noexcept {
+    options.dispatcher = reinterpret_cast<std::uintptr_t>(
+            diagnostic ? &execution::SvmNativeDispatchCounted : &execution::SvmNativeDispatch);
+    options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
+    options.native_fp_environment = true;
+#if defined(__x86_64__)
+    unsigned a, b, c, d;
+    if (__get_cpuid(1, &a, &b, &c, &d)) {
+        options.ssse3 = c & (1u << 9);
+        options.sse41 = c & (1u << 19);
+        options.sse42 = c & (1u << 20);
+        options.aes = c & (1u << 25);
+        options.pclmul = c & 2;
+        options.cx16 = c & (1u << 13);
+        if ((c & (1u << 12)) && (c & (1u << 27)) && (c & (1u << 28))) {
+            unsigned lo, hi;
+            asm volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+            options.fma = (lo & 6) == 6;
+        }
+    }
+    if (__get_cpuid_max(0, nullptr) >= 7) {
+        __cpuid_count(7, 0, a, b, c, d);
+        options.sha = b & (1u << 29);
+    }
+#endif
+    features = (options.ssse3 ? abi::Ssse3 : 0) | (options.sse41 ? abi::Sse41 : 0) |
+               (options.sse42 ? abi::Sse42 : 0) | (options.fma ? abi::Fma : 0) |
+               (options.aes ? abi::Aes : 0) | (options.pclmul ? abi::Pclmul : 0) |
+               (options.sha ? abi::Sha : 0) | (options.cx16 ? abi::Cx16 : 0);
+}
+
+execution::HostBackendOps Runtime::Bind() noexcept {
+    execution::HostBackendOps o;
+    o.context = this;
+    o.target = KnownTargetInfo();
+    o.isa_features = features;
+    o.configure = [](void* p, const GuestLayout& l) noexcept {
+        auto& v = *static_cast<Runtime*>(p);
+        v.options.flags_offset = l.flags_offset;
+        v.options.pc_offset = l.pc_offset;
+        v.options.mxcsr_offset = l.numeric_control_offset;
+    };
+    o.compile =
+            [](void* p, const ir::Program& s, execution::HostCompileRequest r) -> CompileResult& {
+        auto& v = *static_cast<Runtime*>(p);
+        auto c = v.options;
+        c.entry_pc = r.entry_pc;
+        c.fault_locations = r.fault_locations;
+        c.relocatable = r.relocatable;
+        Compile(s, c, v.output, v.allocation);
+        return v.output;
+    };
+    o.relocate = [](void* p, std::span<std::uint8_t> w, std::span<const Relocation> r) noexcept {
+        return Relocate(w, r, static_cast<Runtime*>(p)->options);
+    };
+    o.trim = [](void* p) noexcept {
+        auto& v = *static_cast<Runtime*>(p);
+        if (v.output.words.capacity() > 1024 * 1024)
+            std::vector<std::uint32_t>{}.swap(v.output.words);
+        if (v.allocation.homes.capacity() > 1024 * 1024)
+            std::vector<Home>{}.swap(v.allocation.homes);
+    };
+    o.release = [](void* p) noexcept {
+        auto& v = *static_cast<Runtime*>(p);
+        v.output = {};
+        v.allocation = {};
+    };
+    o.initialize_link = [](void*,
+                           std::span<std::uint8_t> w,
+                           std::uintptr_t rx,
+                           bool dual,
+                           const LinkSite& s,
+                           std::uintptr_t ready) noexcept {
+        return InitializeNativeLink(w, rx, s, ready, dual);
+    };
+    o.patch_link = PatchNativeLink;
+    o.unlink = UnlinkNativeLink;
+    o.synchronize_code = [](std::uint8_t* w, const std::uint8_t* e, std::size_t n) noexcept {
+        SynchronizeCode(w, e, n);
+        return 0;
+    };
+    o.update_fp = [](void*, execution::NativeRunContext& n, std::uint32_t control) noexcept {
+        n.guest_fpcr = (control & 0xe040) | 0x1f80;
+    };
+    o.restore_host_fp = [](const execution::NativeRunContext& n) noexcept {
+#if defined(__x86_64__)
+        const unsigned control = n.host_fpcr;
+        asm volatile("ldmxcsr %0" ::"m"(control) : "memory");
+#else
+        (void)n;
+#endif
+    };
+#if !defined(__x86_64__)
+    o.compile = nullptr;
+    o.target.mode = ir::TargetMode::Unknown;
+#endif
+    return o;
+}
+
+bool RestoreGuestState(execution::FaultContext& c,
+                       const FaultSite& s,
+                       std::span<const std::byte> regs) noexcept {
+    if (s.recovery[0] > 1 || regs.size() < 16 * 8) return false;
+    if (c.flags_offset != UINT32_MAX && !s.recovery[0])
+        std::memcpy(static_cast<std::uint8_t*>(c.state) + c.flags_offset, regs.data() + 3 * 8, 8);
+    return true;
+}
+
+static_assert(offsetof(execution::NativeRunContext, state) == SVM_X64_CTX_STATE);
+}  // namespace swift::runtime::backend::x64

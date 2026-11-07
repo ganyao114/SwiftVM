@@ -11,7 +11,7 @@ inline constexpr std::uint32_t Progbits = 1, Symtab = 2, Strtab = 3, Nobits = 8;
 inline constexpr std::uint64_t Alloc = 2, Executable = 4;
 inline constexpr std::uint32_t Load = 1;
 inline constexpr std::uint16_t ExecutableFile = 2, SharedFile = 3;
-inline constexpr std::uint16_t X86 = 62, Arm64 = 183, Riscv64 = 243;
+inline constexpr std::uint16_t X86 = 62, Arm64 = 183, Riscv64 = 243, LoongArch64 = 258;
 
 struct Header {
     std::uint8_t ident[16]{};

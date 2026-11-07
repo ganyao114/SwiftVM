@@ -5,10 +5,7 @@
 
 namespace swift::x86 {
 
-struct BlockWindow {
-    std::uint64_t pc{};
-    std::span<const std::uint8_t> bytes;
-};
+using runtime::frontend::BlockWindow;
 
 struct DecodedBlock {
     std::uint64_t pc{};
@@ -17,18 +14,11 @@ struct DecodedBlock {
 
 static_assert(sizeof(DecodedBlock) == 16);
 
-struct DecodeLimits {
-    std::uint32_t max_instructions{4096}, max_blocks{256};
-};
+using runtime::frontend::DecodeLimits;
 
 // A cold, read-only borrow of actual callable entries in the current execution
 // domain. Pending keys are not ready. No directory or code owner is copied.
-struct ReadyEntryLookup {
-    void* opaque{};
-    bool (*ready)(void*, std::uint64_t) noexcept {};
-
-    bool Contains(std::uint64_t pc) const noexcept { return ready && ready(opaque, pc); }
-};
+using runtime::frontend::ReadyEntryLookup;
 
 struct DecodedFunction {
     DecodeError error{DecodeError::None};

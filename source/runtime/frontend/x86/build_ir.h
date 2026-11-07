@@ -5,6 +5,7 @@
 #include <span>
 
 #include "runtime/ir/builder.h"
+#include "runtime/frontend/build_result.h"
 #include "region.h"
 
 namespace swift::x86 {
@@ -29,29 +30,13 @@ struct StateLayout {
             x87_opcode_offset{UINT32_MAX};
     std::uint32_t ymm_high_offset{UINT32_MAX};
 };
+
 // Native units return zero for ordinary dispatch, one for SYSCALL and three
 // after LDMXCSR for the runtime to reload the guest FP environment. The runtime
 // owns syscall execution and architectural RCX/R11 updates; no extra guest-state
 // reason slot or per-dispatch state reset is needed.
-enum class BuildError : std::uint8_t {
-    None,
-    InvalidInput,
-    InvalidEncoding,
-    Truncated,
-    Unsupported,
-    IRRejected,
-    FormationRejected,
-};
-
-struct BuildResult {
-    BuildError error{BuildError::None};
-    std::uint64_t error_pc{};
-    std::size_t decoded_bytes{}, instruction_count{};
-    runtime::ir::Error ir_error{runtime::ir::Error::None};
-    runtime::ir::Program program;
-
-    explicit operator bool() const noexcept { return error == BuildError::None && bool(program); }
-};
+using runtime::frontend::BuildError;
+using runtime::frontend::BuildResult;
 
 // Scalar x86-64 data movement/arithmetic, calls, stack operations and dispatch.
 // Unimplemented forms are rejected. Windows are

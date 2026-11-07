@@ -5,6 +5,7 @@
 #include <string>
 
 #include "runtime/execution/memory.h"
+#include "runtime/arch/guest.h"
 
 namespace swift::runtime::platform {
 // Source image identity and initial ABI metadata, not another mapping ledger.
@@ -15,6 +16,7 @@ struct LoadedImage {
     std::string path;
     std::uint64_t device{}, inode{}, file_size{};
     std::uint16_t elf_type{};
+    GuestISA isa{GuestISA::X86_64};
 };
 
 LoadedImage LoadELF(execution::GuestMemory&, const std::string&);

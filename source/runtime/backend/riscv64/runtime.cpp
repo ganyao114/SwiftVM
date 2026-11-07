@@ -27,6 +27,12 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     ops.target = backend::riscv64::KnownTargetInfo();
     ops.pinned_uniform_slots = 0;
     ops.pinned_vectors = false;
+    ops.configure = [](void* raw, const GuestLayout& layout) noexcept {
+        auto& options = static_cast<Runtime*>(raw)->options;
+        options.flags_offset = layout.flags_offset;
+        options.pc_offset = layout.pc_offset;
+        options.mxcsr_offset = layout.numeric_control_offset;
+    };
     ops.compile = [](void* raw,
                      const ir::Program& program,
                      execution::HostCompileRequest request) -> backend::CompileResult& {

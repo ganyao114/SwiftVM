@@ -78,7 +78,7 @@ void PrintUsage() {
             "[--hot-threshold N] [--no-opt] [--decode-timing] [--] guest [args...]\n"
             "  [--cache-dir DIR] persists native code across processes (off by default).\n"
             "  [--aot ARTIFACT] loads embedded guest/code; the guest path is optional.\n"
-            "Static x86-64 ELF, direct guest==host memory, one guest thread.\n"
+            "Static x86-64 or AArch64 ELF, direct guest==host memory, one guest thread.\n"
             "PT_INTERP and unknown instructions are rejected. Unimplemented syscalls return "
             "ENOSYS.\n"
             "Default engine: jit; compile each requested entry immediately.\n"

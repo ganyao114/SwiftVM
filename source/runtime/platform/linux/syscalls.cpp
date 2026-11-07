@@ -1,6 +1,7 @@
 #include "syscalls.h"
 #include "runtime/execution/vm.h"
 #include "runtime/arch/x86/flags.h"
+#include "syscall_abi.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -45,6 +46,23 @@ struct GuestStat {
 
 static_assert(sizeof(GuestStat) == 144);
 
+struct ArmGuestStat {
+    u64 device, inode;
+    std::uint32_t mode, links, uid, gid;
+    u64 rdevice, padding;
+    s64 size;
+    std::int32_t block_size, padding2;
+    s64 blocks, atime;
+    u64 atime_nsec;
+    s64 mtime;
+    u64 mtime_nsec;
+    s64 ctime;
+    u64 ctime_nsec;
+    std::uint32_t unused[2];
+};
+
+static_assert(sizeof(ArmGuestStat) == 128);
+
 }  // namespace
 
 bool LinuxSyscalls::ReadString(u64 address, std::string& value) const {
@@ -64,6 +82,28 @@ s64 LinuxSyscalls::Stat(int fd, u64 output, const char* path, int flags) {
     struct stat status{};
     const auto result = path ? fstatat(fd, path, &status, flags) : fstat(fd, &status);
     if (result) return -errno;
+    if (vm.ISA() == GuestISA::Arm64) {
+        const ArmGuestStat guest{static_cast<u64>(status.st_dev),
+                                 static_cast<u64>(status.st_ino),
+                                 status.st_mode,
+                                 static_cast<std::uint32_t>(status.st_nlink),
+                                 status.st_uid,
+                                 status.st_gid,
+                                 static_cast<u64>(status.st_rdev),
+                                 0,
+                                 status.st_size,
+                                 static_cast<std::int32_t>(status.st_blksize),
+                                 0,
+                                 status.st_blocks,
+                                 status.st_atim.tv_sec,
+                                 static_cast<u64>(status.st_atim.tv_nsec),
+                                 status.st_mtim.tv_sec,
+                                 static_cast<u64>(status.st_mtim.tv_nsec),
+                                 status.st_ctim.tv_sec,
+                                 static_cast<u64>(status.st_ctim.tv_nsec),
+                                 {0, 0}};
+        return vm.GuestWrite(output, &guest, sizeof(guest)) ? 0 : -EFAULT;
+    }
     const GuestStat guest{static_cast<u64>(status.st_dev),
                           static_cast<u64>(status.st_ino),
                           status.st_nlink,
@@ -85,11 +125,12 @@ s64 LinuxSyscalls::Stat(int fd, u64 output, const char* path, int flags) {
     return vm.GuestWrite(output, &guest, sizeof(guest)) ? 0 : -EFAULT;
 }
 
-s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
+s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
+    const auto number =
+            vm.ISA() == GuestISA::Arm64 ? Arm64SyscallOperation(guest_number) : guest_number;
     auto& memory = vm.memory;
     auto& stats = vm.stats;
     auto& options = vm.options;
-    auto& state = vm.thread.native.state;
     auto& clear_child_tid = vm.thread.clear_child_tid;
     auto& exited = vm.thread.exited;
     auto& exit_code = vm.thread.exit_code;
@@ -212,7 +253,7 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
         case 63: {
             struct utsname name{};
             if (uname(&name)) return -errno;
-            std::strcpy(name.machine, "x86_64");
+            std::strcpy(name.machine, vm.ISA() == GuestISA::Arm64 ? "aarch64" : "x86_64");
             return vm.GuestWrite(args[0], &name, sizeof(name)) ? 0 : -EFAULT;
         }
         case 72:
@@ -233,6 +274,12 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
             if (args[0] && !vm.GuestWrite(args[0], value, sizeof(value))) return -EFAULT;
             if (args[1] && !vm.GuestWrite(args[1], timezone, sizeof(timezone))) return -EFAULT;
             return 0;
+        }
+        case 97: {
+            rlimit limit{};
+            if (getrlimit(static_cast<decltype(RLIMIT_STACK)>(args[0]), &limit)) return -errno;
+            const u64 value[2]{limit.rlim_cur, limit.rlim_max};
+            return vm.GuestWrite(args[1], value, sizeof(value)) ? 0 : -EFAULT;
         }
         case 102:
             return getuid();
@@ -273,7 +320,9 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
                                 args[3],
                                 args[4] ? name.c_str() : nullptr));
         }
-        case 158:
+        case 158: {
+            if (vm.ISA() != GuestISA::X86_64) break;
+            auto& state = vm.thread.native.state;
             if (args[0] == 0x1001 || args[0] == 0x1002) {
                 if (args[1] >= (u64{1} << 48)) return -EPERM;
                 (args[0] == 0x1002 ? state.fs_base : state.gs_base) = args[1];
@@ -284,6 +333,7 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
                 return vm.GuestWrite(args[1], &value, sizeof(value)) ? 0 : -EFAULT;
             }
             return -EINVAL;
+        }
         case 186:
             return syscall(SYS_gettid);
         case 201: {
@@ -370,6 +420,15 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
             return Stat(
                     static_cast<int>(args[0]), args[2], path.c_str(), static_cast<int>(args[3]));
         }
+        case 267: {
+            std::string path;
+            if (!ReadString(args[1], path) || !vm.PrepareGuestWrite(args[2], args[3]))
+                return -EFAULT;
+            return Result(readlinkat(static_cast<int>(args[0]),
+                                     path.c_str(),
+                                     reinterpret_cast<char*>(args[2]),
+                                     args[3]));
+        }
         case 302: {
             if (args[0] || args[2]) break;  // Query-only; no host process-limit mutation.
             rlimit limit{};
@@ -393,16 +452,27 @@ s64 LinuxSyscalls::Invoke(u64 number, const u64* args) {
         SVM_LOG(Warning,
                 Syscall,
                 "unsupported guest syscall number={} pc={:#x}; returning ENOSYS",
-                number,
-                state.pc);
+                guest_number,
+                vm.PC());
         reported_unknown = true;
     }
     return -ENOSYS;
 }
 
 void LinuxSyscalls::Service() {
-    auto& state = vm.thread.native.state;
     ++vm.stats.syscalls;
+    if (vm.ISA() == GuestISA::Arm64) {
+        auto& state = vm.thread.native.arm_state;
+        const u64 arguments[6]{state.gprs[0],
+                               state.gprs[1],
+                               state.gprs[2],
+                               state.gprs[3],
+                               state.gprs[4],
+                               state.gprs[5]};
+        state.gprs[0] = static_cast<u64>(Invoke(state.gprs[8], arguments));
+        return;
+    }
+    auto& state = vm.thread.native.state;
     const u64 arguments[6]{state.gprs[x86::RDI],
                            state.gprs[x86::RSI],
                            state.gprs[x86::RDX],

@@ -92,7 +92,7 @@ TEST_CASE("AOT embeds a complete guest and preserves symbol semantics", "[compil
     }
     CHECK(checked_alias && checked_resolver && checked_stub && checked_object);
     // Original data sections borrow the embedded image, not another payload.
-    CHECK(container.Find(".data")->offset == guest->offset + 0x2000);
+    CHECK(container.Find(".data")->offset == guest->offset + fixture::DataOffset);
 }
 
 TEST_CASE("AOT rejects damaged native guest metadata and rewritten symbols", "[compile][aot]") {

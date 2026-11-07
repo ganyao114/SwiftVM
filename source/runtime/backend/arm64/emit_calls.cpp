@@ -8,6 +8,7 @@ namespace swift::runtime::backend::arm64 {
 std::uintptr_t DivisionHelper(unsigned, bool) noexcept;
 std::uintptr_t CpuidHelper() noexcept;
 std::uintptr_t X87Helper() noexcept;
+std::uintptr_t LambdaHelper() noexcept;
 
 namespace detail {
 using x86::X87Command;
@@ -17,6 +18,47 @@ using x86::X87MetadataOffset;
 using x86::X87MetadataOpcode;
 using x86::X87Result;
 using x86::X87State;
+
+void Writer::HandleCallLambdaFamily(OpContext& ctx) {
+    auto& cursor = ctx.cursor;
+    const auto header = cursor.Take();
+    if (header.Kind() != OperandKind::Lambda) Reject(CompileError::UnsupportedOperand);
+    const auto callback = cursor.Take();
+    if (callback.Kind() != OperandKind::Immediate || !callback.Payload())
+        Reject(CompileError::UnsupportedOperand);
+    if (ctx.operation.type != Type::Void && !IntegerType(ctx.operation.type))
+        Reject(CompileError::UnsupportedType);
+    Shadow(false);
+    PublishPinned();
+    HelperFPEnvironment(false);
+    constexpr unsigned arguments[]{0, 16, 17};
+    for (const auto reg : arguments) {
+        if (cursor.at == cursor.end)
+            Immediate(reg, 0);
+        else {
+            const auto argument = cursor.Take();
+            if (!IntegerType(View(argument))) Reject(CompileError::UnsupportedOperand);
+            Move(reg, Read(argument, reg));
+        }
+    }
+    if (cursor.at != cursor.end) Reject(CompileError::UnsupportedOperand);
+    __ sub(v::sp, v::sp, Operand(16));
+    __ str(v::x1, MemOperand(v::sp));
+    HostAddress(1, callback.Payload(), HostSymbol::None);
+    HostAddress(30, LambdaHelper(), HostSymbol::ArmLambdaBridge);
+    __ blr(v::x30);
+    __ ldr(v::x1, MemOperand(v::sp));
+    __ add(v::sp, v::sp, Operand(16));
+    HelperFPEnvironment(true);
+    ReloadPinned();
+    Shadow(true);
+    nzcv_matches = 0;
+    if (ctx.operation.type != Type::Void) {
+        Move(ctx.destination, 0);
+        if (ctx.width < 64) Extract(ctx.destination, ctx.destination, 0, ctx.width);
+        SaveResult(ctx);
+    }
+}
 
 void Writer::HandleReadSystemFamily(OpContext& ctx) {
     const auto kind = IntegerImmediate(ctx.cursor.Take()),

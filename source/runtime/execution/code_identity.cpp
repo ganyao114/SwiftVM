@@ -2,6 +2,7 @@
 #include "dispatch.h"
 #include "host_backend.h"
 #include "runtime.h"
+#include "runtime/arch/x86/cpu.h"
 #include "svm/code_build_id.h"
 
 #include <bit>
@@ -38,6 +39,7 @@ CodeImageKey MakeCodeImageKey(const Digest& guest,
     Number(config, static_cast<unsigned>(backend.target.mode));
     Number(config, backend.target.target);
     Number(config, backend.target.features);
+    Number(config, backend.isa_features);
     const auto& c = backend.capabilities;
     for (const bool value : {c.rcpc_loads,
                              c.rcpc_imm9,

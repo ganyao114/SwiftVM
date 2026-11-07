@@ -1,4 +1,5 @@
 #include "tests/support/arm64_fixture.h"
+#include "runtime/exit.h"
 
 namespace {
 using namespace swift::tests::arm64_fixture;
@@ -1559,15 +1560,51 @@ void ScalarAtomicSequence() {
     }
 }
 
+void ScalarDivision() {
+    using swift::runtime::ExitValue;
+    using swift::runtime::NativeExit;
+    for (const auto scope : {Scope::Block, Scope::Function}) {
+        for (const auto op : {OpCode::Div, OpCode::SignedDiv64}) {
+            Builder builder{scope};
+            Need(builder.BeginBlock(Create(builder)));
+            const auto lhs = Load(builder, 0), rhs = Load(builder, 8);
+            const auto result = Need(
+                    builder.Append(op, Type::U64, {Operand::ValueOf(lhs), Operand::ValueOf(rhs)}));
+            Need(builder.EndBlock(Terminal::Return(result)));
+            const auto code = ::Compile(Submit(builder), arm64::CompileOptions{16});
+            const auto check = [&](u64 a, u64 b, u64 wanted) {
+                std::array<std::uint8_t, 24> state{};
+                Write64(state.data(), a);
+                Write64(state.data() + 8, b);
+                Write64(state.data() + 16, 0xa400003c);
+                if (NativeMode()) {
+                    Execute(code, state.data(), wanted);
+                    Check(Read64(state.data() + 16) == 0xa400003c,
+                          "scalar division leaves guest flags intact");
+                }
+            };
+            check(42, 6, 7);
+            check(17, 0, ExitValue(NativeExit::DivideFault));
+            if (op == OpCode::SignedDiv64) {
+                check(u64(-7), 3, u64(-2));
+                check(u64{1} << 63, u64(-1), ExitValue(NativeExit::DivideFault));
+                check(u64{1} << 63, 1, u64{1} << 63);
+            } else {
+                check(UINT64_MAX, 2, UINT64_MAX / 2);
+            }
+        }
+    }
+}
+
 void Unsupported() {
-    for (const bool flags : {false, true}) {
+    {
         Builder builder{Scope::Block};
         Need(builder.BeginBlock(Create(builder)));
         const auto left = Constant(builder, 9);
         OperationMetadata metadata;
-        if (flags) metadata.flag_outputs = 1;
+        metadata.flag_outputs = 1;
         const auto value =
-                Need(builder.Append(flags ? OpCode::Add : OpCode::Div,
+                Need(builder.Append(OpCode::Add,
                                     Type::U64,
                                     {Operand::ValueOf(left), Operand::Immediate(3, Type::U64)},
                                     metadata));
@@ -1575,8 +1612,7 @@ void Unsupported() {
         auto program = Submit(builder);
         const auto code = arm64::Compile(program);
         Check(!code && code.words.empty() && code.node == value.node &&
-                      code.error == (flags ? arm64::CompileError::UnsupportedFlags
-                                           : arm64::CompileError::UnsupportedOpcode),
+                      code.error == arm64::CompileError::UnsupportedFlags,
               "unsupported work must not publish partial words");
     }
     const auto empty = arm64::Compile(Program{});
@@ -1618,6 +1654,8 @@ TEST_CASE("ReorderedBodies", "[compile][native][arm64]") { CHECK_NOTHROW(Reorder
 TEST_CASE("EntryAndTerminals", "[compile][native][arm64]") { CHECK_NOTHROW(EntryAndTerminals()); }
 
 TEST_CASE("Unsupported", "[compile][arm64]") { CHECK_NOTHROW(Unsupported()); }
+
+TEST_CASE("ScalarDivision", "[compile][native][arm64]") { CHECK_NOTHROW(ScalarDivision()); }
 
 TEST_CASE("ArithmeticFlags", "[compile][native][arm64]") { CHECK_NOTHROW(ArithmeticFlags()); }
 

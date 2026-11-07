@@ -2,6 +2,7 @@
 
 #include "runtime/backend/code.h"
 #include "runtime/ir/types.h"
+#include "runtime/arch/guest.h"
 
 namespace swift::runtime::ir {
 class Program;
@@ -29,11 +30,13 @@ struct HostBackendOps {
     void* context{};
     ir::TargetInfo target;
     HostCapabilities capabilities;
+    std::uint64_t isa_features{};
     // Physical private-state banks belong to the selected native ABI.
     std::uint8_t pinned_uniform_slots{};
     bool pinned_vectors{};
     // Only backends that bake software DAZ/FTZ into code need separate domains.
     bool specializes_fp_flush{};
+    void (*configure)(void*, const GuestLayout&) noexcept {};
     backend::CompileResult& (*compile)(void*, const ir::Program&, HostCompileRequest){};
     bool (*relocate)(void*,
                      std::span<std::uint8_t>,

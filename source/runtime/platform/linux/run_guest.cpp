@@ -81,7 +81,8 @@ RunResult RunGuest(const std::string& executable,
                         : 0;
     return {code, stats, std::move(error), recorded};
 }
-#if !defined(__aarch64__) && !(defined(__riscv) && __riscv_xlen == 64)
+#if !defined(__aarch64__) && !(defined(__riscv) && __riscv_xlen == 64) && !defined(__x86_64__) &&  \
+        !defined(__loongarch64)
 extern "C" std::uint64_t SvmRunNative(NativeRunContext*) noexcept {
     return ExitValue(NativeExit::ResolveFailure);
 }

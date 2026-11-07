@@ -224,6 +224,17 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
         MergeFlags(((value & 1) << 29) | ((value & 4) << 28) | ((value & 2) ? 0 : 1),
                    FlagBits(Flag::All));
         return {};
+    } else if constexpr (op == OpCode::Div) {
+        std::size_t cursor = 1;
+        const auto divisor = static_cast<u64>(Expression(a, cursor));
+        if (!divisor) throw Exit{ExitKind::Fault};
+        return Number(read(0) / divisor, type);
+    } else if constexpr (op == OpCode::SignedDiv64) {
+        const auto dividend = std::bit_cast<std::int64_t>(read(0));
+        const auto divisor = std::bit_cast<std::int64_t>(read(1));
+        if (!divisor || (dividend == std::numeric_limits<std::int64_t>::min() && divisor == -1))
+            throw Exit{ExitKind::Fault};
+        return Number(static_cast<u64>(dividend / divisor), Type::U64);
     } else if constexpr (op == OpCode::Div128) {
         const unsigned width = TypeBits(View(a[0]));
         const auto high = read(0), low = read(1), divisor = read(2);
@@ -261,6 +272,19 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
         AtomicValue observed;
         ObserveAccess(services.atomic(services.opaque, request, observed));
         return Number(u128{observed.low} | (u128{observed.high} << 64), Type::V128);
+    } else if constexpr (op == OpCode::CallLambda) {
+        if (a.size() < 2 || a.size() > 5 || a[0].kind != OperandKind::Lambda ||
+            a[1].kind != OperandKind::Immediate || !a[1].payload ||
+            (type != Type::Void && !IntegerType(type)))
+            throw Exit{ExitKind::Unsupported};
+        u64 arguments[3]{};
+        for (std::size_t i = 2; i < a.size(); ++i) {
+            if (!IntegerType(View(a[i]))) throw Exit{ExitKind::Unsupported};
+            arguments[i - 2] = static_cast<u64>(Read(a[i]));
+        }
+        using Callback = u64 (*)(u64, u64, u64);
+        const auto callback = reinterpret_cast<Callback>(static_cast<std::uintptr_t>(a[1].payload));
+        return Number(callback(arguments[0], arguments[1], arguments[2]), type);
     } else if constexpr (op == OpCode::AtomicExchange || op == OpCode::AtomicFetchAdd ||
                          op == OpCode::AtomicRMW || op == OpCode::CompareAndSwap) {
         if (!services.atomic) throw Exit{ExitKind::Unsupported};
@@ -270,8 +294,16 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
             request.address = read(1);
             request.desired.low = read(2);
             request.carry = read(3) != 0;
-            request.operation = static_cast<AtomicOperation>(
-                    static_cast<unsigned>(AtomicOperation::Add) + read(0));
+            const auto kind = read(0);
+            if (kind > static_cast<unsigned>(AtomicRMWOp::UnsignedMin))
+                throw Exit{ExitKind::Unsupported};
+            request.operation =
+                    kind <= static_cast<unsigned>(AtomicRMWOp::SubBorrow)
+                            ? static_cast<AtomicOperation>(
+                                      static_cast<unsigned>(AtomicOperation::Add) + kind)
+                            : static_cast<AtomicOperation>(
+                                      static_cast<unsigned>(AtomicOperation::SignedMax) + kind -
+                                      static_cast<unsigned>(AtomicRMWOp::SignedMax));
         } else {
             request.address = read(0);
             request.desired.low = read(op == OpCode::CompareAndSwap ? 2 : 1);

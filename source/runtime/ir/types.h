@@ -195,6 +195,10 @@ enum class AtomicRMWOp : std::uint8_t {
     Neg,
     AddCarry,
     SubBorrow,
+    SignedMax,
+    SignedMin,
+    UnsignedMax,
+    UnsignedMin,
 };
 
 // Neutral flags-word ABI. Raw u64 operands/metadata can retain additional
