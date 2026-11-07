@@ -115,10 +115,10 @@ int main(int argc, char** argv) {
                 "%llu,"
                 "\"peak_code_virtual_bytes\":%llu,\"peak_slabs\":%llu,\"peak_dual_slabs\":%llu,"
                 "\"wx_fallback_used\":%s,\"cache_invalidations\":%llu,"
-                "\"dispatch_cache\":\"native_directory_with_local_target_cache\",\"cache_slot_"
+                "\"dispatch_cache\":\"%s\",\"cache_slot_"
                 "bytes\":%zu,\"native_code_bytes\":%zu,"
                 "\"cache_allocation_kind\":\"pc_slots_and_ready_code_rows\","
-                "\"dispatch_count_kind\":\"diagnostic_native_local_cache_and_directory_attempts\","
+                "\"dispatch_count_kind\":\"%s\","
                 "\"dispatch_counts_available\":%s,\"resolved_links_bypass_dispatch_count\":true,"
                 "\"peak_cache_entries\":%llu,\"peak_cache_occupied\":%llu,\"peak_cache_slots\":%"
                 "llu,\"cache_table_allocations\":%llu,"
@@ -165,8 +165,12 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long long>(s.peak_dual_slabs),
                 s.code_wx_fallback ? "true" : "false",
                 static_cast<unsigned long long>(s.cache_invalidations),
+                s.native_local_cache ? "native_directory_with_local_target_cache"
+                                     : "native_directory",
                 sizeof(DispatchSlot),
                 sizeof(NativeCode),
+                s.native_local_cache ? "diagnostic_native_local_cache_and_directory_attempts"
+                                     : "diagnostic_native_directory_attempts",
                 options.decode_timing ? "true" : "false",
                 static_cast<unsigned long long>(s.peak_cache_entries),
                 static_cast<unsigned long long>(s.peak_cache_occupied),

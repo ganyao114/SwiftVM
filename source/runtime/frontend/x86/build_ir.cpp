@@ -653,9 +653,12 @@ BuildResult EmitDecoded(InstructionRange instructions,
                         Terminal::Branch(condition, target_block(taken), target_block(next_pc))));
         };
 
+        using Finish = decltype(finish);
+        using Branch = decltype(branch);
+
         struct Flow {
-            decltype(finish)& finish;
-            decltype(branch)& branch;
+            Finish& finish;
+            Branch& branch;
         } cfg_flow{finish, branch};
 
         std::size_t source{};

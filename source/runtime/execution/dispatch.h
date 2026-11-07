@@ -71,6 +71,9 @@ struct NativeRunContext {
     // Linked XMM0..15 live in v16..v31. Cold C++ boundaries publish/reload
     // the complete bank; UINT32_MAX retains the ordinary memory ABI.
     std::uint64_t pinned_vector_offset{UINT32_MAX};
+    // Cold qualification for native atomics implemented by a fault-intolerant
+    // helper: 0=allowed, 1=guest access fault, 2=unsupported backing.
+    std::uint64_t (*prepare_atomic)(void*, std::uint64_t, std::size_t) noexcept {};
     GuestState state;
 };
 
@@ -93,6 +96,7 @@ static_assert(offsetof(NativeRunContext, guest_fpcr) == 120 &&
               offsetof(NativeRunContext, fp_environment) == 128);
 static_assert(offsetof(NativeRunContext, probe_steps) == 136);
 static_assert(offsetof(NativeRunContext, pinned_vector_offset) == 144);
+static_assert(offsetof(NativeRunContext, prepare_atomic) == 152);
 static_assert(offsetof(NativeRunContext, state) == 160);
 
 // Linked units enter/leave through these thunks. Only SvmNativeExit returns to C++;

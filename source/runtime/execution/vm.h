@@ -61,6 +61,7 @@ private:
     static std::uintptr_t ResolveBridge(void*, NativeRunContext*) noexcept;
     static const NativeCode* LookupNative(void*, std::uintptr_t) noexcept;
     static bool RecoverCodeWrite(void*, std::uintptr_t) noexcept;
+    static std::uint64_t PrepareAtomic(void*, std::uint64_t, std::size_t) noexcept;
     bool PrepareGuestWrite(std::uint64_t, std::size_t);
     bool GuestWrite(std::uint64_t, const void*, std::size_t);
     void FileChanged(int);

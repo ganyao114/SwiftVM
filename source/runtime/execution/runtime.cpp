@@ -15,7 +15,6 @@ namespace front = ::swift::x86;
 
 namespace {
 using u64 = std::uint64_t;
-constexpr std::uint8_t pinned_uniform_slots = 16;
 
 MappingRelease Merge(MappingRelease a, MappingRelease b) noexcept {
     a.remaining_views += b.remaining_views;
@@ -102,11 +101,14 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     auto& faults = thread.faults;
     native.opaque = this;
     native.resolve = ResolveBridge;
+    native.prepare_atomic = PrepareAtomic;
     native.active = &faults.active;
     native.anchor = &thread.anchor;
-    native.pinned_uniform_offset = offsetof(x86::GuestState, gprs);
-    native.pinned_uniform_slots = pinned_uniform_slots;
-    native.pinned_vector_offset = offsetof(x86::GuestState, xmm);
+    native.pinned_uniform_offset =
+            backend.pinned_uniform_slots ? offsetof(x86::GuestState, gprs) : UINT32_MAX;
+    native.pinned_uniform_slots = backend.pinned_uniform_slots;
+    native.pinned_vector_offset =
+            backend.pinned_vectors ? offsetof(x86::GuestState, xmm) : UINT32_MAX;
     native.flags_offset = offsetof(x86::GuestState, packed_flags);
     native.pc_offset = offsetof(x86::GuestState, pc);
     native.fp_environment = 1;
@@ -117,9 +119,9 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     faults.code_write_opaque = this;
     faults.patch_ordered = backend.patch_fault;
     faults.recover_native = backend.recover_native;
-    faults.pinned_uniform_offset = offsetof(x86::GuestState, gprs);
-    faults.pinned_uniform_slots = pinned_uniform_slots;
-    faults.pinned_vector_offset = offsetof(x86::GuestState, xmm);
+    faults.pinned_uniform_offset = native.pinned_uniform_offset;
+    faults.pinned_uniform_slots = backend.pinned_uniform_slots;
+    faults.pinned_vector_offset = native.pinned_vector_offset;
     faults.flags_offset = offsetof(x86::GuestState, packed_flags);
     faults.native_nzcv = backend.capabilities.native_nzcv;
     RefreshNative(native);
@@ -190,10 +192,12 @@ int VM::Run(const std::string& path,
         FaultScope registration{thread.faults, thread.native.state};
         stats.rcpc_loads = backend.capabilities.rcpc_loads;
         stats.rcpc_imm9 = backend.capabilities.rcpc_imm9;
-        stats.fault_locations = stats.recover_unaligned = true;
+        stats.fault_locations = true;
+        stats.recover_unaligned = backend.patch_fault != nullptr;
         stats.private_uniforms = true;
-        stats.pinned_uniform_slots = pinned_uniform_slots;
+        stats.pinned_uniform_slots = backend.pinned_uniform_slots;
         stats.native_nzcv = backend.capabilities.native_nzcv;
+        stats.native_local_cache = backend.reset_indirect != nullptr;
         // All mutable recovery state is in GuestThread, before this jump point.
         // Native and its cold resolver end active before creating C++ owners.
         if (sigsetjmp(thread.faults.jump, 1)) {
@@ -228,6 +232,14 @@ int VM::Run(const std::string& path,
                 Interpret();
             else if (reason == 4)
                 throw std::runtime_error("x87 unsupported command or unmasked exception");
+            else if (reason == 6)
+                throw std::runtime_error("native atomic access is unsupported");
+            else if (reason == 7)
+                throw std::runtime_error("guest integer division fault");
+            else if (reason == 8)
+                throw std::runtime_error("guest memory alignment fault");
+            else if (reason == 9)
+                throw std::runtime_error("guest memory access fault");
             else if (reason != 0)
                 throw std::runtime_error("unknown native dispatch exit reason");
         }
@@ -256,6 +268,21 @@ bool VM::PrepareGuestWrite(u64 address, std::size_t size) {
 
 bool VM::GuestWrite(u64 address, const void* source, std::size_t size) {
     return PrepareGuestWrite(address, size) && memory.CopyOut(address, source, size);
+}
+
+std::uint64_t VM::PrepareAtomic(void* opaque, u64 address, std::size_t size) noexcept {
+    auto& vm = *static_cast<VM*>(opaque);
+    if (!vm.memory.Accessible(address, size, PROT_READ | PROT_WRITE)) return 1;
+    const auto end = address + size;
+    for (const auto& region : vm.memory.Regions()) {
+        if (region.address >= end) break;
+        if (region.address + region.size > address && region.backing != BackingKind::Anonymous)
+            return 2;
+    }
+    // The single guest owns these stable anonymous mappings. Disarm actual
+    // SMC watches before libatomic can enter a lock; retain the active unit
+    // until its next dispatcher boundary rather than invalidating it here.
+    return vm.smc.PrepareWriteRange(address, size) ? 0 : 1;
 }
 
 void VM::FileChanged(int fd) {

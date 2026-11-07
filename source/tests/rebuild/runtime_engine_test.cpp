@@ -1,6 +1,6 @@
 #include "runtime/execution/runtime.h"
 #include "runtime/execution/vm.h"
-#include "runtime/platform/linux/arm64_runtime.h"
+#include "runtime/platform/linux/host_runtime.h"
 
 #include <array>
 #include <cerrno>
@@ -66,7 +66,11 @@ public:
     std::string Path() const { return path.data(); }
 
 private:
+#if defined(__ANDROID__)
     std::array<char, 64> path{"/data/local/tmp/swiftvm-engine-test-XXXXXX"};
+#else
+    std::array<char, 64> path{"/tmp/swiftvm-engine-test-XXXXXX"};
+#endif
 };
 
 void Interpreter(const std::string& path) {
@@ -136,7 +140,7 @@ void ColdDirectory() {
           "release starts fresh heat and unsupported state");
 }
 
-#if defined(__aarch64__)
+#if defined(__aarch64__) || (defined(__linux__) && defined(__riscv) && __riscv_xlen == 64)
 void Tiered() {
     // The first request includes one loop iteration. Its taken edge enters
     // the independently hot body; the exit remains a cold block in Block mode.
@@ -171,7 +175,7 @@ void Tiered() {
                       "cold code runs without constructing IR or allocating native code");
         }
     }
-    swift::runtime::platform::Arm64Runtime host{false};
+    swift::runtime::platform::HostRuntime host{false};
     auto operations = host.Bind();
     operations.compile = [](void*,
                             const swift::runtime::ir::Program&,
@@ -193,7 +197,7 @@ void Tiered() {
 }
 
 void Mixed(const std::string& path, bool invalid) {
-    swift::runtime::platform::Arm64Runtime host{false};
+    swift::runtime::platform::HostRuntime host{false};
     auto operations = host.Bind();
     if (invalid)
         operations.compile = [](void*,
@@ -242,7 +246,7 @@ int main() {
         SourceAdmission();
         ColdDirectory();
         Interpreter(guest.Path());
-#if defined(__aarch64__)
+#if defined(__aarch64__) || (defined(__linux__) && defined(__riscv) && __riscv_xlen == 64)
         Tiered();
         Mixed(guest.Path(), false);
         Mixed(guest.Path(), true);

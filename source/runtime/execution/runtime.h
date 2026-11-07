@@ -58,6 +58,7 @@ struct RuntimeStats {
     std::uint64_t fault_sites{}, unaligned_recoveries{}, unaligned_patches{};
     std::uint64_t run_lifetime_ns{}, unsupported_syscalls{};
     std::uint32_t pinned_uniform_slots{};
+    bool native_local_cache{};
     bool code_wx_fallback{}, rcpc_loads{}, rcpc_imm9{}, fault_locations{}, recover_unaligned{},
             private_uniforms{}, native_nzcv{};
     // frontend_ns includes formation, actual byte decoding, buffer management

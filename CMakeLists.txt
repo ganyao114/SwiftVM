@@ -87,6 +87,38 @@ target_compile_features(svm_vixl_exact PUBLIC cxx_std_20)
 target_compile_definitions(svm_vixl_exact PUBLIC VIXL_INCLUDE_TARGET_AARCH64)
 target_link_libraries(svm_arm64 PRIVATE svm_vixl_exact)
 
+# Exact RV encoding uses the result's word vector directly. Upstream test,
+# cpu probing, executable-buffer and optimization entry points are not used.
+add_library(svm_biscuit_exact STATIC
+    source/runtime/externals/biscuit/src/assembler.cpp
+    source/runtime/externals/biscuit/src/assembler_compressed.cpp
+    source/runtime/externals/biscuit/src/assembler_crypto.cpp
+    source/runtime/externals/biscuit/src/assembler_floating_point.cpp
+    source/runtime/externals/biscuit/src/assembler_vector.cpp
+    source/runtime/externals/biscuit/src/code_buffer.cpp)
+target_include_directories(svm_biscuit_exact PUBLIC source/runtime/externals/biscuit/include)
+target_compile_features(svm_biscuit_exact PUBLIC cxx_std_20)
+add_library(svm_riscv64 STATIC
+    source/runtime/backend/riscv64/allocate.cpp
+    source/runtime/backend/riscv64/compile.cpp
+    source/runtime/backend/riscv64/patch.cpp
+    source/runtime/backend/riscv64/emit.cpp
+    source/runtime/backend/riscv64/emit_operand.cpp
+    source/runtime/backend/riscv64/emit_scalar.cpp
+    source/runtime/backend/riscv64/emit_memory.cpp
+    source/runtime/backend/riscv64/emit_flags.cpp
+    source/runtime/backend/riscv64/emit_control.cpp
+    source/runtime/backend/riscv64/emit_atomic.cpp
+    source/runtime/backend/riscv64/atomic_helpers.cpp
+    source/runtime/backend/riscv64/emit_calls.cpp
+    source/runtime/backend/riscv64/call_helpers.cpp
+    source/runtime/backend/riscv64/emit_vector.cpp
+    source/runtime/backend/riscv64/emit_float.cpp)
+target_link_libraries(svm_riscv64 PUBLIC svm_ir PRIVATE svm_biscuit_exact svm_x87)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_libraries(svm_riscv64 PRIVATE atomic)
+endif()
+
 # This private helper closure performs only integer arithmetic. Its bridge
 # preserves NZCV/GPRs; vector registers and the FP environment stay untouched.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
@@ -137,9 +169,17 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/platform/linux/syscalls.cpp
         source/runtime/platform/linux/safe_access.cpp
         source/runtime/platform/linux/signals.cpp
-        source/runtime/platform/linux/arm64_runtime.cpp
-        source/runtime/platform/linux/arm64_entry.S)
-    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_ir_optimize svm_arm64)
+        source/runtime/platform/linux/run_guest.cpp)
+    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_ir_optimize)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64")
+        target_sources(svm_execution PRIVATE source/runtime/platform/linux/riscv64_runtime.cpp
+            source/runtime/platform/linux/riscv64_entry.S)
+        target_link_libraries(svm_execution PUBLIC svm_riscv64)
+    else()
+        target_sources(svm_execution PRIVATE source/runtime/platform/linux/arm64_runtime.cpp
+            source/runtime/platform/linux/arm64_entry.S)
+        target_link_libraries(svm_execution PUBLIC svm_arm64)
+    endif()
     add_executable(svm_rebuild_linux source/launcher/linux/main.cpp)
     target_link_libraries(svm_rebuild_linux PRIVATE svm_execution)
     add_executable(svm_runtime_engine_test source/tests/rebuild/runtime_engine_test.cpp)
@@ -161,6 +201,8 @@ add_executable(svm_compile_pipeline_test source/tests/rebuild/compile_pipeline_t
 target_link_libraries(svm_compile_pipeline_test PRIVATE svm_x86_ir svm_ir_optimize svm_arm64 distorm)
 add_executable(svm_ir_direct_test source/tests/rebuild/ir_direct_test.cpp)
 target_link_libraries(svm_ir_direct_test PRIVATE svm_ir_direct)
+add_executable(svm_riscv64_compile_test source/tests/rebuild/riscv64_compile_test.cpp)
+target_link_libraries(svm_riscv64_compile_test PRIVATE svm_riscv64)
 add_executable(svm_x86_interpreter_test source/tests/rebuild/x86_interpreter_test.cpp)
 target_link_libraries(svm_x86_interpreter_test PRIVATE svm_x86_ir)
 
@@ -202,6 +244,7 @@ add_test(NAME arm64_compile_contract COMMAND svm_arm64_compile_test)
 add_test(NAME compile_pipeline_contract COMMAND svm_compile_pipeline_test)
 add_test(NAME x86_interpreter_contract COMMAND svm_x86_interpreter_test)
 add_test(NAME ir_direct_contract COMMAND svm_ir_direct_test)
+add_test(NAME riscv64_compile_contract COMMAND svm_riscv64_compile_test)
 if(TARGET svm_runtime_engine_test)
     add_test(NAME runtime_engine_contract COMMAND svm_runtime_engine_test)
 endif()

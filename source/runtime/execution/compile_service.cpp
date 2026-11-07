@@ -58,8 +58,9 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     layout.cpu_query = reinterpret_cast<std::uintptr_t>(&x86::QueryGuestCpu);
     layout.system_query = reinterpret_cast<std::uintptr_t>(&x86::QueryGuestSystem);
     layout.runtime_state_services = true;
-    const bool private_guest_state =
-            faults.registered && native.pinned_uniform_offset != UINT32_MAX;
+    // The VM's guest mappings and owned state are disjoint regardless of
+    // whether this backend keeps architectural fields in physical registers.
+    const bool private_guest_state = faults.registered;
     auto target = vm.backend.target;
     if (faults.registered) target.features |= static_cast<u64>(ir::TargetFeature::FaultLocations);
     if (private_guest_state)

@@ -197,9 +197,12 @@ StepResult InterpretDecoded(const Instruction& decoded,
         finish(condition.number.bits ? yes : no);
     };
 
+    using Finish = decltype(finish);
+    using Branch = decltype(branch);
+
     struct Flow {
-        decltype(finish)& finish;
-        decltype(branch)& branch;
+        Finish& finish;
+        Branch& branch;
     } flow{finish, branch};
 
     bool ended{};

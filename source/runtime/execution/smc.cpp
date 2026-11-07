@@ -115,6 +115,18 @@ bool Smc::Recover(std::uintptr_t address) noexcept {
     return true;
 }
 
+bool Smc::PrepareWriteRange(u64 address, std::size_t size) noexcept {
+    if (!size) return true;
+    const auto page = address & ~(u64{vm.memory.PageSize()} - 1);
+    const auto end = address + size;
+    auto at = std::lower_bound(pages.begin(), pages.end(), page, [](const Page& row, u64 value) {
+        return row.address < value;
+    });
+    for (; at != pages.end() && at->address < end; ++at)
+        if (at->armed && !Recover(at->address)) return false;
+    return true;
+}
+
 void Smc::Clear() {
     const auto page_size = vm.memory.PageSize();
     for (auto& page : pages)

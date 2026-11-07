@@ -28,6 +28,9 @@ struct HostBackendOps {
     void* context{};
     ir::TargetInfo target;
     HostCapabilities capabilities;
+    // Physical private-state banks belong to the selected native ABI.
+    std::uint8_t pinned_uniform_slots{};
+    bool pinned_vectors{};
     backend::CompileResult& (*compile)(void*, const ir::Program&, HostCompileRequest){};
     void (*trim)(void*) noexcept {};
     void (*release)(void*) noexcept {};

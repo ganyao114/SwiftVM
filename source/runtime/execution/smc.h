@@ -15,6 +15,9 @@ public:
 
     void Arm(std::uint64_t, std::size_t);
     bool Recover(std::uintptr_t) noexcept;
+    // Caller has qualified the complete writable range. Retains native code
+    // while removing any actual write watches before a fault-intolerant helper.
+    bool PrepareWriteRange(std::uint64_t, std::size_t) noexcept;
     void Clear();
     void Invalidate();
 
