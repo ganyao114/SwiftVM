@@ -1,0 +1,47 @@
+{
+  "svm_ir_direct_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_ir_direct_test",
+    "bytes": 2330808,
+    "sha256": "475e2e4fb49338cba57cfc0bb4b72a8458d9d97acc1bac3e06901e53bcd84e23"
+  },
+  "svm_ir_optimize_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_ir_optimize_test",
+    "bytes": 3099208,
+    "sha256": "17d9f5e8c79c1ce13566a8db53b853e3a60bf071d9319fdbc833f6247c84551c"
+  },
+  "svm_arm64_compile_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_arm64_compile_test",
+    "bytes": 17680080,
+    "sha256": "ac235939a90fcea87da2a8773a0b69853bd57df84e669d0f75e3531a35c0b5e4"
+  },
+  "svm_compile_pipeline_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_compile_pipeline_test",
+    "bytes": 17934496,
+    "sha256": "ff2ef923a4b208e5a87c4e203c9bb496015f2fc11a9d32f58ce63a8661d8921e"
+  },
+  "svm_instruction_coverage_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_instruction_coverage_test",
+    "bytes": 20114680,
+    "sha256": "60960e62d7bea179fedb82861d5dd5ade2df25ad2feb5eb7fc1737270b40e394"
+  },
+  "svm_avx_coverage_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_avx_coverage_test",
+    "bytes": 20655304,
+    "sha256": "8d142208e1bb657a96bebb55f35c8196ed4a32895e8bf76319542828507b4025"
+  },
+  "svm_x87_coverage_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_x87_coverage_test",
+    "bytes": 20574520,
+    "sha256": "c89145381844a801f577dd3d10f662c780235536c8eee7adb1455630aac62345"
+  },
+  "svm_runtime_engine_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_engine_test",
+    "bytes": 22422152,
+    "sha256": "9bebe5a29748d90168de3440af647080f7bfa57bf7c6a3c054f62b1b90852dae"
+  },
+  "svm_x86_interpreter_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_x86_interpreter_test",
+    "bytes": 11743016,
+    "sha256": "e96ff894cc5d0e88fc1349cd3b87040490f00e28983dbdea372f68d7efc9c7a3"
+  }
+}

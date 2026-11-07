@@ -1,0 +1,53 @@
+{
+  "base_commit": "420c3d462bbe667b70fa7d7bd7b74293e37cee79",
+  "completed_at_utc": "2026-11-07T07:24:48.387799+00:00",
+  "functional_regression_snapshot": "verification.json",
+  "changes_since_functional_regression": [
+    {
+      "path": "source/launcher/linux/main.cpp",
+      "tested_sha256": "f818043d9d69dd6897593b822acfcc280213206a9dfd856c9f61b5c1ba87ccde",
+      "submission_sha256": "b3db5fe43d41470e69445f7d33ec551a754a234c7f051ae62582b09745ff80bc"
+    }
+  ],
+  "change_scope": "Only launcher help wording changed after the 10 host and 9 phone regressions; runtime, IR, frontend and tests are identical to their recorded hashes. README and architecture prose now explicitly state JitOnly is the default.",
+  "format": {
+    "checked_cpp_files": 159,
+    "failures": 0
+  },
+  "final_android_runner": {
+    "sha256": "0440bbe7ed49cbe9e308a64f2af9e3c1759352f397e55705a6f1a2be984fecd4",
+    "bytes": 22426792,
+    "build_type": "Release",
+    "ipo": true
+  },
+  "final_default_cli_checks": [
+    {
+      "scope": "block",
+      "engine": "jit",
+      "exit_code": 40,
+      "interpreted_steps": 0,
+      "compile_attempts": 3,
+      "native_bytes": 300
+    },
+    {
+      "scope": "function",
+      "engine": "jit",
+      "exit_code": 40,
+      "interpreted_steps": 0,
+      "compile_attempts": 1,
+      "native_bytes": 184
+    }
+  ],
+  "help_default_jit_assertion": true,
+  "phone_cleanup": {
+    "namespace": "/data/local/tmp/swiftvm-tiered-submit-20261106",
+    "active_processes": [],
+    "open_files": [],
+    "remaining_bytes": 0,
+    "errors": [],
+    "allocated_bytes_removed": 22462464,
+    "df_actual_free_delta_bytes": 22470656
+  },
+  "external_results": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/tiered-dispatch-submit-20261106",
+  "new_fex_or_compile_timing_comparison": false
+}

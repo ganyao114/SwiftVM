@@ -65,7 +65,7 @@ x86 bytes -> DecodeOne
                |                                                            |
                |                                                CodeHeap/CodeCache/SMC
                |
-               +-- ExecuteInstruction<DirectSink> -> 直接执行/服务事件
+               +-- ExecuteInstruction<DirectSink> -> ir::direct::Interpreter::Emit<Op> -> 数值执行/服务事件
 ```
 
 两个 IrSink 路径消费同一份语义定义。Function 形成在 IR 出生前完成，Block 可以按现有方式流式出生；解释器不需要先形成 region 或构造 Program。
@@ -105,7 +105,7 @@ x86 bytes -> DecodeOne
 - Unknown/EarlyOff 保持通用 IR；可写源仍按当前单 source-block／外部边政策形成。
 - 不重建旧 reset/redecode 循环，不增加全 opcode 支持扫描。
 
-### 4.3 推荐终态：一份高层语义，两个静态 consumer
+### 4.3 一份前端语义，IR 构建与 IR direct 两个 consumer
 
 ```cpp
 template<class Sink>
@@ -116,9 +116,13 @@ StepResult ExecuteInstruction(Sink&, InstructionView);
 // DirectSink::Value = 实际标量／向量值
 ```
 
-共用的应是指令形式验证、guest operand 规则、访存／提交顺序、架构控制流和异常时机。IrSink 保留现有 NodeId、GPR/XMM 出生缓存、pending flags、地址合并与 Known-target 中立选码；DirectSink 持有实际 GuestState，通过 guest-memory service 访问内存。
+前端共用指令形式验证、guest operand 规则、访存／提交顺序、架构控制流和异常时机。IrSink 保留 NodeId、GPR/XMM 出生缓存、pending flags、地址合并与 Known-target 中立选码；DirectSink 只绑定 x86 字段和结构化控制，数值运算提交给独立的 `ir::direct::Interpreter`。
 
-这不是给 DirectSink 实现一个假的 `Emit<OpCode>`：
+两种 consumer 消费同一份 IR opcode／类型／metadata 合同。Builder 的 `Emit<OpCode>` 构建 Program，IR direct 的 `Emit<OpCode>` 立即返回数值快照，不分配 NodeId 或 IR 存储。IR direct 层只绑定 Uniform 字节区、flags／PC／FP 控制引用和内存／原子等执行服务，不依赖 GuestState、StateLayout、decoder 或 frontend 头；相同核心可供其他前端调用。Producer 保留 bits、flags、raw carry、第二返回值和 metadata，延迟 flags 提交只能消费捕获的快照，不能重新执行 producer。
+
+`DecodeOne` 产出的同一个 owned Instruction 可在运行时选择 `BuildDecodedIR` 或 `InterpretDecoded`。后者直接执行共享语义，不 fetch、不重新 decode、不先构造 Program。`InterpretOne` 只是 fetch → DecodeOne → InterpretDecoded 的便利入口。调用方保持相同 guest model 和有效代码版本；consumer 在完整 guest 提交边界选择，不能在单条指令的部分 IR 执行后改道重放。Mixed 模式在 NativeExit 完成状态／FP 同步后交接；这个 API 不承诺外部抢占 JIT 热循环，也不把编译失败后的再次取码计成“复用已解码记录”。
+
+具体合同：
 
 - `ReadGpr/WriteGpr` 共用 guest 子字段与 EAX 零高位规则，具体数值／符号值分别由 sink 处理。
 - 算术 helper 共用 flags 规则；IR sink 可以延迟等价的 flags 生成，解释器按架构提交点更新 portable snapshot。
@@ -144,13 +148,26 @@ StepResult ExecuteInstruction(Sink&, InstructionView);
 
 解释器访存必须新增明确的 safe-access 合同。现有 Native FaultSite 只能恢复已登记的 JIT 指令，不能替普通 C++ memcpy 提供 guest fault 语义。Memory service 负责 guest 逻辑权限、known EOF、SMC 写入口、顺序／atomic 要求以及返回故障；需要 faultable host access 时使用独立的窄 helper／platform recovery path，不能用未受保护的 C++ 访问假装已完成异常交付。
 
-StepResult 至少区分完成／有进度、服务事件、guest fault 和未支持。REP 可保持同PC而减少剩余工作；guest fault 可以带已定义的部分完成，不能再解释成 Unsupported。解释值保留 consumer 的有效 view 和 BitCast/GetFlags 等 raw transport 规则，不能一律按自然 type 截断。解释器普通 C++ 栈也不能直接套用现有 native siglongjmp：恢复应在窄 access helper 内安全返回，再由语义层传播状态，避免跨越含 RAII 的栈帧。
+StepResult 区分完成／有进度、服务事件、guest fault、未支持与 Incomplete。REP 可保持同PC而减少剩余工作；guest fault 可以带已定义的部分完成，不能再解释成 Unsupported。单次服务的 UnsupportedBeforeAccess 只保证那次 access 未发生；若此前已有成功访问或架构写入，整步返回 Incomplete，由 runtime 停止，不能换 consumer 重试。IR direct 用当前调用的一个 observed_effects 位记录实际进度，不建事务日志或回滚图。独立核心、同记录双 consumer 与部分进度的回归结果见 [验证记录](evidence/ir-direct-consumer-20261106/README.md)。解释值保留 consumer 的有效 view 和 BitCast/GetFlags 等 raw transport 规则，不能一律按自然 type 截断。解释器普通 C++ 栈也不能直接套用现有 native siglongjmp：恢复应在窄 access helper 内安全返回，再由语义层传播状态，避免跨越含 RAII 的栈帧。
+
+### 4.3.1 运行时冷解释、热编译
+
+运行时默认 `ExecutionMode::JitOnly`，所有请求入口立即走编译，不等待热度。只有显式选择 `--engine mixed`／`ExecutionMode::Mixed`，才在同一 VM 内按实际入口动态选择 consumer，不要求切换全局模式或复制前端。Mixed 的默认阈值为同一 PC／FP domain 的前 8 次冷入口请求解释，第 9 次请求编译；`RuntimeOptions::hot_threshold`／`--hot-threshold N` 可配置为 0..65535，0 为立即尝试编译。该阈值只作用于 Mixed，是入口访问次数，不是已执行 guest 指令数，也不是最优阈值的性能结论。
+
+- Resolve 先查询 ready entry；命中直接进入 native。未命中才计热，达到阈值后按请求的 Block 或 Function scope 编译。Function 发布的额外入口立即可用，不各自再等待热度。
+- 热度与 native unsupported 标记放在现有 domain `DispatchSlot` 的空余字节中，槽仍为 32B。slot 扩容、重排保留这些字段；源代码失效统一清除。不增加第二张热度表，也不在 ready native 路径计热。
+- 冷路径用 `InterpretBlock` 执行有界线性片段，不构造 Program；遇到控制流、服务、fault、代码改写、单次 REP 或指令预算边界即返回 dispatcher。进入已经 ready 的后继入口前也结束解释，避免继续解释可运行的 native 区间。它不是新的 region 形成 pass，没有持久 decoded／IR cache。
+- JIT unsupported 的入口暂记为不可编译，继续解释，避免每次热访问都重试失败。InvalidProgram 等实现错误仍停止；不会静默解释掩盖错误。SMC／映射失效同时复位该标记和热度。
+- native → cold 沿用已有退出桥发布 pins、向量、portable flags 并恢复宿主 FP；cold → native 复用唯一 GuestState 与既有 FP domain 接线。切换发生在已完成的 guest 边界，不重放半条指令。
+- `JitOnly` 仍为默认模式，绕过热度策略；`InterpretOnly` 不编译。当前策略只做冷入口晋升；不实现按时间降级、后台编译或对正在执行的 native 热循环异步换挡。
+
+统计中的 `interpreted_steps` 只计完成的 direct 执行步（含 REP 单次迭代），`compile_attempts` 和 native 分配继续报告实际工作，不把冷解释成本混作 JIT compile 成本。冷入口仍经过既有 native 冷桥，冷解释吞吐是否需要进一步优化应单独测量。实际冷／热晋升与状态交接结果见 [验证记录](evidence/tiered-dispatch-20261106/README.md)。
 
 ### 4.4 为什么不直接搬旧 interpreter
 
 旧 [interpreter.cpp](/Volumes/Data2/SwiftVM/source/runtime/backend/interp/interpreter.cpp:163) 消费旧 IR；旧 [Runtime](/Volumes/Data2/SwiftVM/source/runtime/backend/runtime.cpp:706) 还明确区分含 host-register 操作的 JIT IR 与可解释 IR。旧树没有现成的 `_DInst -> 直接执行` 引擎。
 
-解释当前中立 Program 是可行的替代路线：能较快复用前端，但仍承担 IR 构造和 Submit。它可作为过渡或测试 oracle，不能被称为无 IR 直接解释。本方案推荐终态为 DirectSink，不强制先建设并长期维护第三套生产 IR interpreter。旧数值／flags 算法、值槽语义和 x87 helper 按当前类型及合同选择性移植。
+解释当前中立 Program 是可行的替代路线：能较快复用前端，但仍承担 IR 构造和 Submit。它可作为过渡或测试 oracle，不能被称为不构造 Program 的直接解释。本方案终态是独立 IR direct 执行核心和前端薄适配；不增加第三套先构建／遍历 Program 的生产解释循环。旧数值／flags 算法、值槽语义和 x87 helper 按当前类型及合同选择性移植。
 
 ### 4.5 Guest state 与 host live state 分责，共用 native 基址
 
@@ -399,9 +416,9 @@ offset→实际映射地址只在发布时解析一次；源 target、patch kind
 - domain 只包含影响该 native 版本的实际 specialization，先保当前四种软件 DAZ/FTZ 模式；不把所有 MXCSR 位都扩成 cache key。
 - guest model、host features 和全局 memory policy 在 VM 内固定；变更时统一失效。
 - scope 是编译策略，不自动成为另一张 PC 表。第一阶段保 first-ready；将来 tier upgrade 通过受控替换／撤链，不覆盖共享 unit descriptor。
-- interpreter-only 模式无需创建 native CodeHeap。mixed 模式保留 Function 失败后从请求root尝试 Block 的既有策略；若再选择直接解释，必须从实际 GuestState.pc／已恢复的有效 continuation 执行。Function 的静态 error_pc 可能来自未执行的分支，不能作为解释器入口；IR 已出生的 prefix 也不是已执行的 guest prefix。
+- interpreter-only 模式无需分配 native CodeHeap 映射。Mixed 按实际入口热度先解释、后编译，细节见 4.3.1；热入口保留 Function 失败后从请求 root 尝试 Block 的既有策略。直接解释必须从实际 GuestState.pc／已恢复的有效 continuation 执行。Function 的静态 error_pc 可能来自未执行的分支，不能作为解释器入口；IR 已出生的 prefix 也不是已执行的 guest prefix。
 - DirectSink 在该条指令副作用前由同一个语义case确定支持度；开始执行后只返回完成／有进度、服务或 GuestFault，不能返回 Unsupported 让另一引擎重跑。REP 同PC且有进度也算成功。
-- 若需要记忆不可 JIT 的入口，绑定 source 版本的 slow entry 进入同一个目录，不能冒充已编译 unit，也不另建失败PC哈希表。
+- 不可 JIT 入口的标记与热度共用同一个 domain PC slot，仍是 pending，不能冒充已编译 unit，也不另建失败 PC 哈希表。源失效清除整个目录时一并清除。
 
 ### 7.5 旧 Runtime／Module／Function／Block：哪些合理，哪些不复用
 
@@ -536,10 +553,17 @@ source/runtime/
     semantics_vector.inc           # 当前 SIMD/FP 指令语义
     semantics_x87.inc              # x87 指令到共享数值协议
     build_ir.h  build_ir.cpp        # IrSink、出生缓存、中立选码、Program 输出
-    interpreter.h interpreter.cpp  # DirectSink、step/run、执行事件
+    interpreter.h interpreter.cpp  # x86薄DirectSink、InterpretDecoded和fetch/decode便利入口
 
   ir/                              # 唯一 Program/Builder/CellRange，跨前后端的 IR 合同
     optimize.h                     # 通用 IR 优化入口、Uniform 语义策略和结果统计
+    direct/
+      services.h                   # IR执行的访存／原子／CPU查询结果及服务
+      interpreter.h interpreter.cpp # 即时Emit、数值快照／metadata、环境与退出合同
+      scalar.inc                   # 标量／Uniform／flags／原子／x87数值原语
+      vector.inc                   # 向量整数与排列数值原语
+      float.inc                    # FP数值及guest控制；实际TU保留-frounding-math
+      crypto.inc sse42.inc         # 共享数值服务的IR入口
     passes/
       optimize.cpp                 # 单 owner、arena 预算、错误收口和固定阶段顺序
       liveness.cpp                 # use/flags 活跃性、Function CFG 摘要传播与最终 DCE
@@ -647,7 +671,7 @@ source/runtime/
 | P1 独立 decoder／定制VIXL exact assembler／Handle组织 | 一个DecodeOne；抽region；单Writer按职责拆源文件、同源薄派发到Handle；VIXL单sink、无隐式scratch/pool/veneer；同words typed encoder／labels | 以构建及现有少量编码／构造合同为主；显式operand之外的x16/x17/v31等保持；words与资源坐标等价；不扩大guest ISA、不新增验证pass |
 | P2 代码内存与执行服务 | VM／单GuestThread及MemMap/CodeHeap/CodeCache/CompileService职责落定；LoadedImage元数据；typed link资源；Linux bridge私有化 | shared unit base及全部entry、pending、single/dual map、release结果；不再保旧内嵌实现，不恢复持久IR／module管理树 |
 | P3 状态与SMC边界 | portable flags/x87定义、共同访存服务、统一写入通知及撤销／冷退休入口 | 已有SMC变体和file alias/EOF合同；保持单线程、可写单B资格 |
-| P4 共用语义与直接解释 | 分指令族抽semantics、IrSink保持JIT、DirectSink逐步覆盖当前子集；InterpretOnly/Mixed事件接线 | CALL/RET/POP/REP/x87 fault-prefix与提交次序；unsupported前无副作用；引擎切换guest状态完整 |
+| P4 共用语义与直接解释 | 分指令族抽semantics、IrSink保持JIT、独立IR direct执行当前子集；同一decoded记录按consumer选择；InterpretOnly/Mixed事件接线 | CALL/RET/POP/REP/x87 fault-prefix与提交次序；unsupported前无副作用；引擎切换guest状态完整 |
 | P5 统一锚定与清理 | 删除重复parser／raw encoding／旧公开类型／临时桥；更新实际支持矩阵 | 红魔相同ELF/FEX/配置固定五轮，分别验Block/Function与总compile窗口 |
 | 后续能力项目 | 可写多B guard、选择性失效、多guest线程／guest signals、更多ISA／host | 单独建立真实资格，不从P5通过推导 |
 

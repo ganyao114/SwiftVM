@@ -745,7 +745,7 @@ static void Divide(Emitter& builder,
 
 template <OpCode op>
 static Value Binary(Emitter& builder, Value left, Operand right, Type type = Type::U64) {
-    return Require(builder.template Apply<op>(type, {Operand::ValueOf(left), right}));
+    return Require(builder.template Emit<op>(type, {Operand::ValueOf(left), right}));
 }
 
 static Value Bit(Emitter& builder, Value value, unsigned bit) {
@@ -987,9 +987,9 @@ template <OpCode op, bool step = false> static void Alu(Emitter& builder,
     }
     const auto calculate = [&] {
         if constexpr (op == OpCode::Neg)
-            return Require(builder.template Apply<op>(type, {Operand::ValueOf(left)}));
+            return Require(builder.template Emit<op>(type, {Operand::ValueOf(left)}));
         else
-            return Require(builder.template Apply<op>(type, {Operand::ValueOf(left), right}));
+            return Require(builder.template Emit<op>(type, {Operand::ValueOf(left), right}));
     };
     const auto result = calculate();
     Value flags = result;

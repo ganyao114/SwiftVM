@@ -1,4 +1,5 @@
 #include "runtime/frontend/x86/interpreter.h"
+#include "runtime/frontend/x86/build_ir.h"
 #include "runtime/arch/x86/state.h"
 #include "runtime/arch/x86/flags.h"
 
@@ -119,6 +120,78 @@ void Scalar() {
     Check(load.Step().kind == front::StepKind::Fault && load.state.pc == Machine::code_pc &&
                   load.state.gprs[arch::RAX] == 0x7000,
           "failed load does not commit destination or PC");
+}
+
+void DecodedConsumers() {
+    Machine machine{0xb8, 0x2a, 0, 0, 0};
+    const auto bytes = std::span<const std::uint8_t>{machine.code};
+    const auto decoded = front::DecodeOne(bytes, machine.state.pc);
+    Check(bool(decoded), "one owned decoder record is available to either consumer");
+    const front::DecodedBlock block{machine.state.pc, 0, 1};
+    const front::BlockWindow window{machine.state.pc, bytes};
+    const auto built = front::BuildDecodedIR(
+            front::InstructionRange{std::span<const front::Instruction>{&decoded.instruction, 1}},
+            {&block, 1},
+            {&window, 1},
+            swift::runtime::ir::Scope::Block,
+            {offsetof(arch::GuestState, gprs), offsetof(arch::GuestState, pc), 8});
+    Check(bool(built) && machine.state.pc == Machine::code_pc && machine.state.gprs[arch::RAX] == 0,
+          "the IR-building consumer submits a Program without executing guest effects");
+    auto services = machine.Services();
+    services.fetch = nullptr;
+    const auto step = front::InterpretDecoded(decoded.instruction, bytes, machine.state, services);
+    Check(step.kind == front::StepKind::Completed && step.instructions == 1 &&
+                  machine.state.gprs[arch::RAX] == 42 && machine.state.pc == Machine::code_pc + 5,
+          "the same decoded record executes through IR direct without fetching or decoding");
+}
+
+void DirectBlockBoundaries() {
+    Machine ready{0xb8, 1, 0, 0, 0, 0xbb, 2, 0, 0, 0};
+    const front::ReadyEntryLookup entry{
+            nullptr, [](void*, u64 pc) noexcept { return pc == Machine::code_pc + 5; }};
+    const auto first = front::InterpretBlock(ready.state, ready.Services(), 256, nullptr, entry);
+    Check(first.kind == front::StepKind::Completed && first.instructions == 1 &&
+                  ready.state.pc == Machine::code_pc + 5 && ready.state.gprs[arch::RAX] == 1 &&
+                  ready.state.gprs[arch::RBX] == 0,
+          "a cold linear fragment stops before a ready native entry");
+    const auto second = front::InterpretBlock(ready.state, ready.Services(), 1);
+    Check(second.kind == front::StepKind::Completed && second.instructions == 1 &&
+                  ready.state.gprs[arch::RBX] == 2 && ready.state.pc == Machine::code_pc + 10,
+          "the completed-instruction budget ends at the actual next PC");
+    Machine branch{0x31, 0xc0, 0x75, 2, 0xbb, 3, 0, 0, 0};
+    const auto untaken = front::InterpretBlock(branch.state, branch.Services());
+    Check(untaken.kind == front::StepKind::Completed && untaken.instructions == 2 &&
+                  branch.state.pc == Machine::code_pc + 4 && branch.state.gprs[arch::RBX] == 0,
+          "an untaken conditional is still a block boundary");
+    Machine repeat{0xf3, 0xaa};
+    repeat.state.gprs[arch::RCX] = 2;
+    repeat.state.gprs[arch::RDI] = Machine::memory_pc;
+    repeat.state.gprs[arch::RAX] = 0x44;
+    const auto iteration = front::InterpretBlock(repeat.state, repeat.Services());
+    Check(iteration.kind == front::StepKind::Completed && iteration.instructions == 1 &&
+                  repeat.state.pc == Machine::code_pc && repeat.state.gprs[arch::RCX] == 1 &&
+                  repeat.writes == 1,
+          "one restartable REP iteration returns before another entry visit");
+}
+
+void PartialServiceStop() {
+    Machine machine{0xb8, 7, 0, 0, 0, 0xc8, 0x10, 0, 2};  // MOV; ENTER 16,2.
+    const auto stack = machine.state.gprs[arch::RSP];
+    const auto base = Machine::memory_pc + 160;
+    machine.state.gprs[arch::RBP] = base;
+    auto services = machine.Services();
+    services.read =
+            [](void* raw, u64, std::span<std::uint8_t>, bool) noexcept -> front::AccessResult {
+        ++static_cast<Machine*>(raw)->reads;
+        return {front::AccessStatus::UnsupportedBeforeAccess};
+    };
+    const auto step = front::InterpretBlock(machine.state, services);
+    Check(step.kind == front::StepKind::Incomplete && machine.writes == 1 && machine.reads == 1 &&
+                  machine.Read64(stack - 8) == base && machine.state.pc == Machine::code_pc + 5 &&
+                  step.pc == Machine::code_pc + 5 && step.instructions == 1 &&
+                  machine.state.gprs[arch::RAX] == 7 && machine.state.gprs[arch::RSP] == stack &&
+                  machine.state.gprs[arch::RBP] == base,
+          "service unavailability after an ENTER write preserves progress and forbids replay");
 }
 
 void Model() {
@@ -301,6 +374,9 @@ void Floating() {
 int main() {
     try {
         Model();
+        DecodedConsumers();
+        PartialServiceStop();
+        DirectBlockBoundaries();
         FetchBoundary();
         Scalar();
         Control();

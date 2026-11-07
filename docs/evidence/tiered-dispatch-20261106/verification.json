@@ -1,0 +1,52 @@
+{
+  "base_commit": "420c3d462bbe667b70fa7d7bd7b74293e37cee79",
+  "worktree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "completed_at_utc": "2026-11-07T07:19:36.149002+00:00",
+  "host": {
+    "build_type": "Release",
+    "ipo": true,
+    "ctest_passed": 10,
+    "ctest_failed": 0
+  },
+  "android": {
+    "serial": "bf1359ff",
+    "build_type": "Release",
+    "ipo": true,
+    "tests_passed": 9,
+    "tests_failed": 0
+  },
+  "format": {
+    "checked": 159,
+    "failures": 0
+  },
+  "source_files": 162,
+  "runner_sha256": "7794a4115ddf4e5cceaee1ba81eaa0030b1f25a24f4d7f4013f0b0173b29e279",
+  "cli": [
+    {
+      "scope": "block",
+      "hot_threshold": 255,
+      "compile_attempts": 0,
+      "interpreted_steps": 124,
+      "native_bytes": 0,
+      "exit_code": 40
+    },
+    {
+      "scope": "block",
+      "hot_threshold": 8,
+      "compile_attempts": 1,
+      "interpreted_steps": 31,
+      "native_bytes": 116,
+      "exit_code": 40
+    },
+    {
+      "scope": "function",
+      "hot_threshold": 8,
+      "compile_attempts": 1,
+      "interpreted_steps": 29,
+      "native_bytes": 160,
+      "exit_code": 40
+    }
+  ],
+  "scope": "IR direct extraction plus runtime cold interpretation and hot JIT promotion; functional regression only, no new FEX or compile timing comparison",
+  "external_results": "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/tiered-dispatch-20261106"
+}

@@ -96,6 +96,11 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
     target_compile_definitions(svm_arm64 PRIVATE SVM_X87_GPR_ONLY=1)
 endif()
 
+# Numerical IR execution is an independent consumer, without a decoder,
+# Program construction or x86 register-layout dependency.
+add_library(svm_ir_direct STATIC source/runtime/ir/direct/interpreter.cpp)
+target_link_libraries(svm_ir_direct PUBLIC svm_ir PRIVATE svm_x87)
+
 # Reuse only the byte decoder. No legacy frontend or middle-pipeline target.
 add_subdirectory(source/runtime/externals/distorm)
 target_compile_definitions(distorm PUBLIC DISTORM_LIGHT)
@@ -107,9 +112,9 @@ add_library(svm_x86_ir STATIC
     source/runtime/frontend/x86/region.cpp
     source/runtime/frontend/x86/interpreter.cpp
     source/runtime/platform/system_query.cpp)
-target_link_libraries(svm_x86_ir PUBLIC svm_ir PRIVATE distorm svm_x87)
+target_link_libraries(svm_x86_ir PUBLIC svm_ir PRIVATE distorm svm_x87 svm_ir_direct)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    set_source_files_properties(source/runtime/frontend/x86/interpreter.cpp
+    set_source_files_properties(source/runtime/ir/direct/interpreter.cpp
         PROPERTIES COMPILE_OPTIONS "-frounding-math")
 endif()
 
@@ -154,6 +159,8 @@ if(TARGET svm_execution)
 endif()
 add_executable(svm_compile_pipeline_test source/tests/rebuild/compile_pipeline_test.cpp)
 target_link_libraries(svm_compile_pipeline_test PRIVATE svm_x86_ir svm_ir_optimize svm_arm64 distorm)
+add_executable(svm_ir_direct_test source/tests/rebuild/ir_direct_test.cpp)
+target_link_libraries(svm_ir_direct_test PRIVATE svm_ir_direct)
 add_executable(svm_x86_interpreter_test source/tests/rebuild/x86_interpreter_test.cpp)
 target_link_libraries(svm_x86_interpreter_test PRIVATE svm_x86_ir)
 
@@ -194,6 +201,7 @@ add_test(NAME ir_optimize_contract COMMAND svm_ir_optimize_test)
 add_test(NAME arm64_compile_contract COMMAND svm_arm64_compile_test)
 add_test(NAME compile_pipeline_contract COMMAND svm_compile_pipeline_test)
 add_test(NAME x86_interpreter_contract COMMAND svm_x86_interpreter_test)
+add_test(NAME ir_direct_contract COMMAND svm_ir_direct_test)
 if(TARGET svm_runtime_engine_test)
     add_test(NAME runtime_engine_contract COMMAND svm_runtime_engine_test)
 endif()
@@ -201,7 +209,8 @@ endif()
 # A recovering UBSan report must fail the contract run instead of being hidden
 # behind an otherwise successful process exit. These are inert without ASan/UBSan.
 set_tests_properties(ir_construction_contract x86_construction_contract
-    ir_optimize_contract arm64_compile_contract compile_pipeline_contract x86_interpreter_contract PROPERTIES
+    ir_optimize_contract arm64_compile_contract compile_pipeline_contract x86_interpreter_contract
+    ir_direct_contract PROPERTIES
     ENVIRONMENT "UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1;ASAN_OPTIONS=halt_on_error=1")
 if(TARGET svm_runtime_engine_test)
     set_tests_properties(runtime_engine_contract PROPERTIES

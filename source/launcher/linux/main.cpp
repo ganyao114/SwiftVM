@@ -1,6 +1,7 @@
 #include "runtime/execution/runtime.h"
 #include "runtime/execution/dispatch.h"
 
+#include <charconv>
 #include <cstdio>
 #include <exception>
 #include <stdexcept>
@@ -24,10 +25,14 @@ int main(int argc, char** argv) {
             if (option == "--help") {
                 std::puts(
                         "svm_rebuild_linux [--scope block|function] [--engine "
-                        "jit|interpreter|mixed] [--no-opt] [--decode-timing] [--] guest [args...]\n"
+                        "jit|interpreter|mixed] [--hot-threshold N] [--no-opt] [--decode-timing] "
+                        "[--] guest [args...]\n"
                         "Static x86-64 ELF, direct guest==host memory, one guest thread.\n"
                         "PT_INTERP and unknown instructions are rejected. Unimplemented syscalls "
                         "return ENOSYS.\n"
+                        "Default engine: jit; compile each requested entry immediately.\n"
+                        "With --engine mixed, interpret cold blocks and compile after N entry "
+                        "visits (--hot-threshold, default 8).\n"
                         "--decode-timing adds perturbed diagnostic clocks around the byte decoder "
                         "only.");
                 return 0;
@@ -52,6 +57,14 @@ int main(int argc, char** argv) {
                     options.mode = ExecutionMode::Mixed;
                 else
                     throw std::runtime_error("invalid --engine");
+            } else if (option == "--hot-threshold") {
+                if (++argument >= argc)
+                    throw std::runtime_error("--hot-threshold requires an integer in 0..65535");
+                const std::string_view count{argv[argument]};
+                const auto parsed = std::from_chars(
+                        count.data(), count.data() + count.size(), options.hot_threshold);
+                if (parsed.ec != std::errc{} || parsed.ptr != count.data() + count.size())
+                    throw std::runtime_error("--hot-threshold requires an integer in 0..65535");
             } else if (option == "--no-opt")
                 options.optimize = false;
             else if (option == "--decode-timing")
@@ -88,6 +101,7 @@ int main(int argc, char** argv) {
                 stderr,
                 "{\"measurement_kind\":\"application_runtime\",\"scope\":\"%s\",\"optimize\":%s,"
                 "\"runtime_completed\":%s,\"exit_code\":%d,"
+                "\"engine\":\"%s\",\"hot_threshold\":%u,\"interpreted_steps\":%llu,"
                 "\"compile_ns\":%llu,\"compile_includes_byte_decode\":true,\"decode_excluded_"
                 "available\":%s,"
                 "\"decode_timing_diagnostic\":%s,\"byte_decoder_timing_perturbs_compile\":%s,"
@@ -118,6 +132,11 @@ int main(int argc, char** argv) {
                 options.optimize ? "true" : "false",
                 result ? "true" : "false",
                 result.exit_code,
+                options.mode == ExecutionMode::JitOnly         ? "jit"
+                : options.mode == ExecutionMode::InterpretOnly ? "interpreter"
+                                                               : "mixed",
+                static_cast<unsigned>(options.hot_threshold),
+                static_cast<unsigned long long>(s.interpreted_steps),
                 static_cast<unsigned long long>(s.compile_request_ns),
                 options.decode_timing ? "true" : "false",
                 options.decode_timing ? "true" : "false",

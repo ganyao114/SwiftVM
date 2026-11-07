@@ -1,0 +1,10 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-ir-direct-20261106",
+  "active_processes": [],
+  "open_files": [],
+  "remaining_bytes": 0,
+  "errors": [],
+  "allocated_bytes_removed": 136720384,
+  "df_actual_free_delta_bytes": 136757248,
+  "completed_at_utc": "2026-11-07T04:47:06.706520+00:00"
+}

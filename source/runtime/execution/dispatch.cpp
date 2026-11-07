@@ -62,6 +62,15 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
     NativeCode code;
     auto entry = Cache().Find(thread.native.state.pc, &code);
     if (!entry) {
+        if (options.mode == ExecutionMode::Mixed &&
+            Cache().DeferCompilation(thread.native.state.pc, options.hot_threshold)) {
+            thread.interpret_requested = true;
+            // Counting a new cold PC may grow the actual directory. Refresh
+            // this borrow even though no native code was constructed.
+            ObserveCache();
+            RefreshNative(context);
+            return 0;
+        }
         RuntimeTimer total{stats.compile_request_ns};
         if (options.scope == ir::Scope::Function) {
             code = compiler.Compile(ir::Scope::Function);
@@ -73,8 +82,10 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
             code = compiler.Compile(ir::Scope::Block);
         if (!code.entry) {
             if (options.mode == ExecutionMode::Mixed &&
-                compiler.Failure() == CompileFailure::Unsupported)
+                compiler.Failure() == CompileFailure::Unsupported) {
+                Cache().DisableCompilation(thread.native.state.pc);
                 thread.interpret_requested = true;
+            }
             ObserveCache();
             RefreshNative(context);
             return 0;

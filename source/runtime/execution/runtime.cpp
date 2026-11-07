@@ -182,7 +182,7 @@ int VM::Run(const std::string& path,
     UpdateFPEnvironment();
     if (options.mode == ExecutionMode::InterpretOnly ||
         (options.mode == ExecutionMode::Mixed && !backend.compile)) {
-        while (!thread.exited) Interpret();
+        while (!thread.exited) Interpret(true);
         return thread.exit_code;
     }
     if (!backend.compile) throw std::runtime_error("native backend is unavailable on this host");
@@ -218,7 +218,7 @@ int VM::Run(const std::string& path,
             else if (reason == 2) {
                 if (thread.interpret_requested) {
                     thread.interpret_requested = false;
-                    Interpret();
+                    Interpret(true);
                 } else
                     throw std::runtime_error(thread.resolver_error ? thread.resolver_error
                                                                    : thread.diagnostic);
@@ -393,10 +393,18 @@ front::CpuResult VM::Cpu(void*, std::uint32_t leaf, std::uint32_t subleaf) noexc
     return {result.lower, result.upper};
 }
 
-void VM::Interpret() {
+void VM::Interpret(bool block) {
     thread.access_error = nullptr;
-    const auto step = front::InterpretOne(thread.native.state, DirectServices());
+    const front::ReadyEntryLookup ready{this, [](void* raw, std::uint64_t pc) noexcept {
+                                            return bool(static_cast<VM*>(raw)->Cache().Find(pc));
+                                        }};
+    const auto step = block ? front::InterpretBlock(
+                                      thread.native.state, DirectServices(), 256, nullptr, ready)
+                            : front::InterpretOne(thread.native.state, DirectServices());
+    stats.interpreted_steps += step.instructions;
     switch (step.kind) {
+        case front::StepKind::Incomplete:
+            throw std::runtime_error("IR direct service unavailable after execution progress");
         case front::StepKind::Completed:
             return;
         case front::StepKind::Service:

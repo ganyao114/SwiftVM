@@ -21,12 +21,14 @@ void Check(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
 
+constexpr std::uint8_t exit_program[]{0xb8, 60, 0, 0, 0, 0xbf, 42, 0, 0, 0, 0x0f, 0x05};
+
 class GuestFile {
 public:
-    GuestFile() {
+    explicit GuestFile(std::span<const std::uint8_t> instructions = exit_program,
+                       std::uint32_t permissions = PF_R | PF_W | PF_X) {
         const int fd = mkstemp(path.data());
         Check(fd >= 0, "cannot create engine-test guest");
-        const std::uint8_t instructions[]{0xb8, 60, 0, 0, 0, 0xbf, 42, 0, 0, 0, 0x0f, 0x05};
         Elf64_Ehdr header{};
         std::memcpy(header.e_ident, ELFMAG, SELFMAG);
         header.e_ident[EI_CLASS] = ELFCLASS64;
@@ -42,18 +44,17 @@ public:
         header.e_phnum = 1;
         Elf64_Phdr segment{};
         segment.p_type = PT_LOAD;
-        segment.p_flags = PF_R | PF_W | PF_X;
+        segment.p_flags = permissions;
         segment.p_vaddr = 0x400000;
         segment.p_paddr = segment.p_vaddr;
-        segment.p_filesz = segment.p_memsz =
-                sizeof(header) + sizeof(segment) + sizeof(instructions);
+        segment.p_filesz = segment.p_memsz = sizeof(header) + sizeof(segment) + instructions.size();
         segment.p_align = 4096;
         std::vector<std::uint8_t> image(segment.p_filesz);
         std::memcpy(image.data(), &header, sizeof(header));
         std::memcpy(image.data() + sizeof(header), &segment, sizeof(segment));
         std::memcpy(image.data() + sizeof(header) + sizeof(segment),
-                    instructions,
-                    sizeof(instructions));
+                    instructions.data(),
+                    instructions.size());
         const auto written = write(fd, image.data(), image.size());
         const auto closed = close(fd);
         Check(written == static_cast<ssize_t>(image.size()) && closed == 0,
@@ -107,7 +108,90 @@ void SourceAdmission() {
               "unqualified device bytes cannot enter a persistent JIT or direct-fetch span");
     Check(memory.Release().Complete(), "source fixtures release all guest mappings");
 }
+
+void ColdDirectory() {
+    execution::HostBackendOps operations;
+    const auto pending = reinterpret_cast<execution::NativeCode::Function>(std::uintptr_t{0x1000});
+    execution::CodeCache cache{pending, operations};
+    Check(cache.DeferCompilation(0, 2) && cache.DeferCompilation(0, 2) &&
+                  !cache.DeferCompilation(0, 2) && !cache.Find(0) && !cache.Entries(),
+          "cold entries defer exactly the requested visits without becoming native code");
+    Check(!cache.DeferCompilation(0x100, 0), "zero threshold requests immediate compilation");
+    cache.DisableCompilation(0x100);
+    for (unsigned i = 2; i < 18; ++i) (void)cache.DeferCompilation(i * 0x100, 2);
+    Check(cache.Allocations() > 1 && !cache.DeferCompilation(0, 2) &&
+                  cache.DeferCompilation(0x100, 0),
+          "growth and collisions preserve heat and unsupported status in their actual PC slots");
+    const auto entry = reinterpret_cast<execution::NativeCode::Function>(std::uintptr_t{0x2000});
+    const std::array extra{swift::runtime::backend::EntryPoint{0x1000, 4}};
+    cache.InsertReady(0x100, {entry, 8, nullptr, {}}, extra);
+    Check(cache.Find(0x100) == entry && cache.Find(0x1000) && cache.Entries() == 2,
+          "ready publication and additional entries take precedence over cold metadata");
+    cache.Clear();
+    Check(!cache.Find(0x100) && cache.DeferCompilation(0, 2) && !cache.DeferCompilation(0x100, 0),
+          "source invalidation clears native entries, heat and unsupported status together");
+    cache.DisableCompilation(0x100);
+    cache.Release();
+    Check(cache.DeferCompilation(0, 2) && !cache.DeferCompilation(0x100, 0),
+          "release starts fresh heat and unsupported state");
+}
+
 #if defined(__aarch64__)
+void Tiered() {
+    // The first request includes one loop iteration. Its taken edge enters
+    // the independently hot body; the exit remains a cold block in Block mode.
+    constexpr std::uint8_t instructions[]{0xb9, 40,   0, 0, 0,  // MOV ECX,40
+                                          0x31, 0xff,           // XOR EDI,EDI
+                                          0x83, 0xc7, 1,        // ADD EDI,1
+                                          0xff, 0xc9,           // DEC ECX
+                                          0x75, 0xf9,           // JNZ body
+                                          0xb8, 60,   0, 0, 0,  // MOV EAX,60
+                                          0x0f, 0x05};          // SYSCALL
+    GuestFile guest{instructions, PF_R | PF_X};
+    const std::array argv{guest.Path()};
+    for (const auto scope :
+         {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function}) {
+        for (const bool promote : {false, true}) {
+            execution::RuntimeOptions options;
+            options.mode = execution::ExecutionMode::Mixed;
+            options.scope = scope;
+            options.hot_threshold = promote ? 2 : 255;
+            const auto result = execution::RunGuest(guest.Path(), argv, {}, options);
+            if (!result) std::fprintf(stderr, "%s\n", result.error.c_str());
+            Check(result && result.exit_code == 40, "cold/native loop handoff preserves state");
+            if (promote)
+                Check(result.stats.compile_attempts == 1 &&
+                              result.stats.code_units_published == 1 && result.stats.native_bytes &&
+                              result.stats.interpreted_steps > 0 &&
+                              result.stats.interpreted_steps < 124,
+                      "hot entry promotes once and executes the remaining loop natively");
+            else
+                Check(!result.stats.compile_attempts && !result.stats.native_bytes &&
+                              !result.stats.peak_slabs && result.stats.interpreted_steps == 124,
+                      "cold code runs without constructing IR or allocating native code");
+        }
+    }
+    swift::runtime::platform::Arm64Runtime host{false};
+    auto operations = host.Bind();
+    operations.compile = [](void*,
+                            const swift::runtime::ir::Program&,
+                            execution::HostCompileRequest) -> backend::CompileResult& {
+        static backend::CompileResult unsupported;
+        unsupported.error = backend::CompileError::UnsupportedOpcode;
+        return unsupported;
+    };
+    execution::RuntimeOptions options;
+    options.mode = execution::ExecutionMode::Mixed;
+    options.hot_threshold = 2;
+    execution::RuntimeStats stats;
+    execution::VM vm{options, stats, operations};
+    const auto code = vm.Run(guest.Path(), argv, {});
+    Check(vm.Close().Complete(), "unsupported hot loop releases the same actual owners");
+    Check(code == 40 && stats.compile_attempts == 1 && !stats.native_bytes &&
+                  stats.interpreted_steps == 124,
+          "an unsupported hot entry is interpreted without repeated failed compilations");
+}
+
 void Mixed(const std::string& path, bool invalid) {
     swift::runtime::platform::Arm64Runtime host{false};
     auto operations = host.Bind();
@@ -130,6 +214,7 @@ void Mixed(const std::string& path, bool invalid) {
     execution::RuntimeStats stats;
     execution::RuntimeOptions options;
     options.mode = execution::ExecutionMode::Mixed;
+    options.hot_threshold = 0;
     execution::VM vm{options, stats, operations};
     const std::array<std::string, 1> argv{path};
     bool stopped{};
@@ -144,8 +229,9 @@ void Mixed(const std::string& path, bool invalid) {
         Check(stopped && stats.syscalls == 0,
               "invalid producer/backend data cannot become an interpreter fallback");
     else
-        Check(!stopped && code == 42 && stats.compile_attempts == 3 && stats.native_bytes == 0,
-              "mixed resumes each unsupported request from actual guest PC/state");
+        Check(!stopped && code == 42 && stats.compile_attempts == 1 && stats.native_bytes == 0 &&
+                      stats.interpreted_steps == 3,
+              "mixed executes the unsupported entry fragment once from actual guest PC/state");
 }
 #endif
 }  // namespace
@@ -154,8 +240,10 @@ int main() {
     try {
         GuestFile guest;
         SourceAdmission();
+        ColdDirectory();
         Interpreter(guest.Path());
 #if defined(__aarch64__)
+        Tiered();
         Mixed(guest.Path(), false);
         Mixed(guest.Path(), true);
 #endif

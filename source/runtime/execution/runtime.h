@@ -10,12 +10,16 @@
 
 namespace swift::runtime::execution {
 
+// Mixed interprets cold entry fragments, then compiles a hot entry into the
+// requested allocation scope. Unsupported native entries keep interpreting.
 enum class ExecutionMode : std::uint8_t { JitOnly, InterpretOnly, Mixed };
 
 struct RuntimeOptions {
     ExecutionMode mode{ExecutionMode::JitOnly};
     ir::Scope scope{ir::Scope::Block};
     bool optimize{true};
+    // Mixed defers this many entry visits; 0 requests compilation immediately.
+    std::uint16_t hot_threshold{8};
     ::swift::x86::DecodeLimits function_limits{};
     bool decode_timing{};
 };
@@ -26,6 +30,8 @@ struct RuntimeStats {
     // null-directory exits count no probes. Resolved links bypass all three
     // diagnostic counts; these fields never infer how many guest units ran.
     std::uint64_t dispatches{}, cache_hits{}, directory_probe_steps{};
+    // Completed direct execution steps, including individual REP iterations.
+    std::uint64_t interpreted_steps{};
     std::uint64_t syscalls{}, compile_attempts{}, function_attempts{}, block_attempts{},
             fallbacks{};
     std::uint64_t compile_request_ns{}, frontend_ns{}, optimize_ns{}, backend_ns{},

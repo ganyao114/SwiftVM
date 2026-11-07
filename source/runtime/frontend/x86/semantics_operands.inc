@@ -213,13 +213,13 @@ template <OpCode op = OpCode::StoreMemoryTSO> static void StoreMemory(
         Emitter& builder, Value address, Value value, unsigned bits, u64 displacement = 0) {
     const auto type = bits == 128 ? Type::V128 : ScalarType(bits);
     if (displacement)
-        Require(builder.template Apply<op>(Type::Void,
-                                           {Operand::Expression(OperandOp::Add, 2),
-                                            Operand::ValueOf(address),
-                                            Operand::Immediate(displacement, Type::U64),
-                                            Operand::ValueOf(value, type)}));
+        Require(builder.template Emit<op>(Type::Void,
+                                          {Operand::Expression(OperandOp::Add, 2),
+                                           Operand::ValueOf(address),
+                                           Operand::Immediate(displacement, Type::U64),
+                                           Operand::ValueOf(value, type)}));
     else
-        Require(builder.template Apply<op>(
+        Require(builder.template Emit<op>(
                 Type::Void, {Operand::ValueOf(address), Operand::ValueOf(value, type)}));
 }
 

@@ -1,4 +1,4 @@
-// Numerical operations of the one DirectSink. No Program or second IR stream.
+// Floating operations preserve the existing numerical and host-environment semantics.
 u64 FlushFloat(u64 bits, unsigned width, bool flush) {
     const auto exponent = width == 64 ? UINT64_C(0x7ff0000000000000) : UINT64_C(0x7f800000);
     return flush && !(bits & exponent) ? bits & (u64{1} << (width - 1)) : bits & Mask(width);
@@ -16,7 +16,8 @@ u64 ConvertFloatInteger(
     return static_cast<u64>(static_cast<std::int64_t>(integral)) & Mask(integer_width);
 }
 
-template <OpCode op> DirectSink::Value DirectSink::Floating(Type type, std::span<const Operand> a) {
+template <OpCode op>
+Interpreter::Value Interpreter::HandleFloating(Type type, std::span<const Operand> a) {
     const auto raw = [&](unsigned i) { return Raw(a[i]); };
     const auto imm = [&](unsigned i) { return static_cast<unsigned>(a[i].payload); };
     const auto lane = [&](unsigned operand, unsigned index, unsigned width) {
@@ -27,8 +28,9 @@ template <OpCode op> DirectSink::Value DirectSink::Floating(Type type, std::span
         out = (out & ~mask) | ((u128{bits} << (index * width)) & mask);
     };
     runtime::platform::HostFloatScope rounding(
-            static_cast<runtime::platform::FloatRounding>((state.mxcsr >> 13) & 3));
-    const bool daz = (state.mxcsr & (1u << 6)) != 0, ftz = (state.mxcsr & (1u << 15)) != 0;
+            static_cast<runtime::platform::FloatRounding>((environment.mxcsr >> 13) & 3));
+    const bool daz = (environment.mxcsr & (1u << 6)) != 0,
+               ftz = (environment.mxcsr & (1u << 15)) != 0;
     if constexpr (op == OpCode::VecFAdd || op == OpCode::VecFSub || op == OpCode::VecFMul ||
                   op == OpCode::VecFDiv || op == OpCode::VecFAddScalar32 ||
                   op == OpCode::VecFSubScalar32 || op == OpCode::VecFMulScalar32 ||
@@ -192,7 +194,7 @@ template <OpCode op> DirectSink::Value DirectSink::Floating(Type type, std::span
                 put(out, i, 32, FlushFloat(std::bit_cast<u32>(static_cast<float>(value)), 32, ftz));
             }
         } else
-            throw detail::Rejected{BuildError::Unsupported};
+            throw Exit{ExitKind::Unsupported};
         return Number(out, Type::V128);
     } else if constexpr (op == OpCode::VecFMulAdd) {
         const auto width = imm(3), flags = imm(4), count = flags & 4 ? 1 : 128 / width;
@@ -225,5 +227,5 @@ template <OpCode op> DirectSink::Value DirectSink::Floating(Type type, std::span
         }
         return Number(out, Type::V128);
     } else
-        return Crypto<op>(type, a);
+        return HandleCrypto<op>(type, a);
 }

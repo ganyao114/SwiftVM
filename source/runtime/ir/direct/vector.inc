@@ -1,5 +1,6 @@
-// Definitions for the single DirectSink; no separate interpreter or state owner.
-template <OpCode op> DirectSink::Value DirectSink::Vector(Type type, std::span<const Operand> a) {
+// Numerical operations of the direct IR consumer; no Program or instruction traversal.
+template <OpCode op>
+Interpreter::Value Interpreter::HandleVector(Type type, std::span<const Operand> a) {
     const auto value = [&](unsigned i) { return Raw(a[i]); };
     const auto imm = [&](unsigned i) { return static_cast<unsigned>(a[i].payload); };
     const auto lane = [](u128 v, unsigned i, unsigned width) {
@@ -197,6 +198,6 @@ template <OpCode op> DirectSink::Value DirectSink::Vector(Type type, std::span<c
             result |= u128{lane(value(0), i, width) >> (width - 1)} << i;
         return Number(result, Type::U32);
     } else
-        return Floating<op>(type, a);
+        return HandleFloating<op>(type, a);
     return Number(result, type);
 }

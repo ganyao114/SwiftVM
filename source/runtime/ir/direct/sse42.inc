@@ -1,5 +1,5 @@
 template <OpCode op>
-DirectSink::Value DirectSink::String(Type type, std::span<const Operand> operands) {
+Interpreter::Value Interpreter::HandleString(Type type, std::span<const Operand> operands) {
     namespace sse42 = ::swift::runtime::x86::sse42;
     if constexpr (op == OpCode::PublishSse42StrFlags) {
         const auto result = static_cast<u64>(Read(operands[0]));
@@ -26,5 +26,5 @@ DirectSink::Value DirectSink::String(Type type, std::span<const Operand> operand
                             vector(0), vector(1), static_cast<std::uint8_t>(operands[2].payload)),
                     type);
     } else
-        throw detail::Rejected{BuildError::Unsupported};
+        throw Exit{ExitKind::Unsupported};
 }

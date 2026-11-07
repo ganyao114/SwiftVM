@@ -1,4 +1,4 @@
-// Definitions for the single DirectSink; no separate interpreter or state owner.
+// Numerical operations of the direct IR consumer; no Program or instruction traversal.
 static void StoreX87Metadata(u64 address, u64 pc, u64 dp, u64 metadata) {
     auto* base = reinterpret_cast<std::uint8_t*>(address);
     const auto opcode = arch::X87MetadataOpcode(metadata);
@@ -9,31 +9,34 @@ static void StoreX87Metadata(u64 address, u64 pc, u64 dp, u64 metadata) {
 }
 
 template <OpCode op>
-DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a) {
+Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> a) {
     const auto type = requested != Type::Void ? requested : a.empty() ? Type::Void : View(a[0]);
     const auto read = [&](std::size_t i) { return static_cast<u64>(Read(a[i])); };
     const auto raw = [&](std::size_t i) { return static_cast<u64>(Raw(a[i])); };
     if constexpr (op == OpCode::ReadSystem || op == OpCode::ReadSystemPair) {
         using Query = runtime::x86::CpuQueryResult (*)(u64, u64) noexcept;
         const auto pair = reinterpret_cast<Query>(a[1].payload)(a[0].payload, 0);
+        observed_effects = true;
         return Number(op == OpCode::ReadSystemPair ? u128{pair.lower} | (u128{pair.upper} << 64)
                                                    : u128{pair.lower},
                       type);
-    } else if constexpr (op == OpCode::LoadImm)
+    } else if constexpr (op == OpCode::Zero)
+        return Number(0, type);
+    else if constexpr (op == OpCode::LoadImm)
         return Number(a[0].payload, View(a[0]));
     else if constexpr (op == OpCode::LoadUniform) {
         u128 value{};
         const auto size = TypeBits(type) / 8;
-        std::memcpy(&value, reinterpret_cast<const std::uint8_t*>(&state) + a[0].payload, size);
+        std::memcpy(&value, environment.uniforms.data() + a[0].payload, size);
         return Number(value, type);
     } else if constexpr (op == OpCode::StoreUniform) {
         const auto value = Read(a[1]);
-        std::memcpy(reinterpret_cast<std::uint8_t*>(&state) + a[0].payload,
-                    &value,
-                    TypeBits(a[0].type) / 8);
+        std::memcpy(environment.uniforms.data() + a[0].payload, &value, TypeBits(a[0].type) / 8);
+        observed_effects = true;
         return {};
     } else if constexpr (op == OpCode::GetUniformAddress)
-        return Number(reinterpret_cast<std::uintptr_t>(&state) + a[0].payload, Type::U64);
+        return Number(reinterpret_cast<std::uintptr_t>(environment.uniforms.data()) + a[0].payload,
+                      Type::U64);
     else if constexpr (op == OpCode::GetOperand) {
         std::size_t cursor{};
         return Number(Expression(a, cursor), type);
@@ -47,7 +50,7 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
         MemoryWrite(address, a[cursor], op == OpCode::StoreMemoryTSO);
         return {};
     } else if constexpr (op == OpCode::CheckMemoryAlignment) {
-        if (read(0) & read(1)) throw DirectExit{StepKind::Fault, read(0)};
+        if (read(0) & read(1)) throw Exit{ExitKind::Fault, read(0)};
         return {};
     } else if constexpr (op == OpCode::Nop || op == OpCode::UniformBarrier ||
                          op == OpCode::XchgBarrier || op == OpCode::FaultLocation)
@@ -66,7 +69,7 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
                           type,
                           op == OpCode::Neg ? 0 : read(0),
                           right,
-                          arch::flags::GetCF(state.packed_flags));
+                          arch::flags::GetCF(environment.packed_flags));
     } else if constexpr (op == OpCode::And || op == OpCode::Or || op == OpCode::Xor ||
                          op == OpCode::AndNot || op == OpCode::Not) {
         std::size_t cursor = 1;
@@ -143,13 +146,14 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
     else if constexpr (op == OpCode::PopCount)
         return Number(std::popcount(raw(0)), type);
     else if constexpr (op == OpCode::CondSet)
-        return Number(ConditionValue(static_cast<Condition>(a[0].payload), state.packed_flags),
-                      Type::Bool);
+        return Number(
+                ConditionValue(static_cast<Condition>(a[0].payload), environment.packed_flags),
+                Type::Bool);
     else if constexpr (op == OpCode::TestFlags || op == OpCode::TestNotFlags)
         return Number(op == OpCode::TestFlags ? AnyFlags(a[0].payload) : !AnyFlags(a[0].payload),
                       Type::Bool);
     else if constexpr (op == OpCode::GetFlags)
-        return Number(state.packed_flags, type, true);
+        return Number(environment.packed_flags, type, true);
     else if constexpr (op == OpCode::RestoreFlags) {
         MergeFlags(raw(0), a[1].payload);
         return {};
@@ -157,18 +161,20 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
         MergeFlags((a[0].payload & FlagBits(Flag::Parity)) ? 1 : 0, a[0].payload);
         return {};
     } else if constexpr (op == OpCode::InvertCarry) {
-        state.packed_flags ^= arch::flags::Carry;
+        environment.packed_flags ^= arch::flags::Carry;
+        observed_effects = true;
         return {};
     } else if constexpr (op == OpCode::SetCarry || op == OpCode::SetOverflow) {
         const auto bit = op == OpCode::SetCarry ? arch::flags::Carry : arch::flags::Overflow;
-        state.packed_flags = (state.packed_flags & ~bit) | (Read(a[0]) ? bit : 0);
+        environment.packed_flags = (environment.packed_flags & ~bit) | (Read(a[0]) ? bit : 0);
+        observed_effects = true;
         return {};
     } else if constexpr (op == OpCode::Select || op == OpCode::SelectZero ||
                          op == OpCode::CondSelect) {
-        const bool test =
-                op == OpCode::CondSelect
-                        ? ConditionValue(static_cast<Condition>(a[0].payload), state.packed_flags)
-                        : ((Read(a[0]) != 0) != (op == OpCode::SelectZero));
+        const bool test = op == OpCode::CondSelect
+                                  ? ConditionValue(static_cast<Condition>(a[0].payload),
+                                                   environment.packed_flags)
+                                  : ((Read(a[0]) != 0) != (op == OpCode::SelectZero));
         return Number(Raw(a[test ? 1 : 2]), type, true);
     } else if constexpr (op == OpCode::ParallelBitDeposit) {
         return Number(arch::ParallelBitDeposit(read(0), read(1)), type);
@@ -185,9 +191,10 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
         }
         return Number(crc, Type::U32);
     } else if constexpr (op == OpCode::Cpuid) {
-        if (!services.cpuid) throw detail::Rejected{BuildError::Unsupported};
+        if (!services.cpuid) throw Exit{ExitKind::Unsupported};
         const auto cpu = services.cpuid(
                 services.opaque, static_cast<u32>(read(0)), static_cast<u32>(read(1)));
+        observed_effects = true;
         auto out = Number(cpu.lower, Type::U64);
         out.number.extra = cpu.upper;
         return out;
@@ -195,20 +202,22 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
         return Number(a[0].value.extra, Type::U64);
     else if constexpr (op == OpCode::X87CommitMetadata) {
         StoreX87Metadata(raw(0), raw(1), raw(2), raw(3));
+        observed_effects = true;
         return {};
     } else if constexpr (op == OpCode::X87Op || op == OpCode::X87Execute) {
+        observed_effects = true;
         const auto result = static_cast<arch::X87Result>(
                 SvmX87Execute(reinterpret_cast<void*>(raw(0)), raw(1), raw(2)));
         if constexpr (op == OpCode::X87Execute) {
             if (result == arch::X87Result::RaisedException ||
                 (result == arch::X87Result::Ok && arch::X87MetadataCommitsSuccess(raw(4)))) {
-                StoreX87Metadata(raw(0), state.pc, raw(3), raw(4));
+                StoreX87Metadata(raw(0), environment.pc, raw(3), raw(4));
             }
         }
         if (result == arch::X87Result::UnmaskedPending ||
             result == arch::X87Result::RaisedException)
-            throw DirectExit{StepKind::Service, 0, 4};
-        if (result != arch::X87Result::Ok) throw detail::Rejected{BuildError::Unsupported};
+            throw Exit{ExitKind::Service, 0, 4};
+        if (result != arch::X87Result::Ok) throw Exit{ExitKind::Unsupported};
         return Number(0, Type::U64);
     } else if constexpr (op == OpCode::PublishFCmpFlags) {
         const auto value = raw(0);
@@ -218,7 +227,7 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
     } else if constexpr (op == OpCode::Div128) {
         const unsigned width = TypeBits(View(a[0]));
         const auto high = read(0), low = read(1), divisor = read(2);
-        if (!divisor) throw DirectExit{StepKind::Fault};
+        if (!divisor) throw Exit{ExitKind::Fault};
         const u128 dividend = (u128{high} << width) | low;
         u128 quotient{}, remainder{};
         if (read(3)) {
@@ -230,19 +239,19 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
             remainder = absolute % d;
             const auto limit = u128{1} << (width - 1);
             if (quotient > limit || (!(minus ^ divisor_minus) && quotient == limit))
-                throw DirectExit{StepKind::Fault};
+                throw Exit{ExitKind::Fault};
             if (minus ^ divisor_minus) quotient = -quotient;
             if (minus) remainder = -remainder;
         } else {
             quotient = dividend / divisor;
             remainder = dividend % divisor;
-            if (quotient > Mask(width)) throw DirectExit{StepKind::Fault};
+            if (quotient > Mask(width)) throw Exit{ExitKind::Fault};
         }
         auto out = Number(quotient & Mask(width), Type::U64);
         out.number.extra = static_cast<u64>(remainder) & Mask(width);
         return out;
     } else if constexpr (op == OpCode::CompareAndSwap128) {
-        if (!services.atomic) throw detail::Rejected{BuildError::Unsupported};
+        if (!services.atomic) throw Exit{ExitKind::Unsupported};
         AtomicRequest request;
         request.address = read(0);
         request.bits = 128;
@@ -250,11 +259,11 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
         request.expected = {read(1), read(2)};
         request.desired = {read(3), read(4)};
         AtomicValue observed;
-        Access(services.atomic(services.opaque, request, observed));
+        ObserveAccess(services.atomic(services.opaque, request, observed));
         return Number(u128{observed.low} | (u128{observed.high} << 64), Type::V128);
     } else if constexpr (op == OpCode::AtomicExchange || op == OpCode::AtomicFetchAdd ||
                          op == OpCode::AtomicRMW || op == OpCode::CompareAndSwap) {
-        if (!services.atomic) throw detail::Rejected{BuildError::Unsupported};
+        if (!services.atomic) throw Exit{ExitKind::Unsupported};
         AtomicRequest request;
         request.bits = TypeBits(type);
         if constexpr (op == OpCode::AtomicRMW) {
@@ -272,8 +281,8 @@ DirectSink::Value DirectSink::Compute(Type requested, std::span<const Operand> a
                                                                : AtomicOperation::FetchAdd;
         }
         AtomicValue observed;
-        Access(services.atomic(services.opaque, request, observed));
+        ObserveAccess(services.atomic(services.opaque, request, observed));
         return Number(observed.low, type);
     } else
-        return Vector<op>(type, a);
+        return HandleVector<op>(type, a);
 }

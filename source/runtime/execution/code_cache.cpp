@@ -31,6 +31,18 @@ const NativeCode* CodeCache::FindHost(std::uintptr_t pc) const noexcept {
     return nullptr;
 }
 
+bool CodeCache::DeferCompilation(std::uint64_t pc, std::uint16_t threshold) {
+    auto& slot = Reserve(pc);
+    if (slot.jit_disabled) return true;
+    if (slot.cold_entries < threshold) {
+        ++slot.cold_entries;
+        return true;
+    }
+    return false;
+}
+
+void CodeCache::DisableCompilation(std::uint64_t pc) { Reserve(pc).jit_disabled = true; }
+
 void CodeCache::InsertReady(std::uint64_t pc,
                             NativeCode code,
                             std::span<const backend::EntryPoint> extra) {

@@ -1,0 +1,47 @@
+[
+  {
+    "case": "svm_ir_direct_test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "svm_ir_optimize_test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "svm_arm64_compile_test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "svm_compile_pipeline_test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "svm_instruction_coverage_test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "svm_avx_coverage_test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "svm_x87_coverage_test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "svm_runtime_engine_test",
+    "exit": 0,
+    "valid": true
+  },
+  {
+    "case": "svm_x86_interpreter_test",
+    "exit": 0,
+    "valid": true
+  }
+]

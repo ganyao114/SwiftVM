@@ -4,7 +4,8 @@
 #include <cstdint>
 #include <span>
 
-#include "decode.h"
+#include "region.h"
+#include "runtime/ir/direct/services.h"
 
 namespace swift::runtime::x86 {
 struct GuestState;
@@ -12,51 +13,20 @@ struct GuestState;
 
 namespace swift::x86 {
 
-enum class AccessStatus : std::uint8_t { Completed, Fault, UnsupportedBeforeAccess };
-
-struct AccessResult {
-    AccessStatus status{AccessStatus::Completed};
-    std::uint64_t fault_address{};
-    // A successful write may require leaving the current execution fragment
-    // after its architectural register/PC commit. It is never retried as a miss.
-    bool code_changed{};
-};
+// Memory/atomic results belong to the IR direct execution service. Fetch and
+// architectural state-image events remain the x86 adapter's responsibility.
+using runtime::ir::direct::AccessResult;
+using runtime::ir::direct::AccessStatus;
+using runtime::ir::direct::AtomicOperation;
+using runtime::ir::direct::AtomicRequest;
+using runtime::ir::direct::AtomicValue;
+using runtime::ir::direct::CpuResult;
 
 struct CodeReadResult {
     AccessResult access;
     // A readable prefix is useful even when the following page is inaccessible.
     // The decoder, not the fetch service, determines the instruction length.
     std::size_t bytes{};
-};
-
-struct AtomicValue {
-    std::uint64_t low{}, high{};
-};
-enum class AtomicOperation : std::uint8_t {
-    CompareExchange,
-    Exchange,
-    FetchAdd,
-    Add,
-    Sub,
-    And,
-    Or,
-    Xor,
-    Neg,
-    AddCarry,
-    SubBorrow,
-    CompareExchange128,
-};
-
-struct AtomicRequest {
-    std::uint64_t address{};
-    AtomicOperation operation{};
-    unsigned bits{};
-    AtomicValue expected, desired;
-    bool carry{};
-};
-
-struct CpuResult {
-    std::uint64_t lower{}, upper{};
 };
 
 // Actual execution services, bound once by the VM. All accesses report failure
@@ -84,6 +54,7 @@ enum class StepKind : std::uint8_t {
     Service,
     Fault,
     Unsupported,
+    Incomplete,  // A required service became unavailable after observable progress; never replay.
     InvalidEncoding,
     Truncated,
 };
@@ -97,13 +68,35 @@ struct StepResult {
     bool code_changed{};
 };
 
+// Consume the same owned DecodeOne record and original bytes accepted by the
+// IR builder. This path executes neutral IR operations immediately: no fetch,
+// re-decode, Builder or Program. Caller retains the same guest model and code
+// version. PC/length/prefix admission occurs before executing the instruction.
+[[nodiscard]] StepResult InterpretDecoded(const Instruction&,
+                                          std::span<const std::uint8_t> source_bytes,
+                                          runtime::x86::GuestState&,
+                                          const DirectServices&);
+
 // One architectural instruction, or one restartable REP iteration. No region,
 // Builder, Program, allocation, native code or persistent decoded cache exists.
 // All completed effects precede next_pc; faults retain the current instruction
-// and its architecturally defined partial completion. Unsupported is returned
-// before guest side effects and never means "retry a partly executed step".
+// and its architecturally defined partial completion. Unsupported permits choosing another consumer
+// only before observable effects; Incomplete and Fault retain partial progress and must never be
+// replayed.
 [[nodiscard]] StepResult InterpretOne(runtime::x86::GuestState&,
                                       const DirectServices&,
                                       DecodeTiming* timing = nullptr);
+
+// Execute a linear fragment, stopping at the first control, service, fault,
+// code-change or instruction-budget boundary. Counts include completed steps;
+// pc identifies the stopping instruction, so a failed suffix never replays its
+// completed prefix. One restartable REP iteration is always a boundary.
+// After at least one completed instruction, a ready entry ends the fragment
+// before fetching that instruction so the caller can enter its native code.
+[[nodiscard]] StepResult InterpretBlock(runtime::x86::GuestState&,
+                                        const DirectServices&,
+                                        std::size_t max_instructions = 256,
+                                        DecodeTiming* timing = nullptr,
+                                        ReadyEntryLookup ready = {});
 
 }  // namespace swift::x86

@@ -1,0 +1,10 @@
+{
+  "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux": {
+    "bytes": 22426776,
+    "sha256": "7794a4115ddf4e5cceaee1ba81eaa0030b1f25a24f4d7f4013f0b0173b29e279"
+  },
+  "/Volumes/Data2/swiftvm-middle-preserved-20261025/reconstruction-20261102/tiered-dispatch-20261106/tier-loop.elf": {
+    "bytes": 141,
+    "sha256": "5366bd15efa4ffe126c2532eb75f5364ddf2795d5de45f350cfbf886e5da7cdf"
+  }
+}

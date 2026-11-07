@@ -27,6 +27,10 @@ struct alignas(32) DispatchSlot {
     std::uint32_t code_id{UINT32_MAX};
     std::uint32_t pending_head{UINT32_MAX};
     bool occupied{};
+    // Cold policy belongs to this same PC/domain directory. Ready entries
+    // bypass it; native lookup still reads only the existing public prefix.
+    std::uint16_t cold_entries{};
+    bool jit_disabled{};
 };
 
 static_assert(std::is_standard_layout_v<DispatchSlot> && sizeof(DispatchSlot) == 32 &&
@@ -35,6 +39,8 @@ static_assert(offsetof(DispatchSlot, pc) == 0 && offsetof(DispatchSlot, entry) =
 static_assert(offsetof(NativeCode, entry) == 0 && sizeof(NativeCode::Function) == 8);
 static_assert(offsetof(DispatchSlot, code_id) == 16 && offsetof(DispatchSlot, pending_head) == 20 &&
               offsetof(DispatchSlot, occupied) == 24);
+static_assert(offsetof(DispatchSlot, cold_entries) == 26 &&
+              offsetof(DispatchSlot, jit_disabled) == 28);
 static_assert(sizeof(DispatchSlot) == (1u << SVM_DISPATCH_SLOT_SHIFT) &&
               offsetof(DispatchSlot, occupied) == SVM_DISPATCH_OCCUPIED_OFFSET);
 

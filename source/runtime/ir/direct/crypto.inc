@@ -1,5 +1,5 @@
 template <OpCode op>
-DirectSink::Value DirectSink::Crypto(Type type, std::span<const Operand> operands) {
+Interpreter::Value Interpreter::HandleCrypto(Type type, std::span<const Operand> operands) {
     namespace crypto = ::swift::runtime::x86::crypto;
     const auto vector = [&](unsigned index) {
         const auto value = Raw(operands[index]);
@@ -31,7 +31,7 @@ DirectSink::Value DirectSink::Crypto(Type type, std::span<const Operand> operand
     else if constexpr (op == OpCode::VecSha256Rnds2)
         operation = crypto::Operation::Sha256Rounds2;
     else
-        return String<op>(type, operands);
+        return HandleString<op>(type, operands);
     a = vector(0);
     if constexpr (op != OpCode::VecAesImc && op != OpCode::VecAesKeygenAssist) b = vector(1);
     if constexpr (op == OpCode::VecSha256Rnds2) c = vector(2);

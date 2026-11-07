@@ -64,7 +64,7 @@ private:
     bool PrepareGuestWrite(std::uint64_t, std::size_t);
     bool GuestWrite(std::uint64_t, const void*, std::size_t);
     void FileChanged(int);
-    void Interpret();
+    void Interpret(bool block = false);
     ::swift::x86::DirectServices DirectServices() noexcept;
     static ::swift::x86::CodeReadResult Fetch(void*,
                                               std::uint64_t,

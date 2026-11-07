@@ -1,0 +1,39 @@
+{
+  "verified_at_utc": "2026-11-07T04:49:22.671487+00:00",
+  "base_commit": "420c3d462bbe667b70fa7d7bd7b74293e37cee79",
+  "working_tree_modified": true,
+  "validated_source_and_assembly_files": 162,
+  "current_sources_match_validated_snapshot": true,
+  "format_files": 159,
+  "format_failures": 0,
+  "host_ctest": {
+    "passed": 10,
+    "total": 10
+  },
+  "redmagic_tests": {
+    "passed": 9,
+    "total": 9
+  },
+  "architecture": "One x86 Semantics<Sink>, two concrete IR Emit consumers. Builder constructs Program; independent ir::direct::Interpreter immediately executes numeric operations. InterpretDecoded consumes the same owned decoder record without fetch/redecode.",
+  "switch_scope": "Selection at decode/fully committed guest boundaries; existing Mixed native/direct handoff retained. No external preemption protocol for JIT hot loops added.",
+  "partial_progress": "Successful accesses and architectural writes preserve observed_effects. Unsupported after progress maps to Incomplete, never consumer retry.",
+  "coverage": [
+    "Independent IR direct numeric/Uniform/metadata/raw views/services/fault cases",
+    "Same decoded record accepted by IR builder and IR direct adapter with fetch unavailable",
+    "ENTER completed stack store followed by unavailable read retains effects and refuses replay",
+    "Existing ARM64, AVX, x87, interpreter and runtime engine regressions"
+  ],
+  "numerical_compile_flags": "-frounding-math moved to runtime/ir/direct/interpreter.cpp",
+  "runner_sha256": "f0a3a06d0833792c47ca0fe49ca7f311abd6dbadb0e182db0aada05366bb74b6",
+  "riscv_status": "Read-only exploration stopped after user correction; no RISC-V source or integration changes.",
+  "phone_cleanup": {
+    "namespace": "/data/local/tmp/swiftvm-ir-direct-20261106",
+    "active_processes": [],
+    "open_files": [],
+    "remaining_bytes": 0,
+    "errors": [],
+    "allocated_bytes_removed": 136720384,
+    "df_actual_free_delta_bytes": 136757248,
+    "completed_at_utc": "2026-11-07T04:47:06.706520+00:00"
+  }
+}

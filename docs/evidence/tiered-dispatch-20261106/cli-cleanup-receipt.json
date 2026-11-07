@@ -1,0 +1,9 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-tiered-cli-20261106",
+  "active_processes": [],
+  "open_files": [],
+  "remaining_bytes": 0,
+  "errors": [],
+  "allocated_bytes_removed": 22462464,
+  "df_actual_free_delta_bytes": 22470656
+}

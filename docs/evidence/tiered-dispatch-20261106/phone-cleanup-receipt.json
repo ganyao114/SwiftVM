@@ -1,0 +1,10 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-tiered-dispatch-20261106",
+  "active_processes": [],
+  "open_files": [],
+  "remaining_bytes": 0,
+  "errors": [],
+  "allocated_bytes_removed": 136888320,
+  "df_actual_free_delta_bytes": 136925184,
+  "completed_at_utc": "2026-11-07T07:17:31.896064+00:00"
+}

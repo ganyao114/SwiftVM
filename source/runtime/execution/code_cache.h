@@ -17,6 +17,10 @@ public:
     CodeCache(NativeCode::Function pending, const HostBackendOps& backend) noexcept;
     NativeCode::Function Find(std::uint64_t pc, NativeCode* unit = nullptr) const noexcept;
     const NativeCode* FindHost(std::uintptr_t pc) const noexcept;
+    // Called only for a real entry miss. Cold policy shares this domain's PC
+    // slot and is reset with the source's normal cache invalidation.
+    bool DeferCompilation(std::uint64_t pc, std::uint16_t threshold);
+    void DisableCompilation(std::uint64_t pc);
     void InsertReady(std::uint64_t pc, NativeCode, std::span<const backend::EntryPoint> extra);
     void AddStaticLink(const NativeCode&, const backend::LinkSite&);
     void AddIndirectSite(const NativeCode&, const backend::LinkSite&);

@@ -38,16 +38,10 @@ public:
 
     OperationMetadata Metadata(NodeId node) const { return Operations()[node.value].Metadata(); }
 
-    template <OpCode op> Result Apply(Type type,
-                                      std::initializer_list<Operand> inputs,
-                                      OperationMetadata metadata = {}) {
-        return Emit<op>(type, inputs, metadata);
-    }
-
 #define INST(name, ...)                                                                            \
     Result name(                                                                                   \
             Type type, std::initializer_list<Operand> inputs, OperationMetadata metadata = {}) {   \
-        return Apply<OpCode::name>(type, inputs, metadata);                                        \
+        return Emit<OpCode::name>(type, inputs, metadata);                                         \
     }
 #include "runtime/ir/opcodes.inc"
 #undef INST

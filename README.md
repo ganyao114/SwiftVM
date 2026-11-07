@@ -46,11 +46,19 @@ Push the runner and a static guest ELF to the device, then select either scope:
 ./svm_rebuild_linux --scope block guest.elf [guest args...]
 ./svm_rebuild_linux --scope function guest.elf [guest args...]
 ./svm_rebuild_linux --engine interpreter guest.elf [guest args...]
-./svm_rebuild_linux --engine mixed --scope function guest.elf [guest args...]
+./svm_rebuild_linux --engine mixed --hot-threshold 8 --scope function guest.elf [guest args...]
 ```
 
-The default engine is JIT. The interpreter shares decoded instructions and
-instruction semantics with the IR frontend and does not construct a Program.
+The default engine is JIT: each requested entry is compiled immediately.
+Cold interpretation and hot promotion require explicit `--engine mixed`.
+Both consumers use the same decoded instruction
+contract and frontend semantics: the IR builder creates a Program, while the
+independent IR direct interpreter executes the submitted operations immediately.
+Mixed mode interprets the first N visits to a cold entry, then attempts JIT
+compilation on the next visit (`--hot-threshold N`, default 8; 0 compiles
+immediately). Ready entries run natively; cold exits return to interpretation.
+Block and Function remain separate allocation scopes. An unsupported native
+entry keeps interpreting until source invalidation permits a fresh attempt.
 
 `--decode-timing` enables intrusive compile diagnostics and counted dispatch;
 leave it off for ordinary runtime measurements. Requested Function cost includes
