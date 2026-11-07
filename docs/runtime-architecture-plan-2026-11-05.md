@@ -152,9 +152,9 @@ StepResult 至少区分完成／有进度、服务事件、guest fault 和未支
 
 解释当前中立 Program 是可行的替代路线：能较快复用前端，但仍承担 IR 构造和 Submit。它可作为过渡或测试 oracle，不能被称为无 IR 直接解释。本方案推荐终态为 DirectSink，不强制先建设并长期维护第三套生产 IR interpreter。旧数值／flags 算法、值槽语义和 x87 helper 按当前类型及合同选择性移植。
 
-### 4.5 Guest state 与 host live state 分开
+### 4.5 Guest state 与 host live state 分责，共用 native 基址
 
-`arch/x86/state.h`、`flags.h`、`x87.h` 是 guest 状态的共享定义。第一阶段保留现有字段布局与 snapshot 值格式，维持 GuestState 576B；不在架构搬家时改变所有 flags 生成。
+`arch/x86/state.h`、`flags.h`、`x87.h` 是 guest 状态的共享定义。当前 `GuestState` 为 864B，内部字段和 Uniform 偏移保持不变；架构状态与 host 运行元数据分别定义，由 `NativeRunContext` 直接内嵌这一个 `GuestState`，线程不再另外持有独立 state 或 state 指针槽。
 
 - portable flags snapshot 明确不是原始 RFLAGS；其编码及 `ToRflags/GetCF/GetZF/...` 只定义在 `arch/x86/flags.h`。
 - A64 的 NZCV、反向 C、x1 raw PF、x29 AF 和受限 TEST tag 是 backend live representation，仅由 ARM64 ABI／恢复桥解释。
@@ -226,6 +226,10 @@ MaterializeConstant(dst, value)              # 有界展开，只修改显式dst
 - `emit_control`：内部 CFG terminal、外部 static/dynamic 出口、frame/flags/PC 边界；没有 PC-directory 所有权。
 - `patch`：解释本 backend 的实际 link/fault 修补格式，调用同一 encoding 算式；不决定 guest target 或 cache membership。
 - `abi.h`、`abi_layout.inc` 与 Linux ARM64 bridge：唯一 pin、flags、FP、context offset 合同。静态汇编与动态发码从同一布局定义消费常量，并以 offsetof/static_assert 核对；不新增每边界状态复制。
+
+统一 native ABI 只保留 `x19 = &context.state`。Context 前部元数据实际占 152B，按 GuestState 的 16B 对齐使 state 位于 offset 160，完整对象为 1024B。元数据通过 `x19 + (offsetof(field) - 160)` 访问：单字段使用有符号字节位移的 `LDUR/STUR`，slots/mask 等相邻字段保持一条负偏移 `LDP`。Uniform IR 仍使用 state 内的原字段偏移；数值 helper 仍接收真实 state／子对象指针。根入口 `SvmRunNative(NativeRunContext*)` 从唯一 owner 建立这个基址，冷 resolver 才用一次 `SUB` 得到完整 context 地址。
+
+`x28` 不再持有 context，追加到 linked 模式的标量 SSA bank；pin16 下由 `x2..x7` 六个寄存器扩大为 `x2..x7, x28` 七个。16 个 GPR pin 与 XMM pin 映射不变；root 继续保存／恢复 host x28，数值 helper 遵守其 callee-saved 合同。Standalone 的普通 state 指针入口及原寄存器 bank 保持原约定。 对应布局、x28 实际执行回归和小规模 compile 对照见 [验证记录](evidence/unified-native-context-20261106/README.md)。
 
 ### 5.5 单次 opcode 派发，Handle 按职责实现
 
@@ -450,8 +454,9 @@ VM
   ├─ CodeCache[domain]                 # NativeUnit描述、真实Entry及link membership
   ├─ CompileService                   # 单次region → Program → native产物
   └─ GuestThread                      # 首阶段按值包含一个，尚不授多线程资格
-       ├─ GuestState / 当前FP domain
-       └─ NativeRunContext / fault恢复 / 当前active borrow
+       ├─ 当前FP domain
+       ├─ NativeRunContext（内嵌唯一GuestState）
+       └─ fault恢复 / 当前active borrow
 ```
 
 - **Module职责保留但不恢复大容器。** 当前只支持静态ELF，image身份、load bias、entry及必要的策略描述放在`platform/linux/loader`的LoadedImage元数据，不单建ModuleManager、全VA default Module或每module code heap。匿名代码使用VM默认编译策略；它是否能读取／执行仍由GuestMemory和既定CodeSource合同决定，默认策略不授映射能力。以后真正支持DSO／加载卸载及多module策略时，再独立source module服务；当前文件结构不预建空管理层。
@@ -459,7 +464,7 @@ VM
 - **策略只在冷入口选择。** guest CPU model与host能力仍归VM；若以后存在module-specific编译策略，在形成前解析一次，region不跨不同策略／SourceMode的边界。改变影响产物的策略先失效已有代码，不给每条IR增加ModuleId／generation，也不恢复热路径的module→function→block查找。
 - **Function和Block保编译含义。** 一次编译的region／Program是短命owner，Block是其中的slice／record；Block与Function仍分别决定分配策略。当前ARM64产物不借Program，编译完成后IR可释放或复用容量，只保真实fault／link／entry资源。未来backend若有helper确实借IR，必须为该实际借用明确owner，不要求所有backend默认保留IR。
 - **NativeUnit和Entry独立于IR寿命。** 多个entry共用unit范围和fault base；多个unit可包含同一guest source，不能把PC当全局唯一IR block owner。撤销完整unit时，其root／所有extra entry及incoming links一起处理，不能只删Function root。共享slab上的其他unit也不能随一个module元数据析构而被误释放。
-- **线程状态不再混进共享owner。** `runtime.h/.cpp`内把VM和GuestThread职责分清，当前按值组合，沿用GuestState576B与NativeRunContext160B。GuestThread停止／注销后才关闭其借用的VM资源；不为拆职责增加shared_ptr图、每thread一份code heap或未实现的QSBR／epoch。
+- **线程状态不再混进共享owner。** `runtime.h/.cpp`内把VM和GuestThread职责分清，当前按值组合，GuestState保持864B内部布局并内嵌于1024B NativeRunContext；单一native基址释放x28。GuestThread停止／注销后才关闭其借用的VM资源；不为拆职责增加shared_ptr图、每thread一份code heap或未实现的QSBR／epoch。
 
 模块卸载、源映射替换、策略变化统一经VM协调：先阻断已有callable routes并撤链接，在真实冷点结束active借用并退休完整unit，再执行或提交GuestMemory的映射变更／image元数据更新；操作失败保留其真实结果。当前全域撤销已能覆盖共享unit及backing alias，先用它完成合同。选择性失效需要时才增加按真实source ranges／pages连接unit的索引，不让Function树或Module范围路由代替依赖记录。此处定义未来卸载的必要顺序，不宣称本轮已经实现DSO卸载。
 
@@ -626,7 +631,7 @@ source/runtime/
 
 1. **数据份数**：D一份、Program一份、u64/N优化表一份、Home/N一份、words一份。F/L/E只记录真实fault/link/entry，label/fixup只随实际B/branch增长。
 2. **决策次数**：guest指令形式判定一个来源；backend配置接入一次；每IR op选码一次；每site实际地址解析一次；每unit发布一次。状态不在 inputs/preparation/actions/certificates 中反复描述。
-3. **热路径**：无每opcode virtual/std::function、无新增全IR扫描、无second code buffer、无每边界通用状态reset。VIXL无隐式GPR/FP scratch或自动插码；临时寄存器与展开由SVM显式决定。CodeCache hot slot首阶段保持32B，GuestState576B、NativeRunContext160B先不改布局。
+3. **热路径**：无每opcode virtual/std::function、无新增全IR扫描、无second code buffer、无每边界通用状态reset。VIXL无隐式GPR/FP scratch或自动插码；临时寄存器与展开由SVM显式决定。CodeCache hot slot保持32B；GuestState内部864B布局不变，内嵌于1024B NativeRunContext，由一个native基址访问。
 4. **职责拆分原则**：源码按语义和资源职责组织，同一owner的方法可分布于多个.cpp。Backend opcode／terminal的case只调用Handle；无“大switch搬家”或向量／状态二次试探派发。拆源文件不新增manager、缓存或独立状态机。
 5. **接口合同**：默认／Unknown继续有用；只有真实安装的fault/SMC/native消费者才授相应能力。不能仅为了让检查通过而授事实。
 6. **资源成本透明**：冷metadata尺寸若为清晰tag增加，记录实际字节与allocation；不为保持名义大小引入难审查的压缩协议。

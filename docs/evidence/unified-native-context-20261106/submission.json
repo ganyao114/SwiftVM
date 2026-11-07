@@ -1,0 +1,21 @@
+{
+  "associated_at_utc": "2026-11-07T04:17:58.982602+00:00",
+  "base_commit": "15834ec4dac749d618537ea00979cdf65d7ebe56",
+  "implementation_commit": "55a3d7689936452886954fa82a00f64a95a28c01",
+  "branch": "refactor/middle-pipeline-rebuild-parity",
+  "validated_source_files": 158,
+  "committed_sources_match_measured_snapshot": true,
+  "measured_runner_sha256": "9f1e408a3579e99a087e98ebb05f32b2972916441644e9162ed762e0da24e147",
+  "measurement_state": "Uncommitted snapshot at measurement time; historical records retained unchanged.",
+  "validation": {
+    "format_files": 155,
+    "format_failures": 0,
+    "host_ctest_passed": 9,
+    "redmagic_tests_passed": 8
+  },
+  "compile_comparison": {
+    "fixed_rounds": 3,
+    "samples": 24,
+    "fresh_fex_comparison": false
+  }
+}

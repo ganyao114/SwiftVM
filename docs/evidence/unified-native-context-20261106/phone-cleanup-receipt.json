@@ -1,0 +1,10 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-unified-context-20261106",
+  "active_processes": [],
+  "open_files": [],
+  "remaining_bytes": 0,
+  "errors": [],
+  "allocated_bytes_removed": 173555712,
+  "df_actual_free_delta_bytes": 173604864,
+  "completed_at_utc": "2026-11-07T03:45:58.384975+00:00"
+}
