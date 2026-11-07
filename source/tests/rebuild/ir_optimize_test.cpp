@@ -1,4 +1,4 @@
-#include "runtime/compile/optimize.h"
+#include "runtime/ir/optimize.h"
 #include "runtime/ir/builder.h"
 
 #include <array>
@@ -9,7 +9,7 @@
 
 namespace {
 using namespace swift::runtime::ir;
-using swift::runtime::compile::Optimize;
+using swift::runtime::ir::Optimize;
 
 void Check(bool condition, const char* expression, int line) {
     if (!condition) {
@@ -577,8 +577,8 @@ void UniformReadForwardingKeepsFaultsAndAliases() {
     const auto after_store =
             Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
     CHECK(builder.EndBlock(Terminal::Return(after_store)) == Error::None);
-    auto result = Optimize(
-            Submit(builder), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{16, 8}});
+    auto result =
+            Optimize(Submit(builder), SIZE_MAX, {.flags = swift::runtime::ir::UniformRange{16, 8}});
     CHECK(result);
     auto published = result.program.Operands(NodeId{kept.node.value + 1}).begin();
     ++published;
@@ -636,7 +636,7 @@ void CoveredMultiplyFlagsReleaseTheirInputs() {
                            {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
     CHECK(builder.EndBlock(Terminal::Return(last)) == Error::None);
     auto result = Optimize(
-            Submit(builder), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+            Submit(builder), SIZE_MAX, {.flags = swift::runtime::ir::UniformRange{128, 8}});
     CHECK(result);
     CHECK(result.program.Operations()[add.node.value].opcode == OpCode::Add);
     CHECK(result.program.Operations()[add.node.value].Metadata() == OperationMetadata{});
@@ -701,10 +701,10 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     Emit(builder, OpCode::LoadMemoryTSO, Type::U64, {Operand::ValueOf(address)});
     const auto next = flags();
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
-    auto result = Optimize(Submit(builder),
-                           SIZE_MAX,
-                           {.flags = swift::runtime::compile::UniformRange{128, 8},
-                            .guest_memory_disjoint = true});
+    auto result = Optimize(
+            Submit(builder),
+            SIZE_MAX,
+            {.flags = swift::runtime::ir::UniformRange{128, 8}, .guest_memory_disjoint = true});
     CHECK(result);
     for (const auto source : {before_fault, before_read, before_alias, before_helper, next}) {
         CHECK(result.program.Operations()[source.node.value].flag_outputs == FlagBits(Flag::All));
@@ -779,8 +779,8 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
                                  {Operand::ValueOf(source), Operand::Immediate(1, Type::U64)},
                                  arithmetic);
     CHECK(graph.EndBlock(Terminal::Return()) == Error::None);
-    auto reduced = Optimize(
-            Submit(graph), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+    auto reduced =
+            Optimize(Submit(graph), SIZE_MAX, {.flags = swift::runtime::ir::UniformRange{128, 8}});
     CHECK(reduced);
     CHECK(reduced.stats.final_walk_skipped == 0);  // The actual Function exit demands narrowed.
     for (const auto writer : {entry_flags, body_flags}) {
@@ -849,7 +849,7 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
                                {FlagBits(Flag::All), FlagProfile::LogicalZeroCVA});
     CHECK(permission.EndBlock(Terminal::Return(observer)) == Error::None);
     auto permitted = Optimize(
-            Submit(permission), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+            Submit(permission), SIZE_MAX, {.flags = swift::runtime::ir::UniformRange{128, 8}});
     CHECK(permitted);
     const OperationMetadata specified_z{
             FlagBits(Flag::Zero), FlagProfile::LogicalZeroCVA, false, true};
@@ -860,8 +860,8 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
                        OpCode::GetFlags,
                        Type::U64,
                        {Operand::ValueOf(byte), Operand::Flags(Flag::All)}) == Error::None);
-    auto observed = Optimize(
-            Submit(edit), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+    auto observed =
+            Optimize(Submit(edit), SIZE_MAX, {.flags = swift::runtime::ir::UniformRange{128, 8}});
     CHECK(observed);
     // An added whole-word observer reads the declared unspecified fields.
     // It neither invalidates a proof nor restores previously omitted flags.
@@ -892,7 +892,7 @@ void FlagsObserveFaultsAliasesAndBlockExits() {
     CHECK(local_permission.EndBlock(Terminal::Return(permission_source)) == Error::None);
     auto granted = Optimize(Submit(local_permission),
                             SIZE_MAX,
-                            {.flags = swift::runtime::compile::UniformRange{128, 8}});
+                            {.flags = swift::runtime::ir::UniformRange{128, 8}});
     CHECK(granted && granted.stats.final_walk_skipped == 0);
     CHECK(granted.stats.erased == 0 && granted.stats.folded == 0 &&
           granted.stats.copy_forwarded == 0 && granted.stats.uniform_forwarded == 0);
@@ -939,7 +939,7 @@ void SingleNumericReadAbsorbsU32Normalizer() {
     Store(builder, 40, byte_sum, Type::U32);
     CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
     auto result = Optimize(
-            Submit(builder), SIZE_MAX, {.flags = swift::runtime::compile::UniformRange{128, 8}});
+            Submit(builder), SIZE_MAX, {.flags = swift::runtime::ir::UniformRange{128, 8}});
     CHECK(result);
     CHECK(result.program.Operations()[single.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operands(sum.node).front().Payload() == parent.node.value);

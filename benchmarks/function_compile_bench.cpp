@@ -1,5 +1,5 @@
 #include "runtime/backend/arm64/compile.h"
-#include "runtime/compile/optimize.h"
+#include "runtime/ir/optimize.h"
 #include "runtime/frontend/x86/build_ir.h"
 #include "tests/rebuild/function_fixture.h"
 
@@ -55,7 +55,7 @@ template <bool audit> Counts Run(const swift::tests::function_region::Fixture& f
                                                         count);
     Require(bool(built));
     if constexpr (audit) out.entry = built.program.EntryBlock().value;
-    auto optimized = compile::Optimize(std::move(built.program));
+    auto optimized = ir::Optimize(std::move(built.program));
     Require(bool(optimized));
     auto code = a64::Compile(optimized.program, {136});
     Require(bool(code) && !code.words.empty());

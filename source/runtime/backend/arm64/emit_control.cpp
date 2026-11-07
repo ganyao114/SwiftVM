@@ -318,178 +318,151 @@ void Writer::Terminal(const StoredTerminal& terminal, BlockId next) {
 }
 
 void Writer::HandleReturn(const StoredTerminal& terminal) {
-    do {
-        Shadow(false);
-        if (terminal.HasValue()) {
-            const auto value = RawValue(terminal.value.value, 16);
-            const auto type = terminal.value_type == Type::Void
-                                      ? source.Operations()[terminal.value.value].type
-                                      : terminal.value_type;
-            Narrow(0, value, Width(type));
-        } else
-            Immediate(0, 0);
-        Epilogue();
-        break;
-    } while (false);
+    Shadow(false);
+    if (terminal.HasValue()) {
+        const auto value = RawValue(terminal.value.value, 16);
+        const auto type = terminal.value_type == Type::Void
+                                  ? source.Operations()[terminal.value.value].type
+                                  : terminal.value_type;
+        Narrow(0, value, Width(type));
+    } else
+        Immediate(0, 0);
+    Epilogue();
 }
 
 void Writer::HandleDispatch() {
-    do {
-        if (!options.private_uniforms) Shadow(false);
-        if (Linked()) {
-            StackAdjust(false);
-            if (static_pc_valid && alternate_pc_valid) {
-                // The selected PC is already committed. Use its two
-                // real constant edges without extending the dead SSA
-                // condition's lifetime or introducing a second cache.
-                SnapshotCompareNZCV();
-                PCMemory(true);
-                Immediate(17, static_pc);
-                masm.exact.cmp(v::x0, Operand(v::x17));
-                const auto skip = static_cast<u32>(output.words.size());
-                masm.exact.b(std::int64_t{0}, v::ne);
-                RestoreCompareNZCV();
-                TailJump(options.dispatcher, true, static_pc);
-                masm.Patch(skip, masm.Here());
-                RestoreCompareNZCV();
-                TailJump(options.dispatcher, true, alternate_pc);
-            } else {
-                if (!options.deferred_pc || !static_pc_valid) PCMemory(true);
-                if (static_pc_valid)
-                    TailJump(options.dispatcher, true, static_pc);
-                else
-                    DynamicDispatch();
-            }
+    if (!options.private_uniforms) Shadow(false);
+    if (Linked()) {
+        StackAdjust(false);
+        if (static_pc_valid && alternate_pc_valid) {
+            // The selected PC is already committed. Use its two
+            // real constant edges without extending the dead SSA
+            // condition's lifetime or introducing a second cache.
+            SnapshotCompareNZCV();
+            PCMemory(true);
+            Immediate(17, static_pc);
+            masm.exact.cmp(v::x0, Operand(v::x17));
+            const auto skip = static_cast<u32>(output.words.size());
+            masm.exact.b(std::int64_t{0}, v::ne);
+            RestoreCompareNZCV();
+            TailJump(options.dispatcher, true, static_pc);
+            masm.Patch(skip, masm.Here());
+            RestoreCompareNZCV();
+            TailJump(options.dispatcher, true, alternate_pc);
         } else {
-            Immediate(0, 0);
-            Epilogue();
+            if (!options.deferred_pc || !static_pc_valid) PCMemory(true);
+            if (static_pc_valid)
+                TailJump(options.dispatcher, true, static_pc);
+            else
+                DynamicDispatch();
         }
-        break;
-    } while (false);
+    } else {
+        Immediate(0, 0);
+        Epilogue();
+    }
 }
 
 void Writer::HandleJump(const StoredTerminal& terminal, BlockId next) {
-    do {
-        if (terminal.first != next) Branch(terminal.first);
-        break;
-    } while (false);
+    if (terminal.first != next) Branch(terminal.first);
 }
 
 void Writer::HandleBranch(const StoredTerminal& terminal, BlockId next) {
-    do {
-        {
-            const auto& home = allocation.homes[terminal.value.value];
-            const auto type = terminal.value_type == Type::Void
-                                      ? source.Operations()[terminal.value.value].type
-                                      : terminal.value_type;
-            if (deferred_test.bits) {
-                Width(type);
-                const auto& deferred = deferred_test;
-                const auto cbnz = Branch19::Zero(
-                        R(deferred.value_register, deferred.bits == 64 ? 64 : 32), true);
-                if (!ShortBranch(cbnz, terminal.first)) {
-                    cbnz.Inverse().Emit(masm.exact, 2);
-                    Branch(terminal.first);
-                }
-                // Only the zero exit completes TEST. Its current value,
-                // not the nonzero entry snapshot, is known to be zero.
-                Immediate(1, 0);
-                Immediate(29, 0);
-                masm.exact.cmp(v::x1, Operand(0));  // CMP x1,#0: N0 Z1 !guestC1 V0.
-                shadow_dirty = true;
-                packed_current = false;
-                nzcv_matches = 0;
-                if (terminal.second != next) Branch(terminal.second);
-                break;
-            }
-            if (home.terminal_only) {
-                Width(type);  // Preserve the terminal's scalar view contract.
-                ConditionEdges(terminal_condition, terminal, next);
-                break;
-            }
-            if (terminal.first == terminal.second) {
-                if (terminal.first != next) Branch(terminal.first);
-                break;
-            }
-            const auto value = RawValue(terminal.value.value, 16);
-            Narrow(16, value, Width(type));
-            const bool true_falls_through = terminal.first == next;
-            if (!ShortBranch(Branch19::Zero(v::x16, !true_falls_through),
-                             true_falls_through ? terminal.second : terminal.first)) {
-                Branch19::Zero(v::x16, true_falls_through).Emit(masm.exact, 2);  // CBNZ/CBZ x16,+8
-                Branch(true_falls_through ? terminal.second : terminal.first);
-            }
-            if (!true_falls_through && terminal.second != next) Branch(terminal.second);
-            break;
+    const auto& home = allocation.homes[terminal.value.value];
+    const auto type = terminal.value_type == Type::Void
+                              ? source.Operations()[terminal.value.value].type
+                              : terminal.value_type;
+    if (deferred_test.bits) {
+        Width(type);
+        const auto& deferred = deferred_test;
+        const auto cbnz =
+                Branch19::Zero(R(deferred.value_register, deferred.bits == 64 ? 64 : 32), true);
+        if (!ShortBranch(cbnz, terminal.first)) {
+            cbnz.Inverse().Emit(masm.exact, 2);
+            Branch(terminal.first);
         }
-    } while (false);
+        // Only the zero exit completes TEST. Its current value,
+        // not the nonzero entry snapshot, is known to be zero.
+        Immediate(1, 0);
+        Immediate(29, 0);
+        masm.exact.cmp(v::x1, Operand(0));  // CMP x1,#0: N0 Z1 !guestC1 V0.
+        shadow_dirty = true;
+        packed_current = false;
+        nzcv_matches = 0;
+        if (terminal.second != next) Branch(terminal.second);
+        return;
+    }
+    if (home.terminal_only) {
+        Width(type);  // Preserve the terminal's scalar view contract.
+        ConditionEdges(terminal_condition, terminal, next);
+        return;
+    }
+    if (terminal.first == terminal.second) {
+        if (terminal.first != next) Branch(terminal.first);
+        return;
+    }
+    const auto value = RawValue(terminal.value.value, 16);
+    Narrow(16, value, Width(type));
+    const bool true_falls_through = terminal.first == next;
+    if (!ShortBranch(Branch19::Zero(v::x16, !true_falls_through),
+                     true_falls_through ? terminal.second : terminal.first)) {
+        Branch19::Zero(v::x16, true_falls_through).Emit(masm.exact, 2);  // CBNZ/CBZ x16,+8
+        Branch(true_falls_through ? terminal.second : terminal.first);
+    }
+    if (!true_falls_through && terminal.second != next) Branch(terminal.second);
 }
 
 void Writer::HandleUnreachable() {
-    do {
-        Shadow(false);
-        masm.exact.brk(0);
-        break;
-    } while (false);
+    Shadow(false);
+    masm.exact.brk(0);
 }
 
 void Writer::HandleCondSetFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto& home = ctx.home;
     const auto destination = ctx.destination;
-    do {
-        {
-            RequireFlags();
-            const auto condition = Condition(cursor.Take());
-            if (home.terminal_only) {
-                terminal_condition = condition;
-                break;
-            }
-            if (condition >= 14)
-                Immediate(destination, 1);
-            else {
-                EnsureNZCV(condition);
-                const bool flip = NativeNZCV() && (condition == 8 || condition == 9);
-                const auto host = NativeNZCV() && (condition == 2 || condition == 3) ? condition ^ 1
-                                                                                     : condition;
-                if (flip) masm.exact.cfinv();
-                masm.exact.cset(X(destination), static_cast<v::Condition>(host));
-                if (flip) masm.exact.cfinv();
-            }
-            break;
-        }
-    } while (false);
+    RequireFlags();
+    const auto condition = Condition(cursor.Take());
+    if (home.terminal_only) {
+        terminal_condition = condition;
+        return;
+    }
+    if (condition >= 14)
+        Immediate(destination, 1);
+    else {
+        EnsureNZCV(condition);
+        const bool flip = NativeNZCV() && (condition == 8 || condition == 9);
+        const auto host =
+                NativeNZCV() && (condition == 2 || condition == 3) ? condition ^ 1 : condition;
+        if (flip) masm.exact.cfinv();
+        masm.exact.cset(X(destination), static_cast<v::Condition>(host));
+        if (flip) masm.exact.cfinv();
+    }
 }
 
 void Writer::HandleCondSelectFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto destination = ctx.destination;
     const auto width = ctx.width;
-    do {
-        {
-            RequireFlags();
-            const auto condition = Condition(cursor.Take());
-            const auto native_width = width == 32 ? 32u : 64u;
-            const auto yes = Read(cursor.Take(), 16, 64, false, native_width),
-                       no = Read(cursor.Take(), 17, 64, false, native_width);
-            if (condition >= 14) {
-                Narrow(destination, yes, width);
-                break;
-            }
-            EnsureNZCV(condition);
-            const bool flip = NativeNZCV() && (condition == 8 || condition == 9);
-            const auto host =
-                    NativeNZCV() && (condition == 2 || condition == 3) ? condition ^ 1 : condition;
-            if (flip) masm.exact.cfinv();
-            masm.exact.csel(R(destination, native_width),
-                            R(yes, native_width),
-                            R(no, native_width),
-                            static_cast<v::Condition>(host));
-            if (flip) masm.exact.cfinv();
-            if (width != 32) Narrow(destination, destination, width);
-            break;
-        }
-    } while (false);
+    RequireFlags();
+    const auto condition = Condition(cursor.Take());
+    const auto native_width = width == 32 ? 32u : 64u;
+    const auto yes = Read(cursor.Take(), 16, 64, false, native_width),
+               no = Read(cursor.Take(), 17, 64, false, native_width);
+    if (condition >= 14) {
+        Narrow(destination, yes, width);
+        return;
+    }
+    EnsureNZCV(condition);
+    const bool flip = NativeNZCV() && (condition == 8 || condition == 9);
+    const auto host =
+            NativeNZCV() && (condition == 2 || condition == 3) ? condition ^ 1 : condition;
+    if (flip) masm.exact.cfinv();
+    masm.exact.csel(R(destination, native_width),
+                    R(yes, native_width),
+                    R(no, native_width),
+                    static_cast<v::Condition>(host));
+    if (flip) masm.exact.cfinv();
+    if (width != 32) Narrow(destination, destination, width);
 }
 
 void Writer::HandleGotoFamily(OpContext& ctx) {
@@ -498,77 +471,61 @@ void Writer::HandleGotoFamily(OpContext& ctx) {
     const auto destination = ctx.destination;
     const auto width = ctx.width;
     const auto save_result = [&] { SaveResult(ctx); };
-    do {
-        {
-            const auto input = cursor.Take();
-            auto check = Read(input, 0);
-            // The returned numeric value is available on both paths. Keep
-            // the full input predicate even if a narrower result aliases it.
-            if (destination == check && width < Width(View(input))) {
-                Move(0, check);
-                check = 0;
-            }
-            Narrow(destination, check, width);
-            save_result();
-            masm.local_fixups.push_back({node.value, static_cast<u32>(output.words.size())});
-            Branch19::Zero(X(check), operation.opcode == OpCode::Goto).Emit(masm.exact, 0);
-            break;
-        }
-    } while (false);
+    const auto input = cursor.Take();
+    auto check = Read(input, 0);
+    // The returned numeric value is available on both paths. Keep
+    // the full input predicate even if a narrower result aliases it.
+    if (destination == check && width < Width(View(input))) {
+        Move(0, check);
+        check = 0;
+    }
+    Narrow(destination, check, width);
+    save_result();
+    masm.local_fixups.push_back({node.value, static_cast<u32>(output.words.size())});
+    Branch19::Zero(X(check), operation.opcode == OpCode::Goto).Emit(masm.exact, 0);
 }
 
 void Writer::HandleBindLabelFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
-    do {
-        {
-            const auto owner = cursor.Take();
-            if (owner.Kind() != OperandKind::Value || owner.Payload() >= node.value)
-                Reject(CompileError::UnsupportedOperand);
-            const auto found = std::find_if(
-                    masm.local_fixups.begin(),
-                    masm.local_fixups.end(),
-                    [&](const LocalFixup& edge) { return edge.node == owner.Payload(); });
-            if (found == masm.local_fixups.end()) Reject(CompileError::InvalidProgram);
-            const auto distance = static_cast<u32>(output.words.size()) - found->word;
-            if (distance >= (1u << 18)) Reject(CompileError::CodeTooLarge);
-            masm.Patch(found->word, masm.Here());
-            masm.local_fixups.erase(found);
-            // CompleteLocalFlags above belongs to the body path. Taken
-            // edges land after it with their already-complete flags intact.
-            // The skipped body did not necessarily establish any linear
-            // PC/flags/location fact; subsequent observers read real state.
-            static_pc_valid = alternate_pc_valid = false;
-            terminal_condition = 18;
-            nzcv_matches = 0;
-            packed_current = false;
-            shadow_dirty = Enabled();
-            has_fault_location = false;
-            deferred_test = {};
-            break;
-        }
-    } while (false);
+    const auto owner = cursor.Take();
+    if (owner.Kind() != OperandKind::Value || owner.Payload() >= node.value)
+        Reject(CompileError::UnsupportedOperand);
+    const auto found = std::find_if(
+            masm.local_fixups.begin(), masm.local_fixups.end(), [&](const LocalFixup& edge) {
+                return edge.node == owner.Payload();
+            });
+    if (found == masm.local_fixups.end()) Reject(CompileError::InvalidProgram);
+    const auto distance = static_cast<u32>(output.words.size()) - found->word;
+    if (distance >= (1u << 18)) Reject(CompileError::CodeTooLarge);
+    masm.Patch(found->word, masm.Here());
+    masm.local_fixups.erase(found);
+    // CompleteLocalFlags above belongs to the body path. Taken
+    // edges land after it with their already-complete flags intact.
+    // The skipped body did not necessarily establish any linear
+    // PC/flags/location fact; subsequent observers read real state.
+    static_pc_valid = alternate_pc_valid = false;
+    terminal_condition = 18;
+    nzcv_matches = 0;
+    packed_current = false;
+    shadow_dirty = Enabled();
+    has_fault_location = false;
+    deferred_test = {};
 }
 
 void Writer::HandleSelectFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto destination = ctx.destination;
     const auto width = ctx.width;
-    do {
-        {
-            SnapshotCompareNZCV();
-            const auto check = Read(cursor.Take(), 0);
-            const auto native_width = width == 32 ? 32u : 64u;
-            const auto yes = Read(cursor.Take(), 16, 64, false, native_width),
-                       no = Read(cursor.Take(), 17, 64, false, native_width);
-            nzcv_matches = 0;
-            masm.exact.cmp(X(check), Operand(0));
-            masm.exact.csel(
-                    R(destination, native_width), R(yes, native_width), R(no, native_width), v::ne);
-            RestoreCompareNZCV();
-            if (width != 32) Narrow(destination, destination, width);
-            break;
-        }
-    } while (false);
+    SnapshotCompareNZCV();
+    const auto check = Read(cursor.Take(), 0);
+    const auto native_width = width == 32 ? 32u : 64u;
+    const auto yes = Read(cursor.Take(), 16, 64, false, native_width),
+               no = Read(cursor.Take(), 17, 64, false, native_width);
+    nzcv_matches = 0;
+    masm.exact.cmp(X(check), Operand(0));
+    masm.exact.csel(R(destination, native_width), R(yes, native_width), R(no, native_width), v::ne);
+    RestoreCompareNZCV();
+    if (width != 32) Narrow(destination, destination, width);
 }
 
 }  // namespace detail

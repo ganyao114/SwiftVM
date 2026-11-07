@@ -8,8 +8,14 @@ add_library(svm_ir STATIC
 target_include_directories(svm_ir PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/source")
 target_compile_features(svm_ir PUBLIC cxx_std_20)
 
-add_library(svm_compile STATIC source/runtime/compile/optimize.cpp)
-target_link_libraries(svm_compile PUBLIC svm_ir)
+# The portable IR optimizer shares the IR contract, independently of execution
+# ownership and any backend. Files divide responsibilities, not extra walks.
+add_library(svm_ir_optimize STATIC
+    source/runtime/ir/passes/optimize.cpp
+    source/runtime/ir/passes/liveness.cpp
+    source/runtime/ir/passes/rewrite.cpp
+    source/runtime/ir/passes/fold.cpp)
+target_link_libraries(svm_ir_optimize PUBLIC svm_ir)
 
 add_subdirectory(source/runtime/externals/SoftFloat-3e)
 add_library(svm_cephes STATIC
@@ -128,7 +134,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/platform/linux/signals.cpp
         source/runtime/platform/linux/arm64_runtime.cpp
         source/runtime/platform/linux/arm64_entry.S)
-    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_compile svm_arm64)
+    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_ir_optimize svm_arm64)
     add_executable(svm_rebuild_linux source/launcher/linux/main.cpp)
     target_link_libraries(svm_rebuild_linux PRIVATE svm_execution)
     add_executable(svm_runtime_engine_test source/tests/rebuild/runtime_engine_test.cpp)
@@ -140,14 +146,14 @@ target_link_libraries(svm_ir_construction_test PRIVATE svm_ir)
 add_executable(svm_x86_construction_test source/tests/rebuild/x86_construction_test.cpp)
 target_link_libraries(svm_x86_construction_test PRIVATE svm_x86_ir distorm)
 add_executable(svm_ir_optimize_test source/tests/rebuild/ir_optimize_test.cpp)
-target_link_libraries(svm_ir_optimize_test PRIVATE svm_compile)
+target_link_libraries(svm_ir_optimize_test PRIVATE svm_ir_optimize)
 add_executable(svm_arm64_compile_test source/tests/rebuild/arm64_compile_test.cpp)
 target_link_libraries(svm_arm64_compile_test PRIVATE svm_arm64)
 if(TARGET svm_execution)
     target_link_libraries(svm_arm64_compile_test PRIVATE svm_execution)
 endif()
 add_executable(svm_compile_pipeline_test source/tests/rebuild/compile_pipeline_test.cpp)
-target_link_libraries(svm_compile_pipeline_test PRIVATE svm_x86_ir svm_compile svm_arm64 distorm)
+target_link_libraries(svm_compile_pipeline_test PRIVATE svm_x86_ir svm_ir_optimize svm_arm64 distorm)
 add_executable(svm_x86_interpreter_test source/tests/rebuild/x86_interpreter_test.cpp)
 target_link_libraries(svm_x86_interpreter_test PRIVATE svm_x86_ir)
 
@@ -161,16 +167,16 @@ if(SVM_BUILD_IR_BENCHMARK)
     add_executable(svm_x86_build_submit_bench benchmarks/x86_build_submit_bench.cpp)
     target_link_libraries(svm_x86_build_submit_bench PRIVATE svm_x86_ir)
     add_executable(svm_ir_birth_replay_bench benchmarks/ir_birth_replay_bench.cpp)
-    target_link_libraries(svm_ir_birth_replay_bench PRIVATE svm_compile)
+    target_link_libraries(svm_ir_birth_replay_bench PRIVATE svm_ir_optimize)
     add_executable(svm_ir_compile_bench benchmarks/ir_compile_bench.cpp)
-    target_link_libraries(svm_ir_compile_bench PRIVATE svm_compile svm_arm64)
+    target_link_libraries(svm_ir_compile_bench PRIVATE svm_ir_optimize svm_arm64)
     add_executable(svm_function_compile_bench benchmarks/function_compile_bench.cpp)
-    target_link_libraries(svm_function_compile_bench PRIVATE svm_x86_ir svm_compile svm_arm64)
+    target_link_libraries(svm_function_compile_bench PRIVATE svm_x86_ir svm_ir_optimize svm_arm64)
 endif()
 
 foreach(svm_coverage IN ITEMS instruction avx x87)
     add_executable(svm_${svm_coverage}_coverage_test source/tests/rebuild/${svm_coverage}_coverage_test.cpp)
-    target_link_libraries(svm_${svm_coverage}_coverage_test PRIVATE svm_x86_ir svm_compile svm_arm64)
+    target_link_libraries(svm_${svm_coverage}_coverage_test PRIVATE svm_x86_ir svm_ir_optimize svm_arm64)
     if(TARGET svm_execution)
         target_link_libraries(svm_${svm_coverage}_coverage_test PRIVATE svm_execution)
     endif()

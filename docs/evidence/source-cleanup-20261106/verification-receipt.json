@@ -1,0 +1,75 @@
+{
+  "verified_at_utc": "2026-11-07T02:36:23.458596+00:00",
+  "base_commit": "a13b68c52c2dd706673dd3cc144354994b366b15",
+  "working_tree_modified": true,
+  "format_files": 155,
+  "format_failures": 0,
+  "host_ctest": {
+    "passed": 9,
+    "total": 9
+  },
+  "redmagic_tests": {
+    "passed": 6,
+    "total": 6
+  },
+  "removed_single_iteration_handler_wrappers": 71,
+  "optimizer_source_files": {
+    "detail.h": 164,
+    "fold.cpp": 375,
+    "liveness.cpp": 481,
+    "optimize.cpp": 61,
+    "rewrite.cpp": 386
+  },
+  "preserved_optimizer_order": [
+    "conservative reverse liveness",
+    "CFG summary propagation and exit-writer edits",
+    "single forward rewrite",
+    "conditional final reverse DCE"
+  ],
+  "compile_check": [
+    {
+      "case": "x87_bench",
+      "scope": "block",
+      "baseline_median_ns": 772708,
+      "candidate_median_ns": 784322,
+      "ratio": 1.015030257225239,
+      "work_equal": true
+    },
+    {
+      "case": "x87_bench",
+      "scope": "function",
+      "baseline_median_ns": 574480,
+      "candidate_median_ns": 590623,
+      "ratio": 1.0281001949589195,
+      "work_equal": true
+    },
+    {
+      "case": "coremark20",
+      "scope": "block",
+      "baseline_median_ns": 39360685,
+      "candidate_median_ns": 39796504,
+      "ratio": 1.0110724444963293,
+      "work_equal": false
+    },
+    {
+      "case": "coremark20",
+      "scope": "function",
+      "baseline_median_ns": 48632728,
+      "candidate_median_ns": 49113053,
+      "ratio": 1.0098765794096518,
+      "work_equal": true
+    }
+  ],
+  "compile_check_limitations": [
+    "Three fixed samples per arm; this is a small cleanup regression check, not a fresh FEX comparison or stable worst-case guarantee.",
+    "One CoreMark Block candidate run compiled 2049 units instead of 2053. All samples retained; differences in total IR/native work are not attributed to better optimization. Other two candidate runs matched baseline work, and every scope kept the same spill/frame counts."
+  ],
+  "phone_cleanup": {
+    "namespace": "/data/local/tmp/swiftvm-source-cleanup-20261106",
+    "active_processes_or_files": [],
+    "remaining_bytes": 0,
+    "errors": [],
+    "allocated_bytes_removed": 145264640,
+    "completed_at_utc": "2026-11-07T02:35:23.542145+00:00"
+  }
+}

@@ -274,38 +274,33 @@ void Writer::HandleVecFAddFamily(OpContext& ctx) {
     const auto vector = ctx.vector;
     const auto first_temp = VectorTemporary();
     const auto second_temp = VectorTemporary(true);
-    do {
-        {
-            if (!vector) Reject(CompileError::UnsupportedType);
-            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            const auto bits = IntegerImmediate(cursor.Take());
-            if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
-            const auto emit = [&](unsigned dst, unsigned lhs, unsigned rhs) {
-                const auto vd = Lanes(dst, bits), vn = Lanes(lhs, bits), vm = Lanes(rhs, bits);
-                if (operation.opcode == OpCode::VecFAdd)
-                    masm.exact.fadd(vd, vn, vm);
-                else if (operation.opcode == OpCode::VecFSub)
-                    masm.exact.fsub(vd, vn, vm);
-                else if (operation.opcode == OpCode::VecFMul)
-                    masm.exact.fmul(vd, vn, vm);
-                else
-                    masm.exact.fdiv(vd, vn, vm);
-            };
-            if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
-                VectorMove(first_temp, left);
-                VectorMove(second_temp, right);
-                LoadMxcsrFlushControl();
-                const auto lanes = static_cast<unsigned>(128 / bits);
-                FlushScalarDenormal(first_temp, 6, 0, static_cast<unsigned>(bits), lanes);
-                FlushScalarDenormal(second_temp, 6, 0, static_cast<unsigned>(bits), lanes);
-                emit(first_temp, first_temp, second_temp);
-                FlushScalarDenormal(first_temp, 15, 0, static_cast<unsigned>(bits), lanes);
-                VectorMove(destination, first_temp);
-            } else
-                emit(destination, left, right);
-            break;
-        }
-    } while (false);
+    if (!vector) Reject(CompileError::UnsupportedType);
+    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+    const auto bits = IntegerImmediate(cursor.Take());
+    if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
+    const auto emit = [&](unsigned dst, unsigned lhs, unsigned rhs) {
+        const auto vd = Lanes(dst, bits), vn = Lanes(lhs, bits), vm = Lanes(rhs, bits);
+        if (operation.opcode == OpCode::VecFAdd)
+            masm.exact.fadd(vd, vn, vm);
+        else if (operation.opcode == OpCode::VecFSub)
+            masm.exact.fsub(vd, vn, vm);
+        else if (operation.opcode == OpCode::VecFMul)
+            masm.exact.fmul(vd, vn, vm);
+        else
+            masm.exact.fdiv(vd, vn, vm);
+    };
+    if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
+        VectorMove(first_temp, left);
+        VectorMove(second_temp, right);
+        LoadMxcsrFlushControl();
+        const auto lanes = static_cast<unsigned>(128 / bits);
+        FlushScalarDenormal(first_temp, 6, 0, static_cast<unsigned>(bits), lanes);
+        FlushScalarDenormal(second_temp, 6, 0, static_cast<unsigned>(bits), lanes);
+        emit(first_temp, first_temp, second_temp);
+        FlushScalarDenormal(first_temp, 15, 0, static_cast<unsigned>(bits), lanes);
+        VectorMove(destination, first_temp);
+    } else
+        emit(destination, left, right);
 }
 
 void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
@@ -348,35 +343,30 @@ void Writer::HandleVecFCmpFamily(OpContext& ctx) {
     const auto destination = ctx.destination;
     const auto first_temp = VectorTemporary();
     const auto second_temp = VectorTemporary(true);
-    do {
-        {
-            const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-            const auto bits = IntegerImmediate(cursor.Take());
-            if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
-            unsigned a = left, b = right;
-            if (options.mxcsr_flush_offset != UINT32_MAX &&
-                (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
-                VectorMove(first_temp, left);
-                VectorMove(second_temp, right);
-                LoadMxcsrFlushControl();
-                FlushScalarDenormal(first_temp, 6, 0, bits, 1);
-                FlushScalarDenormal(second_temp, 6, 0, bits, 1);
-                a = first_temp;
-                b = second_temp;
-            }
-            masm.exact.mrs(v::x30, v::NZCV);  // Preserve the actual guest/packed-mode host NZCV.
-            masm.exact.fcmp(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
-            masm.exact.cset(W(destination), v::lt);  // CSET Wdestination,LT: less or unordered.
-            masm.exact.cset(v::w0,
-                            v::vs);  // CSET W0,VS: unordered (destination may be spill scratch16).
-            masm.exact.cset(v::w17, v::eq);                  // CSET W17,EQ.
-            masm.exact.orr(v::w17, v::w17, Operand(v::w0));  // Equal or unordered.
-            masm.exact.orr(W(destination), W(destination), Operand(v::w0, v::LSL, 1));
-            masm.exact.orr(W(destination), W(destination), Operand(v::w17, v::LSL, 2));
-            masm.exact.msr(v::NZCV, v::x30);  // MSR NZCV,x30: publishing flags is a separate op.
-            break;
-        }
-    } while (false);
+    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+    const auto bits = IntegerImmediate(cursor.Take());
+    if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
+    unsigned a = left, b = right;
+    if (options.mxcsr_flush_offset != UINT32_MAX &&
+        (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
+        VectorMove(first_temp, left);
+        VectorMove(second_temp, right);
+        LoadMxcsrFlushControl();
+        FlushScalarDenormal(first_temp, 6, 0, bits, 1);
+        FlushScalarDenormal(second_temp, 6, 0, bits, 1);
+        a = first_temp;
+        b = second_temp;
+    }
+    masm.exact.mrs(v::x30, v::NZCV);  // Preserve the actual guest/packed-mode host NZCV.
+    masm.exact.fcmp(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
+    masm.exact.cset(W(destination), v::lt);  // CSET Wdestination,LT: less or unordered.
+    masm.exact.cset(v::w0,
+                    v::vs);          // CSET W0,VS: unordered (destination may be spill scratch16).
+    masm.exact.cset(v::w17, v::eq);  // CSET W17,EQ.
+    masm.exact.orr(v::w17, v::w17, Operand(v::w0));  // Equal or unordered.
+    masm.exact.orr(W(destination), W(destination), Operand(v::w0, v::LSL, 1));
+    masm.exact.orr(W(destination), W(destination), Operand(v::w17, v::LSL, 2));
+    masm.exact.msr(v::NZCV, v::x30);  // MSR NZCV,x30: publishing flags is a separate op.
 }
 
 void Writer::HandleVecFCvtPackedFamily(OpContext& ctx) {

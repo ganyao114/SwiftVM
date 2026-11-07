@@ -2,7 +2,7 @@
 #include "vm.h"
 #include "timing.h"
 #include "runtime/arch/x86/cpu.h"
-#include "runtime/compile/optimize.h"
+#include "runtime/ir/optimize.h"
 #include "runtime/frontend/x86/build_ir.h"
 
 #include <algorithm>
@@ -146,14 +146,13 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     }
     if (options.optimize) {
         RuntimeTimer optimize{stats.optimize_ns};
-        auto optimized = compile::Optimize(
+        auto optimized = ir::Optimize(
                 std::move(built.program),
                 optimizer_rows,
                 std::numeric_limits<std::size_t>::max(),
-                compile::UniformPolicy{
-                        .flags = compile::UniformRange{offsetof(GuestState, packed_flags),
-                                                       sizeof(state.packed_flags)},
-                        .guest_memory_disjoint = private_guest_state});
+                ir::UniformPolicy{.flags = ir::UniformRange{offsetof(GuestState, packed_flags),
+                                                            sizeof(state.packed_flags)},
+                                  .guest_memory_disjoint = private_guest_state});
         if (options.decode_timing) {
             stats.optimized_erased += optimized.stats.erased;
             stats.optimized_uniform_forwarded += optimized.stats.uniform_forwarded;

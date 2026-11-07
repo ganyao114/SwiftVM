@@ -3,7 +3,7 @@
 #include "runtime/arch/x86/state.h"
 #include "runtime/arch/x86/flags.h"
 #include "runtime/backend/arm64/compile.h"
-#include "runtime/compile/optimize.h"
+#include "runtime/ir/optimize.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/platform/fp_environment.h"
 
@@ -170,10 +170,10 @@ a64::CompileResult Compile(const Machine& m, bool pinned) {
         std::fputc('\n', stderr);
     }
     Check(bool(built), "fixed AVX instruction builds a real program");
-    auto optimized = runtime::compile::Optimize(
+    auto optimized = runtime::ir::Optimize(
             std::move(built.program),
             SIZE_MAX,
-            {{runtime::compile::UniformRange{offsetof(arch::GuestState, packed_flags), 8}}, true});
+            {{runtime::ir::UniformRange{offsetof(arch::GuestState, packed_flags), 8}}, true});
     Check(bool(optimized), "AVX conditional loads survive the actual three-walk optimizer");
     a64::CompileOptions options;
     options.flags_offset = offsetof(arch::GuestState, packed_flags);

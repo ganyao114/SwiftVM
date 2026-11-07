@@ -1,5 +1,5 @@
 #include "runtime/ir/builder.h"
-#include "runtime/compile/optimize.h"
+#include "runtime/ir/optimize.h"
 
 #include <array>
 #include <charconv>
@@ -477,7 +477,7 @@ template <bool qualify> void Replay(Request& request, bool static_writer, bool o
         Require(bool(submitted), request.line, "P requires a complete normal-terminal request");
         if constexpr (qualify) request.canonical = Canonical(submitted.program, request);
         if (optimize) {
-            auto result = swift::runtime::compile::Optimize(std::move(submitted.program));
+            auto result = swift::runtime::ir::Optimize(std::move(submitted.program));
             Require(bool(result), request.line, "optimizer failed (request not dropped)");
             if constexpr (qualify) {
                 Require(result.program.UnitId() == unit &&

@@ -1,0 +1,147 @@
+Start testing: Nov 06 18:32 PST
+----------------------------------------------------------
+1/9 Testing: instruction_coverage
+1/9 Test: instruction_coverage
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_instruction_coverage_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"instruction_coverage" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+instruction coverage contracts passed
+<end of output>
+Test time =   0.45 sec
+----------------------------------------------------------
+Test Passed.
+"instruction_coverage" end time: Nov 06 18:32 PST
+"instruction_coverage" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/9 Testing: avx_coverage
+2/9 Test: avx_coverage
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_avx_coverage_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"avx_coverage" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+AVX fixed coverage passed (624 checks)
+<end of output>
+Test time =   0.53 sec
+----------------------------------------------------------
+Test Passed.
+"avx_coverage" end time: Nov 06 18:32 PST
+"avx_coverage" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/9 Testing: x87_coverage
+3/9 Test: x87_coverage
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_x87_coverage_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"x87_coverage" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+x87/MMX coverage passed
+<end of output>
+Test time =   0.51 sec
+----------------------------------------------------------
+Test Passed.
+"x87_coverage" end time: Nov 06 18:32 PST
+"x87_coverage" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/9 Testing: ir_construction_contract
+4/9 Test: ir_construction_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_ir_construction_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"ir_construction_contract" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+IR construction contracts passed; successful Submit allocations: 0
+<end of output>
+Test time =   0.52 sec
+----------------------------------------------------------
+Test Passed.
+"ir_construction_contract" end time: Nov 06 18:32 PST
+"ir_construction_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/9 Testing: x86_construction_contract
+5/9 Test: x86_construction_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_x86_construction_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"x86_construction_contract" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+Real x86 decode/build/submit subset contracts passed
+<end of output>
+Test time =   0.54 sec
+----------------------------------------------------------
+Test Passed.
+"x86_construction_contract" end time: Nov 06 18:32 PST
+"x86_construction_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/9 Testing: ir_optimize_contract
+6/9 Test: ir_optimize_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_ir_optimize_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"ir_optimize_contract" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+IR optimize contracts passed
+<end of output>
+Test time =   0.51 sec
+----------------------------------------------------------
+Test Passed.
+"ir_optimize_contract" end time: Nov 06 18:32 PST
+"ir_optimize_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/9 Testing: arm64_compile_contract
+7/9 Test: arm64_compile_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_arm64_compile_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"arm64_compile_contract" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+arm64 scalar contracts: checks=263869 native_execution=false; subset only, no full-VM/FEX qualification
+<end of output>
+Test time =   0.55 sec
+----------------------------------------------------------
+Test Passed.
+"arm64_compile_contract" end time: Nov 06 18:32 PST
+"arm64_compile_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/9 Testing: compile_pipeline_contract
+8/9 Test: compile_pipeline_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_compile_pipeline_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"compile_pipeline_contract" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+12 base paths and 4170 integer/flags/Jcc pipeline paths passed; native execution requires ARM64 Linux/Android
+<end of output>
+Test time =   0.52 sec
+----------------------------------------------------------
+Test Passed.
+"compile_pipeline_contract" end time: Nov 06 18:32 PST
+"compile_pipeline_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/9 Testing: x86_interpreter_contract
+9/9 Test: x86_interpreter_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_x86_interpreter_test"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+"x86_interpreter_contract" start time: Nov 06 18:32 PST
+Output:
+----------------------------------------------------------
+x86 direct execution contracts passed
+<end of output>
+Test time =   0.51 sec
+----------------------------------------------------------
+Test Passed.
+"x86_interpreter_contract" end time: Nov 06 18:32 PST
+"x86_interpreter_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Nov 06 18:32 PST

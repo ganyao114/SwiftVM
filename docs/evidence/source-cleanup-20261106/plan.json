@@ -1,0 +1,20 @@
+{
+  "base_commit": "a13b68c52c2dd706673dd3cc144354994b366b15",
+  "task": "Responsibility and formatting cleanup; small compile regression check, not a fresh FEX comparison",
+  "device": "bf1359ff",
+  "cpu": 4,
+  "taskset": "10",
+  "fixed_rounds": 3,
+  "cases": [
+    "x87_bench",
+    "coremark20"
+  ],
+  "arms": [
+    "baseline-block",
+    "candidate-block",
+    "baseline-function",
+    "candidate-function"
+  ],
+  "compile_boundary": "Current complete compile metric, only byte parser excluded; all samples retained",
+  "frequency_changes": false
+}

@@ -11,7 +11,7 @@
 
 #if defined(__aarch64__) && !defined(__APPLE__)
 #include "runtime/backend/arm64/compile.h"
-#include "runtime/compile/optimize.h"
+#include "runtime/ir/optimize.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/frontend/x86/build_ir.h"
 #include <asm/hwcap.h>
@@ -515,7 +515,7 @@ void NativeHelperABI() {
             std::fputc('\n', stderr);
         }
         Check(bool(built), "native x87/MMX combined input forms real neutral IR");
-        auto optimized = swift::runtime::compile::Optimize(std::move(built.program));
+        auto optimized = swift::runtime::ir::Optimize(std::move(built.program));
         Check(bool(optimized), "native x87/MMX input retains the normal optimizer contract");
         a64::CompileOptions options{};
         options.flags_offset = offsetof(arch::GuestState, packed_flags);

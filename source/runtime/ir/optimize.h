@@ -7,7 +7,7 @@
 #include <vector>
 #include "runtime/ir/program.h"
 
-namespace swift::runtime::compile {
+namespace swift::runtime::ir {
 
 // The caller's actual flags storage in the Uniform buffer. No backend flag
 // bit layout is exposed here. Unknown placement keeps the broad alias barrier.
@@ -32,15 +32,15 @@ struct OptimizeStats {
 };
 
 struct OptimizeResult {
-    ir::Error error{ir::Error::None};
-    ir::Program program;
+    Error error{Error::None};
+    Program program;
     OptimizeStats stats;
     // After taking ownership, allocation failure returns this same, possibly
     // partly optimized owner with CapacityOverflow. Every completed edit is
     // equivalent; no clone or all-program rollback is performed.
     bool allocation_failed{};
 
-    explicit operator bool() const noexcept { return error == ir::Error::None; }
+    explicit operator bool() const noexcept { return error == Error::None; }
 };
 
 // At most three bounded walks over the original storage, with one u64 row per node.
@@ -56,15 +56,15 @@ struct OptimizeResult {
 // Each rejected edit is atomic. An error still returns the one valid owner.
 // Allocation of the dense table occurs before ownership transfer and can
 // throw bad_alloc, leaving the caller's input unchanged.
-OptimizeResult Optimize(ir::Program&&,
+OptimizeResult Optimize(Program&&,
                         std::size_t max_operand_words = std::numeric_limits<std::size_t>::max(),
                         UniformPolicy uniforms = {});
 
 // Borrow the same use/flag rows across requests. Their contents are reset
 // before taking Program ownership; no Program reference survives the call.
-OptimizeResult Optimize(ir::Program&&,
+OptimizeResult Optimize(Program&&,
                         std::vector<std::uint64_t>& rows,
                         std::size_t max_operand_words = std::numeric_limits<std::size_t>::max(),
                         UniformPolicy uniforms = {});
 
-}  // namespace swift::runtime::compile
+}  // namespace swift::runtime::ir

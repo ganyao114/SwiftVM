@@ -1,6 +1,6 @@
 #include "runtime/frontend/x86/detail/decoded.h"
 #include "runtime/backend/arm64/compile.h"
-#include "runtime/compile/optimize.h"
+#include "runtime/ir/optimize.h"
 #include "runtime/frontend/x86/build_ir.h"
 #include "runtime/arch/x86/state.h"
 #include "function_fixture.h"
@@ -116,7 +116,7 @@ a64::CompileResult Compile(swift::x86::BuildResult& built, bool optimize, bool f
     const auto unit = built.program.UnitId();
     const auto* operations = built.program.Operations().data();
     if (optimize) {
-        auto result = compile::Optimize(std::move(built.program));
+        auto result = ir::Optimize(std::move(built.program));
         CHECK(result);
         CHECK(result.program.UnitId() == unit && result.program.Operations().data() == operations);
         built.program = std::move(result.program);
@@ -175,7 +175,7 @@ void RunPipeline(ir::Scope scope, ir::TargetMode mode, bool optimize) {
     const auto unit = built.program.UnitId();
     const auto* operations = built.program.Operations().data();
     if (optimize) {
-        auto optimized = compile::Optimize(std::move(built.program));
+        auto optimized = ir::Optimize(std::move(built.program));
         CHECK(optimized);
         CHECK(optimized.program.UnitId() == unit);
         CHECK(optimized.program.Operations().data() == operations);

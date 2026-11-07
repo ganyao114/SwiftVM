@@ -506,117 +506,91 @@ void Writer::LogicalFlags(unsigned result,
 void Writer::HandleGetFlagsFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto destination = ctx.destination;
-    do {
-        {
-            RequireFlags();
-            if (cursor.Take().Kind() != OperandKind::Value)
-                Reject(CompileError::UnsupportedOperand);
-            Flags(cursor.Take(), false);
-            PackNZCV();
-            Move(destination, 1);
-            if (RawAF()) UnpackRawFlags();
-            break;  // Whole raw word; mask is not a filter.
-        }
-    } while (false);
+    RequireFlags();
+    if (cursor.Take().Kind() != OperandKind::Value) Reject(CompileError::UnsupportedOperand);
+    Flags(cursor.Take(), false);
+    PackNZCV();
+    Move(destination, 1);  // Whole raw word; mask is not a filter.
+    if (RawAF()) UnpackRawFlags();
 }
 
 void Writer::HandleRestoreFlagsFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
-    do {
-        {
-            RequireFlags();
-            PackNZCV();
-            const auto input = RawScalar(cursor.Take(), 16);
-            const auto mask = Flags(cursor.Take(), false);
-            if (mask & ~(all_flags | FlagBits(Flag::Direction)))
-                Reject(CompileError::UnsupportedFlags);
-            nzcv_matches &= ~mask;
-            if (mask & parity) Insert(1, input, 0, 8);
-            if (mask & FlagBits(Flag::Direction)) {
-                Extract(17, input, 10, 1);
-                Insert(1, 17, 10, 1);
-            }
-            const auto host = HostMask(mask) | (mask & auxiliary ? 1u << 26 : 0);
-            for (unsigned bit = 26; bit <= 31;) {
-                if (!(host & (1u << bit))) {
-                    ++bit;
-                    continue;
-                }
-                const auto first = bit;
-                while (bit <= 31 && (host & (1u << bit))) ++bit;
-                Extract(17, input, first, bit - first);
-                Insert(1, 17, first, bit - first);
-            }
-            // The raw-PF ABI carries reserved architectural bits only in
-            // the real memory shadow. Publish DF before unpacking x1.
-            if (RawAF() && (mask & FlagBits(Flag::Direction))) FlagsMemory(false, 1);
-            if (mask & nzcv_flags)
-                RestoreNZCV();
-            else if (RawAF())
-                UnpackRawFlags();
-            break;
+    RequireFlags();
+    PackNZCV();
+    const auto input = RawScalar(cursor.Take(), 16);
+    const auto mask = Flags(cursor.Take(), false);
+    if (mask & ~(all_flags | FlagBits(Flag::Direction))) Reject(CompileError::UnsupportedFlags);
+    nzcv_matches &= ~mask;
+    if (mask & parity) Insert(1, input, 0, 8);
+    if (mask & FlagBits(Flag::Direction)) {
+        Extract(17, input, 10, 1);
+        Insert(1, 17, 10, 1);
+    }
+    const auto host = HostMask(mask) | (mask & auxiliary ? 1u << 26 : 0);
+    for (unsigned bit = 26; bit <= 31;) {
+        if (!(host & (1u << bit))) {
+            ++bit;
+            continue;
         }
-    } while (false);
+        const auto first = bit;
+        while (bit <= 31 && (host & (1u << bit))) ++bit;
+        Extract(17, input, first, bit - first);
+        Insert(1, 17, first, bit - first);
+    }
+    // The raw-PF ABI carries reserved architectural bits only in
+    // the real memory shadow. Publish DF before unpacking x1.
+    if (RawAF() && (mask & FlagBits(Flag::Direction))) FlagsMemory(false, 1);
+    if (mask & nzcv_flags)
+        RestoreNZCV();
+    else if (RawAF())
+        UnpackRawFlags();
 }
 
 void Writer::HandleSaveFlagsFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
-    do {
-        {
-            RequireFlags();
-            const auto owner = cursor.Take();
-            const auto mask = Flags(cursor.Take());
-            if (owner.Kind() != OperandKind::Value) Reject(CompileError::UnsupportedFlags);
-            if (mask && (pending_save != node ||
-                         LegacyMask(NodeId{static_cast<u32>(owner.Payload())}, node) != mask))
-                Reject(CompileError::UnsupportedFlags);
-            if (pending_save == node) pending_save = {};
-            break;
-        }
-    } while (false);
+    RequireFlags();
+    const auto owner = cursor.Take();
+    const auto mask = Flags(cursor.Take());
+    if (owner.Kind() != OperandKind::Value) Reject(CompileError::UnsupportedFlags);
+    if (mask && (pending_save != node ||
+                 LegacyMask(NodeId{static_cast<u32>(owner.Payload())}, node) != mask))
+        Reject(CompileError::UnsupportedFlags);
+    if (pending_save == node) pending_save = {};
 }
 
 void Writer::HandleClearFlagsFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
-    do {
-        RequireFlags();
-        ClearMask(Flags(cursor.Take()));
-        break;
-    } while (false);
+    RequireFlags();
+    ClearMask(Flags(cursor.Take()));
 }
 
 void Writer::HandlePublishFCmpFlagsFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
-    do {
-        {
-            CompleteLocalFlags();
-            RequireFlags();
-            const auto value = Read(cursor.Take(), 16, 32);
-            ClearMask(overflow | negative | (RawAF() ? 0 : auxiliary));
-            nzcv_matches = 0;
-            if (NativeNZCV()) {
-                Rmif(value, 63, 2);
-                masm.exact.cfinv();  // Guest CF bit0 becomes inverted hardware C.
-                Rmif(value, 0, 4);   // Guest ZF is neutral bit2.
-                packed_current = false;
-            } else {
-                Extract(17, value, 0, 1);
-                Insert(1, 17, 29, 1);
-                Extract(17, value, 2, 1);
-                Insert(1, 17, 30, 1);
-            }
-            Extract(17, value, 1, 1);
-            masm.exact.eor(
-                    v::w17, v::w17, Operand(1));  // EOR W17,W17,#1: even raw byte means guest PF=1.
-            if (RawAF()) {
-                Move(1, 17);
-                Move(29, 31);
-                packed_current = false;
-            } else
-                Insert(1, 17, 0, 8);
-            break;
-        }
-    } while (false);
+    CompleteLocalFlags();
+    RequireFlags();
+    const auto value = Read(cursor.Take(), 16, 32);
+    ClearMask(overflow | negative | (RawAF() ? 0 : auxiliary));
+    nzcv_matches = 0;
+    if (NativeNZCV()) {
+        Rmif(value, 63, 2);
+        masm.exact.cfinv();  // Guest CF bit0 becomes inverted hardware C.
+        Rmif(value, 0, 4);   // Guest ZF is neutral bit2.
+        packed_current = false;
+    } else {
+        Extract(17, value, 0, 1);
+        Insert(1, 17, 29, 1);
+        Extract(17, value, 2, 1);
+        Insert(1, 17, 30, 1);
+    }
+    Extract(17, value, 1, 1);
+    masm.exact.eor(v::w17, v::w17, Operand(1));  // EOR W17,W17,#1: even raw byte means guest PF=1.
+    if (RawAF()) {
+        Move(1, 17);
+        Move(29, 31);
+        packed_current = false;
+    } else
+        Insert(1, 17, 0, 8);
 }
 
 void Writer::HandleTestFlagsFamily(OpContext& ctx) {
@@ -624,93 +598,75 @@ void Writer::HandleTestFlagsFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto& home = ctx.home;
     const auto destination = ctx.destination;
-    do {
-        {
-            RequireFlags();
-            const auto mask = Flags(cursor.Take());
-            const bool inverse = operation.opcode == OpCode::TestNotFlags;
-            if (home.terminal_only) {
-                terminal_condition = mask == (carry | zero) ? 20u
-                                     : mask == carry        ? 2u
-                                     : mask == overflow     ? 6u
-                                     : mask == zero         ? 0u
-                                     : mask == negative     ? 4u
-                                                            : 16u;
-                terminal_condition ^= static_cast<unsigned>(inverse);
-            } else if (NativeNZCV() && (mask == carry || mask == overflow || mask == zero ||
-                                        mask == negative || mask == (carry | zero))) {
-                const auto condition = (mask == carry      ? 3u
-                                        : mask == overflow ? 6u
-                                        : mask == zero     ? 0u
-                                        : mask == negative ? 4u
-                                                           : 9u) ^
-                                       static_cast<unsigned>(inverse);
-                masm.exact.cset(X(destination), static_cast<v::Condition>(condition));
-            } else
-                Test(mask, destination, inverse);
-            break;
-        }
-    } while (false);
+    RequireFlags();
+    const auto mask = Flags(cursor.Take());
+    const bool inverse = operation.opcode == OpCode::TestNotFlags;
+    if (home.terminal_only) {
+        terminal_condition = mask == (carry | zero) ? 20u
+                             : mask == carry        ? 2u
+                             : mask == overflow     ? 6u
+                             : mask == zero         ? 0u
+                             : mask == negative     ? 4u
+                                                    : 16u;
+        terminal_condition ^= static_cast<unsigned>(inverse);
+    } else if (NativeNZCV() && (mask == carry || mask == overflow || mask == zero ||
+                                mask == negative || mask == (carry | zero))) {
+        const auto condition = (mask == carry      ? 3u
+                                : mask == overflow ? 6u
+                                : mask == zero     ? 0u
+                                : mask == negative ? 4u
+                                                   : 9u) ^
+                               static_cast<unsigned>(inverse);
+        masm.exact.cset(X(destination), static_cast<v::Condition>(condition));
+    } else
+        Test(mask, destination, inverse);
 }
 
 void Writer::HandleSetCarryFamily(OpContext& ctx) {
     const auto& operation = ctx.operation;
     auto& cursor = ctx.cursor;
-    do {
-        {
-            if (node == elided_consumer) {
-                cursor.Take();
-                elided_consumer = {};
-                break;
-            }
-            CompleteLocalFlags();
-            RequireFlags();
-            const auto value = Read(cursor.Take(), 16);
-            if (NativeNZCV()) {
-                const bool set_carry = operation.opcode == OpCode::SetCarry;
-                Rmif(value, set_carry ? 63 : 0, set_carry ? 2 : 1);
-                if (set_carry) masm.exact.cfinv();
-                packed_current = false;
-                break;
-            }
-            nzcv_matches &= ~(operation.opcode == OpCode::SetCarry ? carry : overflow);
-            Insert(1, value, operation.opcode == OpCode::SetCarry ? 29 : 28, 1);
-            break;
-        }
-    } while (false);
+    if (node == elided_consumer) {
+        cursor.Take();
+        elided_consumer = {};
+        return;
+    }
+    CompleteLocalFlags();
+    RequireFlags();
+    const auto value = Read(cursor.Take(), 16);
+    if (NativeNZCV()) {
+        const bool set_carry = operation.opcode == OpCode::SetCarry;
+        Rmif(value, set_carry ? 63 : 0, set_carry ? 2 : 1);
+        if (set_carry) masm.exact.cfinv();
+        packed_current = false;
+        return;
+    }
+    nzcv_matches &= ~(operation.opcode == OpCode::SetCarry ? carry : overflow);
+    Insert(1, value, operation.opcode == OpCode::SetCarry ? 29 : 28, 1);
 }
 
 void Writer::HandleInvertCarryFamily(OpContext& /*ctx*/) {
-    do {
-        CompleteLocalFlags();
-        RequireFlags();
-        nzcv_matches &= ~carry;
-        if (NativeNZCV()) {
-            masm.exact.cfinv();
-            packed_current = false;
-        } else
-            masm.exact.eor(v::x1, v::x1, Operand(u64{1} << 29));  // EOR x1,x1,#(1<<29).
-        break;
-    } while (false);
+    CompleteLocalFlags();
+    RequireFlags();
+    nzcv_matches &= ~carry;
+    if (NativeNZCV()) {
+        masm.exact.cfinv();
+        packed_current = false;
+    } else
+        masm.exact.eor(v::x1, v::x1, Operand(u64{1} << 29));  // EOR x1,x1,#(1<<29).
 }
 
 void Writer::HandleLocalParitySetFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto destination = ctx.destination;
-    do {
-        {
-            const auto input = Read(cursor.Take(), 16);
-            const auto inverse = cursor.Take();
-            if (inverse.Kind() != OperandKind::Immediate || inverse.Payload() > 1)
-                Reject(CompileError::UnsupportedOperand);
-            Parity(destination, input);
-            if (inverse.Payload()) {
-                Immediate(17, 1);
-                masm.exact.eor(X(destination), X(destination), Operand(v::x17));
-            }
-            break;
-        }
-    } while (false);
+    const auto input = Read(cursor.Take(), 16);
+    const auto inverse = cursor.Take();
+    if (inverse.Kind() != OperandKind::Immediate || inverse.Payload() > 1)
+        Reject(CompileError::UnsupportedOperand);
+    Parity(destination, input);
+    if (inverse.Payload()) {
+        Immediate(17, 1);
+        masm.exact.eor(X(destination), X(destination), Operand(v::x17));
+    }
 }
 
 }  // namespace detail

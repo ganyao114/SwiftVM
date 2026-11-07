@@ -502,7 +502,11 @@ native active 非空时，region、unit 目录和被借用的 fault buffers 保�
 
 ## 9. 目标文件结构与各源文件责任
 
-以下是实际实施结构。`.h/.cpp` 配对属于同一个模块；按所有权／语义分组，不是一个文件等于一个 pass。`ir/`、`compile/optimize.*`、tests 与 externals 未列部分保持当前布局。
+源码中的函数／方法定义之间由 `SeparateDefinitionBlocks: Always` 统一留空行，`scripts/format_runtime.py --check` 检查同一规则。普通 Handle 直接使用函数控制流，不保留旧 switch 的单次 `do/while(false)` 包装。
+
+IR 优化仍按「首逆扫 → CFG 摘要传播及出口写入修正 → 唯一前向改写 → 按需末逆扫」执行；拆文件不增加全 IR 扫描、IR 副本、use 表或 pass 注册层。小型高频谓词继续内联，Release IPO 保持跨源文件优化。 本次源码整理的回归结果与小规模 compile 对照见 [验证记录](evidence/source-cleanup-20261106/README.md)。
+
+以下是实际实施结构。`.h/.cpp` 配对属于同一个模块；按所有权／语义分组，不是一个文件等于一个 pass。IR 优化归属 `ir`，文件按分析、改写和局部折叠职责组织；tests 与 externals 未列部分保持当前布局。
 
 ```text
 source/runtime/
@@ -529,8 +533,14 @@ source/runtime/
     build_ir.h  build_ir.cpp        # IrSink、出生缓存、中立选码、Program 输出
     interpreter.h interpreter.cpp  # DirectSink、step/run、执行事件
 
-  ir/                              # 现有唯一 Program/Builder/CellRange
-  compile/optimize.h  optimize.cpp  # 现有通用优化，不追加流程层
+  ir/                              # 唯一 Program/Builder/CellRange，跨前后端的 IR 合同
+    optimize.h                     # 通用 IR 优化入口、Uniform 语义策略和结果统计
+    passes/
+      optimize.cpp                 # 单 owner、arena 预算、错误收口和固定阶段顺序
+      liveness.cpp                 # use/flags 活跃性、Function CFG 摘要传播与最终 DCE
+      rewrite.cpp                  # 唯一前向改写，copy 与 Uniform 转发共用现有 use 表
+      fold.cpp                     # 常量求值及有界 scalar/vector/address 局部模式
+      detail.h                     # 私有共享事实、CFG 实际缓冲和小型热谓词
 
   backend/
     code.h                         # 真实 native range／entry／link／fault 契约

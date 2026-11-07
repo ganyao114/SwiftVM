@@ -1,5 +1,5 @@
 #include "runtime/backend/arm64/compile.h"
-#include "runtime/compile/optimize.h"
+#include "runtime/ir/optimize.h"
 #include "runtime/ir/builder.h"
 
 #include <array>
@@ -93,7 +93,7 @@ template <bool audit, bool flags> Counts CompileOne(Scope scope, unsigned nodes)
     if constexpr (audit) result.input = builder.CountWork();
     auto submitted = builder.Submit();
     Require(bool(submitted));
-    auto optimized = compile::Optimize(std::move(submitted.program));
+    auto optimized = ir::Optimize(std::move(submitted.program));
     Require(bool(optimized));
     auto compiled = a64::Compile(optimized.program,
                                  flags ? a64::CompileOptions{768} : a64::CompileOptions{});
