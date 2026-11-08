@@ -1,8 +1,8 @@
-#include "vm.h"
 #include "timing.h"
+#include "vm.h"
 
-#include <exception>
 #include <algorithm>
+#include <exception>
 
 namespace swift::runtime::execution {
 const NativeCode* VM::LookupNative(void* opaque, std::uintptr_t host_pc) noexcept {
@@ -38,6 +38,7 @@ void VM::ObserveCache() noexcept {
 std::uintptr_t VM::ResolveBridge(void* opaque, NativeRunContext* context) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
     try {
+        vm.MergeFPStatus();
         return vm.Resolve(*context);
     } catch (const std::exception& error) {
         vm.thread.bridge_failure.Capture(error);

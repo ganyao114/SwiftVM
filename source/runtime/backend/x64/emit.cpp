@@ -1,6 +1,6 @@
-#include "emit.h"
 #include <algorithm>
 #include <cstring>
+#include "emit.h"
 
 namespace swift::runtime::backend::x64::detail {
 Writer::Writer(const Program& s, const Allocation& a, CompileResult& o, CompileOptions c)
@@ -54,7 +54,15 @@ void Writer::Prologue() {
 }
 
 void Writer::Restore() {
-    if (!Linked()) ldmxcsr(dword[rsp + mxcsr_slot]);
+    if (!Linked()) {
+        if (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX) {
+            stmxcsr(dword[rsp + mxcsr_slot + 4]);
+            mov(r11d, dword[rsp + mxcsr_slot + 4]);
+            and_(r11d, 63);
+            or_(dword[r12 + options.mxcsr_offset], r11d);
+        }
+        ldmxcsr(dword[rsp + mxcsr_slot]);
+    }
     if (frame_bytes) add(rsp, frame_bytes);
     if (!Linked()) {
         pop(r15);

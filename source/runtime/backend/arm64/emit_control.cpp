@@ -101,7 +101,12 @@ void Writer::TailJump(HostSymbol symbol,
 // negative prefix, within the exact unscaled load/store displacement range.
 void Writer::ContextMemory(bool load, unsigned value, int offset) {
     const MemOperand field(v::x19, offset);
-    if (load)
+    if (offset >= 0) {
+        if (load)
+            __ ldr(X(value), field);
+        else
+            __ str(X(value), field);
+    } else if (load)
         __ ldur(X(value), field);
     else
         __ stur(X(value), field);

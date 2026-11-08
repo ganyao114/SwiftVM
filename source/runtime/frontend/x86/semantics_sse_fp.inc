@@ -281,12 +281,17 @@ static bool SseFloating(Emitter& builder,
             break;
         }
         case 6:
-            result = Require(builder.VecFCmpMask(Type::V128,
-                                                 {Operand::ValueOf(previous),
-                                                  Operand::ValueOf(input),
-                                                  lane,
-                                                  Operand::Immediate(relation, Type::U8),
-                                                  Operand::Immediate(1, Type::U8)}));
+            result = Require(builder.VecFCmpMask(
+                    Type::V128,
+                    {Operand::ValueOf(previous),
+                     Operand::ValueOf(input),
+                     lane,
+                     Operand::Immediate(relation | ((relation == 1 || relation == 3 ||
+                                                     relation == 14 || relation == 12)
+                                                            ? 16
+                                                            : 0),
+                                        Type::U8),
+                     Operand::Immediate(1, Type::U8)}));
             break;
         case 7: {
             const auto a = Require(builder.VecUnzip(Type::V128,
@@ -349,12 +354,13 @@ static bool SseFloating(Emitter& builder,
             const auto immediate =
                     static_cast<unsigned>(static_cast<std::uint8_t>(instruction.immediate));
             const auto round = [&](unsigned mode) {
-                return Require(builder.VecFRoundInt(Type::V128,
-                                                    {Operand::ValueOf(previous),
-                                                     Operand::ValueOf(input),
-                                                     lane,
-                                                     Operand::Immediate(mode, Type::U8),
-                                                     Operand::Immediate(scalar, Type::U8)}));
+                return Require(
+                        builder.VecFRoundInt(Type::V128,
+                                             {Operand::ValueOf(previous),
+                                              Operand::ValueOf(input),
+                                              lane,
+                                              Operand::Immediate(mode | (immediate & 8), Type::U8),
+                                              Operand::Immediate(scalar, Type::U8)}));
             };
             if (!(immediate & 4))
                 result = round(immediate & 3);

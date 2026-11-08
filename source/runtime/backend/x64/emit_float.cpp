@@ -1,8 +1,21 @@
 #include "emit.h"
 #include "helpers.h"
+#include "runtime/arch/x86/floating.h"
 
 namespace swift::runtime::backend::x64::detail {
 using O = OpCode;
+
+void Writer::AccumulateFloating(const Reg32& raised) {
+    if (options.mxcsr_offset != UINT32_MAX) or_(dword[r12 + options.mxcsr_offset], raised);
+    if (!options.native_fp_environment || options.mxcsr_offset == UINT32_MAX) return;
+    if (Linked()) {
+        or_(dword[r12 - 40], raised);
+        ldmxcsr(dword[r12 - 40]);
+    } else {
+        or_(dword[rsp + mxcsr_slot + 4], raised);
+        ldmxcsr(dword[rsp + mxcsr_slot + 4]);
+    }
+}
 
 void Writer::Float(OpContext& c) {
     const auto op = c.operation.opcode;
@@ -47,8 +60,8 @@ void Writer::Float(OpContext& c) {
                 if (options.mxcsr_offset != UINT32_MAX)
                     mov(r9d, dword[r12 + options.mxcsr_offset]);
                 else
-                    mov(r9d, 0);
-                Call(reinterpret_cast<std::uintptr_t>(&FusedMultiplyAdd),
+                    mov(r9d, 0x1f80);
+                Call(reinterpret_cast<std::uintptr_t>(&FusedMultiplyAddStatus),
                      HostSymbol::X64FusedMultiplyAdd);
             } else {
                 Load(rdi, rsp, tmp + 16 + i * bits / 8, bits);
@@ -57,49 +70,149 @@ void Writer::Float(OpContext& c) {
                 if (options.mxcsr_offset != UINT32_MAX)
                     mov(ecx, dword[r12 + options.mxcsr_offset]);
                 else
-                    mov(ecx, 0);
-                Call(reinterpret_cast<std::uintptr_t>(&RoundIntegral),
+                    mov(ecx, 0x1f80);
+                Call(reinterpret_cast<std::uintptr_t>(&RoundIntegralStatus),
                      HostSymbol::X64RoundIntegral);
             }
+            AccumulateFloating(edx);
             Store(rax, rsp, tmp + 48 + i * bits / 8, bits);
         }
         movdqu(xmm0, ptr[rsp + tmp + 48]);
     } else if (round) {
         const unsigned mode = c.Arg(3).Payload();
-        if (mode > 3) Reject(CompileError::UnsupportedOperand);
+        if (mode & ~11u) Reject(CompileError::UnsupportedOperand);
         if (bits == 32) {
             if (scalar)
-                roundss(xmm0, xmm1, mode | 8);
+                roundss(xmm0, xmm1, mode);
             else
-                roundps(xmm0, xmm1, mode | 8);
+                roundps(xmm0, xmm1, mode);
         } else {
             if (scalar)
-                roundsd(xmm0, xmm1, mode | 8);
+                roundsd(xmm0, xmm1, mode);
             else
-                roundpd(xmm0, xmm1, mode | 8);
+                roundpd(xmm0, xmm1, mode);
         }
     } else if (mask) {
-        ReadVector(c.Arg(0), xmm14);
-        ReadVector(c.Arg(1), xmm15);
-        pxor(xmm0, xmm0);
         const unsigned relations = c.Arg(3).Payload() & 15;
-        for (unsigned r = 0; r < 4; ++r)
-            if (relations & (1u << r)) {
-                movdqa(xmm1, r == 2 ? xmm15 : xmm14);
-                const auto& rhs = r == 2 ? xmm14 : xmm15;
-                const unsigned predicate = r == 1 ? 0 : r == 3 ? 3 : 1;
-                if (bits == 32)
-                    cmpps(xmm1, rhs, predicate);
-                else
-                    cmppd(xmm1, rhs, predicate);
-                por(xmm0, xmm1);
-            }
-        if (scalar) {
-            if (bits == 32)
-                movss(xmm14, xmm0);
+        const bool signaling = c.Arg(3).Payload() & 16;
+        const bool quiet_ordered = FloatingCompareNeedsCall(relations);
+        if (FloatingCompareNeedsCall(c.Arg(3).Payload())) {
+            // SSE2 has no quiet ordered LT/LE predicate. Use the shared pure
+            // numerical leaf only for those shapes instead of introducing IE.
+            const auto tmp = allocation.call_offset + 208;
+            movdqu(ptr[rsp + tmp], xmm0);
+            movdqu(ptr[rsp + tmp + 16], xmm1);
+            mov(dword[rsp + tmp + 64],
+                static_cast<unsigned>(runtime::x86::FloatingOperation::CompareMask));
+            mov(dword[rsp + tmp + 68], bits);
+            if (options.mxcsr_offset != UINT32_MAX)
+                mov(eax, dword[r12 + options.mxcsr_offset]);
             else
-                movsd(xmm14, xmm0);
+                mov(eax, 0x1f80);
+            mov(dword[rsp + tmp + 76], eax);
+            mov(dword[rsp + tmp + 80],
+                scalar ? static_cast<unsigned>(runtime::x86::FloatingFlag::Scalar) : 0);
+            mov(dword[rsp + tmp + 84], relations);
+            PrepareCall();
+            lea(rdi, ptr[rsp + tmp]);
+            Call(reinterpret_cast<std::uintptr_t>(&runtime::x86::ExecuteFloating),
+                 HostSymbol::X64FloatingCompare);
+            mov(edx, dword[rsp + tmp + 88]);
+            AccumulateFloating(edx);
+            movdqu(xmm0, ptr[rsp + tmp + 48]);
+        } else {
+            const auto compare = [&](const Xmm& dst, const Xmm& rhs, unsigned predicate) {
+                if (bits == 32) {
+                    if (scalar)
+                        cmpss(dst, rhs, predicate);
+                    else
+                        cmpps(dst, rhs, predicate);
+                } else {
+                    if (scalar)
+                        cmpsd(dst, rhs, predicate);
+                    else
+                        cmppd(dst, rhs, predicate);
+                }
+            };
+            movdqa(xmm15, xmm0);
+            // Quiet predicates still report SNaN; signaling predicates also
+            // report QNaN. Do not infer this dimension from the result mask.
+            if (signaling && !quiet_ordered) {
+                movdqa(xmm14, xmm0);
+                compare(xmm14, xmm1, 1);
+            }
+            unsigned predicate = 3;
+            bool swap{};
+            switch (relations) {
+                case 1:
+                    predicate = 1;
+                    break;
+                case 2:
+                    predicate = 0;
+                    break;
+                case 3:
+                    predicate = 2;
+                    break;
+                case 4:
+                    predicate = 1;
+                    swap = true;
+                    break;
+                case 5:
+                    predicate = 4;
+                    break;
+                case 6:
+                    predicate = 2;
+                    swap = true;
+                    break;
+                case 7:
+                    predicate = 7;
+                    break;
+                case 8:
+                    predicate = 3;
+                    break;
+                case 9:
+                    predicate = 6;
+                    swap = true;
+                    break;
+                case 10:
+                    predicate = 0;
+                    break;
+                case 11:
+                    predicate = 5;
+                    swap = true;
+                    break;
+                case 12:
+                    predicate = 6;
+                    break;
+                case 13:
+                    predicate = 4;
+                    break;
+                case 14:
+                    predicate = 5;
+                    break;
+                default:
+                    break;
+            }
+            movdqa(xmm14, swap ? xmm1 : xmm0);
+            compare(xmm14, swap ? xmm0 : xmm1, predicate);
+            if (relations == 5 || relations == 10) {
+                compare(xmm0, xmm1, relations == 5 ? 7 : 3);
+                if (relations == 5)
+                    pand(xmm14, xmm0);
+                else
+                    por(xmm14, xmm0);
+            } else if (relations == 0)
+                pxor(xmm14, xmm14);
+            else if (relations == 15)
+                pcmpeqd(xmm14, xmm14);
             movdqa(xmm0, xmm14);
+            if (scalar) {
+                if (bits == 32)
+                    movss(xmm15, xmm0);
+                else
+                    movsd(xmm15, xmm0);
+                movdqa(xmm0, xmm15);
+            }
         }
     } else if (unary) {
         const auto kind = c.Arg(3).Payload();
@@ -151,10 +264,17 @@ void Writer::Float(OpContext& c) {
         movdqa(xmm15, xmm0);
         movdqa(xmm14, c.Arg(3).Payload() ? xmm1 : xmm0);
         const auto& rhs = c.Arg(3).Payload() ? xmm0 : xmm1;
-        if (bits == 32)
-            cmpps(xmm14, rhs, 1);
-        else
-            cmppd(xmm14, rhs, 1);
+        if (bits == 32) {
+            if (scalar)
+                cmpss(xmm14, rhs, 1);
+            else
+                cmpps(xmm14, rhs, 1);
+        } else {
+            if (scalar)
+                cmpsd(xmm14, rhs, 1);
+            else
+                cmppd(xmm14, rhs, 1);
+        }
         pand(xmm0, xmm14);
         pandn(xmm14, xmm1);
         por(xmm0, xmm14);
@@ -274,11 +394,18 @@ FP(VecFRoundInt)
 void Writer::Handle(Op<O::VecFCmp>, OpContext& c) {
     ReadVector(c.Arg(0), xmm0);
     ReadVector(c.Arg(1), xmm1);
-    if (c.Arg(2).Payload() == 32)
-        ucomiss(xmm0, xmm1);
-    else if (c.Arg(2).Payload() == 64)
-        ucomisd(xmm0, xmm1);
-    else
+    const unsigned mode = c.Arg(2).Payload(), bits = mode & 127;
+    if (bits == 32) {
+        if (mode & 128)
+            comiss(xmm0, xmm1);
+        else
+            ucomiss(xmm0, xmm1);
+    } else if (bits == 64) {
+        if (mode & 128)
+            comisd(xmm0, xmm1);
+        else
+            ucomisd(xmm0, xmm1);
+    } else
         Reject(CompileError::UnsupportedOperand);
     setb(al);
     setp(dl);

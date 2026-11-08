@@ -288,6 +288,8 @@ static unsigned MandatoryRepeatPrefixes(Op opcode) {
         case Op::SUBSS:
         case Op::MULSS:
         case Op::DIVSS:
+        case Op::MINSS:
+        case Op::MAXSS:
         case Op::SQRTSS:
         case Op::RCPSS:
         case Op::RSQRTSS:

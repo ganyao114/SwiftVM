@@ -117,13 +117,13 @@ struct exp16_sig32 softfloat_normSubnormalF32Sig( uint_fast32_t );
 
 FEXCORE_PRESERVE_ALL_ATTR
 float32_t softfloat_roundPackToF32( struct softfloat_state *, bool, int_fast16_t, uint_fast32_t );
-float32_t softfloat_normRoundPackToF32( bool, int_fast16_t, uint_fast32_t );
+float32_t softfloat_normRoundPackToF32( struct softfloat_state *, bool, int_fast16_t, uint_fast32_t );
 
-float32_t softfloat_addMagsF32( uint_fast32_t, uint_fast32_t );
-float32_t softfloat_subMagsF32( uint_fast32_t, uint_fast32_t );
+float32_t softfloat_addMagsF32( struct softfloat_state *, uint_fast32_t, uint_fast32_t );
+float32_t softfloat_subMagsF32( struct softfloat_state *, uint_fast32_t, uint_fast32_t );
 float32_t
  softfloat_mulAddF32(
-     uint_fast32_t, uint_fast32_t, uint_fast32_t, uint_fast8_t );
+     struct softfloat_state *, uint_fast32_t, uint_fast32_t, uint_fast32_t, uint_fast8_t );
 
 /*----------------------------------------------------------------------------
 *----------------------------------------------------------------------------*/
@@ -140,13 +140,13 @@ struct exp16_sig64 softfloat_normSubnormalF64Sig( uint_fast64_t );
 
 FEXCORE_PRESERVE_ALL_ATTR
 float64_t softfloat_roundPackToF64( struct softfloat_state *, bool, int_fast16_t, uint_fast64_t );
-float64_t softfloat_normRoundPackToF64( bool, int_fast16_t, uint_fast64_t );
+float64_t softfloat_normRoundPackToF64( struct softfloat_state *, bool, int_fast16_t, uint_fast64_t );
 
-float64_t softfloat_addMagsF64( uint_fast64_t, uint_fast64_t, bool );
-float64_t softfloat_subMagsF64( uint_fast64_t, uint_fast64_t, bool );
+float64_t softfloat_addMagsF64( struct softfloat_state *, uint_fast64_t, uint_fast64_t, bool );
+float64_t softfloat_subMagsF64( struct softfloat_state *, uint_fast64_t, uint_fast64_t, bool );
 float64_t
  softfloat_mulAddF64(
-     uint_fast64_t, uint_fast64_t, uint_fast64_t, uint_fast8_t );
+     struct softfloat_state *, uint_fast64_t, uint_fast64_t, uint_fast64_t, uint_fast8_t );
 
 /*----------------------------------------------------------------------------
 *----------------------------------------------------------------------------*/

@@ -173,6 +173,7 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
             compare || operation.opcode == OpCode::AtomicRMW ? cursor.Take() : CellView{};
     if (!options.private_uniforms) Shadow(false);
     Move(0, Read(address, 0));
+    const auto service_done = UnalignedAtomicService(ctx, input, extra, kind);
     const auto native_width = width == 64 ? 64u : 32u;
     const MemOperand memory(v::x0);
     const auto load_exclusive = [&] {
@@ -331,6 +332,7 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
     // Faultable instructions never publish their observed old
     // value into an architectural pin or the final SSA home.
     // Exclusive failures retry; only a completed RMW commits it.
+    if (service_done != UINT32_MAX) masm.Patch(service_done, masm.Here());
     Move(destination, 16);
     save_result();
     if (!options.private_uniforms) Shadow(true);

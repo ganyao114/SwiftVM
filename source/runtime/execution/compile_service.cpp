@@ -1,13 +1,13 @@
 #include "compile_service.h"
-#include "vm.h"
-#include "timing.h"
 #include "disk_cache.h"
 #include "runtime/ir/optimize.h"
+#include "timing.h"
+#include "vm.h"
 
 #include <algorithm>
-#include "base/format.h"
 #include <limits>
 #include <sys/mman.h>
+#include "base/format.h"
 
 namespace swift::runtime::execution {
 namespace front = frontend;
@@ -102,7 +102,8 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                 std::numeric_limits<std::size_t>::max(),
                 ir::UniformPolicy{
                         .flags = ir::UniformRange{vm.layout.flags_offset, sizeof(std::uint64_t)},
-                        .guest_memory_disjoint = private_guest_state});
+                        .guest_memory_disjoint = private_guest_state,
+                        .numeric_control = ir::UniformRange{vm.layout.numeric_control_offset, 4}});
         if (options.decode_timing) {
             stats.optimized_erased += optimized.stats.erased;
             stats.optimized_uniform_forwarded += optimized.stats.uniform_forwarded;

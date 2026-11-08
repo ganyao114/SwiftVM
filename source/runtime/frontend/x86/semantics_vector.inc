@@ -312,11 +312,15 @@ static void ScalarDouble(Emitter& builder,
         case Op::UCOMISD:
         case Op::COMISS:
         case Op::UCOMISS: {
-            const auto compared =
-                    Require(builder.VecFCmp(Type::U32,
-                                            {Operand::ValueOf(left),
-                                             Operand::ValueOf(right),
-                                             Operand::Immediate(float_bits, Type::U8)}));
+            const auto compared = Require(builder.VecFCmp(
+                    Type::U32,
+                    {Operand::ValueOf(left),
+                     Operand::ValueOf(right),
+                     Operand::Immediate(float_bits | ((instruction.opcode == Op::COMISS ||
+                                                       instruction.opcode == Op::COMISD)
+                                                              ? 128
+                                                              : 0),
+                                        Type::U8)}));
             Require(builder.PublishFCmpFlags(Type::Void, {Operand::ValueOf(compared)}));
             pending = {};
             return;
@@ -640,6 +644,7 @@ static bool Vector(Emitter& builder,
             Unsupported();
         const auto left = VRead(builder, layout, instruction, destination, pc, next_pc, target);
         const auto right = VRead(builder, layout, instruction, source, pc, next_pc, target, true);
+        if (relation == 1 || relation == 3 || relation == 14 || relation == 12) relation |= 16;
         const auto result =
                 Require(builder.VecFCmpMask(Type::V128,
                                             {Operand::ValueOf(left),

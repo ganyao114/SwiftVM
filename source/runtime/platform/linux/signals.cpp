@@ -1,9 +1,10 @@
-#include "runtime/execution/fault.h"
 #include <cerrno>
-#include "signal_time.h"
-#include "base/error.h"
 #include <sys/syscall.h>
 #include <unistd.h>
+#include "base/error.h"
+#include "faultable_atomic.h"
+#include "runtime/execution/fault.h"
+#include "signal_time.h"
 
 namespace swift::runtime::execution {
 namespace {
@@ -112,6 +113,12 @@ void FaultScope::Handle(int signal, siginfo_t* info, void* raw) noexcept {
         return;
     }
     auto& context = scope->context;
+    if (info->si_code > 0 && context.thread_id == static_cast<pid_t>(syscall(SYS_gettid)) &&
+        platform::RecoverAtomicFault(
+                signal, reinterpret_cast<std::uintptr_t>(info->si_addr), raw)) {
+        errno = saved_errno;
+        return;
+    }
     if (info->si_code > 0 && context.thread_id == static_cast<pid_t>(syscall(SYS_gettid)) &&
         context.recover_native &&
         context.recover_native(context,

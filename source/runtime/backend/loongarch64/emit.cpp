@@ -136,6 +136,10 @@ void Writer::Call(std::uintptr_t target, HostSymbol symbol) {
 void Writer::CallRegister(GPR target) {
     if (options.flags_offset != UINT32_MAX) Store(packed_flags, state, options.flags_offset, 64);
     if (options.native_fp_environment && options.dispatcher && options.exit_handler) {
+        as.FRCSR(t6);
+        as.LI(t0, 0x1f0000);
+        as.AND(t6, t6, t0);
+        Store(t6, state, SVM_LA_CTX_REL(SVM_LA_CTX_GUEST_FPSR), 64);
         Load(t6, state, SVM_LA_CTX_REL(SVM_LA_CTX_HOST_FCSR), 64);
         as.FSCSR(t6);
     } else if (!(options.dispatcher && options.exit_handler)) {
@@ -146,6 +150,8 @@ void Writer::CallRegister(GPR target) {
     if (options.flags_offset != UINT32_MAX) Load(packed_flags, state, options.flags_offset, 64);
     if (options.native_fp_environment && options.dispatcher && options.exit_handler) {
         Load(t6, state, SVM_LA_CTX_REL(SVM_LA_CTX_GUEST_FCSR), 64);
+        Load(t0, state, SVM_LA_CTX_REL(SVM_LA_CTX_GUEST_FPSR), 64);
+        as.OR(t6, t6, t0);
         as.FSCSR(t6);
     } else if (options.mxcsr_offset != UINT32_MAX) {
         Load(t6, state, options.mxcsr_offset, 32);

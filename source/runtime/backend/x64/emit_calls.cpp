@@ -1,8 +1,8 @@
 #include "emit.h"
 #include "helpers.h"
 #include "relocate.h"
-#include "runtime/arch/x86/x87.h"
 #include "runtime/arch/x86/sse42_string.h"
+#include "runtime/arch/x86/x87.h"
 
 namespace swift::runtime::backend::x64::detail {
 void Writer::PrepareCall() {
@@ -24,10 +24,14 @@ void Writer::PrepareCall() {
         }
     }
     PublishFlags();
-    if (options.native_fp_environment && Linked())
+    if (options.native_fp_environment && Linked()) {
+        stmxcsr(dword[r12 - 40]);
         ldmxcsr(dword[r12 - 56]);
-    else if (!Linked())
+    } else if (!Linked()) {
+        if (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX)
+            stmxcsr(dword[rsp + mxcsr_slot + 4]);
         ldmxcsr(dword[rsp + mxcsr_slot]);
+    }
     in_call = true;
 }
 

@@ -79,6 +79,10 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         constexpr unsigned rounding[]{0, 3, 2, 1};  // Canonical RC -> LA RNE/RDN/RUP/RTZ.
         native.guest_fpcr = rounding[(mxcsr >> 13) & 3] << 8;
     };
+    ops.floating_status = [](const execution::NativeRunContext& n) noexcept -> std::uint32_t {
+        const auto f = n.guest_fpsr >> 16;
+        return ((f >> 4) & 1) | ((f & 8) >> 1) | ((f & 4) << 1) | ((f & 2) << 3) | ((f & 1) << 5);
+    };
     ops.restore_host_fp = [](const NativeRunContext& native) noexcept {
 #if defined(__loongarch64) || (defined(__loongarch__) && __loongarch_grlen == 64)
         asm volatile("movgr2fcsr $fcsr0, %0" ::"r"(native.host_fpcr) : "memory");
@@ -110,7 +114,7 @@ SVM_CHECK_CONTEXT(host_fpcr, SVM_LA_CTX_HOST_FCSR);
 SVM_CHECK_CONTEXT(guest_fpcr, SVM_LA_CTX_GUEST_FCSR);
 SVM_CHECK_CONTEXT(fp_environment, SVM_LA_CTX_FP_ENVIRONMENT);
 SVM_CHECK_CONTEXT(probe_steps, SVM_LA_CTX_PROBES);
-SVM_CHECK_CONTEXT(prepare_atomic, SVM_LA_CTX_PREPARE_ATOMIC);
+SVM_CHECK_CONTEXT(atomic_service, SVM_LA_CTX_ATOMIC_SERVICE);
 #undef SVM_CHECK_CONTEXT
 
 void RestoreGuestState(execution::FaultContext& context, std::span<const std::byte> gprs) noexcept {

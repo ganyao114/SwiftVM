@@ -1,8 +1,8 @@
-#include "runtime.h"
-#include "runtime/arch/x86/state.h"
 #include "abi.h"
 #include "patch.h"
 #include "relocate.h"
+#include "runtime.h"
+#include "runtime/arch/x86/state.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 
@@ -121,6 +121,10 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         const auto daz = (mxcsr >> 6) & 1u, ftz = (mxcsr >> 15) & 1u;
         native.guest_fpcr = ((mxcsr >> 13) & 1u) << 23 | ((mxcsr >> 14) & 1u) << 22;
         if (self.capabilities.afp) native.guest_fpcr |= 6u | daz | (ftz << 24);
+    };
+    ops.floating_status = [](const execution::NativeRunContext& n) noexcept -> std::uint32_t {
+        const auto f = n.guest_fpsr;
+        return (f & 1) | ((f >> 6) & 2) | ((f & 0x1e) << 1);
     };
     ops.restore_host_fp = [](const NativeRunContext& native) noexcept {
 #if defined(__aarch64__)

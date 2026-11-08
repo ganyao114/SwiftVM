@@ -1,11 +1,11 @@
-#include "runtime.h"
+#include <cstring>
 #include "abi.h"
 #include "abi_layout.inc"
 #include "patch.h"
 #include "relocate.h"
+#include "runtime.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
-#include <cstring>
 #if defined(__x86_64__)
 #include <cpuid.h>
 #endif
@@ -93,6 +93,9 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     };
     o.update_fp = [](void*, execution::NativeRunContext& n, std::uint32_t control) noexcept {
         n.guest_fpcr = (control & 0xe040) | 0x1f80;
+    };
+    o.floating_status = [](const execution::NativeRunContext& n) noexcept -> std::uint32_t {
+        return n.guest_fpcr & 63;
     };
     o.restore_host_fp = [](const execution::NativeRunContext& n) noexcept {
 #if defined(__x86_64__)

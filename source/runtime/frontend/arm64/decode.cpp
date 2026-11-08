@@ -4,6 +4,7 @@
 #include "aarch64/decoder-aarch64.h"
 #include "decode.h"
 #include "instruction.h"
+#include "state_service.h"
 
 namespace swift::arm64 {
 namespace {
@@ -55,6 +56,7 @@ bool Instruction::RelativeTarget(std::uint64_t& target) const noexcept {
 
 bool Instruction::Boundary() const noexcept {
     return Flow() != FlowKind::Linear ||
+           detail::StateRequest(word).kind != runtime::arm64::StateServiceKind::None ||
            ((word & 0xffe00000u) == 0xd5000000u && !(word & (1u << 21)) &&
             ((word >> 5) & 0xffff) == vixl::aarch64::FPCR) ||
            ((word & vixl::aarch64::MemBarrierMask) == vixl::aarch64::ISB);

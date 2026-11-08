@@ -16,19 +16,10 @@ enum class NativeExit : std::uint64_t {
     DivideFault = SVM_NATIVE_EXIT_DIVIDE_FAULT,
     AlignmentFault = SVM_NATIVE_EXIT_ALIGNMENT_FAULT,
     MemoryFault = SVM_NATIVE_EXIT_MEMORY_FAULT,
+    FloatingFault = SVM_NATIVE_EXIT_FLOATING_FAULT,
 };
 
 constexpr std::uint64_t ExitValue(NativeExit value) noexcept {
-    return static_cast<std::uint64_t>(value);
-}
-
-enum class AtomicAccess : std::uint64_t {
-    Allowed = SVM_ATOMIC_ACCESS_ALLOWED,
-    Fault = SVM_ATOMIC_ACCESS_FAULT,
-    Unsupported = SVM_ATOMIC_ACCESS_UNSUPPORTED,
-};
-
-constexpr std::uint64_t AtomicAccessValue(AtomicAccess value) noexcept {
     return static_cast<std::uint64_t>(value);
 }
 

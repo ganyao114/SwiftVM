@@ -83,7 +83,42 @@ add_library(svm_softfloat_ext80 STATIC
     src/f128_to_i64.c
     src/f128_to_ui32.c
     src/f128_to_ui64.c
+    src/f32_add.c
+    src/f64_add.c
+    src/f32_sub.c
+    src/f64_sub.c
+    src/f32_mul.c
+    src/f64_mul.c
+    src/f32_div.c
+    src/f64_div.c
+    src/f32_sqrt.c
+    src/f64_sqrt.c
+    src/s_addMagsF32.c
+    src/s_addMagsF64.c
+    src/s_subMagsF32.c
+    src/s_subMagsF64.c
+    src/s_normRoundPackToF32.c
+    src/s_normRoundPackToF64.c
+    src/i32_to_f32.c
+    src/i32_to_f64.c
+    src/i64_to_f32.c
+    src/i64_to_f64.c
+    src/f32_to_i32.c
+    src/f32_to_i64.c
+    src/f64_to_i32.c
+    src/f64_to_i64.c
+    src/f32_to_f64.c
+    src/f64_to_f32.c
+    src/f32_roundToInt.c
+    src/f64_roundToInt.c
+    src/f32_mulAdd.c
+    src/f64_mulAdd.c
+    src/s_mulAddF32.c
+    src/s_mulAddF64.c
+    src/s_propagateNaNF32UI.c
+    src/s_propagateNaNF64UI.c
     src/f32_to_f128.c
+    src/f64_to_f128.c
     src/i32_to_extF80.c
     src/s_commonNaNToF16UI.c
     src/s_countLeadingZeros32.c

@@ -1,20 +1,21 @@
-#include "vm.h"
-#include "timing.h"
+#include "atomic_service.h"
 #include "disk_cache.h"
 #include "runtime/platform/linux/artifact_file.h"
+#include "timing.h"
+#include "vm.h"
 
+#include <algorithm>
 #include <atomic>
 #include <bit>
-#include <algorithm>
 #include <cerrno>
+#include <stdexcept>
 #include <elf.h>
+#include <sys/mman.h>
 #include "base/error.h"
 #include "base/format.h"
-#include <stdexcept>
-#include <sys/mman.h>
 
-#include "runtime/arch/x86/cpu.h"
 #include "runtime/arch/arm64/numeric.h"
+#include "runtime/arch/x86/cpu.h"
 
 namespace swift::runtime::execution {
 namespace front = ::swift::x86;
@@ -29,72 +30,6 @@ MappingRelease Merge(MappingRelease a, MappingRelease b) noexcept {
     return a;
 }
 
-template <typename T> std::uint64_t AtomicModify(const front::AtomicRequest& request) noexcept {
-    auto* pointer = reinterpret_cast<T*>(request.address);
-    auto old = __atomic_load_n(pointer, __ATOMIC_SEQ_CST);
-    for (;;) {
-        T value{};
-        const auto input = static_cast<T>(request.desired.low);
-        switch (request.operation) {
-            case front::AtomicOperation::CompareExchange:
-                value = old == static_cast<T>(request.expected.low) ? input : old;
-                break;
-            case front::AtomicOperation::Exchange:
-                value = input;
-                break;
-            case front::AtomicOperation::FetchAdd:
-            case front::AtomicOperation::Add:
-                value = static_cast<T>(old + input);
-                break;
-            case front::AtomicOperation::Sub:
-                value = static_cast<T>(old - input);
-                break;
-            case front::AtomicOperation::And:
-                value = static_cast<T>(old & input);
-                break;
-            case front::AtomicOperation::Or:
-                value = static_cast<T>(old | input);
-                break;
-            case front::AtomicOperation::Xor:
-                value = static_cast<T>(old ^ input);
-                break;
-            case front::AtomicOperation::Neg:
-                value = static_cast<T>(T{0} - old);
-                break;
-            case front::AtomicOperation::AddCarry:
-                value = static_cast<T>(old + input + request.carry);
-                break;
-            case front::AtomicOperation::SubBorrow:
-                value = static_cast<T>(old - input - request.carry);
-                break;
-            case front::AtomicOperation::SignedMax:
-                value = std::bit_cast<std::make_signed_t<T>>(old) >
-                                        std::bit_cast<std::make_signed_t<T>>(input)
-                                ? old
-                                : input;
-                break;
-            case front::AtomicOperation::SignedMin:
-                value = std::bit_cast<std::make_signed_t<T>>(old) <
-                                        std::bit_cast<std::make_signed_t<T>>(input)
-                                ? old
-                                : input;
-                break;
-            case front::AtomicOperation::UnsignedMax:
-                value = std::max(old, input);
-                break;
-            case front::AtomicOperation::UnsignedMin:
-                value = std::min(old, input);
-                break;
-            default:
-                __builtin_unreachable();  // Rejected before the first access.
-        }
-        const auto observed = old;
-        // Even a failed guest CMPXCHG completes a real write cycle of old.
-        if (__atomic_compare_exchange_n(
-                    pointer, &old, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-            return observed;
-    }
-}
 }  // namespace
 
 VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
@@ -125,7 +60,7 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     auto& faults = thread.faults;
     native.opaque = this;
     native.resolve = ResolveBridge;
-    native.prepare_atomic = PrepareAtomic;
+    native.atomic_service = AtomicBridge;
     native.active = &faults.active;
     native.anchor = &thread.anchor;
     native.pinned_uniform_slots = backend.pinned_uniform_slots;
@@ -289,7 +224,10 @@ int VM::RunPrepared() {
 void* VM::HostPointer(std::uint64_t address, std::size_t size, bool write) {
     if (!memory.Accessible(address, size, PROT_READ | (write ? PROT_WRITE : 0)))
         swift::ThrowError("guest call buffer is not accessible", ErrorKind::GuestFault);
-    if (write && memory.WriteAffectsCode(address, size)) Invalidate();
+    if (write) {
+        if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
+        if (memory.WriteAffectsCode(address, size)) Invalidate();
+    }
     return reinterpret_cast<void*>(address);
 }
 
@@ -336,75 +274,90 @@ void VM::ExecuteHostCall(std::uint64_t stop_pc) {
 
 void VM::Execute() {
     UpdateFPEnvironment();
-    if (options.mode == ExecutionMode::InterpretOnly ||
-        (options.mode == ExecutionMode::Mixed && !backend.compile)) {
-        while (!thread.exited && !host_returned) {
-            if (host_call_active && PC() == host_return_pc) {
-                host_returned = true;
-                break;
-            }
-            Interpret(true);
-        }
-        return;
-    }
-    if (!backend.compile)
-        swift::ThrowError("native backend is unavailable on this host", ErrorKind::Unsupported);
     {
         FaultScope registration{thread.faults, uniform_data, PC()};
-        stats.rcpc_loads = backend.capabilities.rcpc_loads;
-        stats.rcpc_imm9 = backend.capabilities.rcpc_imm9;
-        stats.fault_locations = true;
-        stats.recover_unaligned = backend.patch_fault != nullptr;
-        stats.private_uniforms = true;
-        stats.pinned_uniform_slots = backend.pinned_uniform_slots;
-        stats.native_nzcv = backend.capabilities.native_nzcv;
-        stats.native_local_cache = backend.reset_indirect != nullptr;
-        // All mutable recovery state is in GuestThread, before this jump point.
-        // Native and its cold resolver end active before creating C++ owners.
-        if (sigsetjmp(thread.faults.jump, 1)) {
-            if (backend.restore_host_fp) backend.restore_host_fp(thread.native);
-            if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
-            swift::ThrowError(swift::Format("guest memory/alignment fault signal={} code={} "
-                                            "pc={:#x} host_pc={:#x} address={:#x}",
-                                            static_cast<int>(thread.faults.signal_number),
-                                            static_cast<int>(thread.faults.signal_code),
-                                            PC(),
-                                            thread.faults.host_pc.load(),
-                                            thread.faults.address.load()),
-                              ErrorKind::GuestFault);
-        }
-        while (!thread.exited && !host_returned) {
-            const auto reason = static_cast<NativeExit>(SvmRunNative(&thread.native));
-            thread.faults.active.store(nullptr);
-            if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
-            if (reason == NativeExit::Syscall)
-                syscalls.Service();
-            else if (reason == NativeExit::ResolveFailure) {
-                if (host_returned) break;
-                if (thread.interpret_requested) {
-                    thread.interpret_requested = false;
+        if (options.mode == ExecutionMode::InterpretOnly ||
+            (options.mode == ExecutionMode::Mixed && !backend.compile)) {
+            while (!thread.exited && !host_returned) {
+                if (host_call_active && PC() == host_return_pc) {
+                    host_returned = true;
+                    break;
+                }
+                Interpret(true);
+            }
+        } else {
+            if (!backend.compile)
+                swift::ThrowError("native backend is unavailable on this host",
+                                  ErrorKind::Unsupported);
+            stats.rcpc_loads = backend.capabilities.rcpc_loads;
+            stats.rcpc_imm9 = backend.capabilities.rcpc_imm9;
+            stats.fault_locations = true;
+            stats.recover_unaligned = backend.patch_fault != nullptr;
+            stats.private_uniforms = true;
+            stats.pinned_uniform_slots = backend.pinned_uniform_slots;
+            stats.native_nzcv = backend.capabilities.native_nzcv;
+            stats.native_local_cache = backend.reset_indirect != nullptr;
+            // All mutable recovery state is in GuestThread, before this jump point.
+            // Native and its cold resolver end active before creating C++ owners.
+            if (sigsetjmp(thread.faults.jump, 1)) {
+                if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
+                if (backend.restore_host_fp) backend.restore_host_fp(thread.native);
+                if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
+                swift::ThrowError(swift::Format("guest memory/alignment fault signal={} code={} "
+                                                "pc={:#x} host_pc={:#x} address={:#x}",
+                                                static_cast<int>(thread.faults.signal_number),
+                                                static_cast<int>(thread.faults.signal_code),
+                                                PC(),
+                                                thread.faults.host_pc.load(),
+                                                thread.faults.address.load()),
+                                  ErrorKind::GuestFault);
+            }
+            while (!thread.exited && !host_returned) {
+                // Unmasked SSE exceptions use the common direct numerical consumer.
+                // Its instruction boundary aggregates every lane before committing.
+                if (ISA() == GuestISA::X86_64 && (NumericControl() & 0x1f80) != 0x1f80) {
                     Interpret(true);
-                } else
-                    swift::ThrowError(compiler.DescribeFailure(),
-                                      compiler.Failure() == CompileFailure::Unsupported
-                                              ? ErrorKind::Unsupported
-                                              : ErrorKind::InvalidState);
-            } else if (reason == NativeExit::FPEnvironment)
-                UpdateFPEnvironment(true);
-            else if (reason == NativeExit::StateService)
-                Interpret();
-            else if (reason == NativeExit::X87Fault)
-                swift::ThrowError("x87 unsupported command or unmasked exception");
-            else if (reason == NativeExit::UnsupportedAtomic)
-                swift::ThrowError("native atomic access is unsupported", ErrorKind::Unsupported);
-            else if (reason == NativeExit::DivideFault)
-                swift::ThrowError("guest integer division fault", ErrorKind::GuestFault);
-            else if (reason == NativeExit::AlignmentFault)
-                swift::ThrowError("guest memory alignment fault", ErrorKind::GuestFault);
-            else if (reason == NativeExit::MemoryFault)
-                swift::ThrowError("guest memory access fault", ErrorKind::GuestFault);
-            else if (reason != NativeExit::Continue)
-                swift::ThrowError("unknown native dispatch exit reason", ErrorKind::InvalidState);
+                    continue;
+                }
+                const auto reason = static_cast<NativeExit>(SvmRunNative(&thread.native));
+                if (reason != NativeExit::FPEnvironment) MergeFPStatus();
+                thread.faults.active.store(nullptr);
+                if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
+                if (reason == NativeExit::Syscall)
+                    syscalls.Service();
+                else if (reason == NativeExit::ResolveFailure) {
+                    if (host_returned) break;
+                    if (thread.interpret_requested) {
+                        thread.interpret_requested = false;
+                        Interpret(true);
+                    } else
+                        swift::ThrowError(compiler.DescribeFailure(),
+                                          compiler.Failure() == CompileFailure::Unsupported
+                                                  ? ErrorKind::Unsupported
+                                                  : ErrorKind::InvalidState);
+                } else if (reason == NativeExit::FPEnvironment)
+                    UpdateFPEnvironment(true);
+                else if (reason == NativeExit::StateService) {
+                    if (ISA() == GuestISA::Arm64) {
+                        if (!HandleArmStateService())
+                            throw swift::RuntimeError(thread.bridge_failure);
+                    } else
+                        Interpret();
+                } else if (reason == NativeExit::X87Fault)
+                    swift::ThrowError("x87 unsupported command or unmasked exception");
+                else if (reason == NativeExit::UnsupportedAtomic)
+                    swift::ThrowError("native atomic access is unsupported",
+                                      ErrorKind::Unsupported);
+                else if (reason == NativeExit::DivideFault)
+                    swift::ThrowError("guest integer division fault", ErrorKind::GuestFault);
+                else if (reason == NativeExit::AlignmentFault)
+                    swift::ThrowError("guest memory alignment fault", ErrorKind::GuestFault);
+                else if (reason == NativeExit::MemoryFault)
+                    swift::ThrowError("guest memory access fault", ErrorKind::GuestFault);
+                else if (reason != NativeExit::Continue)
+                    swift::ThrowError("unknown native dispatch exit reason",
+                                      ErrorKind::InvalidState);
+            }
         }
     }
     if (thread.faults.restore_error)
@@ -412,7 +365,13 @@ void VM::Execute() {
                                 thread.faults.restore_error);
 }
 
+void VM::MergeFPStatus() noexcept {
+    if (ISA() == GuestISA::X86_64 && backend.floating_status)
+        NumericControl() |= backend.floating_status(thread.native);
+}
+
 void VM::UpdateFPEnvironment(bool architectural_write) {
+    if (architectural_write) thread.native.guest_fpsr = 0;
     if (ISA() == GuestISA::Arm64) {
         const auto fpcr = thread.native.arm_state.fpcr;
         // Numeric leaves run only under the supported architectural profile.
@@ -437,6 +396,7 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
 void VM::Invalidate() { smc.Invalidate(); }
 
 bool VM::PrepareGuestWrite(u64 address, std::size_t size) {
+    if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
     if (!memory.Accessible(address, size, PROT_WRITE)) return false;
     if (size && memory.WriteAffectsCode(address, size)) Invalidate();
     return true;
@@ -446,24 +406,18 @@ bool VM::GuestWrite(u64 address, const void* source, std::size_t size) {
     return PrepareGuestWrite(address, size) && memory.CopyOut(address, source, size);
 }
 
-std::uint64_t VM::PrepareAtomic(void* opaque, u64 address, std::size_t size) noexcept {
+std::uint64_t VM::AtomicBridge(void* opaque, AtomicCall* call) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
-    if (!vm.memory.Accessible(address, size, PROT_READ | PROT_WRITE))
-        return AtomicAccessValue(AtomicAccess::Fault);
-    const auto end = address + size;
-    for (const auto& region : vm.memory.Regions()) {
-        if (region.address >= end) break;
-        if (region.address + region.size > address && region.backing != BackingKind::Anonymous)
-            return AtomicAccessValue(AtomicAccess::Unsupported);
-    }
-    // The single guest owns these stable anonymous mappings. Disarm actual
-    // SMC watches before libatomic can enter a lock; retain the active unit
-    // until its next dispatcher boundary rather than invalidating it here.
-    return AtomicAccessValue(vm.smc.PrepareWriteRange(address, size) ? AtomicAccess::Allowed
-                                                                     : AtomicAccess::Fault);
+    const auto status = ExecuteAtomic(vm.memory, vm.smc, *call);
+    if (status != AtomicStatus::Unsupported && vm.ISA() == GuestISA::Arm64)
+        vm.thread.native.arm_state.reservation_valid = 0;
+    if (status == AtomicStatus::Fault)
+        vm.thread.faults.address.store(call->fault_address, std::memory_order_relaxed);
+    return static_cast<std::uint64_t>(status);
 }
 
 void VM::FileChanged(int fd) {
+    if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
     if (memory.RefreshFileMappings(fd)) {
         ++stats.smc_file_write_invalidations;
         Invalidate();
@@ -548,70 +502,19 @@ front::AccessResult VM::Atomic(void* opaque,
                                const front::AtomicRequest& request,
                                front::AtomicValue& observed) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
-    const bool wide =
-            request.bits == 128 && request.operation == front::AtomicOperation::CompareExchange128;
-    if ((!wide && request.bits != 8 && request.bits != 16 && request.bits != 32 &&
-         request.bits != 64) ||
-        (!wide && (request.operation == front::AtomicOperation::CompareExchange128 ||
-                   request.operation > front::AtomicOperation::UnsignedMin)) ||
-        (request.address & (request.bits / 8 - 1)))
-        return {front::AccessStatus::UnsupportedBeforeAccess};
-    const auto bytes = request.bits / 8;
-    if (!vm.memory.Accessible(request.address, bytes, PROT_READ | PROT_WRITE))
-        return {front::AccessStatus::Fault, request.address};
-    // Under the current one-thread contract, owned anonymous pages cannot
-    // disappear between this logical check and the instruction. File/device
-    // atomics need a faultable platform primitive; never emulate them by a
-    // read followed by a separate write or pretend a lock makes them atomic.
-    for (const auto& region : vm.memory.Regions()) {
-        if (region.address >= request.address + bytes) break;
-        if (region.address + region.size > request.address &&
-            region.backing != BackingKind::Anonymous)
+    const bool changed = vm.memory.WriteAffectsCode(request.address, request.bits / 8);
+    AtomicCall call{request};
+    const auto status = static_cast<AtomicStatus>(AtomicBridge(opaque, &call));
+    observed = call.observed;
+    switch (status) {
+        case AtomicStatus::Completed:
+            return {front::AccessStatus::Completed, 0, changed};
+        case AtomicStatus::Fault:
+            return {front::AccessStatus::Fault, call.fault_address};
+        case AtomicStatus::Unsupported:
             return {front::AccessStatus::UnsupportedBeforeAccess};
     }
-    try {
-        const bool changed = vm.memory.WriteAffectsCode(request.address, bytes);
-        if (!vm.PrepareGuestWrite(request.address, bytes))
-            return {front::AccessStatus::Fault, request.address};
-        if (wide) {
-            using Wide = unsigned __int128;
-            auto* pointer = reinterpret_cast<Wide*>(request.address);
-            const auto expected = (Wide{request.expected.high} << 64) | request.expected.low;
-            const auto desired = (Wide{request.desired.high} << 64) | request.desired.low;
-            auto old = __atomic_load_n(pointer, __ATOMIC_SEQ_CST);
-            for (;;) {
-                const auto before = old;
-                const auto value = old == expected ? desired : old;
-                if (__atomic_compare_exchange_n(
-                            pointer, &old, value, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
-                    observed = {static_cast<u64>(before), static_cast<u64>(before >> 64)};
-                    return {front::AccessStatus::Completed, 0, changed};
-                }
-            }
-        }
-        switch (request.bits) {
-            case 8:
-                observed.low = AtomicModify<std::uint8_t>(request);
-                break;
-            case 16:
-                observed.low = AtomicModify<std::uint16_t>(request);
-                break;
-            case 32:
-                observed.low = AtomicModify<std::uint32_t>(request);
-                break;
-            case 64:
-                observed.low = AtomicModify<std::uint64_t>(request);
-                break;
-        }
-        observed.high = 0;
-        return {front::AccessStatus::Completed, 0, changed};
-    } catch (const std::exception& failure) {
-        vm.thread.bridge_failure.Capture(failure);
-        return {front::AccessStatus::Fault, request.address};
-    } catch (...) {
-        vm.thread.bridge_failure.Set(ErrorKind::Runtime, "unknown guest atomic service failure");
-        return {front::AccessStatus::Fault, request.address};
-    }
+    __builtin_unreachable();
 }
 
 front::CpuResult VM::Cpu(void*, std::uint32_t leaf, std::uint32_t subleaf) noexcept {
@@ -650,6 +553,14 @@ void VM::Interpret(bool block) {
                 syscalls.Service();
             else if (step.service == ExitValue(NativeExit::FPEnvironment))
                 UpdateFPEnvironment(true);
+            else if (step.service == ExitValue(NativeExit::StateService) &&
+                     ISA() == GuestISA::Arm64) {
+                if (!HandleArmStateService()) throw swift::RuntimeError(thread.bridge_failure);
+            } else if (step.service == ExitValue(NativeExit::FloatingFault))
+                swift::ThrowError(swift::Format("guest SSE floating exception pc={:#x} mxcsr={:#x}",
+                                                PC(),
+                                                NumericControl()),
+                                  ErrorKind::GuestFault);
             else if (step.service == ExitValue(NativeExit::X87Fault))
                 swift::ThrowError("x87 unsupported command or unmasked exception");
             else

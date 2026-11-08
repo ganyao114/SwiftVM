@@ -1,8 +1,9 @@
-#include "runtime/exit.h"
 #include "interpreter.h"
+#include "runtime/exit.h"
 
 #include <algorithm>
 #include <array>
+#include <optional>
 #include "runtime/arch/x86/state.h"
 #include "runtime/ir/direct/interpreter.h"
 #include "semantics.h"
@@ -172,6 +173,9 @@ StepResult InterpretDecoded(const Instruction& decoded,
         result.kind = StepKind::Truncated;
         return result;
     }
+    const bool checked_fp = (state.mxcsr & 0x1f80) != 0x1f80;
+    std::optional<arch::GuestState> before;
+    if (checked_fp) before = state;
     using Sem = detail::Semantics<DirectSink>;
     DirectSink sink{state, services};
     StateLayout layout;
@@ -224,6 +228,23 @@ StepResult InterpretDecoded(const Instruction& decoded,
                      InstructionRange{std::span<const Instruction>{&decoded, 1}},
                      source);
         pending.Flush(sink);
+        if (checked_fp && sink.floating_exceptions) {
+            const auto unmasked = ~(before->mxcsr >> 7) & 63;
+            auto raised = sink.floating_exceptions;
+            // Pre-computation exceptions take priority across all lanes and
+            // both halves of a single AVX instruction.
+            if (raised & unmasked & 7) raised &= 7;
+            state.mxcsr = before->mxcsr | raised;
+            if (raised & unmasked) {
+                const auto status = state.mxcsr;
+                state = *before;
+                state.mxcsr = status;
+                result.kind = StepKind::Service;
+                result.service = runtime::ExitValue(runtime::NativeExit::FloatingFault);
+                result.next_pc = state.pc;
+                return result;
+            }
+        }
         if (!ended) state.pc = next;
         result.kind = sink.exit_service ? StepKind::Service : StepKind::Completed;
         result.service = sink.exit_service;

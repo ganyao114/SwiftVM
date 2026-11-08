@@ -434,7 +434,10 @@ static Value AvxLane(Emitter& builder,
                     {left,
                      right,
                      Operand::Immediate(wide ? 64 : 32, Type::U8),
-                     Operand::Immediate(relations[immediate & 15], Type::U8),
+                     Operand::Immediate(
+                             relations[immediate & 15] |
+                                     (((UINT32_C(0x99996666) >> (immediate & 31)) & 1) ? 16 : 0),
+                             Type::U8),
                      Operand::Immediate(opcode == Op::VCMPSS || opcode == Op::VCMPSD, Type::U8)}));
         }
         case Op::VPHADDW:
@@ -563,12 +566,13 @@ static Value AvxLane(Emitter& builder,
             const unsigned bits = opcode == Op::VROUNDPD || opcode == Op::VROUNDSD ? 64 : 32;
             const bool scalar = opcode == Op::VROUNDSS || opcode == Op::VROUNDSD;
             const auto round = [&](unsigned mode) {
-                return Require(builder.VecFRoundInt(Type::V128,
-                                                    {left,
-                                                     right,
-                                                     Operand::Immediate(bits, Type::U8),
-                                                     Operand::Immediate(mode, Type::U8),
-                                                     Operand::Immediate(scalar, Type::U8)}));
+                return Require(
+                        builder.VecFRoundInt(Type::V128,
+                                             {left,
+                                              right,
+                                              Operand::Immediate(bits, Type::U8),
+                                              Operand::Immediate(mode | (immediate & 8), Type::U8),
+                                              Operand::Immediate(scalar, Type::U8)}));
             };
             if (!(immediate & 4)) return round(immediate & 3);
             if (layout.mxcsr_offset > UINT32_MAX - 3) Unsupported();
@@ -1034,10 +1038,13 @@ static bool Avx(Emitter& builder,
         case Op::VUCOMISD: {
             const unsigned bits = opcode == Op::VCOMISS || opcode == Op::VUCOMISS ? 32 : 64;
             const auto left = read(destination, 16), right = read(instruction.ops[1], bits / 8);
-            const auto value = Require(builder.VecFCmp(Type::U32,
-                                                       {Operand::ValueOf(left[0]),
-                                                        Operand::ValueOf(right[0]),
-                                                        Operand::Immediate(bits, Type::U8)}));
+            const auto value = Require(builder.VecFCmp(
+                    Type::U32,
+                    {Operand::ValueOf(left[0]),
+                     Operand::ValueOf(right[0]),
+                     Operand::Immediate(
+                             bits | ((opcode == Op::VCOMISS || opcode == Op::VCOMISD) ? 128 : 0),
+                             Type::U8)}));
             Require(builder.PublishFCmpFlags(Type::Void, {Operand::ValueOf(value)}));
             pending = {};
             return true;

@@ -12,3 +12,17 @@ and conversion operations. It has no process/thread-global rounding or
 exception state. The public target is svm_softfloat_ext80; consumers include
 <SoftFloat-3e/softfloat.h> inside extern "C". No preserve_all ABI is assumed:
 the existing native helper bridge owns register/environment preservation.
+
+The selected binary32/binary64 fused-multiply-add algorithms and their two
+8086-SSE NaN propagators are pinned by `FMA_UPSTREAM.json`. They come from the
+same Berkeley SoftFloat Release 3e, using an existing QEMU subproject cache at
+the recorded commit. The local adaptation passes the existing softfloat_state
+pointer through every stateful call; it introduces no global/TLS rounding or
+exception variables and leaves the other subset interfaces unchanged.
+
+The SSE numerical leaf also uses the matching stateful F32/F64 arithmetic,
+signed-integer/precision conversions, and integral-rounding subset. Its additional
+upstream file hashes are recorded in `FMA_UPSTREAM.json` at the same pinned
+revision. Binary128 is used only on unmasked range-exception boundaries to
+separate destination-precision rounding from exponent bounding; ordinary FMA
+continues to round once directly in F32/F64.

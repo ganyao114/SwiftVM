@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <span>
 
+#include "runtime/atomic.h"
+
 namespace swift::runtime::ir::direct {
 
 enum class AccessStatus : std::uint8_t { Completed, Fault, UnsupportedBeforeAccess };
@@ -15,36 +17,9 @@ struct AccessResult {
     bool code_changed{};
 };
 
-struct AtomicValue {
-    std::uint64_t low{}, high{};
-};
-
-enum class AtomicOperation : std::uint8_t {
-    CompareExchange,
-    Exchange,
-    FetchAdd,
-    Add,
-    Sub,
-    And,
-    Or,
-    Xor,
-    Neg,
-    AddCarry,
-    SubBorrow,
-    CompareExchange128,
-    SignedMax,
-    SignedMin,
-    UnsignedMax,
-    UnsignedMin,
-};
-
-struct AtomicRequest {
-    std::uint64_t address{};
-    AtomicOperation operation{};
-    unsigned bits{};
-    AtomicValue expected, desired;
-    bool carry{};
-};
+using ::swift::runtime::AtomicOperation;
+using ::swift::runtime::AtomicRequest;
+using ::swift::runtime::AtomicValue;
 
 struct CpuResult {
     std::uint64_t lower{}, upper{};

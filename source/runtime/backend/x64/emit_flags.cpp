@@ -4,6 +4,19 @@
 namespace swift::runtime::backend::x64::detail {
 namespace f = runtime::x86::flags;
 
+void Writer::Handle(Op<OpCode::ReadFPStatus>, OpContext& c) {
+    if (Linked()) {
+        stmxcsr(dword[r12 - 40]);
+        mov(eax, dword[r12 - 40]);
+    } else {
+        stmxcsr(dword[rsp + mxcsr_slot + 4]);
+        mov(eax, dword[rsp + mxcsr_slot + 4]);
+    }
+    Read(c.Arg(0), rdx);
+    or_(eax, edx);
+    and_(eax, 63);
+}
+
 u64 PackedFlagMask(u64 s) {
     return ((s & 1) ? f::Carry : 0) | ((s & 2) ? f::Overflow : 0) | ((s & 4) ? f::Zero : 0) |
            ((s & 8) ? f::Sign : 0) | ((s & 16) ? 255 : 0) | ((s & 64) ? f::Auxiliary : 0) |

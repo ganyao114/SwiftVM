@@ -6,8 +6,20 @@ namespace swift::runtime::backend::arm64 {
 
 namespace detail {
 
+void Writer::HandleReadFPStatusFamily(OpContext& ctx) {
+    Move(0, Read(ctx.cursor.Take(), 0));
+    __ mrs(v::x30, v::FPSR);
+    Extract(ctx.destination, 30, 0, 1);
+    Extract(17, 30, 7, 1);
+    __ orr(W(ctx.destination), W(ctx.destination), Operand(v::w17, v::LSL, 1));
+    Extract(17, 30, 1, 4);
+    __ orr(W(ctx.destination), W(ctx.destination), Operand(v::w17, v::LSL, 2));
+    __ and_(v::w0, v::w0, Operand(u64{63}));
+    __ orr(W(ctx.destination), W(ctx.destination), Operand(v::w0));
+}
+
 void Writer::LoadMxcsrFlushControl() {
-    if (options.mxcsr_flush_mode != UINT8_MAX) return;
+    if (options.mxcsr_flush_mode != UINT8_MAX || options.mxcsr_flush_offset == UINT32_MAX) return;
     const auto offset = options.mxcsr_flush_offset;
     if (!(offset & 3) && offset / 4 <= 4095)
         Memory(true, 32, 0, 19, offset / 4);
@@ -15,6 +27,186 @@ void Writer::LoadMxcsrFlushControl() {
         Immediate(17, offset);
         __ add(v::x17, v::x19, Operand(v::x17));
         Memory(true, 32, 0, 17);
+    }
+}
+
+void Writer::RecordDenormalInput(unsigned value,
+                                 unsigned bits,
+                                 unsigned count,
+                                 std::initializer_list<unsigned> peers,
+                                 unsigned denominator,
+                                 unsigned fma_flags) {
+    if (options.mxcsr_flush_mode != UINT8_MAX && (options.mxcsr_flush_mode & 1)) return;
+    const unsigned fraction = bits == 32 ? 23 : 52, exponent = bits == 32 ? 8 : 11;
+    const u64 exponent_mask = ((u64{1} << exponent) - 1) << fraction;
+    const bool fused = fma_flags != UINT32_MAX;
+    const std::span<const unsigned> inputs =
+            fused ? std::span<const unsigned>{peers.begin(), peers.size()}
+                  : std::span<const unsigned>{&value, 1};
+    u32 disabled = UINT32_MAX;
+    if (options.mxcsr_flush_mode == UINT8_MAX && options.mxcsr_flush_offset != UINT32_MAX) {
+        disabled = masm.Here();
+        __ tbnz(v::w0, 6, std::int64_t{0});
+    } else if (options.mxcsr_flush_mode == UINT8_MAX && options.native_fp_environment) {
+        // AFP profiles keep DAZ in FPCR.FIZ without a software MXCSR load.
+        __ mrs(v::x17, v::FPCR);
+        disabled = masm.Here();
+        __ tbnz(v::x17, 0, std::int64_t{0});
+    }
+    u32 normal = UINT32_MAX;
+    if (bits == 32 && count == 4) {
+        // A whole normal packed operand needs one exponent reduction, rather
+        // than four scalar classification paths. Only reserved SIMD scratches
+        // absent from this operation's inputs may be used here.
+        unsigned scratch{};
+        for (const unsigned candidate : {VectorTemporary(), VectorTemporary(true), 0u, 1u}) {
+            bool input = candidate == value;
+            for (const auto peer : peers) input |= candidate == peer;
+            if (!input) {
+                scratch = candidate;
+                break;
+            }
+        }
+        std::array<u32, 3> rare{};
+        unsigned rare_count{};
+        for (const auto input : inputs) {
+            __ shl(Lanes(scratch, 32), Lanes(input, 32), 1);
+            __ ushr(Lanes(scratch, 32), Lanes(scratch, 32), 24);
+            __ uminv(S(scratch), Lanes(scratch, 32));
+            __ fmov(v::w16, S(scratch));
+            rare[rare_count++] = masm.Here();
+            __ cbz(v::w16, std::int64_t{0});
+        }
+        normal = masm.Here();
+        __ b(std::int64_t{0});
+        for (unsigned i = 0; i < rare_count; ++i) masm.Patch(rare[i], masm.Here());
+    }
+    for (unsigned lane = 0; lane < count; ++lane) {
+        std::array<u32, 16> done{};
+        unsigned done_count{};
+        const auto skip_zero = [&](const v::Register& reg) {
+            done[done_count++] = masm.Here();
+            __ cbz(reg, std::int64_t{0});
+        };
+        const auto skip_nonzero = [&](const v::Register& reg) {
+            done[done_count++] = masm.Here();
+            __ cbnz(reg, std::int64_t{0});
+        };
+        const auto read = [&](unsigned reg) { __ umov(R(16, bits), Lanes(reg, bits), lane); };
+        const auto zero = [&](unsigned reg) {
+            read(reg);
+            __ lsl(R(17, bits), R(16, bits), 1);
+            skip_zero(R(17, bits));
+        };
+        const auto nan = [&](unsigned reg) {
+            read(reg);
+            Extract(17, 16, fraction, exponent);
+            __ eor(v::x17, v::x17, Operand((u64{1} << exponent) - 1));
+            const auto finite = masm.Here();
+            __ cbnz(v::x17, std::int64_t{0});
+            __ lsl(R(17, bits), R(16, bits), bits - fraction);
+            skip_nonzero(R(17, bits));
+            masm.Patch(finite, masm.Here());
+        };
+        if (fused) {
+            std::array<u32, 3> denormal{};
+            unsigned denormal_count{};
+            for (const auto input : inputs) {
+                read(input);
+                Extract(17, 16, fraction, exponent);
+                const auto normal_input = masm.Here();
+                __ cbnz(v::x17, std::int64_t{0});
+                __ lsl(R(17, bits), R(16, bits), 1);
+                denormal[denormal_count++] = masm.Here();
+                __ cbnz(R(17, bits), std::int64_t{0});
+                masm.Patch(normal_input, masm.Here());
+            }
+            done[done_count++] = masm.Here();
+            __ b(std::int64_t{0});
+            for (unsigned i = 0; i < denormal_count; ++i) masm.Patch(denormal[i], masm.Here());
+        } else {
+            read(value);
+            Extract(17, 16, fraction, exponent);
+            skip_nonzero(v::x17);
+            __ lsl(R(17, bits), R(16, bits), 1);
+            skip_zero(R(17, bits));
+        }
+        if (source.Operations()[node.value].opcode == OpCode::VecFUnary) {
+            done[done_count++] = masm.Here();
+            __ tbnz(R(16, bits), bits - 1, std::int64_t{0});  // Negative sqrt: IE takes priority.
+        }
+        for (const auto peer : peers) nan(peer);
+        if (denominator != UINT32_MAX) zero(denominator);  // ZE takes priority over same-lane DE.
+        if (fused) {
+            const auto a = peers.begin()[0], b = peers.begin()[1], c = peers.begin()[2];
+            const auto infinity = [&](unsigned reg) {
+                read(reg);
+                __ and_(R(17, bits), R(16, bits), Operand((u64{1} << (bits - 1)) - 1));
+                __ eor(R(17, bits), R(17, bits), Operand(exponent_mask));
+                const auto site = masm.Here();
+                __ cbz(R(17, bits), std::int64_t{0});
+                return site;
+            };
+            const auto a_infinite = infinity(a), b_infinite = infinity(b);
+            const auto finite_product = masm.Here();
+            __ b(std::int64_t{0});
+            masm.Patch(a_infinite, masm.Here());
+            zero(b);
+            const auto product_infinite = masm.Here();
+            __ b(std::int64_t{0});
+            masm.Patch(b_infinite, masm.Here());
+            zero(a);
+            masm.Patch(product_infinite, masm.Here());
+            read(c);
+            __ and_(R(17, bits), R(16, bits), Operand((u64{1} << (bits - 1)) - 1));
+            __ eor(R(17, bits), R(17, bits), Operand(exponent_mask));
+            const auto finite_addend = masm.Here();
+            __ cbnz(R(17, bits), std::int64_t{0});
+            read(a);
+            __ umov(R(17, bits), Lanes(b, bits), lane);
+            __ eor(R(16, bits), R(16, bits), Operand(R(17, bits)));
+            __ umov(R(17, bits), Lanes(c, bits), lane);
+            __ eor(R(16, bits), R(16, bits), Operand(R(17, bits)));
+            const bool negate_c = bool(fma_flags & 2) ^
+                                  (bool(fma_flags & 8) && ((lane & 1) == ((fma_flags >> 4) & 1)));
+            if (bool(fma_flags & 1) != negate_c)
+                __ eor(R(16, bits), R(16, bits), Operand(u64{1} << (bits - 1)));
+            done[done_count++] = masm.Here();
+            __ tbnz(R(16, bits), bits - 1, std::int64_t{0});
+            masm.Patch(finite_addend, masm.Here());
+            masm.Patch(finite_product, masm.Here());
+        }
+        __ mrs(v::x17, v::FPSR);
+        __ orr(v::x17, v::x17, Operand(u64{1} << 7));
+        __ msr(v::FPSR, v::x17);
+        for (unsigned i = 0; i < done_count; ++i) masm.Patch(done[i], masm.Here());
+    }
+    if (normal != UINT32_MAX) masm.Patch(normal, masm.Here());
+    if (disabled != UINT32_MAX) masm.Patch(disabled, masm.Here());
+}
+
+void Writer::RecordNaNInput(unsigned value, unsigned bits, unsigned count, bool signaling) {
+    const unsigned fraction = bits == 32 ? 23 : 52, exponent = bits == 32 ? 8 : 11;
+    for (unsigned lane = 0; lane < count; ++lane) {
+        __ umov(R(16, bits), Lanes(value, bits), lane);
+        Extract(17, 16, fraction, exponent);
+        __ eor(v::x17, v::x17, Operand((u64{1} << exponent) - 1));
+        const auto finite = masm.Here();
+        __ cbnz(v::x17, std::int64_t{0});
+        __ lsl(R(17, bits), R(16, bits), bits - fraction);
+        const auto infinity = masm.Here();
+        __ cbz(R(17, bits), std::int64_t{0});
+        u32 quiet = UINT32_MAX;
+        if (!signaling) {
+            quiet = masm.Here();
+            __ tbnz(R(16, bits), fraction - 1, std::int64_t{0});
+        }
+        __ mrs(v::x17, v::FPSR);
+        __ orr(v::x17, v::x17, Operand(u64{1}));
+        __ msr(v::FPSR, v::x17);
+        masm.Patch(finite, masm.Here());
+        masm.Patch(infinity, masm.Here());
+        if (quiet != UINT32_MAX) masm.Patch(quiet, masm.Here());
     }
 }
 
@@ -26,7 +218,14 @@ void Writer::FlushScalarDenormal(unsigned value,
     // Known software controls belong to this whole native unit. Otherwise
     // x0 holds the actual raw MXCSR controls. Neither branch changes NZCV.
     u32 disabled = UINT32_MAX;
-    if (options.mxcsr_flush_mode != UINT8_MAX) {
+    if (options.mxcsr_flush_offset == UINT32_MAX) {
+        if (!options.native_fp_environment || control_bit != 6) return;
+        // An AFP comparison consumed FIZ, but a subsequent integer bitselect
+        // still contains the original input bits. Normalize only that value.
+        __ mrs(v::x0, v::FPCR);
+        disabled = masm.Here();
+        __ tbz(v::w0, 0, std::int64_t{0});
+    } else if (options.mxcsr_flush_mode != UINT8_MAX) {
         if (!(options.mxcsr_flush_mode & (control_bit == 6 ? 1u : 2u))) return;
     } else {
         disabled = static_cast<u32>(output.words.size());
@@ -38,11 +237,20 @@ void Writer::FlushScalarDenormal(unsigned value,
         Extract(17, 16, single ? 23 : 52, single ? 8 : 11);
         const auto normal = static_cast<u32>(output.words.size());
         __ cbnz(v::x17, std::int64_t{0});  // CBNZ x17,next: zero exponent includes existing zeros.
+        __ lsl(R(17, lane_bits), R(16, lane_bits), 1);
+        const auto zero = masm.Here();
+        __ cbz(R(17, lane_bits), std::int64_t{0});
+        if (control_bit == 15) {
+            __ mrs(v::x17, v::FPSR);
+            __ orr(v::x17, v::x17, Operand(u64{0x18}));  // Flushing a tiny result is inexact.
+            __ msr(v::FPSR, v::x17);
+        }
         __ and_(v::x16,
                 v::x16,
                 Operand(u64{1} << (lane_bits - 1)));                 // Keep only the IEEE sign bit.
         __ ins(Lanes(value, lane_bits), i, single ? W(16) : X(16));  // INS preserves other lanes.
         masm.Patch(normal, masm.Here());
+        masm.Patch(zero, masm.Here());
     }
     const auto done = static_cast<u32>(output.words.size());
     if (disabled != UINT32_MAX) masm.Patch(disabled, done);
@@ -55,21 +263,47 @@ void Writer::ConvertFloatToInteger(unsigned destination,
                                    bool truncate) {
     const auto fp = float_bits == 32 ? S(0) : D(0);
     __ fmov(fp, R(raw, float_bits));
+    LoadMxcsrFlushControl();
+    if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
+        FlushScalarDenormal(0, 6, 0, float_bits, 1);
+    // Integer conversions do not report DE. Preserve older sticky flags while
+    // keeping only this conversion's IE/PE, including the invalid-priority rule.
+    __ mrs(v::x0, v::FPSR);
     if (!truncate) {
-        if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
-            LoadMxcsrFlushControl();
-            FlushScalarDenormal(0, 6, 0, float_bits, 1);
-        }
-        __ frinti(fp, fp);  // Active guest RC; no sticky/trap state is published.
+        __ frintx(fp, fp);
     }
     __ fmov(R(16, float_bits), fp);
     Extract(17, 16, float_bits == 32 ? 23 : 52, float_bits == 32 ? 8 : 11);
     __ sub(v::x17, v::x17, Operand((float_bits == 32 ? 127u : 1023u) + integer_bits - 1));
-    __ fcvtzs(R(destination, integer_bits == 64 ? 64 : 32), fp);
-    const auto valid = masm.Here();
+    const auto below = masm.Here();
     __ tbnz(v::x17, 63, std::int64_t{0});
+    const auto above = masm.Here();
+    __ cbnz(v::x17, std::int64_t{0});
+    const auto positive_edge = masm.Here();
+    __ tbz(R(16, float_bits), float_bits - 1, std::int64_t{0});
+    const unsigned fraction = float_bits == 32 ? 23 : 52;
+    // Truncation admits the negative interval (minInt-1,minInt], not only
+    // exactly minInt. Rounded conversions have already removed the fraction.
+    const unsigned window = truncate && fraction >= integer_bits ? fraction - integer_bits + 1 : 0;
+    Extract(17, 16, window, fraction - window);
+    const auto negative_edge = masm.Here();
+    __ cbnz(v::x17, std::int64_t{0});
+    masm.Patch(below, masm.Here());
+    __ fcvtzs(R(destination, integer_bits == 64 ? 64 : 32), fp);
+    __ mrs(v::x17, v::FPSR);
+    __ and_(v::x17, v::x17, Operand(u64{0x1f}));
+    __ and_(v::x17, v::x17, Operand(~u64{0xe}));
+    __ orr(v::x17, v::x17, Operand(v::x0));
+    __ msr(v::FPSR, v::x17);
+    const auto converted = masm.Here();
+    __ b(std::int64_t{0});
+    masm.Patch(above, masm.Here());
+    masm.Patch(positive_edge, masm.Here());
+    masm.Patch(negative_edge, masm.Here());
+    __ orr(v::x0, v::x0, Operand(u64{1}));
+    __ msr(v::FPSR, v::x0);
     Immediate(destination, u64{1} << (integer_bits - 1));
-    masm.Patch(valid, masm.Here());
+    masm.Patch(converted, masm.Here());
     if (integer_bits < 32) Narrow(destination, destination, integer_bits);
 }
 
@@ -82,13 +316,13 @@ void Writer::ConvertScalarFloat(unsigned destination, unsigned raw, unsigned sou
     const auto result_bits = source_bits == 32 ? 64u : 32u;
     const auto result = result_bits == 32 ? S(0) : D(0);
     __ fmov(input, R(raw, source_bits));
-    if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
-        LoadMxcsrFlushControl();
+    LoadMxcsrFlushControl();
+    if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
         FlushScalarDenormal(0, 6, 0, source_bits, 1);
-        __ fcvt(result, input);
+    RecordDenormalInput(0, source_bits, 1);
+    __ fcvt(result, input);
+    if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
         FlushScalarDenormal(0, 15, 0, result_bits, 1);
-    } else
-        __ fcvt(result, input);
     __ fmov(R(destination, result_bits), result);
 }
 
@@ -157,18 +391,23 @@ void Writer::HandleVecFAddFamily(OpContext& ctx) {
         else
             __ fdiv(vd, vn, vm);
     };
+    unsigned a = left, b = right;
+    LoadMxcsrFlushControl();
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
         VectorMove(first_temp, left);
         VectorMove(second_temp, right);
-        LoadMxcsrFlushControl();
         const auto lanes = static_cast<unsigned>(128 / bits);
         FlushScalarDenormal(first_temp, 6, 0, static_cast<unsigned>(bits), lanes);
         FlushScalarDenormal(second_temp, 6, 0, static_cast<unsigned>(bits), lanes);
-        emit(first_temp, first_temp, second_temp);
-        FlushScalarDenormal(first_temp, 15, 0, static_cast<unsigned>(bits), lanes);
-        VectorMove(destination, first_temp);
-    } else
-        emit(destination, left, right);
+        a = first_temp;
+        b = second_temp;
+    }
+    const auto denominator = operation.opcode == OpCode::VecFDiv ? b : UINT32_MAX;
+    RecordDenormalInput(a, bits, 128 / bits, {b}, denominator);
+    RecordDenormalInput(b, bits, 128 / bits, {a}, denominator);
+    emit(destination, a, b);
+    if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
+        FlushScalarDenormal(destination, 15, 0, static_cast<unsigned>(bits), 128 / bits);
 }
 
 void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
@@ -192,16 +431,22 @@ void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
         else
             __ fdiv(out, lhs, rhs);
     };
+    LoadMxcsrFlushControl();
+    const bool divide = opcode == OpCode::VecFDivScalar32 || opcode == OpCode::VecFDivScalar64;
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
         VectorMove(first, left);
         VectorMove(second, right);
-        LoadMxcsrFlushControl();
         FlushScalarDenormal(first, 6, 0, bits, 1);
         FlushScalarDenormal(second, 6, 0, bits, 1);
+        RecordDenormalInput(first, bits, 1, {second}, divide ? second : UINT32_MAX);
+        RecordDenormalInput(second, bits, 1, {first}, divide ? second : UINT32_MAX);
         emit(first, second);
         FlushScalarDenormal(first, 15, 0, bits, 1);
-    } else
+    } else {
+        RecordDenormalInput(left, bits, 1, {right}, divide ? right : UINT32_MAX);
+        RecordDenormalInput(right, bits, 1, {left}, divide ? right : UINT32_MAX);
         emit(left, right);
+    }
     VectorMove(ctx.destination, left);
     __ ins(Lanes(ctx.destination, bits), 0, Lanes(first, bits), 0);
 }
@@ -212,21 +457,27 @@ void Writer::HandleVecFCmpFamily(OpContext& ctx) {
     const auto first_temp = VectorTemporary();
     const auto second_temp = VectorTemporary(true);
     const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-    const auto bits = IntegerImmediate(cursor.Take());
+    const auto encoded = IntegerImmediate(cursor.Take());
+    const auto bits = encoded & ~u64{128};
     if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
     unsigned a = left, b = right;
+    LoadMxcsrFlushControl();
     if (options.mxcsr_flush_offset != UINT32_MAX &&
         (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
         VectorMove(first_temp, left);
         VectorMove(second_temp, right);
-        LoadMxcsrFlushControl();
         FlushScalarDenormal(first_temp, 6, 0, bits, 1);
         FlushScalarDenormal(second_temp, 6, 0, bits, 1);
         a = first_temp;
         b = second_temp;
     }
+    RecordDenormalInput(a, bits, 1, {b});
+    RecordDenormalInput(b, bits, 1, {a});
     __ mrs(v::x30, v::NZCV);  // Preserve the actual guest/packed-mode host NZCV.
-    __ fcmp(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
+    if (encoded & 128)
+        __ fcmpe(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
+    else
+        __ fcmp(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
     __ cset(W(destination), v::lt);  // CSET Wdestination,LT: less or unordered.
     __ cset(v::w0,
             v::vs);          // CSET W0,VS: unordered (destination may be spill scratch16).
@@ -253,7 +504,8 @@ void Writer::HandleVecFCvtPackedFamily(OpContext& ctx) {
         // Scalar conversion scratch v0 must not overwrite a spilled input,
         // nor may a result tied to input erase its next lane.
         VectorMove(copy, input);
-        __ eor(Lanes(ctx.destination, 8), Lanes(ctx.destination, 8), Lanes(ctx.destination, 8));
+        const auto result = ctx.destination == 0 ? VectorTemporary(true) : ctx.destination;
+        __ eor(Lanes(result, 8), Lanes(result, 8), Lanes(result, 8));
         const unsigned input_bits = kind == 2 || kind == 3 || kind == 6 ? 32 : 64;
         const unsigned output_bits = kind == 6 ? 64 : 32;
         const unsigned lanes = kind == 2 || kind == 3 ? 4 : 2;
@@ -263,8 +515,9 @@ void Writer::HandleVecFCvtPackedFamily(OpContext& ctx) {
                 ConvertFloatToInteger(30, 16, input_bits, 32, kind == 3 || kind == 5);
             else
                 ConvertScalarFloat(30, 16, input_bits);
-            __ ins(Lanes(ctx.destination, output_bits), i, R(30, output_bits));
+            __ ins(Lanes(result, output_bits), i, R(30, output_bits));
         }
+        VectorMove(ctx.destination, result);
     }
 }
 
@@ -272,27 +525,44 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& cursor = ctx.cursor;
     const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
-    const auto bits = IntegerImmediate(cursor.Take()), relations = IntegerImmediate(cursor.Take());
+    const auto bits = IntegerImmediate(cursor.Take()), encoded = IntegerImmediate(cursor.Take());
+    const auto relations = encoded & 15;
     const auto scalar = IntegerImmediate(cursor.Take());
-    if ((bits != 32 && bits != 64) || relations > 15 || scalar > 1)
+    if ((bits != 32 && bits != 64) || encoded > 31 || scalar > 1)
         Reject(CompileError::UnsupportedOperand);
     const auto first = VectorTemporary(), second = VectorTemporary(true);
     const bool flush = options.mxcsr_flush_offset != UINT32_MAX &&
                        (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u));
-    unsigned a = left, b = right, temporary = first;
-    const unsigned destination = scalar ? 0 : ctx.destination;
+    unsigned a = left, b = right;
+    const unsigned destination = scalar ? (ctx.destination == 0 ? 1 : 0) : ctx.destination;
+    LoadMxcsrFlushControl();
     if (scalar || flush) {
         VectorMove(first, left);
         VectorMove(second, right);
         if (flush) {
-            LoadMxcsrFlushControl();
             FlushScalarDenormal(first, 6, 0, bits, scalar ? 1 : 128 / bits);
             FlushScalarDenormal(second, 6, 0, bits, scalar ? 1 : 128 / bits);
         }
         a = first;
         b = second;
-        temporary = scalar ? 1 : 0;
     }
+    unsigned temporary{};
+    for (const auto candidate : {first, second, 0u, 1u})
+        if (candidate != a && candidate != b && candidate != destination) {
+            temporary = candidate;
+            break;
+        }
+    const unsigned count = scalar ? 1 : 128 / bits;
+    RecordDenormalInput(a, bits, count, {b});
+    RecordDenormalInput(b, bits, count, {a});
+    RecordNaNInput(a, bits, count, encoded & 16);
+    RecordNaNInput(b, bits, count, encoded & 16);
+    // The relation mask may require signaling host comparisons even for a
+    // quiet x86 predicate. Only the explicit input classification publishes IE.
+    __ mrs(v::x30, v::FPSR);
+    const auto fp = [&](unsigned reg) {
+        return scalar ? (bits == 32 ? S(reg) : D(reg)) : Lanes(reg, bits);
+    };
     const bool invert = relations & 8;
     const auto ordered = static_cast<unsigned>(invert ? ~relations & 7 : relations);
     if (!ordered) {
@@ -303,22 +573,23 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
     } else {
         if (ordered == 5 || ordered == 7) {
             if (ordered == 5)
-                __ fcmgt(Lanes(temporary, bits), Lanes(a, bits), Lanes(b, bits));
+                __ fcmgt(fp(temporary), fp(a), fp(b));
             else
-                __ fcmge(Lanes(temporary, bits), Lanes(a, bits), Lanes(b, bits));
-            __ fcmgt(Lanes(destination, bits), Lanes(b, bits), Lanes(a, bits));
+                __ fcmge(fp(temporary), fp(a), fp(b));
+            __ fcmgt(fp(destination), fp(b), fp(a));
             __ orr(Lanes(destination, 8), Lanes(temporary, 8), Lanes(destination, 8));
         } else {
             if (ordered == 1 || ordered == 3) std::swap(a, b);
             if (ordered == 2)
-                __ fcmeq(Lanes(destination, bits), Lanes(a, bits), Lanes(b, bits));
+                __ fcmeq(fp(destination), fp(a), fp(b));
             else if (ordered == 3 || ordered == 6)
-                __ fcmge(Lanes(destination, bits), Lanes(a, bits), Lanes(b, bits));
+                __ fcmge(fp(destination), fp(a), fp(b));
             else
-                __ fcmgt(Lanes(destination, bits), Lanes(a, bits), Lanes(b, bits));
+                __ fcmgt(fp(destination), fp(a), fp(b));
         }
         if (invert) __ not_(Lanes(destination, 8), Lanes(destination, 8));
     }
+    __ msr(v::FPSR, v::x30);
     if (scalar) {
         VectorMove(ctx.destination, first);
         __ ins(Lanes(ctx.destination, bits), 0, Lanes(destination, bits), 0);
@@ -334,21 +605,28 @@ void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
     if ((bits != 32 && bits != 64) || maximum > 1 || scalar > 1)
         Reject(CompileError::UnsupportedOperand);
     unsigned a = left, b = right, result = VectorTemporary();
+    LoadMxcsrFlushControl();
     if (options.mxcsr_flush_offset != UINT32_MAX &&
         (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
         a = VectorTemporary();
         b = VectorTemporary(true);
-        result = 0;
+        result = ctx.destination == 0 ? 1 : 0;
         VectorMove(a, left);
         VectorMove(b, right);
-        LoadMxcsrFlushControl();
         FlushScalarDenormal(a, 6, 0, bits, scalar ? 1 : 128 / bits);
         FlushScalarDenormal(b, 6, 0, bits, scalar ? 1 : 128 / bits);
     }
+    RecordDenormalInput(a, bits, scalar ? 1 : 128 / bits, {b});
+    RecordDenormalInput(b, bits, scalar ? 1 : 128 / bits, {a});
     // Strict comparison selects source 2 for equal values and unordered,
     // retaining that operand's zero sign and even its signaling NaN payload.
-    __ fcmgt(Lanes(result, bits), Lanes(maximum ? a : b, bits), Lanes(maximum ? b : a, bits));
+    const auto fp = [&](unsigned reg) {
+        return scalar ? (bits == 32 ? S(reg) : D(reg)) : Lanes(reg, bits);
+    };
+    __ fcmgt(fp(result), fp(maximum ? a : b), fp(maximum ? b : a));
     __ bsl(Lanes(result, 8), Lanes(a, 8), Lanes(b, 8));
+    if (options.mxcsr_flush_offset == UINT32_MAX && options.native_fp_environment)
+        FlushScalarDenormal(result, 6, 0, bits, scalar ? 1 : 128 / bits);
     if (scalar) {
         VectorMove(ctx.destination, a);
         __ ins(Lanes(ctx.destination, bits), 0, Lanes(result, bits), 0);
@@ -381,10 +659,13 @@ void Writer::HandleVecFUnaryFamily(OpContext& ctx) {
     };
     if (kind)
         flush_estimate();
-    else if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
+    else {
         LoadMxcsrFlushControl();
-        FlushScalarDenormal(value, 6, 0, bits, count);
+        if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
+            FlushScalarDenormal(value, 6, 0, bits, count);
+        RecordDenormalInput(value, bits, count);
     }
+    if (kind) __ mrs(v::x30, v::FPSR);  // RCP/RSQRT do not publish SIMD FP exceptions.
     if (scalar) {
         const auto v = bits == 32 ? S(value) : D(value);
         if (kind != 1) __ fsqrt(v, v);
@@ -404,6 +685,7 @@ void Writer::HandleVecFUnaryFamily(OpContext& ctx) {
         flush_estimate();
     else if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
         FlushScalarDenormal(value, 15, 0, bits, count);
+    if (kind) __ msr(v::FPSR, v::x30);
     if (scalar) {
         VectorMove(ctx.destination, merge);
         __ ins(Lanes(ctx.destination, bits), 0, Lanes(value, bits), 0);
@@ -417,23 +699,39 @@ void Writer::HandleVecFRoundIntFamily(OpContext& ctx) {
     const auto merge = VectorValue(c.Take(), 0), input = VectorValue(c.Take(), 1);
     const auto bits = IntegerImmediate(c.Take()), mode = IntegerImmediate(c.Take()),
                scalar = IntegerImmediate(c.Take());
-    if ((bits != 32 && bits != 64) || mode > 3 || scalar > 1)
+    if ((bits != 32 && bits != 64) || (mode & ~u64{11}) || scalar > 1)
         Reject(CompileError::UnsupportedOperand);
     const auto value = VectorTemporary();
     VectorMove(value, input);
+    LoadMxcsrFlushControl();
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
-        LoadMxcsrFlushControl();
         FlushScalarDenormal(value, 6, 0, bits, scalar ? 1 : 128 / bits);
     }
+    __ mrs(v::x0, v::FPSR);
     const auto fp = scalar ? (bits == 32 ? S(value) : D(value)) : Lanes(value, bits);
-    if (mode == 0)
+    const auto rounding = mode & 3;
+    if (!(mode & 8)) {
+        // FRINTX reports precision under the active FPCR rounding mode.
+        constexpr unsigned arm_rounding[]{0, 2, 1, 3};
+        __ mrs(v::x16, v::FPCR);
+        __ and_(v::x17, v::x16, Operand(~(u64{3} << 22)));
+        if (rounding) __ orr(v::x17, v::x17, Operand(u64{arm_rounding[rounding]} << 22));
+        __ msr(v::FPCR, v::x17);
+        __ frintx(fp, fp);
+        __ msr(v::FPCR, v::x16);
+    } else if (rounding == 0)
         __ frintn(fp, fp);
-    else if (mode == 1)
+    else if (rounding == 1)
         __ frintm(fp, fp);
-    else if (mode == 2)
+    else if (rounding == 2)
         __ frintp(fp, fp);
     else
         __ frintz(fp, fp);
+    __ mrs(v::x17, v::FPSR);
+    __ and_(v::x17, v::x17, Operand(mode & 8 ? u64{1} : u64{0x1f}));
+    if (!(mode & 8)) __ and_(v::x17, v::x17, Operand(~u64{0xe}));
+    __ orr(v::x17, v::x17, Operand(v::x0));
+    __ msr(v::FPSR, v::x17);  // ROUND reports only IE/PE, never DE.
     if (scalar) {
         VectorMove(ctx.destination, merge);
         __ ins(Lanes(ctx.destination, bits), 0, Lanes(value, bits), 0);
@@ -457,17 +755,19 @@ void Writer::HandleVecFMulAddFamily(OpContext& ctx) {
     if ((bits != 32 && bits != 64) || flags > 31) Reject(CompileError::UnsupportedOperand);
     const bool scalar = flags & 4;
     const unsigned count = scalar ? 1 : 128 / bits;
+    LoadMxcsrFlushControl();
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
-        LoadMxcsrFlushControl();
         FlushScalarDenormal(first, 6, 0, bits, count);
         FlushScalarDenormal(1, 6, 0, bits, count);
         FlushScalarDenormal(0, 6, 0, bits, count);
     }
+    RecordDenormalInput(first, bits, count, {first, 1u, 0u}, UINT32_MAX, flags);
     bool negative_add = false;
     for (unsigned i = 0; i < count; ++i)
         negative_add |= bool(flags & 2) ^ (bool(flags & 8) && ((i & 1) == ((flags >> 4) & 1)));
     if (negative_add) {
         // A sign modifier must not negate the sign of a selected NaN.
+        __ mrs(v::x30, v::FPSR);
         __ fcmeq(Lanes(result, bits), Lanes(0, bits), Lanes(0, bits));
         __ shl(Lanes(result, bits), Lanes(result, bits), bits - 1);
         for (unsigned i = 0; i < 128 / bits; ++i) {
@@ -476,9 +776,16 @@ void Writer::HandleVecFMulAddFamily(OpContext& ctx) {
             if (!negate) __ ins(Lanes(result, bits), i, R(31, bits));
         }
         __ eor(Lanes(0, 8), Lanes(0, 8), Lanes(result, 8));
+        __ msr(v::FPSR, v::x30);
     }
     VectorMove(result, 0);
-    if (flags & 1)
+    if (scalar) {
+        const auto fp = [&](unsigned reg) { return bits == 32 ? S(reg) : D(reg); };
+        if (flags & 1)
+            __ fnmsub(fp(result), fp(first), fp(1), fp(0));
+        else
+            __ fmadd(fp(result), fp(first), fp(1), fp(0));
+    } else if (flags & 1)
         __ fmls(Lanes(result, bits), Lanes(first, bits), Lanes(1, bits));
     else
         __ fmla(Lanes(result, bits), Lanes(first, bits), Lanes(1, bits));
@@ -488,6 +795,7 @@ void Writer::HandleVecFMulAddFamily(OpContext& ctx) {
     // operation already supplies c when it is the only NaN. Override b and
     // then a without arithmetic on their payloads or any NZCV modification.
     const unsigned quiet_bit = bits == 32 ? 22 : 51;
+    __ mrs(v::x30, v::FPSR);
     for (const auto input : {1u, first}) {
         __ fcmeq(Lanes(0, bits), Lanes(input, bits), Lanes(input, bits));
         __ not_(Lanes(0, 8), Lanes(0, 8));
@@ -505,6 +813,7 @@ void Writer::HandleVecFMulAddFamily(OpContext& ctx) {
         __ bsl(Lanes(0, 8), Lanes(input, 8), Lanes(result, 8));
         VectorMove(result, 0);
     }
+    __ msr(v::FPSR, v::x30);
     if (scalar) {
         VectorMove(ctx.destination, first);
         __ ins(Lanes(ctx.destination, bits), 0, Lanes(result, bits), 0);

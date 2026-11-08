@@ -1,14 +1,13 @@
-#include "syscalls.h"
-#include "runtime/execution/vm.h"
 #include "runtime/arch/x86/flags.h"
+#include "runtime/execution/vm.h"
 #include "syscall_abi.h"
+#include "syscalls.h"
 
 #include <algorithm>
 #include <cerrno>
-#include "base/logging.h"
 #include <cstring>
-#include <fcntl.h>
 #include <limits>
+#include <fcntl.h>
 #include <linux/futex.h>
 #include <sched.h>
 #include <sys/ioctl.h>
@@ -22,6 +21,7 @@
 #include <sys/utsname.h>
 #include <time.h>
 #include <unistd.h>
+#include "base/logging.h"
 
 namespace swift::runtime::platform {
 namespace {
@@ -460,6 +460,8 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
 }
 
 void LinuxSyscalls::Service() {
+    // The host may write or remap guest memory while servicing a syscall.
+    if (vm.ISA() == GuestISA::Arm64) vm.thread.native.arm_state.reservation_valid = 0;
     ++vm.stats.syscalls;
     if (vm.ISA() == GuestISA::Arm64) {
         auto& state = vm.thread.native.arm_state;

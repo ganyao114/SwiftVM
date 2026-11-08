@@ -10,7 +10,13 @@
 
 namespace swift::runtime::execution {
 
-enum class BackingKind : std::uint32_t { Anonymous, FilePrivate, FileShared, Other };
+enum class BackingKind : std::uint32_t {
+    Anonymous,
+    FilePrivate,
+    FileShared,
+    Other,
+    AnonymousShared
+};
 enum class SourceMode : std::uint8_t { Immutable, WatchedBlock, Volatile };
 
 struct MemoryRegion {
@@ -48,6 +54,7 @@ public:
     std::uint64_t Brk(std::uint64_t requested);
     bool Contains(std::uint64_t address, std::size_t length, int protection) const noexcept;
     bool Accessible(std::uint64_t address, std::size_t length, int protection) const noexcept;
+    bool PrivateAnonymous(std::uint64_t address, std::size_t length) const noexcept;
     bool CopyIn(void*, std::uint64_t address, std::size_t) const noexcept;
     bool CopyOut(std::uint64_t address, const void*, std::size_t) const noexcept;
     MappingRelease Release() noexcept;

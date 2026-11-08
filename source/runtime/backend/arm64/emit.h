@@ -2,10 +2,10 @@
 
 // Private declarations for one machine-code writer. Program, homes and
 // output remain borrowed from Compile; no intermediate program is created.
-#include "compile.h"
-#include "allocate.h"
 #include "abi.h"
+#include "allocate.h"
 #include "assembler.h"
+#include "compile.h"
 #include "relocate.h"
 
 #include <algorithm>
@@ -119,6 +119,7 @@ private:
     void HandleLoadMemoryFamily(OpContext&);
     void HandleStoreMemoryFamily(OpContext&);
     void HandleCompareAndSwapFamily(OpContext&);
+    u32 UnalignedAtomicService(OpContext&, CellView input, CellView extra, AtomicRMWOp);
     void HandleCheckMemoryAlignmentFamily(OpContext&);
     void HandleMemoryBarrierTSOFamily(OpContext&);
     void HandleMemoryStoreFenceFamily(OpContext&);
@@ -180,6 +181,7 @@ private:
     void HandleVecFAddFamily(OpContext&);
     void HandleVecFAddScalar64Family(OpContext&);
     void HandleVecFCmpFamily(OpContext&);
+    void HandleReadFPStatusFamily(OpContext&);
     void HandleVecFCvtPackedFamily(OpContext&);
     void HandleVecFCmpMaskFamily(OpContext&);
     void HandleVecMinFamily(OpContext&);
@@ -481,6 +483,13 @@ private:
     }
 
     void LoadMxcsrFlushControl();
+    void RecordDenormalInput(unsigned value,
+                             unsigned lane_bits,
+                             unsigned lane_count,
+                             std::initializer_list<unsigned> peers = {},
+                             unsigned denominator = UINT32_MAX,
+                             unsigned fma_flags = UINT32_MAX);
+    void RecordNaNInput(unsigned value, unsigned lane_bits, unsigned lane_count, bool signaling);
     void FlushScalarDenormal(unsigned value,
                              unsigned control_bit,
                              unsigned lane = 0,

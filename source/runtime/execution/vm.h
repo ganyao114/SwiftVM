@@ -8,17 +8,17 @@
 
 #include "code_cache.h"
 #include "code_heap.h"
-#include "compile_service.h"
 #include "code_image.h"
+#include "compile_service.h"
 #include "guest_thread.h"
 #include "host_backend.h"
 #include "memory.h"
 #include "runtime.h"
-#include "smc.h"
-#include "runtime/frontend/x86/interpreter.h"
 #include "runtime/frontend/arm64/interpreter.h"
+#include "runtime/frontend/x86/interpreter.h"
 #include "runtime/platform/linux/loader.h"
 #include "runtime/platform/linux/syscalls.h"
+#include "smc.h"
 
 namespace swift::runtime::execution {
 class DiskCache;
@@ -50,6 +50,9 @@ public:
 
     GuestISA ISA() const noexcept { return layout.isa; }
 
+    // Owner APIs and raw host borrows are not concurrent VM operations. Access
+    // guest bytes while execution is stopped, or hold GuestExecutionLock for
+    // the whole access, including any dereference after HostPointer returns.
     GuestMemory& Memory() noexcept { return memory; }
 
     void* HostPointer(std::uint64_t address, std::size_t size, bool write = false);
@@ -114,6 +117,7 @@ private:
     void ObserveCache() noexcept;
     void ObserveFinal() noexcept;
     void RefreshNative(NativeRunContext&) noexcept;
+    void MergeFPStatus() noexcept;
     void UpdateFPEnvironment(bool architectural_write = false);
     void PrepareLoaded(std::span<const std::string>,
                        std::span<const std::string>,
@@ -136,7 +140,8 @@ private:
     static std::uintptr_t ResolveBridge(void*, NativeRunContext*) noexcept;
     static const NativeCode* LookupNative(void*, std::uintptr_t) noexcept;
     static bool RecoverCodeWrite(void*, std::uintptr_t) noexcept;
-    static std::uint64_t PrepareAtomic(void*, std::uint64_t, std::size_t) noexcept;
+    static std::uint64_t AtomicBridge(void*, AtomicCall*) noexcept;
+    bool HandleArmStateService();
     bool PrepareGuestWrite(std::uint64_t, std::size_t);
     bool GuestWrite(std::uint64_t, const void*, std::size_t);
     void FileChanged(int);

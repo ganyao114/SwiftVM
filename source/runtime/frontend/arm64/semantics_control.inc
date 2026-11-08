@@ -1,4 +1,9 @@
 void VisitSystem(const vixl::aarch64::Instruction* instr) override {
+    const auto request = StateRequest(instr->GetInstructionBits());
+    if (request.kind != runtime::arm64::StateServiceKind::None) {
+        RequestStateService(request);
+        return;
+    }
     if (instr->Mask(SystemHintFMask) == SystemHintFixed) {
         // NOP, YIELD, WFE, WFI, SEV(L), BTI, ... are all treated as NOPs.
         // These hints require no IR operation in the current execution profile.

@@ -104,13 +104,16 @@ void Writer::Crypto(OpContext& c) {
     movq(rcx, xmm1);
     movhlps(xmm15, xmm1);
     movq(r8, xmm15);
-    movq(r9, xmm14);
+    movq(rax, xmm14);
     movhlps(xmm15, xmm14);
-    movq(rax, xmm15);
+    movq(r10, xmm15);
     mov(edi, unsigned(kind));
     sub(rsp, 16);
+    // The third 16-byte aggregate cannot fit in the one remaining GPR.
+    // SysV passes both of its words on the stack, then assigns imm to R9.
     mov(qword[rsp], rax);
-    mov(qword[rsp + 8],
+    mov(qword[rsp + 8], r10);
+    mov(r9d,
         op == O::VecPclMul            ? c.Arg(2).Payload()
         : op == O::VecAesKeygenAssist ? c.Arg(1).Payload()
                                       : 0);

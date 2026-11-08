@@ -1,9 +1,9 @@
-#include "tests/support/check.h"
-#include "tests/support/test_mode.h"
-#include "tests/support/native_code.h"
-#include "tests/support/guest_memory.h"
-#include "runtime/ir/optimize.h"
 #include "runtime/ir/builder.h"
+#include "runtime/ir/optimize.h"
+#include "tests/support/check.h"
+#include "tests/support/guest_memory.h"
+#include "tests/support/native_code.h"
+#include "tests/support/test_mode.h"
 
 #include <array>
 #include <cstdio>
@@ -1365,4 +1365,37 @@ TEST_CASE("SignedWidenMultiplyAlgebra", "[compile][ir-optimize]") {
 
 TEST_CASE("OrderedLoadAddresses", "[compile][ir-optimize]") {
     CHECK_NOTHROW(OrderedLoadAddresses());
+}
+
+TEST_CASE("FP status invalidates only its bound Uniform field", "[compile][floating]") {
+    Builder builder{Scope::Block};
+    const auto block = builder.CreateBlock();
+    CHECK(block && builder.BeginBlock(block.block) == Error::None);
+    const auto status =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(16, Type::U32)});
+    const auto gpr =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    Store(builder, 64, status, Type::U32);
+    Store(builder, 80, gpr);
+    const auto vector =
+            Emit(builder, OpCode::LoadUniform, Type::V128, {Operand::Uniform(128, Type::V128)});
+    const auto division = Emit(builder,
+                               OpCode::VecFDivScalar32,
+                               Type::V128,
+                               {Operand::ValueOf(vector), Operand::ValueOf(vector)});
+    const auto changed =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(16, Type::U32)});
+    Store(builder, 68, changed, Type::U32);
+    const auto unchanged =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    CHECK(builder.EndBlock(Terminal::Return(unchanged)) == Error::None);
+    auto optimized =
+            Optimize(Submit(builder),
+                     SIZE_MAX,
+                     {.guest_memory_disjoint = true, .numeric_control = UniformRange{16, 4}});
+    CHECK(optimized);
+    CHECK(optimized.program.Operations()[division.node.value].opcode == OpCode::VecFDivScalar32);
+    CHECK(optimized.program.Operations()[changed.node.value].opcode == OpCode::LoadUniform);
+    CHECK(optimized.program.Operations()[unchanged.node.value].opcode == OpCode::ZeroExtend64);
+    CHECK(optimized.program.Operands(unchanged.node).front().Payload() == gpr.node.value);
 }

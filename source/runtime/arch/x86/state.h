@@ -31,8 +31,8 @@ struct GuestState {
     std::uint64_t gprs[16]{};
     std::uint64_t pc{}, packed_flags{1}, fs_base{}, gs_base{};
     alignas(16) std::uint8_t xmm[16][16]{};
-    // Preserve the complete guest word, including explicitly written status
-    // bits. Numeric operations do not accumulate MXCSR exception state.
+    // Architectural controls and sticky SSE exception state. Native status is
+    // merged at observers; direct execution accumulates it per instruction.
     std::uint32_t mxcsr{0x1f80};
     X87State x87;
     std::uint64_t x87_ip{}, x87_dp{};

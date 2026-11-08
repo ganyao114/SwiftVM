@@ -30,6 +30,10 @@ or $r31, $zero, $zero
 .macro SVM_LA_RESTORE_HOST_FP
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_FP_ENVIRONMENT)
 beqz $t0, 93f
+movfcsr2gr $t0, $fcsr0
+li.d $t1, 0x1f0000
+and $t0, $t0, $t1
+st.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_GUEST_FPSR)
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_HOST_FCSR)
 movgr2fcsr $fcsr0, $t0
 93:
@@ -39,6 +43,8 @@ movgr2fcsr $fcsr0, $t0
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_FP_ENVIRONMENT)
 beqz $t0, 94f
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_GUEST_FCSR)
+ld.d $t1, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_GUEST_FPSR)
+or $t0, $t0, $t1
 movgr2fcsr $fcsr0, $t0
 94:
 .endm
@@ -57,8 +63,8 @@ ld.d $a0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_OPAQUE)
 addi.d $a1, $r22, -SVM_LA_CTX_STATE
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_RESOLVE)
 jirl $ra, $t0, 0
-beqz $a0, 95f
 SVM_LA_INSTALL_GUEST_FP
+beqz $a0, 95f
 SVM_LA_RELOAD_FLAGS
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_ACTIVE)
 ld.d $t1, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_ANCHOR)
@@ -144,6 +150,7 @@ beqz $t0, 4f
 movfcsr2gr $t0, $fcsr0
 st.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_HOST_FCSR)
 4:
+SVM_LA_INSTALL_GUEST_FP
 SVM_LA_RELOAD_FLAGS
 SVM_LA_RESOLVE_AND_ENTER
 .size SvmRunNative, .-SvmRunNative

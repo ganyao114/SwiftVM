@@ -226,6 +226,12 @@ Error RewriteValues(Context& context) {
             else
                 uniforms.Clear();
         }
+        if (HasAnyEffect(effects, Effect::WriteHostState)) {
+            if (policy.numeric_control)
+                uniforms.Invalidate(policy.numeric_control->offset, policy.numeric_control->bytes);
+            else
+                uniforms.Clear();
+        }
         if (!(rows[at] & live_bit)) continue;
         // These records have no rewritable value inputs or fold to do.
         // Effects above still apply; no decoded Operand draft is needed.

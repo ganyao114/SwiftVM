@@ -12,6 +12,7 @@ struct StateLayout {
     std::uint32_t fpcr_offset{784}, fpsr_offset{788}, tpidr_offset{792},
             numeric_control_offset{800};
     std::uint32_t helper_status_offset{804};
+    std::uint32_t service_word_offset{808}, reservation_valid_offset{812};
 };
 
 using runtime::frontend::BuildError;

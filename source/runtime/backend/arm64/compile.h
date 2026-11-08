@@ -69,7 +69,7 @@ struct CompileOptions {
     bool lse_atomics{};  // Caller has checked actual FEAT_LSE (HWCAP_ATOMICS).
     bool crc32c{};       // Caller has checked actual FEAT_CRC32 (HWCAP_CRC32).
     // Linked FP fields share x19's actual NativeRunContext prefix. Helpers
-    // run in its saved host environment and return to guest_fpcr with clear FPSR.
+    // run in its saved host environment and restore the accrued guest FPSR.
     bool native_fp_environment{};
     // Actual raw32 MXCSR field when independent input/output flush controls
     // are unavailable in hardware. It is separate from private pinned Uniform

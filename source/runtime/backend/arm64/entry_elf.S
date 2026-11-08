@@ -128,6 +128,7 @@ ubfx x1, x1, #0, #8
 .endm
 
 .macro SVM_SAVE_HOST_FP
+SVM_INSTALL_GUEST_FP
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
 cbz x16, 20f
 mrs x16, fpcr
@@ -139,6 +140,8 @@ stp x16, x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HOST_FPCR)]
 .macro SVM_RESTORE_HOST_FP
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
 cbz x16, 21f
+mrs x17, fpsr
+str x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_GUEST_FPSR)]
 ldp x16, x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HOST_FPCR)]
 msr fpcr, x16
 msr fpsr, x17
@@ -150,7 +153,8 @@ ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
 cbz x16, 22f
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_GUEST_FPCR)]
 msr fpcr, x16
-msr fpsr, xzr
+ldr x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_GUEST_FPSR)]
+msr fpsr, x17
 22:
 .endm
 
@@ -171,9 +175,8 @@ blr x16
 SVM_RELOAD_CALLER_PINNED
 
 SVM_RELOAD_VECTORS
-cbz x0, 3f
-
 SVM_INSTALL_GUEST_FP
+cbz x0, 3f
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ACTIVE)]
 ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ANCHOR)]
 stlr x17, [x16]
@@ -273,6 +276,7 @@ stp d14, d15, [sp, #144]
 add x19, x0, #SVM_A64_CTX_STATE
 
 SVM_SAVE_HOST_FP
+SVM_INSTALL_GUEST_FP
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PC_OFFSET)]
 add x29, x19, x16
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_OFFSET)]

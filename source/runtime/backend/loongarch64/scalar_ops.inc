@@ -2,6 +2,7 @@
 LA_SCALAR_OP(DefineLocal)
 LA_SCALAR_OP(LoadLocal)
 LA_SCALAR_OP(StoreLocal)
+LA_SCALAR_OP(ReadFPStatus)
 LA_SCALAR_OP(LoadUniform)
 LA_SCALAR_OP(StoreUniform)
 LA_SCALAR_OP(GetUniformAddress)

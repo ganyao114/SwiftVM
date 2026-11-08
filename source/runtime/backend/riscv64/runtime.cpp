@@ -1,8 +1,8 @@
-#include "runtime.h"
-#include "runtime/arch/x86/state.h"
 #include "abi_layout.inc"
 #include "patch.h"
 #include "relocate.h"
+#include "runtime.h"
+#include "runtime/arch/x86/state.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 
@@ -81,6 +81,10 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         constexpr unsigned rounding[]{0, 2, 3, 1};  // RNE, RDN, RUP, RTZ.
         native.guest_fpcr = rounding[(mxcsr >> 13) & 3] << 5;
     };
+    ops.floating_status = [](const execution::NativeRunContext& n) noexcept -> std::uint32_t {
+        const auto f = n.guest_fpsr;
+        return ((f >> 4) & 1) | ((f & 8) >> 1) | ((f & 4) << 1) | ((f & 2) << 3) | ((f & 1) << 5);
+    };
     ops.restore_host_fp = [](const NativeRunContext& native) noexcept {
 #if defined(__riscv) && __riscv_xlen == 64
         asm volatile("fscsr %0" ::"r"(native.host_fpcr) : "memory");
@@ -112,7 +116,7 @@ SVM_CHECK_CONTEXT(host_fpcr, SVM_RV_CTX_HOST_FCSR);
 SVM_CHECK_CONTEXT(guest_fpcr, SVM_RV_CTX_GUEST_FCSR);
 SVM_CHECK_CONTEXT(fp_environment, SVM_RV_CTX_FP_ENVIRONMENT);
 SVM_CHECK_CONTEXT(probe_steps, SVM_RV_CTX_PROBES);
-SVM_CHECK_CONTEXT(prepare_atomic, SVM_RV_CTX_PREPARE_ATOMIC);
+SVM_CHECK_CONTEXT(atomic_service, SVM_RV_CTX_ATOMIC_SERVICE);
 #undef SVM_CHECK_CONTEXT
 
 void RestoreGuestState(execution::FaultContext& context, std::span<const std::byte> gprs) noexcept {

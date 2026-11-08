@@ -126,15 +126,16 @@ void Writer::Shadow(bool load) {
 
 void Writer::HelperFPEnvironment(bool guest) {
     if (!Linked() || !options.native_fp_environment) return;
+    if (!guest) {
+        __ mrs(v::x30, v::FPSR);
+        ContextMemory(false, 30, abi::ContextOffset(SVM_A64_CTX_GUEST_FPSR));
+    }
     ContextMemory(
             true, 30, abi::ContextOffset(guest ? SVM_A64_CTX_GUEST_FPCR : SVM_A64_CTX_HOST_FPCR));
-    __ msr(v::FPCR, v::x30);  // MSR FPCR,x30.
-    if (guest)
-        __ msr(v::FPSR, v::xzr);  // MSR FPSR,xzr: no MXCSR sticky-state model.
-    else {
-        ContextMemory(true, 30, abi::ContextOffset(SVM_A64_CTX_HOST_FPSR));
-        __ msr(v::FPSR, v::x30);  // MSR FPSR,x30.
-    }
+    __ msr(v::FPCR, v::x30);
+    ContextMemory(
+            true, 30, abi::ContextOffset(guest ? SVM_A64_CTX_GUEST_FPSR : SVM_A64_CTX_HOST_FPSR));
+    __ msr(v::FPSR, v::x30);
 }
 
 void Writer::PackNZCV() {

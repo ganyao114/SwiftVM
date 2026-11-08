@@ -5,10 +5,10 @@
 #include <cstring>
 #include <iterator>
 #include <limits>
-#include "base/error.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "base/error.h"
 
 #include "runtime/platform/linux/safe_access.h"
 
@@ -61,7 +61,7 @@ MemoryRegion Slice(const MemoryRegion& region, u64 first, u64 last) noexcept {
     auto result = region;
     result.address = first;
     result.size = static_cast<std::size_t>(last - first);
-    if (region.backing != BackingKind::Anonymous) result.file_offset += first - region.address;
+    if (IsFile(region)) result.file_offset += first - region.address;
     return result;
 }
 
@@ -69,6 +69,7 @@ bool Coalescible(const MemoryRegion& left, const MemoryRegion& right) noexcept {
     return left.address + left.size == right.address && left.protection == right.protection &&
            left.backing == right.backing &&
            (left.backing == BackingKind::Anonymous ||
+            left.backing == BackingKind::AnonymousShared ||
             (SameFile(left, right) && left.file_offset + left.size == right.file_offset &&
              left.file_size == right.file_size));
 }
@@ -131,6 +132,19 @@ bool GuestMemory::Accessible(u64 address, std::size_t size, int protection) cons
         if (pages <= UINT64_MAX / page_size && accessed > pages * page_size) return false;
     }
     return true;
+}
+
+bool GuestMemory::PrivateAnonymous(u64 address, std::size_t size) const noexcept {
+    if (!size) return true;
+    if (size > UINT64_MAX - address) return false;
+    const auto end = address + size;
+    for (const auto& region : regions) {
+        if (region.address + region.size <= address) continue;
+        if (region.address > address || region.backing != BackingKind::Anonymous) return false;
+        address = std::min(end, region.address + region.size);
+        if (address == end) return true;
+    }
+    return size == 0;
 }
 
 bool GuestMemory::CopyIn(void* destination, u64 address, std::size_t size) const noexcept {
@@ -281,7 +295,9 @@ u64 GuestMemory::Map(
         return failed;
     }
     MemoryRegion mapping{address, size, protection};
-    if (!(flags & MAP_ANONYMOUS)) {
+    if (flags & MAP_ANONYMOUS) {
+        if (flags & MAP_SHARED) mapping.backing = BackingKind::AnonymousShared;
+    } else {
         struct stat status{};
         if (fstat(fd, &status)) return failed;
         mapping.backing = S_ISREG(status.st_mode)

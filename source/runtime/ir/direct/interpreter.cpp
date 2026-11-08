@@ -9,12 +9,13 @@
 #include <cstring>
 #include <limits>
 
-#include "runtime/arch/x86/flags.h"
-#include "runtime/arch/x86/cpu.h"
-#include "runtime/arch/x86/x87.h"
-#include "runtime/arch/x86/vector_crypto.h"
 #include "runtime/arch/x86/bit_operations.h"
+#include "runtime/arch/x86/cpu.h"
+#include "runtime/arch/x86/flags.h"
+#include "runtime/arch/x86/floating.h"
 #include "runtime/arch/x86/sse42_string.h"
+#include "runtime/arch/x86/vector_crypto.h"
+#include "runtime/arch/x86/x87.h"
 #include "runtime/platform/fp_environment.h"
 
 namespace swift::runtime::ir::direct {
@@ -209,11 +210,11 @@ template <OpCode op> Interpreter::Result Interpreter::Emit(Type type,
     return {Error::None, value};
 }
 
-#include "scalar.inc"
-#include "vector.inc"
-#include "float.inc"
 #include "crypto.inc"
+#include "float.inc"
+#include "scalar.inc"
 #include "sse42.inc"
+#include "vector.inc"
 
 // The declaration table is also the complete static call surface. This does
 // not introduce a runtime opcode registry or an intermediate instruction list.

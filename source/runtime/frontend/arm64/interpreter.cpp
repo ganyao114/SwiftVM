@@ -86,6 +86,7 @@ StepResult InterpretDecoded(const Instruction& instruction,
                    : sink.observed_effects                ? StepKind::Incomplete
                                                           : StepKind::Unsupported;
     } catch (const runtime::ir::direct::Exit& e) {
+        if (e.kind == runtime::ir::direct::ExitKind::Fault) state.reservation_valid = 0;
         out.kind = e.kind == runtime::ir::direct::ExitKind::Fault     ? StepKind::Fault
                    : e.kind == runtime::ir::direct::ExitKind::Service ? StepKind::Service
                    : sink.observed_effects                            ? StepKind::Incomplete

@@ -6,3 +6,5 @@ docs/evidence/parity-batch37/** -text -whitespace
 # self-test fixtures. Project formatting applies to SwiftVM-owned sources.
 source/runtime/externals/fmt/** -text -whitespace
 source/tests/externals/catch/** -text -whitespace
+# SoftFloat imports retain upstream EOF blank lines and all other whitespace checks.
+source/runtime/externals/SoftFloat-3e/src/*.c -text whitespace=-blank-at-eof

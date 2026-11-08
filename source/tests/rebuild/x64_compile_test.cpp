@@ -1,16 +1,19 @@
-#include "runtime/backend/x64/allocate.h"
-#include "runtime/backend/x64/patch.h"
-#include "runtime/backend/x64/relocate.h"
-#include "tests/support/ir_builder.h"
-#include "tests/support/check.h"
-#include "tests/support/test_mode.h"
-#include "tests/support/native_code.h"
-#include "tests/support/guest_memory.h"
-#include "runtime/backend/x64/compile.h"
 #include "runtime/arch/x86/cpu.h"
 #include "runtime/arch/x86/flags.h"
+#include "runtime/arch/x86/vector_crypto.h"
+#include "runtime/backend/x64/allocate.h"
+#include "runtime/backend/x64/compile.h"
+#include "runtime/backend/x64/helpers.h"
+#include "runtime/backend/x64/patch.h"
+#include "runtime/backend/x64/relocate.h"
 #include "runtime/ir/builder.h"
+#include "tests/support/check.h"
+#include "tests/support/guest_memory.h"
+#include "tests/support/ir_builder.h"
+#include "tests/support/native_code.h"
+#include "tests/support/test_mode.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -21,8 +24,8 @@
 #include <utility>
 
 #if defined(__x86_64__) && defined(__linux__)
-#include <cpuid.h>
 #include <asm/unistd.h>
+#include <cpuid.h>
 #include <linux/memfd.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
@@ -642,6 +645,341 @@ void FlushModes() {
     }
 }
 
+void FusedArithmeticBoundaries() {
+    current_case = "FMA exact zero, one rounding and NaN policy";
+    for (const unsigned bits : {32u, 64u}) {
+        const unsigned fraction = bits == 32 ? 23 : 52, bias = bits == 32 ? 127 : 1023;
+        const u64 sign = u64{1} << (bits - 1),
+                  infinity = bits == 32 ? 0x7f800000 : UINT64_C(0x7ff0000000000000),
+                  quiet = u64{1} << (fraction - 1), one = u64{bias} << fraction,
+                  two = u64{bias + 1} << fraction, half = u64{bias - 1} << fraction,
+                  quarter = u64{bias - 2} << fraction, minimum = u64{1} << fraction,
+                  maximum = infinity - 1, half_ulp = u64{bias - fraction - 1} << fraction;
+        for (unsigned mode = 0; mode < 4; ++mode) {
+            const unsigned control = 0x1f80 | (mode << 13);
+            const auto fma = [&](u64 a, u64 b, u64 c, unsigned flags = 0, unsigned extra = 0) {
+                return x64::FusedMultiplyAdd(a, b, c, bits, flags, control | extra);
+            };
+            const u64 cancelled = mode == 1 ? sign : 0;
+            Check(fma(one, one, one | sign) == cancelled,
+                  "exact cancellation zero follows directed rounding");
+            Check(fma(0, one, sign) == cancelled && fma(sign, one, 0) == cancelled,
+                  "opposite signed zeros obey active rounding");
+            Check(fma(sign, one, sign) == sign && fma(0, one, 0) == 0,
+                  "equal signed zeros retain their sign");
+            Check(fma(one, one, one, 1) == cancelled && fma(one, one, one, 2) == cancelled &&
+                          fma(one, one, one, 3) == (two | sign),
+                  "product/addend negation is applied before the fused operation");
+            Check(fma(one, one, half_ulp) == one + (mode == 2),
+                  "positive halfway result is rounded once");
+            Check(fma(one | sign, one, half_ulp | sign) == (one | sign) + (mode == 1),
+                  "negative halfway result is rounded once");
+            const u64 below_one = one - 2;
+            Check(fma(one + 1, below_one, one | sign) ==
+                          (sign | (u64{bias - 2 * fraction} << fraction)),
+                  "unrounded product survives exact near cancellation");
+            Check(fma(maximum, two, 0) == ((mode == 1 || mode == 3) ? maximum : infinity),
+                  "positive overflow obeys rounding direction");
+            Check(fma(maximum | sign, two, 0) ==
+                          (sign | ((mode == 2 || mode == 3) ? maximum : infinity)),
+                  "negative overflow obeys rounding direction");
+            Check(fma(1, quarter, 0) == (mode == 2 ? 1 : 0),
+                  "positive tiny result rounds toward the requested direction");
+            Check(fma(sign | 1, quarter, 0) == (sign | (mode == 1 ? 1 : 0)),
+                  "negative tiny result retains the correct zero sign");
+            Check(fma(1, one, 0) == 1 && fma(1, one, 0, 0, 64) == 0,
+                  "DAZ flushes inputs independently of output FTZ");
+            Check(fma(minimum, half, 0) == (minimum >> 1) && fma(minimum, half, 0, 0, 0x8000) == 0,
+                  "FTZ flushes subnormal fused outputs");
+            const u64 first_nan = sign | infinity | 0x123, second_nan = infinity | quiet | 0x456;
+            Check(fma(first_nan, second_nan, one, 3) == (first_nan | quiet),
+                  "first source NaN retains original sign and payload despite arithmetic negation");
+            Check(fma(one, first_nan, second_nan) == (first_nan | quiet) &&
+                          fma(one, one, first_nan, 2) == (first_nan | quiet),
+                  "NaNs in multiplicand and addend are quieted without losing payload");
+            Check(fma(0, infinity, one) == (sign | infinity | quiet) &&
+                          fma(infinity, one, infinity | sign) == (sign | infinity | quiet),
+                  "invalid arithmetic returns the canonical negative quiet NaN");
+        }
+    }
+}
+
+void FusedDirectedZeroNative() {
+    current_case = "native FMA helper preserves directed zero and upper lanes";
+    Builder builder{Scope::Block};
+    Begin(builder);
+    const Pair merge32{0x556677883f800000ULL, 0x123456789abcdef0ULL};
+    const Pair merge64{0x3ff0000000000000ULL, 0xfedcba9876543210ULL};
+    const auto emit = [&](Pair merge, u64 one, u64 minus_one, unsigned bits, unsigned slot) {
+        const auto a = Vector(builder, merge), b = Vector(builder, {one, 0}),
+                   c = Vector(builder, {minus_one, 0});
+        StoreVector(builder,
+                    slot,
+                    Emit(builder,
+                         OpCode::VecFMulAdd,
+                         Type::V128,
+                         {Operand::ValueOf(a),
+                          Operand::ValueOf(b),
+                          Operand::ValueOf(c),
+                          Imm(bits),
+                          Imm(4)}));
+    };
+    emit(merge32, 0x3f800000, 0xbf800000, 32, 0);
+    emit(merge64, 0x3ff0000000000000ULL, 0xbff0000000000000ULL, 64, 1);
+    auto program = Return(builder);
+    auto code = Compile(program);
+    for (unsigned mode = 0; mode < 4; ++mode) {
+        State state;
+        state.mxcsr |= mode << 13;
+        if (Run(code, state)) {
+            Check(state.vectors[0] == Pair{0x5566778800000000ULL | (mode == 1 ? 0x80000000ULL : 0),
+                                           merge32.high},
+                  "F32 directed zero survives actual helper return and scalar merge");
+            Check(state.vectors[1] == Pair{mode == 1 ? 0x8000000000000000ULL : 0, merge64.high},
+                  "F64 directed zero survives actual helper return and scalar merge");
+        }
+    }
+}
+
+void FloatingCompareStatus() {
+    current_case = "native FP comparison signaling and scalar active lanes";
+    for (unsigned bits : {32u, 64u}) {
+        const u64 one = bits == 32 ? 0x3f800000 : UINT64_C(0x3ff0000000000000),
+                  two = bits == 32 ? 0x40000000 : UINT64_C(0x4000000000000000),
+                  snan = bits == 32 ? 0x7f800123 : UINT64_C(0x7ff0000000000123),
+                  quiet = u64{1} << (bits == 32 ? 22 : 51),
+                  mask = bits == 32 ? UINT32_MAX : UINT64_MAX;
+        const auto lanes = [&](u64 low) {
+            return bits == 32 ? Lanes32(low, snan, snan, snan) : Pair{low, snan};
+        };
+        for (bool signaling : {false, true}) {
+            Builder flags_builder{Scope::Block};
+            Begin(flags_builder);
+            auto a = LoadVector(flags_builder, 0), b = LoadVector(flags_builder, 1);
+            auto flags = Emit(
+                    flags_builder,
+                    OpCode::VecFCmp,
+                    Type::U32,
+                    {Operand::ValueOf(a), Operand::ValueOf(b), Imm(bits | (signaling ? 128 : 0))});
+            Store(flags_builder, 0, flags);
+            auto p = Return(flags_builder);
+            auto code = Compile(p);
+            State state;
+            state.vectors[0] = lanes(one);
+            state.vectors[1] = lanes(snan | quiet);
+            if (Run(code, state)) {
+                Check(state.scalars[0] == 7 && (state.mxcsr & 63) == (signaling ? 1 : 0),
+                      "COMIS vs UCOMIS differ for QNaN without observing upper lanes");
+            }
+            for (unsigned relation = 0; relation < 16; ++relation) {
+                Builder builder{Scope::Block};
+                Begin(builder);
+                a = LoadVector(builder, 0);
+                b = LoadVector(builder, 1);
+                const unsigned predicate = relation | (signaling ? 16 : 0);
+                const auto result = Emit(builder,
+                                         OpCode::VecFCmpMask,
+                                         Type::V128,
+                                         {Operand::ValueOf(a),
+                                          Operand::ValueOf(b),
+                                          Imm(bits),
+                                          Imm(predicate),
+                                          Imm(1)});
+                StoreVector(builder, 2, result);
+                auto program = Return(builder);
+                auto options = Options();
+                options.relocatable = true;
+                auto compiled = x64::Compile(program, options);
+                Check(bool(compiled) && compiled.relocatable,
+                      "all quiet/signaling comparison shapes compile");
+                const bool has_leaf = std::any_of(
+                        compiled.relocations.begin(),
+                        compiled.relocations.end(),
+                        [](const auto& r) {
+                            return r.symbol ==
+                                   swift::runtime::backend::HostSymbol::X64FloatingCompare;
+                        });
+                Check(has_leaf == x64::FloatingCompareNeedsCall(predicate),
+                      "only unavailable SSE2 predicates use a numerical call");
+                auto bytes = std::span<std::uint8_t>{
+                        reinterpret_cast<std::uint8_t*>(compiled.words.data()),
+                        compiled.words.size() * 4};
+                Check(x64::Relocate(bytes, compiled.relocations, options),
+                      "floating compare relocations resolve semantically");
+                state = {};
+                state.vectors[0] = lanes(one);
+                state.vectors[1] = lanes(snan | quiet);
+                if (Run(compiled, state)) {
+                    const auto low = relation & 8 ? mask : 0;
+                    Check(state.vectors[2] == lanes(low) &&
+                                  (state.mxcsr & 63) == (signaling ? 1 : 0),
+                          "QNaN predicate result and signaling are independent");
+                }
+                state = {};
+                state.vectors[0] = lanes(one);
+                state.vectors[1] = lanes(snan);
+                if (Run(compiled, state))
+                    Check((state.mxcsr & 63) == 1, "even constant predicates observe SNaN");
+                state = {};
+                state.vectors[0] = lanes(one);
+                state.vectors[1] = lanes(two);
+                if (Run(compiled, state)) {
+                    const auto low = relation & 1 ? mask : 0;
+                    Check(state.vectors[2] == lanes(low) && (state.mxcsr & 63) == 0,
+                          "ordered predicate preserves inactive scalar lanes and their exceptions");
+                }
+            }
+        }
+    }
+}
+
+void FloatingRoundFusedStatus() {
+    current_case = "native ROUND suppression and fused helper exception status";
+    bool sse41_available = true;
+#if defined(__x86_64__) && defined(__linux__)
+    unsigned ca, cb, cc, cd;
+    sse41_available = __get_cpuid(1, &ca, &cb, &cc, &cd) && (cc & (1u << 19));
+#endif
+    for (unsigned bits : {32u, 64u}) {
+        const u64 one = bits == 32 ? 0x3f800000 : UINT64_C(0x3ff0000000000000),
+                  half = bits == 32 ? 0x3f000000 : UINT64_C(0x3fe0000000000000),
+                  two = bits == 32 ? 0x40000000 : UINT64_C(0x4000000000000000),
+                  snan = bits == 32 ? 0x7f800123 : UINT64_C(0x7ff0000000000123);
+        const auto lanes = [&](u64 low) {
+            return bits == 32 ? Lanes32(low, snan, snan, snan) : Pair{low, snan};
+        };
+        for (bool sse41 : {false, true}) {
+            if (sse41 && NativeMode() && !sse41_available) continue;
+            for (unsigned mode : {0u, 8u}) {
+                Builder builder{Scope::Block};
+                Begin(builder);
+                const auto a = LoadVector(builder, 0), b = LoadVector(builder, 1);
+                const auto rounded = Emit(
+                        builder,
+                        OpCode::VecFRoundInt,
+                        Type::V128,
+                        {Operand::ValueOf(a), Operand::ValueOf(b), Imm(bits), Imm(mode), Imm(1)});
+                StoreVector(builder, 2, rounded);
+                auto program = Return(builder);
+                auto options = Options();
+                options.sse41 = sse41;
+                auto code = x64::Compile(program, options);
+                Check(bool(code), "ROUND flags compile with and without SSE4.1");
+                State state;
+                state.vectors[0] = lanes(one);
+                state.vectors[1] = lanes(one + (one - half) / 2);
+                if (Run(code, state)) {
+                    Check(state.vectors[2] == lanes(two) && (state.mxcsr & 63) == (mode ? 0 : 32),
+                          "ROUND suppresses precision only when requested");
+                }
+                state = {};
+                state.vectors[0] = lanes(one);
+                state.vectors[1] = lanes(snan);
+                if (Run(code, state))
+                    Check((state.mxcsr & 63) == 1, "ROUND suppression never suppresses invalid");
+            }
+        }
+        Builder builder{Scope::Block};
+        Begin(builder);
+        const auto a = Vector(builder, lanes(one)), zero = Vector(builder, {});
+        const auto invalid = Emit(builder,
+                                  bits == 32 ? OpCode::VecFDivScalar32 : OpCode::VecFDivScalar64,
+                                  Type::V128,
+                                  {Operand::ValueOf(zero), Operand::ValueOf(zero)});
+        StoreVector(builder, 0, invalid);
+        const auto half_ulp =
+                Vector(builder, lanes(bits == 32 ? 0x33800000 : UINT64_C(0x3ca0000000000000)));
+        const auto fused = Emit(builder,
+                                OpCode::VecFMulAdd,
+                                Type::V128,
+                                {Operand::ValueOf(a),
+                                 Operand::ValueOf(a),
+                                 Operand::ValueOf(half_ulp),
+                                 Imm(bits),
+                                 Imm(4)});
+        StoreVector(builder, 1, fused);
+        const auto selected =
+                Emit(builder,
+                     OpCode::VecFMinMax,
+                     Type::V128,
+                     {Operand::ValueOf(a), Operand::ValueOf(a), Imm(bits), Imm(0), Imm(1)});
+        StoreVector(builder, 2, selected);
+        auto program = Return(builder);
+        auto code = Compile(program);
+        State state;
+        if (Run(code, state)) {
+            Check((state.mxcsr & 63) == (1 | 32),
+                  "native sticky survives a helper and receives FMA precision");
+            Check(state.vectors[1] == lanes(one) && state.vectors[2] == lanes(one),
+                  "FMA/min scalar upper SNaN is preserved without contributing exceptions");
+        }
+    }
+}
+
+void CryptoFallbackABI() {
+    current_case = "SysV crypto fallback aggregate rollback";
+    Builder builder{Scope::Block};
+    Begin(builder);
+    std::array<Value, 8> live;
+    for (unsigned i = 0; i < live.size(); ++i) live[i] = Load(builder, i);
+    const auto a = Vector(builder, {1, 2}), b = Vector(builder, {4, 8}), zero = Vector(builder, {});
+    constexpr std::array<unsigned, 4> controls{0, 1, 0x10, 0x11};
+    for (unsigned i = 0; i < controls.size(); ++i)
+        StoreVector(builder,
+                    i,
+                    Emit(builder,
+                         OpCode::VecPclMul,
+                         Type::V128,
+                         {Operand::ValueOf(a), Operand::ValueOf(b), Imm(controls[i])}));
+    for (unsigned i = 0; i < 2; ++i)
+        StoreVector(builder,
+                    4 + i,
+                    Emit(builder,
+                         OpCode::VecAesKeygenAssist,
+                         Type::V128,
+                         {Operand::ValueOf(zero), Imm(i ? 0x1b : 1)}));
+    const Pair sha_a{0x0123456789abcdefULL, 0x76543210fedcba98ULL},
+            sha_b{0x1122334455667788ULL, 0x99aabbccddeeff00ULL},
+            sha_key{0x428a2f9871374491ULL, 0xb5c0fbcfe9b5dba5ULL};
+    const auto sa = Vector(builder, sha_a), sb = Vector(builder, sha_b),
+               sk = Vector(builder, sha_key);
+    StoreVector(builder,
+                6,
+                Emit(builder,
+                     OpCode::VecSha256Rnds2,
+                     Type::V128,
+                     {Operand::ValueOf(sa), Operand::ValueOf(sb), Operand::ValueOf(sk)}));
+    auto sum = live.front();
+    for (unsigned i = 1; i < live.size(); ++i)
+        sum = Emit(builder,
+                   OpCode::Add,
+                   Type::U64,
+                   {Operand::ValueOf(sum), Operand::ValueOf(live[i])});
+    auto program = Return(builder, sum);
+    auto options = Options();
+    options.aes = options.pclmul = options.sha = false;
+    auto code = x64::Compile(program, options);
+    Check(bool(code), "crypto fallback compilation");
+    State state;
+    for (unsigned i = 0; i < live.size(); ++i) state.scalars[i] = i + 1;
+    if (Run(code, state, 36)) {
+        constexpr std::array<u64, 4> products{4, 8, 8, 16};
+        for (unsigned i = 0; i < products.size(); ++i)
+            Check(state.vectors[i] == Pair{products[i], 0},
+                  "fallback PCLMUL receives its actual nonzero selector");
+        Check(state.vectors[4] == Pair{0x6363636263636363ULL, 0x6363636263636363ULL} &&
+                      state.vectors[5] == Pair{0x6363637863636363ULL, 0x6363637863636363ULL},
+              "fallback AESKEYGENASSIST receives the actual round constant");
+        const auto expected = swift::runtime::x86::crypto::Execute(
+                swift::runtime::x86::crypto::Operation::Sha256Rounds2,
+                {sha_a.low, sha_a.high},
+                {sha_b.low, sha_b.high},
+                {sha_key.low, sha_key.high});
+        Check(state.vectors[6] == Pair{expected.low, expected.high},
+              "fallback SHA receives the complete third aggregate in C ABI order");
+    }
+}
+
 void NaNsAndFusedArithmetic() {
     current_case = "NaN payloads and fused arithmetic";
     Builder builder{Scope::Block};
@@ -952,6 +1290,23 @@ void AtomicOperations() {
         options.cx16 = native;
         auto c = x64::Compile(p, options);
         Check(bool(c), "CAS128 native and guarded helper emission");
+        if (!native) {
+            auto linked_options = options;
+            linked_options.dispatcher = 0x1000;
+            linked_options.exit_handler = 0x2000;
+            linked_options.relocatable = true;
+            const auto linked = x64::Compile(p, linked_options);
+            Check(bool(linked) && linked.relocatable,
+                  "linked CAS128 emits the owner atomic service packet");
+            Check(std::none_of(
+                          linked.relocations.begin(),
+                          linked.relocations.end(),
+                          [](const auto& relocation) {
+                              return relocation.symbol ==
+                                     swift::runtime::backend::HostSymbol::X64CompareExchange128;
+                          }),
+                  "owner atomic service does not enter the standalone libatomic helper");
+        }
         State st;
         if (Run(c, st))
             Check(st.vectors[0] == Pair{17, 23} && pair == Pair{31, 37},
@@ -1107,4 +1462,24 @@ TEST_CASE("PackedFeaturePaths", "[compile][x64-compile][native]") {
 
 TEST_CASE("FlatExpressionShifts", "[compile][x64-compile][native]") {
     CHECK_NOTHROW(FlatExpressionShifts());
+}
+
+TEST_CASE("FusedArithmeticBoundaries", "[compile][x64-compile]") {
+    CHECK_NOTHROW(FusedArithmeticBoundaries());
+}
+
+TEST_CASE("FusedDirectedZeroNative", "[compile][x64-compile][native]") {
+    CHECK_NOTHROW(FusedDirectedZeroNative());
+}
+
+TEST_CASE("CryptoFallbackABI", "[compile][x64-compile][native]") {
+    CHECK_NOTHROW(CryptoFallbackABI());
+}
+
+TEST_CASE("FloatingCompareStatus", "[compile][x64-compile][native]") {
+    CHECK_NOTHROW(FloatingCompareStatus());
+}
+
+TEST_CASE("FloatingRoundFusedStatus", "[compile][x64-compile][native]") {
+    CHECK_NOTHROW(FloatingRoundFusedStatus());
 }

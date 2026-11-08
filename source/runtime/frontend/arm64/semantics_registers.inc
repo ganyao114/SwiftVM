@@ -13,6 +13,7 @@ Value ReadRegister(u8 code, Type size, Reg31Mode r31mode = Reg31IsZeroRegister) 
 }
 
 Value ReadVRegister(u8 code, Type type) {
+    type = StorageType(type);
     auto offset = u32(offsetof(GuestState, q) + code * sizeof(u128));
     return this->LoadUniform(Uniform{offset, type}).WithView(type);
 }
@@ -72,19 +73,14 @@ void WriteWRegister(u8 code, Value value, Reg31Mode r31mode = Reg31IsZeroRegiste
 }
 
 void WriteVRegister(u8 code, Value value) {
+    value = Reinterpret(value, value.ViewType());
+    if (TypeBits(value.ViewType()) <= 64) {
+        // Scalar SIMD writes clear the complete remainder of the Q register.
+        WriteVHalves(code, Widen(value), ImmValue(0, Type::U64));
+        return;
+    }
     auto offset = u32(offsetof(GuestState, q) + code * sizeof(u128));
     this->StoreUniform(Uniform{offset, value.ViewType()}, value);
-    // Scalar SIMD writes clear every bit above the written B/H/S/D lane.
-    const u32 bytes = ValueBytes(value.ViewType());
-    for (u32 i = bytes; i < 16;) {
-        const u32 remaining = 16 - i;
-        const auto type = (i % 8 == 0 && remaining >= 8)   ? Type::U64
-                          : (i % 4 == 0 && remaining >= 4) ? Type::U32
-                          : (i % 2 == 0 && remaining >= 2) ? Type::U16
-                                                           : Type::U8;
-        this->StoreUniform(Uniform{offset + i, type}, ImmValue(0, type));
-        i += ValueBytes(type);
-    }
 }
 
 Value SignExtendValue(Value value, u32 from_bits) {

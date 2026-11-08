@@ -2,6 +2,7 @@
 RV_SCALAR_OP(DefineLocal)
 RV_SCALAR_OP(LoadLocal)
 RV_SCALAR_OP(StoreLocal)
+RV_SCALAR_OP(ReadFPStatus)
 RV_SCALAR_OP(LoadUniform)
 RV_SCALAR_OP(StoreUniform)
 RV_SCALAR_OP(GetUniformAddress)

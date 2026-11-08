@@ -1,4 +1,5 @@
 #include <bit>
+#include "runtime/arch/arm64/service.h"
 #include "runtime/frontend/arm64/build_ir.h"
 #include "tests/support/arm64_guest_fixture.h"
 
@@ -24,6 +25,8 @@ void Build(const Code& code, ir::Scope scope = ir::Scope::Block) {
         INFO(result.error_pc);
         REQUIRE(bool(result));
         CHECK(!result.program.Operations().empty());
+        for (const auto& operation : result.program.Operations())
+            CHECK(operation.type < ir::Type::V8 || operation.type > ir::Type::V64);
     }
 }
 
@@ -135,20 +138,48 @@ TEST_CASE("ARM memory writeback follows successful exact-width access", "[compil
     state.pc = CodeBase;
     state.gprs[0] = 0x12345678;
     state.gprs[31] = DataBase + 64;
+    state.reservation_valid = 1;
     Memory memory{code};
     CHECK(Run(state, memory).kind == front::StepKind::Service);
     CHECK(state.gprs[1] == 0x12345678);
     CHECK(state.gprs[31] == DataBase + 64);
     CHECK(memory.reads == 1 && memory.writes == 1);
+    CHECK(state.reservation_valid == 0);
     State fault;
     fault.pc = CodeBase;
     fault.gprs[31] = DataBase;
+    fault.reservation_valid = 1;
     Memory other{code};
     const auto result = front::InterpretOne(fault, other.Services());
     CHECK(result.kind == front::StepKind::Fault);
     CHECK(fault.gprs[31] == DataBase);
     CHECK(fault.pc == CodeBase);
     CHECK(other.writes == 0);
+    CHECK(fault.reservation_valid == 0);
+    const Code lanes{[](auto& a) {
+        a.str(b0, MemOperand(x0));
+        a.str(h0, MemOperand(x0, 16));
+        a.str(s0, MemOperand(x0, 32));
+        a.str(d0, MemOperand(x0, 48));
+        a.ldr(b1, MemOperand(x0));
+        a.ldr(h2, MemOperand(x0, 16));
+        a.ldr(s3, MemOperand(x0, 32));
+        a.ldp(d4, d5, MemOperand(x0, 48));
+        a.svc(0);
+    }};
+    Build(lanes);
+    State narrow;
+    narrow.pc = CodeBase;
+    narrow.gprs[0] = DataBase;
+    std::memset(narrow.q, 0xff, sizeof(narrow.q));
+    Set(narrow, 0, UINT64_C(0x123456789abcdef0));
+    Memory narrow_memory{lanes};
+    CHECK(Run(narrow, narrow_memory).kind == front::StepKind::Service);
+    constexpr U64 low[]{0xf0, 0xdef0, 0x9abcdef0, UINT64_C(0x123456789abcdef0), 0};
+    for (unsigned r = 1; r <= 5; ++r) {
+        CHECK(Lane<U64>(narrow, r) == low[r - 1]);
+        CHECK(Lane<U64>(narrow, r, 1) == 0);
+    }
 }
 
 TEST_CASE("ARM region formation handles conditional edges and direct loop backedges",
@@ -214,6 +245,68 @@ TEST_CASE("ARM NEON arithmetic and dot preserve lane shape and overlap",
         CHECK(state.q[3][i] == 3);
     }
     for (unsigned i = 0; i < 4; ++i) CHECK(Lane<std::uint32_t>(state, 4, i) == 8);
+    const Code half{[](auto& a) {
+        a.add(v0.V8B(), v1.V8B(), v2.V8B());
+        a.svc(0);
+    }};
+    Build(half);
+    State half_state;
+    half_state.pc = CodeBase;
+    std::memset(half_state.q[1], 1, 16);
+    std::memset(half_state.q[2], 2, 16);
+    Memory half_memory{half};
+    CHECK(Run(half_state, half_memory).kind == front::StepKind::Service);
+    CHECK(Lane<U64>(half_state, 0) == UINT64_C(0x0303030303030303));
+    CHECK(Lane<U64>(half_state, 0, 1) == 0);
+}
+
+TEST_CASE("ARM state services end both formations before suffix execution",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) {
+        a.ldaxp(x0, x2, MemOperand(x1));
+        a.movz(x3, 99);
+        a.svc(0);
+    }};
+    Build(code);
+    const std::array<front::BlockWindow, 1> windows{{{CodeBase, code.View()}}};
+    for (const auto scope : {ir::Scope::Block, ir::Scope::Function}) {
+        std::vector<U64> continuations;
+        const auto result = scope == ir::Scope::Block ? front::BuildIR(windows,
+                                                                       scope,
+                                                                       {},
+                                                                       {},
+                                                                       nullptr,
+                                                                       nullptr,
+                                                                       false,
+                                                                       nullptr,
+                                                                       nullptr,
+                                                                       &continuations)
+                                                      : front::BuildFunctionIR(windows,
+                                                                               CodeBase,
+                                                                               {},
+                                                                               {},
+                                                                               {},
+                                                                               nullptr,
+                                                                               nullptr,
+                                                                               nullptr,
+                                                                               {},
+                                                                               nullptr,
+                                                                               &continuations);
+        REQUIRE(bool(result));
+        CHECK(result.instruction_count == 1 && result.decoded_bytes == 4);
+        CHECK(continuations == std::vector<U64>{CodeBase + 4});
+    }
+    State state;
+    state.pc = CodeBase;
+    Memory memory{code};
+    const auto step = front::InterpretBlock(state, memory.Services());
+    CHECK(step.kind == front::StepKind::Service && step.service == 5);
+    CHECK(state.pc == CodeBase && step.instructions == 1 && state.gprs[3] == 0);
+    const auto request = swift::runtime::arm64::DecodeStateService(state.service_word);
+    CHECK(request.kind == swift::runtime::arm64::StateServiceKind::LoadExclusive);
+    CHECK(request.pair && request.ordered && request.TransferBytes() == 16);
+    CHECK(request.address_register == 1 && request.first_register == 0 &&
+          request.second_register == 2);
 }
 
 TEST_CASE("ARM saturating multiply reports sticky QC without old IR extensions",

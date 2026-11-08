@@ -1,11 +1,12 @@
-#include "relocate.h"
+#include <cstring>
 #include "helpers.h"
+#include "relocate.h"
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/cpu.h"
-#include "runtime/arch/x86/x87.h"
+#include "runtime/arch/x86/floating.h"
 #include "runtime/arch/x86/sse42_string.h"
 #include "runtime/arch/x86/vector_crypto.h"
-#include "runtime/arch/arm64/numeric.h"
-#include <cstring>
+#include "runtime/arch/x86/x87.h"
 
 namespace swift::runtime::backend::x64 {
 HostSymbol CallbackSymbol(std::uintptr_t p) noexcept {
@@ -37,9 +38,11 @@ std::uintptr_t ResolveSymbol(HostSymbol s, const CompileOptions& o) noexcept {
         case HostSymbol::X64CompareExchange128:
             return reinterpret_cast<std::uintptr_t>(&CompareExchange128);
         case HostSymbol::X64RoundIntegral:
-            return reinterpret_cast<std::uintptr_t>(&RoundIntegral);
+            return reinterpret_cast<std::uintptr_t>(&RoundIntegralStatus);
         case HostSymbol::X64FusedMultiplyAdd:
-            return reinterpret_cast<std::uintptr_t>(&FusedMultiplyAdd);
+            return reinterpret_cast<std::uintptr_t>(&FusedMultiplyAddStatus);
+        case HostSymbol::X64FloatingCompare:
+            return reinterpret_cast<std::uintptr_t>(&runtime::x86::ExecuteFloating);
         case HostSymbol::X87Execute:
             return reinterpret_cast<std::uintptr_t>(&SvmX87Execute);
         case HostSymbol::StringImplicit:

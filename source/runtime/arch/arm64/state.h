@@ -12,10 +12,15 @@ struct GuestState {
     std::uint32_t numeric_control{0x1f80};
     // Cold numerical helpers report unsupported controls before committing.
     std::uint32_t helper_status{};
+    std::uint32_t service_word{};
+    // Cleared by ordinary guest writes and the execution owner's mutations.
+    std::uint32_t reservation_valid{};
 };
 
 static_assert(offsetof(GuestState, pc) == 256 && offsetof(GuestState, packed_flags) == 264);
 static_assert(offsetof(GuestState, q) == 272 && offsetof(GuestState, fpcr) == 784);
 static_assert(offsetof(GuestState, fpsr) == 788 && offsetof(GuestState, tpidr_el0) == 792);
 static_assert(offsetof(GuestState, numeric_control) == 800 && sizeof(GuestState) == 816);
+static_assert(offsetof(GuestState, service_word) == 808 &&
+              offsetof(GuestState, reservation_valid) == 812);
 }  // namespace swift::runtime::arm64

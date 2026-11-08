@@ -67,6 +67,8 @@ svm_test_target(svm_arm64_compile_test ISA arm64_android SOURCES
     LIBRARIES ${arm64_test_libraries})
 svm_test_target(svm_compile_pipeline_test ISA arm64 SOURCES rebuild/compile_pipeline_test.cpp
     LIBRARIES svm_x86_ir svm_ir_optimize svm_arm64 distorm)
+svm_test_target(svm_x86_floating_test SOURCES rebuild/x86_floating_test.cpp LIBRARIES svm_x87)
+svm_test(x86_floating_contract svm_x86_floating_test)
 svm_test_target(svm_ir_direct_test SOURCES rebuild/ir_direct_test.cpp LIBRARIES svm_ir_direct)
 svm_test_target(svm_riscv64_compile_test ISA riscv64 SOURCES rebuild/riscv64_compile_test.cpp
     LIBRARIES svm_riscv64)
@@ -101,7 +103,8 @@ svm_native_test(arm64_native_contract svm_arm64_compile_test)
 svm_native_test(pipeline_native_contract svm_compile_pipeline_test)
 svm_native_test(riscv64_native_contract svm_riscv64_compile_test)
 if(TARGET svm_execution)
-    svm_test_target(svm_runtime_engine_test ISA host SOURCES rebuild/runtime_engine_test.cpp LIBRARIES svm_execution)
+    svm_test_target(svm_runtime_engine_test ISA host SOURCES
+        rebuild/runtime_engine_test.cpp rebuild/guest_execution_test.cpp LIBRARIES svm_execution Threads::Threads)
     svm_test(runtime_engine_contract svm_runtime_engine_test)
     svm_native_test(runtime_engine_native_contract svm_runtime_engine_test)
 endif()

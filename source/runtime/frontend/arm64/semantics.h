@@ -6,6 +6,7 @@
 #include "instruction.h"
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/exit.h"
+#include "state_service.h"
 
 #include <algorithm>
 #include <array>
@@ -39,6 +40,10 @@ constexpr Type GPRType(bool wide) { return wide ? Type::U64 : Type::U32; }
 
 constexpr Type ScalarType(unsigned bits) {
     return bits == 8 ? Type::U8 : bits == 16 ? Type::U16 : bits == 32 ? Type::U32 : Type::U64;
+}
+
+constexpr Type StorageType(Type type) {
+    return type >= Type::V8 && type <= Type::V64 ? ScalarType(TypeBits(type)) : type;
 }
 
 constexpr Type VectorType(unsigned bits) {
@@ -172,7 +177,9 @@ private:
         if (offset < 792) return layout.fpsr_offset + offset - 788;
         if (offset < 800) return layout.tpidr_offset + offset - 792;
         if (offset < 804) return layout.numeric_control_offset + offset - 800;
-        return layout.helper_status_offset + offset - 804;
+        if (offset < 808) return layout.helper_status_offset + offset - 804;
+        if (offset < 812) return layout.service_word_offset + offset - 808;
+        return layout.reservation_valid_offset + offset - 812;
     }
 
     Operand Arg(Value v) const { return Operand::ValueOf(v.raw, v.view); }
@@ -230,6 +237,7 @@ private:
         }
         const auto result = sink.template Emit<op>(type, std::span<const Operand>{args});
         if (!result) throw Rejected{BuildError::IRRejected, result.error};
+        if constexpr (op == OpCode::StoreMemory || op == OpCode::StoreMemoryTSO) ClearReservation();
         return {result.GetValue(), type, op};
     }
 
@@ -315,6 +323,7 @@ private:
     Value ImmValue(u64 bits, Type type) { return Emit<OpCode::LoadImm>(Imm{bits}).WithView(type); }
 
     Value TypedLoad(Type type, Input address, bool ordered = false) {
+        type = StorageType(type);
         const auto out = ordered ? sink.template Emit<OpCode::LoadMemoryTSO>(type, {Arg(address)})
                                  : sink.template Emit<OpCode::LoadMemory>(type, {Arg(address)});
         if (!out) throw Rejected{BuildError::IRRejected, out.error};
@@ -325,14 +334,15 @@ private:
         const std::array<Operand, sizeof...(Args)> a{Arg(args)...};
         const auto r = sink.template Emit<op>(type, std::span<const Operand>{a});
         if (!r) throw Rejected{BuildError::IRRejected, r.error};
+        ClearReservation();
         return {r.GetValue(), type, op};
     }
 
     Value Reinterpret(Value input, Type type) {
-        input.view = type;
-        const auto r = sink.template Emit<OpCode::BitCast>(type, {Arg(input)});
-        if (!r) throw Rejected{BuildError::IRRejected, r.error};
-        return {r.GetValue(), type, OpCode::BitCast};
+        type = StorageType(type);
+        if (TypeBits(input.view) == 128 && TypeBits(type) <= 64)
+            return VecExtract64(input, Imm{0u}).WithView(type);
+        return input.WithView(type);
     }
 
     Value TypedLoadTSO(Type type, Input address) { return TypedLoad(type, address, true); }
@@ -457,6 +467,20 @@ private:
         control.kind = Control::Kind::Service;
         control.yes = resume;
         control.service = runtime::ExitValue(runtime::NativeExit::Syscall);
+        end_decode_ = true;
+    }
+
+    void ClearReservation() {
+        StoreUniform(Uniform{u32(offsetof(GuestState, reservation_valid)), Type::U32},
+                     ImmValue(0, Type::U32));
+    }
+
+    void RequestStateService(runtime::arm64::StateServiceRequest request) {
+        StoreUniform(Uniform{u32(offsetof(GuestState, service_word)), Type::U32},
+                     ImmValue(runtime::arm64::EncodeStateService(request), Type::U32));
+        control.kind = Control::Kind::Service;
+        control.yes = current_pc;
+        control.service = runtime::ExitValue(runtime::NativeExit::StateService);
         end_decode_ = true;
     }
 

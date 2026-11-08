@@ -102,6 +102,7 @@ SVM_END SvmNativePending
  PUBLISH_FLAGS
  mov rax,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
  mov qword ptr [rax],0
+ stmxcsr dword ptr [r12+SVM_X64_CTX_GUEST_MXCSR-SVM_X64_CTX_STATE]
  ldmxcsr dword ptr [r12+SVM_X64_CTX_HOST_MXCSR-SVM_X64_CTX_STATE]
  lea rsi,[r12-SVM_X64_CTX_STATE]
  mov rdi,qword ptr [rsi]
@@ -124,6 +125,7 @@ SVM_END SvmNativePending
  jmp SvmNativeExit
 SVM_FUNCTION SvmNativeExit
  PUBLISH_FLAGS
+ stmxcsr dword ptr [r12+SVM_X64_CTX_GUEST_MXCSR-SVM_X64_CTX_STATE]
  ldmxcsr dword ptr [rsp+8]
  add rsp,24
  pop r15

@@ -1,5 +1,7 @@
+#include "abi_layout.inc"
 #include "emit.h"
 #include "helpers.h"
+#include "runtime/atomic.h"
 
 namespace swift::runtime::backend::x64::detail {
 void Writer::Atomic(OpContext& c) {
@@ -122,25 +124,47 @@ void Writer::Handle(Op<OpCode::CompareAndSwap128>, OpContext& c) {
         return;
     }
     if (Linked()) {
+        static_assert(sizeof(runtime::AtomicCall) <= 112);
+        // The first 208 helper bytes hold live XMM/R8/R9 saves. The
+        // remaining scratch region owns this one transient service packet.
+        const auto packet = allocation.call_offset + 208;
+        constexpr auto expected = offsetof(runtime::AtomicRequest, expected);
+        constexpr auto desired = offsetof(runtime::AtomicRequest, desired);
         PrepareCall();
-        Read(c.Arg(0), rsi);
-        mov(rdi, qword[r12 - 160]);
-        mov(edx, 16);
-        mov(r11, qword[r12 - 8]);
+        Read(c.Arg(0), rax);
+        mov(qword[rsp + packet + offsetof(runtime::AtomicRequest, address)], rax);
+        mov(dword[rsp + packet + offsetof(runtime::AtomicRequest, operation)],
+            unsigned(runtime::AtomicOperation::CompareExchange128));
+        mov(dword[rsp + packet + offsetof(runtime::AtomicRequest, bits)], 128);
+        Read(c.Arg(1), rax);
+        mov(qword[rsp + packet + expected], rax);
+        Read(c.Arg(2), rax);
+        mov(qword[rsp + packet + expected + 8], rax);
+        Read(c.Arg(3), rax);
+        mov(qword[rsp + packet + desired], rax);
+        Read(c.Arg(4), rax);
+        mov(qword[rsp + packet + desired + 8], rax);
+        mov(qword[rsp + packet + offsetof(runtime::AtomicRequest, carry)], 0);
+        mov(rdi, qword[r12 - SVM_X64_CTX_STATE]);
+        lea(rsi, ptr[rsp + packet]);
+        mov(r11, qword[r12 + SVM_X64_CTX_ATOMIC_SERVICE - SVM_X64_CTX_STATE]);
         Label unsupported, ready, fault;
         test(r11, r11);
         jz(unsupported, T_NEAR);
         CallRegister(r11);
-        test(rax, rax);
-        jz(ready, T_NEAR);
-        cmp(rax, 1);
+        cmp(rax, unsigned(runtime::AtomicStatus::Completed));
+        je(ready, T_NEAR);
+        cmp(rax, unsigned(runtime::AtomicStatus::Fault));
         je(fault, T_NEAR);
         L(unsupported);
-        in_call = false;
         Exit(ExitValue(NativeExit::UnsupportedAtomic));
         L(fault);
         Exit(ExitValue(NativeExit::MemoryFault));
         L(ready);
+        movq(xmm0, qword[rsp + packet + offsetof(runtime::AtomicCall, observed)]);
+        movq(xmm1, qword[rsp + packet + offsetof(runtime::AtomicCall, observed) + 8]);
+        punpcklqdq(xmm0, xmm1);
+        return;
     }
     PrepareCall();
     Read(c.Arg(0), rdi);

@@ -128,6 +128,7 @@ public:
 
     void ObserveAccess(AccessResult);
 
+    std::uint32_t floating_exceptions{};
     bool code_changed{};
     // A later unsupported access cannot make an already observed fragment
     // safe to replay through a different consumer.

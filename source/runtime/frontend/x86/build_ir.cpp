@@ -1,5 +1,5 @@
-#include "runtime/exit.h"
 #include "build_ir.h"
+#include "runtime/exit.h"
 
 #include <algorithm>
 #include <array>

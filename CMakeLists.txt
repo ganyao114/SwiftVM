@@ -75,6 +75,7 @@ target_compile_definitions(svm_cephes PRIVATE LITTLEENDIAN=1 SOFTFLOAT_FAST_INT6
     "INLINE=static inline" INLINE_LEVEL=4 SOFTFLOAT_FAST_DIV32TO16=1 SOFTFLOAT_FAST_DIV64TO32=1)
 
 add_library(svm_x87 STATIC
+    source/runtime/arch/x86/floating.cpp
     source/runtime/arch/x86/x87.cpp
     source/runtime/arch/x86/x87_convert.cpp
     source/runtime/arch/x86/x87_extended.cpp
@@ -107,6 +108,7 @@ add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/emit_calls.cpp
     source/runtime/backend/arm64/emit_memory.cpp
     source/runtime/backend/arm64/emit_atomic.cpp
+    source/runtime/backend/arm64/emit_atomic_service.cpp
     source/runtime/backend/arm64/emit_control.cpp
     source/runtime/backend/arm64/emit_state.cpp
     source/runtime/backend/arm64/emit_flags.cpp
@@ -277,9 +279,13 @@ endif()
 # The application service consumes the same frontend/optimizer/backend API.
 # ELF loading, executable-memory ownership and dispatch stay outside codegen.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
+    find_package(Threads REQUIRED)
     add_library(svm_execution STATIC
+        source/runtime/execution/atomic_service.cpp
+        source/runtime/execution/arm_state_service.cpp
         source/runtime/execution/dispatch.cpp
         source/runtime/execution/fault.cpp
+        source/runtime/execution/guest_execution.cpp
         source/runtime/execution/memory.cpp
         source/runtime/execution/mem_map.cpp
         source/runtime/execution/code_heap.cpp
@@ -296,29 +302,34 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/platform/linux/loader.cpp
         source/runtime/platform/linux/syscalls.cpp
         source/runtime/platform/linux/safe_access.cpp
+        source/runtime/platform/linux/faultable_atomic.cpp
         source/runtime/platform/linux/signals.cpp
         source/runtime/platform/linux/run_guest.cpp)
     target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_arm64_ir svm_ir_optimize svm_code_image
-        PRIVATE svm_base svm_disk_cache svm_aot_artifact svm_artifact_file)
+        PRIVATE svm_base svm_disk_cache svm_aot_artifact svm_artifact_file Threads::Threads)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64")
         target_sources(svm_execution PRIVATE source/runtime/platform/linux/riscv64_host.cpp
             source/runtime/backend/riscv64/runtime.cpp
-            source/runtime/backend/riscv64/entry_elf.S)
+            source/runtime/backend/riscv64/entry_elf.S
+            source/runtime/backend/riscv64/atomic_native.S)
         target_link_libraries(svm_execution PUBLIC svm_riscv64)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^loongarch64")
         target_sources(svm_execution PRIVATE source/runtime/platform/linux/loongarch64_host.cpp
             source/runtime/backend/loongarch64/runtime.cpp
-            source/runtime/backend/loongarch64/entry_elf.S)
+            source/runtime/backend/loongarch64/entry_elf.S
+            source/runtime/backend/loongarch64/atomic_native.S)
         target_link_libraries(svm_execution PUBLIC svm_loongarch64)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
         target_sources(svm_execution PRIVATE source/runtime/platform/linux/x64_host.cpp
             source/runtime/backend/x64/runtime.cpp
-            source/runtime/backend/x64/entry_elf.S)
+            source/runtime/backend/x64/entry_elf.S
+            source/runtime/backend/x64/atomic_native.S)
         target_link_libraries(svm_execution PUBLIC svm_x64)
     else()
         target_sources(svm_execution PRIVATE source/runtime/platform/linux/arm64_host.cpp
             source/runtime/backend/arm64/runtime.cpp
-            source/runtime/backend/arm64/entry_elf.S)
+            source/runtime/backend/arm64/entry_elf.S
+            source/runtime/backend/arm64/atomic_native.S)
         target_link_libraries(svm_execution PUBLIC svm_arm64)
     endif()
     add_executable(svm_rebuild_linux source/launcher/linux/main.cpp

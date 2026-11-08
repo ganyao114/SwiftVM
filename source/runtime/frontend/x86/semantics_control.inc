@@ -393,8 +393,14 @@ static void Mxcsr(Emitter& builder,
                                                                    // environment before re-entry.
         ended = true;
     } else {
-        const auto value = Require(
+        const auto control = Require(
                 builder.LoadUniform(Type::U32, {Operand::Uniform(layout.mxcsr_offset, Type::U32)}));
+        const auto status = Require(builder.ReadFPStatus(Type::U32, {Operand::ValueOf(control)}));
+        const auto value = Require(
+                builder.Or(Type::U32, {Operand::ValueOf(control), Operand::ValueOf(status)}));
+        Require(builder.StoreUniform(
+                Type::Void,
+                {Operand::Uniform(layout.mxcsr_offset, Type::U32), Operand::ValueOf(value)}));
         u64 displacement{};
         const auto address =
                 Address(builder, layout, instruction, memory, next_pc, target, {}, &displacement);

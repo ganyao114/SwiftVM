@@ -286,6 +286,11 @@ void VisitLoadStorePairNonTemporal(const vixl::aarch64::Instruction* instr) over
 }
 
 void VisitLoadStoreExclusive(const vixl::aarch64::Instruction* instr) override {
+    const auto request = StateRequest(instr->GetInstructionBits());
+    if (request.kind != runtime::arm64::StateServiceKind::None) {
+        RequestStateService(request);
+        return;
+    }
     auto rt = u8(instr->GetRt());
     auto rn = u8(instr->GetRn());
     auto rs = u8(instr->GetRs());
@@ -392,8 +397,7 @@ void VisitLoadStoreExclusive(const vixl::aarch64::Instruction* instr) override {
             this->StoreMemoryTSO(SingleOperand(base), ReadRegister(rt, type));
             return;
         default:
-            // LDXR/STXR and pair exclusives need a per-thread reservation
-            // monitor.
+            // Reserved fields and unpredictable overlaps are not accepted.
             Interrupt(InterruptReason::FALLBACK, current_pc);
             return;
     }

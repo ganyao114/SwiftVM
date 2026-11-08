@@ -1,4 +1,5 @@
 #include "allocate.h"
+#include "helpers.h"
 #include "runtime/backend/allocation_cfg.h"
 
 #include <algorithm>
@@ -122,6 +123,15 @@ private:
                     operation.opcode == OpCode::VecSha256Msg2 ||
                     operation.opcode == OpCode::VecSha256Rnds2)
                     result.has_calls = true;
+                if (operation.opcode == OpCode::VecFCmpMask) {
+                    unsigned argument{};
+                    for (const auto operand : program.Operands(NodeId{i})) {
+                        if (argument++ == 3) {
+                            result.has_calls |= FloatingCompareNeedsCall(operand.Payload());
+                            break;
+                        }
+                    }
+                }
                 auto& home = result.homes[i];
                 home.definition_position = home.last_use = position;
                 // Ordinary flag metadata updates the live RBX word. Only an

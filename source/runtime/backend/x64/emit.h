@@ -2,13 +2,13 @@
 #ifndef XBYAK64
 #define XBYAK64
 #endif
-#include <xbyak/xbyak.h>
-#include "compile.h"
-#include "allocate.h"
-#include "runtime/backend/relocation.h"
-#include "runtime/exit.h"
 #include <array>
 #include <type_traits>
+#include <xbyak/xbyak.h>
+#include "allocate.h"
+#include "compile.h"
+#include "runtime/backend/relocation.h"
+#include "runtime/exit.h"
 
 namespace swift::runtime::backend::x64::detail {
 using namespace ir;
@@ -72,6 +72,7 @@ public:
     void SelectValue(OpContext&);
     void Atomic(OpContext&);
     void Float(OpContext&);
+    void AccumulateFloating(const Reg32&);
     void Vector(OpContext&);
     void Crypto(OpContext&);
     void Query(OpContext&);

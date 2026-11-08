@@ -56,21 +56,64 @@ void Finish(Writer& writer, OpContext& ctx) {
     writer.as.MV(ctx.high, a7);
 }
 
-// SVM models numerical DAZ/FTZ explicitly; LA64 has no independent hardware
-// controls for them. Only t4/t5 are scratch, retaining all source lane bits.
-void Flush(Writer& writer, GPR raw, unsigned bits, unsigned control_bit, bool force = false) {
+void Classify(Writer& writer, GPR destination, FPR input, unsigned bits) {
+    writer.as.FCLASS(destination, input, bits == 32 ? Precision::S : Precision::D, ft4);
+}
+
+void ReadStatus(Writer& writer, GPR destination) { writer.as.FRCSR(destination); }
+
+void WriteStatus(Writer& writer, GPR source) { writer.as.FSCSR(source); }
+
+void RaiseNative(Writer& writer, unsigned flags) {
+    ReadStatus(writer, t4);
+    writer.as.LI(t5, u64{flags} << 16);
+    writer.as.OR(t4, t4, t5);
+    WriteStatus(writer, t4);
+}
+
+void ReadControl(Writer& writer) {
+    writer.Address(t5, state, writer.options.mxcsr_offset);
+    writer.Load(t4, t5, 0, 32);
+}
+
+void RaiseDenormal(Writer& writer) {
+    if (writer.options.mxcsr_offset == UINT32_MAX) return;
+    ReadControl(writer);
+    writer.as.ORI(t4, t4, 2);
+    writer.Store(t4, t5, 0, 32);
+}
+
+// Only t4/t5 are temporary; t6 may retain an instruction's old FP status.
+// DE has no native RV/LA exception bit, so it lives in the canonical word.
+void Flush(Writer& writer,
+           GPR raw,
+           unsigned bits,
+           unsigned control_bit,
+           bool force = false,
+           bool report_denormal = true) {
     if (!force && writer.options.mxcsr_offset == UINT32_MAX) return;
     auto& as = writer.as;
-    Label complete;
-    if (!force) {
-        writer.Load(t4, state, static_cast<std::int32_t>(writer.options.mxcsr_offset), 32);
-        as.SRLI(t4, t4, control_bit);
-        as.ANDI(t4, t4, 1);
-        as.BEQ(t4, x0, &complete);
-    }
+    Label complete, flush;
     as.LI(t5, bits == 32 ? UINT64_C(0x7f800000) : UINT64_C(0x7ff0000000000000));
     as.AND(t4, raw, t5);
     as.BNE(t4, x0, &complete);
+    as.LI(t5, bits == 32 ? UINT64_C(0x7fffff) : UINT64_C(0xfffffffffffff));
+    as.AND(t4, raw, t5);
+    as.BEQ(t4, x0, &complete);
+    if (!force) {
+        ReadControl(writer);
+        as.SRLI(t4, t4, control_bit);
+        as.ANDI(t4, t4, 1);
+        if (control_bit == 6) {
+            as.BNE(t4, x0, &flush);
+            if (report_denormal) RaiseDenormal(writer);
+            as.J(&complete);
+        } else {
+            as.BEQ(t4, x0, &complete);
+            RaiseNative(writer, 3);  // An FTZ flush raises underflow and precision.
+        }
+    }
+    as.Bind(&flush);
     as.LI(t5, u64{1} << (bits - 1));
     as.AND(raw, raw, t5);
     as.Bind(&complete);
@@ -78,7 +121,7 @@ void Flush(Writer& writer, GPR raw, unsigned bits, unsigned control_bit, bool fo
 
 void PropagateNaN(Writer& writer, GPR destination, FPR input, GPR raw, unsigned bits) {
     auto& as = writer.as;
-    as.FCLASS(t4, input, bits == 32 ? Precision::S : Precision::D, ft4);
+    Classify(writer, t4, input, bits);
     as.ANDI(t4, t4, 3);
     Label finite;
     as.BEQ(t4, x0, &finite);
@@ -89,7 +132,7 @@ void PropagateNaN(Writer& writer, GPR destination, FPR input, GPR raw, unsigned 
 
 void RepairArithmeticNaN(Writer& writer, unsigned bits, bool binary, bool fused) {
     auto& as = writer.as;
-    as.FCLASS(t4, ft0, bits == 32 ? Precision::S : Precision::D, ft4);
+    Classify(writer, t4, ft0, bits);
     as.ANDI(t4, t4, 3);
     Label numeric;
     as.BEQ(t4, x0, &numeric);
@@ -108,9 +151,8 @@ void FloatToInteger(Writer& writer, unsigned float_bits, unsigned integer_bits, 
     auto& as = writer.as;
     CheckFloatWidth(writer, float_bits);
     if (integer_bits != 32 && integer_bits != 64) writer.Reject(CompileError::UnsupportedOperand);
-    // The truncating IR contract consumes the raw input; other conversions
-    // use the numerical DAZ control, as the existing ARM64 consumer does.
-    if (!truncate) Flush(writer, t0, float_bits, 6);
+    // CVT and CVTT both apply DAZ; neither reports a denormal exception.
+    Flush(writer, t0, float_bits, 6, false, false);
     ToFloat(as, ft1, t0, float_bits);
     const auto rounding = truncate ? RMode::RTZ : RMode::DYN;
     as.FRCSR(t6);
@@ -129,7 +171,8 @@ void FloatToInteger(Writer& writer, unsigned float_bits, unsigned integer_bits, 
             as.FCVT_L_D(t3, ft1, rounding, ft4);
     }
     as.FRCSR(t4);
-    as.FSCSR(t6);
+    as.OR(t5, t4, t6);
+    as.FSCSR(t5);  // Retain old sticky flags and this conversion's exceptions.
     as.SRLI(t4, t4, 16);
     as.ANDI(t4, t4, 16);  // Invalid includes NaN and either signed overflow.
     Label valid;
@@ -171,7 +214,7 @@ void ConvertFloat(Writer& writer, unsigned source_bits) {
     else
         as.FCVT_S_D(ft0, ft1, RMode::DYN);
     FromFloat(writer, t3, ft0, destination_bits);
-    as.FCLASS(t4, ft1, source_bits == 32 ? Precision::S : Precision::D, ft4);
+    Classify(writer, t4, ft1, source_bits);
     as.ANDI(t4, t4, 3);
     Label numeric;
     as.BEQ(t4, x0, &numeric);
@@ -200,48 +243,80 @@ void RoundIntegral(Writer& writer, unsigned bits, unsigned mode) {
     auto& as = writer.as;
     const auto precision = bits == 32 ? Precision::S : Precision::D;
     constexpr std::array modes{RMode::RNE, RMode::RDN, RMode::RUP, RMode::RTZ};
-    if (mode > 3) writer.Reject(CompileError::UnsupportedOperand);
+    if (mode & ~11u) writer.Reject(CompileError::UnsupportedOperand);
+    const bool suppress_precision = (mode & 8) != 0;
+    if (suppress_precision) ReadStatus(writer, t6);
     Label unchanged, done;
     as.LI(t4, ~(u64{1} << (bits - 1)));
     as.AND(t4, t0, t4);
     as.LI(t5, bits == 32 ? UINT64_C(0x4b000000) : UINT64_C(0x4330000000000000));
     as.BGEU(t4, t5, &unchanged);
     if (bits == 32) {
-        as.FCVT_W_S(t3, ft1, modes[mode], ft4);
+        as.FCVT_W_S(t3, ft1, modes[mode & 3], ft4);
         as.FCVT_S_W(ft0, t3, RMode::RNE, ft4);
     } else {
-        as.FCVT_L_D(t3, ft1, modes[mode], ft4);
+        as.FCVT_L_D(t3, ft1, modes[mode & 3], ft4);
         as.FCVT_D_L(ft0, t3, RMode::RNE, ft4);
     }
     as.FSGNJ(ft0, ft0, ft1, precision);
     FromFloat(writer, t3, ft0, bits);
     as.J(&done);
     as.Bind(&unchanged);
+    Classify(writer, t4, ft1, bits);
+    as.ANDI(t4, t4, 1);
+    Label quiet;
+    as.BEQ(t4, x0, &quiet);
+    RaiseNative(writer, 16);
+    as.Bind(&quiet);
     as.MV(t3, t0);
     PropagateNaN(writer, t3, ft1, t0, bits);
     as.Bind(&done);
+    if (suppress_precision) {
+        ReadStatus(writer, t4);
+        as.LI(t5, ~UINT64_C(0x01010000));
+        as.AND(t4, t4, t5);
+        as.LI(t5, UINT64_C(0x01010000));
+        as.AND(t5, t6, t5);
+        as.OR(t4, t4, t5);
+        WriteStatus(writer, t4);
+    }
+}
+
+void CompareNaNs(Writer& writer, unsigned bits) {
+    Classify(writer, t4, ft1, bits);
+    Classify(writer, t5, ft2, bits);
+    writer.as.OR(t4, t4, t5);
+    writer.as.ANDI(t5, t4, 3);
+}
+
+void ComparisonInvalid(Writer& writer, bool signaling) {
+    Label quiet;
+    if (!signaling) {
+        writer.as.ANDI(t4, t4, 1);
+        writer.as.BEQ(t4, x0, &quiet);
+    }
+    RaiseNative(writer, 16);
+    writer.as.Bind(&quiet);
 }
 
 void CompareMask(Writer& writer, unsigned bits, unsigned relations) {
     auto& as = writer.as;
     const auto precision = bits == 32 ? Precision::S : Precision::D;
-    as.FCLASS(t4, ft1, precision, ft4);
-    as.FCLASS(t5, ft2, precision, ft4);
-    as.OR(t4, t4, t5);
-    as.ANDI(t4, t4, 3);
+    CompareNaNs(writer, bits);
     Label unordered, done;
-    as.BNE(t4, x0, &unordered);
+    as.BNE(t5, x0, &unordered);
     as.FEQ(t3, ft1, ft2, precision, 0);
     as.FLT(t4, ft1, ft2, precision, 0);
     as.LI(t5, 2);
     as.SUB(t5, t5, t3);
     as.SLLI(t4, t4, 1);
     as.SUB(t5, t5, t4);  // less=0, equal=1, greater=2.
-    as.LI(t3, relations);
+    as.LI(t3, relations & 15);
     as.SRL(t3, t3, t5);
     as.ANDI(t3, t3, 1);
     as.J(&done);
     as.Bind(&unordered);
+    ComparisonInvalid(writer, (relations & 16) != 0);
     as.LI(t3, (relations >> 3) & 1);
     as.Bind(&done);
     as.NEG(t3, t3);
@@ -259,6 +334,7 @@ template <O opcode> void Floating(Writer& writer, OpContext& ctx) {
     CheckFloatWidth(writer, bits);
     const unsigned flags = fused ? Immediate(ctx, 4) : 0;
     const unsigned kind = unary || round ? Immediate(ctx, 3) : 0;
+    const bool approximate = unary && kind != 0;
     if constexpr (unary)
         if (kind > 2) writer.Reject(CompileError::UnsupportedOperand);
     const bool scalar = single_scalar || double_scalar ||
@@ -271,9 +347,10 @@ template <O opcode> void Floating(Writer& writer, OpContext& ctx) {
     as.MV(a6, scalar ? a0 : x0);
     as.MV(a7, scalar ? a1 : x0);
     const auto precision = bits == 32 ? Precision::S : Precision::D;
+    if (approximate) ReadStatus(writer, t6);
     for (unsigned lane = 0; lane < (scalar ? 1 : 128 / bits); ++lane) {
         Lane(writer, t0, unary || round ? second : first, lane, bits);
-        Flush(writer, t0, bits, 6, unary && kind != 0);
+        Flush(writer, t0, bits, 6, approximate, !round);
         ToFloat(as, ft1, t0, bits);
         if constexpr (!unary && !round) {
             Lane(writer, t1, second, lane, bits);
@@ -298,7 +375,7 @@ template <O opcode> void Floating(Writer& writer, OpContext& ctx) {
             as.MV(t3, t1);
             as.Bind(&done);
         } else if constexpr (mask)
-            CompareMask(writer, bits, Immediate(ctx, 3) & 15);
+            CompareMask(writer, bits, Immediate(ctx, 3));
         else if constexpr (round)
             RoundIntegral(writer, bits, kind);
         else {
@@ -343,9 +420,10 @@ template <O opcode> void Floating(Writer& writer, OpContext& ctx) {
             FromFloat(writer, t3, ft0, bits);
             RepairArithmeticNaN(writer, bits, !unary, fused);
         }
-        if constexpr (!mask && !minmax) Flush(writer, t3, bits, 15, unary && kind != 0);
+        if constexpr (!mask && !minmax && !round) Flush(writer, t3, bits, 15, approximate);
         Put(writer, t3, lane, bits, scalar);
     }
+    if (approximate) WriteStatus(writer, t6);
     Finish(writer, ctx);
 }
 }  // namespace
@@ -372,7 +450,7 @@ LA_FLOAT(VecFRoundInt)
 #undef LA_FLOAT
 
 void Writer::Handle(Op<O::VecFCmp>, OpContext& ctx) {
-    const unsigned bits = Immediate(ctx, 2);
+    const unsigned descriptor = Immediate(ctx, 2), bits = descriptor & 127;
     CheckFloatWidth(*this, bits);
     Read(ctx.Arg(0), t0, true);
     Read(ctx.Arg(1), t1, true);
@@ -383,18 +461,18 @@ void Writer::Handle(Op<O::VecFCmp>, OpContext& ctx) {
     ToFloat(as, ft1, t0, bits);
     ToFloat(as, ft2, t1, bits);
     const auto precision = bits == 32 ? Precision::S : Precision::D;
+    CompareNaNs(*this, bits);
+    Label unordered, done;
+    as.BNE(t5, x0, &unordered);
     as.FEQ(t3, ft1, ft2, precision, 0);
     as.SLLI(t3, t3, 2);
     as.FLT(t4, ft1, ft2, precision, 0);
     as.OR(t3, t3, t4);
-    as.FCLASS(t4, ft1, precision, ft4);
-    as.FCLASS(t5, ft2, precision, ft4);
-    as.OR(t4, t4, t5);
-    as.ANDI(t4, t4, 3);
-    Label ordered;
-    as.BEQ(t4, x0, &ordered);
+    as.J(&done);
+    as.Bind(&unordered);
+    ComparisonInvalid(*this, (descriptor & 128) != 0);
     as.LI(t3, 7);
-    as.Bind(&ordered);
+    as.Bind(&done);
     as.MV(ctx.destination, t3);
 }
 

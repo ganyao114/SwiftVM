@@ -5,8 +5,9 @@
 #include <cstdint>
 #include <type_traits>
 
-#include "runtime/arch/x86/state.h"
 #include "runtime/arch/arm64/state.h"
+#include "runtime/arch/x86/state.h"
+#include "runtime/atomic.h"
 #include "runtime/backend/code.h"
 #include "runtime/backend/dispatch_layout.inc"
 #include "runtime/exit.h"
@@ -66,24 +67,26 @@ struct NativeRunContext {
     // AF=(x29^x1).bit4. Reserved packed bits stay in the actual state field.
     std::uint64_t native_nzcv{};
     // Root/cold/helper boundaries own the FP environment. Warm native links
-    // retain guest_fpcr; FPSR is isolated host state, not guest MXCSR sticky.
+    // retain guest_fpcr; guest exception status survives every native boundary.
     std::uint64_t host_fpcr{}, host_fpsr{}, guest_fpcr{}, fp_environment{};
     // Diagnostic-only actual directory slot reads, including the first probe.
     std::uint64_t probe_steps{};
     // Linked XMM0..15 live in v16..v31. Cold C++ boundaries publish/reload
     // the complete bank; UINT32_MAX retains the ordinary memory ABI.
     std::uint64_t pinned_vector_offset{UINT32_MAX};
-    // Cold qualification for native atomics implemented by a fault-intolerant
-    // helper: 0=allowed, 1=guest access fault, 2=unsupported backing.
-    std::uint64_t (*prepare_atomic)(void*, std::uint64_t, std::size_t) noexcept {};
+    AtomicService atomic_service{};
 
     union {
         GuestState state{};
         arm64::GuestState arm_state;
     };
+
+    // Raw host exception status survives cold lookup and numerical helpers.
+    // Backends translate it only at architectural status observers.
+    std::uint64_t guest_fpsr{};
 };
 
-static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1024);
+static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1040);
 static_assert(sizeof(std::atomic<const NativeCode*>) == 8 &&
               std::atomic<const NativeCode*>::is_always_lock_free);
 static_assert(offsetof(NativeRunContext, opaque) == 0 && offsetof(NativeRunContext, resolve) == 8);
@@ -102,8 +105,9 @@ static_assert(offsetof(NativeRunContext, guest_fpcr) == 120 &&
               offsetof(NativeRunContext, fp_environment) == 128);
 static_assert(offsetof(NativeRunContext, probe_steps) == 136);
 static_assert(offsetof(NativeRunContext, pinned_vector_offset) == 144);
-static_assert(offsetof(NativeRunContext, prepare_atomic) == 152);
+static_assert(offsetof(NativeRunContext, atomic_service) == 152);
 static_assert(offsetof(NativeRunContext, state) == 160);
+static_assert(offsetof(NativeRunContext, guest_fpsr) == 1024);
 
 // Linked units enter/leave through these thunks. Only SvmNativeExit returns to C++;
 // the root frame owns the one save of x19..x30 and host d8..d15 across all

@@ -5,6 +5,28 @@
 namespace swift::runtime::backend::riscv64::detail {
 namespace flags = ::swift::runtime::x86::flags;
 
+void Writer::Handle(Op<OpCode::ReadFPStatus>, OpContext& ctx) {
+    Read(ctx.Arg(0), t2);
+    as.FRFLAGS(t0);
+    const auto destination = ctx.destination;
+    as.SRLI(destination, t0, 4);
+    as.ANDI(destination, destination, 1);
+    as.ANDI(t1, t0, 8);
+    as.SRLI(t1, t1, 1);
+    as.OR(destination, destination, t1);
+    as.ANDI(t1, t0, 4);
+    as.SLLI(t1, t1, 1);
+    as.OR(destination, destination, t1);
+    as.ANDI(t1, t0, 2);
+    as.SLLI(t1, t1, 3);
+    as.OR(destination, destination, t1);
+    as.ANDI(t1, t0, 1);
+    as.SLLI(t1, t1, 5);
+    as.OR(destination, destination, t1);
+    as.ANDI(t2, t2, 63);
+    as.OR(destination, destination, t2);
+}
+
 u64 PackedFlagMask(u64 selected) {
     return ((selected & FlagBits(Flag::Carry)) ? flags::Carry : 0) |
            ((selected & FlagBits(Flag::Overflow)) ? flags::Overflow : 0) |

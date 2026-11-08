@@ -20,6 +20,8 @@ struct UniformPolicy {
     // Actual execution ownership: valid guest-memory addresses cannot name
     // this private state buffer. Generic clients keep the aliasing default.
     bool guest_memory_disjoint{};
+    // Implicit numerical status writes affect this control/status field only.
+    std::optional<UniformRange> numeric_control;
 };
 
 struct OptimizeStats {

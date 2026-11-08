@@ -1,16 +1,7 @@
 #include "helpers.h"
 
 #include <cstring>
-#include <initializer_list>
-#define LITTLEENDIAN 1
-#define SOFTFLOAT_FAST_INT64 1
-#define FEXCORE_PRESERVE_ALL_ATTR
-extern "C" {
-#include <SoftFloat-3e/softfloat.h>
-}
-#undef FEXCORE_PRESERVE_ALL_ATTR
-#undef SOFTFLOAT_FAST_INT64
-#undef LITTLEENDIAN
+#include "runtime/arch/x86/floating.h"
 
 #include "runtime/arch/x86/x87.h"
 
@@ -63,32 +54,21 @@ u64 CheckedX87(void* state, u64 command, u64 raw, u64 pc, u64 dp, u64 metadata) 
     return static_cast<u64>(status);
 }
 
+Pair RoundIntegralStatus(u64 raw, unsigned bits, unsigned mode, unsigned mxcsr) noexcept {
+    x87::FloatingCall call{};
+    call.operation = static_cast<unsigned>(x87::FloatingOperation::RoundIntegral);
+    call.lane_bits = bits;
+    call.b[0] = raw;
+    call.flags = static_cast<unsigned>(x87::FloatingFlag::Scalar) |
+                 (mode & 8 ? static_cast<unsigned>(x87::FloatingFlag::SuppressPrecision) : 0);
+    call.immediate = mode & 3;
+    call.control = mxcsr;
+    x87::ExecuteFloating(&call);
+    return {call.result[0], call.exceptions};
+}
+
 u64 RoundIntegral(u64 raw, unsigned bits, unsigned mode, unsigned mxcsr) noexcept {
-    if ((mxcsr & 64) &&
-        ((raw & (bits == 32 ? u64{0x7f800000} : UINT64_C(0x7ff0000000000000))) == 0))
-        raw &= u64{1} << (bits - 1);
-    const unsigned frac = bits == 32 ? 23 : 52, bias = bits == 32 ? 127 : 1023;
-    const u64 sign = u64{1} << (bits - 1),
-              em = bits == 32 ? 0x7f800000 : UINT64_C(0x7ff0000000000000),
-              fm = (u64{1} << frac) - 1;
-    if (bits == 32) raw &= UINT32_MAX;
-    u64 mag = raw & ~sign;
-    bool neg = raw & sign;
-    if ((raw & em) == em) return raw | ((raw & fm) ? u64{1} << (frac - 1) : 0);
-    int e = int((raw & em) >> frac) - bias;
-    if (e >= int(frac) || !mag) return raw;
-    if (e < 0) {
-        const u64 half = u64(bias - 1) << frac;
-        bool up = mode == 0 ? mag > half : mode == 1 ? neg : mode == 2 ? !neg : false;
-        return (raw & sign) | (up ? u64(bias) << frac : 0);
-    }
-    const unsigned shift = frac - e;
-    const u64 unit = u64{1} << shift, discard = raw & (unit - 1), trunc = raw & ~(unit - 1);
-    bool up = mode == 0   ? discard > unit / 2 || (discard == unit / 2 && (trunc & unit))
-              : mode == 1 ? neg && discard
-              : mode == 2 ? !neg && discard
-                          : false;
-    return trunc + (up ? unit : 0);
+    return RoundIntegralStatus(raw, bits, mode, mxcsr).first;
 }
 
 Pair CompareExchange128(void* address, u64 elo, u64 ehi, u64 dlo, u64 dhi) noexcept {
@@ -104,36 +84,24 @@ Pair CompareExchange128(void* address, u64 elo, u64 ehi, u64 dlo, u64 dhi) noexc
     }
 }
 
+Pair FusedMultiplyAddStatus(
+        u64 a, u64 b, u64 c, unsigned bits, unsigned flags, unsigned control) noexcept {
+    x87::FloatingCall call{};
+    call.operation = static_cast<unsigned>(x87::FloatingOperation::FusedMultiplyAdd);
+    call.lane_bits = bits;
+    call.a[0] = a;
+    call.b[0] = b;
+    call.c[0] = c;
+    call.flags = static_cast<unsigned>(x87::FloatingFlag::Scalar);
+    call.immediate = flags;
+    call.control = control;
+    x87::ExecuteFloating(&call);
+    return {call.result[0], call.exceptions};
+}
+
 u64 FusedMultiplyAdd(
         u64 a, u64 b, u64 c, unsigned bits, unsigned flags, unsigned control) noexcept {
-    const u64 em = bits == 32 ? u64{0x7f800000} : UINT64_C(0x7ff0000000000000),
-              fm = bits == 32 ? u64{0x7fffff} : UINT64_C(0x000fffffffffffff),
-              quiet = u64{1} << (bits == 32 ? 22 : 51), sign = u64{1} << (bits - 1);
-    const auto nan = [&](u64 v) { return (v & em) == em && (v & fm); };
-    for (auto v : {a, b, c})
-        if (nan(v)) return v | quiet;
-    if (control & 64) {
-        if (!(a & em)) a &= sign;
-        if (!(b & em)) b &= sign;
-        if (!(c & em)) c &= sign;
-    }
-    if (flags & 1) a ^= sign;
-    if (flags & 2) c ^= sign;
-    softfloat_state state{softfloat_tininess_afterRounding, softfloat_round_odd, 0, 80};
-    const auto widen = [&](u64 v) {
-        return bits == 32 ? f32_to_f128(&state, float32_t{std::uint32_t(v)})
-                          : extF80_to_f128(&state, f64_to_extF80(&state, float64_t{v}));
-    };
-    auto product = f128_mul(&state, widen(a), widen(b));
-    auto sum = f128_add(&state, product, widen(c));
-    constexpr unsigned rounding[]{softfloat_round_near_even,
-                                  softfloat_round_min,
-                                  softfloat_round_max,
-                                  softfloat_round_minMag};
-    state.roundingMode = rounding[(control >> 13) & 3];
-    u64 r = bits == 32 ? f128_to_f32(&state, sum).v : f128_to_f64(&state, sum).v;
-    if (nan(r)) r = em | quiet | sign;
-    if ((control & 0x8000) && !(r & em)) r &= sign;
-    return r;
+    return FusedMultiplyAddStatus(a, b, c, bits, flags, control).first;
 }
+
 }  // namespace swift::runtime::backend::x64

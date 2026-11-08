@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <sys/types.h>
 
+#include "guest_execution.h"
 #include "runtime/arch/x86/state.h"
 #include "runtime/backend/code.h"
 
@@ -63,8 +64,9 @@ struct FaultContext {
                                   std::uintptr_t host_pc,
                                   std::uintptr_t address) noexcept;
 
-// Construct before the one sigsetjmp in Run. Registration and previous
-// actions remain unchanged while native code can jump back to that frame.
+// Construct before the one sigsetjmp in Run. Execution ownership, registration
+// and previous actions survive native recovery to that frame. Ownership is
+// released only after the fault service has restored the host handlers.
 class FaultScope {
 public:
     FaultScope(FaultContext&, GuestState&);
@@ -74,6 +76,7 @@ public:
     FaultScope& operator=(const FaultScope&) = delete;
 
 private:
+    GuestExecutionLock execution_lock;
     FaultContext& context;
     std::array<struct sigaction, 3> previous{};
     static void Handle(int, siginfo_t*, void*) noexcept;

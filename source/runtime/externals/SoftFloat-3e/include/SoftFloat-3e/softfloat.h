@@ -79,8 +79,8 @@ float128_t ui64_to_f128( uint64_t );
 void ui64_to_extF80M( uint64_t, extFloat80_t * );
 void ui64_to_f128M( uint64_t, float128_t * );
 float16_t i32_to_f16( int32_t );
-float32_t i32_to_f32( int32_t );
-float64_t i32_to_f64( int32_t );
+float32_t i32_to_f32( struct softfloat_state *, int32_t );
+float64_t i32_to_f64( struct softfloat_state *, int32_t );
 #ifdef SOFTFLOAT_FAST_INT64
 FEXCORE_PRESERVE_ALL_ATTR
 extFloat80_t i32_to_extF80( int32_t );
@@ -89,8 +89,8 @@ float128_t i32_to_f128( int32_t );
 void i32_to_extF80M( int32_t, extFloat80_t * );
 void i32_to_f128M( int32_t, float128_t * );
 float16_t i64_to_f16( int64_t );
-float32_t i64_to_f32( int64_t );
-float64_t i64_to_f64( int64_t );
+float32_t i64_to_f32( struct softfloat_state *, int64_t );
+float64_t i64_to_f64( struct softfloat_state *, int64_t );
 #ifdef SOFTFLOAT_FAST_INT64
 extFloat80_t i64_to_extF80( int64_t );
 float128_t i64_to_f128( int64_t );
@@ -138,14 +138,14 @@ bool f16_isSignalingNaN( float16_t );
 *----------------------------------------------------------------------------*/
 uint_fast32_t f32_to_ui32( float32_t, uint_fast8_t, bool );
 uint_fast64_t f32_to_ui64( float32_t, uint_fast8_t, bool );
-int_fast32_t f32_to_i32( float32_t, uint_fast8_t, bool );
-int_fast64_t f32_to_i64( float32_t, uint_fast8_t, bool );
+int_fast32_t f32_to_i32( struct softfloat_state *, float32_t, uint_fast8_t, bool );
+int_fast64_t f32_to_i64( struct softfloat_state *, float32_t, uint_fast8_t, bool );
 uint_fast32_t f32_to_ui32_r_minMag( float32_t, bool );
 uint_fast64_t f32_to_ui64_r_minMag( float32_t, bool );
 int_fast32_t f32_to_i32_r_minMag( float32_t, bool );
 int_fast64_t f32_to_i64_r_minMag( float32_t, bool );
 float16_t f32_to_f16( float32_t );
-float64_t f32_to_f64( float32_t );
+float64_t f32_to_f64( struct softfloat_state *, float32_t );
 #ifdef SOFTFLOAT_FAST_INT64
 FEXCORE_PRESERVE_ALL_ATTR
 extFloat80_t f32_to_extF80( struct softfloat_state *, float32_t );
@@ -153,14 +153,14 @@ float128_t f32_to_f128( struct softfloat_state *, float32_t );
 #endif
 void f32_to_extF80M( float32_t, extFloat80_t * );
 void f32_to_f128M( float32_t, float128_t * );
-float32_t f32_roundToInt( float32_t, uint_fast8_t, bool );
-float32_t f32_add( float32_t, float32_t );
-float32_t f32_sub( float32_t, float32_t );
-float32_t f32_mul( float32_t, float32_t );
-float32_t f32_mulAdd( float32_t, float32_t, float32_t );
-float32_t f32_div( float32_t, float32_t );
+float32_t f32_roundToInt( struct softfloat_state *, float32_t, uint_fast8_t, bool );
+float32_t f32_add( struct softfloat_state *, float32_t, float32_t );
+float32_t f32_sub( struct softfloat_state *, float32_t, float32_t );
+float32_t f32_mul( struct softfloat_state *, float32_t, float32_t );
+float32_t f32_mulAdd( struct softfloat_state *, float32_t, float32_t, float32_t );
+float32_t f32_div( struct softfloat_state *, float32_t, float32_t );
 float32_t f32_rem( float32_t, float32_t );
-float32_t f32_sqrt( float32_t );
+float32_t f32_sqrt( struct softfloat_state *, float32_t );
 bool f32_eq( float32_t, float32_t );
 bool f32_le( float32_t, float32_t );
 bool f32_lt( float32_t, float32_t );
@@ -174,29 +174,29 @@ bool f32_isSignalingNaN( float32_t );
 *----------------------------------------------------------------------------*/
 uint_fast32_t f64_to_ui32( float64_t, uint_fast8_t, bool );
 uint_fast64_t f64_to_ui64( float64_t, uint_fast8_t, bool );
-int_fast32_t f64_to_i32( float64_t, uint_fast8_t, bool );
-int_fast64_t f64_to_i64( float64_t, uint_fast8_t, bool );
+int_fast32_t f64_to_i32( struct softfloat_state *, float64_t, uint_fast8_t, bool );
+int_fast64_t f64_to_i64( struct softfloat_state *, float64_t, uint_fast8_t, bool );
 uint_fast32_t f64_to_ui32_r_minMag( float64_t, bool );
 uint_fast64_t f64_to_ui64_r_minMag( float64_t, bool );
 int_fast32_t f64_to_i32_r_minMag( float64_t, bool );
 int_fast64_t f64_to_i64_r_minMag( float64_t, bool );
 float16_t f64_to_f16( float64_t );
-float32_t f64_to_f32( float64_t );
+float32_t f64_to_f32( struct softfloat_state *, float64_t );
 #ifdef SOFTFLOAT_FAST_INT64
 FEXCORE_PRESERVE_ALL_ATTR
 extFloat80_t f64_to_extF80( struct softfloat_state *, float64_t );
-float128_t f64_to_f128( float64_t );
+float128_t f64_to_f128( struct softfloat_state *, float64_t );
 #endif
 void f64_to_extF80M( float64_t, extFloat80_t * );
 void f64_to_f128M( float64_t, float128_t * );
-float64_t f64_roundToInt( float64_t, uint_fast8_t, bool );
-float64_t f64_add( float64_t, float64_t );
-float64_t f64_sub( float64_t, float64_t );
-float64_t f64_mul( float64_t, float64_t );
-float64_t f64_mulAdd( float64_t, float64_t, float64_t );
-float64_t f64_div( float64_t, float64_t );
+float64_t f64_roundToInt( struct softfloat_state *, float64_t, uint_fast8_t, bool );
+float64_t f64_add( struct softfloat_state *, float64_t, float64_t );
+float64_t f64_sub( struct softfloat_state *, float64_t, float64_t );
+float64_t f64_mul( struct softfloat_state *, float64_t, float64_t );
+float64_t f64_mulAdd( struct softfloat_state *, float64_t, float64_t, float64_t );
+float64_t f64_div( struct softfloat_state *, float64_t, float64_t );
 float64_t f64_rem( float64_t, float64_t );
-float64_t f64_sqrt( float64_t );
+float64_t f64_sqrt( struct softfloat_state *, float64_t );
 bool f64_eq( float64_t, float64_t );
 bool f64_le( float64_t, float64_t );
 bool f64_lt( float64_t, float64_t );

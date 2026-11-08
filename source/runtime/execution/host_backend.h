@@ -1,8 +1,8 @@
 #pragma once
 
+#include "runtime/arch/guest.h"
 #include "runtime/backend/code.h"
 #include "runtime/ir/types.h"
-#include "runtime/arch/guest.h"
 
 namespace swift::runtime::ir {
 class Program;
@@ -62,6 +62,7 @@ struct HostBackendOps {
                         backend::NativeOffset,
                         std::uintptr_t) noexcept {};
     void (*update_fp)(void*, NativeRunContext&, std::uint32_t) noexcept {};
+    std::uint32_t (*floating_status)(const NativeRunContext&) noexcept {};
     void (*restore_host_fp)(const NativeRunContext&) noexcept {};
     bool (*recover_native)(FaultContext&, int, int, std::uintptr_t, void*) noexcept {};
 };

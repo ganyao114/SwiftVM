@@ -20,7 +20,9 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
         return Number(op == OpCode::ReadSystemPair ? u128{pair.lower} | (u128{pair.upper} << 64)
                                                    : u128{pair.lower},
                       type);
-    } else if constexpr (op == OpCode::Zero)
+    } else if constexpr (op == OpCode::ReadFPStatus)
+        return Number((read(0) | floating_exceptions) & 63, Type::U32);
+    else if constexpr (op == OpCode::Zero)
         return Number(0, type);
     else if constexpr (op == OpCode::LoadImm)
         return Number(a[0].payload, View(a[0]));

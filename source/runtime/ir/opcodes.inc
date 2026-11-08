@@ -32,33 +32,89 @@ INST(GetUniformAddress, Value, Explicit, (Effect::ReadGuestState), Imm)
 // Stateful x87 operation. The dedicated opcode keeps x87 out of the generic
 // CallLambda classification so ARM64 can inline selected commands and
 // whole-function compilation can retain blocks containing x87.
-INST(X87Op, Value, Explicit, (Effect::ReadGuestState | Effect::WriteGuestState | Effect::External | Effect::Control), Value, Imm, Value)
+INST(X87Op,
+     Value,
+     Explicit,
+     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::External | Effect::Control),
+     Value,
+     Imm,
+     Value)
 INST(LoadMemory, Value, Explicit, (Effect::ReadMemory | Effect::MayFault), Operand)
 // Exact scalar access width and extension semantics live in the descriptor
 // (load_extend.h); ReturnType describes the final 32/64-bit integer result.
-INST(LoadMemoryExtend, Value, IntegerExplicit, (Effect::ReadMemory | Effect::MayFault), IntOperand, IntImm)
+INST(LoadMemoryExtend,
+     Value,
+     IntegerExplicit,
+     (Effect::ReadMemory | Effect::MayFault),
+     IntOperand,
+     IntImm)
 INST(StoreMemory, Void, Void, (Effect::WriteMemory | Effect::MayFault), Operand, Value)
-INST(LoadMemoryTSO, Value, Explicit, (Effect::ReadMemory | Effect::MayFault | Effect::Ordered), Operand)
-INST(LoadMemoryExtendTSO, Value, IntegerExplicit, (Effect::ReadMemory | Effect::MayFault | Effect::Ordered), IntOperand, IntImm)
-INST(StoreMemoryTSO, Void, Void, (Effect::WriteMemory | Effect::MayFault | Effect::Ordered), Operand, Value)
+INST(LoadMemoryTSO,
+     Value,
+     Explicit,
+     (Effect::ReadMemory | Effect::MayFault | Effect::Ordered),
+     Operand)
+INST(LoadMemoryExtendTSO,
+     Value,
+     IntegerExplicit,
+     (Effect::ReadMemory | Effect::MayFault | Effect::Ordered),
+     IntOperand,
+     IntImm)
+INST(StoreMemoryTSO,
+     Void,
+     Void,
+     (Effect::WriteMemory | Effect::MayFault | Effect::Ordered),
+     Operand,
+     Value)
 INST(MemoryCopy, Void, Void, (Effect::Unknown), Lambda, Lambda, Imm)
 INST(MemoryCopyTSO, Void, Void, (Effect::Unknown), Lambda, Lambda, Imm)
 INST(MemoryBarrierTSO, Void, Void, (Effect::Ordered))
 // Scalar locked operations return the observed old value at the requested
 // width. CAS inputs are address/expected/desired; failure leaves memory alone.
 // All paths retain full locked ordering, including a failed comparison.
-INST(CompareAndSwap, Value, Explicit, (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered), Value, Value, Value)
+INST(CompareAndSwap,
+     Value,
+     Explicit,
+     (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered),
+     Value,
+     Value,
+     Value)
 // 128-bit CAS takes scalar halves to stay within the IR's five physical-arg
 // limit and returns the observed {high,low} pair as V128.
-INST(CompareAndSwap128, Value, Explicit, (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered), Value, Value, Value, Value, Value)
+INST(CompareAndSwap128,
+     Value,
+     Explicit,
+     (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered),
+     Value,
+     Value,
+     Value,
+     Value,
+     Value)
 // Dynamic architectural-alignment check. A failure terminates the current
 // guest block with PageFatal; the frontend sets the precise guest location
 // immediately before it.
 INST(CheckMemoryAlignment, Void, Void, (Effect::MayFault | Effect::Control), Value, Imm)
-INST(AtomicExchange, Value, Explicit, (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered), Value, Value)
-INST(AtomicFetchAdd, Value, Explicit, (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered), Value, Value)
+INST(AtomicExchange,
+     Value,
+     Explicit,
+     (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered),
+     Value,
+     Value)
+INST(AtomicFetchAdd,
+     Value,
+     Explicit,
+     (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered),
+     Value,
+     Value)
 // AtomicRMWOp immediate, address, operand, explicit carry (see types.h).
-INST(AtomicRMW, Value, Explicit, (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered), Imm, Value, Value, Value)
+INST(AtomicRMW,
+     Value,
+     Explicit,
+     (Effect::ReadMemory | Effect::WriteMemory | Effect::MayFault | Effect::Ordered),
+     Imm,
+     Value,
+     Value,
+     Value)
 
 // Help
 INST(UniformBarrier, Void, Void, (Effect::Ordered))
@@ -89,6 +145,10 @@ INST(AdvancePC, Void, Void, (Effect::WriteGuestState), Imm)
 INST(SetLocation, Void, Void, (Effect::WriteGuestState), Lambda)
 INST(GetLocation, Value, Explicit, (Effect::ReadGuestState))
 INST(Zero, Value, Explicit, (Effect::None))
+// Accrued numerical exceptions: invalid, denormal input, divide-by-zero,
+// overflow, underflow and inexact in bits 0..5. Merge the explicit canonical
+// status shadow (Value U32); hosts without an input-denormal bit retain it.
+INST(ReadFPStatus, U32, IntegerFixed, (Effect::ReadHostState), Value)
 INST(GetHostGPR, Value, Explicit, (Effect::ReadHostState), Imm, Imm)
 INST(GetHostFPR, Value, Explicit, (Effect::ReadHostState), Imm, Imm)
 INST(SetHostGPR, Void, Void, (Effect::WriteHostState), Value, Imm, Imm)
@@ -334,33 +394,53 @@ INST(VecSha256Rnds2, Value, Arg0, (Effect::None), Value, Value, Value)
 // selection; ARM64 follows FEX here. Finite/zero/infinity results retain
 // their opcode semantics. This policy does not relax MIN/MAX selection,
 // comparison masks, conversion sentinels or preservation of unwritten lanes.
-// Numerical FP reads the caller's active FP environment. These operations
-// neither observe arbitrary Uniform state/guest flags nor publish sticky
-// exceptions or traps. Environment changes remain at their actual ordered
-// writers; ReadHostState does not make FP arithmetic a constant/pure opcode.
-INST(VecFAddScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
-INST(VecFSubScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
-INST(VecFMulScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
-INST(VecFDivScalar32, Value, Arg0, (Effect::ReadHostState), Value, Value)
-INST(VecFAddScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
-INST(VecFSubScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
-INST(VecFMulScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
-INST(VecFDivScalar64, Value, Arg0, (Effect::ReadHostState), Value, Value)
+// Numerical FP observes controls and accumulates host exception state. Even
+// an unused result can raise an architectural exception and must survive DCE.
+INST(VecFAddScalar32, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
+INST(VecFSubScalar32, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
+INST(VecFMulScalar32, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
+INST(VecFDivScalar32, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
+INST(VecFAddScalar64, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
+INST(VecFSubScalar64, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
+INST(VecFMulScalar64, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
+INST(VecFDivScalar64, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
 
 // Packed IEEE floating-point operations. Imm is the lane width (32 or 64).
-INST(VecFAdd, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
-INST(VecFSub, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
-INST(VecFMul, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
-INST(VecFDiv, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm)
-INST(VecFMinMax, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
+INST(VecFAdd, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value, Imm)
+INST(VecFSub, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value, Imm)
+INST(VecFMul, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value, Imm)
+INST(VecFDiv, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value, Imm)
+INST(VecFMinMax,
+     Value,
+     Arg0,
+     (Effect::ReadHostState | Effect::WriteHostState),
+     Value,
+     Value,
+     Imm,
+     Imm,
+     Imm)
 // Operands are (merge,input,lane_bits,kind,scalar).
 // kind: 0=sqrt, 1=reciprocal estimate, 2=reciprocal-sqrt estimate.
-INST(VecFUnary, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
+INST(VecFUnary,
+     Value,
+     Arg0,
+     (Effect::ReadHostState | Effect::WriteHostState),
+     Value,
+     Value,
+     Imm,
+     Imm,
+     Imm)
 
 // Scalar compare: low FP lanes of the two vectors, with lane width in bits.
 // U32 result: bit0 CF / bit1 PF / bit2 ZF. Greater=0, less=1, equal=4,
-// unordered=7. Quiet/signaling exception-state differences are not modeled.
-INST(VecFCmp, U32, IntegerFixed, (Effect::ReadHostState), Value, Value, Imm)
+// unordered=7. The width immediate bit7 requests signaling on quiet NaNs.
+INST(VecFCmp,
+     U32,
+     IntegerFixed,
+     (Effect::ReadHostState | Effect::WriteHostState),
+     Value,
+     Value,
+     Imm)
 // Lane-wise compare to an all-ones / all-zeros mask.  The predicate (second
 // Imm) is a RELATION SET, not an ISA's compare encoding: an IEEE 754 compare
 // of two lanes has exactly four mutually exclusive outcomes, and the predicate
@@ -369,26 +449,44 @@ INST(VecFCmp, U32, IntegerFixed, (Effect::ReadHostState), Value, Value, Imm)
 // All 16 subsets are legal: 0 is "never" and 15 is "always".  So `le` is 3,
 // `ord` is 7, `neq` (x86's NEQ_UQ, which is true when unordered) is 13, and
 // x86's NEQ_OQ, which is not, is 5.  Front ends translate their own encoding
-// into this -- for x86 see frontend/x86/fp_cmp_predicate.h, which also records
-// why the AVX signalling-vs-quiet dimension is NOT represented here (it is an
-// MXCSR exception-flag distinction only, measured on hardware, and SwiftVM
-// models no FP exception state).
+// into this. Predicate bit4 requests signaling on quiet NaNs; low four bits
+// retain the relation set. Signaling NaNs always raise invalid.
 // Final Imm is scalar (preserve upper lanes) when non-zero.
-INST(VecFCmpMask, Value, Arg0, (Effect::ReadHostState), Value, Value, Imm, Imm, Imm)
+INST(VecFCmpMask,
+     Value,
+     Arg0,
+     (Effect::ReadHostState | Effect::WriteHostState),
+     Value,
+     Value,
+     Imm,
+     Imm,
+     Imm)
 
 // Scalar conversions. The result is the raw IEEE/integer bit pattern in a
 // scalar container; widths are supplied as immediates in bits. IntToFloat
 // consumes signed source-width bits, then a float width. FloatToInt takes
 // float width, integer width, and a truncate-to-zero selector; invalid signed
-// conversions return that integer width's minInt. No MXCSR sticky/trap state
-// is produced by these numerical operations.
-INST(VecFCvtIntToFloat, Value, Explicit, (Effect::ReadHostState), Value, Imm, Imm)
-INST(VecFCvtFloatToInt, Value, Explicit, (Effect::ReadHostState), Value, Imm, Imm, Imm)
+// conversions return that integer width's minInt and accumulate invalid.
+INST(VecFCvtIntToFloat,
+     Value,
+     Explicit,
+     (Effect::ReadHostState | Effect::WriteHostState),
+     Value,
+     Imm,
+     Imm)
+INST(VecFCvtFloatToInt,
+     Value,
+     Explicit,
+     (Effect::ReadHostState | Effect::WriteHostState),
+     Value,
+     Imm,
+     Imm,
+     Imm)
 // Imm is source IEEE width (32 or 64); the result is the other width.
-INST(VecFCvtScalar, Value, Explicit, (Effect::ReadHostState), Value, Imm)
+INST(VecFCvtScalar, Value, Explicit, (Effect::ReadHostState | Effect::WriteHostState), Value, Imm)
 // 0=dq2ps, 1=dq2pd, 2=ps2dq, 3=ttps2dq, 4=pd2dq, 5=ttpd2dq,
 // 6=ps2pd, 7=pd2ps.
-INST(VecFCvtPacked, Value, Explicit, (Effect::ReadHostState), Value, Imm)
+INST(VecFCvtPacked, Value, Explicit, (Effect::ReadHostState | Effect::WriteHostState), Value, Imm)
 
 // De-interleave: the exact dual of VecZip, and the primitive every pairwise /
 // horizontal operation is built from.  The concatenation {a, b} is viewed as
@@ -439,6 +537,7 @@ INST(VecFMulAdd, Value, Arg0, (Effect::Unknown), Value, Value, Value, Imm, Imm)
 //     2  toward +infinity (ceil)    3  toward zero (truncate)
 // Third Imm non-zero means SCALAR: only lane 0 is rounded and the remaining
 // lanes come from `merge` (arg 1), the same shape VecFUnary already uses.
+// Rounding immediate low two bits select RC; bit3 suppresses precision status.
 //
 // The mode is an immediate rather than "whatever the current mode is": an IR
 // value must mean the same thing wherever it is scheduled, and a back end is
@@ -590,7 +689,15 @@ INST(Sse42StrExplicit, U64, Fixed, (Effect::None), Value, Value, Value, Imm)
 
 // Stateful x87 operation with explicit failure metadata (see x87.h).
 // DP is read on the raised-exception edge before the result home is written.
-INST(X87Execute, U64, Fixed, (Effect::ReadGuestState | Effect::WriteGuestState | Effect::External | Effect::Control), Value, Imm, Value, Value, Imm)
+INST(X87Execute,
+     U64,
+     Fixed,
+     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::External | Effect::Control),
+     Value,
+     Imm,
+     Value,
+     Value,
+     Imm)
 INST(ReadSystemPair, Value, Explicit, (Effect::Unknown), Imm, Imm)
 // One architectural metadata commit, including legacy fused x87 windows.
 INST(X87CommitMetadata, Void, Void, (Effect::WriteGuestState), Value, Imm, Value, Imm)

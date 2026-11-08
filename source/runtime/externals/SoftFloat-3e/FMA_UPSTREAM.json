@@ -1,0 +1,148 @@
+{
+  "upstream_url": "https://gitlab.com/qemu-project/berkeley-softfloat-3.git",
+  "revision": "b64af41c3276f97f0e181920400ee056b9c88037",
+  "release": "Berkeley SoftFloat 3e",
+  "files": [
+    {
+      "upstream_path": "source/f32_mulAdd.c",
+      "sha256": "867914dd6c8dc3a03e1369b7a65fb1cf2975ef2d1a1b5bbf3eeb1b8758cb3e2b"
+    },
+    {
+      "upstream_path": "source/f64_mulAdd.c",
+      "sha256": "1d16eff3acdec91e3aee893c4f389cf23df998e2bd199344d0574c01a9b09bcc"
+    },
+    {
+      "upstream_path": "source/s_mulAddF32.c",
+      "sha256": "fdfa3a9d52c8e8406d5121ed3c11838c0f643c37dadecb408ff1842a05a7dcd1"
+    },
+    {
+      "upstream_path": "source/s_mulAddF64.c",
+      "sha256": "1761bdb8cc07d782f17a59ae62f931bf7a238fdabf8f3dc7190d0f40237469f7"
+    },
+    {
+      "upstream_path": "source/8086-SSE/s_propagateNaNF32UI.c",
+      "sha256": "83215e4528ffaee4e5bf4975e42acc65eb349dbdf33a408857c707790ed356e7"
+    },
+    {
+      "upstream_path": "source/8086-SSE/s_propagateNaNF64UI.c",
+      "sha256": "e3584b53c927e73a18457654125a558c58501ad7cc1de9bd3c6db75e06c190aa"
+    },
+    {
+      "upstream_path": "source/f32_add.c",
+      "sha256": "540c8f2d95b30bc846fe5b747aa6aae1bb70c687b9429278678bb0a000f65dcc"
+    },
+    {
+      "upstream_path": "source/f64_add.c",
+      "sha256": "edb05c732053d1107456c95b7f9b18e58a25546925d3ffafac27b5f263db0b2e"
+    },
+    {
+      "upstream_path": "source/f32_sub.c",
+      "sha256": "c4020ba5c2d5f10e647711bd7287c574ca498b0e469ee99f1f9c68c930d43311"
+    },
+    {
+      "upstream_path": "source/f64_sub.c",
+      "sha256": "6b581000e70e679e057d2ce17e0839aa5a7da6982685b9718b6540069441e689"
+    },
+    {
+      "upstream_path": "source/f32_mul.c",
+      "sha256": "bca46360750b343f24aafcfa7c36f24e3fc4fb6465d0c49f60de7980a86bc37b"
+    },
+    {
+      "upstream_path": "source/f64_mul.c",
+      "sha256": "335137bca17d29eddb451f562869ca7327c5fe472f347d2e36c55e4c2219e79b"
+    },
+    {
+      "upstream_path": "source/f32_div.c",
+      "sha256": "ec341d5028f63f19230729ed8d8aca424b08f221adfdce4ebce3caa6d54ba0d8"
+    },
+    {
+      "upstream_path": "source/f64_div.c",
+      "sha256": "c44985b8084d6407fd3cd4043dbe02c2651721ac03d1c3920798fc1b75ea2f3e"
+    },
+    {
+      "upstream_path": "source/f32_sqrt.c",
+      "sha256": "2eb2d1a5a35d2e839aa69e18bda3868ef5f86c214df6adad3ae50cb8a6195dc8"
+    },
+    {
+      "upstream_path": "source/f64_sqrt.c",
+      "sha256": "643a9abb4d30aff2cac9be281687055a1a677ae7555ca782fc3fb1932d000908"
+    },
+    {
+      "upstream_path": "source/s_addMagsF32.c",
+      "sha256": "5b2d7992841c17e42a96e5aec865b4386cdc7e9030ac6f4d25ad74e4e73fb59b"
+    },
+    {
+      "upstream_path": "source/s_addMagsF64.c",
+      "sha256": "2b4f69206b4e8d3fc26bc64ca147663530b68b53b0b0e7817c724e2d99376ec5"
+    },
+    {
+      "upstream_path": "source/s_subMagsF32.c",
+      "sha256": "53ca2e9f6f1edc7095133e7c98018d69d1e6cd0d5f5b5c0393c4e656ee9a965c"
+    },
+    {
+      "upstream_path": "source/s_subMagsF64.c",
+      "sha256": "733f17b90486602ff6c67fa3d99166a841b03276c0fcc7da66751d1e8631f01f"
+    },
+    {
+      "upstream_path": "source/s_normRoundPackToF32.c",
+      "sha256": "2e473ba709740808cfd59931034be7c67c80c87ddb76a4765dceb23c9bb518d2"
+    },
+    {
+      "upstream_path": "source/s_normRoundPackToF64.c",
+      "sha256": "4e65ccecf8ee96e2c5815575df3a0e4495ac82987a841868cb1d130556a3dd0a"
+    },
+    {
+      "upstream_path": "source/i32_to_f32.c",
+      "sha256": "e6ccd7ec5ca8ea2b64435e94ecb0962be000f31d36abb88e68f6e90b44c0c290"
+    },
+    {
+      "upstream_path": "source/i32_to_f64.c",
+      "sha256": "de334caa22edfcfc2a35572a2e858f0c500ad5018fc4335b46dfb003e0076183"
+    },
+    {
+      "upstream_path": "source/i64_to_f32.c",
+      "sha256": "15c028b6e784138754cd7af1e6c360416ea26d71e97f52fe2a5cb452eb6048c4"
+    },
+    {
+      "upstream_path": "source/i64_to_f64.c",
+      "sha256": "905170a7a36d108afa5fc43596cd4a29a5a6a8f82264ad890b45feeb5bad021c"
+    },
+    {
+      "upstream_path": "source/f32_to_i32.c",
+      "sha256": "f955cfbb69c337d4546c2cf5353654432fb3170cc9f4fb0f416e306fdb4ea73c"
+    },
+    {
+      "upstream_path": "source/f32_to_i64.c",
+      "sha256": "d7a1083de841e474736b8357f2342879b23c155a1591475f95020c48228bcefc"
+    },
+    {
+      "upstream_path": "source/f64_to_i32.c",
+      "sha256": "8cb6390959e1800514601ceab2a2010bfc6189729357d212c377208951a3b286"
+    },
+    {
+      "upstream_path": "source/f64_to_i64.c",
+      "sha256": "1502fb0ef9d22983b8f5040284f3a69a8479326109a7b82f14c7217687b90900"
+    },
+    {
+      "upstream_path": "source/f32_to_f64.c",
+      "sha256": "d25caefe4a26b9e9e1fa1cc53c683d8a22468122b2d09c16deb0e833702ada10"
+    },
+    {
+      "upstream_path": "source/f64_to_f32.c",
+      "sha256": "48e998019d76613444c6f20e5d272464abd2657795830905dcf629bb18d90529"
+    },
+    {
+      "upstream_path": "source/f32_roundToInt.c",
+      "sha256": "8bd60926124351237faf0a4365d9848edc8ad09371807e801c3ff4c1702c94a9"
+    },
+    {
+      "upstream_path": "source/f64_roundToInt.c",
+      "sha256": "5463f765aeb7766b2a456305b723e1a205a9f9a6f85c918a466b482a89e67033"
+    },
+    {
+      "upstream_path": "source/f64_to_f128.c",
+      "sha256": "247cc939189101ab88d9c687d81928220c9606c8ecf0d48376bf52c4f5cd74ee"
+    }
+  ],
+  "local_changes": "Adapt only the listed F32/F64 arithmetic, conversion and NaN entry points and their stateful calls to the existing explicit softfloat_state ABI. No global rounding/exception state is introduced; original per-file notices are retained."
+}
