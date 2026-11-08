@@ -18,6 +18,7 @@ bool VM::RecoverCodeWrite(void* opaque, std::uintptr_t address) noexcept {
 void VM::RefreshNative(NativeRunContext& context) noexcept {
     context.mask = thread.faults.smc_pending ? 0 : Cache().Mask();
     context.slots = thread.faults.smc_pending ? Cache().EmptyData() : Cache().Data();
+    context.l1 = thread.faults.smc_pending ? empty_l1.Data() : thread.l1.Data();
     context.anchor = &thread.anchor;
 }
 
@@ -106,6 +107,7 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
         ObserveCache();
     }
     thread.anchor = code;
+    if (thread.l1.Data()) thread.l1.Fill(PC(), entry);
     thread.bridge_failure.Clear();
     RefreshNative(context);
     return reinterpret_cast<std::uintptr_t>(entry);

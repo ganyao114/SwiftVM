@@ -1,8 +1,7 @@
-#include "patch.h"
-#include "abi.h"
-#include "encoding.h"
 #include <algorithm>
 #include <cstring>
+#include "encoding.h"
+#include "patch.h"
 
 namespace swift::runtime::backend::arm64 {
 
@@ -132,13 +131,6 @@ void UnlinkNativeLink(std::uintptr_t* writable,
     SynchronizeLink(writable, executable, gate_back, back_words, gate_changed, head_changed);
 }
 
-void ResetIndirectSite(std::uintptr_t* writable_array, const std::uintptr_t* fallback) noexcept {
-    for (unsigned i = 0; i < abi::DynamicCacheEntries; ++i)
-        __atomic_store_n(writable_array + i * 2 + 1,
-                         reinterpret_cast<std::uintptr_t>(fallback),
-                         __ATOMIC_RELEASE);
-}
-
 bool InitializeNativeLink(std::span<std::uint8_t> write,
                           std::uintptr_t execute,
                           const backend::LinkSite& site,
@@ -148,17 +140,6 @@ bool InitializeNativeLink(std::span<std::uint8_t> write,
     if ((data & 7) || data > write.size()) return false;
     const auto fallback = site.fallback_offset;
     if ((fallback & 3) || fallback >= write.size()) return false;
-    if (site.kind == LinkKind::Dynamic) {
-        constexpr auto bytes = abi::DynamicCacheWords * 4u;
-        if (bytes > write.size() - data) return false;
-        for (unsigned i = 0; i < abi::DynamicCacheEntries; ++i) {
-            const std::uintptr_t cold = execute + fallback;
-            std::memcpy(write.data() + data + i * 16 + 8, &cold, 8);
-        }
-        const auto alias = writable_alias ? writable_alias + data : 0;
-        std::memcpy(write.data() + data + bytes - 8, &alias, 8);
-        return true;
-    }
     const auto branch = site.branch_offset;
     if (8u > write.size() - data || (branch & 3) || branch >= data) return false;
     auto* pointer = reinterpret_cast<std::uintptr_t*>(write.data() + data);

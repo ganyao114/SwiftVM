@@ -1,4 +1,9 @@
+#include "base/error.h"
 #include "tests/support/arm64_fixture.h"
+
+#if defined(__aarch64__) && defined(__ANDROID__)
+#include "runtime/execution/dispatch_cache.h"
+#endif
 
 namespace {
 using namespace swift::tests::arm64_fixture;
@@ -215,7 +220,20 @@ void DeferredPCLinks() {
         execution::CodeCache self_cache{nullptr, counted_backend};
         const auto& self_site = code.links.front();
         const auto incoming = arena.Publish(code.words, {}, code.links);
-        self_cache.InsertReady(options.entry_pc, incoming, {});
+        const std::array canonical_alias{swift::runtime::backend::EntryPoint{options.entry_pc, 4}};
+        self_cache.InsertReady(options.entry_pc, incoming, canonical_alias);
+        Check(self_cache.Entries() == 1 && self_cache.Find(options.entry_pc) == incoming.entry,
+              "a repeated canonical PC retains the original base rather than its alias offset");
+        const std::array invalid_alias{swift::runtime::backend::EntryPoint{
+                options.entry_pc, static_cast<std::uint32_t>(incoming.bytes)}};
+        bool invalid_entry{};
+        try {
+            self_cache.InsertReady(options.entry_pc, incoming, invalid_alias);
+        } catch (const swift::RuntimeError& error) {
+            invalid_entry = error.Kind() == swift::ErrorKind::Runtime;
+        }
+        Check(invalid_entry && self_cache.Find(options.entry_pc) == incoming.entry,
+              "a repeated canonical PC still rejects an alias outside its owning code range");
         self_cache.AddStaticLink(incoming, self_site);
 
         struct SelfLookup {
@@ -224,18 +242,15 @@ void DeferredPCLinks() {
             unsigned calls{};
         } self_lookup{self_cache, self_site.target_pc};
 
-        const auto self = arena.Publish(
-                code.words,
-                {},
-                code.links,
+        const auto resolve =
                 [](void* opaque, u64 pc, std::uintptr_t unit) noexcept -> std::uintptr_t {
-                    auto& lookup = *static_cast<SelfLookup*>(opaque);
-                    ++lookup.calls;
-                    if (const auto ready = lookup.cache.Find(pc))
-                        return reinterpret_cast<std::uintptr_t>(ready);
-                    return pc == lookup.pc ? unit : 0;
-                },
-                &self_lookup);
+            auto& lookup = *static_cast<SelfLookup*>(opaque);
+            ++lookup.calls;
+            if (const auto ready = lookup.cache.Find(pc))
+                return reinterpret_cast<std::uintptr_t>(ready);
+            return pc == lookup.pc ? unit : 0;
+        };
+        const auto self = arena.Publish(code.words, {}, code.links, resolve, &self_lookup);
         self_cache.AddStaticLink(self, self_site);
         Check(self_lookup.calls == (self.writable ? 1u : 0u) &&
                       self_cache.Pending() == (self.writable ? 2u : 0u),
@@ -248,11 +263,39 @@ void DeferredPCLinks() {
                       self_cache.Pending() == 0,
               "ready registration patches the old incoming edge once without resynchronizing the "
               "already prepared self edge");
+
+        std::array<execution::NativeCode, 2> ready_owners;
+        for (auto& owner : ready_owners) {
+            owner = arena.Publish(code.words, {}, code.links, resolve, &self_lookup);
+            const auto* words = reinterpret_cast<const std::uint32_t*>(owner.entry);
+            Check(!owner.writable || Read64(words + WordOffset(self_site.data_offset)) ==
+                                             reinterpret_cast<std::uintptr_t>(self.entry),
+                  "each committed owner contains the actual already-ready target");
+            self_cache.AddStaticLink(owner, self_site, self.entry);
+        }
+        Check(patch_calls == (self.writable ? 1u : 0u) && self_cache.Pending() == 0 &&
+                      self_cache.LinkRows() == (self.writable ? 4u : 0u) &&
+                      self_cache.Patched() == (self.writable ? 4u : 0u),
+              "prepared ready targets retain each owner's unlink row without a second patch");
+
+        auto invalid_links = code.links;
+        invalid_links.push_back(self_site);
+        invalid_links.back().data_offset = UINT32_MAX;
+        bool rejected{};
+        try {
+            (void)arena.Publish(code.words, {}, invalid_links, resolve, &self_lookup);
+        } catch (const swift::RuntimeError& error) {
+            rejected = error.Kind() == swift::ErrorKind::InvalidArgument;
+        }
+        Check(rejected && self_cache.Pending() == 0 &&
+                      self_cache.LinkRows() == (self.writable ? 4u : 0u),
+              "a rejected unpublished slice leaves no cache relocation for a later reuse");
+
         self_cache.ResetLinks();
         if (self.writable) {
             const auto base = reinterpret_cast<std::uintptr_t>(self.entry);
             const auto* words = reinterpret_cast<const std::uint32_t*>(self.entry);
-            Check(unlink_calls == 2 &&
+            Check(unlink_calls == 4 &&
                           Read64(words + WordOffset(self_site.data_offset)) ==
                                   base + self_site.fallback_offset &&
                           words[WordOffset(self_site.branch_offset)] ==
@@ -261,6 +304,13 @@ void DeferredPCLinks() {
                                                   << 5)),
                   "the prelinked self edge keeps its real relocation and restores its cold gate on "
                   "unlink");
+            for (const auto& owner : ready_owners) {
+                const auto base = reinterpret_cast<std::uintptr_t>(owner.entry);
+                const auto* words = reinterpret_cast<const std::uint32_t*>(owner.entry);
+                Check(Read64(words + WordOffset(self_site.data_offset)) ==
+                              base + self_site.fallback_offset,
+                      "revocation restores the cold gate of every prepared ready owner");
+            }
         }
     }
 #endif
@@ -390,6 +440,49 @@ void CompleteAdditionalEntries() {
 }
 
 void LinkedDynamicPC() {
+    for (const auto scope : {Scope::Block, Scope::Function}) {
+        Builder builder{scope};
+        Need(builder.BeginBlock(Create(builder)));
+        Store(builder, 128, Load(builder, 0));
+        Need(builder.EndBlock(Terminal::Dispatch()));
+        auto program = Submit(builder);
+        arm64::CompileOptions options;
+        options.flags_offset = 136;
+        options.pc_offset = 128;
+        options.dispatcher = 0x1111222233334444ULL;
+        options.exit_handler = 0xaaaabbbbccccddddULL;
+        options.l2_dispatcher = 0x5555666677778888ULL;
+        options.relocatable = true;
+        options.dispatch_mode = arm64::DispatchMode::Inline;
+        const auto code = arm64::Compile(program, options);
+        Check(bool(code) && code.links.empty(),
+              "Block and Function dynamic exits create no per-site link or cache resources");
+        // LDR L1; UBFIZ index; ADD slot; LDP tag/entry; SUB tag; CBNZ miss; BR entry.
+        constexpr std::array<std::uint32_t, 5> lookup{
+                0xf941b670u, 0xd37c4c07u, 0x8b070207u, 0xa94044f0u, 0xcb000210u};
+        const auto at =
+                std::search(code.words.begin(), code.words.end(), lookup.begin(), lookup.end());
+        Check(at != code.words.end() && code.words.end() - at >= 7 &&
+                      (at[5] & 0xff00001fu) == 0xb5000010u && at[6] == 0xd61f0220u,
+              "the ready-only L1 hit is seven flag-preserving instructions with its own BR");
+        Check(std::any_of(code.relocations.begin(),
+                          code.relocations.end(),
+                          [](const auto& r) {
+                              return r.symbol == swift::runtime::backend::HostSymbol::DispatcherL2;
+                          }),
+              "only the shared L2 miss callback owns the dynamic exit relocation");
+        options.dispatch_mode = arm64::DispatchMode::Callback;
+        options.l2_dispatcher = 0;
+        const auto callback = arm64::Compile(program, options);
+        Check(bool(callback) &&
+                      std::none_of(callback.relocations.begin(),
+                                   callback.relocations.end(),
+                                   [](const auto& r) {
+                                       return r.symbol ==
+                                              swift::runtime::backend::HostSymbol::DispatcherL2;
+                                   }),
+              "ordinary custom callbacks retain their ABI without a thread L1 requirement");
+    }
 #if defined(__aarch64__) && defined(__ANDROID__)
     if (NativeMode()) {
         namespace execution = swift::runtime::execution;
@@ -410,6 +503,9 @@ void LinkedDynamicPC() {
                             ? reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatchNZCV)
                             : reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatch);
             options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
+            options.l2_dispatcher = reinterpret_cast<std::uintptr_t>(
+                    native_nzcv ? &execution::SvmNativeL2DispatchNZCV
+                                : &execution::SvmNativeL2Dispatch);
 
             Builder source{Scope::Block};
             Need(source.BeginBlock(Create(source)));
@@ -462,7 +558,10 @@ void LinkedDynamicPC() {
 
             resolver.target_pc = next_pc;
             std::atomic<const execution::NativeCode*> active{};
+            execution::DispatchCache cache;
+            cache.Ensure();
             execution::NativeRunContext context;
+            context.l1 = cache.Data();
             auto& state = context.state;
             context.opaque = &resolver;
             context.resolve = [](void* opaque,
@@ -495,6 +594,7 @@ void LinkedDynamicPC() {
             context.pc_offset = options.pc_offset;
             context.native_nzcv = native_nzcv;
             for (const bool warm : {false, true}) {
+                cache.Reset();
                 context.slots =
                         warm ? slots.data()
                              : nullptr;  // Public nullable context keeps the original cold guard.
@@ -566,6 +666,7 @@ void LinkedDynamicPC() {
             resolver.second = &local_destination;
             resolver.ready = &local_slot;
             for (const u64 count_value : {u64{0}, u64{0x100}}) {
+                cache.Reset();
                 u64 memory = 0x77;
                 const auto selected_pc = count_value ? 0x3000 : next_pc;
                 state = {};
@@ -711,6 +812,7 @@ void LinkedDynamicPC() {
                           "initialization");
                     resolver.first = &predicate_entry;
                     const auto run_predicate = [&](bool zero) {
+                        cache.Reset();
                         const auto flags =
                                 zero ? initial | (u64{1} << 30) : initial & ~(u64{1} << 30);
                         state = {};
@@ -770,18 +872,18 @@ void LinkedDynamicPC() {
             // PC-zero tag match; Native/counting covers empty mismatch and pending.
             auto callable_options = options;
             callable_options.entry_pc = entry_pc;
-            callable_options.callable_directory = true;
             callable_options.dispatch_mode =
                     native_nzcv ? arm64::DispatchMode::InlineCounted : arm64::DispatchMode::Inline;
-            if (native_nzcv)
+            if (native_nzcv) {
                 callable_options.dispatcher =
                         reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatchNZCVCounted);
+                callable_options.l2_dispatcher = reinterpret_cast<std::uintptr_t>(
+                        &execution::SvmNativeL2DispatchNZCVCounted);
+            }
             const auto callable_code = arm64::Compile(source_program, callable_options);
-            Check(bool(callable_code) && (native_nzcv || callable_code.words.size() + 2 ==
-                                                                 source_code.words.size()),
-                  "the explicit callable owner removes two nullable ready-path guards without "
-                  "changing "
-                  "the register bank");
+            Check(bool(callable_code) &&
+                          (native_nzcv || callable_code.words.size() == source_code.words.size()),
+                  "ready-only L1 lookup has one shape independent of callable L2 payloads");
             const u64 callable_pc = native_nzcv ? next_pc : 0;
             auto callable_target_options = callable_options;
             callable_target_options.entry_pc = callable_pc;
@@ -803,6 +905,7 @@ void LinkedDynamicPC() {
             context.slots = &seed;
             context.mask = 0;
             const auto run_callable = [&](bool pending) {
+                cache.Reset();
                 seed = {};
                 seed.entry = cold;
                 if (pending) {
@@ -825,54 +928,32 @@ void LinkedDynamicPC() {
                       "callable empty/pending paths commit the actual PC and preserve complete "
                       "flags/reserved");
                 Check(context.cache_hits == 37 &&
-                              (!native_nzcv || (context.dispatcher_entries == (pending ? 1u : 2u) &&
-                                                context.probe_steps == (pending ? 1u : 2u))),
-                      "only a counted tag-match pending call undoes one hit, while empty mismatch "
-                      "follows real cold probes");
+                              (!native_nzcv ||
+                               (context.dispatcher_entries == 1 && context.probe_steps == 1)),
+                      "L1 miss probes L2 once and only a matched pending thunk cancels its hit");
             };
             run_callable(false);
             if (native_nzcv) run_callable(true);
 
             auto cached_options = options;
             cached_options.entry_pc = entry_pc;
-            cached_options.local_dispatch_cache = true;
             cached_options.dispatch_mode = arm64::DispatchMode::InlineCounted;
             cached_options.dispatcher = reinterpret_cast<std::uintptr_t>(
                     native_nzcv ? &execution::SvmNativeDispatchNZCVCounted
                                 : &execution::SvmNativeDispatchCounted);
+            cached_options.l2_dispatcher = reinterpret_cast<std::uintptr_t>(
+                    native_nzcv ? &execution::SvmNativeL2DispatchNZCVCounted
+                                : &execution::SvmNativeL2DispatchCounted);
             const auto cached_code = arm64::Compile(source_program, cached_options);
-            Check(bool(cached_code) && cached_code.links.size() == 1 &&
-                          cached_code.links[0].kind == arm64::LinkKind::Dynamic,
-                  "one real dynamic site owns one fixed array relocation in the existing link "
-                  "collection");
+            Check(bool(cached_code) && cached_code.links.empty(),
+                  "dynamic tails borrow thread L1 without native DATA or link resources");
             const auto cached_entry = arena.Publish(cached_code.words, {}, cached_code.links);
-            const auto tuple_offset = WordOffset(cached_code.links[0].data_offset) * 4u;
-            const auto* tuple =
-                    reinterpret_cast<const std::uint8_t*>(cached_entry.entry) + tuple_offset;
-            const auto cache_fallback = reinterpret_cast<std::uintptr_t>(cached_entry.entry) +
-                                        cached_code.links[0].fallback_offset;
-            const auto pair_offset = [](u64 pc) {
-                return ((pc >> 2) & (arm64::abi::DynamicCacheEntries - 1)) * 16u;
-            };
-            bool callable_entries = true;
-            for (unsigned i = 0; i < arm64::abi::DynamicCacheEntries; ++i)
-                callable_entries &= Read64(tuple + i * 16 + 8) == cache_fallback;
-            Check(callable_entries &&
-                          Read64(tuple + arm64::abi::DynamicCacheEntries * 16) ==
-                                  (cached_entry.writable
-                                           ? reinterpret_cast<std::uintptr_t>(
-                                                     cached_entry.writable + tuple_offset)
-                                           : 0),
-                  "publication starts with sixteen callable site fallbacks and the actual writable "
-                  "DATA base alias");
+            const auto second_entry = arena.Publish(cached_code.words, {}, cached_code.links);
             execution::DispatchSlot cached_slot;
             cached_slot.pc = callable_pc;
-            cached_slot.entry = cold;
-            cached_slot.occupied = true;
-            // Both counted variants use the counted pending thunk; it removes
-            // only the preceding directory tag-match hit, never a local hit.
             cached_slot.entry = reinterpret_cast<execution::NativeCode::Function>(
                     &execution::SvmNativePendingCounted);
+            cached_slot.occupied = true;
             resolver.first = &cached_entry;
             resolver.second = &callable_target;
             resolver.ready = &cached_slot;
@@ -891,97 +972,93 @@ void LinkedDynamicPC() {
                               state.gprs[swift::runtime::x86::RCX] == target_pc &&
                               state.packed_flags == initial && context.dispatcher_entries == 1 &&
                               context.probe_steps == probes && context.cache_hits == hits,
-                      "local and directory hits preserve PC/Return/whole flags and count one "
-                      "dispatch "
-                      "with only real directory probes");
+                      "thread L1 and shared L2 preserve PC/Return/flags and count each transfer "
+                      "once");
             };
+            cache.Reset();
+            Check(cache.Data()[0].pc == UINT64_MAX && !cache.Data()[0].entry,
+                  "the empty slot-zero sentinel cannot falsely hit guest PC zero");
             context.slots = &cached_slot;
             context.mask = 0;
             run_cached(2, 1, 0, callable_pc);
-            const auto first_offset = pair_offset(callable_pc);
-            Check(Read64(tuple + first_offset + 8) == cache_fallback,
-                  "a callable pending payload leaves the local site fallback intact, including PC "
-                  "zero");
+            const auto first_index = execution::DispatchCache::Index(callable_pc);
+            Check(!cache.Data()[first_index].entry,
+                  "a pending L2 payload never enters the ready-only thread L1");
             run_cached(1, 1, 1, callable_pc);
-            if (cached_entry.writable) {
-                Check(Read64(tuple + first_offset) == callable_pc &&
-                              Read64(tuple + first_offset + 8) ==
-                                      reinterpret_cast<std::uintptr_t>(callable_target.entry),
-                      "only the ready code_id directory result warms this actual site's selected "
-                      "pair");
-                context.slots = nullptr;  // A real local hit does not consult even the nullable
-                                          // public directory.
-                run_cached(1, 0, 1, callable_pc);
-                for (unsigned i = 0; i < arm64::abi::DynamicCacheEntries; ++i)
-                    __atomic_store_n(reinterpret_cast<std::uintptr_t*>(cached_entry.writable +
-                                                                       tuple_offset + i * 16 + 8),
-                                     cache_fallback,
-                                     __ATOMIC_RELEASE);
-                context.slots = &cached_slot;
-                run_cached(1, 1, 1, callable_pc);
-                const auto changed_pc = callable_pc + 4;
-                auto changed_options = callable_target_options;
-                changed_options.entry_pc = changed_pc;
-                const auto changed_code = arm64::Compile(target_program, changed_options);
-                Check(bool(changed_code),
-                      "the different-index ready target preserves its actual PC observer");
-                const auto changed_target =
-                        arena.Publish(changed_code.words, {}, changed_code.links);
-                cached_slot.pc = changed_pc;
-                cached_slot.entry = changed_target.entry;
-                cached_slot.code_id = 1;
-                resolver.second = &changed_target;
-                run_cached(1, 1, 1, changed_pc);
-                const auto second_offset = pair_offset(changed_pc);
-                Check(first_offset != second_offset &&
-                              Read64(tuple + first_offset) == callable_pc &&
-                              Read64(tuple + second_offset) == changed_pc &&
-                              Read64(tuple + second_offset + 8) ==
-                                      reinterpret_cast<std::uintptr_t>(changed_target.entry),
-                      "different indices retain both full-PC ready targets");
-                context.slots = nullptr;
-                run_cached(1, 0, 1, callable_pc);
-                run_cached(1, 0, 1, changed_pc);
+            Check(cache.Data()[first_index].pc == callable_pc &&
+                          cache.Data()[first_index].entry == callable_target.entry,
+                  "the shared L2 ready match fills the supplied L1 slot");
+            context.slots = nullptr;
+            run_cached(1, 0, 1, callable_pc);
+            resolver.first = &second_entry;
+            run_cached(1, 0, 1, callable_pc);
+            Check(second_entry.entry != cached_entry.entry,
+                  "separate dynamic BR sites reuse the same thread-owned ready cache");
+            resolver.first = &cached_entry;
 
-                const auto collision_pc = callable_pc + arm64::abi::DynamicCacheEntries * 4;
-                auto collision_options = callable_target_options;
-                collision_options.entry_pc = collision_pc;
-                const auto collision_code = arm64::Compile(target_program, collision_options);
-                Check(bool(collision_code),
-                      "the same-index replacement preserves its actual PC observer");
-                const auto collision_target =
-                        arena.Publish(collision_code.words, {}, collision_code.links);
-                context.slots = &cached_slot;
-                cached_slot.pc = collision_pc;
-                cached_slot.entry = collision_target.entry;
-                cached_slot.code_id = 2;
-                resolver.second = &collision_target;
-                run_cached(1, 1, 1, collision_pc);
-                Check(pair_offset(collision_pc) == first_offset &&
-                              Read64(tuple + first_offset) == collision_pc &&
-                              Read64(tuple + first_offset + 8) ==
-                                      reinterpret_cast<std::uintptr_t>(collision_target.entry) &&
-                              Read64(tuple + second_offset) == changed_pc,
-                      "a full-PC collision probes the directory and replaces only its selected "
-                      "pair");
-                context.slots = nullptr;
-                run_cached(1, 0, 1, collision_pc);
-                run_cached(1, 0, 1, changed_pc);
-                context.slots = &cached_slot;
-                cached_slot.pc = callable_pc;
-                cached_slot.entry = callable_target.entry;
-                cached_slot.code_id = 0;
-                resolver.second = &callable_target;
-                run_cached(1, 1, 1, callable_pc);
-                context.slots = nullptr;
-                run_cached(1, 0, 1, callable_pc);
-                Check(Read64(tuple + second_offset) == changed_pc,
-                      "returning to an evicted target can refill without disabling the other "
-                      "index");
-            } else
-                Check(Read64(tuple + first_offset + 8) == cache_fallback,
-                      "single-mapping publication retains its callable fallback and uses the "
-                      "directory");
+            cache.Reset();
+            context.slots = &cached_slot;
+            run_cached(1, 1, 1, callable_pc);
+            const auto changed_pc = callable_pc + 4;
+            auto changed_options = callable_target_options;
+            changed_options.entry_pc = changed_pc;
+            const auto changed_code = arm64::Compile(target_program, changed_options);
+            Check(bool(changed_code), "a different-index target retains its own PC observer");
+            const auto changed_target = arena.Publish(changed_code.words, {}, changed_code.links);
+            cached_slot.pc = changed_pc;
+            cached_slot.entry = changed_target.entry;
+            cached_slot.code_id = 1;
+            resolver.second = &changed_target;
+            run_cached(1, 1, 1, changed_pc);
+            const auto second_index = execution::DispatchCache::Index(changed_pc);
+            Check(first_index != second_index && cache.Data()[first_index].pc == callable_pc &&
+                          cache.Data()[second_index].pc == changed_pc &&
+                          cache.Data()[second_index].entry == changed_target.entry,
+                  "different L1 indices retain both full-PC ready targets");
+            context.slots = nullptr;
+            run_cached(1, 0, 1, callable_pc);
+            run_cached(1, 0, 1, changed_pc);
+
+            const auto collision_pc = callable_pc + (u64{1} << SVM_DISPATCH_L1_BITS);
+            auto collision_options = callable_target_options;
+            collision_options.entry_pc = collision_pc;
+            const auto collision_code = arm64::Compile(target_program, collision_options);
+            Check(bool(collision_code), "a 1MiB alias target retains its own PC observer");
+            const auto collision_target =
+                    arena.Publish(collision_code.words, {}, collision_code.links);
+            context.slots = &cached_slot;
+            cached_slot.pc = collision_pc;
+            cached_slot.entry = collision_target.entry;
+            cached_slot.code_id = 2;
+            resolver.second = &collision_target;
+            run_cached(1, 1, 1, collision_pc);
+            Check(execution::DispatchCache::Index(collision_pc) == first_index &&
+                          cache.Data()[first_index].pc == collision_pc &&
+                          cache.Data()[first_index].entry == collision_target.entry &&
+                          cache.Data()[second_index].pc == changed_pc,
+                  "full-PC comparison sends a 1MiB alias through L2 before replacing its slot");
+            context.slots = nullptr;
+            run_cached(1, 0, 1, collision_pc);
+            run_cached(1, 0, 1, changed_pc);
+            context.slots = &cached_slot;
+            cached_slot.pc = callable_pc;
+            cached_slot.entry = callable_target.entry;
+            cached_slot.code_id = 0;
+            resolver.second = &callable_target;
+            run_cached(1, 1, 1, callable_pc);
+            context.slots = nullptr;
+            run_cached(1, 0, 1, callable_pc);
+            cache.ClearKey(callable_pc);
+            Check(!cache.Data()[first_index].entry &&
+                          cache.Data()[second_index].entry == changed_target.entry,
+                  "clearing one key preserves ready targets in other L1 slots");
+            context.slots = &cached_slot;
+            run_cached(1, 1, 1, callable_pc);
+            cache.Reset();
+            Check(cache.Data()[0].pc == UINT64_MAX && !cache.Data()[first_index].entry &&
+                          !cache.Data()[second_index].entry,
+                  "owner reset restores zero pages and the slot-zero sentinel");
+            run_cached(1, 1, 1, callable_pc);
         }
     }
 #endif
@@ -1113,7 +1190,7 @@ TEST_CASE("CompleteAdditionalEntries", "[arm64][native]") {
     CHECK_NOTHROW(CompleteAdditionalEntries());
 }
 
-TEST_CASE("LinkedDynamicPC", "[arm64][native]") { CHECK_NOTHROW(LinkedDynamicPC()); }
+TEST_CASE("LinkedDynamicPC", "[compile][arm64][native]") { CHECK_NOTHROW(LinkedDynamicPC()); }
 
 TEST_CASE("LinkedPinnedUniforms", "[compile][native][arm64]") {
     CHECK_NOTHROW(LinkedPinnedUniforms());

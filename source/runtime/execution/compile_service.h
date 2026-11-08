@@ -3,6 +3,7 @@
 #include "runtime/backend/code.h"
 #include "runtime/ir/program.h"
 #include "runtime/frontend/build_result.h"
+#include "runtime/frontend/source.h"
 #include "runtime/code_source.h"
 #include <string>
 
@@ -58,6 +59,9 @@ private:
     std::vector<std::uint64_t> optimizer_rows;
     const backend::CompileResult* last{};
     std::uint64_t entry_pc{};
+    // Rebuilt from current mappings before each synchronous BuildFrontend.
+    // Retained entries are never used to qualify later source mappings.
+    std::vector<frontend::BlockWindow> region_windows;
     std::vector<SourceSpan> source_spans;
     std::vector<std::uint64_t> continuations;
     CompileFailure failure{};

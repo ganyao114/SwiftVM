@@ -46,6 +46,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     o.context = this;
     o.target = KnownTargetInfo();
     o.isa_features = features;
+    o.thread_dispatch_cache = true;
     o.configure = [](void* p, const GuestLayout& l) noexcept {
         auto& v = *static_cast<Runtime*>(p);
         v.options.flags_offset = l.flags_offset;
@@ -122,4 +123,6 @@ bool RestoreGuestState(execution::FaultContext& c,
 }
 
 static_assert(offsetof(execution::NativeRunContext, state) == SVM_X64_CTX_STATE);
+static_assert(offsetof(execution::NativeRunContext, guest_fpsr) == SVM_X64_CTX_GUEST_FPSR);
+static_assert(offsetof(execution::NativeRunContext, l1) == SVM_X64_CTX_L1);
 }  // namespace swift::runtime::backend::x64

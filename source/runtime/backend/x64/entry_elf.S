@@ -52,6 +52,23 @@ SVM_FUNCTION \name
  mov eax,dword ptr [r12+SVM_X64_CTX_PC-SVM_X64_CTX_STATE]
  mov qword ptr [r12+rax],rdi
  PUBLISH_FLAGS
+ // R8 is only a scratch borrow of this thread's selected L1 slot. A null
+ // base retains the bare NativeRunContext callback ABI; VM entries have L1.
+ mov r8,qword ptr [r12+SVM_X64_CTX_L1-SVM_X64_CTX_STATE]
+ test r8,r8
+ jz .Ll2\@
+ mov eax,edi
+ and eax,(1<<SVM_DISPATCH_L1_BITS)-1
+ shl rax,SVM_DISPATCH_L1_ENTRY_SHIFT
+ add r8,rax
+ cmp qword ptr [r8],rdi
+ jne .Ll2\@
+ mov r11,qword ptr [r8+8]
+.if \counted
+ add qword ptr [r12+SVM_X64_CTX_HITS-SVM_X64_CTX_STATE],1
+.endif
+ jmp .Lenter\@
+.Ll2\@:
  mov rsi,qword ptr [r12+SVM_X64_CTX_SLOTS-SVM_X64_CTX_STATE]
  mov rdx,qword ptr [r12+SVM_X64_CTX_MASK-SVM_X64_CTX_STATE]
  mov rax,rdi
@@ -73,12 +90,26 @@ SVM_FUNCTION \name
  and rax,rdx
  jmp .Lprobe\@
 .Lready\@:
-.if \counted
- add qword ptr [r12+SVM_X64_CTX_HITS-SVM_X64_CTX_STATE],1
-.endif
  mov r11,qword ptr [rcx+8]
  test r11,r11
  jz .Lcold
+.if \counted
+ add qword ptr [r12+SVM_X64_CTX_HITS-SVM_X64_CTX_STATE],1
+.endif
+ // PendingCounted cancels the counted tag match. The uncounted root
+ // must go cold directly: it has no hit increment for that thunk to cancel.
+ // Only ready entries enter L1; reuse R8 rather than selecting/hash again.
+ cmp dword ptr [rcx+SVM_DISPATCH_CODE_ID_OFFSET],-1
+.if \counted
+ je .Lenter\@
+.else
+ je .Lcold
+.endif
+ test r8,r8
+ jz .Lenter\@
+ mov qword ptr [r8+8],r11
+ mov qword ptr [r8],rdi
+.Lenter\@:
  mov rax,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
  mov rcx,qword ptr [r12+SVM_X64_CTX_ANCHOR-SVM_X64_CTX_STATE]
  mov qword ptr [rax],rcx

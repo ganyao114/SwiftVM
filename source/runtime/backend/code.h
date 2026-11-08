@@ -35,7 +35,7 @@ struct FaultSite {
 
 static_assert(sizeof(FaultSite) == 32);
 
-enum class LinkKind : std::uint8_t { Static, Dynamic };
+enum class LinkKind : std::uint8_t { Static };
 
 struct LinkSite {
     LinkKind kind{LinkKind::Static};
@@ -69,6 +69,9 @@ struct CompileResult {
     // True only for a complete opt-in symbol recording. Ordinary JIT keeps
     // its original address materializations and allocates no relocation rows.
     bool relocatable{};
+    // Actual emitted dynamic tails need the runtime's thread dispatch cache.
+    // A transient JIT resource fact; persisted code is provisioned on restore.
+    bool has_indirect_dispatch{};
     ir::NodeId node{};
     ir::BlockId block{};
     std::vector<std::uint32_t> words;

@@ -22,8 +22,11 @@ public:
     bool DeferCompilation(std::uint64_t pc, std::uint16_t threshold);
     void DisableCompilation(std::uint64_t pc);
     void InsertReady(std::uint64_t pc, NativeCode, std::span<const backend::EntryPoint> extra);
-    void AddStaticLink(const NativeCode&, const backend::LinkSite&);
-    void AddIndirectSite(const NativeCode&, const backend::LinkSite&);
+    // A non-null prepared target was already resolved from this cache and
+    // initialized before CodeHeap committed this unit. Only retain its unlink row.
+    void AddStaticLink(const NativeCode&,
+                       const backend::LinkSite&,
+                       NativeCode::Function prepared_target = nullptr);
     void ResetLinks() noexcept;
     void Clear() noexcept;
     void Release() noexcept;
@@ -57,10 +60,9 @@ private:
         std::uintptr_t* writable;
         const std::uintptr_t* executable;
         std::uint32_t next{UINT32_MAX}, branch_back_bytes{};
-        backend::LinkKind kind{backend::LinkKind::Static};
     };
 
-    static_assert(sizeof(Relocation) == 32);
+    static_assert(sizeof(Relocation) == 24);
     const HostBackendOps& backend;
     DispatchSlot empty;
     std::vector<DispatchSlot> slots;

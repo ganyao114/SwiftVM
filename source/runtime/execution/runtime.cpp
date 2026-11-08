@@ -93,6 +93,7 @@ void VM::ObserveFinal() noexcept {
     stats.dispatches = thread.native.dispatcher_entries;
     stats.cache_hits = thread.native.cache_hits;
     stats.directory_probe_steps = thread.native.probe_steps;
+    stats.thread_l1_bytes = thread.l1.Data() ? DispatchCache::Bytes : 0;
     for (const auto& cache : caches) {
         stats.patched_links += cache.Patched();
         stats.pending_links += cache.Pending();
@@ -100,6 +101,13 @@ void VM::ObserveFinal() noexcept {
         stats.link_relocation_rows += cache.LinkRows();
         stats.link_relocation_capacity += cache.LinkCapacity();
     }
+}
+
+void VM::EnsureThreadDispatch() {
+    if (!backend.thread_dispatch_cache || thread.l1.Data()) return;
+    thread.l1.Ensure();
+    stats.thread_dispatch_cache = true;
+    RefreshNative(thread.native);
 }
 
 MappingRelease VM::Close() noexcept {
@@ -117,8 +125,10 @@ MappingRelease VM::Close() noexcept {
         for (auto& cache : caches) cache.Release();
         thread.anchor = {};
         RefreshNative(thread.native);
+        thread.native.l1 = nullptr;
+        native = Merge(thread.l1.Release(), empty_l1.Release());
         compiler.Release();
-        native = heap.Release();
+        native = Merge(native, heap.Release());
     }
     // Guest image/stack teardown belongs to run lifetime, as before. Native
     // cache/buffer release above remains in the complete compile window.
@@ -296,7 +306,7 @@ void VM::Execute() {
             stats.private_uniforms = true;
             stats.pinned_uniform_slots = backend.pinned_uniform_slots;
             stats.native_nzcv = backend.capabilities.native_nzcv;
-            stats.native_local_cache = backend.reset_indirect != nullptr;
+            stats.thread_dispatch_cache = backend.thread_dispatch_cache;
             // All mutable recovery state is in GuestThread, before this jump point.
             // Native and its cold resolver end active before creating C++ owners.
             if (sigsetjmp(thread.faults.jump, 1)) {
@@ -388,7 +398,13 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
     if (mxcsr & ~u64{0xffff})
         swift::ThrowError("guest MXCSR contains reserved bits", ErrorKind::GuestFault);
     const auto daz = (mxcsr >> 6) & 1, ftz = (mxcsr >> 15) & 1;
-    thread.fp_mode = backend.specializes_fp_flush ? static_cast<std::uint8_t>(daz | (ftz << 1)) : 0;
+    const auto mode =
+            backend.specializes_fp_flush ? static_cast<std::uint8_t>(daz | (ftz << 1)) : 0;
+    if (mode != thread.fp_mode) {
+        RuntimeTimer total{stats.compile_request_ns};
+        thread.l1.Reset();
+        thread.fp_mode = mode;
+    }
     if (backend.update_fp) backend.update_fp(backend.context, thread.native, mxcsr);
     RefreshNative(thread.native);
 }

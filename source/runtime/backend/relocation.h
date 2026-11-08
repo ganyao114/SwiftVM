@@ -16,6 +16,7 @@ enum class HostSymbol : std::uint16_t {
     Exit = 2,
     GuestCpuQuery = 3,
     GuestSystemQuery = 4,
+    DispatcherL2 = 5,
     ArmPairBridge = 16,
     ArmX87Bridge = 17,
     ArmVectorBridge = 18,

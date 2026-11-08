@@ -356,6 +356,198 @@ void PackedFloatingArithmetic() {
     }
 }
 
+void PackedFPStatus() {
+    using Vector = std::array<u64, 2>;
+
+    struct State {
+        Vector left, right, result{};
+        u64 flags{};
+        std::uint32_t control{}, status{};
+        Vector kept_left{}, kept_right{};
+    };
+
+    struct Case {
+        OpCode opcode;
+        unsigned relation;
+        Vector left, right, expected;
+        std::uint32_t status;
+        std::uint8_t mode{};
+        bool scalar{};
+    };
+
+    [[maybe_unused]] constexpr u64 initial_flags = 0xa5a50000bc00003cULL;
+    for (const unsigned bits : {32u, 64u}) {
+        const u64 one = bits == 32 ? 0x3f800000 : 0x3ff0000000000000,
+                  two = bits == 32 ? 0x40000000 : 0x4000000000000000,
+                  half = bits == 32 ? 0x3f000000 : 0x3fe0000000000000,
+                  minimum = bits == 32 ? 0x00800000 : 0x0010000000000000,
+                  infinity = bits == 32 ? 0x7f800000 : 0x7ff0000000000000,
+                  qnan = infinity | (u64{1} << (bits == 32 ? 22 : 51)) | 1, snan = infinity | 1,
+                  sign = u64{1} << (bits - 1), mask = bits == 32 ? UINT32_MAX : UINT64_MAX;
+        const auto pack = [&](u64 low, u64 high, u64 tail) {
+            return bits == 64 ? Vector{low, high} : Vector{low | (high << 32), tail | (tail << 32)};
+        };
+        const auto compare = [&](unsigned relation, u64 nan, std::uint32_t status) {
+            // Lane 0 raises DE; lane 1 independently classifies a NaN. Other
+            // lanes are equal normals, so their expected mask is independent.
+            return Case{OpCode::VecFCmpMask,
+                        relation,
+                        pack(1, nan, one),
+                        pack(0, one, one),
+                        pack((relation & 4) ? mask : 0,
+                             (relation & 8) ? mask : 0,
+                             (relation & 2) ? mask : 0),
+                        status};
+        };
+        const std::array cases{
+                compare(17, qnan, 3),  // Native signaling LT.
+                compare(1, qnan, 2),   // Quiet LT needs signaling-host correction.
+                compare(2, qnan, 2),   // Native quiet EQ.
+                compare(2, snan, 3),
+                compare(18, qnan, 3),  // Signaling EQ needs quiet-host correction.
+                compare(8, qnan, 2),   // Quiet unordered uses a composite predicate.
+                compare(24, qnan, 3),
+                compare(0, qnan, 2),  // Constant false still observes exception inputs.
+                compare(16, qnan, 3),
+                compare(15, snan, 3),  // Constant true must observe sNaN even when quiet.
+                compare(31, qnan, 3),
+                Case{OpCode::VecFCmpMask,
+                     17,
+                     pack(one, snan, 1),
+                     pack(two, qnan, qnan),
+                     pack(mask, snan, 1),
+                     0,
+                     0,
+                     true},
+                // NaN suppresses same-lane DE, while another lane may still set it.
+                Case{OpCode::VecFCmpMask,
+                     17,
+                     pack(1, 1, one),
+                     pack(qnan, 0, one),
+                     pack(0, 0, 0),
+                     3},
+                // Zero-divide has priority over DE only in its own lane.
+                Case{OpCode::VecFDiv,
+                     0,
+                     pack(1, 1, one),
+                     pack(0, one, one),
+                     pack(infinity, 1, one),
+                     6},
+                Case{OpCode::VecFMul,
+                     0,
+                     pack(1, sign | 1, one),
+                     pack(one, one, one),
+                     pack(0, sign, one),
+                     0,
+                     1},
+                Case{OpCode::VecFMul,
+                     0,
+                     pack(minimum, sign | minimum, one),
+                     pack(half, half, one),
+                     pack(0, sign, one),
+                     48,
+                     2},
+                Case{OpCode::VecFMul,
+                     0,
+                     pack(1, sign | 1, one),
+                     pack(one, one, one),
+                     pack(0, sign, one),
+                     0,
+                     3},
+        };
+        for (const auto& test : cases) {
+            Builder builder{Scope::Block};
+            Need(builder.BeginBlock(Create(builder)));
+            const auto load = [&](std::uint32_t offset) {
+                return Need(builder.Emit<OpCode::LoadUniform>(
+                        Type::V128, {Operand::Uniform(offset, Type::V128)}));
+            };
+            const auto store = [&](std::uint32_t offset, Value value) {
+                Need(builder.Emit<OpCode::StoreUniform>(
+                        Type::Void,
+                        {Operand::Uniform(offset, Type::V128), Operand::ValueOf(value)}));
+            };
+            const auto left = load(offsetof(State, left)), right = load(offsetof(State, right));
+            const auto result =
+                    test.opcode == OpCode::VecFCmpMask
+                            ? Need(builder.Emit<OpCode::VecFCmpMask>(
+                                      Type::V128,
+                                      {Operand::ValueOf(left),
+                                       Operand::ValueOf(right),
+                                       Operand::Immediate(bits, Type::U8),
+                                       Operand::Immediate(test.relation, Type::U8),
+                                       Operand::Immediate(test.scalar, Type::U8)}))
+                            : Need(builder.Append(test.opcode,
+                                                  Type::V128,
+                                                  {Operand::ValueOf(left),
+                                                   Operand::ValueOf(right),
+                                                   Operand::Immediate(bits, Type::U8)}));
+            store(offsetof(State, result), result);
+            store(offsetof(State, kept_left), left);
+            store(offsetof(State, kept_right), right);
+            const auto shadow = Need(builder.Emit<OpCode::LoadUniform>(
+                    Type::U32, {Operand::Uniform(offsetof(State, control), Type::U32)}));
+            const auto status =
+                    Need(builder.Emit<OpCode::ReadFPStatus>(Type::U32, {Operand::ValueOf(shadow)}));
+            Need(builder.Emit<OpCode::StoreUniform>(
+                    Type::Void,
+                    {Operand::Uniform(offsetof(State, status), Type::U32),
+                     Operand::ValueOf(status)}));
+            Need(builder.EndBlock(Terminal::Return(Constant(builder, 42))));
+            const auto program = Submit(builder);
+            // Known software control, dynamically read control, and AFP's FIZ.
+            for (unsigned profile = 0; profile != 3; ++profile) {
+                arm64::CompileOptions options{offsetof(State, flags)};
+                options.mxcsr_flush_offset = profile == 2 ? UINT32_MAX : offsetof(State, control);
+                options.mxcsr_flush_mode = profile == 0 ? test.mode : UINT8_MAX;
+                options.native_fp_environment = profile == 2;
+                const auto code = ::Compile(program, options);
+#if defined(__aarch64__) && defined(__ANDROID__)
+                if (!NativeMode() || (profile == 2 && !TestBackendOps().capabilities.afp)) continue;
+                State state{test.left, test.right};
+                state.flags = initial_flags;
+                state.control = 0x1fa0u | ((test.mode & 1u) << 6) | ((test.mode & 2u) << 14);
+                swift::tests::NativeCode native{code.words, swift::tests::NativeISA::Arm64Android};
+
+                struct RestoreFP {
+                    u64 control, status;
+
+                    RestoreFP(u64 next) {
+                        asm volatile("mrs %0,fpcr\nmrs %1,fpsr" : "=r"(control), "=r"(status));
+                        const u64 previous_overflow = 4;
+                        asm volatile("msr fpcr,%0\nmsr fpsr,%1" ::"r"(next), "r"(previous_overflow)
+                                     : "memory");
+                    }
+
+                    ~RestoreFP() {
+                        asm volatile("msr fpcr,%0\nmsr fpsr,%1" ::"r"(control), "r"(status)
+                                     : "memory");
+                    }
+                };
+
+                u64 returned;
+                {
+                    const u64 fpcr = profile == 2
+                                             ? 6u | (test.mode & 1u) | ((u64{test.mode} & 2u) << 23)
+                                             : 0;
+                    RestoreFP restore{fpcr};
+                    returned = native.Run(reinterpret_cast<std::uint8_t*>(&state));
+                }
+                INFO("bits=" << bits << " predicate=" << test.relation
+                             << " mode=" << unsigned(test.mode) << " profile=" << profile);
+                Check(returned == 42 && state.result == test.expected &&
+                              state.kept_left == test.left && state.kept_right == test.right,
+                      "packed/status consumers preserve input homes, scalar upper lanes and "
+                      "numeric results");
+                Check(state.status == (test.status | 40u) && state.flags == initial_flags,
+                      "native FP status preserves prior sticky and shadow while respecting DE/NaN "
+                      "precedence");
+#endif
+            }
+        }
+    }
+}
+
 void VectorLaneMasks() {
     std::array<std::uint8_t, 128> state{};
     Builder builder{Scope::Block};
@@ -445,3 +637,5 @@ TEST_CASE("VectorSignedWidenMultiply", "[compile][native][arm64]") {
 TEST_CASE("PackedFloatingArithmetic", "[compile][native][arm64]") {
     CHECK_NOTHROW(PackedFloatingArithmetic());
 }
+
+TEST_CASE("PackedFPStatus", "[compile][native][arm64]") { CHECK_NOTHROW(PackedFPStatus()); }

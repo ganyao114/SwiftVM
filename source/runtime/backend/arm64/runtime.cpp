@@ -28,13 +28,18 @@ Runtime::Runtime(bool diagnostic, execution::HostCapabilities host) noexcept : c
     options.native_fp_environment = true;
     options.dispatch_mode = diagnostic ? backend::arm64::DispatchMode::InlineCounted
                                        : backend::arm64::DispatchMode::Inline;
-    options.local_dispatch_cache = options.callable_directory = true;
     const auto dispatch = capabilities.native_nzcv
                                   ? (diagnostic ? &execution::SvmNativeDispatchNZCVCounted
                                                 : &execution::SvmNativeDispatchNZCV)
                                   : (diagnostic ? &execution::SvmNativeDispatchCounted
                                                 : &execution::SvmNativeDispatch);
     options.dispatcher = reinterpret_cast<std::uintptr_t>(dispatch);
+    const auto l2_dispatch = capabilities.native_nzcv
+                                     ? (diagnostic ? &execution::SvmNativeL2DispatchNZCVCounted
+                                                   : &execution::SvmNativeL2DispatchNZCV)
+                                     : (diagnostic ? &execution::SvmNativeL2DispatchCounted
+                                                   : &execution::SvmNativeL2Dispatch);
+    options.l2_dispatcher = reinterpret_cast<std::uintptr_t>(l2_dispatch);
     options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
     if (!capabilities.afp) options.mxcsr_flush_offset = offsetof(GuestState, mxcsr);
 }
@@ -47,6 +52,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     ops.pinned_uniform_slots = 16;
     ops.pinned_vectors = true;
     ops.specializes_fp_flush = !capabilities.afp;
+    ops.thread_dispatch_cache = true;
     ops.configure = [](void* raw, const GuestLayout& layout) noexcept {
         auto& self = *static_cast<Runtime*>(raw);
         self.options.flags_offset = layout.flags_offset;
@@ -115,7 +121,6 @@ execution::HostBackendOps Runtime::Bind() noexcept {
             };
     ops.patch_link = backend::arm64::PatchNativeLink;
     ops.unlink = backend::arm64::UnlinkNativeLink;
-    ops.reset_indirect = backend::arm64::ResetIndirectSite;
     ops.update_fp = [](void* raw, NativeRunContext& native, std::uint32_t mxcsr) noexcept {
         const auto& self = *static_cast<Runtime*>(raw);
         const auto daz = (mxcsr >> 6) & 1u, ftz = (mxcsr >> 15) & 1u;
@@ -165,6 +170,8 @@ SVM_CHECK_CONTEXT(guest_fpcr, SVM_A64_CTX_GUEST_FPCR);
 SVM_CHECK_CONTEXT(fp_environment, SVM_A64_CTX_FP_ENVIRONMENT);
 SVM_CHECK_CONTEXT(probe_steps, SVM_A64_CTX_PROBES);
 SVM_CHECK_CONTEXT(pinned_vector_offset, SVM_A64_CTX_VECTOR_OFFSET);
+SVM_CHECK_CONTEXT(guest_fpsr, SVM_A64_CTX_GUEST_FPSR);
+SVM_CHECK_CONTEXT(l1, SVM_A64_CTX_L1);
 #undef SVM_CHECK_CONTEXT
 
 namespace {

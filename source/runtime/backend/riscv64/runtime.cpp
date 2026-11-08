@@ -25,6 +25,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     execution::HostBackendOps ops;
     ops.context = this;
     ops.target = backend::riscv64::KnownTargetInfo();
+    ops.thread_dispatch_cache = true;
     ops.pinned_uniform_slots = 0;
     ops.pinned_vectors = false;
     ops.configure = [](void* raw, const GuestLayout& layout) noexcept {
@@ -117,6 +118,7 @@ SVM_CHECK_CONTEXT(guest_fpcr, SVM_RV_CTX_GUEST_FCSR);
 SVM_CHECK_CONTEXT(fp_environment, SVM_RV_CTX_FP_ENVIRONMENT);
 SVM_CHECK_CONTEXT(probe_steps, SVM_RV_CTX_PROBES);
 SVM_CHECK_CONTEXT(atomic_service, SVM_RV_CTX_ATOMIC_SERVICE);
+SVM_CHECK_CONTEXT(l1, SVM_RV_CTX_L1);
 #undef SVM_CHECK_CONTEXT
 
 void RestoreGuestState(execution::FaultContext& context, std::span<const std::byte> gprs) noexcept {

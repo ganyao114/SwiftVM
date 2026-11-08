@@ -15,6 +15,7 @@ inline constexpr std::uint64_t PackedDynamicFlags = 0xf40000ff;
 inline constexpr unsigned DispatchSlotShift = SVM_A64_SLOT_SHIFT,
                           DispatchOccupiedOffset = SVM_A64_OCCUPIED_OFFSET,
                           DispatchHashShift = SVM_A64_DISPATCH_HASH_SHIFT;
+inline constexpr unsigned L1Bits = SVM_A64_L1_BITS, L1EntryShift = SVM_A64_L1_ENTRY_SHIFT;
 inline constexpr unsigned StateRegister = SVM_A64_STATE_REG, ExtraScalarRegister = 28;
 
 constexpr int ContextOffset(unsigned offset) noexcept {
@@ -24,9 +25,8 @@ constexpr int ContextOffset(unsigned offset) noexcept {
 inline constexpr int ContextSlotsOffset = ContextOffset(SVM_A64_CTX_SLOTS),
                      ContextDispatchesOffset = ContextOffset(SVM_A64_CTX_DISPATCHES),
                      ContextHitsOffset = ContextOffset(SVM_A64_CTX_HITS),
-                     ContextProbesOffset = ContextOffset(SVM_A64_CTX_PROBES);
-// Per actual dynamic tail: sixteen (PC,entry) pairs plus one writable base alias.
-inline constexpr unsigned DynamicCacheEntries = 16, DynamicCacheWords = DynamicCacheEntries * 4 + 2;
+                     ContextProbesOffset = ContextOffset(SVM_A64_CTX_PROBES),
+                     ContextL1Offset = ContextOffset(SVM_A64_CTX_L1);
 
 // The runtime's pinned Uniform ABI. Callers admit only the actual 8/12/16
 // layouts; this one mapping is consumed by allocation and machine emission.

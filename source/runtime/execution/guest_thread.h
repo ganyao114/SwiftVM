@@ -19,6 +19,7 @@ struct GuestThread {
 
     FaultContext faults;
     NativeRunContext native;
+    DispatchCache l1;
     backend::NativeCode anchor;
     std::uint8_t fp_mode{};
     swift::Failure bridge_failure;

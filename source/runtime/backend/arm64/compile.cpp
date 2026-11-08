@@ -1,5 +1,5 @@
-#include "emit.h"
 #include "allocation_detail.h"
+#include "emit.h"
 
 #include <algorithm>
 
@@ -12,6 +12,7 @@ void ClearCode(backend::CompileResult& result) noexcept {
     result.entries.clear();
     result.relocations.clear();
     result.relocatable = false;
+    result.has_indirect_dispatch = false;
 }
 }  // namespace
 

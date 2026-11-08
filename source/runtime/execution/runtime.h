@@ -4,9 +4,9 @@
 #include <span>
 #include <string>
 
+#include "base/error.h"
 #include "runtime/frontend/source.h"
 #include "runtime/ir/types.h"
-#include "base/error.h"
 
 namespace swift::runtime::execution {
 
@@ -59,12 +59,13 @@ struct RuntimeStats {
     std::uint64_t code_units_published{}, static_links{}, patched_links{}, pending_links{},
             pending_targets{};
     std::uint64_t link_relocation_rows{}, link_relocation_capacity{};
+    std::uint64_t thread_l1_bytes{};
     std::uint64_t smc_write_faults{}, smc_function_single_block_attempts{};
     std::uint64_t smc_file_write_invalidations{};
     std::uint64_t fault_sites{}, unaligned_recoveries{}, unaligned_patches{};
     std::uint64_t run_lifetime_ns{}, unsupported_syscalls{};
     std::uint32_t pinned_uniform_slots{};
-    bool native_local_cache{};
+    bool thread_dispatch_cache{};
     bool code_wx_fallback{}, rcpc_loads{}, rcpc_imm9{}, fault_locations{}, recover_unaligned{},
             private_uniforms{}, native_nzcv{};
     // frontend_ns includes formation, actual byte decoding, buffer management

@@ -1,9 +1,9 @@
-#include "relocate.h"
 #include "compile.h"
 #include "encoding.h"
-#include "vector_helper.h"
-#include "runtime/arch/x86/cpu.h"
+#include "relocate.h"
 #include "runtime/arch/arm64/numeric.h"
+#include "runtime/arch/x86/cpu.h"
+#include "vector_helper.h"
 
 #include <cstring>
 
@@ -29,6 +29,8 @@ std::uintptr_t ResolveSymbol(HostSymbol symbol, const CompileOptions& options) n
             return reinterpret_cast<std::uintptr_t>(&::swift::runtime::arm64::ExecuteNumeric);
         case HostSymbol::Dispatcher:
             return options.dispatcher;
+        case HostSymbol::DispatcherL2:
+            return options.l2_dispatcher;
         case HostSymbol::Exit:
             return options.exit_handler;
         case HostSymbol::GuestCpuQuery:

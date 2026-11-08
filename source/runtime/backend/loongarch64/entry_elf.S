@@ -86,6 +86,21 @@ st.d $t4, $r22, SVM_LA_CTX_REL(\field)
 .if \counted
 SVM_LA_COUNT SVM_LA_CTX_DISPATCHES
 .endif
+// t6 retains this transfer's L1 slot through the one L2 probe loop.
+// A legacy context's null L1 selects its existing L2-only path.
+ld.d $t6, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_L1)
+beqz $t6, 6f
+bstrpick.d $t2, $a0, (SVM_DISPATCH_L1_BITS - 1), 0
+slli.d $t2, $t2, SVM_DISPATCH_L1_ENTRY_SHIFT
+add.d $t6, $t6, $t2
+ld.d $t5, $t6, 0
+bne $t5, $a0, 6f
+ld.d $t5, $t6, 8
+.if \counted
+SVM_LA_COUNT SVM_LA_CTX_HITS
+.endif
+jirl $zero, $t5, 0
+6:
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_SLOTS)
 ld.d $t1, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_MASK)
 beqz $t0, 3f
@@ -106,6 +121,14 @@ beqz $t5, 3f
 .if \counted
 SVM_LA_COUNT SVM_LA_CTX_HITS
 .endif
+// LD.W sign-extends UINT32_MAX; pending callable thunks never enter L1.
+ld.w $t4, $t3, SVM_DISPATCH_CODE_ID_OFFSET
+addi.w $t4, $t4, 1
+beqz $t4, 7f
+beqz $t6, 7f
+st.d $t5, $t6, 8
+st.d $a0, $t6, 0
+7:
 jirl $zero, $t5, 0
 2:
 ld.bu $t5, $t3, SVM_DISPATCH_OCCUPIED_OFFSET

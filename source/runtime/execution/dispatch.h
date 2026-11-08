@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <type_traits>
 
+#include "dispatch_cache.h"
 #include "runtime/arch/arm64/state.h"
 #include "runtime/arch/x86/state.h"
 #include "runtime/atomic.h"
@@ -20,10 +21,11 @@ constexpr std::size_t DirectoryIndex(std::uint64_t pc, std::size_t mask) noexcep
     return (pc ^ (pc >> SVM_DISPATCH_HASH_SHIFT)) & mask;
 }
 
-// The runtime's sole PC directory, shared directly with native dispatch.
+// The VM/domain's authoritative L2 directory, shared directly with native dispatch.
 // Public pending slots may have null entry. The Process-owned callable
 // directory instead fills pending/empty payloads with a cold thunk; only its
-// valid code_id indexes borrowed NativeCode metadata in that same owner.
+// valid code_id indexes borrowed NativeCode metadata in that same owner. Thread
+// L1 entries borrow ready payloads from this directory and own no code.
 struct alignas(32) DispatchSlot {
     std::uint64_t pc{};
     NativeCode::Function entry{};
@@ -84,6 +86,7 @@ struct NativeRunContext {
     // Raw host exception status survives cold lookup and numerical helpers.
     // Backends translate it only at architectural status observers.
     std::uint64_t guest_fpsr{};
+    DispatchEntry* l1{};
 };
 
 static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1040);
@@ -108,6 +111,7 @@ static_assert(offsetof(NativeRunContext, pinned_vector_offset) == 144);
 static_assert(offsetof(NativeRunContext, atomic_service) == 152);
 static_assert(offsetof(NativeRunContext, state) == 160);
 static_assert(offsetof(NativeRunContext, guest_fpsr) == 1024);
+static_assert(offsetof(NativeRunContext, l1) == SVM_DISPATCH_CTX_L1);
 
 // Linked units enter/leave through these thunks. Only SvmNativeExit returns to C++;
 // the root frame owns the one save of x19..x30 and host d8..d15 across all
@@ -124,6 +128,12 @@ extern "C" void SvmNativeDispatch() noexcept;
 extern "C" void SvmNativeDispatchCounted() noexcept;
 extern "C" void SvmNativeDispatchNZCV() noexcept;
 extern "C" void SvmNativeDispatchNZCVCounted() noexcept;
+// ARM64 inline L1 misses carry the already selected slot in x7. These
+// entries probe only L2 and do not count the same dispatch a second time.
+extern "C" void SvmNativeL2Dispatch() noexcept;
+extern "C" void SvmNativeL2DispatchCounted() noexcept;
+extern "C" void SvmNativeL2DispatchNZCV() noexcept;
+extern "C" void SvmNativeL2DispatchNZCVCounted() noexcept;
 // Callable-directory tag matches only. x0 is the real target PC; the counted
 // entry cancels exactly the hit increment just made before this BR.
 extern "C" void SvmNativePending() noexcept;

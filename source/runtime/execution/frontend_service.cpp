@@ -13,6 +13,7 @@ frontend::BuildResult CompileService::BuildFrontend(ir::Scope scope,
                                                     bool mutable_entry,
                                                     bool private_state,
                                                     bool collect) {
+    region_windows.clear();
     const bool function = scope == ir::Scope::Function && !mutable_entry;
     if (scope == ir::Scope::Function && mutable_entry)
         ++vm.stats.smc_function_single_block_attempts;
@@ -32,7 +33,6 @@ frontend::BuildResult CompileService::BuildFrontend(ir::Scope scope,
     const auto pc = vm.PC();
     const frontend::BlockWindow block{pc, vm.memory.CodeAt(pc)};
     std::span<const frontend::BlockWindow> windows{&block, 1};
-    std::vector<frontend::BlockWindow> region_windows;
     if (function) {
         for (const auto& region : vm.memory.Regions())
             if ((region.protection & (PROT_READ | PROT_EXEC)) == (PROT_READ | PROT_EXEC) &&

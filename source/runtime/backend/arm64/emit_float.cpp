@@ -6,210 +6,6 @@ namespace swift::runtime::backend::arm64 {
 
 namespace detail {
 
-void Writer::HandleReadFPStatusFamily(OpContext& ctx) {
-    Move(0, Read(ctx.cursor.Take(), 0));
-    __ mrs(v::x30, v::FPSR);
-    Extract(ctx.destination, 30, 0, 1);
-    Extract(17, 30, 7, 1);
-    __ orr(W(ctx.destination), W(ctx.destination), Operand(v::w17, v::LSL, 1));
-    Extract(17, 30, 1, 4);
-    __ orr(W(ctx.destination), W(ctx.destination), Operand(v::w17, v::LSL, 2));
-    __ and_(v::w0, v::w0, Operand(u64{63}));
-    __ orr(W(ctx.destination), W(ctx.destination), Operand(v::w0));
-}
-
-void Writer::LoadMxcsrFlushControl() {
-    if (options.mxcsr_flush_mode != UINT8_MAX || options.mxcsr_flush_offset == UINT32_MAX) return;
-    const auto offset = options.mxcsr_flush_offset;
-    if (!(offset & 3) && offset / 4 <= 4095)
-        Memory(true, 32, 0, 19, offset / 4);
-    else {
-        Immediate(17, offset);
-        __ add(v::x17, v::x19, Operand(v::x17));
-        Memory(true, 32, 0, 17);
-    }
-}
-
-void Writer::RecordDenormalInput(unsigned value,
-                                 unsigned bits,
-                                 unsigned count,
-                                 std::initializer_list<unsigned> peers,
-                                 unsigned denominator,
-                                 unsigned fma_flags) {
-    if (options.mxcsr_flush_mode != UINT8_MAX && (options.mxcsr_flush_mode & 1)) return;
-    const unsigned fraction = bits == 32 ? 23 : 52, exponent = bits == 32 ? 8 : 11;
-    const u64 exponent_mask = ((u64{1} << exponent) - 1) << fraction;
-    const bool fused = fma_flags != UINT32_MAX;
-    const std::span<const unsigned> inputs =
-            fused ? std::span<const unsigned>{peers.begin(), peers.size()}
-                  : std::span<const unsigned>{&value, 1};
-    u32 disabled = UINT32_MAX;
-    if (options.mxcsr_flush_mode == UINT8_MAX && options.mxcsr_flush_offset != UINT32_MAX) {
-        disabled = masm.Here();
-        __ tbnz(v::w0, 6, std::int64_t{0});
-    } else if (options.mxcsr_flush_mode == UINT8_MAX && options.native_fp_environment) {
-        // AFP profiles keep DAZ in FPCR.FIZ without a software MXCSR load.
-        __ mrs(v::x17, v::FPCR);
-        disabled = masm.Here();
-        __ tbnz(v::x17, 0, std::int64_t{0});
-    }
-    u32 normal = UINT32_MAX;
-    if (bits == 32 && count == 4) {
-        // A whole normal packed operand needs one exponent reduction, rather
-        // than four scalar classification paths. Only reserved SIMD scratches
-        // absent from this operation's inputs may be used here.
-        unsigned scratch{};
-        for (const unsigned candidate : {VectorTemporary(), VectorTemporary(true), 0u, 1u}) {
-            bool input = candidate == value;
-            for (const auto peer : peers) input |= candidate == peer;
-            if (!input) {
-                scratch = candidate;
-                break;
-            }
-        }
-        std::array<u32, 3> rare{};
-        unsigned rare_count{};
-        for (const auto input : inputs) {
-            __ shl(Lanes(scratch, 32), Lanes(input, 32), 1);
-            __ ushr(Lanes(scratch, 32), Lanes(scratch, 32), 24);
-            __ uminv(S(scratch), Lanes(scratch, 32));
-            __ fmov(v::w16, S(scratch));
-            rare[rare_count++] = masm.Here();
-            __ cbz(v::w16, std::int64_t{0});
-        }
-        normal = masm.Here();
-        __ b(std::int64_t{0});
-        for (unsigned i = 0; i < rare_count; ++i) masm.Patch(rare[i], masm.Here());
-    }
-    for (unsigned lane = 0; lane < count; ++lane) {
-        std::array<u32, 16> done{};
-        unsigned done_count{};
-        const auto skip_zero = [&](const v::Register& reg) {
-            done[done_count++] = masm.Here();
-            __ cbz(reg, std::int64_t{0});
-        };
-        const auto skip_nonzero = [&](const v::Register& reg) {
-            done[done_count++] = masm.Here();
-            __ cbnz(reg, std::int64_t{0});
-        };
-        const auto read = [&](unsigned reg) { __ umov(R(16, bits), Lanes(reg, bits), lane); };
-        const auto zero = [&](unsigned reg) {
-            read(reg);
-            __ lsl(R(17, bits), R(16, bits), 1);
-            skip_zero(R(17, bits));
-        };
-        const auto nan = [&](unsigned reg) {
-            read(reg);
-            Extract(17, 16, fraction, exponent);
-            __ eor(v::x17, v::x17, Operand((u64{1} << exponent) - 1));
-            const auto finite = masm.Here();
-            __ cbnz(v::x17, std::int64_t{0});
-            __ lsl(R(17, bits), R(16, bits), bits - fraction);
-            skip_nonzero(R(17, bits));
-            masm.Patch(finite, masm.Here());
-        };
-        if (fused) {
-            std::array<u32, 3> denormal{};
-            unsigned denormal_count{};
-            for (const auto input : inputs) {
-                read(input);
-                Extract(17, 16, fraction, exponent);
-                const auto normal_input = masm.Here();
-                __ cbnz(v::x17, std::int64_t{0});
-                __ lsl(R(17, bits), R(16, bits), 1);
-                denormal[denormal_count++] = masm.Here();
-                __ cbnz(R(17, bits), std::int64_t{0});
-                masm.Patch(normal_input, masm.Here());
-            }
-            done[done_count++] = masm.Here();
-            __ b(std::int64_t{0});
-            for (unsigned i = 0; i < denormal_count; ++i) masm.Patch(denormal[i], masm.Here());
-        } else {
-            read(value);
-            Extract(17, 16, fraction, exponent);
-            skip_nonzero(v::x17);
-            __ lsl(R(17, bits), R(16, bits), 1);
-            skip_zero(R(17, bits));
-        }
-        if (source.Operations()[node.value].opcode == OpCode::VecFUnary) {
-            done[done_count++] = masm.Here();
-            __ tbnz(R(16, bits), bits - 1, std::int64_t{0});  // Negative sqrt: IE takes priority.
-        }
-        for (const auto peer : peers) nan(peer);
-        if (denominator != UINT32_MAX) zero(denominator);  // ZE takes priority over same-lane DE.
-        if (fused) {
-            const auto a = peers.begin()[0], b = peers.begin()[1], c = peers.begin()[2];
-            const auto infinity = [&](unsigned reg) {
-                read(reg);
-                __ and_(R(17, bits), R(16, bits), Operand((u64{1} << (bits - 1)) - 1));
-                __ eor(R(17, bits), R(17, bits), Operand(exponent_mask));
-                const auto site = masm.Here();
-                __ cbz(R(17, bits), std::int64_t{0});
-                return site;
-            };
-            const auto a_infinite = infinity(a), b_infinite = infinity(b);
-            const auto finite_product = masm.Here();
-            __ b(std::int64_t{0});
-            masm.Patch(a_infinite, masm.Here());
-            zero(b);
-            const auto product_infinite = masm.Here();
-            __ b(std::int64_t{0});
-            masm.Patch(b_infinite, masm.Here());
-            zero(a);
-            masm.Patch(product_infinite, masm.Here());
-            read(c);
-            __ and_(R(17, bits), R(16, bits), Operand((u64{1} << (bits - 1)) - 1));
-            __ eor(R(17, bits), R(17, bits), Operand(exponent_mask));
-            const auto finite_addend = masm.Here();
-            __ cbnz(R(17, bits), std::int64_t{0});
-            read(a);
-            __ umov(R(17, bits), Lanes(b, bits), lane);
-            __ eor(R(16, bits), R(16, bits), Operand(R(17, bits)));
-            __ umov(R(17, bits), Lanes(c, bits), lane);
-            __ eor(R(16, bits), R(16, bits), Operand(R(17, bits)));
-            const bool negate_c = bool(fma_flags & 2) ^
-                                  (bool(fma_flags & 8) && ((lane & 1) == ((fma_flags >> 4) & 1)));
-            if (bool(fma_flags & 1) != negate_c)
-                __ eor(R(16, bits), R(16, bits), Operand(u64{1} << (bits - 1)));
-            done[done_count++] = masm.Here();
-            __ tbnz(R(16, bits), bits - 1, std::int64_t{0});
-            masm.Patch(finite_addend, masm.Here());
-            masm.Patch(finite_product, masm.Here());
-        }
-        __ mrs(v::x17, v::FPSR);
-        __ orr(v::x17, v::x17, Operand(u64{1} << 7));
-        __ msr(v::FPSR, v::x17);
-        for (unsigned i = 0; i < done_count; ++i) masm.Patch(done[i], masm.Here());
-    }
-    if (normal != UINT32_MAX) masm.Patch(normal, masm.Here());
-    if (disabled != UINT32_MAX) masm.Patch(disabled, masm.Here());
-}
-
-void Writer::RecordNaNInput(unsigned value, unsigned bits, unsigned count, bool signaling) {
-    const unsigned fraction = bits == 32 ? 23 : 52, exponent = bits == 32 ? 8 : 11;
-    for (unsigned lane = 0; lane < count; ++lane) {
-        __ umov(R(16, bits), Lanes(value, bits), lane);
-        Extract(17, 16, fraction, exponent);
-        __ eor(v::x17, v::x17, Operand((u64{1} << exponent) - 1));
-        const auto finite = masm.Here();
-        __ cbnz(v::x17, std::int64_t{0});
-        __ lsl(R(17, bits), R(16, bits), bits - fraction);
-        const auto infinity = masm.Here();
-        __ cbz(R(17, bits), std::int64_t{0});
-        u32 quiet = UINT32_MAX;
-        if (!signaling) {
-            quiet = masm.Here();
-            __ tbnz(R(16, bits), fraction - 1, std::int64_t{0});
-        }
-        __ mrs(v::x17, v::FPSR);
-        __ orr(v::x17, v::x17, Operand(u64{1}));
-        __ msr(v::FPSR, v::x17);
-        masm.Patch(finite, masm.Here());
-        masm.Patch(infinity, masm.Here());
-        if (quiet != UINT32_MAX) masm.Patch(quiet, masm.Here());
-    }
-}
-
 void Writer::FlushScalarDenormal(unsigned value,
                                  unsigned control_bit,
                                  unsigned lane,
@@ -403,8 +199,7 @@ void Writer::HandleVecFAddFamily(OpContext& ctx) {
         b = second_temp;
     }
     const auto denominator = operation.opcode == OpCode::VecFDiv ? b : UINT32_MAX;
-    RecordDenormalInput(a, bits, 128 / bits, {b}, denominator);
-    RecordDenormalInput(b, bits, 128 / bits, {a}, denominator);
+    RecordDenormalInputs(a, b, bits, 128 / bits, denominator);
     emit(destination, a, b);
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
         FlushScalarDenormal(destination, 15, 0, static_cast<unsigned>(bits), 128 / bits);
@@ -438,13 +233,11 @@ void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
         VectorMove(second, right);
         FlushScalarDenormal(first, 6, 0, bits, 1);
         FlushScalarDenormal(second, 6, 0, bits, 1);
-        RecordDenormalInput(first, bits, 1, {second}, divide ? second : UINT32_MAX);
-        RecordDenormalInput(second, bits, 1, {first}, divide ? second : UINT32_MAX);
+        RecordDenormalInputs(first, second, bits, 1, divide ? second : UINT32_MAX);
         emit(first, second);
         FlushScalarDenormal(first, 15, 0, bits, 1);
     } else {
-        RecordDenormalInput(left, bits, 1, {right}, divide ? right : UINT32_MAX);
-        RecordDenormalInput(right, bits, 1, {left}, divide ? right : UINT32_MAX);
+        RecordDenormalInputs(left, right, bits, 1, divide ? right : UINT32_MAX);
         emit(left, right);
     }
     VectorMove(ctx.destination, left);
@@ -471,8 +264,7 @@ void Writer::HandleVecFCmpFamily(OpContext& ctx) {
         a = first_temp;
         b = second_temp;
     }
-    RecordDenormalInput(a, bits, 1, {b});
-    RecordDenormalInput(b, bits, 1, {a});
+    RecordDenormalInputs(a, b, bits, 1);
     __ mrs(v::x30, v::NZCV);  // Preserve the actual guest/packed-mode host NZCV.
     if (encoded & 128)
         __ fcmpe(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
@@ -553,18 +345,22 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
             break;
         }
     const unsigned count = scalar ? 1 : 128 / bits;
-    RecordDenormalInput(a, bits, count, {b});
-    RecordDenormalInput(b, bits, count, {a});
-    RecordNaNInput(a, bits, count, encoded & 16);
-    RecordNaNInput(b, bits, count, encoded & 16);
-    // The relation mask may require signaling host comparisons even for a
-    // quiet x86 predicate. Only the explicit input classification publishes IE.
-    __ mrs(v::x30, v::FPSR);
+    RecordDenormalInputs(a, b, bits, count);
+    const bool invert = relations & 8;
+    const auto ordered = static_cast<unsigned>(invert ? ~relations & 7 : relations);
+    // FCMEQ is quiet, while FCMGT/FCMGE signal on every NaN. Preserve their
+    // accrued exceptions when that exactly matches the guest predicate.
+    const bool native_status = ordered && bool(encoded & 16) == (ordered != 2);
+    if (!native_status) {
+        RecordNaNInput(a, bits, count, encoded & 16);
+        RecordNaNInput(b, bits, count, encoded & 16);
+        // Quiet/compound predicates may need a signaling host comparison.
+        // Only the explicit classification may then publish IE.
+        if (ordered) __ mrs(v::x30, v::FPSR);
+    }
     const auto fp = [&](unsigned reg) {
         return scalar ? (bits == 32 ? S(reg) : D(reg)) : Lanes(reg, bits);
     };
-    const bool invert = relations & 8;
-    const auto ordered = static_cast<unsigned>(invert ? ~relations & 7 : relations);
     if (!ordered) {
         if (invert)
             __ cmeq(Lanes(destination, 64), Lanes(destination, 64), Lanes(destination, 64));
@@ -589,7 +385,7 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
         }
         if (invert) __ not_(Lanes(destination, 8), Lanes(destination, 8));
     }
-    __ msr(v::FPSR, v::x30);
+    if (!native_status && ordered) __ msr(v::FPSR, v::x30);
     if (scalar) {
         VectorMove(ctx.destination, first);
         __ ins(Lanes(ctx.destination, bits), 0, Lanes(destination, bits), 0);
@@ -616,8 +412,7 @@ void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
         FlushScalarDenormal(a, 6, 0, bits, scalar ? 1 : 128 / bits);
         FlushScalarDenormal(b, 6, 0, bits, scalar ? 1 : 128 / bits);
     }
-    RecordDenormalInput(a, bits, scalar ? 1 : 128 / bits, {b});
-    RecordDenormalInput(b, bits, scalar ? 1 : 128 / bits, {a});
+    RecordDenormalInputs(a, b, bits, scalar ? 1 : 128 / bits);
     // Strict comparison selects source 2 for equal values and unordered,
     // retaining that operand's zero sign and even its signaling NaN payload.
     const auto fp = [&](unsigned reg) {

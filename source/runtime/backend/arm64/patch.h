@@ -26,10 +26,9 @@ void PatchNativeLink(std::uintptr_t* writable,
 void UnlinkNativeLink(std::uintptr_t* writable,
                       const std::uintptr_t* executable,
                       NativeOffset back_bytes) noexcept;
-void ResetIndirectSite(std::uintptr_t* writable_array, const std::uintptr_t* fallback) noexcept;
 // Each real resource is initialized once before publication. writable_alias=0
-// denotes the single-mapping fallback: its dynamic sites remain cold and its
-// static sites are never prelinked to code that could not later be unlinked.
+// denotes the single-mapping fallback: static sites are never prelinked to
+// code that could not later be unlinked.
 bool InitializeNativeLink(std::span<std::uint8_t> write,
                           std::uintptr_t execute,
                           const backend::LinkSite&,

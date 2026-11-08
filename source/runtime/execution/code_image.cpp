@@ -1,5 +1,5 @@
-#include "code_image.h"
 #include "base/error.h"
+#include "code_image.h"
 
 #include <algorithm>
 #include <bit>
@@ -135,12 +135,8 @@ void Validate(const CodeUnit& unit, bool byte_code) {
                 "invalid fault fallback offset");
     }
     for (const auto& link : code.links) {
-        Require(link.kind == backend::LinkKind::Static || link.kind == backend::LinkKind::Dynamic,
-                "invalid native link kind");
-        const bool branch =
-                link.kind == backend::LinkKind::Dynamic
-                        ? link.branch_offset == backend::NoNativeOffset
-                        : !(link.branch_offset & instruction_mask) && link.branch_offset < size;
+        Require(link.kind == backend::LinkKind::Static, "invalid native link kind");
+        const bool branch = !(link.branch_offset & instruction_mask) && link.branch_offset < size;
         Require(!(link.data_offset & 7) && size >= 8 && link.data_offset <= size - 8 && branch &&
                         !(link.fallback_offset & instruction_mask) && link.fallback_offset < size,
                 "invalid native link offsets");

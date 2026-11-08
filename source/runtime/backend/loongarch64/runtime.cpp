@@ -22,6 +22,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     execution::HostBackendOps ops;
     ops.context = this;
     ops.target = backend::loongarch64::KnownTargetInfo();
+    ops.thread_dispatch_cache = true;
     ops.configure = [](void* raw, const GuestLayout& layout) noexcept {
         auto& options = static_cast<Runtime*>(raw)->options;
         options.flags_offset = layout.flags_offset;
@@ -115,6 +116,7 @@ SVM_CHECK_CONTEXT(guest_fpcr, SVM_LA_CTX_GUEST_FCSR);
 SVM_CHECK_CONTEXT(fp_environment, SVM_LA_CTX_FP_ENVIRONMENT);
 SVM_CHECK_CONTEXT(probe_steps, SVM_LA_CTX_PROBES);
 SVM_CHECK_CONTEXT(atomic_service, SVM_LA_CTX_ATOMIC_SERVICE);
+SVM_CHECK_CONTEXT(l1, SVM_LA_CTX_L1);
 #undef SVM_CHECK_CONTEXT
 
 void RestoreGuestState(execution::FaultContext& context, std::span<const std::byte> gprs) noexcept {

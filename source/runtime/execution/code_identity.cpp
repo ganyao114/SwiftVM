@@ -35,6 +35,10 @@ CodeImageKey MakeCodeImageKey(const Digest& guest,
     Number(config, sizeof(NativeRunContext));
     Number(config, offsetof(NativeRunContext, state));
     Number(config, sizeof(DispatchSlot));
+    Number(config, offsetof(NativeRunContext, l1));
+    Number(config, DispatchCache::Entries);
+    Number(config, sizeof(DispatchEntry));
+    Number(config, backend.thread_dispatch_cache);
     Number(config, std::endian::native == std::endian::little);
     Number(config, static_cast<unsigned>(backend.target.mode));
     Number(config, backend.target.target);

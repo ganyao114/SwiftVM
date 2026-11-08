@@ -104,7 +104,8 @@ svm_native_test(pipeline_native_contract svm_compile_pipeline_test)
 svm_native_test(riscv64_native_contract svm_riscv64_compile_test)
 if(TARGET svm_execution)
     svm_test_target(svm_runtime_engine_test ISA host SOURCES
-        rebuild/runtime_engine_test.cpp rebuild/guest_execution_test.cpp LIBRARIES svm_execution Threads::Threads)
+        rebuild/runtime_engine_test.cpp rebuild/guest_execution_test.cpp rebuild/dispatch_cache_test.cpp
+        LIBRARIES svm_execution Threads::Threads)
     svm_test(runtime_engine_contract svm_runtime_engine_test)
     svm_native_test(runtime_engine_native_contract svm_runtime_engine_test)
 endif()

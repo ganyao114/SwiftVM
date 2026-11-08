@@ -36,6 +36,7 @@ struct HostBackendOps {
     bool pinned_vectors{};
     // Only backends that bake software DAZ/FTZ into code need separate domains.
     bool specializes_fp_flush{};
+    bool thread_dispatch_cache{};
     void (*configure)(void*, const GuestLayout&) noexcept {};
     backend::CompileResult& (*compile)(void*, const ir::Program&, HostCompileRequest){};
     bool (*relocate)(void*,
@@ -56,7 +57,6 @@ struct HostBackendOps {
                        std::uintptr_t,
                        std::uint32_t) noexcept {};
     void (*unlink)(std::uintptr_t*, const std::uintptr_t*, std::uint32_t) noexcept {};
-    void (*reset_indirect)(std::uintptr_t*, const std::uintptr_t*) noexcept {};
     bool (*patch_fault)(const backend::NativeCode&,
                         backend::NativeOffset,
                         backend::NativeOffset,

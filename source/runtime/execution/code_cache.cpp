@@ -1,7 +1,7 @@
 #include "code_cache.h"
 
-#include "base/error.h"
 #include <utility>
+#include "base/error.h"
 
 namespace swift::runtime::execution {
 CodeCache::CodeCache(NativeCode::Function pending, const HostBackendOps& backend) noexcept
@@ -60,6 +60,7 @@ void CodeCache::InsertReady(std::uint64_t pc,
     BindReady(pc, id, code.entry);
     for (const auto& entry : extra) {
         if (entry.offset >= code.bytes) swift::ThrowError("entry outside native unit");
+        if (entry.pc == pc) continue;  // The unit's canonical entry is already bound above.
         BindReady(entry.pc,
                   id,
                   reinterpret_cast<NativeCode::Function>(

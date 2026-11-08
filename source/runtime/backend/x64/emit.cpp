@@ -173,6 +173,7 @@ void Writer::Terminal(const StoredTerminal& t) {
         xor_(edi, edi);
     Restore();
     if (Linked()) {
+        output.has_indirect_dispatch = true;
         HostAddress(r11, options.dispatcher, HostSymbol::Dispatcher);
         jmp(r11);
     } else {

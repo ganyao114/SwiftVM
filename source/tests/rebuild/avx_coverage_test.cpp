@@ -1,15 +1,15 @@
-#include "tests/support/check.h"
-#include "tests/support/test_mode.h"
-#include "tests/support/native_code.h"
-#include "tests/support/guest_memory.h"
-#include "runtime/frontend/x86/interpreter.h"
-#include "runtime/frontend/x86/build_ir.h"
-#include "runtime/arch/x86/state.h"
 #include "runtime/arch/x86/flags.h"
+#include "runtime/arch/x86/state.h"
 #include "runtime/backend/arm64/compile.h"
-#include "runtime/ir/optimize.h"
 #include "runtime/execution/dispatch.h"
+#include "runtime/frontend/x86/build_ir.h"
+#include "runtime/frontend/x86/interpreter.h"
+#include "runtime/ir/optimize.h"
 #include "runtime/platform/fp_environment.h"
+#include "tests/support/check.h"
+#include "tests/support/guest_memory.h"
+#include "tests/support/native_code.h"
+#include "tests/support/test_mode.h"
 
 #include <algorithm>
 #include <array>
@@ -183,12 +183,9 @@ a64::CompileResult Compile(const Machine& m, bool pinned) {
         options.private_uniforms = true;
         options.fault_locations = true;
 #if defined(__aarch64__) && !defined(__APPLE__)
-        if (NativeMode()) {
-            options.dispatcher =
-                    reinterpret_cast<std::uintptr_t>(runtime::execution::SvmNativeDispatch);
-            options.exit_handler =
-                    reinterpret_cast<std::uintptr_t>(runtime::execution::SvmNativeExit);
-        }
+        options.dispatcher =
+                reinterpret_cast<std::uintptr_t>(runtime::execution::SvmNativeDispatch);
+        options.exit_handler = reinterpret_cast<std::uintptr_t>(runtime::execution::SvmNativeExit);
 #else
         // Host qualification checks linked emission without executing A64.
         options.dispatcher = 0x1000;
@@ -218,7 +215,10 @@ void Same(const arch::GuestState& actual, const arch::GuestState& expected) {
           "AVX preserves whole packed flags and reserved fields");
     Check(std::memcmp(actual.gprs, expected.gprs, sizeof(actual.gprs)) == 0,
           "AVX preserves unrelated GPRs");
-    Check(actual.mxcsr == expected.mxcsr, "AVX does not synthesize MXCSR sticky state");
+    if (actual.mxcsr != expected.mxcsr)
+        std::fprintf(stderr, "AVX MXCSR actual=%08x expected=%08x\n", actual.mxcsr, expected.mxcsr);
+    Check(actual.mxcsr == expected.mxcsr,
+          "AVX preserves controls and records exact sticky exceptions");
     for (unsigned reg = 0; reg < 16; ++reg)
         Check(Get(actual, reg) == Get(expected, reg), "AVX native full low/high vector state");
 }
@@ -232,6 +232,10 @@ void Native(const Machine& input, const arch::GuestState& expected, bool pinned)
         auto state = input.state;
         runtime::platform::HostFloatScope environment(
                 static_cast<runtime::platform::FloatRounding>((state.mxcsr >> 13) & 3));
+        // These numerical test units borrow the host FP environment. Observe
+        // their raw native status here, as the VM's architectural observer does.
+        // The scope restores the original host environment after the check.
+        asm volatile("msr fpsr,xzr" ::: "memory");
         if (!pinned)
             Check(reinterpret_cast<runtime::backend::NativeCode::Function>(address)(
                           reinterpret_cast<std::uint8_t*>(&state)) == 0,
@@ -275,6 +279,19 @@ void Native(const Machine& input, const arch::GuestState& expected, bool pinned)
             Check(returned == 2 && resolver.calls == 2,
                   "linked AVX pin16 leaves through the real cold boundary");
         }
+        u64 raw_status;
+        asm volatile("mrs %0,fpsr" : "=r"(raw_status));
+        const auto raised = static_cast<u32>((raw_status & 1) | ((raw_status >> 6) & 2) |
+                                             ((raw_status & 0x1e) << 1));
+        state.mxcsr |= raised;
+        if (expected.mxcsr & 63)
+            std::fprintf(stderr,
+                         "AVX native pin=%u raw_fpsr=%llx raised=%02x mxcsr=%08x expected=%08x\n",
+                         unsigned(pinned),
+                         static_cast<unsigned long long>(raw_status),
+                         raised,
+                         state.mxcsr,
+                         expected.mxcsr);
         Same(state, expected);
     }
 #else
@@ -282,7 +299,7 @@ void Native(const Machine& input, const arch::GuestState& expected, bool pinned)
 #endif
 }
 
-void Golden(Machine input, const Bytes& answer, unsigned reads = 0) {
+void Golden(Machine input, const Bytes& answer, unsigned reads = 0, u32 raised = 0) {
     auto direct = input;
     const auto result = direct.Step();
     Check(result.kind == front::StepKind::Completed, "AVX Direct execution accepts fixed bytes");
@@ -292,6 +309,17 @@ void Golden(Machine input, const Bytes& answer, unsigned reads = 0) {
     auto expected = input.state;
     Set(expected, 0, answer);
     expected.pc += input.code.size();
+    expected.mxcsr |= raised;
+    if (raised || direct.state.mxcsr != expected.mxcsr) {
+        std::fprintf(stderr, "AVX direct bytes=");
+        for (const auto byte : input.code) std::fprintf(stderr, "%02x", byte);
+        std::fprintf(stderr,
+                     " input_mxcsr=%08x raised=%02x actual=%08x expected=%08x\n",
+                     input.state.mxcsr,
+                     raised,
+                     direct.state.mxcsr,
+                     expected.mxcsr);
+    }
     Same(direct.state, expected);
     Native(input, expected, false);
     Native(input, expected, true);
@@ -348,7 +376,10 @@ void FusedGolden() {
     SetHex(fused.state, 1, "0008803f0010803f0008803f0004803f0002803f0008803f0004803f0010803f");
     SetHex(fused.state, 2, "0008803f0004803f0004803f0002803f0008803f0002803f0008803f0002803f");
     SetHex(fused.state, 0, "000480bf0008803f000280bf0008803f000480bf0010803f000280bf0004803f");
-    Golden(fused, Words({0x39c00800, 0x40000e00, 0x39a00400, 0x40000700}));
+    // Exact dyadic arithmetic gives residuals 2^-24 and 2^-27 in lanes 1/3
+    // after rounding to these normal float answers. Lanes 0/2 are exact.
+    // Thus the instruction raises PE only, independently of the Rosetta values.
+    Golden(fused, Words({0x39c00800, 0x40000e00, 0x39a00400, 0x40000700}), 0, 0x20);
     Machine scalar("c4e271b9c2");
     SetHex(scalar.state, 1, "1101c07f1101c07f000000401101c07f4404807f1101c07f0000807f1101c07f");
     SetHex(scalar.state, 2, "2202c0ff000000402202c0ff2202c0ff2202c0ff5505807f000000000000807f");

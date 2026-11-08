@@ -104,13 +104,15 @@ void WriteReport(std::FILE* stream,
     r.Number("wx_fallback_used", s.code_wx_fallback);
     r.Number("cache_invalidations", s.cache_invalidations);
     r.Text("dispatch_cache",
-           s.native_local_cache ? "native_directory_with_local_target_cache" : "native_directory");
+           s.thread_dispatch_cache ? "thread_l1_shared_directory" : "native_directory");
+    r.Number("thread_l1_entries", s.thread_l1_bytes / sizeof(DispatchEntry));
+    r.Number("thread_l1_virtual_bytes", s.thread_l1_bytes);
     r.Number("cache_slot_bytes", sizeof(DispatchSlot));
     r.Number("native_code_bytes", sizeof(NativeCode));
     r.Text("cache_allocation_kind", "pc_slots_and_ready_code_rows");
     r.Text("dispatch_count_kind",
-           s.native_local_cache ? "diagnostic_native_local_cache_and_directory_attempts"
-                                : "diagnostic_native_directory_attempts");
+           s.thread_dispatch_cache ? "diagnostic_thread_l1_and_directory_attempts"
+                                   : "diagnostic_native_directory_attempts");
     r.Number("dispatch_counts_available", options.decode_timing);
     r.Number("resolved_links_bypass_dispatch_count", true);
     r.Number("peak_cache_entries", s.peak_cache_entries);

@@ -218,10 +218,7 @@ add x4, x4, #1
 stur x4, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HITS)]
 .endm
 
-.macro SVM_DISPATCH_BODY counted=0, native=0
-.if \counted
-SVM_COUNT_DISPATCH
-.endif
+.macro SVM_L2_DISPATCH_BODY counted=0, native=0
 ldp x2, x6, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_SLOTS)]
 cbz x2, 5f
 eor x5, x0, x0, lsr #SVM_A64_DISPATCH_HASH_SHIFT
@@ -240,6 +237,14 @@ cbz x16, 5f
 .if \counted
 SVM_COUNT_HIT
 .endif
+// Pending payloads remain callable but must never enter the ready-only L1.
+// A public callback context may omit L1; inline runtime exits always supply it.
+cbz x7, 9f
+ldr w4, [x3, #SVM_A64_CODE_ID_OFFSET]
+add w4, w4, #1
+cbz w4, 9f
+stp x0, x16, [x7]
+9:
 br x16
 6:
 ldrb w4, [x3, #SVM_A64_OCCUPIED_OFFSET]
@@ -257,6 +262,27 @@ SVM_PACK_SAVED_NATIVE_NZCV
 .endif
 
 SVM_RESOLVE_AND_ENTER
+.endm
+
+.macro SVM_DISPATCH_BODY l2, counted=0
+.if \counted
+SVM_COUNT_DISPATCH
+.endif
+ldr x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_L1)]
+cbz x16, 7f
+ubfiz x7, x0, #SVM_A64_L1_ENTRY_SHIFT, #SVM_A64_L1_BITS
+add x7, x16, x7
+ldp x4, x16, [x7]
+sub x4, x4, x0
+cbnz x4, 8f
+.if \counted
+SVM_COUNT_HIT
+.endif
+br x16
+7:
+mov x7, xzr
+8:
+b \l2
 .endm
 
 .p2align 2
@@ -321,29 +347,57 @@ SVM_RESOLVE_AND_ENTER
 .global SvmNativeDispatch
 .type SvmNativeDispatch, %function
 SvmNativeDispatch:
-SVM_DISPATCH_BODY 0, 0
+SVM_DISPATCH_BODY SvmNativeL2Dispatch, 0
 .size SvmNativeDispatch, .-SvmNativeDispatch
 
 .p2align 2
 .global SvmNativeDispatchCounted
 .type SvmNativeDispatchCounted, %function
 SvmNativeDispatchCounted:
-SVM_DISPATCH_BODY 1, 0
+SVM_DISPATCH_BODY SvmNativeL2DispatchCounted, 1
 .size SvmNativeDispatchCounted, .-SvmNativeDispatchCounted
 
 .p2align 2
 .global SvmNativeDispatchNZCV
 .type SvmNativeDispatchNZCV, %function
 SvmNativeDispatchNZCV:
-SVM_DISPATCH_BODY 0, 1
+SVM_DISPATCH_BODY SvmNativeL2DispatchNZCV, 0
 .size SvmNativeDispatchNZCV, .-SvmNativeDispatchNZCV
 
 .p2align 2
 .global SvmNativeDispatchNZCVCounted
 .type SvmNativeDispatchNZCVCounted, %function
 SvmNativeDispatchNZCVCounted:
-SVM_DISPATCH_BODY 1, 1
+SVM_DISPATCH_BODY SvmNativeL2DispatchNZCVCounted, 1
 .size SvmNativeDispatchNZCVCounted, .-SvmNativeDispatchNZCVCounted
+
+.p2align 2
+.global SvmNativeL2Dispatch
+.type SvmNativeL2Dispatch, %function
+SvmNativeL2Dispatch:
+SVM_L2_DISPATCH_BODY 0, 0
+.size SvmNativeL2Dispatch, .-SvmNativeL2Dispatch
+
+.p2align 2
+.global SvmNativeL2DispatchCounted
+.type SvmNativeL2DispatchCounted, %function
+SvmNativeL2DispatchCounted:
+SVM_L2_DISPATCH_BODY 1, 0
+.size SvmNativeL2DispatchCounted, .-SvmNativeL2DispatchCounted
+
+.p2align 2
+.global SvmNativeL2DispatchNZCV
+.type SvmNativeL2DispatchNZCV, %function
+SvmNativeL2DispatchNZCV:
+SVM_L2_DISPATCH_BODY 0, 1
+.size SvmNativeL2DispatchNZCV, .-SvmNativeL2DispatchNZCV
+
+.p2align 2
+.global SvmNativeL2DispatchNZCVCounted
+.type SvmNativeL2DispatchNZCVCounted, %function
+SvmNativeL2DispatchNZCVCounted:
+SVM_L2_DISPATCH_BODY 1, 1
+.size SvmNativeL2DispatchNZCVCounted, .-SvmNativeL2DispatchNZCVCounted
 
 .p2align 2
 .global SvmNativePending

@@ -47,6 +47,9 @@ struct CompileOptions {
     // publish state.pc only at the cold dispatcher or a real observer.
     // exit_handler instead receives the unchanged Return reason in x0.
     std::uintptr_t dispatcher{}, exit_handler{};
+    // Inline tails pass x0=PC and x7=the selected ready-only thread-L1 slot.
+    // The shared L2 entry probes once without recounting the transfer.
+    std::uintptr_t l2_dispatcher{};
     std::uint32_t pc_offset{UINT32_MAX}, pinned_uniform_offset{UINT32_MAX};
     // Runtime enforces guest memory/private state disjointness and publishes
     // x1 at cold resolution or fatal faults. Requires the linked pinned ABI.
@@ -82,7 +85,8 @@ struct CompileOptions {
     // x0 before resolving. The publisher relocates every returned LinkSite.
     bool deferred_pc{};
     std::uint64_t entry_pc{};  // The actual request PC, not a guessed x0 input.
-    // Explicit opt-in to abi.h's one-directory NativeRunContext layout.
+    // Explicit opt-in to abi.h's thread-L1/shared-L2 NativeRunContext layout.
+    // Inline modes require a non-null thread L1 and an L2-only callback.
     // Custom callbacks/default callers keep their original tail transfer.
     DispatchMode dispatch_mode{DispatchMode::Callback};
     // Caller consumes the block-local raw PF/carry recipes in FaultSite.
@@ -92,17 +96,10 @@ struct CompileOptions {
     // map to v16..v31. The runtime owns root/helper/fatal synchronization.
     // The default memory ABI retains the original dynamic vector bank.
     std::uint32_t pinned_vector_offset{UINT32_MAX};
-    // The actual directory owner guarantees a valid slots/mask tuple, even
-    // when empty, and a callable native/cold payload in every slot. Public
-    // nullable contexts retain their guards unless this fact is supplied.
-    bool callable_directory{};
     // Optional invariant software flush mode for this entire native unit:
     // bit0=DAZ, bit1=FTZ. The caller owns cache separation and must exit the
     // unit before changing these controls. Unknown retains raw MXCSR reads.
     std::uint8_t mxcsr_flush_mode{UINT8_MAX};
-    // Inline dynamic sites borrow the same directory owner and its reset
-    // lifetime for one fixed local native-DATA array. Callback mode stays unchanged.
-    bool local_dispatch_cache{};
     // Actual host Crypto Extension capabilities; all neutral crypto forms
     // retain their pure numerical helper fallback when the feature is absent.
     bool aes{}, pmull{}, sha256{};

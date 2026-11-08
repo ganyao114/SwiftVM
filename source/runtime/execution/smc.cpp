@@ -1,14 +1,14 @@
 #include "smc.h"
-#include "vm.h"
 #include "timing.h"
+#include "vm.h"
 
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
-#include "base/error.h"
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <unistd.h>
+#include "base/error.h"
 
 namespace swift::runtime::execution {
 namespace {
@@ -64,6 +64,9 @@ void Smc::Arm(u64 address, std::size_t length) {
         candidate_pages += static_cast<std::size_t>(count);
     });
     if (!candidate_pages) return;
+    // Recover can only observe an armed page. Establish its miss view here,
+    // before protection can admit a signal reader, and never in the handler.
+    if (vm.backend.thread_dispatch_cache) vm.empty_l1.Ensure();
     pages.reserve(pages.size() + candidate_pages);
     CodeWriteRanges(vm.memory.Regions(), address, end, [&](u64 begin, u64 tail) {
         const auto last = (tail - 1) & ~(u64{page_size} - 1);
@@ -112,6 +115,7 @@ bool Smc::Recover(std::uintptr_t address) noexcept {
     vm.thread.faults.smc_pending = 1;
     __atomic_store_n(&vm.thread.native.mask, u64{0}, __ATOMIC_RELAXED);
     __atomic_store_n(&vm.thread.native.slots, vm.Cache().EmptyData(), __ATOMIC_RELEASE);
+    __atomic_store_n(&vm.thread.native.l1, vm.empty_l1.Data(), __ATOMIC_RELEASE);
     for (auto& cache : vm.caches) cache.ResetLinks();
     return true;
 }
@@ -147,6 +151,7 @@ void Smc::Invalidate() {
     vm.DisablePersistence();
     RuntimeTimer total{vm.stats.compile_request_ns}, release{vm.stats.code_release_ns};
     Clear();
+    vm.thread.l1.Reset();
     vm.thread.faults.smc_pending = 0;
     // The signal path already restored links while old native code could run.
     // A service-triggered invalidation is itself cold, so removing all domains

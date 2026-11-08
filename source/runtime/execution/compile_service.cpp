@@ -5,6 +5,7 @@
 #include "vm.h"
 
 #include <algorithm>
+#include <cstring>
 #include <limits>
 #include <sys/mman.h>
 #include "base/format.h"
@@ -170,6 +171,9 @@ NativeCode CompileService::Publish(const backend::CompileResult& compiled,
                                    std::vector<backend::FaultSite> faults) {
     auto& stats = vm.stats;
     RuntimeTimer publish{stats.publication_ns};
+    // Shared entry dispatch accepts a null L1. Inline dynamic tails require
+    // the real thread view before any entry or direct link can reach this unit.
+    if (compiled.has_indirect_dispatch) vm.EnsureThreadDispatch();
     auto code = vm.heap.Publish(
             compiled.words,
             std::move(faults),
@@ -192,12 +196,19 @@ NativeCode CompileService::Publish(const backend::CompileResult& compiled,
     stats.peak_dual_slabs = std::max(stats.peak_dual_slabs, static_cast<u64>(dual_slabs));
     stats.code_wx_fallback |= slabs != dual_slabs;
     for (const auto& link : compiled.links) {
-        if (link.kind == backend::LinkKind::Static) ++stats.static_links;
+        ++stats.static_links;
         if (!code.writable) continue;
-        if (link.kind == backend::LinkKind::Dynamic)
-            vm.Cache().AddIndirectSite(code, link);
-        else
-            vm.Cache().AddStaticLink(code, link);
+        NativeCode::Function prepared{};
+        if (link.target_pc != entry_pc) {
+            std::uintptr_t target;
+            std::memcpy(&target, code.writable + link.data_offset, sizeof(target));
+            // Publish validated and initialized this real target literal. Its
+            // only external ready source above is this cache, so retain the
+            // unlink row without looking up or patching the same target again.
+            const auto cold = reinterpret_cast<std::uintptr_t>(code.entry) + link.fallback_offset;
+            if (target != cold) prepared = reinterpret_cast<NativeCode::Function>(target);
+        }
+        vm.Cache().AddStaticLink(code, link, prepared);
     }
     return code;
 }
@@ -205,6 +216,9 @@ NativeCode CompileService::Publish(const backend::CompileResult& compiled,
 NativeCode CompileService::Restore(const CodeUnit& unit, bool sources_verified) {
     if (!sources_verified && !vm.SourcesMatch(unit.sources)) return {};
     entry_pc = unit.pc;
+    // The transient emitter resource fact is not part of persisted images.
+    // Prepare older and current images conservatively before publication.
+    vm.EnsureThreadDispatch();
     auto code = Publish(unit.code, unit.code.faults);
     for (const auto& source : unit.sources)
         if (source.mode == static_cast<std::uint8_t>(SourceMode::WatchedBlock))
@@ -219,6 +233,7 @@ void CompileService::Release() noexcept {
     std::vector<std::uint64_t>{}.swap(optimizer_rows);
     std::vector<SourceSpan>{}.swap(source_spans);
     std::vector<std::uint64_t>{}.swap(continuations);
+    std::vector<frontend::BlockWindow>{}.swap(region_windows);
     if (vm.backend.release) vm.backend.release(vm.backend.context);
 }
 

@@ -221,6 +221,7 @@ void Writer::Terminal(const StoredTerminal& terminal) {
             Restore();
             if (options.dispatcher && options.exit_handler) {
                 HostAddress(t6, options.dispatcher, HostSymbol::Dispatcher);
+                output.has_indirect_dispatch = true;
                 as.JR(t6);
             } else {
                 as.MV(a0, x0);

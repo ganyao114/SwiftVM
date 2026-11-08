@@ -483,6 +483,18 @@ private:
     }
 
     void LoadMxcsrFlushControl();
+    u32 DenormalControlGuard();
+    void RecordDenormalLanes(std::span<const unsigned> inputs,
+                             unsigned lane_bits,
+                             unsigned lane_count,
+                             std::initializer_list<unsigned> peers,
+                             unsigned denominator,
+                             unsigned fma_flags);
+    void RecordDenormalInputs(unsigned left,
+                              unsigned right,
+                              unsigned lane_bits,
+                              unsigned lane_count,
+                              unsigned denominator = UINT32_MAX);
     void RecordDenormalInput(unsigned value,
                              unsigned lane_bits,
                              unsigned lane_count,

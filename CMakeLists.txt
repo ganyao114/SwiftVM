@@ -110,6 +110,7 @@ add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/emit_atomic.cpp
     source/runtime/backend/arm64/emit_atomic_service.cpp
     source/runtime/backend/arm64/emit_control.cpp
+    source/runtime/backend/arm64/emit_dispatch.cpp
     source/runtime/backend/arm64/emit_state.cpp
     source/runtime/backend/arm64/emit_flags.cpp
     source/runtime/backend/arm64/emit_vector.cpp
@@ -119,6 +120,7 @@ add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/emit_crypto.cpp
     source/runtime/backend/arm64/vector_helper.cpp
     source/runtime/backend/arm64/emit_float.cpp
+    source/runtime/backend/arm64/emit_fp_status.cpp
     source/runtime/backend/arm64/compile.cpp)
 target_link_libraries(svm_arm64 PUBLIC svm_ir PRIVATE svm_x87 svm_allocation svm_system_query)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
@@ -284,6 +286,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/execution/atomic_service.cpp
         source/runtime/execution/arm_state_service.cpp
         source/runtime/execution/dispatch.cpp
+        source/runtime/execution/dispatch_cache.cpp
         source/runtime/execution/fault.cpp
         source/runtime/execution/guest_execution.cpp
         source/runtime/execution/memory.cpp
