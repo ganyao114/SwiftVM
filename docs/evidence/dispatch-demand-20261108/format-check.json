@@ -1,0 +1,193 @@
+{
+  "all_passed": true,
+  "files": [
+    {
+      "path": "benchmarks/indirect_dispatch/pmu_region.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/launcher/linux/report.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/abi.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/compile.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/compile.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_control.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_dispatch.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_float.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_fp_status.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/patch.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/patch.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/relocate.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/runtime.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/code.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/compile.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/emit.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/runtime.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/relocation.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/riscv64/compile.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/riscv64/emit.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/riscv64/runtime.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/x64/compile.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/x64/emit.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/backend/x64/runtime.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/code_cache.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/code_cache.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/code_identity.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/code_image.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/code_link.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/compile_service.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/compile_service.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch_cache.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch_cache.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/frontend_service.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/guest_thread.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/host_backend.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/runtime.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/runtime.h",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/smc.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/runtime/execution/vm.h",
+      "matches": true
+    },
+    {
+      "path": "source/tests/rebuild/arm64_link_test.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/tests/rebuild/arm64_vector_test.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/tests/rebuild/avx_coverage_test.cpp",
+      "matches": true
+    },
+    {
+      "path": "source/tests/rebuild/dispatch_cache_test.cpp",
+      "matches": true
+    }
+  ]
+}

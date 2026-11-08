@@ -1,0 +1,9 @@
+{
+  "namespace": "/data/local/tmp/swiftvm-dispatch-demand-20261108",
+  "remaining_bytes": 0,
+  "allocated_bytes_removed": 252236800,
+  "df_free_delta_bytes": 253693952,
+  "active_processes": [],
+  "open_files": [],
+  "errors": []
+}

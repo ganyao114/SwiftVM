@@ -1,0 +1,145 @@
+{
+  "source": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108",
+  "retained_files": [
+    {
+      "file": "summary.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/summary.json",
+      "bytes": 4508,
+      "sha256": "b2c531b8f6ac56de8110a1125c89fcaa1f4ebd16a1949d60a6e7efae8537afbd"
+    },
+    {
+      "file": "source-freeze.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/source-freeze.json",
+      "bytes": 12544,
+      "sha256": "a24bab82ea8e3c08fc619649b68e21d666c603c82c1aa61afb89a1d8fedb4dd8"
+    },
+    {
+      "file": "candidate-identity.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/candidate-identity.json",
+      "bytes": 207,
+      "sha256": "c9a6ba3c11c864086e59697d0ea44281ab37e57b54fbf85d8ffac308f88cc033"
+    },
+    {
+      "file": "format-check.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/format-check.json",
+      "bytes": 4383,
+      "sha256": "1880dfb3c19fc054761b048b739084fa3c14b29519197fd2fb0d69545ec5a6e0"
+    },
+    {
+      "file": "diff-check.txt",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/diff-check.txt",
+      "bytes": 25,
+      "sha256": "f6a7d2113895ff7c42d5ce1b8ed901898e65102abf499b98eebd4c7ba5a0c7a2"
+    },
+    {
+      "file": "plan.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/plan.json",
+      "bytes": 1635,
+      "sha256": "b66cf9d9f021277fa58e4aa0f966d738bb2730041dec7b5bec76d5cf898f3afa"
+    },
+    {
+      "file": "cases.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/cases.json",
+      "bytes": 1130,
+      "sha256": "e9485bc5fc5721e47258d169d593e6b9d3d186f6124640841350bf80dddc0f9b"
+    },
+    {
+      "file": "environment.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/environment.json",
+      "bytes": 874,
+      "sha256": "93be72fe9c9b5d802f01a7648f41b16172ba014a91909ca6d00024a967e6f6c9"
+    },
+    {
+      "file": "inputs.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/inputs.json",
+      "bytes": 2577,
+      "sha256": "f65e89c729fcff70f64da238d5e18b95b1633b550c46d218cb47551e5ba29468"
+    },
+    {
+      "file": "benchmark-summary.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/summary.json",
+      "bytes": 54788,
+      "sha256": "856e8b528b661ec59e5c8b3d2a8beef082d842103b942f26d7fa7be897e6b759"
+    },
+    {
+      "file": "compile-records.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/compile-records.json",
+      "bytes": 290253,
+      "sha256": "b9913a32372d526e074a35292ce9412f46357b2a702ddf4db0a66951d0fc4092"
+    },
+    {
+      "file": "runtime-records.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/runtime-records.json",
+      "bytes": 208317,
+      "sha256": "8f8d2921ccacac8a50453d73d5a6018b4156d1f59ed63554c07303996ea9e947"
+    },
+    {
+      "file": "compile-breakdown.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/compile-breakdown.json",
+      "bytes": 30838,
+      "sha256": "2ede2a4c19e3a35a47102a6d30ad2ae298edf75aad6b4a708da72f0c8e0432ce"
+    },
+    {
+      "file": "phone-cleanup-receipt.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/benchmark/phone-cleanup-receipt.json",
+      "bytes": 232,
+      "sha256": "7ed03911dca04e64d13d49f87b5454898ff187f367c35705133f16889bad0da0"
+    },
+    {
+      "file": "paired-plan.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/paired/plan.json",
+      "bytes": 694,
+      "sha256": "c634acc3291d4492e46580308718d3b152381e591e0aec446d388e5f058a9287"
+    },
+    {
+      "file": "paired-records.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/paired/records.json",
+      "bytes": 161755,
+      "sha256": "ff5828c7072ff264a44683c81612643126b9b805552c001db1b30db91687e167"
+    },
+    {
+      "file": "paired-summary.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/paired/summary.json",
+      "bytes": 2410,
+      "sha256": "b1856f4982434b7164e5cc2acf2b0b1580e40ee9786530121d21c15e5b63cfa7"
+    },
+    {
+      "file": "android-tests.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/android-tests/summary.json",
+      "bytes": 1530,
+      "sha256": "8da76eaf546357e5ae0133ad22c43e42bbe2c2af14a0ca8da6c66e3f8254dd56"
+    },
+    {
+      "file": "host-tests.stdout",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/host-tests.stdout",
+      "bytes": 250,
+      "sha256": "e97b83213491085ce79ed4d855d08ca2919107177a75201165f9dfcffceb4d62"
+    },
+    {
+      "file": "x64-summary.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/summary.json",
+      "bytes": 6419,
+      "sha256": "8b75446338fae4480a9c142ee563fd8953f1a18e1f5de8d1c405bbc929767db1"
+    },
+    {
+      "file": "rv-la-summary.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/rv-la-final-summary.json",
+      "bytes": 1641,
+      "sha256": "d3d2083815421cd8d90a9008804ee17c7904781e58f99a9caf981919dd2075ff"
+    },
+    {
+      "file": "riscv64-summary.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/final-summary.json",
+      "bytes": 4555,
+      "sha256": "3ebdbccff0cc42c77932fd7dbe677bb5661a676cc7e2fafac5b36d9b4a490963"
+    },
+    {
+      "file": "loongarch64-summary.json",
+      "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/loongarch64/final-summary.json",
+      "bytes": 4601,
+      "sha256": "0ddf6ab032afe8916c2df130d0c97bcebbec6fbb9a5eef16b461bd6149d1cc61"
+    }
+  ],
+  "normalized_observations_copied_without_selection": 192,
+  "large_binaries_and_raw_console_files": "Retained in original Data2 result directory, excluded from Git."
+}

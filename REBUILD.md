@@ -7,6 +7,19 @@ the measurement checkpoints before integration. Portable build instructions and
 the retained evidence subset are in [README.md](README.md) and the
 [checkpoint](docs/codegen-parity-checkpoint-2026-11-04.md).
 
+The current indirect dispatcher uses a guest-thread ready L1 and the VM/domain
+CodeCache as shared L2. The old per-site arrays and `callable_directory` option
+have been retired. See the [implementation and measurements](docs/thread-dispatch-cache-2026-11-08.md)
+for the layout, invalidation contract, compile guard and retained performance limits.
+The latest FP and compile-resource checkpoint is recorded in
+[FP status optimization](docs/fp-status-optimization-2026-11-08.md) and
+[dispatch resource optimization](docs/dispatch-resource-optimization-2026-11-08.md).
+Thread L1 is now provisioned before publishing actual dynamic exits; static-only
+JIT code can use L2 without mapping L1. The SMC miss view is created before the
+first write watch. Persisted code is provisioned conservatively on restore.
+The retained measurements include remaining FP and x87 Block compile gaps.
+The batch descriptions below retain their historical configuration.
+
 Latest tested parity checkpoint: [implementation progress](docs/codegen-parity-progress-2026-11-03.md).
 The latest retained full checkpoint is batch 37. Both scopes pass this fixed
 input's quantified performance goal: runtime, cycles and instructions <=1.10x

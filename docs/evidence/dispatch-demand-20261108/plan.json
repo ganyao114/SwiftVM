@@ -1,0 +1,36 @@
+{
+  "created_utc": "2026-11-08T14:40:48.973714+00:00",
+  "subject_commit": "cbd06547a2d9e5259f65bc99a69e95c055aa8bcb",
+  "working_tree_modified": true,
+  "runtime_source_modified_during_benchmark": false,
+  "parent_binary_sha256": "68f0116fa9514a3aa2bcf003cc42e0569cecaf1fc7e8edc50f98e76633f2b113",
+  "namespace": "/data/local/tmp/swiftvm-dispatch-demand-20261108",
+  "device": "bf1359ff",
+  "cpu": 4,
+  "repetitions_per_case_arm": 3,
+  "runtime_samples": 72,
+  "compile_samples": 72,
+  "workloads": [
+    "coremark",
+    "int",
+    "fp",
+    "mem",
+    "branch",
+    "call",
+    "func_tests",
+    "x87_bench"
+  ],
+  "arms": [
+    "block",
+    "function",
+    "fex"
+  ],
+  "selection": "Fixed3 medians, cyclic arm order; all observations retained, no threshold-based repeat or pooling.",
+  "runtime": "Ordinary fresh process, user cycles/instructions/branch-misses in one complete CPU4 group; includes startup/JIT. CoreMark100000 uses >=10s guest loop; other times whole child.",
+  "compile": "Separate decode-timing/qualified FEX byte-probe; same input, CoreMark20. Include complete existing compile window, exclude only byte parser for comparison. FEX final native arena destruction is outside older logical working buffer release probe.",
+  "fex_revision": "a156752fae3a4f65fefb1ed95af980bcdfac43d7 + fixed Android patch; default multiblock and TSO, AVX/AOT/object cache disabled",
+  "frequency_policy_changed": false,
+  "page_cache": "retained; no global cache flush",
+  "x87_oracle": "exit-only inherited fixture, not full numerical proof",
+  "harness_sha256": "75b8b82471d8f13f94fa24367653341d36fd6cf7416916d5a2237c24ed79b9c6"
+}

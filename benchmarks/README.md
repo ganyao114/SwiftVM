@@ -1,5 +1,20 @@
 # IR construction, optimization, scalar compilation and budget checks
 
+For the frozen 6272-byte bench-suite ELF, `app_inputs/split_bench_suite.py`
+creates a separate RX-code/RW-BSS input without changing instruction bytes,
+constant bytes, guest PCs or data addresses:
+
+```sh
+python3 benchmarks/app_inputs/split_bench_suite.py \
+  --guest /path/to/frozen/bench_suite_x86_64 \
+  --output /path/on/data-volume/bench-suite-rx-rw
+```
+
+The generated JSON records both identities and segment layouts. Use this as a
+separate formation diagnostic: the original RWX guest requires SVM's watched
+single-block policy even under Function allocation. Retain its original results;
+the RX/RW variant does not demonstrate faster handling of writable code.
+
 The current application checkpoint is contract section 28 and `REBUILD.md`.
 It includes native unit linking, real fault-PC recovery, sixteen pinned guest
 GPRs and native NZCV on actual FEAT_FlagM hosts (packed fallback otherwise).

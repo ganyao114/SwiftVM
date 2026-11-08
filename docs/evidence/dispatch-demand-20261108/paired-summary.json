@@ -1,0 +1,122 @@
+{
+  "block": {
+    "parent": {
+      "fp": {
+        "cpu-cycles:u": 256832321,
+        "instructions:u": 709459519,
+        "branch-misses:u": 295055
+      },
+      "x87_compile_excluding_byte_ns": 726090,
+      "x87_values_ns": [
+        764790,
+        726090,
+        713074
+      ],
+      "fp_compile": {
+        "median_ns": 2683354,
+        "values_ns": [
+          2683354,
+          2644122,
+          2774757
+        ]
+      },
+      "func_tests_compile": {
+        "median_ns": 21795553,
+        "values_ns": [
+          21832474,
+          20572800,
+          21795553
+        ]
+      }
+    },
+    "candidate": {
+      "fp": {
+        "cpu-cycles:u": 256720646,
+        "instructions:u": 709459169,
+        "branch-misses:u": 297812
+      },
+      "x87_compile_excluding_byte_ns": 646821,
+      "x87_values_ns": [
+        646304,
+        646821,
+        657815
+      ],
+      "fp_compile": {
+        "median_ns": 2654442,
+        "values_ns": [
+          2654442,
+          2360628,
+          2840307
+        ]
+      },
+      "func_tests_compile": {
+        "median_ns": 20627600,
+        "values_ns": [
+          20627600,
+          20335505,
+          21116944
+        ]
+      }
+    }
+  },
+  "function": {
+    "parent": {
+      "fp": {
+        "cpu-cycles:u": 256819111,
+        "instructions:u": 710356995,
+        "branch-misses:u": 295682
+      },
+      "x87_compile_excluding_byte_ns": 676822,
+      "x87_values_ns": [
+        704581,
+        676822,
+        669845
+      ],
+      "fp_compile": {
+        "median_ns": 2795908,
+        "values_ns": [
+          2795908,
+          2840410,
+          2528685
+        ]
+      },
+      "func_tests_compile": {
+        "median_ns": 39881046,
+        "values_ns": [
+          65658068,
+          31292931,
+          39881046
+        ]
+      }
+    },
+    "candidate": {
+      "fp": {
+        "cpu-cycles:u": 256902358,
+        "instructions:u": 710357560,
+        "branch-misses:u": 298449
+      },
+      "x87_compile_excluding_byte_ns": 643700,
+      "x87_values_ns": [
+        636509,
+        643700,
+        689114
+      ],
+      "fp_compile": {
+        "median_ns": 2824966,
+        "values_ns": [
+          2824966,
+          2830478,
+          2578301
+        ]
+      },
+      "func_tests_compile": {
+        "median_ns": 31810834,
+        "values_ns": [
+          31810834,
+          32017432,
+          31347879
+        ]
+      }
+    }
+  }
+}

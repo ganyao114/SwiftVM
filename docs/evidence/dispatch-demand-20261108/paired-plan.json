@@ -1,0 +1,22 @@
+{
+  "repetitions_per_scope_version": 3,
+  "versions": [
+    "parent",
+    "candidate"
+  ],
+  "scopes": [
+    "block",
+    "function"
+  ],
+  "workloads": [
+    "fp runtime PMU",
+    "fp compile excluding byte",
+    "func_tests compile excluding byte",
+    "x87 compile excluding byte"
+  ],
+  "reason_for_compile_guards": "Actual dispatch resource demand must improve cold compile without a material regression; retain all timing samples and code work counts.",
+  "observations": 48,
+  "order": "alternate version order per repetition; retain all, no fastest selection",
+  "parent_sha256": "68f0116fa9514a3aa2bcf003cc42e0569cecaf1fc7e8edc50f98e76633f2b113",
+  "mixed_into_formal_matrix": false
+}

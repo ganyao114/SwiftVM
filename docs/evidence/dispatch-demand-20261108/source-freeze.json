@@ -1,0 +1,362 @@
+{
+  "base_commit": "cbd06547a2d9e5259f65bc99a69e95c055aa8bcb",
+  "worktree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "bytes": 20740,
+      "sha256": "a7ba6fd01bc3ea8c7c60c2776e7f22ba4cb0776cb8db56912c0c61e91b5caac2"
+    },
+    {
+      "path": "REBUILD.md",
+      "bytes": 16618,
+      "sha256": "72b7e9c979352da501e95e5ff43df2fd765ce0dd2b5b67cd7ece68fd4c6d2bae"
+    },
+    {
+      "path": "benchmarks/README.md",
+      "bytes": 23760,
+      "sha256": "967b65b1ca2b70a04c2f45f09abb80e0b6f379545ba21015a5dc55bfb844a74e"
+    },
+    {
+      "path": "benchmarks/app_inputs/split_bench_suite.py",
+      "bytes": 2941,
+      "sha256": "455c5bedbb12c2094df95c65552705a5d299bab376dc1147ea3fe0985de7be43"
+    },
+    {
+      "path": "benchmarks/indirect_dispatch/README.md",
+      "bytes": 3778,
+      "sha256": "27f73cfc3d8ad6e484fe53e024a19f020ccd0891e10501907cf9b9ca5c99903b"
+    },
+    {
+      "path": "benchmarks/indirect_dispatch/build.py",
+      "bytes": 10191,
+      "sha256": "5f6169ef86cd447bf3d5d84397f6a7f0959f0998eb305d59a3653bfaa26d3498"
+    },
+    {
+      "path": "benchmarks/indirect_dispatch/build_returns.py",
+      "bytes": 10000,
+      "sha256": "47a8fe8407a5bfe80de0aabc8fff224ebc48cdd7fc1c1514054f33468c5d903c"
+    },
+    {
+      "path": "benchmarks/indirect_dispatch/guest.S.in",
+      "bytes": 4150,
+      "sha256": "ff5de692278ef07a61d861da1a67e8746b5b173fb3245a0f48231972209a88d7"
+    },
+    {
+      "path": "benchmarks/indirect_dispatch/pmu_region.cpp",
+      "bytes": 9311,
+      "sha256": "9134d5f222e7808299e87197b7d233be6da236daab841473d0077caccbf3318a"
+    },
+    {
+      "path": "benchmarks/indirect_dispatch/run.py",
+      "bytes": 6143,
+      "sha256": "1d46782978da7dbac77421e2af60bd0b4f5c105b8c6f7048e658db3470e024c5"
+    },
+    {
+      "path": "docs/benchmark-gap-analysis-2026-11-08.md",
+      "bytes": 13602,
+      "sha256": "38736858d4f6af309cb84db6e47edb42bc5152ebf08fa14d640c9bd93ed236a5"
+    },
+    {
+      "path": "docs/fp-status-optimization-2026-11-08.md",
+      "bytes": 13158,
+      "sha256": "47ffb03721516df1235698d7576ca6972f37d209956093dc69b1b4b5c8c68279"
+    },
+    {
+      "path": "docs/indirect-dispatch-benchmark-2026-11-07.md",
+      "bytes": 10945,
+      "sha256": "d0527941070d6d73263225617247ab52230c85438490ce1c48e5f55707541b35"
+    },
+    {
+      "path": "docs/post-l1-benchmark-2026-11-08.md",
+      "bytes": 8532,
+      "sha256": "b1cfec1566c265d0262d0f64fa864f7f6725ef0e677178542e978188c031cf8f"
+    },
+    {
+      "path": "docs/thread-dispatch-cache-2026-11-08.md",
+      "bytes": 12086,
+      "sha256": "455052eb61051ecf9005e32295e1797760da15dc7fb30fd44abe23416479b41a"
+    },
+    {
+      "path": "source/launcher/linux/report.cpp",
+      "bytes": 7700,
+      "sha256": "65885113fa9fbac49f060794a5a5f72131c7f080b7cdcf7c3774944d9f4743d0"
+    },
+    {
+      "path": "source/runtime/backend/arm64/abi.h",
+      "bytes": 2716,
+      "sha256": "5c2f90ecafc0b680f664da9bf911fa6f79c0c8948e744026b38cd349b7871e24"
+    },
+    {
+      "path": "source/runtime/backend/arm64/abi_layout.inc",
+      "bytes": 1489,
+      "sha256": "a9af47be58bea922b341446933c171dcac24daf4e6a67bcd26046e66a59be151"
+    },
+    {
+      "path": "source/runtime/backend/arm64/compile.cpp",
+      "bytes": 3025,
+      "sha256": "13d6db934d9c5282cf561f171b433528127e992e001dc39585c785da3e0695c7"
+    },
+    {
+      "path": "source/runtime/backend/arm64/compile.h",
+      "bytes": 6995,
+      "sha256": "dfc70949b77751f47c1e80252ca423b6678bc10759e53be7d67639c9fa1b71f7"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit.h",
+      "bytes": 30905,
+      "sha256": "50fafbd9de1fd6f2592463c92aa80df8753044b03e9dc96216a545278087a096"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_control.cpp",
+      "bytes": 14811,
+      "sha256": "fb676388770ef673d8a70573e4881feace4aed52755fcff8d9e68780ea1f1cf9"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_dispatch.cpp",
+      "bytes": 4752,
+      "sha256": "85b95cd4805fdf7916a7595d3a9a94980ee0fc8924ec5f3e74d5c76fb62450c1"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_float.cpp",
+      "bytes": 29002,
+      "sha256": "ddc701c1a7038c36022e29b223f188c577e2d54467ad4fd74471e63c84dcde9a"
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_fp_status.cpp",
+      "bytes": 11926,
+      "sha256": "8837e0845be75e5adbd0a879edb3a66c900b6ae54818fdd4ed098acf378f3add"
+    },
+    {
+      "path": "source/runtime/backend/arm64/entry_elf.S",
+      "bytes": 9739,
+      "sha256": "6915aadced9ef84a9da57f2e8656c9473a2a4c9d439160e7dc9ee78269cbd052"
+    },
+    {
+      "path": "source/runtime/backend/arm64/patch.cpp",
+      "bytes": 8928,
+      "sha256": "333076fec8a7ac1fc05327b6d951188c88a39688c230dad3723b79ea887aa847"
+    },
+    {
+      "path": "source/runtime/backend/arm64/patch.h",
+      "bytes": 1862,
+      "sha256": "3ec76b2cbe8abc5e77e1d3a2471d4862a260dd8db29a612ea9db693e77e2b19e"
+    },
+    {
+      "path": "source/runtime/backend/arm64/relocate.cpp",
+      "bytes": 5957,
+      "sha256": "520e345524b472d2de340b9caa2de98e228b53071f52cf010c16ed3ed8b1b14c"
+    },
+    {
+      "path": "source/runtime/backend/arm64/runtime.cpp",
+      "bytes": 11864,
+      "sha256": "4b5461672b4ff5cbf210e34b75c0e49f41121dc2236e23668d7e2e98c390bc43"
+    },
+    {
+      "path": "source/runtime/backend/code.h",
+      "bytes": 2572,
+      "sha256": "73f8131a575c0225f81c7fd1af7985b5db65e8c5ef8fb55714827c1c9114da57"
+    },
+    {
+      "path": "source/runtime/backend/dispatch_layout.inc",
+      "bytes": 412,
+      "sha256": "57d9a6234b96f39564743439b4b04c094f684a9838ddb8d0916bb5336e7679a4"
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/abi_layout.inc",
+      "bytes": 894,
+      "sha256": "d7d50e6f51ab4cddf9e040e460773d46beecf114b62af23105936283c3031e0d"
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/compile.cpp",
+      "bytes": 2049,
+      "sha256": "d8ed8d80a7917dabe67d55fd5fbdd1b2c1d372c4e55d18c987f9f2365e94be2d"
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/emit.cpp",
+      "bytes": 13406,
+      "sha256": "fad85a436281b3c4b8c3879295e079c234f9566ca690ac2b749c16fce328ed6d"
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/entry_elf.S",
+      "bytes": 5963,
+      "sha256": "5ff633b6ab47203fd2b1357010f7fde8aab753a5cf4e2740b8c73f6abd34755a"
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/runtime.cpp",
+      "bytes": 5867,
+      "sha256": "3dc9900b8413126aba0783fbe286ab2c280920162c6a2bc19f91375e60c7d3a0"
+    },
+    {
+      "path": "source/runtime/backend/relocation.h",
+      "bytes": 2560,
+      "sha256": "48c738b3af55b9c886eec202a300767d95f43298b9f55d7c8a9751752b19dcdf"
+    },
+    {
+      "path": "source/runtime/backend/riscv64/abi_layout.inc",
+      "bytes": 893,
+      "sha256": "78641e38cbbc933cd2b67e7cf1257a2639d65a7fc02317321ff69b363d27db01"
+    },
+    {
+      "path": "source/runtime/backend/riscv64/compile.cpp",
+      "bytes": 2041,
+      "sha256": "0b320e020867fc3d1256b1c3fd4c5cdc0101d281e0270885404a3d866dfa3ea8"
+    },
+    {
+      "path": "source/runtime/backend/riscv64/emit.cpp",
+      "bytes": 13202,
+      "sha256": "57fd1f7cac2be55a1d9f7cfa68908480eff69c12a1559a98277bb624a8abcf38"
+    },
+    {
+      "path": "source/runtime/backend/riscv64/entry_elf.S",
+      "bytes": 5570,
+      "sha256": "956e0c5f48dce859ed051dadabd18d06eee6c7f2ee29cec28c58ee6635a07a71"
+    },
+    {
+      "path": "source/runtime/backend/riscv64/runtime.cpp",
+      "bytes": 5893,
+      "sha256": "3f15f263be7c0bcc1abdca6dba7527461140ecd9b7c14e034925c76d3f457ab1"
+    },
+    {
+      "path": "source/runtime/backend/x64/abi_layout.inc",
+      "bytes": 484,
+      "sha256": "669fe95e861ffe18fe72017cd32bfded1cda6c65863417faab6916b516a98f98"
+    },
+    {
+      "path": "source/runtime/backend/x64/compile.cpp",
+      "bytes": 2029,
+      "sha256": "d8ce6065d197acf58caa9ba603c1721e5620af049305d20f79ae430c541771e4"
+    },
+    {
+      "path": "source/runtime/backend/x64/emit.cpp",
+      "bytes": 9345,
+      "sha256": "a76e75233f1e73b87562247195224f1b493e5257765ba00fe6a17cdb6fc0ea8f"
+    },
+    {
+      "path": "source/runtime/backend/x64/entry_elf.S",
+      "bytes": 4362,
+      "sha256": "fbdbec1266e62ad429c1a7ff01065300e5c19c2b6ed418abc9b6208bc4103d7c"
+    },
+    {
+      "path": "source/runtime/backend/x64/runtime.cpp",
+      "bytes": 5037,
+      "sha256": "388f463e0a62b02890ed20e8fe4bd47599168d2ad99f63ee9820887ee9f69ac9"
+    },
+    {
+      "path": "source/runtime/execution/code_cache.cpp",
+      "bytes": 5541,
+      "sha256": "19b4f1995b7cba14d0eeea65f6e6166df3ece6e774db4454382ec06773a1d41a"
+    },
+    {
+      "path": "source/runtime/execution/code_cache.h",
+      "bytes": 3212,
+      "sha256": "2c062ffca181f1d8829aabec901b3f53ab2c006dfe9a5f8140c9251ca45d7915"
+    },
+    {
+      "path": "source/runtime/execution/code_identity.cpp",
+      "bytes": 3121,
+      "sha256": "caa70e57dfd82fc3bb54b25daed454e15d55e1a2b9503780fb41e32513d280e0"
+    },
+    {
+      "path": "source/runtime/execution/code_image.cpp",
+      "bytes": 17135,
+      "sha256": "4e43842decae710cb4d74d10161f9d63e8ad526ef0adbcb73f380e89194a1a17"
+    },
+    {
+      "path": "source/runtime/execution/code_link.cpp",
+      "bytes": 1900,
+      "sha256": "c061cf092c5ff8779b7790aee6323e1b4bd4745867a127358cedbf68aeaf0c21"
+    },
+    {
+      "path": "source/runtime/execution/compile_service.cpp",
+      "bytes": 11718,
+      "sha256": "3a50004baed227bfacfaf85310eaf65a0e2e6e8ef1be6a8188726f4ac5e6da3c"
+    },
+    {
+      "path": "source/runtime/execution/compile_service.h",
+      "bytes": 2598,
+      "sha256": "2948fca65774644703cba9f9791ef3bc490f1bbc80d32c0a7c2e5e910c70f073"
+    },
+    {
+      "path": "source/runtime/execution/dispatch.cpp",
+      "bytes": 4441,
+      "sha256": "997502bf0e7d360d9ecd76727bf7d12d1f95c50b12fffedaed866f7f36dd517c"
+    },
+    {
+      "path": "source/runtime/execution/dispatch.h",
+      "bytes": 7442,
+      "sha256": "7a1059d08e750b864f3b17ff6aa5847bd5c15edc7241f2b042c6a378fad8d47e"
+    },
+    {
+      "path": "source/runtime/execution/dispatch_cache.cpp",
+      "bytes": 1374,
+      "sha256": "bb8cee076867211e0edd8ac9e50c019c5f91a46236f9fc21ad32ac0d8e211aaa"
+    },
+    {
+      "path": "source/runtime/execution/dispatch_cache.h",
+      "bytes": 1485,
+      "sha256": "b9cee0b3fff2f74d1d027259703f13de46050301429af0292f3824fe2ae3e3e7"
+    },
+    {
+      "path": "source/runtime/execution/frontend_service.cpp",
+      "bytes": 5563,
+      "sha256": "f128026ab2cd9c3c857545e8a98367f2e9f73646a517bc31de1cb9aee8bce8ce"
+    },
+    {
+      "path": "source/runtime/execution/guest_thread.h",
+      "bytes": 799,
+      "sha256": "e3bd7a9ee98f1214311cb76e53d33e04c94e4b6a6213b96cc648a5b3455db836"
+    },
+    {
+      "path": "source/runtime/execution/host_backend.h",
+      "bytes": 2765,
+      "sha256": "88905908fb6c3f1d6293841287cc40527166fb993c0f6d7d2fff6c5c7326c4da"
+    },
+    {
+      "path": "source/runtime/execution/runtime.cpp",
+      "bytes": 27097,
+      "sha256": "0a1c33dde15affe1d96011721cd1a6b1f0c5986d3f3e41932430eed673f0f037"
+    },
+    {
+      "path": "source/runtime/execution/runtime.h",
+      "bytes": 4199,
+      "sha256": "9cf328a0a027811987fd3d444d3152ca18aeca40afa75ca2dbf0b211379d42b3"
+    },
+    {
+      "path": "source/runtime/execution/smc.cpp",
+      "bytes": 7182,
+      "sha256": "7a320a547c1760bcd04c5554d032fb616dba4e4a041c41b9f1c80caf8b645ab5"
+    },
+    {
+      "path": "source/runtime/execution/vm.h",
+      "bytes": 7181,
+      "sha256": "61ce730dc6ef5099a31094875a8ad9f390ae9e077c0600e73af12089dcbbbb0c"
+    },
+    {
+      "path": "source/tests/CMakeLists.txt",
+      "bytes": 7325,
+      "sha256": "c53de54ec497772f449efe92b53caa521609567e85c5faf4b665b89823c5ffe9"
+    },
+    {
+      "path": "source/tests/rebuild/arm64_link_test.cpp",
+      "bytes": 69252,
+      "sha256": "b364c337c48ca3d87b18fd2776d74f5d6319865bc925d548d5ca8752022007c8"
+    },
+    {
+      "path": "source/tests/rebuild/arm64_vector_test.cpp",
+      "bytes": 33785,
+      "sha256": "7ff8e97b622559840cc6e6505d434f4635803bf866706ddc7b3917ce4e9e5ac9"
+    },
+    {
+      "path": "source/tests/rebuild/avx_coverage_test.cpp",
+      "bytes": 26811,
+      "sha256": "4d08ebc78c9d38ed52c28dd629029507f9cd9abb5461ad4deaee061dca7c536c"
+    },
+    {
+      "path": "source/tests/rebuild/dispatch_cache_test.cpp",
+      "bytes": 11711,
+      "sha256": "6fdc640b6e84e74e169b62b5cf3500573afe0df033f7ef21288cd177929db026"
+    }
+  ],
+  "production_source_changed_during_measurement": false
+}

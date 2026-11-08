@@ -1,0 +1,194 @@
+// Linux x86-64 freestanding fixture. Only target layout and dispatch differ.
+.equ ITERATIONS, @ITERATIONS@
+.equ WARMUP, 4096
+.equ ROUNDS, 2
+.section .text
+.global _start
+.type _start,@function
+_start:
+    mov $WARMUP, %edi
+    call kernel
+    xor %r12d, %r12d
+round:
+    // gettid is a guest syscall. The controller must qualify this TID against
+    // the actual child process's /proc/PID/task entries before perf attach.
+    mov $186, %eax
+    syscall
+    test %rax, %rax
+    js failed
+    movl $0x44414552, output(%rip)  // READ
+    movw $0x2059, output+4(%rip)    // Y<space>
+    lea output+6(%rip), %rdi
+    call append_decimal
+    movb $10, (%rdi)
+    inc %rdi
+    call write_output
+    mov $71, %r8d                  // G
+    call read_token
+    call monotonic
+    mov %rax, %r13
+    movabs $ITERATIONS, %rdi
+.global measured_kernel_call
+measured_kernel_call:
+    call kernel
+    mov %rax, %r14
+    call monotonic
+    sub %r13, %rax
+    mov %rax, %r15
+    movl $0x454e4f44, output(%rip)  // DONE
+    movb $32, output+4(%rip)
+    lea output+5(%rip), %rdi
+    call append_decimal
+    movb $32, (%rdi)
+    inc %rdi
+    mov %r14, %rax
+    call append_decimal
+    movb $10, (%rdi)
+    inc %rdi
+    call write_output
+    mov $88, %r8d                  // X
+    call read_token
+    inc %r12d
+    cmp $ROUNDS, %r12d
+    jb round
+    xor %edi, %edi
+    mov $60, %eax
+    syscall
+failed:
+    mov $70, %edi
+    mov $60, %eax
+    syscall
+.size _start, .-_start
+
+// Input RDI=count. Returns (sum of AL results) XOR (XOR of loaded pointers).
+// Both controls execute the same load, index arithmetic, and checksum work.
+.type kernel,@function
+kernel:
+    push %rbx
+    push %r12
+    push %r13
+    push %r14
+    push %r15
+    lea sequence_table(%rip), %r12
+    mov %rdi, %r13
+    xor %r14d, %r14d
+    xor %r15d, %r15d
+    xor %ebx, %ebx
+.global selection_loop
+selection_loop:
+    mov (%r12,%r14,8), %r11
+    xor %r11, %rbx
+.global dispatch_site
+dispatch_site:
+@DISPATCH@
+.global dispatch_resume
+dispatch_resume:
+    movzbl %al, %eax
+    add %rax, %r15
+    inc %r14d
+    and $1023, %r14d
+    dec %r13
+    jnz selection_loop
+    mov %r15, %rax
+    xor %rbx, %rax
+    pop %r15
+    pop %r14
+    pop %r13
+    pop %r12
+    pop %rbx
+    ret
+.size kernel, .-kernel
+
+// Nanoseconds from CLOCK_MONOTONIC; both rounds share this syscall and RET.
+.type monotonic,@function
+monotonic:
+    mov $228, %eax
+    mov $1, %edi
+    lea timespec(%rip), %rsi
+    syscall
+    test %rax, %rax
+    js failed
+    imul $1000000000, timespec(%rip), %rax
+    add timespec+8(%rip), %rax
+    ret
+.size monotonic, .-monotonic
+
+// Input RAX=value, RDI=output cursor. Return RDI=end, no libc or FP.
+.type append_decimal,@function
+append_decimal:
+    sub $32, %rsp
+    lea 32(%rsp), %r8
+    mov $10, %r9d
+1:
+    xor %edx, %edx
+    div %r9
+    add $48, %dl
+    dec %r8
+    mov %dl, (%r8)
+    test %rax, %rax
+    jnz 1b
+    lea 32(%rsp), %r10
+2:
+    mov (%r8), %dl
+    mov %dl, (%rdi)
+    inc %r8
+    inc %rdi
+    cmp %r10, %r8
+    jb 2b
+    add $32, %rsp
+    ret
+.size append_decimal, .-append_decimal
+
+// Input RDI=end of output. Each protocol line fits in one pipe-atomic write.
+.type write_output,@function
+write_output:
+    lea output(%rip), %rsi
+    mov %rdi, %rdx
+    sub %rsi, %rdx
+    mov $1, %edi
+3:
+    mov $1, %eax
+    syscall
+    cmp $-4, %rax
+    je 3b
+    cmp %rdx, %rax
+    jne failed
+    ret
+.size write_output, .-write_output
+
+// Input R8B=required byte. EOF, a short read, or a wrong token exits 70.
+.type read_token,@function
+read_token:
+    xor %edi, %edi
+    lea token(%rip), %rsi
+    mov $1, %edx
+4:
+    xor %eax, %eax
+    syscall
+    cmp $-4, %rax
+    je 4b
+    cmp $1, %rax
+    jne failed
+    cmp %r8b, token(%rip)
+    jne failed
+    ret
+.size read_token, .-read_token
+
+// A single alignment at the bank boundary. Per-target .p2align would destroy
+// 4-byte CALL spacing and change the SVM per-site index distribution.
+.p2align 6
+@TARGETS@
+
+.section .rodata
+.p2align 3
+.global sequence_table
+sequence_table:
+@TABLE@
+.size sequence_table, .-sequence_table
+
+.section .bss
+.p2align 4
+timespec: .zero 16
+output: .zero 96
+token: .zero 1
+.section .note.GNU-stack,"",@progbits

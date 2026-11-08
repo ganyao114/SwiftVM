@@ -1,0 +1,164 @@
+{
+  "all_passed": true,
+  "scope": "Demand-created real thread L1 with preserved lazy SMC empty view. Actual x64 backend under one real Linux kernel run; fixed-cache incremental build.",
+  "cases": [
+    {
+      "name": "runtime-native",
+      "exit": 0,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "test_cases": true
+      }
+    },
+    {
+      "name": "persistence-native",
+      "exit": 0,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "test_cases": true
+      }
+    },
+    {
+      "name": "x86-jit-block",
+      "exit": 40,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "runtime_completed": true,
+        "thread_l1_bound": true,
+        "diagnostic_hits_bounded": true,
+        "native_bytes": true,
+        "no_interpreter": true
+      }
+    },
+    {
+      "name": "x86-jit-function",
+      "exit": 40,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "runtime_completed": true,
+        "thread_l1_bound": true,
+        "diagnostic_hits_bounded": true,
+        "native_bytes": true,
+        "no_interpreter": true
+      }
+    }
+  ],
+  "native_tests": {
+    "runtime-native": {
+      "assertions": 146,
+      "groups": 8
+    },
+    "persistence-native": {
+      "assertions": 45,
+      "groups": 4
+    }
+  },
+  "smokes": [
+    {
+      "name": "x86-jit-block",
+      "exit": 40,
+      "compile_attempts": 3,
+      "interpreted_steps": 0,
+      "native_bytes": 848,
+      "thread_l1_entries": 0,
+      "thread_l1_virtual_bytes": 0,
+      "static_links": 3,
+      "patched_links": 3
+    },
+    {
+      "name": "x86-jit-function",
+      "exit": 40,
+      "compile_attempts": 1,
+      "interpreted_steps": 0,
+      "native_bytes": 536,
+      "thread_l1_entries": 0,
+      "thread_l1_virtual_bytes": 0,
+      "static_links": 0,
+      "patched_links": 0
+    }
+  ],
+  "coverage": [
+    "Runtime native filter [native]~[atomic]: Mixed promotion, ARM precise faults/control rejection, SSE precise FP status, dispatch lifecycle",
+    "Real dynamic dispatch/FP-domain changes still require 16MiB L1 in engine assertions",
+    "New pure-static watched-code self-modification asserts exit42, one SMC fault, zero real thread L1 bytes",
+    "Native persistence restore, SMC disable, source-policy rejection and AOT fault publication",
+    "Tiny x86 static-only JIT B/F require zero real L1 entries/virtual bytes; guest exit40 and zero interpreted steps"
+  ],
+  "source_identity": {
+    "root_manifest": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/source-freeze.json",
+    "manifest_sha256": "a24bab82ea8e3c08fc619649b68e21d666c603c82c1aa61afb89a1d8fedb4dd8",
+    "prebuild_check": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/freeze-prebuild-check.json",
+    "postrun_check": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/freeze-postrun-check.json",
+    "frozen_source_hashes_matched": 71,
+    "incremental_patch": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/incremental.patch",
+    "incremental_patch_sha256": "df4f797585c6fc33850a9550a3c17306c7ef3153eff50e08f7587a632f756cf8"
+  },
+  "build_result": {
+    "exit_code": 0,
+    "command": [
+      "orb",
+      "-m",
+      "ubuntu",
+      "env",
+      "TMPDIR=/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/tmp",
+      "cmake",
+      "--build",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64",
+      "--target",
+      "svm_runtime_engine_test",
+      "svm_runtime_persistence_test",
+      "svm_rebuild_linux",
+      "--parallel",
+      "4"
+    ],
+    "log": "build-targeted.log"
+  },
+  "binaries": {
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_engine_test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_engine_test",
+      "bytes": 5466368,
+      "sha256": "484e309159f387b6ac789b36c91102be0325d01704ec6fd4d4fb140cecd61052"
+    },
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_persistence_test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_persistence_test",
+      "bytes": 5361328,
+      "sha256": "19cb4d9670a6e2db52c2fd93f3621baf76a72c1883d2108a51348b345e1f7e0c"
+    },
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_rebuild_linux": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_rebuild_linux",
+      "bytes": 4151952,
+      "sha256": "1dfa7d1324a3a1826898e4e1185421b64b7a04ab61cd469bdf2c884647c89536"
+    }
+  },
+  "inputs": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/kernel-final/binary-inputs.json",
+  "commands": {
+    "build": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/build-command.json",
+    "kernel": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/kernel-final/execution-inputs.json"
+  },
+  "raw_console": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/kernel-final/console.log.gz",
+  "results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/kernel-final/results.json",
+  "cleanup": {
+    "owned_pid": 75705,
+    "running": false,
+    "qemu_exit": 0,
+    "deadline": false,
+    "temporary_initrd_removed_bytes": 8509893,
+    "temporary_initrd_remaining": false,
+    "expanded_rootfs_created": false,
+    "errors": [],
+    "independent_process_check": {
+      "exit_code": 1,
+      "output": "",
+      "owned_qemu_present": false
+    },
+    "derived_rootfs_remaining_bytes": 0,
+    "derived_init_executable_removed": true,
+    "df_after": "Filesystem    1024-blocks      Used Available Capacity  iused     ifree %iused  Mounted on\n/dev/disk11s1   999155012 940349916  58600708    95% 10690305 586007080    2%   /Volumes/Data2\n"
+  },
+  "cleanup_receipt": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/x64/kernel-final/cleanup-receipt.json",
+  "claim": "Functional validation under QEMU system with an actual Linux kernel and two emulated CPUs. No physical hardware or performance claim; no phone access, no product changes, no broad ISA suite."
+}

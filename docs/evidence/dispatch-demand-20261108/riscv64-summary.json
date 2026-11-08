@@ -1,0 +1,126 @@
+{
+  "architecture": "riscv64",
+  "all_passed": true,
+  "head": "cbd06547a2d9e5259f65bc99a69e95c055aa8bcb",
+  "code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"96e858e7dc60431d8c3f2ef557993010cb5cc2b95b6d59a65e1128da93ad938f\"\n",
+  "build_inputs": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/build-inputs.json",
+  "binary_hashes_recorded": true,
+  "kernel_results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/kernel-01/results.json",
+  "case_inputs": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/kernel-01/case-inputs.json",
+  "execution_inputs": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/kernel-01/execution-inputs.json",
+  "input_hashes": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/kernel-01/input-hashes.json",
+  "console": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/kernel-01/console.log.gz",
+  "cleanup_receipt": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/cleanup-receipt.json",
+  "root_freeze": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/source-freeze.json",
+  "frozen_file_count": 71,
+  "all_frozen_files_match_after_validation": true,
+  "native_cases": 12,
+  "catch_results": [
+    {
+      "name": "engine-native",
+      "filter": "[native]~[atomic]",
+      "passed_cases": 8,
+      "assertions": 146
+    },
+    {
+      "name": "persistence-native",
+      "filter": "[native]",
+      "passed_cases": 4,
+      "assertions": 45
+    }
+  ],
+  "guest_jit_invocations": 4,
+  "smoke_results": [
+    {
+      "name": "x86-block-jit",
+      "exit": 40,
+      "all_passed": true,
+      "stdout_exact": "",
+      "expected_l1_bytes": 0,
+      "stats": {
+        "scope": "block",
+        "engine": "jit",
+        "compile_attempts": 3,
+        "code_units_published": 3,
+        "static_links": 3,
+        "native_bytes": 980,
+        "interpreted_steps": 0,
+        "fallbacks": 0,
+        "cache_invalidations": 0,
+        "dispatch_cache": "thread_l1_shared_directory",
+        "thread_l1_entries": 0,
+        "thread_l1_virtual_bytes": 0
+      }
+    },
+    {
+      "name": "arm-block-jit",
+      "exit": 42,
+      "all_passed": true,
+      "stdout_exact": "arm64 frontend ok\n",
+      "expected_l1_bytes": 16777216,
+      "stats": {
+        "scope": "block",
+        "engine": "jit",
+        "compile_attempts": 38,
+        "code_units_published": 38,
+        "static_links": 52,
+        "native_bytes": 16508,
+        "interpreted_steps": 0,
+        "fallbacks": 0,
+        "cache_invalidations": 0,
+        "dispatch_cache": "thread_l1_shared_directory",
+        "thread_l1_entries": 1048576,
+        "thread_l1_virtual_bytes": 16777216
+      }
+    },
+    {
+      "name": "x86-function-jit",
+      "exit": 40,
+      "all_passed": true,
+      "stdout_exact": "",
+      "expected_l1_bytes": 0,
+      "stats": {
+        "scope": "function",
+        "engine": "jit",
+        "compile_attempts": 1,
+        "code_units_published": 1,
+        "static_links": 0,
+        "native_bytes": 672,
+        "interpreted_steps": 0,
+        "fallbacks": 0,
+        "cache_invalidations": 0,
+        "dispatch_cache": "thread_l1_shared_directory",
+        "thread_l1_entries": 0,
+        "thread_l1_virtual_bytes": 0
+      }
+    },
+    {
+      "name": "arm-function-jit",
+      "exit": 42,
+      "all_passed": true,
+      "stdout_exact": "arm64 frontend ok\n",
+      "expected_l1_bytes": 16777216,
+      "stats": {
+        "scope": "function",
+        "engine": "jit",
+        "compile_attempts": 14,
+        "code_units_published": 14,
+        "static_links": 9,
+        "native_bytes": 12888,
+        "interpreted_steps": 0,
+        "fallbacks": 0,
+        "cache_invalidations": 0,
+        "dispatch_cache": "thread_l1_shared_directory",
+        "thread_l1_entries": 1048576,
+        "thread_l1_virtual_bytes": 16777216
+      }
+    }
+  ],
+  "environment": {
+    "real_linux_system_kernel": true,
+    "two_emulated_harts": true,
+    "aslr": true,
+    "optional_features": "RVV/Zb* disabled"
+  },
+  "claim": "One focused functional run per architecture. Native engine validates static SMC with ready L1 zero, dynamic SMC with ready L1 16MiB and FP-domain invalidation; persistence validates conservative restored-code path. No performance or whole-ISA claim. Atomic groups skipped."
+}

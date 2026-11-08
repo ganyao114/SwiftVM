@@ -1,0 +1,111 @@
+{
+  "worktree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "base_commit": "cbd06547a2d9e5259f65bc99a69e95c055aa8bcb",
+  "committed_or_pushed_this_turn": false,
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 35294936,
+    "sha256": "c8ac4ba9e29d3bbbc8ebcb4129140288bd42ff14bbc928fda3bc6df2c9e6effa"
+  },
+  "candidate_gzip_sha256_verified": true,
+  "source_manifest": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/source-freeze.json",
+  "source_manifest_sha256": "a24bab82ea8e3c08fc619649b68e21d666c603c82c1aa61afb89a1d8fedb4dd8",
+  "all_71_frozen_file_hashes_match": true,
+  "report": "/Volumes/Data2/SwiftVM-submit-20261104/docs/dispatch-resource-optimization-2026-11-08.md",
+  "report_sha256": "4027e71f486f4ccc7b2ebc7c04c4a94a949aa326b5567c5397648e28f9905456",
+  "implementation": [
+    "Create real thread L1 before publishing actual emitted dynamic tails, shared null-L1 static fallback retained",
+    "SMC miss view created before first actual page write watch",
+    "Initial real link relocation capacity of four",
+    "Report actual mapped thread L1 bytes at final observation"
+  ],
+  "transient_codegen_resource_fact": "has_indirect_dispatch; no IR scan/pass; not persisted; restore conservatively provisions thread L1",
+  "pure_static_x87_thread_l1_entries_and_bytes": 0,
+  "final_all_144_primary_observations_valid": true,
+  "final_paired_observations": 48,
+  "paired_changes": {
+    "block": {
+      "x87_compile_reduction": 0.10917241664256494,
+      "fp_cycles_change": -0.0004348167690312321
+    },
+    "function": {
+      "x87_compile_reduction": 0.048937534536406924,
+      "fp_cycles_change": 0.0003241464378405112
+    }
+  },
+  "x87_compile_excluding_byte_ms": {
+    "block": 0.699895,
+    "function": 0.623334,
+    "fex": 0.3119270833333333
+  },
+  "x87_compile_excluding_byte_ratios": {
+    "block": 2.243777592252463,
+    "function": 1.9983324094172654
+  },
+  "function_x87_median_at_budget_edge_not_a_stable_upper_bound": true,
+  "all_numeric_targets_met": false,
+  "remaining_numeric_misses": [
+    {
+      "case": "fp",
+      "arm": "block",
+      "metric": "seconds",
+      "ratio": 1.3522668966107008,
+      "limit": 1.1
+    },
+    {
+      "case": "fp",
+      "arm": "block",
+      "metric": "cycles",
+      "ratio": 1.1934714108915139,
+      "limit": 1.1
+    },
+    {
+      "case": "fp",
+      "arm": "function",
+      "metric": "cycles",
+      "ratio": 1.1913015720997084,
+      "limit": 1.1
+    },
+    {
+      "case": "x87_bench",
+      "arm": "block",
+      "metric": "compile_excluding_byte",
+      "ratio": 2.243777592252463,
+      "limit": 2.0
+    }
+  ],
+  "functional_verification": {
+    "all_passed": true,
+    "android": "android-tests/summary.json",
+    "host": "host-tests.stdout",
+    "x64": "x64/summary.json",
+    "riscv64_and_loongarch64": "rv-la-final-summary.json",
+    "new_contract": "Static watched-code self-modification completes exit42/fault1 with real L1 unmapped; dynamic SMC/FP-domain paths use actual16MiB; persisted code restoration passed"
+  },
+  "rejected_experiment": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/cold-compile-fp-layout-20261108/trial-outcome.json",
+    "fp_layout_in_final_product": false,
+    "reason": "Only -0.095%/-0.183% FP cycles, instructions unchanged; added cold fixups and range fixture removed",
+    "samples_mixed_into_final": false
+  },
+  "format_files": 47,
+  "git_diff_check_passed": true,
+  "phone_cleanup": {
+    "namespace": "/data/local/tmp/swiftvm-dispatch-demand-20261108",
+    "remaining_bytes": 0,
+    "allocated_bytes_removed": 252236800,
+    "df_free_delta_bytes": 253693952,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "limitations": [
+    "FEX release probe covers logical buffers, not final native arena/lookup destruction; SVM complete native owner release remains charged",
+    "Fixed3 medians and full ranges, no significance/full-ISA claim",
+    "FP precise status cost and x87 Block compile remain above targets",
+    "func_tests Function compilation wall times show large inter-run stage-local variation; paired samples retained rather than replacing primary samples",
+    "x87 benchmark inherited exit-only numerical oracle",
+    "AFP unavailable on current phone; native AFP testing requires actual capability",
+    "Thread L1 requirement is transient; restored older/current images provision conservatively"
+  ]
+}

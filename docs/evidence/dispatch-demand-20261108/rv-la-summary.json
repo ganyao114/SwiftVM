@@ -1,0 +1,36 @@
+{
+  "all_passed": true,
+  "architectures": [
+    {
+      "architecture": "riscv64",
+      "all_passed": true,
+      "final_summary": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/final-summary.json",
+      "cleanup_receipt": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/riscv64/cleanup-receipt.json",
+      "code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"96e858e7dc60431d8c3f2ef557993010cb5cc2b95b6d59a65e1128da93ad938f\"\n",
+      "native_cases": 12,
+      "guest_jit_invocations": 4,
+      "static_x86_l1_bytes": 0,
+      "dynamic_arm_l1_bytes": 16777216
+    },
+    {
+      "architecture": "loongarch64",
+      "all_passed": true,
+      "final_summary": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/loongarch64/final-summary.json",
+      "cleanup_receipt": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/loongarch64/cleanup-receipt.json",
+      "code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"2293b720f259e7d384b4fcb351f5acfbb03f713229979e0fa5cb047d004adc39\"\n",
+      "native_cases": 12,
+      "guest_jit_invocations": 4,
+      "static_x86_l1_bytes": 0,
+      "dynamic_arm_l1_bytes": 16777216
+    }
+  ],
+  "native_cases_total": 24,
+  "guest_jit_invocations_total": 8,
+  "frozen_file_count": 71,
+  "all_frozen_files_match_after_validation": true,
+  "removed_temporary_file_bytes": 30082846,
+  "production_source_changed_during_validation": false,
+  "commit_created": false,
+  "all_owned_qemu_processes_absent": true,
+  "fixed_build_caches_retained": true
+}
