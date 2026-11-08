@@ -11,7 +11,7 @@ parent/candidate runs. No observation is selected or replaced by a faster run.
   [paired summary](paired-summary.json).
 - [Measured source snapshot hashes](source-freeze.json),
   [unchanged product source check](product-source-match.json), [runner identity](candidate-identity.json).
-- [Android tests](android-tests.json), [host tests](host-tests.stdout),
+- [Android tests](android-tests.json), [host tests](host-tests.json),
   [x64](x64-summary.json), [RV/LA](rv-la-summary.json).
 - [Phone cleanup](phone-cleanup-receipt.json), [file identities](manifest.json).
 

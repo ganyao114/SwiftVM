@@ -110,10 +110,12 @@
       "sha256": "8da76eaf546357e5ae0133ad22c43e42bbe2c2af14a0ca8da6c66e3f8254dd56"
     },
     {
-      "file": "host-tests.stdout",
+      "file": "host-tests.json",
       "original": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/dispatch-demand-20261108/host-tests.stdout",
-      "bytes": 250,
-      "sha256": "e97b83213491085ce79ed4d855d08ca2919107177a75201165f9dfcffceb4d62"
+      "bytes": 407,
+      "sha256": "7891404f3f0e409afbdc77530838db2ad0d60557cb4b475ad9be10ff31b76380",
+      "original_stdout_sha256": "e97b83213491085ce79ed4d855d08ca2919107177a75201165f9dfcffceb4d62",
+      "encoding": "Verbatim stdout including trailing newlines in JSON; no output removed."
     },
     {
       "file": "x64-summary.json",

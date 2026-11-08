@@ -1,0 +1,6 @@
+{
+  "exit": 0,
+  "stdout": "Filters: \"PackedFPStatus\",\"PackedFloatingArithmetic\",\"DeferredPCLinks\",\"LinkedDynamicPC\"\nRandomness seeded to: 621912308\n===============================================================================\nAll tests passed (4 assertions in 4 test cases)\n\n",
+  "stderr": "",
+  "original_stdout_sha256": "e97b83213491085ce79ed4d855d08ca2919107177a75201165f9dfcffceb4d62"
+}
