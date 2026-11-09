@@ -19,6 +19,20 @@ void VM::ConfigureGuest(GuestISA isa) {
                   32,
                   32};
         uniform_data = &thread.native.arm_state;
+    } else if (isa == GuestISA::Arm32) {
+        if (layout.isa != isa) std::construct_at(&thread.native.arm32_state);
+        using State = arm32::GuestState;
+        layout = {isa,
+                  sizeof(State),
+                  offsetof(State, r),
+                  offsetof(State, pc),
+                  offsetof(State, packed_flags),
+                  offsetof(State, r) + 13 * 8,
+                  offsetof(State, q),
+                  offsetof(State, numeric_control),
+                  16,
+                  16};
+        uniform_data = &thread.native.arm32_state;
     } else {
         if (layout.isa != isa) std::construct_at(&thread.native.state);
         using State = x86::GuestState;

@@ -27,7 +27,7 @@ public:
     std::int64_t Action(int, std::uint64_t action, std::uint64_t old, std::uint64_t size);
     std::int64_t Mask(int how, std::uint64_t set, std::uint64_t old, std::uint64_t size);
     std::int64_t AltStack(std::uint64_t set, std::uint64_t old);
-    bool ReturnFrame();
+    bool ReturnFrame(bool realtime = true);
     void InterruptSyscall(std::uint64_t number,
                           const std::uint64_t* arguments,
                           bool restartable,
@@ -45,7 +45,8 @@ public:
     std::int64_t WaitInfo(std::uint64_t input,
                           std::uint64_t info,
                           std::uint64_t timeout,
-                          std::uint64_t size);
+                          std::uint64_t size,
+                          bool time64 = false);
     std::int64_t Queue(int, const GuestSignalInfo&);
     std::int64_t WaitSyscall(std::uint64_t number, const std::uint64_t* args);
     static bool HostIngress(void*, int, siginfo_t*, void*) noexcept;
@@ -69,7 +70,7 @@ private:
     bool wait_active{};
 
     struct InterruptedSyscall {
-        std::uint64_t instruction_pc{}, number{}, arguments[6]{};
+        std::uint64_t instruction_pc{}, resume_pc{}, number{}, arguments[6]{};
         timespec deadline{};
         bool active{}, restartable{}, restart_without_handler{}, deadline_valid{}, restart_ready{};
     } interrupted;
@@ -79,7 +80,7 @@ private:
     void Ready() noexcept;
     bool Enqueue(int, const GuestSignalInfo&) noexcept;
     bool OwnSignals(std::uint64_t);
-    std::uint64_t Restorer();
+    std::uint64_t Restorer(bool realtime = true);
     GuestSignalStack StackView() const noexcept;
     void Terminate(int) noexcept;
     void RestoreInterruptedCall() noexcept;

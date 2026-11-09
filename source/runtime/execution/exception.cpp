@@ -14,6 +14,8 @@ std::unique_ptr<GuestExceptionSnapshot> VM::CaptureException() const {
     snapshot->info = thread.faults.exception;
     if (ISA() == GuestISA::Arm64)
         snapshot->state = thread.native.arm_state;
+    else if (ISA() == GuestISA::Arm32)
+        snapshot->state = thread.native.arm32_state;
     else
         snapshot->state = thread.native.state;
     return snapshot;
@@ -22,11 +24,12 @@ std::unique_ptr<GuestExceptionSnapshot> VM::CaptureException() const {
 void VM::DeliverException(const GuestExceptionInfo& event) {
     thread.faults.exception = event;
     thread.faults.exception_pending = false;
-    if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
+    ClearReservation();
     if (options.exception_handler) {
-        const GuestContextView context = ISA() == GuestISA::Arm64
-                                                 ? GuestContextView{&thread.native.arm_state}
-                                                 : GuestContextView{&thread.native.state};
+        const GuestContextView context =
+                ISA() == GuestISA::Arm64   ? GuestContextView{&thread.native.arm_state}
+                : ISA() == GuestISA::Arm32 ? GuestContextView{&thread.native.arm32_state}
+                                           : GuestContextView{&thread.native.state};
         switch (options.exception_handler(options.exception_opaque, context, event)) {
             case GuestExceptionDisposition::Resume:
                 RestoreGuestFP();
@@ -65,7 +68,7 @@ void VM::DeliverPending() {
 }
 
 void VM::ServiceArmState() {
-    if (HandleArmStateService()) return;
+    if (ISA() == GuestISA::Arm32 ? HandleArm32StateService() : HandleArmStateService()) return;
     if (thread.bridge_failure.kind != ErrorKind::GuestFault)
         throw swift::RuntimeError(thread.bridge_failure);
     thread.bridge_failure.Clear();
@@ -80,13 +83,13 @@ void VM::RaiseEncodedException(std::uint64_t encoded) {
     event.isa = ISA();
     event.origin = GuestExceptionOrigin::Semantic;
     event.kind = static_cast<GuestExceptionKind>((encoded >> 8) & 255);
-    event.instruction_pc = PC();
+    event.instruction_pc = CodeAddress(ISA(), PC());
     if (event.kind == GuestExceptionKind::Breakpoint) {
         if (ISA() == GuestISA::X86_64) event.exception_vector = 3;
-        event.instruction_pc -= (encoded >> 16) & 255;
+        if (ISA() != GuestISA::Arm32) event.instruction_pc -= (encoded >> 16) & 255;
         event.signal_number = SIGTRAP;
         event.signal_code = ISA() == GuestISA::X86_64 ? SI_KERNEL : TRAP_BRKPT;
-        if (ISA() == GuestISA::Arm64) {
+        if (ISA() != GuestISA::X86_64) {
             event.address = event.instruction_pc;
             event.address_valid = true;
         }
@@ -105,7 +108,7 @@ void VM::RaiseSemanticException(NativeExit reason, std::uint64_t pc) {
     GuestExceptionInfo event;
     event.isa = ISA();
     event.origin = GuestExceptionOrigin::Semantic;
-    event.instruction_pc = pc;
+    event.instruction_pc = CodeAddress(ISA(), pc);
     switch (reason) {
         case NativeExit::DivideFault:
             if (ISA() == GuestISA::X86_64) event.exception_vector = 0;
@@ -139,8 +142,8 @@ void VM::RaiseSemanticException(NativeExit reason, std::uint64_t pc) {
         case NativeExit::AlignmentFault:
             if (ISA() == GuestISA::X86_64) event.exception_vector = 13;
             event.kind = GuestExceptionKind::Alignment;
-            event.signal_number = ISA() == GuestISA::Arm64 ? SIGBUS : SIGSEGV;
-            event.signal_code = ISA() == GuestISA::Arm64 ? BUS_ADRALN : SI_KERNEL;
+            event.signal_number = ISA() != GuestISA::X86_64 ? SIGBUS : SIGSEGV;
+            event.signal_code = ISA() != GuestISA::X86_64 ? BUS_ADRALN : SI_KERNEL;
             break;
         case NativeExit::MemoryFault:
             if (ISA() == GuestISA::X86_64) event.exception_vector = 14;

@@ -4,8 +4,8 @@
 #include <span>
 #include <string>
 
-#include "runtime/execution/memory.h"
 #include "runtime/arch/guest.h"
+#include "runtime/execution/memory.h"
 
 namespace swift::runtime::platform {
 // Source image identity and initial ABI metadata, not another mapping ledger.
@@ -26,5 +26,7 @@ LoadedImage LoadELF(execution::GuestMemory&,
 std::uint64_t InitialStack(execution::GuestMemory&,
                            const LoadedImage&,
                            std::span<const std::string> argv,
-                           std::span<const std::string> environment);
+                           std::span<const std::string> environment,
+                           std::uint64_t hwcap = 0,
+                           std::uint64_t hwcap2 = 0);
 }  // namespace swift::runtime::platform

@@ -37,6 +37,8 @@ public:
     ~GuestMemory();
     GuestMemory(const GuestMemory&) = delete;
     GuestMemory& operator=(const GuestMemory&) = delete;
+    // Mapping-time policy only; native guest accesses remain guest==host.
+    void SetAddressBits(unsigned);
 
     void InitializeBrk(std::uint64_t start, std::uint64_t limit) noexcept {
         brk_start = brk_current = start;
@@ -83,6 +85,8 @@ private:
     std::size_t page_size;
     std::size_t file_regions{}, executable_file_regions{};
     std::uint64_t brk_start{}, brk_current{}, brk_limit{};
+    std::uint64_t address_limit{UINT64_MAX};
+    std::uint64_t next_low_address{0x10000000};
     std::vector<MemoryRegion> Replaced(std::uint64_t address,
                                        std::size_t length,
                                        int protection,

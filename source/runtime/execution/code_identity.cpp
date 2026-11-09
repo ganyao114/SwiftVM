@@ -21,7 +21,8 @@ void Number(Sha256& hash, std::uint64_t value) {
 CodeImageKey MakeCodeImageKey(const Digest& guest,
                               std::uint64_t load_bias,
                               const HostBackendOps& backend,
-                              const RuntimeOptions& options) {
+                              const RuntimeOptions& options,
+                              GuestISA guest_isa) {
     constexpr std::string_view build{SVM_CODE_BUILD_ID};
     CodeImageKey key;
     key.build_id = HashBytes({reinterpret_cast<const std::uint8_t*>(build.data()), build.size()});
@@ -29,8 +30,13 @@ CodeImageKey MakeCodeImageKey(const Digest& guest,
     key.host_isa = backend.target.target;
     key.load_bias = load_bias;
     key.requested_scope = options.scope;
+    key.guest_isa = guest_isa;
+    key.guest_profile = guest_isa == GuestISA::Arm32 ? options.arm32_profile.Identity() : 0;
     Sha256 config;
     Number(config, CodeImageFormatVersion);
+    Number(config, static_cast<unsigned>(key.guest_isa));
+    Number(config, key.guest_profile);
+    Number(config, key.location_version);
     Number(config, sizeof(GuestState));
     Number(config, sizeof(NativeRunContext));
     Number(config, offsetof(NativeRunContext, state));
@@ -76,6 +82,9 @@ Digest CodeImageKeyDigest(const CodeImageKey& key) {
     hash.Update(key.configuration);
     Number(hash, key.load_bias);
     Number(hash, key.host_isa);
+    Number(hash, static_cast<unsigned>(key.guest_isa));
+    Number(hash, key.guest_profile);
+    Number(hash, key.location_version);
     Number(hash, static_cast<unsigned>(key.requested_scope));
     return hash.Finish();
 }

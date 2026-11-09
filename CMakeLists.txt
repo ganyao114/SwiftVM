@@ -160,6 +160,12 @@ target_compile_definitions(svm_arm64_numeric PRIVATE
     LITTLEENDIAN=1 SOFTFLOAT_FAST_INT64=1 SOFTFLOAT_BUILTIN_CLZ=1
     FEXCORE_PRESERVE_ALL_ATTR= FEXCORE_HAS_PRESERVE_ALL_ATTR=0)
 target_link_libraries(svm_arm64 PRIVATE svm_arm64_numeric)
+add_library(svm_arm32_numeric STATIC source/runtime/arch/arm32/numeric.cpp
+    source/runtime/arch/arm32/numeric_registry.cpp)
+target_link_libraries(svm_arm32_numeric PUBLIC svm_arm64_numeric)
+target_include_directories(svm_arm32_numeric PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/source")
+target_compile_features(svm_arm32_numeric PUBLIC cxx_std_20)
+target_link_libraries(svm_arm64 PRIVATE svm_arm32_numeric)
 
 # Exact RV encoding uses the result's word vector directly. Upstream test,
 # cpu probing, executable-buffer and optimization entry points are not used.
@@ -190,6 +196,7 @@ add_library(svm_riscv64 STATIC
     source/runtime/backend/riscv64/call_helpers.cpp
     source/runtime/backend/riscv64/emit_vector.cpp
     source/runtime/backend/riscv64/emit_float.cpp)
+target_link_libraries(svm_riscv64 PRIVATE svm_arm32_numeric)
 target_link_libraries(svm_riscv64 PUBLIC svm_ir PRIVATE svm_biscuit_exact svm_x87 svm_allocation svm_system_query svm_arm64_numeric)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_libraries(svm_riscv64 PRIVATE atomic)
@@ -215,6 +222,7 @@ add_library(svm_loongarch64 STATIC
     source/runtime/backend/loongarch64/emit_vector.cpp
     source/runtime/backend/loongarch64/patch.cpp
     source/runtime/backend/loongarch64/relocate.cpp)
+target_link_libraries(svm_loongarch64 PRIVATE svm_arm32_numeric)
 target_link_libraries(svm_loongarch64 PUBLIC svm_ir PRIVATE swift_xbyak_loongarch64
     svm_x87 svm_allocation svm_system_query svm_arm64_numeric)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^loongarch64")
@@ -239,6 +247,7 @@ add_library(svm_x64 STATIC
     source/runtime/backend/x64/helpers.cpp
     source/runtime/backend/x64/patch.cpp
     source/runtime/backend/x64/relocate.cpp)
+target_link_libraries(svm_x64 PRIVATE svm_arm32_numeric)
 target_include_directories(svm_x64 PRIVATE source/runtime/externals)
 target_link_libraries(svm_x64 PUBLIC svm_ir PRIVATE svm_x87 svm_allocation svm_system_query
     svm_arm64_numeric svm_softfloat_ext80)
@@ -277,6 +286,12 @@ add_library(svm_arm64_ir STATIC
     source/runtime/frontend/arm64/build_ir.cpp
     source/runtime/frontend/arm64/interpreter.cpp)
 target_link_libraries(svm_arm64_ir PUBLIC svm_ir PRIVATE svm_aarch64_decode svm_ir_direct svm_arm64_numeric)
+add_library(svm_arm32_ir STATIC
+    source/runtime/frontend/arm32/decode.cpp
+    source/runtime/frontend/arm32/region.cpp
+    source/runtime/frontend/arm32/build_ir.cpp
+    source/runtime/frontend/arm32/interpreter.cpp)
+target_link_libraries(svm_arm32_ir PUBLIC svm_ir PRIVATE svm_ir_direct svm_arm32_numeric)
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     set_source_files_properties(source/runtime/ir/direct/interpreter.cpp
         PROPERTIES COMPILE_OPTIONS "-frounding-math")
@@ -289,6 +304,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
     add_library(svm_execution STATIC
         source/runtime/execution/atomic_service.cpp
         source/runtime/execution/arm_state_service.cpp
+        source/runtime/execution/arm32_state_service.cpp
         source/runtime/execution/dispatch.cpp
         source/runtime/execution/dispatch_cache.cpp
         source/runtime/execution/fault.cpp
@@ -309,16 +325,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/execution/runtime.cpp
         source/runtime/platform/linux/loader.cpp
         source/runtime/platform/linux/syscalls.cpp
+        source/runtime/platform/linux/syscalls_arm32.cpp
+        source/runtime/platform/linux/abi_arm32.cpp
+        source/runtime/platform/linux/arm32_user_helpers.cpp
         source/runtime/platform/linux/safe_access.cpp
         source/runtime/platform/linux/faultable_atomic.cpp
         source/runtime/platform/linux/signals.cpp
         source/runtime/platform/linux/guest_signals.cpp
         source/runtime/platform/linux/signal_frame_x86.cpp
         source/runtime/platform/linux/signal_frame_arm64.cpp
+        source/runtime/platform/linux/signal_frame_arm32.cpp
         source/runtime/platform/linux/wait_syscall.cpp
         source/runtime/platform/linux/wait_syscall.S
         source/runtime/platform/linux/run_guest.cpp)
-    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_arm64_ir svm_ir_optimize svm_code_image
+    target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_arm64_ir svm_arm32_ir svm_ir_optimize svm_code_image
         PRIVATE svm_base svm_disk_cache svm_aot_artifact svm_artifact_file Threads::Threads)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64")
         target_sources(svm_execution PRIVATE source/runtime/platform/linux/riscv64_host.cpp

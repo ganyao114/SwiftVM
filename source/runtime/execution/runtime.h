@@ -6,6 +6,7 @@
 #include <string>
 
 #include "base/error.h"
+#include "runtime/arch/arm32/profile.h"
 #include "runtime/exception.h"
 #include "runtime/frontend/source.h"
 #include "runtime/ir/types.h"
@@ -24,6 +25,7 @@ struct RuntimeOptions {
     // Mixed defers this many entry visits; 0 requests compilation immediately.
     std::uint16_t hot_threshold{8};
     frontend::DecodeLimits function_limits{};
+    arm32::Profile arm32_profile{};
     bool decode_timing{};
     // Additional request-level clocks when decode_timing is enabled.
     bool compile_details{};

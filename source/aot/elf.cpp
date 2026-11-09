@@ -8,6 +8,30 @@
 
 namespace swift::aot::elf {
 namespace {
+struct Header32 {
+    std::uint8_t ident[16];
+    std::uint16_t type, machine;
+    std::uint32_t version, entry, phoff, shoff, flags;
+    std::uint16_t ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
+};
+
+struct Program32 {
+    std::uint32_t type, offset, vaddr, paddr, filesz, memsz, flags, align;
+};
+
+struct Section32 {
+    std::uint32_t name, type, flags, address, offset, size, link, info, align, entry_size;
+};
+
+struct Symbol32 {
+    std::uint32_t name, value, size;
+    std::uint8_t info, other;
+    std::uint16_t section;
+};
+
+static_assert(sizeof(Header32) == 52 && sizeof(Program32) == 32 && sizeof(Section32) == 40 &&
+              sizeof(Symbol32) == 16);
+
 [[noreturn]] void Invalid(const char* text) { ThrowError(text, ErrorKind::InvalidArgument); }
 
 template <class T>
@@ -22,17 +46,57 @@ std::vector<T> Table(std::span<const std::uint8_t> bytes, std::uint64_t offset, 
 
 View::View(std::span<const std::uint8_t> input) : bytes(input) {
     static_assert(std::endian::native == std::endian::little);
-    if (bytes.size() < sizeof(Header)) Invalid("truncated ELF header");
-    std::memcpy(&header, bytes.data(), sizeof(header));
-    constexpr std::uint8_t identity[]{0x7f, 'E', 'L', 'F', 2, 1, 1};
-    if (std::memcmp(header.ident, identity, sizeof(identity)) || header.version != 1 ||
-        header.ehsize != sizeof(Header))
-        Invalid("expected ELF64 little-endian version 1");
-    if ((header.phnum && header.phentsize != sizeof(ProgramHeader)) ||
-        (header.shnum && header.shentsize != sizeof(Section)))
-        Invalid("unsupported ELF table entry size");
-    segments = Table<ProgramHeader>(bytes, header.phoff, header.phnum);
-    sections = Table<Section>(bytes, header.shoff, header.shnum);
+    if (bytes.size() < 16) Invalid("truncated ELF header");
+    constexpr std::uint8_t magic[]{0x7f, 'E', 'L', 'F'};
+    if (std::memcmp(bytes.data(), magic, sizeof(magic)) || bytes[5] != 1 || bytes[6] != 1 ||
+        (bytes[4] != 1 && bytes[4] != 2))
+        Invalid("expected ELF32/ELF64 little-endian version 1");
+    if (bytes[4] == 1) {
+        if (bytes.size() < sizeof(Header32)) Invalid("truncated ELF32 header");
+        Header32 raw;
+        std::memcpy(&raw, bytes.data(), sizeof(raw));
+        std::memcpy(header.ident, raw.ident, sizeof(raw.ident));
+        header.type = raw.type;
+        header.machine = raw.machine;
+        header.version = raw.version;
+        header.entry = raw.entry;
+        header.phoff = raw.phoff;
+        header.shoff = raw.shoff;
+        header.flags = raw.flags;
+        header.ehsize = raw.ehsize;
+        header.phentsize = raw.phentsize;
+        header.phnum = raw.phnum;
+        header.shentsize = raw.shentsize;
+        header.shnum = raw.shnum;
+        header.shstrndx = raw.shstrndx;
+        if (raw.ehsize != sizeof(Header32) || (raw.phnum && raw.phentsize != sizeof(Program32)) ||
+            (raw.shnum && raw.shentsize != sizeof(Section32)))
+            Invalid("invalid ELF32 table sizes");
+        for (const auto& p : Table<Program32>(bytes, raw.phoff, raw.phnum))
+            segments.push_back(
+                    {p.type, p.flags, p.offset, p.vaddr, p.paddr, p.filesz, p.memsz, p.align});
+        for (const auto& p : Table<Section32>(bytes, raw.shoff, raw.shnum))
+            sections.push_back({p.name,
+                                p.type,
+                                p.flags,
+                                p.address,
+                                p.offset,
+                                p.size,
+                                p.link,
+                                p.info,
+                                p.align,
+                                p.entry_size});
+    } else {
+        if (bytes.size() < sizeof(Header)) Invalid("truncated ELF64 header");
+        std::memcpy(&header, bytes.data(), sizeof(header));
+        if (header.ehsize != sizeof(Header) ||
+            (header.phnum && header.phentsize != sizeof(ProgramHeader)) ||
+            (header.shnum && header.shentsize != sizeof(Section)))
+            Invalid("invalid ELF64 table sizes");
+        segments = Table<ProgramHeader>(bytes, header.phoff, header.phnum);
+        sections = Table<Section>(bytes, header.shoff, header.shnum);
+    }
+    if (header.version != 1) Invalid("invalid ELF version");
     if (header.shstrndx >= sections.size() && header.shstrndx)
         Invalid("ELF section-name table index exceeds table");
     for (const auto& segment : segments) {
@@ -40,10 +104,11 @@ View::View(std::span<const std::uint8_t> input) : bytes(input) {
             (segment.type == Load && segment.filesz > segment.memsz))
             Invalid("ELF segment exceeds file/memory bounds");
     }
+    const auto symbol_size = header.ident[4] == 1 ? sizeof(Symbol32) : sizeof(Symbol);
     for (const auto& section : sections) {
         if (section.type != Nobits) (void)Contents(section);
         if (section.type == Symtab &&
-            (section.entry_size != sizeof(Symbol) || section.size % sizeof(Symbol) ||
+            (section.entry_size != symbol_size || section.size % symbol_size ||
              section.link >= sections.size() || sections[section.link].type != Strtab))
             Invalid("invalid ELF symbol table");
         if (section.align && (section.align & (section.align - 1)))
@@ -83,10 +148,14 @@ std::string_view View::SymbolName(const Section& table, const Symbol& symbol) co
 }
 
 std::vector<Symbol> View::Symbols(const Section& table) const {
-    if (table.type != Symtab || table.entry_size != sizeof(Symbol) || table.size % sizeof(Symbol))
+    const auto width = header.ident[4] == 1 ? sizeof(Symbol32) : sizeof(Symbol);
+    if (table.type != Symtab || table.entry_size != width || table.size % width)
         Invalid("invalid ELF symbol table");
-    return Table<Symbol>(
-            bytes, table.offset, static_cast<std::size_t>(table.size / sizeof(Symbol)));
+    if (header.ident[4] == 2) return Table<Symbol>(bytes, table.offset, table.size / width);
+    std::vector<Symbol> result;
+    for (const auto& s : Table<Symbol32>(bytes, table.offset, table.size / width))
+        result.push_back({s.name, s.info, s.other, s.section, s.value, s.size});
+    return result;
 }
 
 const Section* View::Find(std::string_view name) const {

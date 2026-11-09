@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <variant>
 
+#include "runtime/arch/arm32/state.h"
 #include "runtime/arch/arm64/state.h"
 #include "runtime/arch/guest.h"
 #include "runtime/arch/x86/state.h"
@@ -41,7 +42,7 @@ enum class GuestStopReason : std::uint8_t {
     HostFailure,
 };
 
-using GuestContextView = std::variant<x86::GuestState*, arm64::GuestState*>;
+using GuestContextView = std::variant<x86::GuestState*, arm64::GuestState*, arm32::GuestState*>;
 enum class GuestExceptionDisposition : std::uint8_t { GuestOS, Resume, Stop };
 using GuestExceptionHandler = GuestExceptionDisposition (*)(void*,
                                                             GuestContextView,
@@ -51,7 +52,7 @@ using GuestExceptionHandler = GuestExceptionDisposition (*)(void*,
 // packed flags remain typed state; ABI exporters use the ISA conversion helpers.
 struct GuestExceptionSnapshot {
     GuestExceptionInfo info;
-    std::variant<x86::GuestState, arm64::GuestState> state;
+    std::variant<x86::GuestState, arm64::GuestState, arm32::GuestState> state;
 };
 
 }  // namespace swift::runtime

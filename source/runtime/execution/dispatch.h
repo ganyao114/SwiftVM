@@ -6,6 +6,7 @@
 #include <type_traits>
 
 #include "dispatch_cache.h"
+#include "runtime/arch/arm32/state.h"
 #include "runtime/arch/arm64/state.h"
 #include "runtime/arch/x86/state.h"
 #include "runtime/atomic.h"
@@ -82,6 +83,7 @@ struct NativeRunContext {
     union {
         GuestState state{};
         arm64::GuestState arm_state;
+        arm32::GuestState arm32_state;
     };
 
     // Raw host exception status survives cold lookup and numerical helpers.

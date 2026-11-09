@@ -89,6 +89,11 @@ svm_test(x86_construction_contract svm_x86_construction_test)
 svm_test_target(svm_arm64_frontend_test SOURCES rebuild/arm64_frontend_test.cpp
     LIBRARIES svm_arm64_ir svm_aarch64_decode)
 svm_test(arm64_frontend_contract svm_arm64_frontend_test)
+svm_test_target(svm_arm32_frontend_test ISA host SOURCES rebuild/arm32_frontend_test.cpp
+    rebuild/arm32_semantics_test.cpp rebuild/arm32_numeric_test.cpp
+    LIBRARIES svm_arm32_ir svm_ir_optimize svm_arm64 svm_x64 svm_riscv64 svm_loongarch64)
+svm_test(arm32_frontend_contract svm_arm32_frontend_test)
+svm_native_test(arm32_frontend_native_contract svm_arm32_frontend_test)
 svm_test(ir_optimize_contract svm_ir_optimize_test)
 svm_test(arm64_compile_contract svm_arm64_compile_test)
 svm_test(compile_pipeline_contract svm_compile_pipeline_test)
@@ -110,6 +115,10 @@ if(TARGET svm_execution)
         rebuild/guest_signal_test.cpp
         rebuild/runtime_engine_test.cpp rebuild/guest_execution_test.cpp rebuild/dispatch_cache_test.cpp rebuild/exception_recovery_test.cpp
         LIBRARIES svm_execution Threads::Threads)
+    svm_test_target(svm_arm32_runtime_test ISA host SOURCES rebuild/arm32_runtime_test.cpp
+        LIBRARIES svm_execution Threads::Threads)
+    svm_test(arm32_runtime_contract svm_arm32_runtime_test)
+    svm_native_test(arm32_runtime_native_contract svm_arm32_runtime_test)
     svm_test(runtime_engine_contract svm_runtime_engine_test)
     svm_native_test(runtime_engine_native_contract svm_runtime_engine_test)
 endif()

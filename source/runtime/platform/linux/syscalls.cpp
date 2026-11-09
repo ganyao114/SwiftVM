@@ -1,3 +1,4 @@
+#include "abi_arm32.h"
 #include "runtime/arch/x86/flags.h"
 #include "runtime/execution/vm.h"
 #include "syscall_abi.h"
@@ -84,6 +85,10 @@ s64 LinuxSyscalls::Stat(int fd, u64 output, const char* path, int flags) {
     struct stat status{};
     const auto result = path ? fstatat(fd, path, &status, flags) : fstat(fd, &status);
     if (result) return -errno;
+    if (vm.ISA() == GuestISA::Arm32) {
+        const auto guest = abi32::Encode(status);
+        return vm.GuestWrite(output, &guest, sizeof(guest)) ? 0 : -EFAULT;
+    }
     if (vm.ISA() == GuestISA::Arm64) {
         const ArmGuestStat guest{static_cast<u64>(status.st_dev),
                                  static_cast<u64>(status.st_ino),
@@ -138,7 +143,10 @@ s64 LinuxSyscalls::HostCall(u64 number, const u64* arguments) {
             deadline = restart_deadline;
         } else {
             timespec duration{};
-            if (!vm.memory.CopyIn(&duration, arguments[3], sizeof(duration))) return -EFAULT;
+            if (!(vm.ISA() == GuestISA::Arm32
+                          ? abi32::ReadTimespec(vm.memory, arguments[3], duration, time64_arguments)
+                          : vm.memory.CopyIn(&duration, arguments[3], sizeof(duration))))
+                return -EFAULT;
             if (duration.tv_sec < 0 || duration.tv_nsec < 0 || duration.tv_nsec >= 1000000000)
                 return -EINVAL;
             if (clock_gettime(CLOCK_MONOTONIC, &deadline)) return -errno;
@@ -149,6 +157,13 @@ s64 LinuxSyscalls::HostCall(u64 number, const u64* arguments) {
             deadline.tv_nsec = (deadline.tv_nsec + duration.tv_nsec) % 1000000000;
         }
         adjusted[3] = reinterpret_cast<u64>(&remaining);
+    }
+    timespec absolute{};
+    if (number == SYS_futex && arguments[3] &&
+        (arguments[1] & FUTEX_CMD_MASK) == FUTEX_WAIT_BITSET && vm.ISA() == GuestISA::Arm32) {
+        if (!abi32::ReadTimespec(vm.memory, arguments[3], absolute, time64_arguments))
+            return -EFAULT;
+        adjusted[3] = reinterpret_cast<u64>(&absolute);
     }
     resumed_deadline = false;
     for (;;) {
@@ -193,6 +208,10 @@ void LinuxSyscalls::RestartPolicy(u64 operation,
 s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
     const auto number =
             vm.ISA() == GuestISA::Arm64 ? Arm64SyscallOperation(guest_number) : guest_number;
+    return InvokeOperation(number, args);
+}
+
+s64 LinuxSyscalls::InvokeOperation(u64 number, const u64* args) {
     auto& memory = vm.memory;
     auto& stats = vm.stats;
     auto& options = vm.options;
@@ -285,8 +304,15 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
             if (!signal) return 0;
             GuestSignalInfo info{};
             const bool queued = number == 129 || number == 297;
-            if (queued && !memory.CopyIn(&info, args[number == 297 ? 3 : 2], sizeof(info)))
-                return -EFAULT;
+            if (queued) {
+                const auto input = args[number == 297 ? 3 : 2];
+                if (vm.ISA() == GuestISA::Arm32) {
+                    abi32::SignalInfo compact;
+                    if (!memory.CopyIn(&compact, input, sizeof(compact))) return -EFAULT;
+                    info = abi32::Decode(compact);
+                } else if (!memory.CopyIn(&info, input, sizeof(info)))
+                    return -EFAULT;
+            }
             if (queued && info.code >= 0) return -EPERM;
             info.number = signal;
             if (!queued) {
@@ -352,7 +378,10 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
         case 63: {
             struct utsname name{};
             if (uname(&name)) return -errno;
-            std::strcpy(name.machine, vm.ISA() == GuestISA::Arm64 ? "aarch64" : "x86_64");
+            std::strcpy(name.machine,
+                        vm.ISA() == GuestISA::Arm64   ? "aarch64"
+                        : vm.ISA() == GuestISA::Arm32 ? "armv7l"
+                                                      : "x86_64");
             return vm.GuestWrite(args[0], &name, sizeof(name)) ? 0 : -EFAULT;
         }
         case 72:
@@ -453,10 +482,12 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
                 if (!vm.PrepareGuestWrite(args[4], sizeof(std::uint32_t))) return -EFAULT;
             } else if (requeue && !memory.Contains(args[4], sizeof(std::uint32_t), PROT_READ))
                 return -EFAULT;
-            // Both kernel ABIs use a 32-bit word and two signed 64-bit
-            // timespec fields. Requeue's fourth argument is an integer,
-            // whereas WAIT/WAIT_BITSET consume an optional time pointer.
-            if (timed && args[3] && !memory.Contains(args[3], sizeof(timespec), PROT_READ))
+            // Requeue's fourth argument is an integer. WAIT consumes a
+            // guest timespec, normalized by HostCall before entering Linux.
+            const auto time_bytes = vm.ISA() == GuestISA::Arm32 && !time64_arguments
+                                            ? sizeof(abi32::Timespec)
+                                            : sizeof(timespec);
+            if (timed && args[3] && !memory.Contains(args[3], time_bytes, PROT_READ))
                 return -EFAULT;
             if (timed) return HostCall(SYS_futex, args);
             return Result(syscall(SYS_futex, args[0], args[1], args[2], args[3], args[4], args[5]));
@@ -545,7 +576,7 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
         SVM_LOG(Warning,
                 Syscall,
                 "unsupported guest syscall number={} pc={:#x}; returning ENOSYS",
-                guest_number,
+                current_guest_number,
                 vm.PC());
         reported_unknown = true;
     }
@@ -554,8 +585,9 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
 
 SyscallServiceResult LinuxSyscalls::Service() {
     // The host may write or remap guest memory while servicing a syscall.
-    if (vm.ISA() == GuestISA::Arm64) vm.thread.native.arm_state.reservation_valid = 0;
+    vm.ClearReservation();
     ++vm.stats.syscalls;
+    if (vm.ISA() == GuestISA::Arm32) return ServiceArm32();
     if (vm.ISA() == GuestISA::Arm64) {
         auto& state = vm.thread.native.arm_state;
         const u64 arguments[6]{state.gprs[0],
@@ -579,6 +611,7 @@ SyscallServiceResult LinuxSyscalls::Service() {
         }
         const auto number = state.gprs[8];
         resumed_deadline = vm.signals.ConsumeRestartDeadline(number, arguments, restart_deadline);
+        current_guest_number = number;
         auto result = Invoke(number, arguments);
         const auto operation = Arm64SyscallOperation(number);
         if (result == CancelledBeforeCall) result = -EINTR;
@@ -614,6 +647,7 @@ SyscallServiceResult LinuxSyscalls::Service() {
     resumed_deadline = vm.signals.ConsumeRestartDeadline(number, arguments, restart_deadline);
     state.gprs[x86::RCX] = state.pc;
     state.gprs[x86::R11] = x86::flags::ToRflags(state.packed_flags);
+    current_guest_number = number;
     auto result = Invoke(number, arguments);
     if (result == CancelledBeforeCall) result = -EINTR;
     state.gprs[x86::RAX] = static_cast<u64>(result);

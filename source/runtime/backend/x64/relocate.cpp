@@ -1,6 +1,7 @@
 #include <cstring>
 #include "helpers.h"
 #include "relocate.h"
+#include "runtime/arch/arm32/numeric_registry.h"
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/cpu.h"
 #include "runtime/arch/x86/floating.h"
@@ -16,10 +17,14 @@ HostSymbol CallbackSymbol(std::uintptr_t p) noexcept {
         return HostSymbol::GuestSystemQuery;
     if (p == reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric))
         return HostSymbol::ArmGuestFP;
+    if (const auto identity = runtime::arm32::NumericCallbackIdentity(p))
+        return static_cast<HostSymbol>(255 + identity);
     return HostSymbol::None;
 }
 
 std::uintptr_t ResolveSymbol(HostSymbol s, const CompileOptions& o) noexcept {
+    if (static_cast<std::uint16_t>(s) >= 256)
+        return runtime::arm32::ResolveNumericCallbackIdentity(static_cast<std::uint16_t>(s) - 255);
     switch (s) {
         case HostSymbol::Dispatcher:
             return o.dispatcher;

@@ -1,10 +1,11 @@
-#include "relocate.h"
-#include "compile.h"
 #include "atomic_helpers.h"
 #include "call_helpers.h"
+#include "compile.h"
+#include "relocate.h"
+#include "runtime/arch/arm32/numeric_registry.h"
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/bit_operations.h"
 #include "runtime/arch/x86/cpu.h"
-#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/sse42_string.h"
 #include "runtime/arch/x86/vector_crypto.h"
 #include "runtime/arch/x86/x87.h"
@@ -21,10 +22,15 @@ HostSymbol CallbackSymbol(std::uintptr_t address) noexcept {
         return HostSymbol::GuestCpuQuery;
     if (address == reinterpret_cast<std::uintptr_t>(&x86::QueryGuestSystem))
         return HostSymbol::GuestSystemQuery;
+    if (const auto identity = runtime::arm32::NumericCallbackIdentity(address))
+        return static_cast<HostSymbol>(255 + identity);
     return HostSymbol::None;
 }
 
 std::uintptr_t ResolveSymbol(HostSymbol symbol, const CompileOptions& options) noexcept {
+    if (static_cast<std::uint16_t>(symbol) >= 256)
+        return runtime::arm32::ResolveNumericCallbackIdentity(static_cast<std::uint16_t>(symbol) -
+                                                              255);
     switch (symbol) {
         case HostSymbol::ArmGuestFP:
             return reinterpret_cast<std::uintptr_t>(&::swift::runtime::arm64::ExecuteNumeric);

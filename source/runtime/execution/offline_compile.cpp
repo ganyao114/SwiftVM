@@ -1,8 +1,8 @@
 #include "offline_compile.h"
-#include "vm.h"
-#include "timing.h"
 #include "runtime/platform/linux/artifact_file.h"
 #include "runtime/platform/linux/host_runtime.h"
+#include "timing.h"
+#include "vm.h"
 
 #include "base/error.h"
 
@@ -34,13 +34,21 @@ CodeImage VM::Precompile(std::span<const std::uint8_t> bytes,
                 NumericControl() = (initial_mxcsr & ~UINT32_C(0x8040)) | ((domain & 1u) << 6) |
                                    ((domain >> 1) << 15);
                 UpdateFPEnvironment();
-                std::set<std::uint64_t> pending(entries.begin(), entries.end()), attempted;
-                pending.insert(image.entry);
+                std::set<std::uint64_t> pending, attempted;
+                const auto entry_key = [&](std::uint64_t value) {
+                    return ISA() == GuestISA::Arm32 && !(value >> 32)
+                                   ? arm32::Location::Make(
+                                             value & ~1u, value & 1u, 0, Arm32State().fpscr)
+                                             .Key()
+                                   : value;
+                };
+                for (const auto entry : entries) pending.insert(entry_key(entry));
+                pending.insert(entry_key(image.entry));
                 while (!pending.empty()) {
                     const auto pc = *pending.begin();
                     pending.erase(pending.begin());
                     if (!attempted.insert(pc).second || Cache().Find(pc) ||
-                        memory.CodeAt(pc).empty())
+                        memory.CodeAt(CodeAddress(ISA(), pc)).empty())
                         continue;
                     PC() = pc;
                     RuntimeTimer total{stats.compile_request_ns};
@@ -63,7 +71,11 @@ CodeImage VM::Precompile(std::span<const std::uint8_t> bytes,
                 }
             }
             NumericControl() = initial_mxcsr;
-            PC() = image.entry;
+            PC() = ISA() == GuestISA::Arm32
+                           ? arm32::Location::Make(
+                                     image.entry & ~1u, image.entry & 1u, 0, Arm32State().fpscr)
+                                     .Key()
+                           : image.entry;
             UpdateFPEnvironment();
         }
         if (thread.faults.restore_error)

@@ -1,13 +1,14 @@
 #include "base/error.h"
 #include "base/hash.h"
+#include "runtime/arch/arm32/location.h"
 #include "runtime/execution/code_image.h"
 #include "runtime/execution/disk_cache.h"
 #include "runtime/platform/linux/artifact_file.h"
 
-#include <catch2/catch_test_macros.hpp>
 #include <cstdlib>
 #include <filesystem>
 #include <string_view>
+#include <catch2/catch_test_macros.hpp>
 #include <unistd.h>
 
 namespace {
@@ -173,4 +174,25 @@ TEST_CASE("corrupt optional cache is replaceable and never a partial hit",
     CHECK(fresh.Find(0x401000, 0));
     CHECK(std::distance(std::filesystem::directory_iterator{directory.path},
                         std::filesystem::directory_iterator{}) == 1);
+}
+
+TEST_CASE("ARM32 persistence keeps translation context while sources use physical addresses",
+          "[compile][persistence][arm32]") {
+    auto image = Example();
+    image.key.guest_isa = GuestISA::Arm32;
+    image.key.guest_profile = 0x701;
+    const auto location = arm32::Location::Make(0x401000, true, 0x18, 1u << 22).Key();
+    for (auto& unit : image.units) {
+        unit.pc = location;
+        unit.code.faults[0].guest_pc = location;
+        unit.code.entries[0].pc = location + 2;
+        unit.code.links[0].target_pc = arm32::Location{location}.WithPC(0x402000).Key();
+    }
+    CodeImage decoded;
+    std::string error;
+    REQUIRE(DecodeCodeImage(EncodeCodeImage(image), decoded, error));
+    CHECK(decoded.key == image.key);
+    CHECK(decoded.units[0].pc == location);
+    CHECK(decoded.units[0].sources[0].span.pc == 0x401000);
+    CHECK(decoded.units[0].code.faults[0].guest_pc == location);
 }

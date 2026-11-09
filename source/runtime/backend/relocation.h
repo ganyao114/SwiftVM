@@ -53,6 +53,16 @@ enum class HostSymbol : std::uint16_t {
     LoongCheckedX87 = 81,
     LoongCompareExchange128 = 82,
     ArmGuestFP = 96,
+// Each mathematical operation reserves eight stable leaf IDs: 8/16/32/64
+// bits, with the architectural or the standard SIMD FP environment.
+// These callbacks take only FPSCR and scalar numerical operands.
+#define ARM32_NUMERIC_CALLBACK(name, identity, widths, standard)                                   \
+    Arm32##name##8 = 256 + identity * 8, Arm32##name##8Standard = 257 + identity * 8,              \
+    Arm32##name##16 = 258 + identity * 8, Arm32##name##16Standard = 259 + identity * 8,            \
+    Arm32##name##32 = 260 + identity * 8, Arm32##name##32Standard = 261 + identity * 8,            \
+    Arm32##name##64 = 262 + identity * 8, Arm32##name##64Standard = 263 + identity * 8,
+#include "runtime/arch/arm32/numeric_callbacks.inc"
+#undef ARM32_NUMERIC_CALLBACK
 };
 
 enum class RelocationKind : std::uint16_t {

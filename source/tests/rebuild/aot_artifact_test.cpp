@@ -142,3 +142,106 @@ TEST_CASE("GuestFn keeps independent SysV register banks and whole aggregate spi
     CHECK(!absent);
     CHECK(absent.status() == GuestCallStatus::SetupFailed);
 }
+
+TEST_CASE("AOT embeds ELF32 ARM guests and resolves Thumb symbols by full location",
+          "[compile][aot][arm32]") {
+    struct Header32 {
+        std::uint8_t ident[16];
+        std::uint16_t type, machine;
+        std::uint32_t version, entry, phoff, shoff, flags;
+        std::uint16_t ehsize, phentsize, phnum, shentsize, shnum, shstrndx;
+    };
+
+    struct Program32 {
+        std::uint32_t type, offset, vaddr, paddr, filesz, memsz, flags, align;
+    };
+
+    struct Section32 {
+        std::uint32_t name, type, flags, address, offset, size, link, info, align, entry_size;
+    };
+
+    struct Symbol32 {
+        std::uint32_t name, value, size;
+        std::uint8_t info, other;
+        std::uint16_t section;
+    };
+
+    auto input = Artifact();
+    const auto old_bytes = input.guest_elf;
+    const aot::elf::View old{old_bytes};
+    const auto& h = old.FileHeader();
+    Header32 header{};
+    std::memcpy(header.ident, h.ident, 16);
+    header.ident[4] = 1;
+    header.type = h.type;
+    header.machine = aot::elf::Arm32;
+    header.version = 1;
+    header.entry = h.entry | 1u;
+    header.phoff = sizeof(header);
+    header.shoff = h.shoff;
+    header.flags = 0x05000000;
+    header.ehsize = sizeof(header);
+    header.phentsize = sizeof(Program32);
+    header.phnum = h.phnum;
+    header.shentsize = sizeof(Section32);
+    header.shnum = h.shnum;
+    header.shstrndx = h.shstrndx;
+    std::memcpy(input.guest_elf.data(), &header, sizeof(header));
+    for (unsigned i = 0; i < old.Segments().size(); ++i) {
+        const auto& p = old.Segments()[i];
+        const Program32 raw{p.type,
+                            std::uint32_t(p.offset),
+                            std::uint32_t(p.vaddr),
+                            std::uint32_t(p.paddr),
+                            std::uint32_t(p.filesz),
+                            std::uint32_t(p.memsz),
+                            p.flags,
+                            std::uint32_t(p.align)};
+        std::memcpy(input.guest_elf.data() + header.phoff + i * sizeof(raw), &raw, sizeof(raw));
+    }
+    for (unsigned i = 0; i < old.Sections().size(); ++i) {
+        const auto& s = old.Sections()[i];
+        Section32 raw{s.name,
+                      s.type,
+                      std::uint32_t(s.flags),
+                      std::uint32_t(s.address),
+                      std::uint32_t(s.offset),
+                      std::uint32_t(s.size),
+                      s.link,
+                      s.info,
+                      std::uint32_t(s.align),
+                      std::uint32_t(s.entry_size)};
+        if (s.type == aot::elf::Symtab) {
+            const auto symbols = old.Symbols(s);
+            raw.size = symbols.size() * sizeof(Symbol32);
+            raw.entry_size = sizeof(Symbol32);
+            for (unsigned j = 0; j < symbols.size(); ++j) {
+                const auto& symbol = symbols[j];
+                const auto thumb = (symbol.info & 15) == 2 || (symbol.info & 15) == 10;
+                const Symbol32 item{symbol.name,
+                                    std::uint32_t(symbol.value | unsigned(thumb)),
+                                    std::uint32_t(symbol.size),
+                                    symbol.info,
+                                    symbol.other,
+                                    symbol.section};
+                std::memcpy(
+                        input.guest_elf.data() + s.offset + j * sizeof(item), &item, sizeof(item));
+            }
+        }
+        std::memcpy(input.guest_elf.data() + header.shoff + i * sizeof(raw), &raw, sizeof(raw));
+    }
+    input.code.key.guest_isa = swift::runtime::GuestISA::Arm32;
+    input.code.key.guest_id = swift::HashBytes(input.guest_elf);
+    for (auto& unit : input.code.units) unit.pc |= UINT64_C(1) << 32;
+    aot::ResolveSymbols(input);
+    const auto encoded = aot::EncodeArtifact(input);
+    aot::Artifact output;
+    std::string error;
+    REQUIRE(aot::DecodeArtifact(encoded, output, error));
+    const aot::elf::View container{encoded}, guest{output.guest_elf};
+    CHECK(container.FileHeader().ident[4] == 2 && guest.FileHeader().ident[4] == 1);
+    CHECK(container.Find(".symtab")->entry_size == sizeof(aot::elf::Symbol));
+    const auto* sum = aot::FindSymbol(output, "sum7");
+    REQUIRE(sum);
+    CHECK(sum->Compiled() && sum->guest_value == (fixture::Sum7 | 1u));
+}

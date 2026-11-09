@@ -1,0 +1,7 @@
+Encoding definitions and field signatures are adapted from Dynarmic A32.
+Reference: https://github.com/ganyao114/dynarmic-interp
+Revision: 5a76f6930935bc07a2aa5158f3ee515c34ca14fd
+Copyright (c) 2016-2020 MerryMage and original contributors.
+SPDX-License-Identifier: 0BSD
+Original decoder tables credit Lioncash. Original notices remain in imported files.
+The decoder and dispatch generation here has no Dynarmic runtime dependency.

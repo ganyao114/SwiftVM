@@ -1,0 +1,17 @@
+{
+  "patterns": 788,
+  "opcodes": 759,
+  "groups": {
+    "arm": 261,
+    "thumb16": 79,
+    "thumb32": 239,
+    "vfp": 62,
+    "neon": 147
+  },
+  "arm_candidate_rows": 1691,
+  "arm_unique_buckets": 345,
+  "arm_max_candidates": 35,
+  "thumb32_candidate_rows": 258,
+  "thumb16_table_bytes": 131072,
+  "reference_revision": "5a76f6930935bc07a2aa5158f3ee515c34ca14fd"
+}

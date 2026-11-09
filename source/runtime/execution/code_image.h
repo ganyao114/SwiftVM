@@ -1,6 +1,7 @@
 #pragma once
 
 #include "base/hash.h"
+#include "runtime/arch/guest.h"
 #include "runtime/backend/code.h"
 #include "runtime/code_source.h"
 
@@ -12,12 +13,15 @@ namespace swift::runtime::execution {
 struct HostBackendOps;
 struct RuntimeOptions;
 
-inline constexpr std::uint32_t CodeImageFormatVersion = 3;
+inline constexpr std::uint32_t CodeImageFormatVersion = 4;
 
 struct CodeImageKey {
     Digest build_id{}, guest_id{}, configuration{};
     std::uint64_t load_bias{};
     std::uint32_t host_isa{};
+    GuestISA guest_isa{GuestISA::X86_64};
+    std::uint16_t location_version{1};
+    std::uint64_t guest_profile{};
     ir::Scope requested_scope{ir::Scope::Block};
     friend bool operator==(const CodeImageKey&, const CodeImageKey&) = default;
 };
@@ -44,7 +48,8 @@ struct CodeImage {
 CodeImageKey MakeCodeImageKey(const Digest& guest,
                               std::uint64_t load_bias,
                               const HostBackendOps&,
-                              const RuntimeOptions&);
+                              const RuntimeOptions&,
+                              GuestISA guest_isa = GuestISA::X86_64);
 Digest CodeImageKeyDigest(const CodeImageKey&);
 
 // Disk caches carry words inline. AOT ELF carries the same unit records with

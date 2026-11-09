@@ -3,13 +3,13 @@
 #include <algorithm>
 #include <cerrno>
 #include <cstring>
+#include <vector>
 #include <elf.h>
 #include <fcntl.h>
-#include "base/error.h"
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <vector>
+#include "base/error.h"
 
 namespace swift::runtime::platform {
 namespace {
@@ -43,28 +43,34 @@ void ReadAt(int fd, void* destination, std::size_t size, u64 offset) {
     }
 }
 
-template <typename Read> LoadedImage MapELF(execution::GuestMemory& memory,
-                                            const std::string& path,
-                                            u64 file_size,
-                                            Read read) {
+template <typename Header, typename Segment, typename Read> LoadedImage MapELF(
+        execution::GuestMemory& memory, const std::string& path, u64 file_size, Read read) {
     const auto page_size = memory.PageSize();
-    if (file_size < sizeof(Elf64_Ehdr)) Error("invalid ELF file size");
-    Elf64_Ehdr header{};
+    if (file_size < sizeof(Header)) Error("invalid ELF file size");
+    Header header{};
     read(&header, sizeof(header), 0);
-    if (std::memcmp(header.e_ident, ELFMAG, SELFMAG) || header.e_ident[EI_CLASS] != ELFCLASS64 ||
+    if (std::memcmp(header.e_ident, ELFMAG, SELFMAG) ||
+        header.e_ident[EI_CLASS] !=
+                (sizeof(Header) == sizeof(Elf32_Ehdr) ? ELFCLASS32 : ELFCLASS64) ||
         header.e_ident[EI_DATA] != ELFDATA2LSB || header.e_ident[EI_VERSION] != EV_CURRENT ||
         header.e_version != EV_CURRENT ||
-        (header.e_machine != EM_X86_64 && header.e_machine != EM_AARCH64) ||
+        (sizeof(Header) == sizeof(Elf32_Ehdr)
+                 ? header.e_machine != EM_ARM
+                 : (header.e_machine != EM_X86_64 && header.e_machine != EM_AARCH64)) ||
         (header.e_type != ET_EXEC && header.e_type != ET_DYN) || header.e_ehsize < sizeof(header) ||
-        header.e_phentsize != sizeof(Elf64_Phdr) || !header.e_phnum || header.e_phnum > 1024)
-        Error("expected a little-endian x86-64/AArch64 ET_EXEC/ET_DYN ELF");
-    const auto table_size = std::size_t{header.e_phnum} * sizeof(Elf64_Phdr);
+        header.e_phentsize != sizeof(Segment) || !header.e_phnum || header.e_phnum > 1024)
+        Error("expected a supported little-endian ARM32/x86-64/AArch64 ELF");
+    if constexpr (sizeof(Header) == sizeof(Elf32_Ehdr)) {
+        if (header.e_flags & EF_ARM_BE8) Error("ARM32 BE8 guests are unsupported");
+    }
+    memory.SetAddressBits(sizeof(Header) == sizeof(Elf32_Ehdr) ? 32 : 64);
+    const auto table_size = std::size_t{header.e_phnum} * sizeof(Segment);
     if (header.e_phoff > file_size || table_size > file_size - header.e_phoff)
         Error("ELF program headers exceed file");
-    std::vector<Elf64_Phdr> headers(header.e_phnum);
+    std::vector<Segment> headers(header.e_phnum);
     read(headers.data(), table_size, header.e_phoff);
     u64 low = UINT64_MAX, high{}, alignment = page_size;
-    std::vector<Elf64_Phdr> loads;
+    std::vector<Segment> loads;
     for (const auto& segment : headers) {
         if (segment.p_type == PT_INTERP)
             Error("PT_INTERP is not supported by this static ELF runner");
@@ -143,13 +149,26 @@ template <typename Read> LoadedImage MapELF(execution::GuestMemory& memory,
                            protection))
             SystemError("protect guest ELF");
     }
-    if (memory.CodeAt(image.entry).empty()) Error("ELF entry is not executable/readable");
+    if (memory.CodeAt(header.e_machine == EM_ARM ? image.entry & ~u64{1} : image.entry).empty())
+        Error("ELF entry is not executable/readable");
     memory.InitializeBrk(base + span, base + total);
     image.path = path;
     image.file_size = file_size;
     image.elf_type = header.e_type;
     image.isa = static_cast<GuestISA>(header.e_machine);
     return image;
+}
+
+template <typename Read> LoadedImage SelectELF(execution::GuestMemory& memory,
+                                               const std::string& path,
+                                               u64 size,
+                                               Read read) {
+    if (size < EI_NIDENT) Error("truncated ELF identity");
+    std::uint8_t identity[EI_NIDENT];
+    read(identity, sizeof(identity), 0);
+    if (identity[EI_CLASS] == ELFCLASS32)
+        return MapELF<Elf32_Ehdr, Elf32_Phdr>(memory, path, size, read);
+    return MapELF<Elf64_Ehdr, Elf64_Phdr>(memory, path, size, read);
 }
 }  // namespace
 
@@ -165,12 +184,12 @@ LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
     struct stat status{};
     if (fstat(fd, &status)) SystemError("stat guest ELF");
     if (status.st_size < 0) Error("invalid ELF file size");
-    auto image = MapELF(memory,
-                        path,
-                        static_cast<u64>(status.st_size),
-                        [&](void* destination, std::size_t size, u64 offset) {
-                            ReadAt(fd, destination, size, offset);
-                        });
+    auto image = SelectELF(memory,
+                           path,
+                           static_cast<u64>(status.st_size),
+                           [&](void* destination, std::size_t size, u64 offset) {
+                               ReadAt(fd, destination, size, offset);
+                           });
     image.device = static_cast<u64>(status.st_dev);
     image.inode = static_cast<u64>(status.st_ino);
     return image;
@@ -179,18 +198,20 @@ LoadedImage LoadELF(execution::GuestMemory& memory, const std::string& path) {
 LoadedImage LoadELF(execution::GuestMemory& memory,
                     std::span<const std::uint8_t> bytes,
                     const std::string& display_path) {
-    return MapELF(memory,
-                  display_path,
-                  bytes.size(),
-                  [&](void* destination, std::size_t size, u64 offset) {
-                      std::memcpy(destination, bytes.data() + offset, size);
-                  });
+    return SelectELF(memory,
+                     display_path,
+                     bytes.size(),
+                     [&](void* destination, std::size_t size, u64 offset) {
+                         std::memcpy(destination, bytes.data() + offset, size);
+                     });
 }
 
 u64 InitialStack(execution::GuestMemory& memory,
                  const LoadedImage& image,
                  std::span<const std::string> argv,
-                 std::span<const std::string> environment) {
+                 std::span<const std::string> environment,
+                 u64 hwcap,
+                 u64 hwcap2) {
     const auto page_size = memory.PageSize();
     constexpr std::size_t stack_size = 8u << 20;
     const auto base =
@@ -205,7 +226,9 @@ u64 InitialStack(execution::GuestMemory& memory,
         std::memcpy(reinterpret_cast<void*>(top), data, size);
         return top;
     };
-    const char* platform = image.isa == GuestISA::Arm64 ? "aarch64" : "x86_64";
+    const char* platform = image.isa == GuestISA::Arm32   ? "v7l"
+                           : image.isa == GuestISA::Arm64 ? "aarch64"
+                                                          : "x86_64";
     const auto platform_at = push(platform, std::strlen(platform) + 1);
     std::uint8_t random[16];
     const auto fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
@@ -250,15 +273,20 @@ u64 InitialStack(execution::GuestMemory& memory,
     aux(AT_SECURE, 0);
     aux(AT_RANDOM, random_at);
     aux(AT_PLATFORM, platform_at);
-    aux(AT_HWCAP, 0);
-    aux(AT_HWCAP2, 0);
+    aux(AT_HWCAP, hwcap);
+    aux(AT_HWCAP2, hwcap2);
     aux(AT_CLKTCK, static_cast<u64>(std::max(1L, sysconf(_SC_CLK_TCK))));
     aux(AT_EXECFN, arguments.empty() ? 0 : arguments.front());
     aux(AT_NULL, 0);
-    if (words.size() > (top - bottom) / 8) Error("guest stack table exceeds stack");
-    top = (top - words.size() * 8) & ~u64{15};
+    const auto word_bytes = image.isa == GuestISA::Arm32 ? 4u : 8u;
+    if (words.size() > (top - bottom) / word_bytes) Error("guest stack table exceeds stack");
+    top = (top - words.size() * word_bytes) & ~u64{15};
     if (top < bottom) Error("guest stack alignment exceeds stack");
-    std::memcpy(reinterpret_cast<void*>(top), words.data(), words.size() * 8);
+    if (word_bytes == 4) {
+        auto* output = reinterpret_cast<std::uint32_t*>(top);
+        for (const auto word : words) *output++ = static_cast<std::uint32_t>(word);
+    } else
+        std::memcpy(reinterpret_cast<void*>(top), words.data(), words.size() * 8);
     return top;
 }
 

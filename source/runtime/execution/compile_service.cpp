@@ -61,7 +61,7 @@ NativeCode CompileService::Compile(ir::Scope scope) {
     if (private_guest_state)
         target.features |= static_cast<u64>(ir::TargetFeature::PrivateGPRState) |
                            static_cast<u64>(ir::TargetFeature::PrivateVectorState);
-    const auto source_mode = memory.ClassifySource(pc);
+    const auto source_mode = memory.ClassifySource(CodeAddress(vm.ISA(), pc));
     if (!source_mode) {
         diagnostic.message = "guest instruction source is not readable/executable";
         failure = CompileFailure::InvalidInput;
@@ -161,7 +161,7 @@ NativeCode CompileService::Compile(ir::Scope scope) {
         if (collect) {
             vm.smc.Arm(source_spans);
         } else
-            vm.smc.Arm(pc, built.decoded_bytes);
+            vm.smc.Arm(CodeAddress(vm.ISA(), pc), built.decoded_bytes);
     }
     if (collect) vm.RecordUnit(scope, compiled, code, source_spans);
     // Keep only the actual working buffers; no native metadata borrows

@@ -84,6 +84,15 @@ GuestMemory::GuestMemory() {
 
 GuestMemory::~GuestMemory() { (void)Release(); }
 
+void GuestMemory::SetAddressBits(unsigned bits) {
+    const auto limit = bits == 32 ? (u64{1} << 32) : UINT64_MAX;
+    for (const auto& region : regions)
+        if (region.address >= limit || region.size > limit - region.address)
+            swift::ThrowError("existing guest mapping exceeds the selected address width",
+                              ErrorKind::InvalidState);
+    address_limit = limit;
+}
+
 MappingRelease GuestMemory::Release() noexcept {
     MappingRelease result;
     std::size_t kept{};
@@ -290,6 +299,39 @@ u64 GuestMemory::Map(
         return failed;
     }
     const auto size = static_cast<std::size_t>(Up(length, page_size));
+    if (address >= address_limit || size > address_limit - address) {
+        errno = ENOMEM;
+        return failed;
+    }
+    if (address_limit != UINT64_MAX && !(flags & MAP_FIXED)) {
+        // Select low virtual addresses only at map time. MAP_FIXED below
+        // still uses NOREPLACE for unowned host ranges, never host clobbering.
+        const auto start = address ? address & ~u64{page_size - 1} : next_low_address;
+        const u64 granule = std::max<u64>(page_size, 65536);
+        for (unsigned pass = 0; pass != 2; ++pass) {
+            auto at = pass ? u64{65536} : std::max<u64>(start, 65536);
+            const auto end = pass ? start : address_limit;
+            while (at < end && size <= end - at) {
+                const auto overlap =
+                        std::find_if(regions.begin(), regions.end(), [&](const auto& r) {
+                            return r.address < at + size && at < r.address + r.size;
+                        });
+                if (overlap != regions.end()) {
+                    at = Up(overlap->address + overlap->size, granule);
+                    continue;
+                }
+                const auto mapped = Map(at, length, protection, flags | MAP_FIXED, fd, offset);
+                if (mapped != failed) {
+                    next_low_address = Up(at + size, granule);
+                    return mapped;
+                }
+                if (errno != EEXIST && errno != EINVAL && errno != ENOMEM) return failed;
+                at += granule;
+            }
+        }
+        errno = ENOMEM;
+        return failed;
+    }
     if (size > UINT64_MAX - offset) {
         errno = EINVAL;
         return failed;

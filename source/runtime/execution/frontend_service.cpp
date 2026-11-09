@@ -1,8 +1,9 @@
 #include "compile_service.h"
-#include "vm.h"
 #include "runtime/arch/x86/cpu.h"
-#include "runtime/frontend/x86/build_ir.h"
+#include "runtime/frontend/arm32/build_ir.h"
 #include "runtime/frontend/arm64/build_ir.h"
+#include "runtime/frontend/x86/build_ir.h"
+#include "vm.h"
 
 #include <sys/mman.h>
 
@@ -31,7 +32,8 @@ frontend::BuildResult CompileService::BuildFrontend(ir::Scope scope,
     auto* sources = collect ? &source_spans : nullptr;
     auto* after = vm.offline_output ? &continuations : nullptr;
     const auto pc = vm.PC();
-    const frontend::BlockWindow block{pc, vm.memory.CodeAt(pc)};
+    const auto address = CodeAddress(vm.ISA(), pc);
+    const frontend::BlockWindow block{address, vm.memory.CodeAt(address)};
     std::span<const frontend::BlockWindow> windows{&block, 1};
     if (function) {
         for (const auto& region : vm.memory.Regions())
@@ -66,6 +68,34 @@ frontend::BuildResult CompileService::BuildFrontend(ir::Scope scope,
                                        &reusable,
                                        sources,
                                        after);
+    }
+    if (vm.ISA() == GuestISA::Arm32) {
+        const ::swift::arm32::StateLayout layout;
+        if (function)
+            return ::swift::arm32::BuildFunctionIR(windows,
+                                                   pc,
+                                                   layout,
+                                                   vm.options.function_limits,
+                                                   target,
+                                                   nullptr,
+                                                   timing,
+                                                   &reusable,
+                                                   ready,
+                                                   sources,
+                                                   after,
+                                                   vm.options.arm32_profile);
+        return ::swift::arm32::BuildIR(windows,
+                                       pc,
+                                       scope,
+                                       layout,
+                                       target,
+                                       nullptr,
+                                       timing,
+                                       mutable_entry,
+                                       &reusable,
+                                       sources,
+                                       after,
+                                       vm.options.arm32_profile);
     }
     using State = x86::GuestState;
     ::swift::x86::StateLayout layout;

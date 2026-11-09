@@ -14,8 +14,11 @@
 #include "base/error.h"
 #include "base/format.h"
 
+#include "runtime/arch/arm32/numeric.h"
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/cpu.h"
+#include "runtime/platform/linux/abi_arm32.h"
+#include "runtime/platform/linux/arm32_user_helpers.h"
 
 namespace swift::runtime::execution {
 namespace front = ::swift::x86;
@@ -205,12 +208,21 @@ void VM::PrepareLoaded(std::span<const std::string> argv,
                        const Digest* guest_identity,
                        const CodeImage* native) {
     ConfigureGuest(image.isa);
-    PC() = image.entry;
-    SP() = platform::InitialStack(memory, image, argv, environment);
+    PC() = image.isa == GuestISA::Arm32
+                   ? arm32::Location::Make(image.entry & ~1u, image.entry & 1u).Key()
+                   : image.entry;
+    SP() = platform::InitialStack(
+            memory,
+            image,
+            argv,
+            environment,
+            ISA() == GuestISA::Arm32 ? platform::abi32::HardwareCapabilities(options.arm32_profile)
+                                     : 0);
+    if (ISA() == GuestISA::Arm32) platform::InstallArm32UserHelpers(memory);
     UpdateFPEnvironment(true);
     if (guest_identity) {
         RuntimeTimer total{stats.compile_request_ns}, load{stats.cache_load_ns};
-        image_key = MakeCodeImageKey(*guest_identity, image.load_bias, backend, options);
+        image_key = MakeCodeImageKey(*guest_identity, image.load_bias, backend, options, ISA());
     }
     if (offline_output || native) {
         if (image.elf_type != ET_EXEC)
@@ -251,7 +263,7 @@ void* VM::HostPointer(std::uint64_t address, std::size_t size, bool write) {
     if (!memory.Accessible(address, size, PROT_READ | (write ? PROT_WRITE : 0)))
         swift::ThrowError("guest call buffer is not accessible", ErrorKind::GuestFault);
     if (write) {
-        if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
+        ClearReservation();
         if (memory.WriteAffectsCode(address, size)) Invalidate();
     }
     return reinterpret_cast<void*>(address);
@@ -260,7 +272,18 @@ void* VM::HostPointer(std::uint64_t address, std::size_t size, bool write) {
 void VM::CallGuest(std::uint64_t pc, std::uint64_t stack_pointer, std::uint64_t stop_pc) {
     if (!prepared || closing || closed || host_call_active || thread.exited)
         swift::ThrowError("guest is not available for a host call", ErrorKind::InvalidState);
-    if (!memory.CodeAt(stop_pc).empty())
+    if (ISA() == GuestISA::Arm32) {
+        const auto key = [&](std::uint64_t value) {
+            return value >> 32
+                           ? value
+                           : arm32::Location::Make(value & ~1u, value & 1u, 0, Arm32State().fpscr)
+                                     .Key();
+        };
+        pc = key(pc);
+        stop_pc = key(stop_pc);
+        stack_pointer = std::uint32_t(stack_pointer);
+    }
+    if (!memory.CodeAt(CodeAddress(ISA(), stop_pc)).empty())
         swift::ThrowError("guest call return sentinel must not be executable",
                           ErrorKind::InvalidArgument);
     PC() = pc;
@@ -350,7 +373,9 @@ void VM::Execute() {
                     RaiseEncodedException(status);
                 else if (reason == NativeExit::ResolveFailure) {
                     if (host_returned) break;
-                    if (ISA() == GuestISA::Arm64 && (PC() & 3)) {
+                    if ((ISA() == GuestISA::Arm64 && (PC() & 3)) ||
+                        (ISA() == GuestISA::Arm32 &&
+                         (PC() & (arm32::Location{PC()}.Thumb() ? 1u : 3u)))) {
                         RaiseSemanticException(NativeExit::AlignmentFault, PC());
                     } else if (thread.interpret_requested) {
                         thread.interpret_requested = false;
@@ -366,7 +391,7 @@ void VM::Execute() {
                         GuestExceptionInfo event;
                         event.isa = ISA();
                         event.origin = GuestExceptionOrigin::Semantic;
-                        event.instruction_pc = event.address = PC();
+                        event.instruction_pc = event.address = CodeAddress(ISA(), PC());
                         event.address_valid = true;
                         event.kind = GuestExceptionKind::Memory;
                         event.access = GuestExceptionAccess::Execute;
@@ -378,8 +403,9 @@ void VM::Execute() {
                         GuestExceptionInfo event;
                         event.isa = ISA();
                         event.origin = GuestExceptionOrigin::Semantic;
-                        event.instruction_pc = PC();
-                        event.address = PC() + memory.CodeAt(PC()).size();
+                        event.instruction_pc = CodeAddress(ISA(), PC());
+                        event.address =
+                                event.instruction_pc + memory.CodeAt(event.instruction_pc).size();
                         event.address_valid = true;
                         event.kind = GuestExceptionKind::Memory;
                         event.access = GuestExceptionAccess::Execute;
@@ -394,7 +420,7 @@ void VM::Execute() {
                 } else if (reason == NativeExit::FPEnvironment)
                     UpdateFPEnvironment(true);
                 else if (reason == NativeExit::StateService) {
-                    if (ISA() == GuestISA::Arm64)
+                    if (ISA() == GuestISA::Arm64 || ISA() == GuestISA::Arm32)
                         ServiceArmState();
                     else
                         Interpret();
@@ -437,6 +463,16 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
                                ((fpcr & (1u << 24)) ? 0x8040u : 0u);
         }
     }
+    if (ISA() == GuestISA::Arm32 && architectural_write) {
+        auto& state = thread.native.arm32_state;
+        if (!arm32::IsSupportedFPSCR(state.fpscr))
+            swift::ThrowError("ARM32 FPSCR exception enables are unsupported",
+                              ErrorKind::Unsupported);
+        state.RekeyFPSCR();
+        constexpr unsigned rounding[]{0, 2, 1, 3};
+        NumericControl() = 0x1f80u | (rounding[(state.fpscr >> 22) & 3] << 13) |
+                           ((state.fpscr & (1u << 24)) ? 0x8040u : 0u);
+    }
     const auto mxcsr = NumericControl();
     if (mxcsr & ~u64{0xffff})
         swift::ThrowError("guest MXCSR contains reserved bits", ErrorKind::GuestFault);
@@ -455,7 +491,7 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
 void VM::Invalidate() { smc.Invalidate(); }
 
 bool VM::PrepareGuestWrite(u64 address, std::size_t size) {
-    if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
+    ClearReservation();
     if (!memory.Accessible(address, size, PROT_WRITE)) return false;
     if (size && memory.WriteAffectsCode(address, size)) Invalidate();
     return true;
@@ -468,8 +504,7 @@ bool VM::GuestWrite(u64 address, const void* source, std::size_t size) {
 std::uint64_t VM::AtomicBridge(void* opaque, AtomicCall* call) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
     const auto status = ExecuteAtomic(vm.memory, vm.smc, *call);
-    if (status != AtomicStatus::Unsupported && vm.ISA() == GuestISA::Arm64)
-        vm.thread.native.arm_state.reservation_valid = 0;
+    if (status != AtomicStatus::Unsupported) vm.ClearReservation();
     if (status == AtomicStatus::Fault) {
         RecordMemoryFault(vm.thread.faults,
                           call->fault_address,
@@ -480,7 +515,7 @@ std::uint64_t VM::AtomicBridge(void* opaque, AtomicCall* call) noexcept {
 }
 
 void VM::FileChanged(int fd) {
-    if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
+    ClearReservation();
     if (memory.RefreshFileMappings(fd)) {
         ++stats.smc_file_write_invalidations;
         Invalidate();
@@ -611,6 +646,19 @@ void VM::Interpret(bool block) {
         step = block ? ::swift::arm64::InterpretBlock(
                                thread.native.arm_state, services, 256, nullptr, ready)
                      : ::swift::arm64::InterpretOne(thread.native.arm_state, services);
+    } else if (ISA() == GuestISA::Arm32) {
+        ::swift::arm32::DirectServices services{this, Fetch, Read, Write, Atomic};
+        services.guest_events = [](void* raw) noexcept {
+            return static_cast<VM*>(raw)->signals.Pending();
+        };
+        step = block ? ::swift::arm32::InterpretBlock(thread.native.arm32_state,
+                                                      services,
+                                                      256,
+                                                      nullptr,
+                                                      ready,
+                                                      options.arm32_profile)
+                     : ::swift::arm32::InterpretOne(
+                               thread.native.arm32_state, services, nullptr, options.arm32_profile);
     } else {
         step = block ? front::InterpretBlock(
                                thread.native.state, DirectServices(), 256, nullptr, ready)
@@ -631,7 +679,7 @@ void VM::Interpret(bool block) {
             else if (step.service == ExitValue(NativeExit::FPEnvironment))
                 UpdateFPEnvironment(true);
             else if (step.service == ExitValue(NativeExit::StateService) &&
-                     ISA() == GuestISA::Arm64) {
+                     (ISA() == GuestISA::Arm64 || ISA() == GuestISA::Arm32)) {
                 ServiceArmState();
             } else if (step.service == ExitValue(NativeExit::GuestEvents))
                 DeliverPending();
@@ -661,7 +709,9 @@ void VM::Interpret(bool block) {
     }
     swift::ThrowError(
             swift::Format("{} direct execution rejected pc={:#x} kind={} address={:#x}",
-                          ISA() == GuestISA::Arm64 ? "AArch64" : "x86",
+                          ISA() == GuestISA::Arm64   ? "AArch64"
+                          : ISA() == GuestISA::Arm32 ? "AArch32"
+                                                     : "x86",
                           step.pc,
                           static_cast<unsigned>(step.kind),
                           step.fault_address),

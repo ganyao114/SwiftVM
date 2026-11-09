@@ -103,7 +103,8 @@ bool ScopeValid(ir::Scope scope) {
     return scope == ir::Scope::Block || scope == ir::Scope::Function;
 }
 
-void Validate(const CodeUnit& unit, bool byte_code) {
+void Validate(const CodeUnit& unit, bool byte_code, GuestISA isa) {
+    const auto physical_pc = CodeAddress(isa, unit.pc);
     const auto instruction_mask = byte_code ? 0u : 3u;
     const auto& code = unit.code;
     const auto size = code.words.size() * sizeof(std::uint32_t);
@@ -116,7 +117,8 @@ void Validate(const CodeUnit& unit, bool byte_code) {
         Require(source.span.size && source.span.size <= UINT64_MAX - source.span.pc &&
                         source.mode <= 1,
                 "invalid code source dependency");
-        owns_entry |= unit.pc >= source.span.pc && unit.pc - source.span.pc < source.span.size;
+        owns_entry |=
+                physical_pc >= source.span.pc && physical_pc - source.span.pc < source.span.size;
     }
     Require(owns_entry, "code unit entry is outside its source dependencies");
     for (const auto& site : code.faults) {
@@ -172,6 +174,9 @@ void Key(Writer& out, const CodeImageKey& key) {
     out.Bytes(key.configuration);
     out.U64(key.load_bias);
     out.U32(key.host_isa);
+    out.U16(static_cast<unsigned>(key.guest_isa));
+    out.U16(key.location_version);
+    out.U64(key.guest_profile);
     out.U8(static_cast<unsigned>(key.requested_scope));
 }
 
@@ -182,6 +187,13 @@ CodeImageKey Key(Reader& in) {
     key.configuration = in.Hash();
     key.load_bias = in.U64();
     key.host_isa = in.U32();
+    key.guest_isa = static_cast<GuestISA>(in.U16());
+    key.location_version = in.U16();
+    key.guest_profile = in.U64();
+    Require((key.guest_isa == GuestISA::X86_64 || key.guest_isa == GuestISA::Arm64 ||
+             key.guest_isa == GuestISA::Arm32) &&
+                    key.location_version == 1,
+            "invalid guest ISA/location format");
     key.requested_scope = static_cast<ir::Scope>(in.U8());
     Require(ScopeValid(key.requested_scope), "invalid image scope");
     Require(key.host_isa == 0xa64 || key.host_isa == 0x64 || key.host_isa == 0x8664 ||
@@ -190,8 +202,12 @@ CodeImageKey Key(Reader& in) {
     return key;
 }
 
-void Unit(Writer& out, const CodeUnit& unit, const std::uint64_t* text_offset, bool byte_code) {
-    Validate(unit, byte_code);
+void Unit(Writer& out,
+          const CodeUnit& unit,
+          const std::uint64_t* text_offset,
+          bool byte_code,
+          GuestISA isa) {
+    Validate(unit, byte_code, isa);
     const auto& code = unit.code;
     out.U64(unit.pc);
     out.U8(unit.fp_mode);
@@ -246,7 +262,8 @@ CodeUnit Unit(Reader& in,
               std::span<const std::uint8_t> text,
               bool external,
               std::uint64_t& previous_text_end,
-              bool byte_code) {
+              bool byte_code,
+              GuestISA isa) {
     CodeUnit unit;
     unit.pc = in.U64();
     unit.fp_mode = in.U8();
@@ -310,7 +327,7 @@ CodeUnit Unit(Reader& in,
         source.digest = in.Hash();
         source.mode = in.U8();
     }
-    Validate(unit, byte_code);
+    Validate(unit, byte_code, isa);
     return unit;
 }
 
@@ -337,7 +354,11 @@ std::vector<std::uint8_t> Encode(const CodeImage& image,
     }
     payload.U32(static_cast<std::uint32_t>(image.units.size()));
     for (std::size_t i = 0; i < image.units.size(); ++i)
-        Unit(payload, image.units[i], text ? &offsets[i] : nullptr, image.key.host_isa == 0x8664);
+        Unit(payload,
+             image.units[i],
+             text ? &offsets[i] : nullptr,
+             image.key.host_isa == 0x8664,
+             image.key.guest_isa);
     Require(payload.bytes.size() <= maximum_bytes - 56, "code image exceeds its size limit");
     Writer result;
     result.Bytes(magic);
@@ -380,7 +401,8 @@ bool Decode(std::span<const std::uint8_t> bytes,
         image.units.reserve(count);
         std::uint64_t end{};
         for (std::uint32_t i = 0; i < count; ++i)
-            image.units.push_back(Unit(in, text, external, end, image.key.host_isa == 0x8664));
+            image.units.push_back(Unit(
+                    in, text, external, end, image.key.host_isa == 0x8664, image.key.guest_isa));
         Require(in.Empty(), "trailing code image metadata");
         output = std::move(image);
         error.clear();

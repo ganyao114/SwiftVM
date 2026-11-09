@@ -2,6 +2,7 @@
 
 #include "base/error.h"
 #include "elf.h"
+#include "runtime/arch/arm32/location.h"
 #include "runtime/platform/linux/artifact_file.h"
 
 #include <algorithm>
@@ -68,9 +69,10 @@ std::uint32_t HostFlags(std::uint16_t machine) {
 }
 
 void ValidateGuest(const elf::View& guest) {
-    if ((guest.FileHeader().machine != elf::X86 && guest.FileHeader().machine != elf::Arm64) ||
+    if ((guest.FileHeader().machine != elf::X86 && guest.FileHeader().machine != elf::Arm64 &&
+         guest.FileHeader().machine != elf::Arm32) ||
         guest.FileHeader().type != elf::ExecutableFile)
-        Invalid("AOT supports static x86-64/AArch64 ET_EXEC guests only");
+        Invalid("AOT supports static ARM32/x86-64/AArch64 ET_EXEC guests only");
     for (const auto& section : guest.Sections())
         if (guest.Name(section).starts_with(".svmaot."))
             Invalid("guest ELF uses reserved AOT section names");
@@ -133,7 +135,9 @@ void VerifyOriginalSections(const elf::View& container,
         if (container.Name(copied) != guest.Name(original) || copied.type != original.type ||
             copied.flags != original.flags || copied.address != original.address ||
             copied.link != original.link || copied.info != original.info ||
-            copied.align != original.align || copied.entry_size != original.entry_size)
+            copied.align != original.align ||
+            copied.entry_size !=
+                    (original.type == elf::Symtab ? sizeof(elf::Symbol) : original.entry_size))
             Invalid("AOT changed an original guest section descriptor");
         const auto source = guest.Contents(original), destination = container.Contents(copied);
         if (original.type == elf::Symtab) {
@@ -189,12 +193,17 @@ std::vector<Symbol> ResolvedSymbols(std::span<const std::uint8_t> guest,
         for (std::uint32_t i = 0; i < code.units.size(); ++i) {
             const auto& unit = code.units[i];
             if (unit.fp_mode) continue;
-            if (unit.pc == symbol.guest_value) {
+            const auto key = code.key.guest_isa == runtime::GuestISA::Arm32
+                                     ? runtime::arm32::Location::Make(symbol.guest_value & ~1u,
+                                                                      symbol.guest_value & 1u)
+                                               .Key()
+                                     : symbol.guest_value;
+            if (unit.pc == key) {
                 symbol.unit = i;
                 break;
             }
             for (const auto& entry : unit.code.entries) {
-                if (entry.pc != symbol.guest_value) continue;
+                if (entry.pc != key) continue;
                 symbol.unit = i;
                 symbol.code_offset = entry.offset;
                 break;
@@ -327,6 +336,8 @@ Bytes EncodeArtifact(const Artifact& input) {
             const auto rewritten = SymbolBytes(
                     guest, guest.Sections()[i], input.code, symbols, text_index, stub, offsets);
             section.offset = Append(result, rewritten, 8);
+            section.size = rewritten.size();
+            section.entry_size = sizeof(elf::Symbol);
         } else if (i)
             section.offset = guest_offset + section.offset;
     }

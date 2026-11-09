@@ -2,6 +2,7 @@
 #include "call_helpers.h"
 #include "compile.h"
 #include "relocate.h"
+#include "runtime/arch/arm32/numeric_registry.h"
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/bit_operations.h"
 #include "runtime/arch/x86/cpu.h"
@@ -21,10 +22,15 @@ HostSymbol CallbackSymbol(std::uintptr_t address) noexcept {
         return HostSymbol::GuestSystemQuery;
     if (address == reinterpret_cast<std::uintptr_t>(&::swift::runtime::arm64::ExecuteNumeric))
         return HostSymbol::ArmGuestFP;
+    if (const auto identity = runtime::arm32::NumericCallbackIdentity(address))
+        return static_cast<HostSymbol>(255 + identity);
     return HostSymbol::None;
 }
 
 std::uintptr_t ResolveSymbol(HostSymbol symbol, const CompileOptions& options) noexcept {
+    if (static_cast<std::uint16_t>(symbol) >= 256)
+        return runtime::arm32::ResolveNumericCallbackIdentity(static_cast<std::uint16_t>(symbol) -
+                                                              255);
     switch (symbol) {
         case HostSymbol::Dispatcher:
             return options.dispatcher;

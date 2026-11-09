@@ -65,6 +65,20 @@ bool DecodeArm64SignalFrame(const execution::GuestMemory&,
                             arm64::GuestState& restored,
                             SignalFrameContext&);
 
+bool EncodeArm32SignalFrame(const arm32::GuestState&,
+                            const GuestExceptionInfo&,
+                            const GuestSignalInfo&,
+                            const GuestSignalAction&,
+                            const SignalFrameContext&,
+                            std::uint64_t restorer,
+                            EncodedSignalFrame&,
+                            arm32::GuestState& handler);
+bool DecodeArm32SignalFrame(const execution::GuestMemory&,
+                            const arm32::GuestState&,
+                            arm32::GuestState& restored,
+                            SignalFrameContext&,
+                            bool realtime = true);
+
 inline bool OnSignalStack(std::uint64_t sp, const GuestSignalStack& stack) noexcept {
     return !(stack.flags & 2) && sp >= stack.address && sp - stack.address < stack.size;
 }

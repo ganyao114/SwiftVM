@@ -14,6 +14,7 @@
 #include "host_backend.h"
 #include "memory.h"
 #include "runtime.h"
+#include "runtime/frontend/arm32/interpreter.h"
 #include "runtime/frontend/arm64/interpreter.h"
 #include "runtime/frontend/x86/interpreter.h"
 #include "runtime/platform/linux/guest_signals.h"
@@ -48,6 +49,8 @@ public:
     x86::GuestState& State() noexcept { return thread.native.state; }
 
     arm64::GuestState& ArmState() noexcept { return thread.native.arm_state; }
+
+    arm32::GuestState& Arm32State() noexcept { return thread.native.arm32_state; }
 
     GuestISA ISA() const noexcept { return layout.isa; }
 
@@ -161,7 +164,16 @@ private:
     static const NativeCode* LookupNative(void*, std::uintptr_t) noexcept;
     static bool RecoverCodeWrite(void*, std::uintptr_t) noexcept;
     static std::uint64_t AtomicBridge(void*, AtomicCall*) noexcept;
+
+    void ClearReservation() noexcept {
+        if (ISA() == GuestISA::Arm64)
+            ArmState().reservation_valid = 0;
+        else if (ISA() == GuestISA::Arm32)
+            Arm32State().reservation_valid = 0;
+    }
+
     bool HandleArmStateService();
+    bool HandleArm32StateService();
     void ServiceArmState();
     bool PrepareGuestWrite(std::uint64_t, std::size_t);
     bool GuestWrite(std::uint64_t, const void*, std::size_t);

@@ -11,7 +11,7 @@ inline constexpr std::uint32_t Progbits = 1, Symtab = 2, Strtab = 3, Nobits = 8;
 inline constexpr std::uint64_t Alloc = 2, Executable = 4;
 inline constexpr std::uint32_t Load = 1;
 inline constexpr std::uint16_t ExecutableFile = 2, SharedFile = 3;
-inline constexpr std::uint16_t X86 = 62, Arm64 = 183, Riscv64 = 243, LoongArch64 = 258;
+inline constexpr std::uint16_t Arm32 = 40, X86 = 62, Arm64 = 183, Riscv64 = 243, LoongArch64 = 258;
 
 struct Header {
     std::uint8_t ident[16]{};
@@ -44,8 +44,8 @@ struct Symbol {
 static_assert(sizeof(Header) == 64 && sizeof(ProgramHeader) == 56);
 static_assert(sizeof(Section) == 64 && sizeof(Symbol) == 24);
 
-// A bounded ELF64 little-endian view. It neither maps PT_LOAD nor resolves
-// relocations, so the AOT reader stays portable and independent of Linux VM.
+// A bounded ELF32/ELF64 little-endian view, normalized to 64-bit records. It neither maps PT_LOAD
+// nor resolves relocations, so the AOT reader stays portable and independent of Linux VM.
 class View {
 public:
     explicit View(std::span<const std::uint8_t>);

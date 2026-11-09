@@ -42,7 +42,7 @@ void RecordGuestFault(FaultContext& context,
     auto& event = context.exception;
     event = {};
     event.isa = context.guest_isa;
-    event.instruction_pc = site.guest_pc;
+    event.instruction_pc = CodeAddress(context.guest_isa, site.guest_pc);
     event.address = address;
     event.address_valid = true;
     event.host_pc = host_pc;

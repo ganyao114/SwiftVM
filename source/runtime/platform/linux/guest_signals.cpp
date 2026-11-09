@@ -1,3 +1,4 @@
+#include "abi_arm32.h"
 #include "guest_signals.h"
 
 #include <algorithm>
@@ -67,7 +68,7 @@ int SignalNumber(const GuestExceptionInfo& event, GuestISA isa) noexcept {
         case GuestExceptionKind::Memory:
             return event.signal_number == 7 ? 7 : 11;
         case GuestExceptionKind::Alignment:
-            return isa == GuestISA::Arm64 ? 7 : 11;
+            return isa != GuestISA::X86_64 ? 7 : 11;
         case GuestExceptionKind::Divide:
         case GuestExceptionKind::FloatingPoint:
             return 8;
@@ -126,7 +127,10 @@ void GuestSignals::InterruptSyscall(u64 number,
                                     const u64* arguments,
                                     bool restartable,
                                     bool restart_without_handler) noexcept {
-    interrupted.instruction_pc = vm.PC() - (vm.ISA() == GuestISA::X86_64 ? 2u : 4u);
+    interrupted.resume_pc = vm.PC();
+    interrupted.instruction_pc = vm.ISA() == GuestISA::Arm32
+                                         ? vm.Arm32State().service_pc
+                                         : vm.PC() - (vm.ISA() == GuestISA::X86_64 ? 2u : 4u);
     interrupted.number = number;
     std::copy_n(arguments, 6, interrupted.arguments);
     interrupted.active = true;
@@ -139,7 +143,10 @@ void GuestSignals::RestoreInterruptedCall() noexcept {
     vm.PC() = interrupted.instruction_pc;
     if (vm.ISA() == GuestISA::X86_64)
         vm.State().gprs[x86::RAX] = interrupted.number;
-    else
+    else if (vm.ISA() == GuestISA::Arm32) {
+        vm.Arm32State().r[7] = interrupted.number;
+        std::copy_n(interrupted.arguments, 6, vm.Arm32State().r);
+    } else
         vm.ArmState().gprs[0] = interrupted.arguments[0];
 }
 
@@ -157,11 +164,13 @@ void GuestSignals::CompleteInterruptedWithoutHandler() noexcept {
 bool GuestSignals::ConsumeRestartDeadline(u64 number,
                                           const u64* arguments,
                                           timespec& deadline) noexcept {
-    const bool reuse =
-            interrupted.restart_ready && interrupted.deadline_valid &&
-            interrupted.instruction_pc == vm.PC() - (vm.ISA() == GuestISA::X86_64 ? 2u : 4u) &&
-            interrupted.number == number &&
-            std::equal(arguments, arguments + 6, interrupted.arguments);
+    const bool reuse = interrupted.restart_ready && interrupted.deadline_valid &&
+                       interrupted.instruction_pc ==
+                               (vm.ISA() == GuestISA::Arm32
+                                        ? vm.Arm32State().service_pc
+                                        : vm.PC() - (vm.ISA() == GuestISA::X86_64 ? 2u : 4u)) &&
+                       interrupted.number == number &&
+                       std::equal(arguments, arguments + 6, interrupted.arguments);
     if (reuse) deadline = interrupted.deadline;
     interrupted.restart_ready = interrupted.deadline_valid = false;
     return reuse;
@@ -179,6 +188,11 @@ bool GuestSignals::MatchesRestartContext() const noexcept {
                std::equal(std::begin(interrupted.arguments),
                           std::end(interrupted.arguments),
                           vm.ArmState().gprs);
+    if (vm.ISA() == GuestISA::Arm32)
+        return vm.Arm32State().r[7] == interrupted.number &&
+               std::equal(std::begin(interrupted.arguments),
+                          std::end(interrupted.arguments),
+                          vm.Arm32State().r);
     const auto& state = vm.State();
     constexpr unsigned registers[]{x86::RDI, x86::RSI, x86::RDX, x86::R10, x86::R8, x86::R9};
     if (state.gprs[x86::RAX] != interrupted.number) return false;
@@ -222,13 +236,16 @@ std::int64_t GuestSignals::Suspend(u64 input, u64 size) {
     return -EINTR;
 }
 
-std::int64_t GuestSignals::WaitInfo(u64 input, u64 output, u64 timeout, u64 size) {
+std::int64_t GuestSignals::WaitInfo(u64 input, u64 output, u64 timeout, u64 size, bool time64) {
     if (size != 8) return -EINVAL;
     u64 wanted{};
     if (!vm.memory.CopyIn(&wanted, input, 8)) return -EFAULT;
     wanted &= ~Unblockable;
     timespec duration{};
-    if (timeout && !vm.memory.CopyIn(&duration, timeout, sizeof(duration))) return -EFAULT;
+    if (timeout &&
+        !(vm.ISA() == GuestISA::Arm32 ? abi32::ReadTimespec(vm.memory, timeout, duration, time64)
+                                      : vm.memory.CopyIn(&duration, timeout, sizeof(duration))))
+        return -EFAULT;
     if (timeout && (duration.tv_sec < 0 || duration.tv_nsec < 0 || duration.tv_nsec >= 1000000000))
         return -EINVAL;
     timespec start{};
@@ -256,9 +273,12 @@ std::int64_t GuestSignals::WaitInfo(u64 input, u64 output, u64 timeout, u64 size
             Ready();
         }
         if (have) {
-            result = output && !vm.GuestWrite(output, &selected, sizeof(selected))
-                             ? -EFAULT
-                             : event.signal_number;
+            const auto compact = abi32::Encode(selected);
+            const bool written =
+                    !output || (vm.ISA() == GuestISA::Arm32
+                                        ? vm.GuestWrite(output, &compact, sizeof(compact))
+                                        : vm.GuestWrite(output, &selected, sizeof(selected)));
+            result = written ? event.signal_number : -EFAULT;
             selected_number = 0;
             break;
         }
@@ -379,7 +399,7 @@ bool GuestSignals::TakePending(GuestExceptionInfo& event) noexcept {
     event.origin = GuestExceptionOrigin::Async;
     event.signal_number = number;
     event.signal_code = selected.code;
-    event.instruction_pc = vm.PC();
+    event.instruction_pc = CodeAddress(vm.ISA(), vm.PC());
     Ready();
     return true;
 }
@@ -398,10 +418,21 @@ std::int64_t GuestSignals::Action(int number, u64 input, u64 output, u64 size) {
     IngressGuard guard{owned | (input ? Bit(number) : 0), pressure};
     if (!guard.valid) return -errno;
     auto action = actions[number];
-    if (input && !vm.memory.CopyIn(&action, input, sizeof(action))) return -EFAULT;
-    constexpr u64 supported = 0xdc000007;
+    if (input) {
+        if (vm.ISA() == GuestISA::Arm32) {
+            abi32::Action compact;
+            if (!vm.memory.CopyIn(&compact, input, sizeof(compact))) return -EFAULT;
+            action = abi32::Decode(compact);
+        } else if (!vm.memory.CopyIn(&action, input, sizeof(action)))
+            return -EFAULT;
+    }
+    const u64 supported = 0xdc000007 | (vm.ISA() == GuestISA::Arm32 ? 0x02000000 : 0);
     if (input && (action.flags & ~supported)) return -EINVAL;
-    if (output && !vm.GuestWrite(output, &actions[number], sizeof(action))) return -EFAULT;
+    const auto compact = abi32::Encode(actions[number]);
+    if (output &&
+        !(vm.ISA() == GuestISA::Arm32 ? vm.GuestWrite(output, &compact, sizeof(compact))
+                                      : vm.GuestWrite(output, &actions[number], sizeof(action))))
+        return -EFAULT;
     if (!input) return 0;
     if (!OwnSignals(Bit(number))) return -errno;
     action.mask &= ~Unblockable;
@@ -437,35 +468,51 @@ std::int64_t GuestSignals::AltStack(u64 input, u64 output) {
     if (!guard.valid) return -errno;
     const auto old = StackView();
     GuestSignalStack next;
-    if (input && !vm.memory.CopyIn(&next, input, sizeof(next))) return -EFAULT;
-    if (output && !vm.GuestWrite(output, &old, sizeof(old))) return -EFAULT;
+    if (input) {
+        if (vm.ISA() == GuestISA::Arm32) {
+            abi32::Stack compact;
+            if (!vm.memory.CopyIn(&compact, input, sizeof(compact))) return -EFAULT;
+            next = abi32::Decode(compact);
+        } else if (!vm.memory.CopyIn(&next, input, sizeof(next)))
+            return -EFAULT;
+    }
+    const auto compact = abi32::Encode(old);
+    if (output && !(vm.ISA() == GuestISA::Arm32 ? vm.GuestWrite(output, &compact, sizeof(compact))
+                                                : vm.GuestWrite(output, &old, sizeof(old))))
+        return -EFAULT;
     if (!input) return 0;
     if (OnSignalStack(vm.SP(), stack)) return -EPERM;
     if (next.flags & ~0x80000002u) return -EINVAL;
     if (!(next.flags & 2)) {
         const auto minimum = vm.ISA() == GuestISA::Arm64 ? 5120u : 2048u;
         if (next.size < minimum) return -ENOMEM;
-        if (next.address >= (u64{1} << 48) || next.size > (u64{1} << 48) - next.address)
-            return -EINVAL;
+        const auto limit = u64{1} << (vm.ISA() == GuestISA::Arm32 ? 32 : 48);
+        if (next.address >= limit || next.size > limit - next.address) return -EINVAL;
     }
     next.padding = 0;
     stack = next;
     return 0;
 }
 
-u64 GuestSignals::Restorer() {
-    if (restorer) return restorer;
+u64 GuestSignals::Restorer(bool realtime) {
+    const auto offset = vm.ISA() == GuestISA::Arm32 && !realtime ? 16u : 0u;
+    if (restorer) return restorer + offset;
     const auto address = vm.memory.Map(
             0, vm.memory.PageSize(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
     if (address == UINT64_MAX) return 0;
     constexpr std::uint8_t x86_code[]{0xb8, 15, 0, 0, 0, 0x0f, 0x05, 0x0f, 0x0b};
     constexpr std::uint32_t arm_code[]{0xd2801168, 0xd4000001, 0xd4200000};
+    constexpr std::uint32_t arm32_code[]{
+            0xe3a070ad, 0xef000000, 0xe7f000f0, 0xe320f000, 0xe3a07077, 0xef000000, 0xe7f000f0};
     const bool written = vm.ISA() == GuestISA::X86_64
                                  ? vm.memory.CopyOut(address, x86_code, sizeof(x86_code))
+                         : vm.ISA() == GuestISA::Arm32
+                                 ? vm.memory.CopyOut(address, arm32_code, sizeof(arm32_code))
                                  : vm.memory.CopyOut(address, arm_code, sizeof(arm_code));
     if (!written || vm.memory.Protect(address, vm.memory.PageSize(), PROT_READ | PROT_EXEC))
         return 0;
-    return restorer = address;
+    restorer = address;
+    return restorer + offset;
 }
 
 void GuestSignals::Terminate(int number) noexcept {
@@ -487,9 +534,11 @@ SignalDelivery GuestSignals::Deliver(const GuestExceptionInfo& event) {
         action = actions[number];
         if (interrupted.restart_ready) {
             if (MatchesRestartContext()) {
-                vm.PC() = interrupted.instruction_pc + (vm.ISA() == GuestISA::X86_64 ? 2u : 4u);
+                vm.PC() = interrupted.resume_pc;
                 if (vm.ISA() == GuestISA::X86_64)
                     vm.State().gprs[x86::RAX] = static_cast<u64>(-EINTR);
+                else if (vm.ISA() == GuestISA::Arm32)
+                    vm.Arm32State().r[0] = std::uint32_t(-EINTR);
                 else
                     vm.ArmState().gprs[0] = static_cast<u64>(-EINTR);
                 interrupted.active = true;
@@ -534,8 +583,9 @@ SignalDelivery GuestSignals::Deliver(const GuestExceptionInfo& event) {
                                 : 1;
         if (event.address_valid) std::memcpy(info.payload.data(), &event.address, 8);
     }
-    const auto return_pc =
-            (action.flags & 0x04000000) && action.restorer ? action.restorer : Restorer();
+    const auto return_pc = (action.flags & 0x04000000) && action.restorer
+                                   ? action.restorer
+                                   : Restorer(vm.ISA() != GuestISA::Arm32 || (action.flags & 4));
     if (!return_pc) {
         Terminate(11);
         return SignalDelivery::Terminate;
@@ -563,6 +613,21 @@ SignalDelivery GuestSignals::Deliver(const GuestExceptionInfo& event) {
                 vm.RestoreGuestFP();
                 throw;
             }
+        }
+    } else if (vm.ISA() == GuestISA::Arm32) {
+        arm32::GuestState handler;
+        valid = EncodeArm32SignalFrame(vm.Arm32State(),
+                                       event,
+                                       info,
+                                       action,
+                                       frame_context,
+                                       return_pc,
+                                       frame,
+                                       handler) &&
+                vm.GuestWrite(frame.address, frame.bytes.data(), frame.bytes.size());
+        if (valid) {
+            vm.Arm32State() = handler;
+            vm.RestoreGuestFP();
         }
     } else {
         arm64::GuestState handler;
@@ -605,13 +670,14 @@ SignalDelivery GuestSignals::Deliver(const GuestExceptionInfo& event) {
     return SignalDelivery::Resume;
 }
 
-bool GuestSignals::ReturnFrame() {
+bool GuestSignals::ReturnFrame(bool realtime) {
     SignalFrameContext restored;
     const auto valid_stack = [&] {
+        const auto limit = u64{1} << (vm.ISA() == GuestISA::Arm32 ? 32 : 48);
         return !(restored.stack.flags & ~0x80000003u) &&
                ((restored.stack.flags & 2) ||
-                (restored.stack.address < (u64{1} << 48) &&
-                 restored.stack.size <= (u64{1} << 48) - restored.stack.address));
+                (restored.stack.address < limit &&
+                 restored.stack.size <= limit - restored.stack.address));
     };
     if (vm.ISA() == GuestISA::X86_64) {
         x86::GuestState state;
@@ -626,6 +692,13 @@ bool GuestSignals::ReturnFrame() {
             vm.RestoreGuestFP();
             throw;
         }
+    } else if (vm.ISA() == GuestISA::Arm32) {
+        arm32::GuestState state;
+        if (!DecodeArm32SignalFrame(vm.memory, vm.Arm32State(), state, restored, realtime) ||
+            !valid_stack())
+            return false;
+        vm.Arm32State() = state;
+        vm.RestoreGuestFP();
     } else {
         arm64::GuestState state;
         if (!DecodeArm64SignalFrame(vm.memory, vm.ArmState(), state, restored) || !valid_stack())
