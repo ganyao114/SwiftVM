@@ -1,14 +1,14 @@
 # 异常现场还原与交付机制（2026-11-08）
 
-状态：设计稿，尚未实现。基于提交工作树 `/Volumes/Data2/SwiftVM-submit-20261104`、HEAD `08143855b4c038dc9483fe8893e5458eecf0685c` 及当前 WIP。本文延续 [runtime 架构方案](runtime-architecture-plan-2026-11-05.md) 中的代码所有权、共享前端语义和 uniform IR 合同。
+状态：恢复、交付与重新派发主路径已于 2026-11-09 落地，实际文件、验收、性能及保留边界见 [实施记录](exception-context-recovery-implementation-2026-11-09.md)。方案评审基线为提交工作树 `/Volumes/Data2/SwiftVM-submit-20261104`、HEAD `08143855b4c038dc9483fe8893e5458eecf0685c`；实施前代码及方案已分别提交为 `23a87ff1`、`20073b14`。本文继续定义必须保留的合同，不据此宣告完整 POSIX、多线程 guest 或任意 host PC 恢复能力。本文延续 [runtime 架构方案](runtime-architecture-plan-2026-11-05.md) 中的代码所有权、共享前端语义和 uniform IR 合同。
 
 本轮 review 修订：已知 guest 前端采用“源指令前安全点 + PC 单调窗口”取代每 unit 入口检查；补齐等待入口的丢唤醒协议、按信号独立的 RT 容量、停止原因分类及多读提交资格。RV64 LR/SC 的异步响应须服从架构前进约束，未解决前不承诺该区间的有界延迟。修订前原稿保留在 Data2 的 `exception-design-review-20261108/plan.before.md`。
 
 目标：发生 guest 异常时获得符合 ISA 语义、可修改和可恢复的完整 guest 上下文；正常路径不保存逐指令快照，不保留完整 IR 或分配结果，不重新引入中间分析流水线。同步故障与异步事件采用不同的恢复路径，最终交付相同的 guest 上下文。
 
-## 1. 当前基础与缺口
+## 1. 评审起点与本轮替换范围
 
-已经存在的基础：
+实施前已经存在的基础：
 
 - `backend::FaultSite` 为 32B，包含实际 native 范围、guest PC、对齐 fallback 及 8B 后端恢复描述。
 - `NativeCode` 为 40B 借用视图；`CodeHeap` 独占 native slabs 和稳定的 fault metadata 分片。
@@ -16,7 +16,7 @@
 - 前端已有 fault 前的逻辑发布与指令内提交次序；IR direct 复用同一套语义。
 - 本轮已修正 ARM64 root entry 保存 host FP 的顺序，以及 fatal fault 的 FPSR 捕获；[两项真实设备回归](evidence/fp-exception-fixes-20261108/summary.json) 已通过。
 
-仍未完成的部分：
+本轮针对以下旧路径完成替换；这些条目记录评审起点，当前结果以实施记录为准：
 
 - 现有 `FaultScope` 使用一个进程全局指针、每次运行安装三个 host signal handler；缺少线程 TLS activation、host altstack 和完整生命周期协议。
 - 当前 fault 多数经 `siglongjmp` 转为 `RuntimeError`；`RunResult` 只有错误描述，没有在 VM 销毁后仍有效的 guest 现场。
@@ -25,7 +25,7 @@
 - guest Linux 的 signal dispositions、mask、pending、signal frame、`rt_sigreturn` 尚未形成完整机制。
 - 新修复只验证 ARM64 host 对应路径，不能据此宣布其它 host 的 FP signal 恢复已经完备。
 
-相关现状入口：[fault.h](../source/runtime/execution/fault.h)、[signals.cpp](../source/runtime/platform/linux/signals.cpp)、[arm64_host.cpp](../source/runtime/platform/linux/arm64_host.cpp)、[runtime.cpp](../source/runtime/execution/runtime.cpp)。
+当前职责入口：[exception.h](../source/runtime/exception.h)、[fault.h](../source/runtime/execution/fault.h)、[exception.cpp](../source/runtime/execution/exception.cpp)、[signals.cpp](../source/runtime/platform/linux/signals.cpp)、[guest_signals.cpp](../source/runtime/platform/linux/guest_signals.cpp)、[arm64_host.cpp](../source/runtime/platform/linux/arm64_host.cpp)、[runtime.cpp](../source/runtime/execution/runtime.cpp)。四后端及测试调用者均已移除旧 longjmp 出口。
 
 ## 2. 必须固定的恢复合同
 
@@ -194,7 +194,7 @@ pin 合并不能让“未来的 guest 寄存器写入”越过 fault 或可交�
 
 x87 等融合窗口一次可能消费多条 decode record。安全点只能放在实际语义窗口完成的位置，使用最后一条已完成指令的结束 PC；不能为跳过的 records 伪造中间状态。可能在窗口内产生独立故障／未屏蔽异常时，须保留相应恢复点或取消该融合。
 
-精确重启资格不仅核对多次内存写，还要核对多读后的部分寄存器更新。目前 ARM NEON 非交织多寄存器 load 是逐次 ReadMemory → WriteVRegister，与 LDP 的集中提交不同；第二次 fault 时旧 Q 可能已被覆盖。若 ISA 不允许该部分状态，须延迟目的提交，不能靠扩大 FaultSite 或再加 PC map 补救。已恢复 GPR/flags 也不等于 ENTER、FSAVE、m80 store 的全部语义已验证；未确认类别不宣称完整可恢复支持，不默默切换解释器重跑已有副作用。
+精确重启资格不仅核对多次内存写，还要核对多读后的部分寄存器更新。评审时 ARM NEON 非交织多寄存器 load 是逐次 ReadMemory → WriteVRegister；本轮已改为局部暂存最多 4 个结果，全部读取成功后才提交目的 bank，单寄存器 lane/replicate 也采用相同规则，并以第二次读取失败验证旧 Q 不被覆盖。不能靠扩大 FaultSite 或再加 PC map 补救。已恢复 GPR/flags 也不等于 ENTER、FSAVE、m80 store 的全部语义已逐类验证；未确认类别不宣称完整可恢复支持，不默默切换解释器重跑已有副作用。
 
 ## 7. 异步事件：先继续原 host 流程，再在安全点交付
 
@@ -380,8 +380,10 @@ host-PC lookup 初期可保留现有线性查找，因为只在异常路径使�
 
 ```text
 source/runtime/
+  exception.h                  # 公共事件、停止原因、借用view、自有snapshot和冷回调
   execution/
-    fault.h / fault.cpp          # Core event、activation 合同、现场完成与冷路径交付
+    fault.h / fault.cpp          # activation与fault记录，不包含guest Linux frame
+    exception.cpp               # 完成语义异常、嵌入方回调和guest OS交付
     guest_thread.h              # 唯一运行 state、当前异常、pending request；不放guest Linux frame
     dispatch.h                  # root ABI 字段与 ExceptionExit 声明
     runtime.cpp                 # 消费退出原因；合并FP后交付，按guest state重新派发
@@ -411,7 +413,7 @@ source/runtime/
     *_host.cpp                  # 各host ucontext解析／改写，调用backend recovery
     faultable_atomic.cpp        # 仅窄访问fixup，不承担通用guest exception交付
     wait_syscall.h / .cpp        # HostWait登记、取消/完成结果、通知mask的所属方
-    {arm64,x64,riscv64,loongarch64}/wait_syscall.S # 各Linux host ABI的窄等待stub
+    wait_syscall.S              # 按实际host预处理选择窄syscall stub，不额外建四层目录
     guest_signals.h / .cpp      # Linux guest dispositions/mask/pending/交付/restart策略
     signal_frame_x86.cpp        # Linux x86 guest frame与sigreturn格式
     signal_frame_arm64.cpp      # Linux ARM64 guest frame与sigreturn格式
@@ -459,7 +461,7 @@ source/runtime/
 
 性能收口记录真实新增工作：安全点数量和动态检查次数、DeferTest等局部融合保留/退化、native bytes、fault metadata bytes、每线程常驻/RT容量/活跃frame、HostWait成本及 compile/frontend/backend/publication/release。诊断计数只在专用版本启用。Block、Function 和间接调用热路径分别比较，不能用Function整体收益掩盖小Block回退。
 
-设计约束是零新增全 IR 分析 pass、零逐指令 snapshot、零 per-block owner；metadata 随现有发码线性产生。整体 compile 目标仍为 FEX 同数量级、最多 2×，新增机制不能通过移出初始化／销毁计时或静默省略异常能力达标。现有 x87 Block 本来尚未达标，本文没有运行新 benchmark，也不宣告达到绝对门槛。
+设计约束是零新增全 IR 分析 pass、零逐指令 snapshot、零 per-block owner；metadata 随现有发码线性产生。整体 compile 目标仍为 FEX 同数量级、最多 2×，新增机制不能通过移出初始化／销毁计时或静默省略异常能力达标。实施前 x87 Block 本来尚未达标；本轮固定次数的前后对照与 FEX 编译参照见实施记录，不能把异常机制接通等同于所有 benchmark 均已达到绝对门槛。
 
 process service 改为驻留后，首次安装仍计入实际首次使用窗口；同进程复用的摊销成绩另列，并报告保留的资源。不能仅因 owner 从 VM 提升到 process 就把首次安装或线程 altstack 的真实成本从完整成绩中隐去。
 

@@ -1,0 +1,13 @@
+{
+  "command": [
+    "adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "/data/local/tmp/swiftvm-exception-recovery-20261109/svm_runtime_engine_test --native '[signals]' --reporter compact"
+  ],
+  "exit": 0,
+  "stdout": "Filters: [signals]\nRNG seed: 133993331\nAll tests passed (71 assertions in 5 test cases)\n\n\n",
+  "stderr": "",
+  "sha256": "25a34f61fb6b86cf266906eb2b33f2367e14bd27e512da19cbce9f880943aa3b"
+}

@@ -1,0 +1,4736 @@
+{
+  "measurement": "final fixed source parent/candidate guard; descriptive fixed3 medians, all samples retained",
+  "created_utc": "2026-11-09T08:58:56.909600+00:00",
+  "compile_observations": 120,
+  "runtime_observations": 30,
+  "compile": {
+    "coremark": {
+      "parent-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            38.393984,
+            39.481247,
+            40.297079
+          ],
+          "median": 39.481247,
+          "minimum": 38.393984,
+          "maximum": 40.297079
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            42.576705,
+            43.823769,
+            44.54864
+          ],
+          "median": 43.823769,
+          "minimum": 42.576705,
+          "maximum": 44.54864
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              15.464634,
+              15.986212,
+              16.149582
+            ],
+            "median": 15.986212,
+            "minimum": 15.464634,
+            "maximum": 16.149582
+          },
+          "compile_decode_ns": {
+            "samples": [
+              4.182721,
+              4.342522,
+              4.251561
+            ],
+            "median": 4.251561,
+            "minimum": 4.182721,
+            "maximum": 4.342522
+          },
+          "optimize_ns": {
+            "samples": [
+              7.358878,
+              7.313466,
+              7.564058
+            ],
+            "median": 7.358878,
+            "minimum": 7.313466,
+            "maximum": 7.564058
+          },
+          "backend_ns": {
+            "samples": [
+              12.389596,
+              12.625657,
+              12.651911
+            ],
+            "median": 12.625657,
+            "minimum": 12.389596,
+            "maximum": 12.651911
+          },
+          "publication_ns": {
+            "samples": [
+              5.295598,
+              5.576853,
+              5.97321
+            ],
+            "median": 5.576853,
+            "minimum": 5.295598,
+            "maximum": 5.97321
+          },
+          "code_release_ns": {
+            "samples": [
+              0.42526,
+              0.609896,
+              0.560052
+            ],
+            "median": 0.560052,
+            "minimum": 0.42526,
+            "maximum": 0.609896
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.047448,
+              0.027916,
+              0.028229
+            ],
+            "median": 0.028229,
+            "minimum": 0.027916,
+            "maximum": 0.047448
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            11728,
+            11761
+          ],
+          "emitted_guest_bytes": [
+            44254,
+            44396
+          ],
+          "ir_nodes": [
+            35333,
+            35383
+          ],
+          "operand_words": [
+            63234,
+            63345
+          ],
+          "native_bytes": [
+            315400,
+            315584
+          ],
+          "fault_sites": [
+            4940,
+            4946
+          ],
+          "spill_slots": [
+            22
+          ],
+          "max_frame_bytes": [
+            32
+          ],
+          "code_units_published": [
+            2049,
+            2053
+          ]
+        },
+        "fault_metadata_bytes": [
+          158080,
+          158272,
+          158272
+        ]
+      },
+      "candidate-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            56.377608,
+            39.818197,
+            57.209265
+          ],
+          "median": 56.377608,
+          "minimum": 39.818197,
+          "maximum": 57.209265
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            60.682821,
+            44.111083,
+            61.47388
+          ],
+          "median": 60.682821,
+          "minimum": 44.111083,
+          "maximum": 61.47388
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              15.970412,
+              15.618206,
+              16.058392
+            ],
+            "median": 15.970412,
+            "minimum": 15.618206,
+            "maximum": 16.058392
+          },
+          "compile_decode_ns": {
+            "samples": [
+              4.305213,
+              4.292886,
+              4.264615
+            ],
+            "median": 4.292886,
+            "minimum": 4.264615,
+            "maximum": 4.305213
+          },
+          "optimize_ns": {
+            "samples": [
+              23.542492,
+              7.465858,
+              7.547084
+            ],
+            "median": 7.547084,
+            "minimum": 7.465858,
+            "maximum": 23.542492
+          },
+          "backend_ns": {
+            "samples": [
+              13.245508,
+              13.036616,
+              29.601037
+            ],
+            "median": 13.245508,
+            "minimum": 13.036616,
+            "maximum": 29.601037
+          },
+          "publication_ns": {
+            "samples": [
+              5.626806,
+              5.836999,
+              5.969386
+            ],
+            "median": 5.836999,
+            "minimum": 5.626806,
+            "maximum": 5.969386
+          },
+          "code_release_ns": {
+            "samples": [
+              0.512396,
+              0.478594,
+              0.46375
+            ],
+            "median": 0.478594,
+            "minimum": 0.46375,
+            "maximum": 0.512396
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.090156,
+              0.084323,
+              0.089428
+            ],
+            "median": 0.089428,
+            "minimum": 0.084323,
+            "maximum": 0.090156
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            11756,
+            11765
+          ],
+          "emitted_guest_bytes": [
+            44382,
+            44388
+          ],
+          "ir_nodes": [
+            36285,
+            36341
+          ],
+          "operand_words": [
+            64237,
+            64319
+          ],
+          "native_bytes": [
+            425408,
+            426764
+          ],
+          "fault_sites": [
+            4734,
+            4736
+          ],
+          "spill_slots": [
+            22
+          ],
+          "max_frame_bytes": [
+            32
+          ],
+          "code_units_published": [
+            2051,
+            2053
+          ]
+        },
+        "fault_metadata_bytes": [
+          151488,
+          151488,
+          151552
+        ]
+      },
+      "parent-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            65.724116,
+            47.222767,
+            48.443895
+          ],
+          "median": 48.443895,
+          "minimum": 47.222767,
+          "maximum": 65.724116
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            71.291934,
+            52.572753,
+            54.026636
+          ],
+          "median": 54.026636,
+          "minimum": 52.572753,
+          "maximum": 71.291934
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              38.771355,
+              21.505583,
+              22.458698
+            ],
+            "median": 22.458698,
+            "minimum": 21.505583,
+            "maximum": 38.771355
+          },
+          "compile_decode_ns": {
+            "samples": [
+              5.567818,
+              5.349986,
+              5.582741
+            ],
+            "median": 5.567818,
+            "minimum": 5.349986,
+            "maximum": 5.582741
+          },
+          "optimize_ns": {
+            "samples": [
+              10.687873,
+              10.584835,
+              10.71943
+            ],
+            "median": 10.687873,
+            "minimum": 10.584835,
+            "maximum": 10.71943
+          },
+          "backend_ns": {
+            "samples": [
+              17.297505,
+              16.281871,
+              16.236574
+            ],
+            "median": 16.281871,
+            "minimum": 16.236574,
+            "maximum": 17.297505
+          },
+          "publication_ns": {
+            "samples": [
+              3.457722,
+              3.173011,
+              3.486716
+            ],
+            "median": 3.457722,
+            "minimum": 3.173011,
+            "maximum": 3.486716
+          },
+          "code_release_ns": {
+            "samples": [
+              0.395104,
+              0.425989,
+              0.497605
+            ],
+            "median": 0.425989,
+            "minimum": 0.395104,
+            "maximum": 0.497605
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.030051,
+              0.027812,
+              0.027448
+            ],
+            "median": 0.027812,
+            "minimum": 0.027448,
+            "maximum": 0.030051
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            16449
+          ],
+          "emitted_guest_bytes": [
+            63409
+          ],
+          "ir_nodes": [
+            50739
+          ],
+          "operand_words": [
+            84868
+          ],
+          "native_bytes": [
+            337592
+          ],
+          "fault_sites": [
+            6768
+          ],
+          "spill_slots": [
+            30
+          ],
+          "max_frame_bytes": [
+            48
+          ],
+          "code_units_published": [
+            676
+          ]
+        },
+        "fault_metadata_bytes": [
+          216576,
+          216576,
+          216576
+        ]
+      },
+      "candidate-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            48.773294,
+            86.177408,
+            50.342503
+          ],
+          "median": 50.342503,
+          "minimum": 48.773294,
+          "maximum": 86.177408
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            54.399315,
+            91.765533,
+            71.898951
+          ],
+          "median": 71.898951,
+          "minimum": 54.399315,
+          "maximum": 91.765533
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              21.973224,
+              40.133373,
+              38.288333
+            ],
+            "median": 38.288333,
+            "minimum": 21.973224,
+            "maximum": 40.133373
+          },
+          "compile_decode_ns": {
+            "samples": [
+              5.626021,
+              5.588125,
+              21.556448
+            ],
+            "median": 5.626021,
+            "minimum": 5.588125,
+            "maximum": 21.556448
+          },
+          "optimize_ns": {
+            "samples": [
+              10.633856,
+              11.176041,
+              10.927976
+            ],
+            "median": 10.927976,
+            "minimum": 10.633856,
+            "maximum": 11.176041
+          },
+          "backend_ns": {
+            "samples": [
+              17.252298,
+              34.80745,
+              17.792525
+            ],
+            "median": 17.792525,
+            "minimum": 17.252298,
+            "maximum": 34.80745
+          },
+          "publication_ns": {
+            "samples": [
+              3.382083,
+              4.317863,
+              3.587521
+            ],
+            "median": 3.587521,
+            "minimum": 3.382083,
+            "maximum": 4.317863
+          },
+          "code_release_ns": {
+            "samples": [
+              0.488958,
+              0.56375,
+              0.551198
+            ],
+            "median": 0.551198,
+            "minimum": 0.488958,
+            "maximum": 0.56375
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.073854,
+              0.092136,
+              0.185573
+            ],
+            "median": 0.092136,
+            "minimum": 0.073854,
+            "maximum": 0.185573
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            16449
+          ],
+          "emitted_guest_bytes": [
+            63409
+          ],
+          "ir_nodes": [
+            52236
+          ],
+          "operand_words": [
+            86365
+          ],
+          "native_bytes": [
+            515220
+          ],
+          "fault_sites": [
+            6445
+          ],
+          "spill_slots": [
+            30
+          ],
+          "max_frame_bytes": [
+            48
+          ],
+          "code_units_published": [
+            676
+          ]
+        },
+        "fault_metadata_bytes": [
+          206240,
+          206240,
+          206240
+        ]
+      },
+      "fex-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            63.4603125,
+            46.22078125,
+            46.560885416666665
+          ],
+          "median": 46.560885416666665,
+          "minimum": 46.22078125,
+          "maximum": 63.4603125
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            71.6540625,
+            54.0521875,
+            54.43333333333334
+          ],
+          "median": 54.43333333333334,
+          "minimum": 54.0521875,
+          "maximum": 71.6540625
+        }
+      },
+      "candidate_block_over_parent": 1.4279591523540276,
+      "candidate_function_over_parent": 1.039191894045679,
+      "candidate_function_over_fex": 1.0812187644090567
+    },
+    "int": {
+      "parent-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.840579,
+            1.916128,
+            1.989575
+          ],
+          "median": 1.916128,
+          "minimum": 1.840579,
+          "maximum": 1.989575
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            1.991198,
+            2.082708,
+            2.158387
+          ],
+          "median": 2.082708,
+          "minimum": 1.991198,
+          "maximum": 2.158387
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.867709,
+              0.904063,
+              0.984375
+            ],
+            "median": 0.904063,
+            "minimum": 0.867709,
+            "maximum": 0.984375
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.150619,
+              0.16658,
+              0.168812
+            ],
+            "median": 0.16658,
+            "minimum": 0.150619,
+            "maximum": 0.168812
+          },
+          "optimize_ns": {
+            "samples": [
+              0.240679,
+              0.237504,
+              0.245523
+            ],
+            "median": 0.240679,
+            "minimum": 0.237504,
+            "maximum": 0.245523
+          },
+          "backend_ns": {
+            "samples": [
+              0.415782,
+              0.434274,
+              0.419787
+            ],
+            "median": 0.419787,
+            "minimum": 0.415782,
+            "maximum": 0.434274
+          },
+          "publication_ns": {
+            "samples": [
+              0.297452,
+              0.337179,
+              0.343488
+            ],
+            "median": 0.337179,
+            "minimum": 0.297452,
+            "maximum": 0.343488
+          },
+          "code_release_ns": {
+            "samples": [
+              0.080677,
+              0.080937,
+              0.077032
+            ],
+            "median": 0.080677,
+            "minimum": 0.077032,
+            "maximum": 0.080937
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.030469,
+              0.031458,
+              0.030728
+            ],
+            "median": 0.030728,
+            "minimum": 0.030469,
+            "maximum": 0.031458
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            269
+          ],
+          "emitted_guest_bytes": [
+            1060
+          ],
+          "ir_nodes": [
+            592
+          ],
+          "operand_words": [
+            1077
+          ],
+          "native_bytes": [
+            5140
+          ],
+          "fault_sites": [
+            33
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            39
+          ]
+        },
+        "fault_metadata_bytes": [
+          1056,
+          1056,
+          1056
+        ]
+      },
+      "candidate-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.896043,
+            2.14897,
+            2.155578
+          ],
+          "median": 2.14897,
+          "minimum": 1.896043,
+          "maximum": 2.155578
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.062501,
+            2.297918,
+            2.322818
+          ],
+          "median": 2.297918,
+          "minimum": 2.062501,
+          "maximum": 2.322818
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.874532,
+              1.086405,
+              0.9625
+            ],
+            "median": 0.9625,
+            "minimum": 0.874532,
+            "maximum": 1.086405
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.166458,
+              0.148948,
+              0.16724
+            ],
+            "median": 0.166458,
+            "minimum": 0.148948,
+            "maximum": 0.16724
+          },
+          "optimize_ns": {
+            "samples": [
+              0.242243,
+              0.242034,
+              0.263228
+            ],
+            "median": 0.242243,
+            "minimum": 0.242034,
+            "maximum": 0.263228
+          },
+          "backend_ns": {
+            "samples": [
+              0.410415,
+              0.428646,
+              0.466405
+            ],
+            "median": 0.428646,
+            "minimum": 0.410415,
+            "maximum": 0.466405
+          },
+          "publication_ns": {
+            "samples": [
+              0.316406,
+              0.298384,
+              0.370103
+            ],
+            "median": 0.316406,
+            "minimum": 0.298384,
+            "maximum": 0.370103
+          },
+          "code_release_ns": {
+            "samples": [
+              0.086562,
+              0.090105,
+              0.103438
+            ],
+            "median": 0.090105,
+            "minimum": 0.086562,
+            "maximum": 0.103438
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.075417,
+              0.076042,
+              0.095
+            ],
+            "median": 0.076042,
+            "minimum": 0.075417,
+            "maximum": 0.095
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            269
+          ],
+          "emitted_guest_bytes": [
+            1060
+          ],
+          "ir_nodes": [
+            599
+          ],
+          "operand_words": [
+            1084
+          ],
+          "native_bytes": [
+            5844
+          ],
+          "fault_sites": [
+            33
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            39
+          ]
+        },
+        "fault_metadata_bytes": [
+          1056,
+          1056,
+          1056
+        ]
+      },
+      "parent-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.948798,
+            2.307451,
+            1.967093
+          ],
+          "median": 1.967093,
+          "minimum": 1.948798,
+          "maximum": 2.307451
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.106251,
+            2.476615,
+            2.136459
+          ],
+          "median": 2.136459,
+          "minimum": 2.106251,
+          "maximum": 2.476615
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.915884,
+              1.060885,
+              0.963753
+            ],
+            "median": 0.963753,
+            "minimum": 0.915884,
+            "maximum": 1.060885
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.157453,
+              0.169164,
+              0.169366
+            ],
+            "median": 0.169164,
+            "minimum": 0.157453,
+            "maximum": 0.169366
+          },
+          "optimize_ns": {
+            "samples": [
+              0.2575,
+              0.28094,
+              0.252863
+            ],
+            "median": 0.2575,
+            "minimum": 0.252863,
+            "maximum": 0.28094
+          },
+          "backend_ns": {
+            "samples": [
+              0.428178,
+              0.522394,
+              0.42578
+            ],
+            "median": 0.428178,
+            "minimum": 0.42578,
+            "maximum": 0.522394
+          },
+          "publication_ns": {
+            "samples": [
+              0.315154,
+              0.335571,
+              0.319064
+            ],
+            "median": 0.319064,
+            "minimum": 0.315154,
+            "maximum": 0.335571
+          },
+          "code_release_ns": {
+            "samples": [
+              0.100313,
+              0.183802,
+              0.0825
+            ],
+            "median": 0.100313,
+            "minimum": 0.0825,
+            "maximum": 0.183802
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.03,
+              0.03099,
+              0.034479
+            ],
+            "median": 0.03099,
+            "minimum": 0.03,
+            "maximum": 0.034479
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            295
+          ],
+          "emitted_guest_bytes": [
+            1148
+          ],
+          "ir_nodes": [
+            615
+          ],
+          "operand_words": [
+            1127
+          ],
+          "native_bytes": [
+            5192
+          ],
+          "fault_sites": [
+            33
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            38
+          ]
+        },
+        "fault_metadata_bytes": [
+          1056,
+          1056,
+          1056
+        ]
+      },
+      "candidate-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.861734,
+            1.928231,
+            2.060992
+          ],
+          "median": 1.928231,
+          "minimum": 1.861734,
+          "maximum": 2.060992
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.010994,
+            2.102449,
+            2.215206
+          ],
+          "median": 2.102449,
+          "minimum": 2.010994,
+          "maximum": 2.215206
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.854326,
+              0.913386,
+              0.978647
+            ],
+            "median": 0.913386,
+            "minimum": 0.854326,
+            "maximum": 0.978647
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.14926,
+              0.174218,
+              0.154214
+            ],
+            "median": 0.154214,
+            "minimum": 0.14926,
+            "maximum": 0.174218
+          },
+          "optimize_ns": {
+            "samples": [
+              0.254374,
+              0.258019,
+              0.281043
+            ],
+            "median": 0.258019,
+            "minimum": 0.254374,
+            "maximum": 0.281043
+          },
+          "backend_ns": {
+            "samples": [
+              0.408078,
+              0.420526,
+              0.426353
+            ],
+            "median": 0.420526,
+            "minimum": 0.408078,
+            "maximum": 0.426353
+          },
+          "publication_ns": {
+            "samples": [
+              0.275471,
+              0.28745,
+              0.299428
+            ],
+            "median": 0.28745,
+            "minimum": 0.275471,
+            "maximum": 0.299428
+          },
+          "code_release_ns": {
+            "samples": [
+              0.082865,
+              0.094636,
+              0.092604
+            ],
+            "median": 0.092604,
+            "minimum": 0.082865,
+            "maximum": 0.094636
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.078751,
+              0.070834,
+              0.081249
+            ],
+            "median": 0.078751,
+            "minimum": 0.070834,
+            "maximum": 0.081249
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            295
+          ],
+          "emitted_guest_bytes": [
+            1148
+          ],
+          "ir_nodes": [
+            623
+          ],
+          "operand_words": [
+            1135
+          ],
+          "native_bytes": [
+            5992
+          ],
+          "fault_sites": [
+            33
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            38
+          ]
+        },
+        "fault_metadata_bytes": [
+          1056,
+          1056,
+          1056
+        ]
+      },
+      "fex-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.56,
+            1.6171354166666667,
+            1.5653645833333332
+          ],
+          "median": 1.5653645833333332,
+          "minimum": 1.56,
+          "maximum": 1.6171354166666667
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.05890625,
+            1.9103125,
+            1.84640625
+          ],
+          "median": 1.9103125,
+          "minimum": 1.84640625,
+          "maximum": 2.05890625
+        }
+      },
+      "candidate_block_over_parent": 1.1215169341505369,
+      "candidate_function_over_parent": 0.9802439437281308,
+      "candidate_function_over_fex": 1.2318095225420065
+    },
+    "fp": {
+      "parent-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.534949,
+            2.691962,
+            2.427619
+          ],
+          "median": 2.534949,
+          "minimum": 2.427619,
+          "maximum": 2.691962
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.789275,
+            2.953069,
+            2.697865
+          ],
+          "median": 2.789275,
+          "minimum": 2.697865,
+          "maximum": 2.953069
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.232606,
+              1.278955,
+              1.223962
+            ],
+            "median": 1.232606,
+            "minimum": 1.223962,
+            "maximum": 1.278955
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.254326,
+              0.261107,
+              0.270246
+            ],
+            "median": 0.261107,
+            "minimum": 0.254326,
+            "maximum": 0.270246
+          },
+          "optimize_ns": {
+            "samples": [
+              0.357501,
+              0.351825,
+              0.338594
+            ],
+            "median": 0.351825,
+            "minimum": 0.338594,
+            "maximum": 0.357501
+          },
+          "backend_ns": {
+            "samples": [
+              0.573909,
+              0.597865,
+              0.564998
+            ],
+            "median": 0.573909,
+            "minimum": 0.564998,
+            "maximum": 0.597865
+          },
+          "publication_ns": {
+            "samples": [
+              0.431822,
+              0.410214,
+              0.377396
+            ],
+            "median": 0.410214,
+            "minimum": 0.377396,
+            "maximum": 0.431822
+          },
+          "code_release_ns": {
+            "samples": [
+              0.089114,
+              0.141927,
+              0.093073
+            ],
+            "median": 0.093073,
+            "minimum": 0.089114,
+            "maximum": 0.141927
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.031773,
+              0.098593,
+              0.030468
+            ],
+            "median": 0.031773,
+            "minimum": 0.030468,
+            "maximum": 0.098593
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            434
+          ],
+          "emitted_guest_bytes": [
+            1848
+          ],
+          "ir_nodes": [
+            1079
+          ],
+          "operand_words": [
+            1992
+          ],
+          "native_bytes": [
+            12676
+          ],
+          "fault_sites": [
+            137
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            43
+          ]
+        },
+        "fault_metadata_bytes": [
+          4384,
+          4384,
+          4384
+        ]
+      },
+      "candidate-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.422849,
+            2.466704,
+            2.993856
+          ],
+          "median": 2.466704,
+          "minimum": 2.422849,
+          "maximum": 2.993856
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.668956,
+            2.711823,
+            3.255264
+          ],
+          "median": 2.711823,
+          "minimum": 2.668956,
+          "maximum": 3.255264
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.090939,
+              1.182031,
+              1.467599
+            ],
+            "median": 1.182031,
+            "minimum": 1.090939,
+            "maximum": 1.467599
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.246107,
+              0.245119,
+              0.261408
+            ],
+            "median": 0.246107,
+            "minimum": 0.245119,
+            "maximum": 0.261408
+          },
+          "optimize_ns": {
+            "samples": [
+              0.387817,
+              0.349532,
+              0.354684
+            ],
+            "median": 0.354684,
+            "minimum": 0.349532,
+            "maximum": 0.387817
+          },
+          "backend_ns": {
+            "samples": [
+              0.583279,
+              0.572081,
+              0.627029
+            ],
+            "median": 0.583279,
+            "minimum": 0.572081,
+            "maximum": 0.627029
+          },
+          "publication_ns": {
+            "samples": [
+              0.370467,
+              0.365731,
+              0.453492
+            ],
+            "median": 0.370467,
+            "minimum": 0.365731,
+            "maximum": 0.453492
+          },
+          "code_release_ns": {
+            "samples": [
+              0.084427,
+              0.101927,
+              0.185677
+            ],
+            "median": 0.101927,
+            "minimum": 0.084427,
+            "maximum": 0.185677
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.085937,
+              0.072709,
+              0.087812
+            ],
+            "median": 0.085937,
+            "minimum": 0.072709,
+            "maximum": 0.087812
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            434
+          ],
+          "emitted_guest_bytes": [
+            1848
+          ],
+          "ir_nodes": [
+            1090
+          ],
+          "operand_words": [
+            2003
+          ],
+          "native_bytes": [
+            15188
+          ],
+          "fault_sites": [
+            121
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            43
+          ]
+        },
+        "fault_metadata_bytes": [
+          3872,
+          3872,
+          3872
+        ]
+      },
+      "parent-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.601192,
+            2.560412,
+            2.698278
+          ],
+          "median": 2.601192,
+          "minimum": 2.560412,
+          "maximum": 2.698278
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.841927,
+            2.828229,
+            2.950055
+          ],
+          "median": 2.841927,
+          "minimum": 2.828229,
+          "maximum": 2.950055
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.189173,
+              1.209688,
+              1.25302
+            ],
+            "median": 1.209688,
+            "minimum": 1.189173,
+            "maximum": 1.25302
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.240735,
+              0.267817,
+              0.251777
+            ],
+            "median": 0.251777,
+            "minimum": 0.240735,
+            "maximum": 0.267817
+          },
+          "optimize_ns": {
+            "samples": [
+              0.423643,
+              0.422393,
+              0.420942
+            ],
+            "median": 0.422393,
+            "minimum": 0.420942,
+            "maximum": 0.423643
+          },
+          "backend_ns": {
+            "samples": [
+              0.655885,
+              0.657085,
+              0.679323
+            ],
+            "median": 0.657085,
+            "minimum": 0.655885,
+            "maximum": 0.679323
+          },
+          "publication_ns": {
+            "samples": [
+              0.329421,
+              0.354735,
+              0.373906
+            ],
+            "median": 0.354735,
+            "minimum": 0.329421,
+            "maximum": 0.373906
+          },
+          "code_release_ns": {
+            "samples": [
+              0.147656,
+              0.086302,
+              0.12151
+            ],
+            "median": 0.12151,
+            "minimum": 0.086302,
+            "maximum": 0.147656
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.02896,
+              0.031875,
+              0.03125
+            ],
+            "median": 0.03125,
+            "minimum": 0.02896,
+            "maximum": 0.031875
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            591
+          ],
+          "emitted_guest_bytes": [
+            2531
+          ],
+          "ir_nodes": [
+            1433
+          ],
+          "operand_words": [
+            2733
+          ],
+          "native_bytes": [
+            19448
+          ],
+          "fault_sites": [
+            188
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            42
+          ]
+        },
+        "fault_metadata_bytes": [
+          6016,
+          6016,
+          6016
+        ]
+      },
+      "candidate-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.82465,
+            2.888188,
+            2.858189
+          ],
+          "median": 2.858189,
+          "minimum": 2.82465,
+          "maximum": 2.888188
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            3.073129,
+            3.172392,
+            3.109162
+          ],
+          "median": 3.109162,
+          "minimum": 3.073129,
+          "maximum": 3.172392
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.283538,
+              1.336411,
+              1.344945
+            ],
+            "median": 1.336411,
+            "minimum": 1.283538,
+            "maximum": 1.344945
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.248479,
+              0.284204,
+              0.250973
+            ],
+            "median": 0.250973,
+            "minimum": 0.248479,
+            "maximum": 0.284204
+          },
+          "optimize_ns": {
+            "samples": [
+              0.408281,
+              0.434998,
+              0.414378
+            ],
+            "median": 0.414378,
+            "minimum": 0.408281,
+            "maximum": 0.434998
+          },
+          "backend_ns": {
+            "samples": [
+              0.748384,
+              0.73672,
+              0.740208
+            ],
+            "median": 0.740208,
+            "minimum": 0.73672,
+            "maximum": 0.748384
+          },
+          "publication_ns": {
+            "samples": [
+              0.365727,
+              0.41026,
+              0.37338
+            ],
+            "median": 0.37338,
+            "minimum": 0.365727,
+            "maximum": 0.41026
+          },
+          "code_release_ns": {
+            "samples": [
+              0.112969,
+              0.095834,
+              0.091146
+            ],
+            "median": 0.095834,
+            "minimum": 0.091146,
+            "maximum": 0.112969
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.08948,
+              0.078281,
+              0.079062
+            ],
+            "median": 0.079062,
+            "minimum": 0.078281,
+            "maximum": 0.08948
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            591
+          ],
+          "emitted_guest_bytes": [
+            2531
+          ],
+          "ir_nodes": [
+            1448
+          ],
+          "operand_words": [
+            2748
+          ],
+          "native_bytes": [
+            22352
+          ],
+          "fault_sites": [
+            172
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            42
+          ]
+        },
+        "fault_metadata_bytes": [
+          5504,
+          5504,
+          5504
+        ]
+      },
+      "fex-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.70328125,
+            1.7269270833333332,
+            1.7198958333333332
+          ],
+          "median": 1.7198958333333332,
+          "minimum": 1.70328125,
+          "maximum": 1.7269270833333332
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.0263020833333334,
+            2.077916666666667,
+            2.04390625
+          ],
+          "median": 2.04390625,
+          "minimum": 2.0263020833333334,
+          "maximum": 2.077916666666667
+        }
+      },
+      "candidate_block_over_parent": 0.9730783538445941,
+      "candidate_function_over_parent": 1.0987997041356423,
+      "candidate_function_over_fex": 1.6618384349827389
+    },
+    "mem": {
+      "parent-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.321092,
+            2.488449,
+            2.286198
+          ],
+          "median": 2.321092,
+          "minimum": 2.286198,
+          "maximum": 2.488449
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.541612,
+            2.85906,
+            2.511617
+          ],
+          "median": 2.541612,
+          "minimum": 2.511617,
+          "maximum": 2.85906
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.176249,
+              1.269168,
+              1.115364
+            ],
+            "median": 1.176249,
+            "minimum": 1.115364,
+            "maximum": 1.269168
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.22052,
+              0.370611,
+              0.225419
+            ],
+            "median": 0.225419,
+            "minimum": 0.22052,
+            "maximum": 0.370611
+          },
+          "optimize_ns": {
+            "samples": [
+              0.288698,
+              0.29026,
+              0.288956
+            ],
+            "median": 0.288956,
+            "minimum": 0.288698,
+            "maximum": 0.29026
+          },
+          "backend_ns": {
+            "samples": [
+              0.498228,
+              0.527502,
+              0.51916
+            ],
+            "median": 0.51916,
+            "minimum": 0.498228,
+            "maximum": 0.527502
+          },
+          "publication_ns": {
+            "samples": [
+              0.376042,
+              0.552607,
+              0.389366
+            ],
+            "median": 0.389366,
+            "minimum": 0.376042,
+            "maximum": 0.552607
+          },
+          "code_release_ns": {
+            "samples": [
+              0.090729,
+              0.10349,
+              0.09125
+            ],
+            "median": 0.09125,
+            "minimum": 0.090729,
+            "maximum": 0.10349
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.029167,
+              0.031198,
+              0.030678
+            ],
+            "median": 0.030678,
+            "minimum": 0.029167,
+            "maximum": 0.031198
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            323
+          ],
+          "emitted_guest_bytes": [
+            1354
+          ],
+          "ir_nodes": [
+            736
+          ],
+          "operand_words": [
+            1335
+          ],
+          "native_bytes": [
+            6304
+          ],
+          "fault_sites": [
+            51
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            46
+          ]
+        },
+        "fault_metadata_bytes": [
+          1632,
+          1632,
+          1632
+        ]
+      },
+      "candidate-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.335152,
+            2.503256,
+            2.691864
+          ],
+          "median": 2.503256,
+          "minimum": 2.335152,
+          "maximum": 2.691864
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.572291,
+            2.729946,
+            2.914223
+          ],
+          "median": 2.729946,
+          "minimum": 2.572291,
+          "maximum": 2.914223
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.09776,
+              1.097443,
+              1.20953
+            ],
+            "median": 1.09776,
+            "minimum": 1.097443,
+            "maximum": 1.20953
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.237139,
+              0.22669,
+              0.222359
+            ],
+            "median": 0.22669,
+            "minimum": 0.222359,
+            "maximum": 0.237139
+          },
+          "optimize_ns": {
+            "samples": [
+              0.309582,
+              0.303438,
+              0.299374
+            ],
+            "median": 0.303438,
+            "minimum": 0.299374,
+            "maximum": 0.309582
+          },
+          "backend_ns": {
+            "samples": [
+              0.532969,
+              0.545989,
+              0.547707
+            ],
+            "median": 0.545989,
+            "minimum": 0.532969,
+            "maximum": 0.547707
+          },
+          "publication_ns": {
+            "samples": [
+              0.368277,
+              0.45615,
+              0.494223
+            ],
+            "median": 0.45615,
+            "minimum": 0.368277,
+            "maximum": 0.494223
+          },
+          "code_release_ns": {
+            "samples": [
+              0.092657,
+              0.127187,
+              0.171458
+            ],
+            "median": 0.127187,
+            "minimum": 0.092657,
+            "maximum": 0.171458
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.092605,
+              0.116458,
+              0.110208
+            ],
+            "median": 0.110208,
+            "minimum": 0.092605,
+            "maximum": 0.116458
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            323
+          ],
+          "emitted_guest_bytes": [
+            1354
+          ],
+          "ir_nodes": [
+            747
+          ],
+          "operand_words": [
+            1346
+          ],
+          "native_bytes": [
+            7608
+          ],
+          "fault_sites": [
+            49
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            46
+          ]
+        },
+        "fault_metadata_bytes": [
+          1568,
+          1568,
+          1568
+        ]
+      },
+      "parent-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.352066,
+            2.33125,
+            2.363949
+          ],
+          "median": 2.352066,
+          "minimum": 2.33125,
+          "maximum": 2.363949
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.580521,
+            2.535836,
+            2.576769
+          ],
+          "median": 2.576769,
+          "minimum": 2.535836,
+          "maximum": 2.580521
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.146303,
+              1.085782,
+              1.099534
+            ],
+            "median": 1.099534,
+            "minimum": 1.085782,
+            "maximum": 1.146303
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.228455,
+              0.204586,
+              0.21282
+            ],
+            "median": 0.21282,
+            "minimum": 0.204586,
+            "maximum": 0.228455
+          },
+          "optimize_ns": {
+            "samples": [
+              0.315104,
+              0.330472,
+              0.315521
+            ],
+            "median": 0.315521,
+            "minimum": 0.315104,
+            "maximum": 0.330472
+          },
+          "backend_ns": {
+            "samples": [
+              0.528854,
+              0.516457,
+              0.533227
+            ],
+            "median": 0.528854,
+            "minimum": 0.516457,
+            "maximum": 0.533227
+          },
+          "publication_ns": {
+            "samples": [
+              0.393538,
+              0.388182,
+              0.41104
+            ],
+            "median": 0.393538,
+            "minimum": 0.388182,
+            "maximum": 0.41104
+          },
+          "code_release_ns": {
+            "samples": [
+              0.089115,
+              0.106354,
+              0.107812
+            ],
+            "median": 0.106354,
+            "minimum": 0.089115,
+            "maximum": 0.107812
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.030053,
+              0.030886,
+              0.030572
+            ],
+            "median": 0.030572,
+            "minimum": 0.030053,
+            "maximum": 0.030886
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            376
+          ],
+          "emitted_guest_bytes": [
+            1609
+          ],
+          "ir_nodes": [
+            818
+          ],
+          "operand_words": [
+            1521
+          ],
+          "native_bytes": [
+            6804
+          ],
+          "fault_sites": [
+            63
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            45
+          ]
+        },
+        "fault_metadata_bytes": [
+          2016,
+          2016,
+          2016
+        ]
+      },
+      "candidate-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.415871,
+            2.385094,
+            2.572399
+          ],
+          "median": 2.415871,
+          "minimum": 2.385094,
+          "maximum": 2.572399
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.613639,
+            2.606512,
+            2.785625
+          ],
+          "median": 2.613639,
+          "minimum": 2.606512,
+          "maximum": 2.785625
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.08698,
+              1.073801,
+              1.229218
+            ],
+            "median": 1.08698,
+            "minimum": 1.073801,
+            "maximum": 1.229218
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.197768,
+              0.221418,
+              0.213226
+            ],
+            "median": 0.213226,
+            "minimum": 0.197768,
+            "maximum": 0.221418
+          },
+          "optimize_ns": {
+            "samples": [
+              0.328907,
+              0.316361,
+              0.313799
+            ],
+            "median": 0.316361,
+            "minimum": 0.313799,
+            "maximum": 0.328907
+          },
+          "backend_ns": {
+            "samples": [
+              0.539685,
+              0.536771,
+              0.552601
+            ],
+            "median": 0.539685,
+            "minimum": 0.536771,
+            "maximum": 0.552601
+          },
+          "publication_ns": {
+            "samples": [
+              0.41375,
+              0.430468,
+              0.411252
+            ],
+            "median": 0.41375,
+            "minimum": 0.411252,
+            "maximum": 0.430468
+          },
+          "code_release_ns": {
+            "samples": [
+              0.088802,
+              0.08375,
+              0.097865
+            ],
+            "median": 0.088802,
+            "minimum": 0.08375,
+            "maximum": 0.097865
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.076301,
+              0.086614,
+              0.079322
+            ],
+            "median": 0.079322,
+            "minimum": 0.076301,
+            "maximum": 0.086614
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            376
+          ],
+          "emitted_guest_bytes": [
+            1609
+          ],
+          "ir_nodes": [
+            832
+          ],
+          "operand_words": [
+            1535
+          ],
+          "native_bytes": [
+            8780
+          ],
+          "fault_sites": [
+            57
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            45
+          ]
+        },
+        "fault_metadata_bytes": [
+          1824,
+          1824,
+          1824
+        ]
+      },
+      "fex-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.5176041666666666,
+            1.5334895833333333,
+            1.5109895833333333
+          ],
+          "median": 1.5176041666666666,
+          "minimum": 1.5109895833333333,
+          "maximum": 1.5334895833333333
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            1.8878125,
+            1.8330729166666668,
+            1.8203645833333333
+          ],
+          "median": 1.8330729166666668,
+          "minimum": 1.8203645833333333,
+          "maximum": 1.8878125
+        }
+      },
+      "candidate_block_over_parent": 1.0784820248400322,
+      "candidate_function_over_parent": 1.0271272149676072,
+      "candidate_function_over_fex": 1.5918979751527216
+    },
+    "branch": {
+      "parent-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.941347,
+            1.903386,
+            1.961248
+          ],
+          "median": 1.941347,
+          "minimum": 1.903386,
+          "maximum": 1.961248
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.100573,
+            2.057914,
+            2.137244
+          ],
+          "median": 2.100573,
+          "minimum": 2.057914,
+          "maximum": 2.137244
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.949009,
+              0.940157,
+              0.995413
+            ],
+            "median": 0.949009,
+            "minimum": 0.940157,
+            "maximum": 0.995413
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.159226,
+              0.154528,
+              0.175996
+            ],
+            "median": 0.159226,
+            "minimum": 0.154528,
+            "maximum": 0.175996
+          },
+          "optimize_ns": {
+            "samples": [
+              0.234167,
+              0.23729,
+              0.23422
+            ],
+            "median": 0.23422,
+            "minimum": 0.234167,
+            "maximum": 0.23729
+          },
+          "backend_ns": {
+            "samples": [
+              0.410209,
+              0.408288,
+              0.418802
+            ],
+            "median": 0.410209,
+            "minimum": 0.408288,
+            "maximum": 0.418802
+          },
+          "publication_ns": {
+            "samples": [
+              0.329688,
+              0.295362,
+              0.309738
+            ],
+            "median": 0.309738,
+            "minimum": 0.295362,
+            "maximum": 0.329688
+          },
+          "code_release_ns": {
+            "samples": [
+              0.080677,
+              0.080573,
+              0.081302
+            ],
+            "median": 0.080677,
+            "minimum": 0.080573,
+            "maximum": 0.081302
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.030052,
+              0.030936,
+              0.031355
+            ],
+            "median": 0.030936,
+            "minimum": 0.030052,
+            "maximum": 0.031355
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            273
+          ],
+          "emitted_guest_bytes": [
+            1052
+          ],
+          "ir_nodes": [
+            570
+          ],
+          "operand_words": [
+            1053
+          ],
+          "native_bytes": [
+            5084
+          ],
+          "fault_sites": [
+            29
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            39
+          ]
+        },
+        "fault_metadata_bytes": [
+          928,
+          928,
+          928
+        ]
+      },
+      "candidate-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.827657,
+            1.975464,
+            1.908897
+          ],
+          "median": 1.908897,
+          "minimum": 1.827657,
+          "maximum": 1.975464
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            1.980517,
+            2.133281,
+            2.067392
+          ],
+          "median": 2.067392,
+          "minimum": 1.980517,
+          "maximum": 2.133281
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.821874,
+              0.890363,
+              0.869376
+            ],
+            "median": 0.869376,
+            "minimum": 0.821874,
+            "maximum": 0.890363
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.15286,
+              0.157817,
+              0.158495
+            ],
+            "median": 0.157817,
+            "minimum": 0.15286,
+            "maximum": 0.158495
+          },
+          "optimize_ns": {
+            "samples": [
+              0.236095,
+              0.251507,
+              0.256722
+            ],
+            "median": 0.251507,
+            "minimum": 0.236095,
+            "maximum": 0.256722
+          },
+          "backend_ns": {
+            "samples": [
+              0.397031,
+              0.405516,
+              0.427658
+            ],
+            "median": 0.405516,
+            "minimum": 0.397031,
+            "maximum": 0.427658
+          },
+          "publication_ns": {
+            "samples": [
+              0.269271,
+              0.284325,
+              0.277598
+            ],
+            "median": 0.277598,
+            "minimum": 0.269271,
+            "maximum": 0.284325
+          },
+          "code_release_ns": {
+            "samples": [
+              0.087344,
+              0.163906,
+              0.086146
+            ],
+            "median": 0.087344,
+            "minimum": 0.086146,
+            "maximum": 0.163906
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.102916,
+              0.072396,
+              0.084531
+            ],
+            "median": 0.084531,
+            "minimum": 0.072396,
+            "maximum": 0.102916
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            273
+          ],
+          "emitted_guest_bytes": [
+            1052
+          ],
+          "ir_nodes": [
+            578
+          ],
+          "operand_words": [
+            1061
+          ],
+          "native_bytes": [
+            5892
+          ],
+          "fault_sites": [
+            29
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            39
+          ]
+        },
+        "fault_metadata_bytes": [
+          928,
+          928,
+          928
+        ]
+      },
+      "parent-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.864205,
+            1.966064,
+            1.909474
+          ],
+          "median": 1.909474,
+          "minimum": 1.864205,
+          "maximum": 1.966064
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.019578,
+            2.127864,
+            2.066671
+          ],
+          "median": 2.066671,
+          "minimum": 2.019578,
+          "maximum": 2.127864
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.861144,
+              0.896093,
+              0.883173
+            ],
+            "median": 0.883173,
+            "minimum": 0.861144,
+            "maximum": 0.896093
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.155373,
+              0.1618,
+              0.157197
+            ],
+            "median": 0.157197,
+            "minimum": 0.155373,
+            "maximum": 0.1618
+          },
+          "optimize_ns": {
+            "samples": [
+              0.250049,
+              0.299901,
+              0.25349
+            ],
+            "median": 0.25349,
+            "minimum": 0.250049,
+            "maximum": 0.299901
+          },
+          "backend_ns": {
+            "samples": [
+              0.423547,
+              0.438336,
+              0.424529
+            ],
+            "median": 0.424529,
+            "minimum": 0.423547,
+            "maximum": 0.438336
+          },
+          "publication_ns": {
+            "samples": [
+              0.297809,
+              0.303704,
+              0.310784
+            ],
+            "median": 0.303704,
+            "minimum": 0.297809,
+            "maximum": 0.310784
+          },
+          "code_release_ns": {
+            "samples": [
+              0.089948,
+              0.089114,
+              0.095261
+            ],
+            "median": 0.089948,
+            "minimum": 0.089114,
+            "maximum": 0.095261
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.030207,
+              0.030884,
+              0.030416
+            ],
+            "median": 0.030416,
+            "minimum": 0.030207,
+            "maximum": 0.030884
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            314
+          ],
+          "emitted_guest_bytes": [
+            1203
+          ],
+          "ir_nodes": [
+            615
+          ],
+          "operand_words": [
+            1152
+          ],
+          "native_bytes": [
+            5240
+          ],
+          "fault_sites": [
+            29
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            38
+          ]
+        },
+        "fault_metadata_bytes": [
+          928,
+          928,
+          928
+        ]
+      },
+      "candidate-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.077495,
+            2.057969,
+            1.993953
+          ],
+          "median": 2.057969,
+          "minimum": 1.993953,
+          "maximum": 2.077495
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.250265,
+            2.237029,
+            2.153701
+          ],
+          "median": 2.237029,
+          "minimum": 2.153701,
+          "maximum": 2.250265
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.893695,
+              0.940622,
+              0.882291
+            ],
+            "median": 0.893695,
+            "minimum": 0.882291,
+            "maximum": 0.940622
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.17277,
+              0.17906,
+              0.159748
+            ],
+            "median": 0.17277,
+            "minimum": 0.159748,
+            "maximum": 0.17906
+          },
+          "optimize_ns": {
+            "samples": [
+              0.247918,
+              0.258489,
+              0.251508
+            ],
+            "median": 0.251508,
+            "minimum": 0.247918,
+            "maximum": 0.258489
+          },
+          "backend_ns": {
+            "samples": [
+              0.479685,
+              0.485466,
+              0.428333
+            ],
+            "median": 0.479685,
+            "minimum": 0.428333,
+            "maximum": 0.485466
+          },
+          "publication_ns": {
+            "samples": [
+              0.413277,
+              0.302813,
+              0.325669
+            ],
+            "median": 0.325669,
+            "minimum": 0.302813,
+            "maximum": 0.413277
+          },
+          "code_release_ns": {
+            "samples": [
+              0.074584,
+              0.09776,
+              0.089479
+            ],
+            "median": 0.089479,
+            "minimum": 0.074584,
+            "maximum": 0.09776
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.073751,
+              0.072344,
+              0.108438
+            ],
+            "median": 0.073751,
+            "minimum": 0.072344,
+            "maximum": 0.108438
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            314
+          ],
+          "emitted_guest_bytes": [
+            1203
+          ],
+          "ir_nodes": [
+            624
+          ],
+          "operand_words": [
+            1161
+          ],
+          "native_bytes": [
+            6152
+          ],
+          "fault_sites": [
+            29
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            38
+          ]
+        },
+        "fault_metadata_bytes": [
+          928,
+          928,
+          928
+        ]
+      },
+      "fex-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.474375,
+            1.6170833333333332,
+            1.4384375
+          ],
+          "median": 1.474375,
+          "minimum": 1.4384375,
+          "maximum": 1.6170833333333332
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            1.7822916666666668,
+            1.9077604166666668,
+            1.7711458333333332
+          ],
+          "median": 1.7822916666666668,
+          "minimum": 1.7711458333333332,
+          "maximum": 1.9077604166666668
+        }
+      },
+      "candidate_block_over_parent": 0.9832848017381747,
+      "candidate_function_over_parent": 1.077767489895123,
+      "candidate_function_over_fex": 1.3958246714709623
+    },
+    "call": {
+      "parent-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.062632,
+            2.276403,
+            2.161462
+          ],
+          "median": 2.161462,
+          "minimum": 2.062632,
+          "maximum": 2.276403
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.220263,
+            2.453904,
+            2.324011
+          ],
+          "median": 2.324011,
+          "minimum": 2.220263,
+          "maximum": 2.453904
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.984737,
+              1.003126,
+              0.988489
+            ],
+            "median": 0.988489,
+            "minimum": 0.984737,
+            "maximum": 1.003126
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.157631,
+              0.177501,
+              0.162549
+            ],
+            "median": 0.162549,
+            "minimum": 0.157631,
+            "maximum": 0.177501
+          },
+          "optimize_ns": {
+            "samples": [
+              0.258176,
+              0.265158,
+              0.284636
+            ],
+            "median": 0.265158,
+            "minimum": 0.258176,
+            "maximum": 0.284636
+          },
+          "backend_ns": {
+            "samples": [
+              0.452604,
+              0.594791,
+              0.473069
+            ],
+            "median": 0.473069,
+            "minimum": 0.452604,
+            "maximum": 0.594791
+          },
+          "publication_ns": {
+            "samples": [
+              0.304793,
+              0.356923,
+              0.337446
+            ],
+            "median": 0.337446,
+            "minimum": 0.304793,
+            "maximum": 0.356923
+          },
+          "code_release_ns": {
+            "samples": [
+              0.11375,
+              0.126562,
+              0.128698
+            ],
+            "median": 0.126562,
+            "minimum": 0.11375,
+            "maximum": 0.128698
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.031355,
+              0.031094,
+              0.032291
+            ],
+            "median": 0.031355,
+            "minimum": 0.031094,
+            "maximum": 0.032291
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            268
+          ],
+          "emitted_guest_bytes": [
+            1011
+          ],
+          "ir_nodes": [
+            677
+          ],
+          "operand_words": [
+            1207
+          ],
+          "native_bytes": [
+            5952
+          ],
+          "fault_sites": [
+            48
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            46
+          ]
+        },
+        "fault_metadata_bytes": [
+          1536,
+          1536,
+          1536
+        ]
+      },
+      "candidate-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.530841,
+            2.133639,
+            2.204435
+          ],
+          "median": 2.204435,
+          "minimum": 2.133639,
+          "maximum": 2.530841
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.704475,
+            2.308287,
+            2.382969
+          ],
+          "median": 2.382969,
+          "minimum": 2.308287,
+          "maximum": 2.704475
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.140049,
+              0.940206,
+              0.998547
+            ],
+            "median": 0.998547,
+            "minimum": 0.940206,
+            "maximum": 1.140049
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.173634,
+              0.174648,
+              0.178534
+            ],
+            "median": 0.174648,
+            "minimum": 0.173634,
+            "maximum": 0.178534
+          },
+          "optimize_ns": {
+            "samples": [
+              0.290625,
+              0.258589,
+              0.273803
+            ],
+            "median": 0.273803,
+            "minimum": 0.258589,
+            "maximum": 0.290625
+          },
+          "backend_ns": {
+            "samples": [
+              0.533073,
+              0.47401,
+              0.463902
+            ],
+            "median": 0.47401,
+            "minimum": 0.463902,
+            "maximum": 0.533073
+          },
+          "publication_ns": {
+            "samples": [
+              0.415683,
+              0.352863,
+              0.375144
+            ],
+            "median": 0.375144,
+            "minimum": 0.352863,
+            "maximum": 0.415683
+          },
+          "code_release_ns": {
+            "samples": [
+              0.142969,
+              0.120365,
+              0.122552
+            ],
+            "median": 0.122552,
+            "minimum": 0.120365,
+            "maximum": 0.142969
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.089532,
+              0.082917,
+              0.07875
+            ],
+            "median": 0.082917,
+            "minimum": 0.07875,
+            "maximum": 0.089532
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            268
+          ],
+          "emitted_guest_bytes": [
+            1011
+          ],
+          "ir_nodes": [
+            688
+          ],
+          "operand_words": [
+            1218
+          ],
+          "native_bytes": [
+            7080
+          ],
+          "fault_sites": [
+            48
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            46
+          ]
+        },
+        "fault_metadata_bytes": [
+          1536,
+          1536,
+          1536
+        ]
+      },
+      "parent-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.267586,
+            2.090417,
+            2.039844
+          ],
+          "median": 2.090417,
+          "minimum": 2.039844,
+          "maximum": 2.267586
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.439576,
+            2.260417,
+            2.195206
+          ],
+          "median": 2.260417,
+          "minimum": 2.195206,
+          "maximum": 2.439576
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.044636,
+              0.977808,
+              0.957027
+            ],
+            "median": 0.977808,
+            "minimum": 0.957027,
+            "maximum": 1.044636
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.17199,
+              0.17,
+              0.155362
+            ],
+            "median": 0.17,
+            "minimum": 0.155362,
+            "maximum": 0.17199
+          },
+          "optimize_ns": {
+            "samples": [
+              0.305002,
+              0.261454,
+              0.256825
+            ],
+            "median": 0.261454,
+            "minimum": 0.256825,
+            "maximum": 0.305002
+          },
+          "backend_ns": {
+            "samples": [
+              0.485367,
+              0.460311,
+              0.447971
+            ],
+            "median": 0.460311,
+            "minimum": 0.447971,
+            "maximum": 0.485367
+          },
+          "publication_ns": {
+            "samples": [
+              0.373283,
+              0.320363,
+              0.327608
+            ],
+            "median": 0.327608,
+            "minimum": 0.320363,
+            "maximum": 0.373283
+          },
+          "code_release_ns": {
+            "samples": [
+              0.115677,
+              0.136198,
+              0.101667
+            ],
+            "median": 0.115677,
+            "minimum": 0.101667,
+            "maximum": 0.136198
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.038124,
+              0.030001,
+              0.029791
+            ],
+            "median": 0.030001,
+            "minimum": 0.029791,
+            "maximum": 0.038124
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            268
+          ],
+          "emitted_guest_bytes": [
+            1011
+          ],
+          "ir_nodes": [
+            673
+          ],
+          "operand_words": [
+            1201
+          ],
+          "native_bytes": [
+            5888
+          ],
+          "fault_sites": [
+            48
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            45
+          ]
+        },
+        "fault_metadata_bytes": [
+          1536,
+          1536,
+          1536
+        ]
+      },
+      "candidate-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            2.388387,
+            2.133378,
+            1.979267
+          ],
+          "median": 2.133378,
+          "minimum": 1.979267,
+          "maximum": 2.388387
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            2.566976,
+            2.312657,
+            2.120103
+          ],
+          "median": 2.312657,
+          "minimum": 2.120103,
+          "maximum": 2.566976
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              1.00057,
+              0.978177,
+              0.830885
+            ],
+            "median": 0.978177,
+            "minimum": 0.830885,
+            "maximum": 1.00057
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.178589,
+              0.179279,
+              0.140836
+            ],
+            "median": 0.178589,
+            "minimum": 0.140836,
+            "maximum": 0.179279
+          },
+          "optimize_ns": {
+            "samples": [
+              0.265519,
+              0.267764,
+              0.253807
+            ],
+            "median": 0.265519,
+            "minimum": 0.253807,
+            "maximum": 0.267764
+          },
+          "backend_ns": {
+            "samples": [
+              0.475053,
+              0.469844,
+              0.434484
+            ],
+            "median": 0.469844,
+            "minimum": 0.434484,
+            "maximum": 0.475053
+          },
+          "publication_ns": {
+            "samples": [
+              0.343801,
+              0.33083,
+              0.367606
+            ],
+            "median": 0.343801,
+            "minimum": 0.33083,
+            "maximum": 0.367606
+          },
+          "code_release_ns": {
+            "samples": [
+              0.122344,
+              0.111094,
+              0.088177
+            ],
+            "median": 0.111094,
+            "minimum": 0.088177,
+            "maximum": 0.122344
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.282813,
+              0.078489,
+              0.072083
+            ],
+            "median": 0.078489,
+            "minimum": 0.072083,
+            "maximum": 0.282813
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            268
+          ],
+          "emitted_guest_bytes": [
+            1011
+          ],
+          "ir_nodes": [
+            684
+          ],
+          "operand_words": [
+            1212
+          ],
+          "native_bytes": [
+            7016
+          ],
+          "fault_sites": [
+            48
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            45
+          ]
+        },
+        "fault_metadata_bytes": [
+          1536,
+          1536,
+          1536
+        ]
+      },
+      "fex-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            1.4907291666666667,
+            1.71203125,
+            1.5759895833333333
+          ],
+          "median": 1.5759895833333333,
+          "minimum": 1.4907291666666667,
+          "maximum": 1.71203125
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            1.7834375,
+            2.010416666666667,
+            1.9322395833333332
+          ],
+          "median": 1.9322395833333332,
+          "minimum": 1.7834375,
+          "maximum": 2.010416666666667
+        }
+      },
+      "candidate_block_over_parent": 1.019881450610744,
+      "candidate_function_over_parent": 1.0205514019451623,
+      "candidate_function_over_fex": 1.3536751908523084
+    },
+    "func_tests": {
+      "parent-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            20.014581,
+            20.497457,
+            20.155217
+          ],
+          "median": 20.155217,
+          "minimum": 20.014581,
+          "maximum": 20.497457
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            22.015566,
+            22.503687,
+            22.185272
+          ],
+          "median": 22.185272,
+          "minimum": 22.015566,
+          "maximum": 22.503687
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              7.856868,
+              8.215323,
+              8.100041
+            ],
+            "median": 8.100041,
+            "minimum": 7.856868,
+            "maximum": 8.215323
+          },
+          "compile_decode_ns": {
+            "samples": [
+              2.000985,
+              2.00623,
+              2.030055
+            ],
+            "median": 2.00623,
+            "minimum": 2.000985,
+            "maximum": 2.030055
+          },
+          "optimize_ns": {
+            "samples": [
+              3.868146,
+              3.52647,
+              3.652815
+            ],
+            "median": 3.652815,
+            "minimum": 3.52647,
+            "maximum": 3.868146
+          },
+          "backend_ns": {
+            "samples": [
+              6.475693,
+              6.384166,
+              6.158843
+            ],
+            "median": 6.384166,
+            "minimum": 6.158843,
+            "maximum": 6.475693
+          },
+          "publication_ns": {
+            "samples": [
+              2.652316,
+              3.105688,
+              3.09058
+            ],
+            "median": 3.09058,
+            "minimum": 2.652316,
+            "maximum": 3.105688
+          },
+          "code_release_ns": {
+            "samples": [
+              0.249323,
+              0.273177,
+              0.264583
+            ],
+            "median": 0.264583,
+            "minimum": 0.249323,
+            "maximum": 0.273177
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.028802,
+              0.028178,
+              0.027812
+            ],
+            "median": 0.028178,
+            "minimum": 0.027812,
+            "maximum": 0.028802
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            5716
+          ],
+          "emitted_guest_bytes": [
+            22777
+          ],
+          "ir_nodes": [
+            16946
+          ],
+          "operand_words": [
+            28947
+          ],
+          "native_bytes": [
+            167272
+          ],
+          "fault_sites": [
+            2142
+          ],
+          "spill_slots": [
+            14
+          ],
+          "max_frame_bytes": [
+            16
+          ],
+          "code_units_published": [
+            1142
+          ]
+        },
+        "fault_metadata_bytes": [
+          68544,
+          68544,
+          68544
+        ]
+      },
+      "candidate-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            20.802792,
+            20.24597,
+            20.203998
+          ],
+          "median": 20.24597,
+          "minimum": 20.203998,
+          "maximum": 20.802792
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            22.791531,
+            22.177596,
+            22.157717
+          ],
+          "median": 22.177596,
+          "minimum": 22.157717,
+          "maximum": 22.791531
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              7.811213,
+              7.483293,
+              7.725532
+            ],
+            "median": 7.725532,
+            "minimum": 7.483293,
+            "maximum": 7.811213
+          },
+          "compile_decode_ns": {
+            "samples": [
+              1.988739,
+              1.931626,
+              1.953719
+            ],
+            "median": 1.953719,
+            "minimum": 1.931626,
+            "maximum": 1.988739
+          },
+          "optimize_ns": {
+            "samples": [
+              3.503654,
+              3.588441,
+              3.51339
+            ],
+            "median": 3.51339,
+            "minimum": 3.503654,
+            "maximum": 3.588441
+          },
+          "backend_ns": {
+            "samples": [
+              6.62743,
+              6.70466,
+              6.624855
+            ],
+            "median": 6.62743,
+            "minimum": 6.624855,
+            "maximum": 6.70466
+          },
+          "publication_ns": {
+            "samples": [
+              3.503448,
+              3.151224,
+              3.002335
+            ],
+            "median": 3.151224,
+            "minimum": 3.002335,
+            "maximum": 3.503448
+          },
+          "code_release_ns": {
+            "samples": [
+              0.405781,
+              0.298802,
+              0.299218
+            ],
+            "median": 0.299218,
+            "minimum": 0.298802,
+            "maximum": 0.405781
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.071042,
+              0.070469,
+              0.093802
+            ],
+            "median": 0.071042,
+            "minimum": 0.070469,
+            "maximum": 0.093802
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            5716
+          ],
+          "emitted_guest_bytes": [
+            22777
+          ],
+          "ir_nodes": [
+            17561
+          ],
+          "operand_words": [
+            29565
+          ],
+          "native_bytes": [
+            230320
+          ],
+          "fault_sites": [
+            2111
+          ],
+          "spill_slots": [
+            14
+          ],
+          "max_frame_bytes": [
+            16
+          ],
+          "code_units_published": [
+            1142
+          ]
+        },
+        "fault_metadata_bytes": [
+          67552,
+          67552,
+          67552
+        ]
+      },
+      "parent-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            29.978705,
+            80.573828,
+            64.877091
+          ],
+          "median": 64.877091,
+          "minimum": 29.978705,
+          "maximum": 80.573828
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            33.68265,
+            84.770007,
+            68.760163
+          ],
+          "median": 68.760163,
+          "minimum": 33.68265,
+          "maximum": 84.770007
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              14.936763,
+              32.38807,
+              16.303602
+            ],
+            "median": 16.303602,
+            "minimum": 14.936763,
+            "maximum": 32.38807
+          },
+          "compile_decode_ns": {
+            "samples": [
+              3.703945,
+              4.196179,
+              3.883072
+            ],
+            "median": 3.883072,
+            "minimum": 3.703945,
+            "maximum": 4.196179
+          },
+          "optimize_ns": {
+            "samples": [
+              6.173076,
+              6.490563,
+              22.656878
+            ],
+            "median": 6.490563,
+            "minimum": 6.173076,
+            "maximum": 22.656878
+          },
+          "backend_ns": {
+            "samples": [
+              9.691871,
+              26.295508,
+              10.15229
+            ],
+            "median": 10.15229,
+            "minimum": 9.691871,
+            "maximum": 26.295508
+          },
+          "publication_ns": {
+            "samples": [
+              2.199163,
+              18.810293,
+              18.815335
+            ],
+            "median": 18.810293,
+            "minimum": 2.199163,
+            "maximum": 18.815335
+          },
+          "code_release_ns": {
+            "samples": [
+              0.315156,
+              0.394791,
+              0.448855
+            ],
+            "median": 0.394791,
+            "minimum": 0.315156,
+            "maximum": 0.448855
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.028855,
+              0.036927,
+              0.030678
+            ],
+            "median": 0.030678,
+            "minimum": 0.028855,
+            "maximum": 0.036927
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            10650
+          ],
+          "emitted_guest_bytes": [
+            43485
+          ],
+          "ir_nodes": [
+            29470
+          ],
+          "operand_words": [
+            46677
+          ],
+          "native_bytes": [
+            203480
+          ],
+          "fault_sites": [
+            3581
+          ],
+          "spill_slots": [
+            25
+          ],
+          "max_frame_bytes": [
+            32
+          ],
+          "code_units_published": [
+            384
+          ]
+        },
+        "fault_metadata_bytes": [
+          114592,
+          114592,
+          114592
+        ]
+      },
+      "candidate-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            49.72434,
+            66.259733,
+            65.77489
+          ],
+          "median": 65.77489,
+          "minimum": 49.72434,
+          "maximum": 66.259733
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            53.681194,
+            70.338696,
+            69.693795
+          ],
+          "median": 69.693795,
+          "minimum": 53.681194,
+          "maximum": 70.338696
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              16.100935,
+              48.611619,
+              32.335369
+            ],
+            "median": 32.335369,
+            "minimum": 16.100935,
+            "maximum": 48.611619
+          },
+          "compile_decode_ns": {
+            "samples": [
+              3.956854,
+              4.078963,
+              3.918905
+            ],
+            "median": 3.956854,
+            "minimum": 3.918905,
+            "maximum": 4.078963
+          },
+          "optimize_ns": {
+            "samples": [
+              6.560152,
+              6.584675,
+              22.722462
+            ],
+            "median": 6.584675,
+            "minimum": 6.560152,
+            "maximum": 22.722462
+          },
+          "backend_ns": {
+            "samples": [
+              27.095511,
+              11.065359,
+              10.844938
+            ],
+            "median": 11.065359,
+            "minimum": 10.844938,
+            "maximum": 27.095511
+          },
+          "publication_ns": {
+            "samples": [
+              3.137922,
+              3.190426,
+              2.961193
+            ],
+            "median": 3.137922,
+            "minimum": 2.961193,
+            "maximum": 3.190426
+          },
+          "code_release_ns": {
+            "samples": [
+              0.343333,
+              0.408177,
+              0.397552
+            ],
+            "median": 0.397552,
+            "minimum": 0.343333,
+            "maximum": 0.408177
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.078385,
+              0.106875,
+              0.091979
+            ],
+            "median": 0.091979,
+            "minimum": 0.078385,
+            "maximum": 0.106875
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            10650
+          ],
+          "emitted_guest_bytes": [
+            43485
+          ],
+          "ir_nodes": [
+            30777
+          ],
+          "operand_words": [
+            47988
+          ],
+          "native_bytes": [
+            342688
+          ],
+          "fault_sites": [
+            3470
+          ],
+          "spill_slots": [
+            25
+          ],
+          "max_frame_bytes": [
+            32
+          ],
+          "code_units_published": [
+            384
+          ]
+        },
+        "fault_metadata_bytes": [
+          111040,
+          111040,
+          111040
+        ]
+      },
+      "fex-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            30.436510416666668,
+            30.34625,
+            30.820833333333333
+          ],
+          "median": 30.436510416666668,
+          "minimum": 30.34625,
+          "maximum": 30.820833333333333
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            35.34427083333333,
+            35.497083333333336,
+            35.723958333333336
+          ],
+          "median": 35.497083333333336,
+          "minimum": 35.34427083333333,
+          "maximum": 35.723958333333336
+        }
+      },
+      "candidate_block_over_parent": 1.0045027051804998,
+      "candidate_function_over_parent": 1.013838459557319,
+      "candidate_function_over_fex": 2.1610522724044756
+    },
+    "x87_bench": {
+      "parent-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            0.799372,
+            0.715003,
+            0.685259
+          ],
+          "median": 0.715003,
+          "minimum": 0.685259,
+          "maximum": 0.799372
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            0.833228,
+            0.749428,
+            0.721822
+          ],
+          "median": 0.749428,
+          "minimum": 0.721822,
+          "maximum": 0.833228
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.288178,
+              0.28422,
+              0.262395
+            ],
+            "median": 0.28422,
+            "minimum": 0.262395,
+            "maximum": 0.288178
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.033856,
+              0.034425,
+              0.036563
+            ],
+            "median": 0.034425,
+            "minimum": 0.033856,
+            "maximum": 0.036563
+          },
+          "optimize_ns": {
+            "samples": [
+              0.090574,
+              0.059895,
+              0.06172
+            ],
+            "median": 0.06172,
+            "minimum": 0.059895,
+            "maximum": 0.090574
+          },
+          "backend_ns": {
+            "samples": [
+              0.139167,
+              0.129426,
+              0.12677
+            ],
+            "median": 0.129426,
+            "minimum": 0.12677,
+            "maximum": 0.139167
+          },
+          "publication_ns": {
+            "samples": [
+              0.116927,
+              0.091875,
+              0.098748
+            ],
+            "median": 0.098748,
+            "minimum": 0.091875,
+            "maximum": 0.116927
+          },
+          "code_release_ns": {
+            "samples": [
+              0.149792,
+              0.14099,
+              0.129948
+            ],
+            "median": 0.14099,
+            "minimum": 0.129948,
+            "maximum": 0.149792
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.038229,
+              0.033281,
+              0.03125
+            ],
+            "median": 0.033281,
+            "minimum": 0.03125,
+            "maximum": 0.038229
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            20
+          ],
+          "emitted_guest_bytes": [
+            50
+          ],
+          "ir_nodes": [
+            51
+          ],
+          "operand_words": [
+            131
+          ],
+          "native_bytes": [
+            1864
+          ],
+          "fault_sites": [
+            1
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            3
+          ]
+        },
+        "fault_metadata_bytes": [
+          32,
+          32,
+          32
+        ]
+      },
+      "candidate-block": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            0.796929,
+            0.687341,
+            0.755414
+          ],
+          "median": 0.755414,
+          "minimum": 0.687341,
+          "maximum": 0.796929
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            0.844584,
+            0.716196,
+            0.805157
+          ],
+          "median": 0.805157,
+          "minimum": 0.716196,
+          "maximum": 0.844584
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.269323,
+              0.257032,
+              0.286354
+            ],
+            "median": 0.269323,
+            "minimum": 0.257032,
+            "maximum": 0.286354
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.047655,
+              0.028855,
+              0.049743
+            ],
+            "median": 0.047655,
+            "minimum": 0.028855,
+            "maximum": 0.049743
+          },
+          "optimize_ns": {
+            "samples": [
+              0.058854,
+              0.055416,
+              0.05776
+            ],
+            "median": 0.05776,
+            "minimum": 0.055416,
+            "maximum": 0.058854
+          },
+          "backend_ns": {
+            "samples": [
+              0.128074,
+              0.125365,
+              0.131146
+            ],
+            "median": 0.128074,
+            "minimum": 0.125365,
+            "maximum": 0.131146
+          },
+          "publication_ns": {
+            "samples": [
+              0.090574,
+              0.092344,
+              0.092915
+            ],
+            "median": 0.092344,
+            "minimum": 0.090574,
+            "maximum": 0.092915
+          },
+          "code_release_ns": {
+            "samples": [
+              0.208698,
+              0.086979,
+              0.131094
+            ],
+            "median": 0.131094,
+            "minimum": 0.086979,
+            "maximum": 0.208698
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.081147,
+              0.088593,
+              0.096824
+            ],
+            "median": 0.088593,
+            "minimum": 0.081147,
+            "maximum": 0.096824
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            20
+          ],
+          "emitted_guest_bytes": [
+            50
+          ],
+          "ir_nodes": [
+            52
+          ],
+          "operand_words": [
+            132
+          ],
+          "native_bytes": [
+            2136
+          ],
+          "fault_sites": [
+            1
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            3
+          ]
+        },
+        "fault_metadata_bytes": [
+          32,
+          32,
+          32
+        ]
+      },
+      "parent-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            0.6637,
+            0.640054,
+            0.643128
+          ],
+          "median": 0.643128,
+          "minimum": 0.640054,
+          "maximum": 0.6637
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            0.704428,
+            0.675209,
+            0.663386
+          ],
+          "median": 0.675209,
+          "minimum": 0.663386,
+          "maximum": 0.704428
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.286146,
+              0.275937,
+              0.256146
+            ],
+            "median": 0.275937,
+            "minimum": 0.256146,
+            "maximum": 0.286146
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.040728,
+              0.035155,
+              0.020258
+            ],
+            "median": 0.035155,
+            "minimum": 0.020258,
+            "maximum": 0.040728
+          },
+          "optimize_ns": {
+            "samples": [
+              0.054271,
+              0.053594,
+              0.069584
+            ],
+            "median": 0.054271,
+            "minimum": 0.053594,
+            "maximum": 0.069584
+          },
+          "backend_ns": {
+            "samples": [
+              0.089427,
+              0.088125,
+              0.090104
+            ],
+            "median": 0.089427,
+            "minimum": 0.088125,
+            "maximum": 0.090104
+          },
+          "publication_ns": {
+            "samples": [
+              0.081406,
+              0.083593,
+              0.092812
+            ],
+            "median": 0.083593,
+            "minimum": 0.081406,
+            "maximum": 0.092812
+          },
+          "code_release_ns": {
+            "samples": [
+              0.153958,
+              0.136146,
+              0.118489
+            ],
+            "median": 0.136146,
+            "minimum": 0.118489,
+            "maximum": 0.153958
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.036042,
+              0.034063,
+              0.032813
+            ],
+            "median": 0.034063,
+            "minimum": 0.032813,
+            "maximum": 0.036042
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            20
+          ],
+          "emitted_guest_bytes": [
+            50
+          ],
+          "ir_nodes": [
+            50
+          ],
+          "operand_words": [
+            126
+          ],
+          "native_bytes": [
+            1732
+          ],
+          "fault_sites": [
+            1
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            1
+          ]
+        },
+        "fault_metadata_bytes": [
+          32,
+          32,
+          32
+        ]
+      },
+      "candidate-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            0.62828,
+            0.87302,
+            0.708437
+          ],
+          "median": 0.708437,
+          "minimum": 0.62828,
+          "maximum": 0.87302
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            0.647134,
+            0.908178,
+            0.728228
+          ],
+          "median": 0.728228,
+          "minimum": 0.647134,
+          "maximum": 0.908178
+        },
+        "phase_ms": {
+          "frontend_ns": {
+            "samples": [
+              0.232135,
+              0.271354,
+              0.256666
+            ],
+            "median": 0.256666,
+            "minimum": 0.232135,
+            "maximum": 0.271354
+          },
+          "compile_decode_ns": {
+            "samples": [
+              0.018854,
+              0.035158,
+              0.019791
+            ],
+            "median": 0.019791,
+            "minimum": 0.018854,
+            "maximum": 0.035158
+          },
+          "optimize_ns": {
+            "samples": [
+              0.049584,
+              0.054114,
+              0.066875
+            ],
+            "median": 0.054114,
+            "minimum": 0.049584,
+            "maximum": 0.066875
+          },
+          "backend_ns": {
+            "samples": [
+              0.091979,
+              0.090886,
+              0.096562
+            ],
+            "median": 0.091979,
+            "minimum": 0.090886,
+            "maximum": 0.096562
+          },
+          "publication_ns": {
+            "samples": [
+              0.087135,
+              0.133073,
+              0.125729
+            ],
+            "median": 0.125729,
+            "minimum": 0.087135,
+            "maximum": 0.133073
+          },
+          "code_release_ns": {
+            "samples": [
+              0.088698,
+              0.258385,
+              0.097292
+            ],
+            "median": 0.097292,
+            "minimum": 0.088698,
+            "maximum": 0.258385
+          },
+          "fault_service_ns": {
+            "samples": [
+              0.09453,
+              0.097032,
+              0.081458
+            ],
+            "median": 0.09453,
+            "minimum": 0.081458,
+            "maximum": 0.097032
+          }
+        },
+        "work_count_sets": {
+          "emitted_guest_instructions": [
+            20
+          ],
+          "emitted_guest_bytes": [
+            50
+          ],
+          "ir_nodes": [
+            51
+          ],
+          "operand_words": [
+            127
+          ],
+          "native_bytes": [
+            2004
+          ],
+          "fault_sites": [
+            1
+          ],
+          "spill_slots": [
+            0
+          ],
+          "max_frame_bytes": [
+            0
+          ],
+          "code_units_published": [
+            1
+          ]
+        },
+        "fault_metadata_bytes": [
+          32,
+          32,
+          32
+        ]
+      },
+      "fex-function": {
+        "decode_excluded_compile_ms": {
+          "samples": [
+            0.27875,
+            0.42651041666666667,
+            0.335625
+          ],
+          "median": 0.335625,
+          "minimum": 0.27875,
+          "maximum": 0.42651041666666667
+        },
+        "inclusive_compile_ms": {
+          "samples": [
+            0.3011979166666667,
+            0.4635416666666667,
+            0.35859375
+          ],
+          "median": 0.35859375,
+          "minimum": 0.3011979166666667,
+          "maximum": 0.4635416666666667
+        }
+      },
+      "candidate_block_over_parent": 1.0565186439777174,
+      "candidate_function_over_parent": 1.101548991802565,
+      "candidate_function_over_fex": 2.1107992551210426
+    }
+  },
+  "runtime": {
+    "fp": {
+      "block": {
+        "parent": {
+          "run_lifetime_seconds": {
+            "samples": [
+              0.202753385,
+              0.203626354,
+              0.202113958
+            ],
+            "median": 0.202753385,
+            "minimum": 0.202113958,
+            "maximum": 0.203626354
+          },
+          "whole_child_seconds": {
+            "samples": [
+              0.252875,
+              0.230987,
+              0.220696
+            ],
+            "median": 0.230987,
+            "minimum": 0.220696,
+            "maximum": 0.252875
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              2.837292,
+              3.174325,
+              2.528175
+            ],
+            "median": 2.837292,
+            "minimum": 2.528175,
+            "maximum": 3.174325
+          },
+          "native_bytes": [
+            12652
+          ]
+        },
+        "candidate": {
+          "run_lifetime_seconds": {
+            "samples": [
+              0.203089896,
+              0.21905427,
+              0.203045521
+            ],
+            "median": 0.203089896,
+            "minimum": 0.203045521,
+            "maximum": 0.21905427
+          },
+          "whole_child_seconds": {
+            "samples": [
+              0.233848,
+              0.266508,
+              0.221652
+            ],
+            "median": 0.233848,
+            "minimum": 0.221652,
+            "maximum": 0.266508
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              2.584432,
+              2.655729,
+              2.608128
+            ],
+            "median": 2.608128,
+            "minimum": 2.584432,
+            "maximum": 2.655729
+          },
+          "native_bytes": [
+            15164
+          ]
+        },
+        "candidate_over_parent": 1.001659705952628
+      },
+      "function": {
+        "parent": {
+          "run_lifetime_seconds": {
+            "samples": [
+              0.203335625,
+              0.202411511,
+              0.203261302
+            ],
+            "median": 0.203261302,
+            "minimum": 0.202411511,
+            "maximum": 0.203335625
+          },
+          "whole_child_seconds": {
+            "samples": [
+              0.223524,
+              0.223111,
+              0.253758
+            ],
+            "median": 0.223524,
+            "minimum": 0.223111,
+            "maximum": 0.253758
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              2.794432,
+              2.79516,
+              2.978746
+            ],
+            "median": 2.79516,
+            "minimum": 2.794432,
+            "maximum": 2.978746
+          },
+          "native_bytes": [
+            19424
+          ]
+        },
+        "candidate": {
+          "run_lifetime_seconds": {
+            "samples": [
+              0.205348281,
+              0.203417916,
+              0.205099427
+            ],
+            "median": 0.205099427,
+            "minimum": 0.203417916,
+            "maximum": 0.205348281
+          },
+          "whole_child_seconds": {
+            "samples": [
+              0.224428,
+              0.222051,
+              0.225819
+            ],
+            "median": 0.224428,
+            "minimum": 0.222051,
+            "maximum": 0.225819
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              4.615671,
+              2.811924,
+              2.854684
+            ],
+            "median": 2.854684,
+            "minimum": 2.811924,
+            "maximum": 4.615671
+          },
+          "native_bytes": [
+            22328
+          ]
+        },
+        "candidate_over_parent": 1.0090431625789744
+      }
+    },
+    "call": {
+      "block": {
+        "parent": {
+          "run_lifetime_seconds": {
+            "samples": [
+              0.379435364,
+              0.38031599,
+              0.380910104
+            ],
+            "median": 0.38031599,
+            "minimum": 0.379435364,
+            "maximum": 0.380910104
+          },
+          "whole_child_seconds": {
+            "samples": [
+              0.398441,
+              0.398951,
+              0.41478
+            ],
+            "median": 0.398951,
+            "minimum": 0.398441,
+            "maximum": 0.41478
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              2.095308,
+              2.197293,
+              2.23042
+            ],
+            "median": 2.197293,
+            "minimum": 2.095308,
+            "maximum": 2.23042
+          },
+          "native_bytes": [
+            5832
+          ]
+        },
+        "candidate": {
+          "run_lifetime_seconds": {
+            "samples": [
+              0.386648489,
+              0.387363437,
+              0.385993802
+            ],
+            "median": 0.386648489,
+            "minimum": 0.385993802,
+            "maximum": 0.387363437
+          },
+          "whole_child_seconds": {
+            "samples": [
+              0.405585,
+              0.406342,
+              0.404695
+            ],
+            "median": 0.405585,
+            "minimum": 0.404695,
+            "maximum": 0.406342
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              2.311201,
+              2.271461,
+              2.328077
+            ],
+            "median": 2.311201,
+            "minimum": 2.271461,
+            "maximum": 2.328077
+          },
+          "native_bytes": [
+            6960
+          ]
+        },
+        "candidate_over_parent": 1.0166506251814444
+      },
+      "function": {
+        "parent": {
+          "run_lifetime_seconds": {
+            "samples": [
+              0.379430365,
+              0.379867604,
+              0.381332031
+            ],
+            "median": 0.379867604,
+            "minimum": 0.379430365,
+            "maximum": 0.381332031
+          },
+          "whole_child_seconds": {
+            "samples": [
+              0.398349,
+              0.398901,
+              0.402196
+            ],
+            "median": 0.398901,
+            "minimum": 0.398349,
+            "maximum": 0.402196
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              2.276513,
+              2.58891,
+              2.293281
+            ],
+            "median": 2.293281,
+            "minimum": 2.276513,
+            "maximum": 2.58891
+          },
+          "native_bytes": [
+            5768
+          ]
+        },
+        "candidate": {
+          "run_lifetime_seconds": {
+            "samples": [
+              0.385903021,
+              0.385848594,
+              0.385418541
+            ],
+            "median": 0.385848594,
+            "minimum": 0.385418541,
+            "maximum": 0.385903021
+          },
+          "whole_child_seconds": {
+            "samples": [
+              0.404591,
+              0.405328,
+              0.40373
+            ],
+            "median": 0.404591,
+            "minimum": 0.40373,
+            "maximum": 0.405328
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              2.096398,
+              2.557657,
+              2.196878
+            ],
+            "median": 2.196878,
+            "minimum": 2.096398,
+            "maximum": 2.557657
+          },
+          "native_bytes": [
+            6896
+          ]
+        },
+        "candidate_over_parent": 1.0157449330688382
+      }
+    },
+    "coremark": {
+      "function": {
+        "parent": {
+          "run_lifetime_seconds": {
+            "samples": [
+              15.450448848,
+              15.45967864,
+              15.439785671
+            ],
+            "median": 15.450448848,
+            "minimum": 15.439785671,
+            "maximum": 15.45967864
+          },
+          "whole_child_seconds": {
+            "samples": [
+              15.47335,
+              15.478294,
+              15.45875
+            ],
+            "median": 15.47335,
+            "minimum": 15.45875,
+            "maximum": 15.478294
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              52.598077,
+              51.569208,
+              52.290634
+            ],
+            "median": 52.290634,
+            "minimum": 51.569208,
+            "maximum": 52.598077
+          },
+          "native_bytes": [
+            333108
+          ]
+        },
+        "candidate": {
+          "run_lifetime_seconds": {
+            "samples": [
+              16.764675983,
+              16.655386504,
+              16.622747545
+            ],
+            "median": 16.655386504,
+            "minimum": 16.622747545,
+            "maximum": 16.764675983
+          },
+          "whole_child_seconds": {
+            "samples": [
+              16.815273,
+              16.674598,
+              16.641823
+            ],
+            "median": 16.674598,
+            "minimum": 16.641823,
+            "maximum": 16.815273
+          },
+          "inclusive_compile_ms": {
+            "samples": [
+              105.595316,
+              54.140584,
+              54.949384
+            ],
+            "median": 54.949384,
+            "minimum": 54.140584,
+            "maximum": 105.595316
+          },
+          "native_bytes": [
+            511856
+          ]
+        },
+        "candidate_over_parent": 1.0779872266400838
+      }
+    }
+  },
+  "limits": [
+    "Three samples per arm do not establish statistical significance; CoreMark and func_tests contain large wall-time spreads.",
+    "SVM includes complete native owner release; FEX excludes final native-arena/directory destruction.",
+    "FEX CompileBlock is multiblock: compare against SVM Function; Block is separate.",
+    "Runtime guard compares parent and candidate; no new FEX runtime or runtime PMU comparison.",
+    "Short CoreMark is only compile/CRC validation; runtime uses validated 100000-iteration loop.",
+    "x87 fixture has exit-only validation; instruction-clock diagnosis is separate and uses counts, not nanoseconds."
+  ],
+  "initial_implementation_checkpoint": "guard/compile-records.json and guard/runtime-records.json retained separately, not pooled with final",
+  "compile_diagnostics": {
+    "instruction_clock": {
+      "observations": 12,
+      "function_qualified": 6,
+      "function_candidate_over_parent": 1.044017849475926,
+      "block_qualified": 0,
+      "block_limit": "The clock substitution changes guest timing/reporting work, so Block work-count sets differ from the formal set. All six retained; excluded from matched ratios.",
+      "unit": "retired_user_instructions, despite raw _ns field names"
+    },
+    "thread_clock": {
+      "observations": 12,
+      "function_qualified": 6,
+      "function_candidate_over_parent": 1.0145111271877958,
+      "block_qualified": 0,
+      "block_limit": "All six Block reports retained; compiled work-count sets differ from formal set. No matched formal regression claim.",
+      "unit": "thread CPU nanoseconds, with identical clock syscall overhead in both arms",
+      "guest_clock": "real CLOCK_MONOTONIC retained; only exact steady_clock::now callers intercepted",
+      "attempt01": "qualification harness printed activation only at destructor, but runner uses _Exit. Preserved separately; not a product failure or formal observation."
+    }
+  }
+}

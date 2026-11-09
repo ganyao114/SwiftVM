@@ -1,0 +1,24 @@
+{
+  "observations": 12,
+  "repetitions": 3,
+  "cases": [
+    "coremark-short20"
+  ],
+  "versions": [
+    "parent",
+    "candidate"
+  ],
+  "scopes": [
+    "block",
+    "function"
+  ],
+  "purpose": "Separate compiler work from the large wall-clock spread in the fixed guard; no observations selected or repeated to a threshold",
+  "timer_unit": "retired_user_instructions; product field suffix _ns is inherited and must not be read as nanoseconds",
+  "instrumentation": "Existing measurement-only LD_PRELOAD replaces CLOCK_MONOTONIC with a pinned per-thread user-instruction PMU counter; every read requires enabled=running>0",
+  "not_measurement_of": [
+    "elapsed time",
+    "FEX ratio",
+    "generated code runtime PMU"
+  ],
+  "counter_library_sha256": "27ea56c04b82f831622bbd14924513163fc45ebbeb56c6693aafd24587e48377"
+}

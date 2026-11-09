@@ -1,0 +1,209 @@
+Start testing: Nov 09 00:39 PST
+----------------------------------------------------------
+8/29 Testing: ir_construction_contract
+8/29 Test: ir_construction_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_ir_construction_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"ir_construction_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 3369081230
+===============================================================================
+All tests passed (17 assertions in 17 test cases)
+
+<end of output>
+Test time =   0.81 sec
+----------------------------------------------------------
+Test Passed.
+"ir_construction_contract" end time: Nov 09 00:39 PST
+"ir_construction_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+9/29 Testing: x86_construction_contract
+9/29 Test: x86_construction_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_x86_construction_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"x86_construction_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 3403235580
+===============================================================================
+All tests passed (75 assertions in 25 test cases)
+
+<end of output>
+Test time =   0.44 sec
+----------------------------------------------------------
+Test Passed.
+"x86_construction_contract" end time: Nov 09 00:39 PST
+"x86_construction_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+10/29 Testing: arm64_frontend_contract
+10/29 Test: arm64_frontend_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_arm64_frontend_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"arm64_frontend_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 1290411323
+===============================================================================
+All tests passed (77 assertions in 13 test cases)
+
+<end of output>
+Test time =   0.41 sec
+----------------------------------------------------------
+Test Passed.
+"arm64_frontend_contract" end time: Nov 09 00:39 PST
+"arm64_frontend_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+11/29 Testing: ir_optimize_contract
+11/29 Test: ir_optimize_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_ir_optimize_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"ir_optimize_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 1303871017
+===============================================================================
+All tests passed (22 assertions in 21 test cases)
+
+<end of output>
+Test time =   0.39 sec
+----------------------------------------------------------
+Test Passed.
+"ir_optimize_contract" end time: Nov 09 00:39 PST
+"ir_optimize_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+12/29 Testing: arm64_compile_contract
+12/29 Test: arm64_compile_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_arm64_compile_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"arm64_compile_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 1791210520
+===============================================================================
+All tests passed (38 assertions in 37 test cases)
+
+<end of output>
+Test time =   0.90 sec
+----------------------------------------------------------
+Test Passed.
+"arm64_compile_contract" end time: Nov 09 00:39 PST
+"arm64_compile_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+15/29 Testing: ir_direct_contract
+15/29 Test: ir_direct_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_ir_direct_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"ir_direct_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 1427690260
+===============================================================================
+All tests passed (4 assertions in 6 test cases)
+
+<end of output>
+Test time =   0.41 sec
+----------------------------------------------------------
+Test Passed.
+"ir_direct_contract" end time: Nov 09 00:39 PST
+"ir_direct_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+16/29 Testing: riscv64_compile_contract
+16/29 Test: riscv64_compile_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_riscv64_compile_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"riscv64_compile_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 1274190627
+===============================================================================
+All tests passed (14 assertions in 13 test cases)
+
+<end of output>
+Test time =   0.40 sec
+----------------------------------------------------------
+Test Passed.
+"riscv64_compile_contract" end time: Nov 09 00:39 PST
+"riscv64_compile_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+17/29 Testing: x64_compile_contract
+17/29 Test: x64_compile_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_x64_compile_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"x64_compile_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 1240346025
+===============================================================================
+All tests passed (24 assertions in 23 test cases)
+
+<end of output>
+Test time =   0.42 sec
+----------------------------------------------------------
+Test Passed.
+"x64_compile_contract" end time: Nov 09 00:39 PST
+"x64_compile_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+19/29 Testing: loongarch64_compile_contract
+19/29 Test: loongarch64_compile_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_loongarch64_compile_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"loongarch64_compile_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 4068501155
+===============================================================================
+All tests passed (16 assertions in 15 test cases)
+
+<end of output>
+Test time =   0.42 sec
+----------------------------------------------------------
+Test Passed.
+"loongarch64_compile_contract" end time: Nov 09 00:39 PST
+"loongarch64_compile_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+26/29 Testing: code_image_contract
+26/29 Test: code_image_contract
+Command: "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/svm_code_image_test" "--compile-only" "[compile]"
+Directory: /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host/source/tests
+"code_image_contract" start time: Nov 09 00:39 PST
+Output:
+----------------------------------------------------------
+Filters: [compile]
+Randomness seeded to: 3974379880
+===============================================================================
+All tests passed (44 assertions in 6 test cases)
+
+<end of output>
+Test time =   0.44 sec
+----------------------------------------------------------
+Test Passed.
+"code_image_contract" end time: Nov 09 00:39 PST
+"code_image_contract" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Nov 09 00:39 PST
+
+compile =   5.05 sec*proc
+
+portable =   5.05 sec*proc
+
+unit =   5.05 sec*proc

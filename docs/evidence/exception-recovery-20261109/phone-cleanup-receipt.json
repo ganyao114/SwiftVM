@@ -1,0 +1,37 @@
+{
+  "completed_utc": "2026-11-09T09:13:11.884353+00:00",
+  "device": "bf1359ff",
+  "owned_namespace": "/data/local/tmp/swiftvm-exception-recovery-20261109",
+  "predelete_open_files": {
+    "command": "lsof -l, filtered to exact owned namespace",
+    "exit": 0,
+    "matches": [],
+    "total_lines": 107078,
+    "stderr": ""
+  },
+  "delete_exit": 0,
+  "directory_absent": true,
+  "directory_allocated_bytes_released": 287791104,
+  "directory_remaining_bytes": 0,
+  "df_available_before_bytes": 6275891200,
+  "df_available_after_bytes": 6563778560,
+  "df_available_increase_bytes": 287887360,
+  "df_before_raw": "281046\t/data/local/tmp/swiftvm-exception-recovery-20261109\nFilesystem       1K-blocks      Used Available Use% Mounted on\n/dev/block/dm-52 476244812 470116012   6128800  99% /mnt/pass_through/0/emulated\n",
+  "df_after_raw": "Filesystem       1K-blocks      Used Available Use% Mounted on\n/dev/block/dm-52 476244812 469834872   6409940  99% /mnt/pass_through/0/emulated\n",
+  "postdelete_open_files": {
+    "command": "lsof -l, filtered to exact owned namespace",
+    "exit": 0,
+    "matches": [],
+    "total_lines": 108771,
+    "stderr": ""
+  },
+  "active_owned_writers": false,
+  "errors": [],
+  "preserved_results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109",
+  "preserved_runner": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109/candidate-svm_rebuild_linux.gz",
+  "parent_preserved_gzip": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/fp-exception-fixes-20261108/candidate-svm_rebuild_linux.gz",
+  "regenerable_parent_copy_removed_bytes": 35205640,
+  "fixed_build_caches_retained": true,
+  "other_phone_projects_or_services_modified": false,
+  "frequency_policy_modified": false
+}

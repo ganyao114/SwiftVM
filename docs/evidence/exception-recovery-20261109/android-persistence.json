@@ -1,0 +1,14 @@
+{
+  "command": [
+    "adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "/data/local/tmp/swiftvm-exception-recovery-20261109/svm_runtime_persistence_test --native '[native]' --reporter compact"
+  ],
+  "exit_code": 0,
+  "elapsed": 0.13227949989959598,
+  "binary_sha256": "daff2a43a4beb008ee2bea8e5ea0dc6dd475ce06bfa5fc6d969f9d8623cb08ec",
+  "stdout": "Filters: [native]\nRNG seed: 1376952312\nAll tests passed (46 assertions in 4 test cases)\n\n\n",
+  "stderr": ""
+}

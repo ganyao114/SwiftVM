@@ -1,0 +1,24 @@
+{
+  "observations": 12,
+  "repetitions": 3,
+  "cases": [
+    "coremark-short20"
+  ],
+  "versions": [
+    "parent",
+    "candidate"
+  ],
+  "scopes": [
+    "block",
+    "function"
+  ],
+  "purpose": "Separate compiler work from the large wall-clock spread in the fixed guard; no observations selected or repeated to a threshold",
+  "timer_unit": "thread_cpu_nanoseconds; syscall clock includes kernel CPU, not wall time",
+  "instrumentation": "Only calls from each ELF exact steady_clock::now symbol use CLOCK_THREAD_CPUTIME_ID; guest clock_gettime is unchanged. Identical shim syscall overhead in both arms, diagnostic only",
+  "not_measurement_of": [
+    "elapsed time",
+    "FEX ratio",
+    "generated code runtime PMU"
+  ],
+  "counter_library_sha256": "a5e43680fe2a4cf6e4e57922128cfe10ee9c8d2e229fc7f3bf23e109285c1005"
+}

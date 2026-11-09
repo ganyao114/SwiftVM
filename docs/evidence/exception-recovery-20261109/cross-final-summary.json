@@ -1,0 +1,158 @@
+{
+  "all_passed": true,
+  "claim": "Minimal final cold-hint followup under QEMU system + real Linux kernels; no smoke or full matrix repeated.",
+  "architectures": [
+    {
+      "architecture": "x64",
+      "all_passed": true,
+      "selected_cases": {
+        "exception-api": 2,
+        "signals": 5
+      },
+      "binary": {
+        "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_engine_test",
+        "bytes": 5691416,
+        "sha256": "42b0eb0e67fdbf6dd3fb9fff3eec095da0982b60163af3eec974b9a72a4dc2c6"
+      },
+      "build": {
+        "command": [
+          "orb",
+          "-m",
+          "ubuntu",
+          "env",
+          "TMPDIR=/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/tmp",
+          "cmake",
+          "--build",
+          "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64",
+          "--target",
+          "svm_runtime_engine_test",
+          "--parallel",
+          "4"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 9.857124540954828
+      },
+      "raw_results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109/cross/final/hint-followup/x64/kernel-01/results.json",
+      "cleanup": {
+        "owned_pid": 54966,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 5120916,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "errors": []
+      },
+      "owned_qemu_absent": true,
+      "aslr_mode": 1
+    },
+    {
+      "architecture": "riscv64",
+      "all_passed": true,
+      "selected_cases": {
+        "exception-api": 2,
+        "signals": 5
+      },
+      "binary": {
+        "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/svm_runtime_engine_test",
+        "bytes": 5836016,
+        "sha256": "548c7cd544231ef38ecd896178b3e8228bec5b54ea43cac144d648a76a0e4fb8"
+      },
+      "build": {
+        "command": [
+          "/usr/local/bin/docker",
+          "run",
+          "--rm",
+          "--network",
+          "none",
+          "--name",
+          "svm-exception-hint-riscv64-20261109",
+          "--mount",
+          "type=bind,source=/Volumes/Data2/SwiftVM-submit-20261104,target=/Volumes/Data2/SwiftVM-submit-20261104",
+          "--mount",
+          "type=bind,source=/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64,target=/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64",
+          "--env",
+          "TMPDIR=/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64/tmp",
+          "swiftvm-middle-rv64-env:20261024-v6",
+          "cmake",
+          "--build",
+          "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-riscv64",
+          "--target",
+          "svm_runtime_engine_test",
+          "--parallel",
+          "4"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 13.73409349983558
+      },
+      "raw_results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109/cross/final/hint-followup/riscv64/kernel-01/results.json",
+      "cleanup": {
+        "owned_pid": 54976,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 5561641,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "old_inputs_modified": false,
+        "errors": []
+      },
+      "owned_qemu_absent": true,
+      "aslr_mode": 2
+    },
+    {
+      "architecture": "loongarch64",
+      "all_passed": true,
+      "selected_cases": {
+        "exception-api": 2,
+        "signals": 5
+      },
+      "binary": {
+        "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_engine_test",
+        "bytes": 5765080,
+        "sha256": "0655441f99807c32ab4793c65afe5b1b9654c698d81df1f47e75816a26fa6120"
+      },
+      "build": {
+        "command": [
+          "/opt/homebrew/bin/orb",
+          "-m",
+          "ubuntu",
+          "-u",
+          "root",
+          "env",
+          "TMPDIR=/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/tmp",
+          "cmake",
+          "--build",
+          "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64",
+          "--target",
+          "svm_runtime_engine_test",
+          "--parallel",
+          "4"
+        ],
+        "exit_code": 0,
+        "elapsed_seconds": 12.755687916651368
+      },
+      "raw_results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109/cross/final/hint-followup/loongarch64/kernel-01/results.json",
+      "cleanup": {
+        "owned_pid": 55028,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 13279755,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "old_inputs_modified": false,
+        "errors": []
+      },
+      "owned_qemu_absent": true,
+      "aslr_mode": 2
+    }
+  ],
+  "source_freeze": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109/cross/final/hint-followup/source-freeze.json",
+  "all_sources_match_after_validation": true,
+  "source_differences": [],
+  "selected_test_case_executions": 21,
+  "temporary_initrds_removed_bytes": 23962312,
+  "all_owned_qemu_absent": true,
+  "explicit_new_oracle": "InterpretOnly same VM: handled Write1 null fault then handled Read4 null fault; access/width/address/si_code are fresh and native_bytes=0"
+}

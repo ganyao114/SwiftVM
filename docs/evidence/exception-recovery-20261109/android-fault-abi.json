@@ -1,0 +1,13 @@
+{
+  "command": [
+    "adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "/data/local/tmp/swiftvm-exception-recovery-20261109/svm_arm64_compile_test --native FaultMetadataAndRecovery,FaultLocationBoundaries,FunctionDeferredTestFaults,LocalFlagsFaults --reporter compact"
+  ],
+  "exit": 0,
+  "stdout": "Filters: \"FaultMetadataAndRecovery\",\"FaultLocationBoundaries\",\"FunctionDeferredTestFaults\",\"LocalFlagsFaults\"\nRNG seed: 3689472189\nAll tests passed (4 assertions in 4 test cases)\n\n\n",
+  "stderr": "",
+  "sha256": "406be60194a2f2e1bdd61ec214b72e59781c3f936a6be0584e491269cbb50cad"
+}

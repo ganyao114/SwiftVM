@@ -1,0 +1,123 @@
+{
+  "block": {
+    "parent": {
+      "qualified": 0,
+      "compile_excluding_byte_instructions": [],
+      "phase_instructions": {
+        "frontend_ns": [],
+        "compile_decode_ns": [],
+        "optimize_ns": [],
+        "backend_ns": [],
+        "publication_ns": [],
+        "code_release_ns": [],
+        "fault_service_ns": []
+      }
+    },
+    "candidate": {
+      "qualified": 0,
+      "compile_excluding_byte_instructions": [],
+      "phase_instructions": {
+        "frontend_ns": [],
+        "compile_decode_ns": [],
+        "optimize_ns": [],
+        "backend_ns": [],
+        "publication_ns": [],
+        "code_release_ns": [],
+        "fault_service_ns": []
+      }
+    }
+  },
+  "function": {
+    "parent": {
+      "qualified": 3,
+      "compile_excluding_byte_instructions": [
+        129393320,
+        129394909,
+        129393827
+      ],
+      "phase_instructions": {
+        "frontend_ns": [
+          55669323,
+          55671075,
+          55669327
+        ],
+        "compile_decode_ns": [
+          13190122,
+          13190122,
+          13190122
+        ],
+        "optimize_ns": [
+          34494982,
+          34494734,
+          34495438
+        ],
+        "backend_ns": [
+          50223159,
+          50223247,
+          50223199
+        ],
+        "publication_ns": [
+          1518273,
+          1518270,
+          1518280
+        ],
+        "code_release_ns": [
+          42080,
+          42080,
+          42080
+        ],
+        "fault_service_ns": [
+          2445,
+          2445,
+          2445
+        ]
+      }
+    },
+    "candidate": {
+      "qualified": 3,
+      "compile_excluding_byte_instructions": [
+        135090999,
+        135089116,
+        135089465
+      ],
+      "phase_instructions": {
+        "frontend_ns": [
+          56907893,
+          56907465,
+          56907893
+        ],
+        "compile_decode_ns": [
+          13190122,
+          13190122,
+          13190122
+        ],
+        "optimize_ns": [
+          34921912,
+          34921416,
+          34921280
+        ],
+        "backend_ns": [
+          54222040,
+          54221096,
+          54221152
+        ],
+        "publication_ns": [
+          1549165,
+          1549150,
+          1549151
+        ],
+        "code_release_ns": [
+          39685,
+          39685,
+          39685
+        ],
+        "fault_service_ns": [
+          7254,
+          7254,
+          7254
+        ]
+      }
+    },
+    "candidate_over_parent": 1.044017849475926
+  }
+}

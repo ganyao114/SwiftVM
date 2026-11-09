@@ -1,0 +1,750 @@
+{
+  "version": "Homebrew clang-format version 22.1.1",
+  "files": [
+    "source/launcher/linux/main.cpp",
+    "source/launcher/linux/report.cpp",
+    "source/runtime/backend/arm64/abi_layout.inc",
+    "source/runtime/backend/arm64/allocation_selection.cpp",
+    "source/runtime/backend/arm64/emit.cpp",
+    "source/runtime/backend/arm64/emit.h",
+    "source/runtime/backend/arm64/emit_atomic.cpp",
+    "source/runtime/backend/arm64/emit_atomic_service.cpp",
+    "source/runtime/backend/arm64/emit_calls.cpp",
+    "source/runtime/backend/arm64/emit_control.cpp",
+    "source/runtime/backend/arm64/emit_crypto.cpp",
+    "source/runtime/backend/arm64/emit_flags.cpp",
+    "source/runtime/backend/arm64/emit_memory.cpp",
+    "source/runtime/backend/arm64/emit_ops.inc",
+    "source/runtime/backend/arm64/emit_sse42.cpp",
+    "source/runtime/backend/arm64/patch.h",
+    "source/runtime/backend/arm64/recovery.cpp",
+    "source/runtime/backend/arm64/recovery.h",
+    "source/runtime/backend/arm64/runtime.cpp",
+    "source/runtime/backend/arm64/runtime.h",
+    "source/runtime/backend/loongarch64/abi_layout.inc",
+    "source/runtime/backend/loongarch64/emit.cpp",
+    "source/runtime/backend/loongarch64/emit.h",
+    "source/runtime/backend/loongarch64/emit_atomic.cpp",
+    "source/runtime/backend/loongarch64/emit_control.cpp",
+    "source/runtime/backend/loongarch64/emit_memory.cpp",
+    "source/runtime/backend/loongarch64/recovery.cpp",
+    "source/runtime/backend/loongarch64/recovery.h",
+    "source/runtime/backend/loongarch64/runtime.cpp",
+    "source/runtime/backend/loongarch64/runtime.h",
+    "source/runtime/backend/loongarch64/scalar_ops.inc",
+    "source/runtime/backend/riscv64/abi_layout.inc",
+    "source/runtime/backend/riscv64/emit.cpp",
+    "source/runtime/backend/riscv64/emit.h",
+    "source/runtime/backend/riscv64/emit_atomic.cpp",
+    "source/runtime/backend/riscv64/emit_control.cpp",
+    "source/runtime/backend/riscv64/emit_memory.cpp",
+    "source/runtime/backend/riscv64/recovery.cpp",
+    "source/runtime/backend/riscv64/recovery.h",
+    "source/runtime/backend/riscv64/runtime.cpp",
+    "source/runtime/backend/riscv64/runtime.h",
+    "source/runtime/backend/riscv64/scalar_ops.inc",
+    "source/runtime/backend/x64/abi_layout.inc",
+    "source/runtime/backend/x64/emit.cpp",
+    "source/runtime/backend/x64/emit.h",
+    "source/runtime/backend/x64/emit_atomic.cpp",
+    "source/runtime/backend/x64/emit_calls.cpp",
+    "source/runtime/backend/x64/emit_control.cpp",
+    "source/runtime/backend/x64/emit_memory.cpp",
+    "source/runtime/backend/x64/ops.inc",
+    "source/runtime/backend/x64/recovery.cpp",
+    "source/runtime/backend/x64/recovery.h",
+    "source/runtime/backend/x64/runtime.cpp",
+    "source/runtime/backend/x64/runtime.h",
+    "source/runtime/exception.h",
+    "source/runtime/execution/arm_state_service.cpp",
+    "source/runtime/execution/code_image.h",
+    "source/runtime/execution/dispatch.h",
+    "source/runtime/execution/exception.cpp",
+    "source/runtime/execution/fault.cpp",
+    "source/runtime/execution/fault.h",
+    "source/runtime/execution/guest_state.cpp",
+    "source/runtime/execution/guest_thread.h",
+    "source/runtime/execution/runtime.cpp",
+    "source/runtime/execution/runtime.h",
+    "source/runtime/execution/state_service.cpp",
+    "source/runtime/execution/vm.h",
+    "source/runtime/exit.h",
+    "source/runtime/exit.inc",
+    "source/runtime/frontend/arm64/build_ir.cpp",
+    "source/runtime/frontend/arm64/interpreter.cpp",
+    "source/runtime/frontend/arm64/interpreter.h",
+    "source/runtime/frontend/arm64/semantics.h",
+    "source/runtime/frontend/arm64/semantics_memory.inc",
+    "source/runtime/frontend/arm64/sink.h",
+    "source/runtime/frontend/guest_events.h",
+    "source/runtime/frontend/x86/build_ir.cpp",
+    "source/runtime/frontend/x86/detail/decoded.h",
+    "source/runtime/frontend/x86/interpreter.cpp",
+    "source/runtime/frontend/x86/interpreter.h",
+    "source/runtime/frontend/x86/opcodes.inc",
+    "source/runtime/frontend/x86/semantics.h",
+    "source/runtime/frontend/x86/semantics_control.inc",
+    "source/runtime/frontend/x86/semantics_dispatch.inc",
+    "source/runtime/ir/direct/interpreter.cpp",
+    "source/runtime/ir/direct/scalar.inc",
+    "source/runtime/ir/direct/services.h",
+    "source/runtime/ir/opcodes.inc",
+    "source/runtime/ir/passes/rewrite.cpp",
+    "source/runtime/ir/types.h",
+    "source/runtime/platform/linux/arm64_host.cpp",
+    "source/runtime/platform/linux/guest_signals.cpp",
+    "source/runtime/platform/linux/guest_signals.h",
+    "source/runtime/platform/linux/loongarch64_host.cpp",
+    "source/runtime/platform/linux/riscv64_host.cpp",
+    "source/runtime/platform/linux/run_guest.cpp",
+    "source/runtime/platform/linux/signal_frame.h",
+    "source/runtime/platform/linux/signal_frame_arm64.cpp",
+    "source/runtime/platform/linux/signal_frame_x86.cpp",
+    "source/runtime/platform/linux/signals.cpp",
+    "source/runtime/platform/linux/signals.h",
+    "source/runtime/platform/linux/syscall_abi.h",
+    "source/runtime/platform/linux/syscalls.cpp",
+    "source/runtime/platform/linux/syscalls.h",
+    "source/runtime/platform/linux/wait_syscall.cpp",
+    "source/runtime/platform/linux/wait_syscall.h",
+    "source/runtime/platform/linux/x64_host.cpp",
+    "source/tests/rebuild/arm64_compile_test.cpp",
+    "source/tests/rebuild/arm64_fault_test.cpp",
+    "source/tests/rebuild/arm64_frontend_test.cpp",
+    "source/tests/rebuild/exception_recovery_test.cpp",
+    "source/tests/rebuild/guest_signal_test.cpp",
+    "source/tests/rebuild/ir_direct_test.cpp",
+    "source/tests/rebuild/ir_optimize_test.cpp",
+    "source/tests/rebuild/loongarch64_compile_test.cpp",
+    "source/tests/rebuild/riscv64_compile_test.cpp",
+    "source/tests/rebuild/runtime_engine_test.cpp",
+    "source/tests/rebuild/runtime_persistence_test.cpp",
+    "source/tests/rebuild/x64_compile_test.cpp",
+    "source/tests/rebuild/x86_construction_test.cpp",
+    "source/tests/support/aot_fixture.h",
+    "source/tests/support/arm64_fixture.cpp",
+    "source/tests/support/arm64_fixture.h"
+  ],
+  "exit": 1,
+  "stdout": "",
+  "stderr": "source/runtime/backend/arm64/emit.cpp:183:44: error: code should be clang-formatted [-Wclang-format-violations]\n} catch (const vixl::CodeBufferOverflow&) {\n                                           ^\n",
+  "byte_checks": [
+    {
+      "file": "source/launcher/linux/main.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/launcher/linux/report.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/abi_layout.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/allocation_selection.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_atomic.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_atomic_service.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_calls.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_control.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_crypto.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_flags.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_memory.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_ops.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/emit_sse42.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/patch.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/recovery.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/recovery.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/runtime.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/arm64/runtime.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/abi_layout.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/emit.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/emit.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/emit_atomic.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/emit_control.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/emit_memory.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/recovery.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/recovery.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/runtime.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/runtime.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/loongarch64/scalar_ops.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/abi_layout.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/emit.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/emit.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/emit_atomic.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/emit_control.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/emit_memory.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/recovery.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/recovery.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/runtime.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/runtime.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/riscv64/scalar_ops.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/abi_layout.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/emit.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/emit.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/emit_atomic.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/emit_calls.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/emit_control.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/emit_memory.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/ops.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/recovery.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/recovery.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/runtime.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/backend/x64/runtime.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/exception.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/arm_state_service.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/code_image.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/dispatch.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/exception.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/fault.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/fault.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/guest_state.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/guest_thread.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/runtime.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/runtime.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/state_service.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/execution/vm.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/exit.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/exit.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/arm64/build_ir.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/arm64/interpreter.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/arm64/interpreter.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/arm64/semantics.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/arm64/semantics_memory.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/arm64/sink.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/guest_events.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/x86/build_ir.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/x86/detail/decoded.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/x86/interpreter.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/x86/interpreter.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/x86/opcodes.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/x86/semantics.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/x86/semantics_control.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/frontend/x86/semantics_dispatch.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/ir/direct/interpreter.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/ir/direct/scalar.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/ir/direct/services.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/ir/opcodes.inc",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/ir/passes/rewrite.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/ir/types.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/arm64_host.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/guest_signals.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/guest_signals.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/loongarch64_host.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/riscv64_host.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/run_guest.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/signal_frame.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/signal_frame_arm64.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/signal_frame_x86.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/signals.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/signals.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/syscall_abi.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/syscalls.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/syscalls.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/wait_syscall.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/wait_syscall.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/runtime/platform/linux/x64_host.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/arm64_compile_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/arm64_fault_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/arm64_frontend_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/exception_recovery_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/guest_signal_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/ir_direct_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/ir_optimize_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/loongarch64_compile_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/riscv64_compile_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/runtime_engine_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/runtime_persistence_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/x64_compile_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/rebuild/x86_construction_test.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/support/aot_fixture.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/support/arm64_fixture.cpp",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    },
+    {
+      "file": "source/tests/support/arm64_fixture.h",
+      "exit": 0,
+      "formatted_bytes_equal": true
+    }
+  ],
+  "canonical_bytes_pass": true,
+  "dry_run_limit": "clang-format22 dry-run reports function-try catch line in emit.cpp although full formatter output is byte-identical; every file compared against actual formatter output."
+}

@@ -1,0 +1,39 @@
+{
+  "created_utc": "2026-11-09T08:51:03.873370+00:00",
+  "scope": "final exception implementation, fixed parent/candidate cold compile guard plus fixed FEX reference",
+  "baseline_commit": "20073b14",
+  "candidate_working_tree": true,
+  "compile_repetitions": 3,
+  "compile_observations": 120,
+  "compile_cases": [
+    "coremark",
+    "int",
+    "fp",
+    "mem",
+    "branch",
+    "call",
+    "func_tests",
+    "x87_bench"
+  ],
+  "compile_arms": [
+    "parent-block",
+    "candidate-block",
+    "parent-function",
+    "candidate-function",
+    "fex"
+  ],
+  "runtime_repetitions": 3,
+  "runtime_cases": [
+    "fp",
+    "call",
+    "coremark"
+  ],
+  "selection": "fixed3 cyclic order; retain all; no fastest selection or repeat-to-threshold",
+  "fex_revision": "a156752f + fixed Android patch; FEX multiblock, TSO retained",
+  "compile_endpoint_limit": "FEX excludes final arena/cache destruction; SVM includes full native ownership release",
+  "runtime_endpoint": "whole-child wall time; CoreMark also reports validated guest-loop time; no PMU attribution",
+  "source_mutation_during_observations": false,
+  "revision_reason": "Fix redundant safepoint entry-PC publication and defer raw-flags completion to the pending slow path; retain guard/ as the complete first frozen implementation checkpoint",
+  "frequency_policy_changed": false,
+  "harness_sha256": "1291da891114e024c1f7d315b47005e200a96d454b3b7a6dd5c470256da64934"
+}

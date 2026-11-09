@@ -1,0 +1,22 @@
+{
+  "completed_utc": "2026-11-09T09:16:10.458845+00:00",
+  "branch": "refactor/middle-pipeline-rebuild-parity",
+  "original_code_commit": "23a87ff1",
+  "design_commit": "20073b14",
+  "implementation_commit": "56b44f1c93cf12f50dfb392b78454f158f784d7d",
+  "source_files": 130,
+  "source_matches_tested_freeze": true,
+  "candidate_identity": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 35651368,
+    "sha256": "38da77e92875cc50e1d902dbf7c641fb3eb3135bce5b0f48ff5efbe7701b02c9",
+    "archive": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109/candidate-svm_rebuild_linux.gz",
+    "archive_bytes": 9296828,
+    "archive_sha256": "c5bbe4ea17dfb7692632becff1f4a9578c60cef2130c7f83c9a1ac23a5d6b0c1"
+  },
+  "cleanup_receipt": "phone-cleanup-receipt.json",
+  "source_patch_gzip": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109/implementation.patch.gz",
+  "push_requested_this_turn": false,
+  "pushed": false,
+  "performance_claim": "Functional recovery/delivery path implemented; no all-suite <=2x or zero-overhead claim; see full report."
+}
