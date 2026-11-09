@@ -1,8 +1,8 @@
-#include "tests/support/check.h"
-#include "tests/support/test_mode.h"
-#include "tests/support/native_code.h"
-#include "tests/support/guest_memory.h"
 #include "runtime/ir/direct/interpreter.h"
+#include "tests/support/check.h"
+#include "tests/support/guest_memory.h"
+#include "tests/support/native_code.h"
+#include "tests/support/test_mode.h"
 
 #include <array>
 #include <cstdio>
@@ -90,14 +90,18 @@ void NumericAndUniform() {
 
     const std::array literal{Operand::Immediate(0xfedcba9876543210ULL, Type::U64)};
     const auto wide = Need(interpreter.Emit<OpCode::LoadImm>(Type::U64, std::span{literal}));
+    const auto fixed_wide =
+            Need(interpreter.EmitImm<OpCode::LoadImm>(Type::U64, 0xfedcba9876543210ULL, Type::U64));
+    Check(fixed_wide.number.bits == wide.number.bits &&
+                  interpreter.NaturalType(fixed_wide) == interpreter.NaturalType(wide),
+          "fixed literal calls retain the ordinary span entry's numerical semantics");
     const auto sum = Need(interpreter.Emit<OpCode::Add>(
             Type::U64, {Operand::ValueOf(wide), Operand::Immediate(0x11, Type::U64)}));
-    Need(interpreter.Emit<OpCode::StoreUniform>(
-            Type::Void, {Operand::Uniform(3, Type::U64), Operand::ValueOf(sum, Type::U32)}));
-    const auto loaded = Need(
-            interpreter.Emit<OpCode::LoadUniform>(Type::U64, {Operand::Uniform(3, Type::U64)}));
-    Need(interpreter.Emit<OpCode::StoreUniform>(
-            Type::Void, {Operand::Uniform(14, Type::U16), Operand::ValueOf(sum, Type::U8)}));
+    Need(interpreter.EmitUniformValue<OpCode::StoreUniform>(
+            Type::Void, 3, Type::U64, sum, Type::U32));
+    const auto loaded = Need(interpreter.EmitUniform<OpCode::LoadUniform>(Type::U64, 3, Type::U64));
+    Need(interpreter.EmitUniformValue<OpCode::StoreUniform>(
+            Type::Void, 14, Type::U16, sum, Type::U8));
 
     Check(sum.number.bits == 0xfedcba9876543221ULL && interpreter.NaturalType(sum) == Type::U64,
           "direct values retain the complete numeric result and its natural type");

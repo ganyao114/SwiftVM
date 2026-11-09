@@ -11,6 +11,7 @@
 
 #include "instruction.h"
 #include "runtime/arch/x86/x87.h"
+#include "runtime/frontend/timing.h"
 #include "semantics.h"
 
 namespace swift::x86 {
@@ -91,11 +92,10 @@ public:
     void StateMemory(unsigned, Value, Value, u64 pc, u64) {
         if (!layout.runtime_state_services) throw detail::Rejected{BuildError::Unsupported};
         PublishRegisters();
-        const auto at = Emit<OpCode::LoadImm>(Type::U64, {Operand::Immediate(pc, Type::U64)});
+        const auto at = EmitImm<OpCode::LoadImm>(Type::U64, pc, Type::U64);
         if (!at) throw detail::Rejected{BuildError::IRRejected, at.error};
-        const auto error = Emit<OpCode::StoreUniform>(
-                Type::Void,
-                {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(at.GetValue())});
+        const auto error = EmitUniformValue<OpCode::StoreUniform>(
+                Type::Void, layout.pc_offset, Type::U64, at.GetValue());
         if (!error) throw detail::Rejected{BuildError::IRRejected, error.error};
         FinishDispatch(runtime::ExitValue(runtime::NativeExit::StateService));
     }
@@ -196,7 +196,7 @@ Value Emitter::ShiftedAddress(
 void Emitter::PrepareFault(StateLayout layout, u64 pc, TargetInfo target, bool external_helper) {
     PublishRegisters();
     if (target.Has(TargetFeature::FaultLocations)) {
-        Require(FaultLocation(Type::Void, {Operand::Immediate(pc, Type::U64)}));
+        Require(EmitImm<OpCode::FaultLocation>(Type::Void, pc, Type::U64));
         if (!external_helper) return;
     }
     // External C++ helpers do not fault inside a native FaultSite span.
@@ -234,10 +234,11 @@ void Emitter::PublishGPRs(std::uint16_t slots) {
         MaterializeGPR(slot);
         const auto node = gprs[slot].value;
         const auto type = Operations()[node.value].type;
-        Require(Emit<OpCode::StoreUniform>(
-                Type::Void,
-                {Operand::Uniform(layout.gprs_offset + slot * layout.stride, Type::U64),
-                 Operand::ValueOf({UnitId(), node}, type)}));
+        Require(EmitUniformValue<OpCode::StoreUniform>(Type::Void,
+                                                       layout.gprs_offset + slot * layout.stride,
+                                                       Type::U64,
+                                                       {UnitId(), node},
+                                                       type));
     }
 }
 
@@ -247,10 +248,11 @@ void Emitter::PublishVectors() {
     while (publish) {
         const auto slot = std::countr_zero(publish);
         publish = static_cast<std::uint16_t>(publish & (publish - 1));
-        Require(Emit<OpCode::StoreUniform>(
-                Type::Void,
-                {Operand::Uniform(layout.fprs_offset + slot * 16, Type::V128),
-                 Operand::ValueOf({UnitId(), vectors[slot]}, Type::V128)}));
+        Require(EmitUniformValue<OpCode::StoreUniform>(Type::Void,
+                                                       layout.fprs_offset + slot * 16,
+                                                       Type::V128,
+                                                       {UnitId(), vectors[slot]},
+                                                       Type::V128));
     }
 }
 
@@ -324,7 +326,7 @@ Value Emitter::ReadGpr(u32 offset, unsigned slot, unsigned bits) {
     // Only an uncaptured parent range needs a real state read. Generic callers
     // keep their original typed Uniform accesses and observation behavior.
     builder.PublishGPRs(bit);
-    const auto value = Require(builder.LoadUniform(Type::Void, {Operand::Uniform(offset, type)}));
+    const auto value = Require(builder.EmitUniform<OpCode::LoadUniform>(Type::Void, offset, type));
     if (cache && bits >= 32) {
         builder.gprs[slot] = {value.node, {}, 0};
         builder.valid_gprs |= bit;
@@ -385,9 +387,8 @@ void Emitter::WriteGpr(u32 offset, unsigned slot, unsigned bits, Value value) {
     // StoreUniform reads the value's logical view, then stores the descriptor
     // width. U64 field + U32 input therefore zeroes the architectural high half,
     // including raw aliases, without birthing an explicit zero-extend node.
-    Require(builder.StoreUniform(Type::Void,
-                                 {Operand::Uniform(offset, bits == 32 ? Type::U64 : type),
-                                  Operand::ValueOf(value, type)}));
+    Require(builder.EmitUniformValue<OpCode::StoreUniform>(
+            Type::Void, offset, bits == 32 ? Type::U64 : type, value, type));
 }
 
 bool ValidRequest(std::size_t blocks, Scope scope, StateLayout layout, TargetInfo target) {
@@ -431,7 +432,7 @@ Value Emitter::ReadAddressGpr(unsigned slot) {
 Value Emitter::ReadXmm(u32 offset, unsigned slot) {
     const auto bit = static_cast<std::uint16_t>(1u << slot);
     if (private_vectors && (valid_vectors & bit)) return {UnitId(), vectors[slot]};
-    const auto value = Require(LoadUniform(Type::V128, {Operand::Uniform(offset, Type::V128)}));
+    const auto value = Require(EmitUniform<OpCode::LoadUniform>(Type::V128, offset, Type::V128));
     if (private_vectors) {
         vectors[slot] = value.node;
         valid_vectors |= bit;
@@ -447,9 +448,8 @@ void Emitter::WriteXmm(u32 offset, unsigned slot, Value value) {
         dirty_vectors |= bit;
         return;
     }
-    Require(StoreUniform(
-            Type::Void,
-            {Operand::Uniform(offset, Type::V128), Operand::ValueOf(value, Type::V128)}));
+    Require(EmitUniformValue<OpCode::StoreUniform>(
+            Type::Void, offset, Type::V128, value, Type::V128));
 }
 
 void Emitter::InvalidateXmm(unsigned slot) {
@@ -465,8 +465,7 @@ Value Emitter::X87Zero() {
 
 Value Emitter::X87Address(u32 offset) {
     if (!x87_state)
-        x87_state =
-                Require(GetUniformAddress(Type::U64, {Operand::Immediate(offset, Type::U32)})).node;
+        x87_state = Require(EmitImm<OpCode::GetUniformAddress>(Type::U64, offset, Type::U32)).node;
     return {UnitId(), x87_state};
 }
 
@@ -676,8 +675,7 @@ BuildResult EmitDecoded(InstructionRange instructions,
             // request can decode it. They must never become cached self entries.
             if (scope == Scope::Function && target.Has(TargetFeature::ExternalEntries) &&
                 block != entry_block && slice.instruction_count)
-                Require(builder.Emit<OpCode::EntryPoint>(Type::Void,
-                                                         {Operand::Immediate(pc, Type::U64)}));
+                Require(builder.EmitImm<OpCode::EntryPoint>(Type::Void, pc, Type::U64));
             bool ended{};
             unsigned x87_following{};
             for (std::size_t i = 0; i < slice.instruction_count; ++i) {
@@ -818,14 +816,18 @@ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
     if (!ValidRequest(1, Scope::Function, layout, target))
         return {BuildError::InvalidInput, entry_pc, 0, 0, Error::None, {}};
     const bool entries = target.Has(TargetFeature::ExternalEntries);
-    const auto decoded = DecodeFunction(readable,
-                                        entry_pc,
-                                        limits,
-                                        timing,
-                                        entries ? ready : ReadyEntryLookup{},
-                                        model,
-                                        source_spans,
-                                        continuations);
+    const auto decoded = [&] {
+        runtime::frontend::ScopedBuildTimer formation_time{
+                timing && timing->stages ? &timing->formation_ns : nullptr};
+        return DecodeFunction(readable,
+                              entry_pc,
+                              limits,
+                              timing,
+                              entries ? ready : ReadyEntryLookup{},
+                              model,
+                              source_spans,
+                              continuations);
+    }();
     if (!decoded) {
         const auto error = decoded.error == DecodeError::InvalidInput ? BuildError::InvalidInput
                            : decoded.error == DecodeError::Truncated  ? BuildError::Truncated
@@ -838,6 +840,8 @@ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
     }
     // Request/source/record structure was established by this DecodeFunction.
     // Public decoded inputs and byte-decoded Blocks retain all emitter checks.
+    runtime::frontend::ScopedBuildTimer birth_time{timing && timing->stages ? &timing->ir_birth_ns
+                                                                            : nullptr};
     return EmitDecoded(decoded.instructions,
                        decoded.blocks,
                        readable,
@@ -876,76 +880,83 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
     if (windows.size() > 1) multiple_blocks.resize(windows.size());
     auto blocks = windows.size() == 1 ? std::span{&local_block, 1} : std::span{multiple_blocks};
     DecodeFailure failure;
-    for (std::size_t block = 0; block < windows.size(); ++block) {
-        const auto& window = windows[block];
-        auto& slice = blocks[block];
-        slice = {window.pc, static_cast<u32>(instructions.size()), 0};
-        if (failure.error != BuildError::None) continue;
-        auto bytes = window.bytes;
-        if (block + 1 < windows.size() && windows[block + 1].pc - window.pc < bytes.size())
-            bytes = bytes.first(static_cast<std::size_t>(windows[block + 1].pc - window.pc));
-        u64 pc = window.pc;
-        while (!bytes.empty()) {
-            const auto parsed = DecodeOne(bytes, pc, timing, model);
-            if (!parsed) {
-                failure = {block,
-                           parsed.error == DecodeError::Truncated ? BuildError::Truncated
-                           : parsed.error == DecodeError::UnsupportedGuestFeature
-                                   ? BuildError::Unsupported
-                                   : BuildError::InvalidEncoding};
-                break;
-            }
-            const auto& instruction = parsed.instruction.View().Record();
-            if (instructions.size() == std::numeric_limits<u32>::max()) {
-                failure = {block, BuildError::IRRejected, Error::CapacityOverflow};
-                break;
-            }
-            if (instructions.size() < local_instructions.size()) {
-                local_instructions[instructions.size()] = parsed.instruction;
-                instructions = {local_instructions.data(), instructions.size() + 1};
-            } else {
-                if (overflow_instructions.empty()) {
-                    overflow_instructions.reserve(local_instructions.size() * 2);
-                    overflow_instructions.insert(overflow_instructions.end(),
-                                                 local_instructions.begin(),
-                                                 local_instructions.end());
+    {
+        runtime::frontend::ScopedBuildTimer formation_time{
+                timing && timing->stages ? &timing->formation_ns : nullptr};
+        for (std::size_t block = 0; block < windows.size(); ++block) {
+            const auto& window = windows[block];
+            auto& slice = blocks[block];
+            slice = {window.pc, static_cast<u32>(instructions.size()), 0};
+            if (failure.error != BuildError::None) continue;
+            auto bytes = window.bytes;
+            if (block + 1 < windows.size() && windows[block + 1].pc - window.pc < bytes.size())
+                bytes = bytes.first(static_cast<std::size_t>(windows[block + 1].pc - window.pc));
+            u64 pc = window.pc;
+            while (!bytes.empty()) {
+                const auto parsed = DecodeOne(bytes, pc, timing, model);
+                if (!parsed) {
+                    failure = {block,
+                               parsed.error == DecodeError::Truncated ? BuildError::Truncated
+                               : parsed.error == DecodeError::UnsupportedGuestFeature
+                                       ? BuildError::Unsupported
+                                       : BuildError::InvalidEncoding};
+                    break;
                 }
-                overflow_instructions.push_back(parsed.instruction);
-                instructions = overflow_instructions;
-            }
-            ++slice.instruction_count;
-            pc += instruction.size;
-            bytes = bytes.subspan(instruction.size);
-            if (instruction.unit_boundary) {
-                if (continuations &&
-                    (instruction.flow == FlowKind::Call || instruction.opcode == Op::CPUID ||
-                     instruction.opcode == Op::LDMXCSR))
-                    continuations->push_back(pc);
-                if (scope == Scope::Block &&
-                    (instruction.flow == FlowKind::Conditional ||
-                     instruction.flow == FlowKind::Jump) &&
-                    Sem::Direct(instruction)) {
-                    const u64 target_pc = pc + instruction.immediate;
-                    if (window.pc < target_pc && target_pc < pc) {
-                        const auto first = instructions.begin() + slice.first_instruction;
-                        const auto leader =
-                                std::lower_bound(first,
-                                                 instructions.end(),
-                                                 target_pc,
-                                                 [](const Instruction& decoded, u64 address) {
-                                                     return decoded.View().PC() < address;
-                                                 });
-                        // Emit only the prefix before a newly discovered loop header.
-                        // The existing slice also bounds semantic/x87 lookahead.
-                        if (leader != instructions.end() && leader->View().PC() == target_pc)
-                            slice.instruction_count = static_cast<u32>(leader - first);
+                const auto& instruction = parsed.instruction.View().Record();
+                if (instructions.size() == std::numeric_limits<u32>::max()) {
+                    failure = {block, BuildError::IRRejected, Error::CapacityOverflow};
+                    break;
+                }
+                if (instructions.size() < local_instructions.size()) {
+                    local_instructions[instructions.size()] = parsed.instruction;
+                    instructions = {local_instructions.data(), instructions.size() + 1};
+                } else {
+                    if (overflow_instructions.empty()) {
+                        overflow_instructions.reserve(local_instructions.size() * 2);
+                        overflow_instructions.insert(overflow_instructions.end(),
+                                                     local_instructions.begin(),
+                                                     local_instructions.end());
                     }
+                    overflow_instructions.push_back(parsed.instruction);
+                    instructions = overflow_instructions;
                 }
-                break;
+                ++slice.instruction_count;
+                pc += instruction.size;
+                bytes = bytes.subspan(instruction.size);
+                if (instruction.unit_boundary) {
+                    if (continuations &&
+                        (instruction.flow == FlowKind::Call || instruction.opcode == Op::CPUID ||
+                         instruction.opcode == Op::LDMXCSR))
+                        continuations->push_back(pc);
+                    if (scope == Scope::Block &&
+                        (instruction.flow == FlowKind::Conditional ||
+                         instruction.flow == FlowKind::Jump) &&
+                        Sem::Direct(instruction)) {
+                        const u64 target_pc = pc + instruction.immediate;
+                        if (window.pc < target_pc && target_pc < pc) {
+                            const auto first = instructions.begin() + slice.first_instruction;
+                            const auto leader =
+                                    std::lower_bound(first,
+                                                     instructions.end(),
+                                                     target_pc,
+                                                     [](const Instruction& decoded, u64 address) {
+                                                         return decoded.View().PC() < address;
+                                                     });
+                            // Emit only the prefix before a newly discovered loop header.
+                            // The existing slice also bounds semantic/x87 lookahead.
+                            if (leader != instructions.end() && leader->View().PC() == target_pc)
+                                slice.instruction_count = static_cast<u32>(leader - first);
+                        }
+                    }
+                    break;
+                }
             }
+            if (source_spans && pc > window.pc)
+                source_spans->push_back({window.pc, pc - window.pc});
         }
-        if (source_spans && pc > window.pc) source_spans->push_back({window.pc, pc - window.pc});
     }
+    runtime::frontend::ScopedBuildTimer birth_time{timing && timing->stages ? &timing->ir_birth_ns
+                                                                            : nullptr};
     return EmitDecoded(instructions,
                        blocks,
                        windows,

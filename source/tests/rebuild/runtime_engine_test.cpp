@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <cstring>
 #include <stdexcept>
@@ -118,6 +119,114 @@ void SourceAdmission() {
                       memory.CodeAt(device).empty(),
               "unqualified device bytes cannot enter a persistent JIT or direct-fetch span");
     Check(memory.Release().Complete(), "source fixtures release all guest mappings");
+
+    execution::RuntimeOptions options;
+    execution::RuntimeStats stats;
+    execution::VM vm{options, stats, {}};
+    execution::Smc watches{vm};
+    auto& watched_memory = vm.Memory();
+    GuestFile file;
+    const auto file_fd = open(file.Path().c_str(), O_RDWR | O_CLOEXEC);
+    Check(file_fd >= 0 && ftruncate(file_fd, size * 2) == 0,
+          "create shared source and writable-alias backing");
+    const auto source = watched_memory.Map(0, size * 2, PROT_READ | PROT_EXEC, MAP_SHARED, file_fd);
+    const auto writer =
+            watched_memory.Map(0, size * 2, PROT_READ | PROT_WRITE, MAP_SHARED, file_fd);
+    Check(close(file_fd) == 0 && source != UINT64_MAX && writer != UINT64_MAX,
+          "map the known shared writable source alias");
+    const std::array spans{swift::runtime::SourceSpan{source + size - 1, 2},
+                           swift::runtime::SourceSpan{source + size, 1},
+                           swift::runtime::SourceSpan{source, 0}};
+    watches.Arm(spans);
+    watches.Arm(spans);  // Already armed, including the duplicate/cross-page source.
+    Check(!watches.Recover(source) && watches.Recover(writer + size) &&
+                  !watches.Recover(writer + size),
+          "batch source watches protect writable aliases once, leaving RX source unchanged");
+    watches.Arm(source, 1);  // Its alias page is still armed; the second is unarmed.
+    Check(watches.Recover(writer + size) && watches.Recover(writer),
+          "arming an existing page also preserves rearming of older unarmed records");
+    watches.Clear();
+
+    const auto partial = watched_memory.Map(
+            0, size * 2, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS);
+    Check(partial != UINT64_MAX && munmap(reinterpret_cast<void*>(partial + size), size) == 0,
+          "inject a later host protection failure after the first candidate page");
+    bool failed{};
+    try {
+        watches.Arm(partial, size * 2);
+    } catch (const std::exception&) {
+        failed = true;
+    }
+    Check(failed, "partial source protection failure remains a host error");
+    Check(watched_memory.Map(partial + size,
+                             size,
+                             PROT_READ | PROT_WRITE | PROT_EXEC,
+                             MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED) == partial + size,
+          "restore the deliberately missing host page");
+    watches.Arm(partial, 1);  // First page stayed armed across the failed batch.
+    Check(watches.Recover(partial + size) && watches.Recover(partial),
+          "a failed batch retains every page record for later protection and recovery");
+    watches.Clear();
+    Check(vm.Close().Complete(), "batched source-watch fixtures release their mappings");
+}
+
+void FaultMetadataLifetime() {
+    execution::HostBackendOps operations;
+    execution::CodeHeap heap{operations, static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
+    constexpr std::array<std::uint32_t, 1> words{0};  // Published data is never executed.
+    Check(heap.Publish(words, {}, {}).faults.empty(), "empty fault input publishes an empty view");
+    const auto record = [](std::uint64_t pc) {
+        backend::FaultSite site{0, 4, pc};
+        site.recovery = {8, 12, 1, 0, 4, 3, 2, 1};
+        return site;
+    };
+    const auto equal = [](const backend::FaultSite& actual, const backend::FaultSite& expected) {
+        return actual.first_offset == expected.first_offset &&
+               actual.last_offset == expected.last_offset && actual.guest_pc == expected.guest_pc &&
+               actual.unaligned_offset == expected.unaligned_offset &&
+               actual.fallback_offset == expected.fallback_offset &&
+               actual.recovery == expected.recovery;
+    };
+    execution::NativeCode first;
+    {
+        std::vector<backend::FaultSite> compiler{record(0x1000), record(0x1004)};
+        first = heap.Publish(words, compiler, {});
+        compiler.front() = record(0xdead);
+        Check(equal(first.faults.front(), record(0x1000)),
+              "published fault metadata does not borrow mutable compiler records");
+    }
+    const auto* first_address = first.faults.data();
+    // Republishing an existing view exercises an input that aliases the last
+    // fragment while its unused capacity can still hold the copied records.
+    const auto copied = heap.Publish(words, first.faults, {});
+    const auto* copied_address = copied.faults.data();
+    constexpr std::size_t records = 257;
+    constexpr std::size_t units = 12;
+    std::array<execution::NativeCode, units> published;
+    std::array<const backend::FaultSite*, units> addresses;
+    std::vector<backend::FaultSite> compiler(records);
+    for (std::size_t unit = 0; unit < published.size(); ++unit) {
+        for (std::size_t i = 0; i < records; ++i) compiler[i] = record(0x2000 + unit * records + i);
+        published[unit] = heap.Publish(words, compiler, {});
+        addresses[unit] = published[unit].faults.data();
+        std::fill(compiler.begin(), compiler.end(), backend::FaultSite{});
+    }
+    Check(first.faults.data() == first_address && copied.faults.data() == copied_address &&
+                  first.faults.size() == 2 && copied.faults.size() == 2 &&
+                  equal(first.faults[0], record(0x1000)) &&
+                  equal(first.faults[1], record(0x1004)) &&
+                  equal(copied.faults[0], record(0x1000)) &&
+                  equal(copied.faults[1], record(0x1004)),
+          "older fault views survive compiler destruction, appends and outer-container growth");
+    for (std::size_t unit = 0; unit < published.size(); ++unit) {
+        Check(published[unit].faults.data() == addresses[unit] &&
+                      published[unit].faults.size() == records,
+              "each fault span retains its address and its own unit extent");
+        for (std::size_t i = 0; i < records; ++i)
+            Check(equal(published[unit].faults[i], record(0x2000 + unit * records + i)),
+                  "later metadata fragments retain every copied fault record");
+    }
+    Check(heap.Release().Complete(), "fault metadata owner releases its native mappings");
 }
 
 void ColdDirectory() {
@@ -400,6 +509,164 @@ void SSEExceptionState() {
     Check(statuses_match, "native/direct SSE status matches architectural exception flags");
 }
 
+#if defined(__aarch64__)
+struct HostFPState {
+    std::uint64_t control{}, status{};
+
+    static HostFPState Read() noexcept {
+        HostFPState result;
+        asm volatile("mrs %0, fpcr\n mrs %1, fpsr"
+                     : "=r"(result.control), "=r"(result.status)
+                     :
+                     : "memory");
+        return result;
+    }
+
+    void Write() const noexcept {
+        asm volatile("msr fpcr, %0\n msr fpsr, %1" ::"r"(control), "r"(status) : "memory");
+    }
+
+    bool operator==(const HostFPState&) const = default;
+};
+
+struct ScopedHostFP {
+    HostFPState saved{HostFPState::Read()};
+
+    ~ScopedHostFP() { saved.Write(); }
+};
+
+struct NativeFPResult {
+    HostFPState host;
+    int exit_code{-1}, signal_number{}, signal_code{};
+    bool guest_fault{};
+};
+
+// Round toward zero and default-NaN differ from the guest's nearest/default
+// controls. A preexisting host invalid sticky must survive either native exit.
+constexpr HostFPState host_fp_fixture{(std::uint64_t{3} << 22) | (std::uint64_t{1} << 25), 1};
+
+NativeFPResult RunWithHostFP(execution::VM& vm) {
+    const ScopedHostFP restore;
+    NativeFPResult result;
+    host_fp_fixture.Write();
+    try {
+        result.exit_code = vm.RunPrepared();
+        result.host = HostFPState::Read();
+    } catch (const swift::RuntimeError& failure) {
+        result.host = HostFPState::Read();
+        restore.saved.Write();
+        result.guest_fault = failure.Kind() == swift::ErrorKind::GuestFault;
+        (void)std::sscanf(failure.what(),
+                          "guest memory/alignment fault signal=%d code=%d",
+                          &result.signal_number,
+                          &result.signal_code);
+    }
+    restore.saved.Write();
+    return result;
+}
+
+void NativeFPEnvironmentPreservation() {
+    std::vector<std::uint8_t> code{0xf3, 0x0f, 0x5e, 0xc1};  // DIVSS XMM0,XMM1.
+    code.insert(code.end(), std::begin(exit_program), std::end(exit_program));
+    GuestFile guest{code, PF_R | PF_X};
+    for (const auto scope :
+         {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function}) {
+        swift::runtime::platform::HostRuntime host{false};
+        execution::RuntimeOptions options;
+        options.mode = execution::ExecutionMode::JitOnly;
+        options.scope = scope;
+        options.decode_timing = true;
+        execution::RuntimeStats stats;
+        execution::VM vm{options, stats, host.Bind()};
+        vm.PrepareGuest(guest.Path());
+        const std::array<std::uint32_t, 4> left{0x3f800000, 0x12345678, 0x9abcdef0, 0xa5a55a5a};
+        const std::uint32_t right = 0x40400000;  // 1/3 rounds differently under host toward-zero.
+        std::memcpy(vm.State().xmm[0], left.data(), sizeof left);
+        std::memcpy(vm.State().xmm[1], &right, sizeof right);
+        vm.State().mxcsr = 0x1f80;
+        const auto result = RunWithHostFP(vm);
+        std::array<std::uint32_t, 4> actual{};
+        std::memcpy(actual.data(), vm.State().xmm[0], sizeof actual);
+        Check(result.exit_code == 42 && !result.guest_fault && stats.interpreted_steps == 0 &&
+                      stats.compile_attempts == 1 && stats.code_units_published == 1 &&
+                      stats.native_bytes,
+              "real VM executes both scopes through one native FP unit");
+        Check(result.host == host_fp_fixture,
+              "native return preserves the caller's exact nondefault FPCR and nonzero FPSR");
+        Check(actual == std::array<std::uint32_t, 4>{0x3eaaaaab, left[1], left[2], left[3]} &&
+                      vm.State().mxcsr == 0x1fa0,
+              "native arithmetic uses guest rounding and retains guest precision without host "
+              "invalid");
+        Check(vm.Close().Complete(), "native FP environment fixture releases mappings");
+    }
+}
+
+void SSEStatusSurvivesNativeMemoryFault() {
+    // No status observer, helper, branch or guest dispatch separates FDIV from
+    // the bad load: its freshly raised ZE remains only in hardware FPSR.
+    std::vector<std::uint8_t> code{0xf3,
+                                   0x0f,
+                                   0x5e,
+                                   0xc1,  // DIVSS XMM0,XMM1.
+                                   0x49,
+                                   0x83,
+                                   0xc4,
+                                   0x01,  // ADD R12,1.
+                                   0x4c,
+                                   0x8b,
+                                   0x30};  // MOV R14,[RAX].
+    code.insert(code.end(), std::begin(exit_program), std::end(exit_program));
+    GuestFile guest{code, PF_R | PF_X};
+    for (const auto scope :
+         {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function}) {
+        swift::runtime::platform::HostRuntime host{false};
+        execution::RuntimeOptions options;
+        options.mode = execution::ExecutionMode::JitOnly;
+        options.scope = scope;
+        options.decode_timing = true;
+        execution::RuntimeStats stats;
+        execution::VM vm{options, stats, host.Bind()};
+        vm.PrepareGuest(guest.Path());
+        const auto missing =
+                vm.Memory().Map(0, vm.Memory().PageSize(), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS);
+        Check(missing != UINT64_MAX, "map a real inaccessible native load destination");
+        const auto fault_pc = vm.State().pc + 8;
+        constexpr std::uint64_t original_r12 = 0x1122334455667788,
+                                original_r14 = 0x8877665544332211;
+        vm.State().gprs[x86::RAX] = missing;
+        vm.State().gprs[x86::R12] = original_r12;
+        vm.State().gprs[x86::R14] = original_r14;
+        const std::array<std::uint32_t, 4> left{0x3f800000, 0x12345678, 0x9abcdef0, 0xa5a55a5a};
+        const std::array<std::uint32_t, 4> right{0, 0x87654321, 0x0fedcba9, 0x5a5aa5a5};
+        std::memcpy(vm.State().xmm[0], left.data(), sizeof left);
+        std::memcpy(vm.State().xmm[1], right.data(), sizeof right);
+        vm.State().mxcsr = 0x1fa0;  // Preexisting PE; the masked divide newly raises ZE.
+        const auto result = RunWithHostFP(vm);
+        std::array<std::uint32_t, 4> actual{}, unchanged{};
+        std::memcpy(actual.data(), vm.State().xmm[0], sizeof actual);
+        std::memcpy(unchanged.data(), vm.State().xmm[1], sizeof unchanged);
+        Check(result.guest_fault && result.signal_number == SIGSEGV &&
+                      result.signal_code == SEGV_ACCERR && stats.interpreted_steps == 0 &&
+                      stats.compile_attempts == 1 && stats.code_units_published == 1 &&
+                      stats.fault_sites == 1 && stats.native_bytes,
+              "one native unit reaches the actual inaccessible load through its SIGSEGV owner");
+        Check(vm.State().mxcsr == 0x1fa4,
+              "native memory fault retains preexisting PE and newly accrued masked divide ZE");
+        Check(vm.State().pc == fault_pc && vm.State().gprs[x86::RAX] == missing &&
+                      vm.State().gprs[x86::R12] == original_r12 + 1 &&
+                      vm.State().gprs[x86::R14] == original_r14 &&
+                      actual ==
+                              std::array<std::uint32_t, 4>{0x7f800000, left[1], left[2], left[3]} &&
+                      unchanged == right,
+              "fatal load publishes exact PC and completed GPR/XMM changes without its "
+              "destination");
+        Check(result.host == host_fp_fixture,
+              "fatal native memory recovery preserves exact caller FPCR and FPSR");
+        Check(vm.Close().Complete(), "native FP fault fixture releases mappings");
+    }
+}
+#endif
+
 void UnalignedAtomicOwner() {
     constexpr std::array<std::uint8_t, 4> add{0xf0, 0x83, 0x00, 1};
     std::vector<std::uint8_t> code(add.begin(), add.end());
@@ -648,6 +915,10 @@ void ArmUnsupportedFPControl() {
 
 TEST_CASE("SourceAdmission", "[compile][execution]") { CHECK_NOTHROW(SourceAdmission()); }
 
+TEST_CASE("FaultMetadataLifetime", "[compile][execution]") {
+    CHECK_NOTHROW(FaultMetadataLifetime());
+}
+
 TEST_CASE("ColdDirectory", "[compile][execution]") { CHECK_NOTHROW(ColdDirectory()); }
 
 TEST_CASE("InterpretOnly through runtime", "[compile][execution]") {
@@ -677,6 +948,16 @@ TEST_CASE("ARM guest exact fault state", "[native][execution][arm64-guest]") {
 TEST_CASE("SSE exception state", "[native][execution][floating]") {
     CHECK_NOTHROW(SSEExceptionState());
 }
+
+#if defined(__aarch64__)
+TEST_CASE("Native FP environment preservation", "[native][execution][floating][arm64]") {
+    CHECK_NOTHROW(NativeFPEnvironmentPreservation());
+}
+
+TEST_CASE("SSE status survives native memory fault", "[native][execution][floating][arm64]") {
+    CHECK_NOTHROW(SSEStatusSurvivesNativeMemoryFault());
+}
+#endif
 
 TEST_CASE("Unaligned atomic owner", "[native][execution][atomic]") {
     CHECK_NOTHROW(UnalignedAtomicOwner());

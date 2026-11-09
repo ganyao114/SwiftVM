@@ -1,0 +1,54 @@
+{
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 35205072,
+    "sha256": "ee0ae5c47f8988dd7d339fcbc0787e361aee27465316f4901dbbea52a0cdbac9"
+  },
+  "remote_input_sha256_matches": [
+    {
+      "name": "FEXLoader",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "FEXLoader-byte",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "FEXServer",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "simpleperf",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "coremark",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "bench-suite",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "func-tests",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "x87-bench",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "fex-config/Config.json",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "candidate",
+      "matches_input_sha256": true
+    },
+    {
+      "name": "launch.sh",
+      "matches_input_sha256": true
+    }
+  ],
+  "product_source_match": true
+}

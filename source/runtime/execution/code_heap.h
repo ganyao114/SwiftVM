@@ -10,6 +10,7 @@
 
 namespace swift::runtime::execution {
 struct HostBackendOps;
+struct PublicationTiming;
 using NativeCode = backend::NativeCode;
 
 // The only owner of native slabs and actual recovery buffers. Entries in the
@@ -23,12 +24,15 @@ public:
     CodeHeap(const CodeHeap&) = delete;
     CodeHeap& operator=(const CodeHeap&) = delete;
 
+    // Borrow compiler records only for this call. Published fault spans remain
+    // in stable heap-owned fragments until Release, including across new units.
     NativeCode Publish(std::span<const std::uint32_t>,
-                       std::vector<backend::FaultSite>,
+                       std::span<const backend::FaultSite>,
                        std::span<const backend::LinkSite>,
                        ReadyResolver = nullptr,
                        void* = nullptr,
-                       std::span<const backend::Relocation> = {});
+                       std::span<const backend::Relocation> = {},
+                       PublicationTiming* = nullptr);
     // Caller has revoked all entries/links and ended native/fault borrows.
     // Failed mappings remain owned here; no global retained-owner registry.
     MappingRelease Release() noexcept;

@@ -1,0 +1,23 @@
+{
+  "created_utc": "2026-11-09T01:56:56.008446+00:00",
+  "repo": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "git_base": "08143855b4c038dc9483fe8893e5458eecf0685c",
+  "parent_runner_sha256": "ee0ae5c47f8988dd7d339fcbc0787e361aee27465316f4901dbbea52a0cdbac9",
+  "scope": [
+    "save actual host FP environment before installing guest environment",
+    "sample guest hardware FPSR from fatal signal context and merge on unwind"
+  ],
+  "verification": [
+    "two real ARM64 native regression cases, Block and Function",
+    "existing runtime native/FP/link/persistence contracts"
+  ],
+  "exclude": [
+    "guest signal ABI",
+    "asynchronous delivery",
+    "metadata redesign",
+    "full benchmark campaign"
+  ],
+  "phone": "bf1359ff",
+  "namespace": "/data/local/tmp/swiftvm-fp-exception-fixes-20261108",
+  "large_temporary_data": "Data2, fixed build cache"
+}

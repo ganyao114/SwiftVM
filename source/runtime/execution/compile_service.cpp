@@ -151,11 +151,15 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                           : CompileFailure::Unsupported;
         return {};
     }
-    auto code = Publish(compiled, std::move(compiled.faults));
+    auto code = Publish(compiled, compiled.faults);
+    // Published recovery records belong to CodeHeap. Retain only the real
+    // backend scratch capacity, subject to the ordinary large-unit limit.
+    compiled.faults.clear();
+    if (compiled.faults.capacity() > 4096) std::vector<backend::FaultSite>{}.swap(compiled.faults);
     // Mutable entries remain one source block, even with Function allocation.
     if (mutable_entry) {
         if (collect) {
-            for (const auto& source : source_spans) vm.smc.Arm(source.pc, source.size);
+            vm.smc.Arm(source_spans);
         } else
             vm.smc.Arm(pc, built.decoded_bytes);
     }
@@ -168,15 +172,21 @@ NativeCode CompileService::Compile(ir::Scope scope) {
 }
 
 NativeCode CompileService::Publish(const backend::CompileResult& compiled,
-                                   std::vector<backend::FaultSite> faults) {
+                                   std::span<const backend::FaultSite> faults) {
     auto& stats = vm.stats;
     RuntimeTimer publish{stats.publication_ns};
+    auto* detail = vm.options.compile_details && vm.options.decode_timing
+                           ? &stats.publication_detail
+                           : nullptr;
     // Shared entry dispatch accepts a null L1. Inline dynamic tails require
     // the real thread view before any entry or direct link can reach this unit.
-    if (compiled.has_indirect_dispatch) vm.EnsureThreadDispatch();
+    if (compiled.has_indirect_dispatch) {
+        RuntimeTimer dispatch_cache{detail ? &detail->dispatch_cache_ns : nullptr};
+        vm.EnsureThreadDispatch();
+    }
     auto code = vm.heap.Publish(
             compiled.words,
-            std::move(faults),
+            faults,
             compiled.links,
             [](void* opaque, u64 pc, std::uintptr_t unit) noexcept -> std::uintptr_t {
                 auto& owner = *static_cast<VM*>(opaque);
@@ -185,7 +195,8 @@ NativeCode CompileService::Publish(const backend::CompileResult& compiled,
                 return pc == owner.compiler.EntryPC() ? unit : 0;
             },
             &vm,
-            compiled.relocations);
+            compiled.relocations,
+            detail);
     ++stats.code_units_published;
     if (vm.options.decode_timing) stats.fault_sites += code.faults.size();
     stats.native_bytes += code.bytes;
@@ -195,6 +206,7 @@ NativeCode CompileService::Publish(const backend::CompileResult& compiled,
     stats.peak_slabs = std::max(stats.peak_slabs, static_cast<u64>(slabs));
     stats.peak_dual_slabs = std::max(stats.peak_dual_slabs, static_cast<u64>(dual_slabs));
     stats.code_wx_fallback |= slabs != dual_slabs;
+    RuntimeTimer registration{detail ? &detail->registration_ns : nullptr};
     for (const auto& link : compiled.links) {
         ++stats.static_links;
         if (!code.writable) continue;

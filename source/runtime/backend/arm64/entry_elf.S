@@ -128,7 +128,6 @@ ubfx x1, x1, #0, #8
 .endm
 
 .macro SVM_SAVE_HOST_FP
-SVM_INSTALL_GUEST_FP
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
 cbz x16, 20f
 mrs x16, fpcr

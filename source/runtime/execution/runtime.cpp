@@ -56,6 +56,7 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
         , compiler(*this)
         , syscalls(*this)
         , smc(*this) {
+    stats.compile_decode.stages = options.decode_timing && options.compile_details;
     auto& native = thread.native;
     auto& faults = thread.faults;
     native.opaque = this;
@@ -73,6 +74,7 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     faults.code_write_opaque = this;
     faults.patch_ordered = backend.patch_fault;
     faults.recover_native = backend.recover_native;
+    faults.guest_fp_status = backend.floating_status ? &native.guest_fpsr : nullptr;
     faults.pinned_uniform_slots = backend.pinned_uniform_slots;
     faults.native_nzcv = backend.capabilities.native_nzcv;
     ConfigureGuest(GuestISA::X86_64);
@@ -312,6 +314,7 @@ void VM::Execute() {
             if (sigsetjmp(thread.faults.jump, 1)) {
                 if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
                 if (backend.restore_host_fp) backend.restore_host_fp(thread.native);
+                MergeFPStatus();
                 if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
                 swift::ThrowError(swift::Format("guest memory/alignment fault signal={} code={} "
                                                 "pc={:#x} host_pc={:#x} address={:#x}",

@@ -1,14 +1,14 @@
-#include "tests/support/check.h"
-#include "tests/support/test_mode.h"
-#include "tests/support/native_code.h"
-#include "tests/support/guest_memory.h"
 #include "runtime/ir/builder.h"
+#include "tests/support/check.h"
+#include "tests/support/guest_memory.h"
+#include "tests/support/native_code.h"
+#include "tests/support/test_mode.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdio>
-#include <iterator>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <new>
 #include <stdexcept>
@@ -780,6 +780,152 @@ void StaticOpcodeWritesKeepTheConstructionContract() {
     }
     CHECK(known == known_cells.end() && dynamic == generic_cells.end());
     CHECK(builder.Emit<OpCode::Nop>(Type::Void, {}).error == Error::Consumed);
+}
+
+void FixedShapeWritesKeepTheConstructionContract() {
+    Builder foreign{Scope::Block};
+    const auto foreign_block = foreign.CreateBlock();
+    CHECK(foreign.BeginBlock(foreign_block.block) == Error::None);
+    const auto foreign_value = Literal(foreign, 9).GetValue();
+    for (const auto mode : {TargetMode::Known, TargetMode::Unknown, TargetMode::EarlyOff}) {
+        Builder builder{Scope::Block, {mode, 0xa64, UINT64_MAX}};
+        const auto block = builder.CreateBlock();
+        CHECK(builder.BeginBlock(block.block) == Error::None);
+        CHECK(builder.Reserve(16, 64, 1) == Error::None);
+        const OperationMetadata metadata{UINT64_C(1) << 63, FlagProfile::ArithmeticRaw, false};
+        const auto literal = builder.EmitImm<OpCode::LoadImm>(Type::Void, UINT64_MAX, Type::S8);
+        const auto generic_literal = builder.Append(
+                OpCode::LoadImm, Type::Void, {Operand::Immediate(UINT64_MAX, Type::S8)});
+        const auto uniform = builder.EmitUniform<OpCode::LoadUniform>(Type::Void, 17, Type::U64);
+        const auto generic_uniform =
+                builder.Append(OpCode::LoadUniform, Type::Void, {Operand::Uniform(17, Type::U64)});
+        const auto store = builder.EmitUniformValue<OpCode::StoreUniform>(
+                Type::Void, 29, Type::U64, uniform.GetValue(), Type::U32, metadata);
+        const auto generic_store = builder.Append(
+                OpCode::StoreUniform,
+                Type::Void,
+                {Operand::Uniform(29, Type::U64), Operand::ValueOf(uniform.GetValue(), Type::U32)},
+                metadata);
+        const auto x87 = builder.EmitX87<OpCode::X87Execute>(Type::U64,
+                                                             uniform.GetValue(),
+                                                             UINT64_MAX,
+                                                             literal.GetValue(),
+                                                             uniform.GetValue(),
+                                                             UINT64_C(1) << 63,
+                                                             metadata);
+        const auto generic_x87 = builder.Append(OpCode::X87Execute,
+                                                Type::U64,
+                                                {Operand::ValueOf(uniform.GetValue()),
+                                                 Operand::Immediate(UINT64_MAX, Type::U64),
+                                                 Operand::ValueOf(literal.GetValue()),
+                                                 Operand::ValueOf(uniform.GetValue()),
+                                                 Operand::Immediate(UINT64_C(1) << 63, Type::U64)},
+                                                metadata);
+        for (const auto& [fixed, generic] : std::array{std::pair{literal, generic_literal},
+                                                       std::pair{uniform, generic_uniform},
+                                                       std::pair{store, generic_store},
+                                                       std::pair{x87, generic_x87}}) {
+            CHECK(fixed && generic);
+            const auto& first = builder.Operations()[fixed.node.value];
+            const auto& second = builder.Operations()[generic.node.value];
+            CHECK(first.opcode == second.opcode && first.type == second.type &&
+                  first.Metadata() == second.Metadata());
+            const auto first_words = builder.Operands(fixed.node);
+            const auto second_words = builder.Operands(generic.node);
+            CHECK(first_words.WordCount() == second_words.WordCount());
+            for (std::size_t i = 0; i < first_words.WordCount(); ++i)
+                CHECK(first_words.data()[i].bits == second_words.data()[i].bits);
+        }
+        const auto reject = [&](auto&& append, Error error) {
+            const auto before = builder.CountWork();
+            CHECK(append().error == error);
+            CHECK(builder.CountWork() == before);
+        };
+        reject([&] { return builder.EmitImm<OpCode::LoadImm>(Type::Void, 256, Type::U8); },
+               Error::InvalidRange);
+        reject([&] { return builder.EmitUniform<OpCode::LoadUniform>(Type::Void, 0, Type::Void); },
+               Error::InvalidType);
+        reject(
+                [&] {
+                    return builder.EmitUniformValue<OpCode::StoreUniform>(
+                            Type::Void, 0, Type::U64, foreign_value);
+                },
+                Error::ForeignUnit);
+        reject(
+                [&] {
+                    return builder.EmitUniformValue<OpCode::StoreUniform>(
+                            Type::Void, 0, Type::U64, uniform.GetValue(), static_cast<Type>(255));
+                },
+                Error::InvalidType);
+        reject(
+                [&] {
+                    return builder.EmitX87<OpCode::X87Execute>(Type::U64,
+                                                               uniform.GetValue(),
+                                                               UINT64_MAX,
+                                                               literal.GetValue(),
+                                                               foreign_value,
+                                                               0);
+                },
+                Error::ForeignUnit);
+        reject(
+                [&] {
+                    return builder.EmitX87<OpCode::X87Execute>(Type::U64,
+                                                               uniform.GetValue(),
+                                                               0,
+                                                               {builder.UnitId(), store.node},
+                                                               uniform.GetValue(),
+                                                               0);
+                },
+                Error::InvalidValue);
+        reject(
+                [&] {
+                    return builder.EmitX87<OpCode::X87Execute>(Type::U32,
+                                                               uniform.GetValue(),
+                                                               UINT64_MAX,
+                                                               literal.GetValue(),
+                                                               uniform.GetValue(),
+                                                               UINT64_MAX);
+                },
+                Error::InvalidResultType);
+        reject(
+                [&] {
+                    return builder.EmitImm<OpCode::LoadImm>(
+                            Type::Void, 0, Type::U64, {0, FlagProfile::None, false, true});
+                },
+                Error::InvalidRange);
+        CHECK(builder.EndBlock(Terminal::Return(x87.GetValue())) == Error::None);
+        CHECK(SubmitWithoutAllocation(builder));
+        CHECK(builder.EmitImm<OpCode::LoadImm>(Type::Void, 0, Type::U64).error == Error::Consumed);
+    }
+    // Failure while growing cells and then while publishing the Operation must
+    // both remove the complete unpublished suffix, including wide literals.
+    for (const unsigned allocation : {1u, 2u}) {
+        Builder builder{Scope::Block};
+        const auto block = builder.CreateBlock();
+        CHECK(builder.BeginBlock(block.block) == Error::None);
+        CHECK(builder.Reserve(1, 4, 1) == Error::None);
+        const auto seed = builder.EmitImm<OpCode::LoadImm>(Type::Void, 0, Type::U64);
+        CHECK(seed);
+        const auto before = builder.CountWork();
+        bool failed{};
+        failure_countdown = allocation;
+        try {
+            (void)builder.EmitX87<OpCode::X87Execute>(Type::U64,
+                                                      seed.GetValue(),
+                                                      UINT64_MAX,
+                                                      seed.GetValue(),
+                                                      seed.GetValue(),
+                                                      UINT64_MAX);
+        } catch (const std::bad_alloc&) {
+            failed = true;
+        }
+        failure_countdown = 0;
+        CHECK(failed && builder.CountWork() == before);
+        CHECK(builder.EmitX87<OpCode::X87Execute>(
+                Type::U64, seed.GetValue(), 0, seed.GetValue(), seed.GetValue(), 0));
+        CHECK(builder.EndBlock(Terminal::Dispatch()) == Error::None);
+        CHECK(SubmitWithoutAllocation(builder));
+    }
 }
 
 void ExplicitWorkAccounting() {
@@ -1554,6 +1700,17 @@ TEST_CASE("StaticOpcodeWritesKeepTheConstructionContract", "[compile][ir-constru
     } reset;
 
     CHECK_NOTHROW(StaticOpcodeWritesKeepTheConstructionContract());
+}
+
+TEST_CASE("FixedShapeWritesKeepTheConstructionContract", "[compile][ir-construction]") {
+    struct Reset {
+        ~Reset() {
+            count_allocations = false;
+            failure_countdown = 0;
+        }
+    } reset;
+
+    CHECK_NOTHROW(FixedShapeWritesKeepTheConstructionContract());
 }
 
 TEST_CASE("ExplicitWorkAccounting", "[compile][ir-construction]") {

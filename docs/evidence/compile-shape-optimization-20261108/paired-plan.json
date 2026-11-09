@@ -1,0 +1,22 @@
+{
+  "repetitions_per_scope_version": 3,
+  "versions": [
+    "parent",
+    "candidate"
+  ],
+  "scopes": [
+    "block",
+    "function"
+  ],
+  "workloads": [
+    "fp runtime PMU",
+    "fp compile excluding byte",
+    "func_tests compile excluding byte",
+    "x87 compile excluding byte"
+  ],
+  "reason_for_compile_guards": "Fixed shape IR construction and repeated work reduction must improve cold compile without a material regression; retain all timing samples and code work counts.",
+  "observations": 48,
+  "order": "alternate version order per repetition; retain all, no fastest selection",
+  "parent_sha256": "c8ac4ba9e29d3bbbc8ebcb4129140288bd42ff14bbc928fda3bc6df2c9e6effa",
+  "mixed_into_formal_matrix": false
+}

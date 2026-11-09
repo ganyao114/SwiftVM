@@ -1,0 +1,264 @@
+{
+  "started_at_utc": "2026-11-08T17:22:24.198175+00:00",
+  "source": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "head": "08143855b4c038dc9483fe8893e5458eecf0685c",
+  "build": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64",
+  "compiler_environment": "Orb Ubuntu, fixed LA GCC14.4 LP64D baseline without LSX/LASX",
+  "command": [
+    "/opt/homebrew/bin/orb",
+    "-m",
+    "ubuntu",
+    "-u",
+    "root",
+    "env",
+    "TMPDIR=/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/tmp",
+    "cmake",
+    "--build",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64",
+    "--target",
+    "svm_runtime_engine_test",
+    "svm_rebuild_linux",
+    "svm_runtime_persistence_test",
+    "-j",
+    "6"
+  ],
+  "target_scope": [
+    "svm_rebuild_linux",
+    "svm_runtime_engine_test",
+    "svm_runtime_persistence_test"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 22.53062983416021,
+  "completed_at_utc": "2026-11-08T17:22:46.757208+00:00",
+  "code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"b6157ac16969b00cb8ba888c20d1381f7499934d50bd4353b889188687fc0aa1\"\n",
+  "binaries": {
+    "svm_rebuild_linux": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_rebuild_linux",
+      "bytes": 4371296,
+      "sha256": "5e6876c75496d15948d5bc221261cefd8881e4c61bec4d607414b71e1def3883"
+    },
+    "svm_runtime_engine_test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_engine_test",
+      "bytes": 5504568,
+      "sha256": "523997553abb79c6a0a01e260c61339a456a95af22c5516fe56a23eeb9c5c560"
+    },
+    "svm_runtime_persistence_test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/svm_runtime_persistence_test",
+      "bytes": 5400768,
+      "sha256": "609b846c7c34b13b4952cb248abe05d786965dd72d7a2d12e954d6814d793278"
+    }
+  },
+  "fresh_objects": [
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/code_cache.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/code_cache.cpp.o",
+      "source_mtime_ns": 1794155176057566729,
+      "object_mtime_ns": 1794155838714356425,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/code_link.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/code_link.cpp.o",
+      "source_mtime_ns": 1794146959281030208,
+      "object_mtime_ns": 1794148825672168167,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/compile_service.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/compile_service.cpp.o",
+      "source_mtime_ns": 1794157245519400357,
+      "object_mtime_ns": 1794157337161909410,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/frontend_service.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/frontend_service.cpp.o",
+      "source_mtime_ns": 1794142199799760800,
+      "object_mtime_ns": 1794157336924256944,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/runtime.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/runtime.cpp.o",
+      "source_mtime_ns": 1794155005768747834,
+      "object_mtime_ns": 1794157339004047046,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/smc.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/smc.cpp.o",
+      "source_mtime_ns": 1794155056822583692,
+      "object_mtime_ns": 1794157338333254903,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/compile.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_loongarch64.dir/source/runtime/backend/loongarch64/compile.cpp.o",
+      "source_mtime_ns": 1794148477519773798,
+      "object_mtime_ns": 1794148823994644240,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/backend/loongarch64/emit.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_loongarch64.dir/source/runtime/backend/loongarch64/emit.cpp.o",
+      "source_mtime_ns": 1794148477520503267,
+      "object_mtime_ns": 1794148824212101904,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/dispatch_cache_test.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/source/tests/CMakeFiles/svm_runtime_engine_test.dir/rebuild/dispatch_cache_test.cpp.o",
+      "source_mtime_ns": 1794148711236096714,
+      "object_mtime_ns": 1794157341075442147,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/code_heap.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/code_heap.cpp.o",
+      "source_mtime_ns": 1794157172739359206,
+      "object_mtime_ns": 1794157336643933633,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/code_persistence.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/code_persistence.cpp.o",
+      "source_mtime_ns": 1794157179170525958,
+      "object_mtime_ns": 1794157338408378525,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/ir/builder.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_ir.dir/source/runtime/ir/builder.cpp.o",
+      "source_mtime_ns": 1794155777295629278,
+      "object_mtime_ns": 1794155835423850826,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/ir/passes/liveness.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_ir_optimize.dir/source/runtime/ir/passes/liveness.cpp.o",
+      "source_mtime_ns": 1794158455219006080,
+      "object_mtime_ns": 1794158550223635010,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/ir/passes/rewrite.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_ir_optimize.dir/source/runtime/ir/passes/rewrite.cpp.o",
+      "source_mtime_ns": 1794154829228561081,
+      "object_mtime_ns": 1794155835388327254,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/frontend/x86/build_ir.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/build_ir.cpp.o",
+      "source_mtime_ns": 1794155150183754494,
+      "object_mtime_ns": 1794155838988933984,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/frontend/arm64/build_ir.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_arm64_ir.dir/source/runtime/frontend/arm64/build_ir.cpp.o",
+      "source_mtime_ns": 1794155451065443796,
+      "object_mtime_ns": 1794155839902052121,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/launcher/linux/options.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_rebuild_linux.dir/source/launcher/linux/options.cpp.o",
+      "source_mtime_ns": 1794155451028992085,
+      "object_mtime_ns": 1794157339612481632,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/launcher/linux/report.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_rebuild_linux.dir/source/launcher/linux/report.cpp.o",
+      "source_mtime_ns": 1794156839101764351,
+      "object_mtime_ns": 1794157339625793873,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/tests/rebuild/runtime_engine_test.cpp",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/source/tests/CMakeFiles/svm_runtime_engine_test.dir/rebuild/runtime_engine_test.cpp.o",
+      "source_mtime_ns": 1794157121302171040,
+      "object_mtime_ns": 1794157341925039293,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/ir/builder.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_ir.dir/source/runtime/ir/builder.cpp.o",
+      "source_mtime_ns": 1794155777295198979,
+      "object_mtime_ns": 1794155835423850826,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/ir/builder_impl.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_ir.dir/source/runtime/ir/builder.cpp.o",
+      "source_mtime_ns": 1794155799179472759,
+      "object_mtime_ns": 1794155835423850826,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/frontend/timing.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/build_ir.cpp.o",
+      "source_mtime_ns": 1794154785816638932,
+      "object_mtime_ns": 1794155838988933984,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/frontend/source.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/build_ir.cpp.o",
+      "source_mtime_ns": 1794155005767154769,
+      "object_mtime_ns": 1794155838988933984,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/frontend/x86/semantics_operands.inc",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/build_ir.cpp.o",
+      "source_mtime_ns": 1794155150188938197,
+      "object_mtime_ns": 1794155838988933984,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/frontend/x86/semantics_x87.inc",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_x86_ir.dir/source/runtime/frontend/x86/build_ir.cpp.o",
+      "source_mtime_ns": 1794154924864871944,
+      "object_mtime_ns": 1794155838988933984,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/code_heap.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/code_heap.cpp.o",
+      "source_mtime_ns": 1794156989556946424,
+      "object_mtime_ns": 1794157336643933633,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/compile_service.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/compile_service.cpp.o",
+      "source_mtime_ns": 1794157245545847377,
+      "object_mtime_ns": 1794157337161909410,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/runtime.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/runtime.cpp.o",
+      "source_mtime_ns": 1794155005767915155,
+      "object_mtime_ns": 1794157339004047046,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/smc.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/smc.cpp.o",
+      "source_mtime_ns": 1794154920770334713,
+      "object_mtime_ns": 1794157338333254903,
+      "fresh": true
+    },
+    {
+      "source": "/Volumes/Data2/SwiftVM-submit-20261104/source/runtime/execution/timing.h",
+      "object": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-loongarch64/CMakeFiles/svm_execution.dir/source/runtime/execution/runtime.cpp.o",
+      "source_mtime_ns": 1794156839101239552,
+      "object_mtime_ns": 1794157339004047046,
+      "fresh": true
+    }
+  ],
+  "fresh_objects_valid": true
+}

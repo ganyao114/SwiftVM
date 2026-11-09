@@ -1,6 +1,6 @@
 // Members of the single Semantics<Sink> template. No instruction stream or owner.
 static Value Constant(Emitter& builder, u64 bits, Type type = Type::U64) {
-    return Require(builder.LoadImm(Type::Void, {Operand::Immediate(bits, type)}));
+    return Require(builder.template EmitImm<OpCode::LoadImm>(Type::Void, bits, type));
 }
 
 static Value Add(Emitter& builder, Value left, Operand right) {
@@ -113,8 +113,8 @@ static Value Address(Emitter& builder,
         if (segment != Register::FS && segment != Register::GS) return base;
         const auto offset = segment == Register::FS ? layout.fs_base_offset : layout.gs_base_offset;
         if (offset > UINT32_MAX - 7) Unsupported();
-        const auto segment_base =
-                Require(builder.LoadUniform(Type::U64, {Operand::Uniform(offset, Type::U64)}));
+        const auto segment_base = Require(
+                builder.template EmitUniform<OpCode::LoadUniform>(Type::U64, offset, Type::U64));
         if (!base) return segment_base;
         if (narrow)
             base = Require(builder.ZeroExtend64(Type::U64, {Operand::ValueOf(base, Type::U32)}));

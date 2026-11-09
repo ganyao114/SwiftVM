@@ -1,13 +1,13 @@
 #include "base/error.h"
-#include "tests/support/check.h"
-#include "tests/support/test_mode.h"
-#include "tests/support/native_code.h"
-#include "tests/support/guest_memory.h"
-#include "runtime/frontend/x86/detail/decoded.h"
-#include "x86_fixtures.h"
+#include "runtime/arch/x86/x87.h"
 #include "runtime/externals/distorm/distorm.h"
 #include "runtime/externals/distorm/mnemonics.h"
-#include "runtime/arch/x86/x87.h"
+#include "runtime/frontend/x86/detail/decoded.h"
+#include "tests/support/check.h"
+#include "tests/support/guest_memory.h"
+#include "tests/support/native_code.h"
+#include "tests/support/test_mode.h"
+#include "x86_fixtures.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -1545,7 +1545,8 @@ void PackedByteAndComparisonsAndRelativeCall() {
     const auto built = BuildIR({&source, 1}, Scope::Block, vector_layout);
     CHECK(built);
     CHECK(built.instruction_count == 12 && built.decoded_bytes == bytes.size());
-    constexpr std::array<std::uint64_t, 8> relations{2, 1, 3, 8, 13, 14, 12, 7};
+    // Legacy LT/LE/NLT/NLE predicates signal on quiet NaNs (IR bit 4).
+    constexpr std::array<std::uint64_t, 8> relations{2, 17, 19, 8, 13, 30, 28, 7};
     std::size_t packs{}, compares{};
     for (const auto& op : built.program.Operations()) {
         const auto args = built.program.Operands(op);
@@ -1558,7 +1559,7 @@ void PackedByteAndComparisonsAndRelativeCall() {
         if (op.opcode == OpCode::VecFCmpMask) {
             CHECK(compares < 9 && op.type == Type::V128 && CellCount(args) == 5);
             CHECK(CellAt(args, 2).Payload() == (compares < 8 ? 32u : 64u));
-            CHECK(CellAt(args, 3).Payload() == (compares < 8 ? relations[compares] : 1));
+            CHECK(CellAt(args, 3).Payload() == (compares < 8 ? relations[compares] : 17));
             CHECK(CellAt(args, 4).Payload() == 0 && op.Metadata() == OperationMetadata{});
             ++compares;
         }

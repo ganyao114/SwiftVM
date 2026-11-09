@@ -55,6 +55,9 @@ struct FaultContext {
     int restore_error{};
     // Actual private XMM bank in v16..v31; fatal recovery reads FPSIMD state.
     std::uint32_t pinned_vector_offset{UINT32_MAX};
+    // Optional borrowed raw FP status slot. The host adapter captures it
+    // from the signal frame before leaving native code; the VM merges it.
+    std::uint64_t* guest_fp_status{};
 };
 
 [[noreturn]] void RaiseGuestFault(FaultContext&,

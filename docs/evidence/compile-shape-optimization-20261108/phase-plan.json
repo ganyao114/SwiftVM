@@ -1,0 +1,7 @@
+{
+  "observations": 18,
+  "detail_clocks": true,
+  "mixed_into_formal_matrix": false,
+  "formation_includes_byte_parser": true,
+  "publication_children_nonoverlapping": true
+}

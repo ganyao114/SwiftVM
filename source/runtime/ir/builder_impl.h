@@ -21,20 +21,35 @@ template <class T> [[gnu::noinline]] inline void Grow(std::vector<T>& values,
 
 inline bool SignedType(Type type) noexcept { return type >= Type::S8 && type <= Type::S64; }
 
-inline Error LiteralType(const Operand& operand, Type& type) noexcept {
-    type = operand.type;
+inline Error LiteralType(std::uint64_t payload, Type requested, Type& type) noexcept {
+    type = requested;
     if (!ValidType(type) || type == Type::Void) return Error::InvalidType;
     const auto bits = TypeBits(type);
     if (!bits || bits > 64) return Error::InvalidRange;
     if (bits == 64) return Error::None;
     const auto mask = (std::uint64_t{1} << bits) - 1;
-    if ((operand.payload & ~mask) == 0) return Error::None;
+    if ((payload & ~mask) == 0) return Error::None;
     // A signed literal can carry its ordinary sign-extended C++ bit pattern.
-    if (SignedType(type) && (operand.payload & ~mask) == ~mask &&
-        (operand.payload & (std::uint64_t{1} << (bits - 1))))
+    if (SignedType(type) && (payload & ~mask) == ~mask &&
+        (payload & (std::uint64_t{1} << (bits - 1))))
         return Error::None;
     return Error::InvalidRange;
 }
+
+inline Error LiteralType(const Operand& operand, Type& type) noexcept {
+    return LiteralType(operand.payload, operand.type, type);
+}
+
+// Both fixed-shape and general appends install only an unpublished suffix.
+struct OperandRollback {
+    std::vector<Cell>& cells;
+    const std::size_t first;
+    bool committed{};
+
+    ~OperandRollback() noexcept {
+        if (!committed) cells.resize(first);
+    }
+};
 
 inline bool Optional(Signature signature) noexcept {
     return signature == Signature::OptionalData || signature == Signature::OptionalOperand ||
@@ -305,6 +320,31 @@ Error Builder::ProcessArguments(const Schema& schema,
     return Error::None;
 }
 
+[[gnu::always_inline]] inline AppendResult Builder::CommitAppend(OpCode op,
+                                                                 Type type,
+                                                                 OperationMetadata metadata,
+                                                                 std::size_t first_word) {
+    // All admission has finished. The last possible allocation precedes
+    // publishing the operation, its ID and the block's actual node count.
+    const auto node_index = storage->operations.size();
+    if (node_index == storage->operations.capacity())
+        detail::Grow(storage->operations, node_index + 1, 32);
+    static_assert(std::is_trivially_copyable_v<Operation> && std::is_trivially_copyable_v<Cell>);
+    const NodeId node{static_cast<std::uint32_t>(node_index)};
+    storage->operations.push_back(
+            {metadata.flag_outputs,
+             static_cast<std::uint32_t>(first_word),
+             static_cast<std::uint32_t>(storage->operands.size() - first_word),
+             storage->active,
+             op,
+             type,
+             static_cast<std::uint8_t>(static_cast<unsigned>(metadata.profile) |
+                                       (metadata.branch_only ? 4u : 0u) |
+                                       (metadata.discard_omitted_flags ? 8u : 0u))});
+    ++storage->blocks[storage->active.value].node_count;
+    return {Error::None, node, type == Type::Void ? 0 : storage->unit};
+}
+
 template <OpCode known_op> AppendResult Builder::AppendImpl(OpCode op,
                                                             Type requested,
                                                             std::span<const Operand> operands,
@@ -328,15 +368,7 @@ template <OpCode known_op> AppendResult Builder::AppendImpl(OpCode op,
     // This private append owns its whole mutation interval. Each actual cell
     // is installed as it is checked; failure removes only this unpublished
     // suffix. Cell destruction is trivial and shrinking cannot allocate.
-    struct OperandRollback {
-        std::vector<Cell>& cells;
-        const std::size_t first;
-        bool committed{};
-
-        ~OperandRollback() noexcept {
-            if (!committed) cells.resize(first);
-        }
-    } rollback{storage->operands, storage->operands.size()};
+    detail::OperandRollback rollback{storage->operands, storage->operands.size()};
 
     Type first{Type::Void};
     std::size_t word_count{};  // Used only by the rewrite measurement instantiation.
@@ -353,26 +385,9 @@ template <OpCode known_op> AppendResult Builder::AppendImpl(OpCode op,
                 schemas[static_cast<std::size_t>(known_op)].result)>(
                 *schema, requested, first, type);
     if (result_error != Error::None) return {result_error};
-    // All cell admission has finished. The last possible allocation precedes
-    // publishing the operation, its ID and the block's actual node count.
-    if (node_index == storage->operations.capacity())
-        detail::Grow(storage->operations, node_index + 1, 32);
-    static_assert(std::is_trivially_copyable_v<Operation> && std::is_trivially_copyable_v<Cell>);
-    const NodeId node{static_cast<std::uint32_t>(node_index)};
-    const auto first_operand = static_cast<std::uint32_t>(rollback.first);
-    storage->operations.push_back(
-            {metadata.flag_outputs,
-             first_operand,
-             static_cast<std::uint32_t>(storage->operands.size() - rollback.first),
-             storage->active,
-             op,
-             type,
-             static_cast<std::uint8_t>(static_cast<unsigned>(metadata.profile) |
-                                       (metadata.branch_only ? 4u : 0u) |
-                                       (metadata.discard_omitted_flags ? 8u : 0u))});
-    ++storage->blocks[storage->active.value].node_count;
+    const auto result = CommitAppend(op, type, metadata, rollback.first);
     rollback.committed = true;
-    return {Error::None, node, type == Type::Void ? 0 : storage->unit};
+    return result;
 }
 
 }  // namespace swift::runtime::ir

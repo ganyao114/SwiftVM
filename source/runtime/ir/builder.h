@@ -83,6 +83,53 @@ public:
         return Emit<op>(result, {operands.begin(), operands.size()}, metadata);
     }
 
+    // These fixed shapes carry their kind and arity in the C++ call. Payloads,
+    // owner identity and consumer views retain the ordinary append checks.
+    // The small out-of-line encoders are shared by opcodes with the same shape.
+    template <OpCode op> AppendResult EmitImm(Type result,
+                                              std::uint64_t bits,
+                                              Type literal_type,
+                                              OperationMetadata metadata = {}) {
+        static_assert(HasShape<op, Signature::Imm>());
+        return AppendImm(op, result, bits, literal_type, metadata);
+    }
+
+    template <OpCode op> AppendResult EmitUniform(Type result,
+                                                  std::uint32_t offset,
+                                                  Type field_type,
+                                                  OperationMetadata metadata = {}) {
+        static_assert(HasShape<op, Signature::Uniform>());
+        return AppendUniform(op, result, offset, field_type, metadata);
+    }
+
+    template <OpCode op> AppendResult EmitUniformValue(Type result,
+                                                       std::uint32_t offset,
+                                                       Type field_type,
+                                                       Value value,
+                                                       Type view = Type::Void,
+                                                       OperationMetadata metadata = {}) {
+        static_assert(HasShape<op, Signature::Uniform, Signature::Value>());
+        return AppendUniformValue(op, result, offset, field_type, value, view, metadata);
+    }
+
+    // x87's command and metadata are full U64 literals; its three actual Value
+    // inputs use their natural types. No prevalidated handles are introduced.
+    template <OpCode op> AppendResult EmitX87(Type result,
+                                              Value state,
+                                              std::uint64_t command,
+                                              Value raw,
+                                              Value address,
+                                              std::uint64_t detail_bits,
+                                              OperationMetadata metadata = {}) {
+        static_assert(HasShape<op,
+                               Signature::Value,
+                               Signature::Imm,
+                               Signature::Value,
+                               Signature::Value,
+                               Signature::Imm>());
+        return AppendX87(op, result, state, command, raw, address, detail_bits, metadata);
+    }
+
     Error EndBlock(Terminal);
     // Update only the original record's flag metadata, in either construction
     // or Edit. No operand/use walk, allocation or backend semantic admission.
@@ -130,6 +177,32 @@ public:
     SubmitResult Submit() noexcept;
 
 private:
+    template <OpCode op, Signature... arguments> static consteval bool HasShape() {
+        if constexpr (static_cast<std::size_t>(op) >= schemas.size())
+            return false;
+        else {
+            constexpr std::array shape{arguments...};
+            constexpr auto& schema = schemas[static_cast<std::size_t>(op)];
+            if (schema.argument_count != shape.size()) return false;
+            for (std::size_t i = 0; i < shape.size(); ++i)
+                if (schema.arguments[i] != shape[i]) return false;
+            return true;
+        }
+    }
+
+    Error CheckFixedAppend(OperationMetadata) const noexcept;
+    Error StoreFixedValue(Value, Type view, Type& effective);
+    Error StoreFixedImmediate(std::uint64_t, Type, Type& effective);
+    Error StoreFixedUniform(std::uint32_t, Type);
+    AppendResult FinishFixedAppend(
+            OpCode, Type, Type first, OperationMetadata, std::size_t first_word);
+    AppendResult CommitAppend(OpCode, Type, OperationMetadata, std::size_t first_word);
+    AppendResult AppendImm(OpCode, Type, std::uint64_t, Type, OperationMetadata);
+    AppendResult AppendUniform(OpCode, Type, std::uint32_t, Type, OperationMetadata);
+    AppendResult AppendUniformValue(
+            OpCode, Type, std::uint32_t, Type, Value, Type, OperationMetadata);
+    AppendResult AppendX87(
+            OpCode, Type, Value, std::uint64_t, Value, Value, std::uint64_t, OperationMetadata);
     explicit Builder(std::unique_ptr<Program::Storage>, std::size_t max_operand_words) noexcept;
     template <bool measure> Error StoreOperand(const Operand&, std::size_t& words);
     template <int known_signature, bool measure> Error AppendArgument(Signature,

@@ -310,7 +310,17 @@ bool Allocator::SelectHomes() {
                                          ? EffectsFor(operation.opcode, operation.Metadata())
                                          : Effect::None;
             const auto pc_literal = ObservePC(i, inputs, effects, selection);
-            if (!RecordInputUses(i, inputs, pc_literal, selection)) return false;
+            // Their admitted schemas contain no Value edges. They still
+            // participate in PC, flags and delayed physical-pin decisions.
+            switch (operation.opcode) {
+                case OpCode::Nop:
+                case OpCode::LoadImm:
+                case OpCode::FaultLocation:
+                case OpCode::EntryPoint:
+                    break;
+                default:
+                    if (!RecordInputUses(i, inputs, pc_literal, selection)) return false;
+            }
             ObserveNZCV(i, inputs, effects, selection);
             SelectPinnedHome(i, inputs, effects, selection);
         }

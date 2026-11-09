@@ -1,0 +1,25 @@
+{
+  "observations": 24,
+  "repetitions_per_case_scope_version": 3,
+  "versions": [
+    "parent",
+    "candidate"
+  ],
+  "cases": [
+    "fp",
+    "x87_bench"
+  ],
+  "scopes": [
+    "block",
+    "function"
+  ],
+  "clock_substitution": "CLOCK_MONOTONIC -> perf pinned per-thread user retired instructions, exclude kernel/hypervisor; other clocks retain syscall clock_gettime",
+  "unit_of_every_reported_timer_number": "retired_user_instructions (field names in raw product JSON still end in _ns)",
+  "counts_include": "counter clock wrapper overhead and same original decode-timing diagnostic calls",
+  "not_measurement_of": "wall time, CPU time, nanoseconds or FEX compile ratio",
+  "mixed_into_formal_matrix": false,
+  "multiplex": "every counter read requires time_enabled == time_running > 0",
+  "source_sha256": "650bf4b439cc401a37ce0170de3d34014b4a17c4f3ce9bb24e6b90c2a0b1c1e1",
+  "library_sha256": "27ea56c04b82f831622bbd14924513163fc45ebbeb56c6693aafd24587e48377",
+  "order": "alternate version order per repetition; all fixed observations retained"
+}

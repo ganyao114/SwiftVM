@@ -17,6 +17,10 @@ struct DecodeLimits {
 // Counts only actual decoder calls when explicitly requested by the owner.
 struct DecodeTiming {
     std::uint64_t nanoseconds{}, calls{};
+    // Request-level diagnostic intervals. Formation includes byte parsing;
+    // ir_birth covers construction into the one Program owner.
+    std::uint64_t formation_ns{}, ir_birth_ns{};
+    bool stages{};
 };
 
 struct ReadyEntryLookup {

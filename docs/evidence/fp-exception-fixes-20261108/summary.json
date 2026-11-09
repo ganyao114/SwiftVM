@@ -1,0 +1,44 @@
+{
+  "recorded_utc": "2026-11-09T02:09:14.627118+00:00",
+  "scope": "two confirmed ARM64 host FP boundary bugs",
+  "changes": [
+    "save original host FPCR/FPSR before installing guest FP state",
+    "capture raw FPSR from fatal signal FPSIMD frame, then merge guest status after restoring host FP"
+  ],
+  "regressions": {
+    "old_product": "two cases fail at expected assertions on RedMagic bf1359ff",
+    "fixed_product": "two cases pass, each covers Block and Function",
+    "normal": "guest nearest DIVSS 1/3 produces 0x3eaaaaab and PE; host toward-zero/default-NaN controls and nonzero IOC preserved",
+    "fatal": "same native unit DIVSS 1/0 then ADD then PROT_NONE load: exact SIGSEGV/SEGV_ACCERR, guest MXCSR 0x1fa4 retains prior PE and new ZE, correct PC/GPR/XMM and host FP preservation",
+    "no_interpreter_fallback": true
+  },
+  "contracts": {
+    "runtime_native_cases": 10,
+    "runtime_native_assertions": 148,
+    "fp_and_links_cases": 4,
+    "persistence_native_cases": 4,
+    "all_passed": true
+  },
+  "limits": [
+    "ARM64 host only; no general guest signal system added",
+    "both real VM regression cases use the existing XMM pin bank; scalar/status-only combination reviewed, not separately executed",
+    "no full benchmark or cross-architecture kernel campaign; compiler passes and native ABI layout unchanged"
+  ],
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 35205640,
+    "sha256": "587b2dd0fa122667eb5a1d3365fd1407f66c88cfe9682420bef1ff6b9318c21d"
+  },
+  "source_sha256_matches": true,
+  "phone_cleanup": {
+    "namespace": "/data/local/tmp/swiftvm-fp-exception-fixes-20261108",
+    "remaining_bytes": 0,
+    "allocated_bytes_removed": 222453760,
+    "df_free_delta_bytes": 222474240,
+    "active_processes": [],
+    "open_files": [],
+    "errors": []
+  },
+  "committed": false,
+  "raw_result_root": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/fp-exception-fixes-20261108"
+}

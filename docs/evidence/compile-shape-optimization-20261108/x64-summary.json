@@ -1,0 +1,267 @@
+{
+  "all_passed": true,
+  "started_at_utc": "2026-11-08T17:22:20.065762+00:00",
+  "claim": "Focused functional integration on the actual x64 backend under QEMU system and a real Linux kernel, two emulated CPUs. No phone, physical-hardware, benchmark, or performance claim.",
+  "build_result": {
+    "exit_code": 0,
+    "command": [
+      "orb",
+      "-m",
+      "ubuntu",
+      "env",
+      "TMPDIR=/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/tmp",
+      "cmake",
+      "--build",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64",
+      "--target",
+      "svm_runtime_engine_test",
+      "svm_runtime_persistence_test",
+      "svm_rebuild_linux",
+      "--parallel",
+      "4"
+    ],
+    "log": "build-targeted.log",
+    "elapsed_seconds": 15.421078125014901,
+    "completed_at_utc": "2026-11-08T17:22:35.503509+00:00"
+  },
+  "scope": "Fixed-cache final x64 integration after restoring the existing liveness implementation. Same seven-process narrow kernel protocol; no coverage expansion or cache reconfiguration.",
+  "cases": [
+    {
+      "name": "compile-contracts",
+      "exit": 0,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "test_cases": true
+      }
+    },
+    {
+      "name": "runtime-native",
+      "exit": 0,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "test_cases": true
+      }
+    },
+    {
+      "name": "persistence-native",
+      "exit": 0,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "test_cases": true
+      }
+    },
+    {
+      "name": "x86-jit-block",
+      "exit": 40,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "runtime_completed": true,
+        "thread_l1_bound": true,
+        "diagnostic_hits_bounded": true,
+        "native_bytes": true,
+        "no_interpreter": true
+      }
+    },
+    {
+      "name": "arm-jit-block",
+      "exit": 42,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "runtime_completed": true,
+        "thread_l1_bound": true,
+        "diagnostic_hits_bounded": true,
+        "native_bytes": true,
+        "no_interpreter": true,
+        "output": true
+      }
+    },
+    {
+      "name": "x86-jit-function",
+      "exit": 40,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "runtime_completed": true,
+        "thread_l1_bound": true,
+        "diagnostic_hits_bounded": true,
+        "native_bytes": true,
+        "no_interpreter": true
+      }
+    },
+    {
+      "name": "arm-jit-function",
+      "exit": 42,
+      "all_passed": true,
+      "checks": {
+        "exit": true,
+        "runtime_completed": true,
+        "thread_l1_bound": true,
+        "diagnostic_hits_bounded": true,
+        "native_bytes": true,
+        "no_interpreter": true,
+        "output": true
+      }
+    }
+  ],
+  "native_tests": {
+    "compile-contracts": {
+      "assertions": 2,
+      "groups": 2
+    },
+    "runtime-native": {
+      "assertions": 146,
+      "groups": 8
+    },
+    "persistence-native": {
+      "assertions": 45,
+      "groups": 4
+    }
+  },
+  "smokes": [
+    {
+      "compile_attempts": 3,
+      "interpreted_steps": 0,
+      "native_bytes": 848,
+      "thread_l1_entries": 0,
+      "thread_l1_virtual_bytes": 0,
+      "static_links": 3,
+      "patched_links": 3,
+      "name": "x86-jit-block",
+      "exit": 40
+    },
+    {
+      "compile_attempts": 38,
+      "interpreted_steps": 0,
+      "native_bytes": 13852,
+      "thread_l1_entries": 1048576,
+      "thread_l1_virtual_bytes": 16777216,
+      "static_links": 52,
+      "patched_links": 30,
+      "name": "arm-jit-block",
+      "exit": 42
+    },
+    {
+      "compile_attempts": 1,
+      "interpreted_steps": 0,
+      "native_bytes": 536,
+      "thread_l1_entries": 0,
+      "thread_l1_virtual_bytes": 0,
+      "static_links": 0,
+      "patched_links": 0,
+      "name": "x86-jit-function",
+      "exit": 40
+    },
+    {
+      "compile_attempts": 14,
+      "interpreted_steps": 0,
+      "native_bytes": 11476,
+      "thread_l1_entries": 1048576,
+      "thread_l1_virtual_bytes": 16777216,
+      "static_links": 9,
+      "patched_links": 9,
+      "name": "arm-jit-function",
+      "exit": 42
+    }
+  ],
+  "coverage": [
+    "Compile-only SourceAdmission and FaultMetadataLifetime: batched SMC cross-page/duplicate/shared-alias and partial protection-failure checks; metadata source mutation/destruction, self-alias republish and stable borrowed views across fragment/outer-vector growth.",
+    "Original runtime native filter [native]~[atomic], eight groups: generated x64 execution, ARM precise fault/control behavior, SSE floating state and dispatch lifecycle.",
+    "Existing engine assertions retain dynamic real L1 16MiB and pure-static watched-code real L1 zero.",
+    "Original persistence native suite, four groups: restore, SMC invalidation, source-policy rejection and AOT fault behavior.",
+    "x86 static-only JIT block/function smoke: guest exit40, zero interpreted steps, zero real L1.",
+    "ARM frontend JIT block/function smoke: expected output, guest exit42, zero interpreted steps, real L1 16MiB."
+  ],
+  "source_identity": {
+    "root_manifest": {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/source-freeze.json",
+      "bytes": 4908,
+      "sha256": "8ef4095f463973ab13d4ebbf0c542a234bf32f41706ca4b2d86f6e29a3cfe019"
+    },
+    "prebuild_check": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/freeze-prebuild-check.json",
+    "postbuild_check": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/freeze-postbuild-check.json",
+    "postrun_check": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/freeze-postrun-check.json",
+    "frozen_source_hashes_matched": 30,
+    "head": "08143855b4c038dc9483fe8893e5458eecf0685c",
+    "build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"bdf58d714bf047254a534226eee737df02cdc7f10ebe0410917ccc5fd41343ee\"\n",
+    "liveness_after_run": {
+      "path": "source/runtime/ir/passes/liveness.cpp",
+      "matches_head": true,
+      "bytes": 23289,
+      "sha256": "789bcad1252c6a6a8494323b07b1de56e800d952656047d3d7fc58f5ccaae4ce"
+    }
+  },
+  "binaries": {
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_engine_test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_engine_test",
+      "bytes": 5468184,
+      "sha256": "b39bcd30c7dcf94fc13a56cb0c718d4cc530de0c2127a91fcde31ff3c42e30b0"
+    },
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_persistence_test": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_runtime_persistence_test",
+      "bytes": 5365640,
+      "sha256": "d69d5c000822ea5261ea8d38140c8c3115a7aa80253b46f373c76dd9230d089a"
+    },
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_rebuild_linux": {
+      "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-x64/svm_rebuild_linux",
+      "bytes": 4151216,
+      "sha256": "d9486d08297f431d757c55c9a9bda93a32b0650749b6c1a6ad75e839f49d4c64"
+    }
+  },
+  "results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/kernel-final/results.json",
+  "raw_console": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/kernel-final/console.log.gz",
+  "commands": {
+    "build": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/build-command.json",
+    "kernel": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/kernel-final/execution-inputs.json"
+  },
+  "cleanup": {
+    "owned_pid": 47692,
+    "running": false,
+    "qemu_exit": 0,
+    "deadline": false,
+    "temporary_initrd_removed_bytes": 8524003,
+    "temporary_initrd_remaining": false,
+    "expanded_rootfs_created": false,
+    "errors": [],
+    "independent_process_check": {
+      "exit_code": 1,
+      "output": "",
+      "owned_qemu_present": false
+    },
+    "derived_rootfs_remaining_bytes": 0,
+    "derived_init_executable_removed": true,
+    "df_after": "Filesystem    1024-blocks      Used Available Capacity  iused     ifree %iused  Mounted on\n/dev/disk11s1   999155012 940502556  58448068    95% 10698685 584480680    2%   /Volumes/Data2\n"
+  },
+  "cleanup_receipt": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/kernel-final/cleanup-receipt.json",
+  "completed_at_utc": "2026-11-08T17:22:44.284533+00:00",
+  "candidate_stage": "final metadata fragments with liveness.cpp restored to HEAD; 30 frozen modified files",
+  "candidate_transition": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/candidate-stage.json",
+  "previous_candidate_summary": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/pre-liveness-revert/x64/summary.json",
+  "smoke_code_size_comparison_to_pre_liveness_revert": {
+    "x86-jit-block": {
+      "previous_native_bytes": 848,
+      "final_native_bytes": 848,
+      "equal": true
+    },
+    "arm-jit-block": {
+      "previous_native_bytes": 13852,
+      "final_native_bytes": 13852,
+      "equal": true
+    },
+    "x86-jit-function": {
+      "previous_native_bytes": 536,
+      "final_native_bytes": 536,
+      "equal": true
+    },
+    "arm-jit-function": {
+      "previous_native_bytes": 11476,
+      "final_native_bytes": 11476,
+      "equal": true
+    }
+  },
+  "derivation": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/x64/harness-derivation.json"
+}

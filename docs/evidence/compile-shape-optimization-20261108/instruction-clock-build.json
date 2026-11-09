@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "/Users/swift/Library/Android/sdk/ndk/29.0.13846066/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android28-clang",
+    "-O2",
+    "-shared",
+    "-fPIC",
+    "-Wall",
+    "-Wextra",
+    "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/instruction-clock/instruction_clock.c",
+    "-o",
+    "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/instruction-clock/instruction_clock.so"
+  ],
+  "exit": 0,
+  "stdout": "",
+  "stderr": "",
+  "source_sha256": "650bf4b439cc401a37ce0170de3d34014b4a17c4f3ce9bb24e6b90c2a0b1c1e1",
+  "library_sha256": "27ea56c04b82f831622bbd14924513163fc45ebbeb56c6693aafd24587e48377"
+}

@@ -1,0 +1,152 @@
+[
+  {
+    "path": "source/launcher/linux/options.cpp",
+    "sha256": "7a9d5a35bd90934dac808e86dc051211670154a71533fd0a6854a7bda780701f",
+    "bytes": 4016
+  },
+  {
+    "path": "source/launcher/linux/report.cpp",
+    "sha256": "f3e8286aec3ffb7d7b2dfb6f04e715989bb6013776ce72ca40bafa264cd4949f",
+    "bytes": 8534
+  },
+  {
+    "path": "source/runtime/backend/arm64/allocation_selection.cpp",
+    "sha256": "97aa54bc6a401ddf5fbdffa4ff76efb5c8aeef8272021607bd325fef293849ae",
+    "bytes": 18377
+  },
+  {
+    "path": "source/runtime/execution/code_cache.cpp",
+    "sha256": "ae45f923c688150e1fe126faaf8cd2391769df96d19fc1264afc0edb971975a7",
+    "bytes": 5541
+  },
+  {
+    "path": "source/runtime/execution/code_heap.cpp",
+    "sha256": "e4f8c38570798da9c40ea479c080681786e8b48a829442655fac7fc68fc908d4",
+    "bytes": 7083
+  },
+  {
+    "path": "source/runtime/execution/code_heap.h",
+    "sha256": "db0ec8e8bf10b37e10e99da38a5dfe72e8648f5b83343a1c4d11b6b24c94ba83",
+    "bytes": 1942
+  },
+  {
+    "path": "source/runtime/execution/code_persistence.cpp",
+    "sha256": "21e79a217f53022bc1d0d341e358b04bfc3eb35a66d1c0490e3211a4a68e0a3b",
+    "bytes": 5032
+  },
+  {
+    "path": "source/runtime/execution/compile_service.cpp",
+    "sha256": "1a02bef48d41d848442e8254cfbf487aa3f95cdeffe18e154107796e5e3a08e9",
+    "bytes": 12292
+  },
+  {
+    "path": "source/runtime/execution/compile_service.h",
+    "sha256": "7a68bcda12a09091cc1e988f73fe79a3eea1324b3d6ea9450e3a925d369099a6",
+    "bytes": 2602
+  },
+  {
+    "path": "source/runtime/execution/dispatch.cpp",
+    "sha256": "7bd6e394cefda6cdb3d2de99ce7f2bf93d676d8bbb8c4d8b71bb3b3eb815125e",
+    "bytes": 4676
+  },
+  {
+    "path": "source/runtime/execution/runtime.cpp",
+    "sha256": "d770eaa115f9b6fcb65da57754a9f8f3989a5d0118b533df66ce1f9039cb8e9b",
+    "bytes": 27181
+  },
+  {
+    "path": "source/runtime/execution/runtime.h",
+    "sha256": "3847a8804bd7ae1f1b53578dbc086de23c7bb5c7e8c083f14215cf3ef66ba596",
+    "bytes": 4359
+  },
+  {
+    "path": "source/runtime/execution/smc.cpp",
+    "sha256": "1f57a604cf449db45de393e760d7b08b3e7ea78c6a351c75a68c29e2701c606a",
+    "bytes": 8346
+  },
+  {
+    "path": "source/runtime/execution/smc.h",
+    "sha256": "bdc26c052a2237b2e654b43adf558481a1c58071862b1c01bf81800ada62371a",
+    "bytes": 1188
+  },
+  {
+    "path": "source/runtime/execution/timing.h",
+    "sha256": "3962355357809fee43868e25eb6ff50bb6dbf0e6bb0afa86f7d2d94015809f46",
+    "bytes": 1016
+  },
+  {
+    "path": "source/runtime/frontend/arm64/build_ir.cpp",
+    "sha256": "b75175e96ef7b198f225ca7eb123f9ca89e3f0a0ea86705cffc0919bab28e782",
+    "bytes": 13401
+  },
+  {
+    "path": "source/runtime/frontend/source.h",
+    "sha256": "1d6248a54d9ebe1d2eb25f52d4f9ae8dedfec46556c70c5828c2f3c05973e351",
+    "bytes": 850
+  },
+  {
+    "path": "source/runtime/frontend/x86/build_ir.cpp",
+    "sha256": "8f9482065d9bab5569ebfe7e86ce14fbb45f0bcd53430d23f59ba85e6aeb6a95",
+    "bytes": 47378
+  },
+  {
+    "path": "source/runtime/frontend/x86/semantics_operands.inc",
+    "sha256": "a367f78aa00c1a0c3f06924aee0a10c2c445835dea09c10d92c357fc0901b7b6",
+    "bytes": 15876
+  },
+  {
+    "path": "source/runtime/frontend/x86/semantics_x87.inc",
+    "sha256": "88692a664fbaade4fb6718e670d659c2090716311194543e06cae8dabdafa957",
+    "bytes": 35775
+  },
+  {
+    "path": "source/runtime/ir/builder.cpp",
+    "sha256": "d9f8452b4d6bc3003f9f1f76732aef7dd6db0b9a03655d57d55d3c862f1d2bd8",
+    "bytes": 19021
+  },
+  {
+    "path": "source/runtime/ir/builder.h",
+    "sha256": "d75528b2cea5fc24ede3877ca53bde17650069c1bee316bc87f7f4f20d06c3b0",
+    "bytes": 12387
+  },
+  {
+    "path": "source/runtime/ir/builder_impl.h",
+    "sha256": "ac381d0ec8fa8c6ae7dfcf926fa1a718587814e4757e391da41c2f1add2b915b",
+    "bytes": 18372
+  },
+  {
+    "path": "source/runtime/ir/direct/interpreter.h",
+    "sha256": "5703372175edeca9ed49132dbeb2b5720066e2582b991934f2a15f4d3dbdd201",
+    "bytes": 8500
+  },
+  {
+    "path": "source/runtime/ir/passes/rewrite.cpp",
+    "sha256": "d6997a187c58f2607850fd32191b1b6263fcf5f32fc6b1902cc5b3ded255374c",
+    "bytes": 19560
+  },
+  {
+    "path": "source/tests/rebuild/ir_construction_test.cpp",
+    "sha256": "f5f3e95930729f85400ff7a751296ec674f82361353520470f6b588db76dd37a",
+    "bytes": 90470
+  },
+  {
+    "path": "source/tests/rebuild/ir_direct_test.cpp",
+    "sha256": "7cb977f6786776dcb6c39f6992fecae5107ed4774c18e9cedc1b6e6ba353a923",
+    "bytes": 14776
+  },
+  {
+    "path": "source/tests/rebuild/runtime_engine_test.cpp",
+    "sha256": "dc8d8a5faf62d2edbc68c6636707e733978d238b2a7e4682f2092d73aac49544",
+    "bytes": 41122
+  },
+  {
+    "path": "source/tests/rebuild/x86_construction_test.cpp",
+    "sha256": "8470291e6199e16498fa629262a68f94dca84e2651902438005db6edf5849f6f",
+    "bytes": 105904
+  },
+  {
+    "path": "source/runtime/frontend/timing.h",
+    "sha256": "f613d38b426e45d7739a12faf1a7cf3be6c9cdb10e4bd979eb6379da6c284c2f",
+    "bytes": 743
+  }
+]

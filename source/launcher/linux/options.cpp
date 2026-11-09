@@ -62,7 +62,10 @@ Options ParseOptions(int argc, char* const* argv) {
             options.artifact_path = value(option);
         else if (option == "--decode-timing")
             options.decode_timing = true;
-        else if (option.starts_with('-'))
+        else if (option == "--compile-details") {
+            options.decode_timing = true;
+            options.compile_details = true;
+        } else if (option.starts_with('-'))
             Invalid(Format("unknown runner option: {}", option));
         else
             break;
@@ -75,7 +78,8 @@ Options ParseOptions(int argc, char* const* argv) {
 void PrintUsage() {
     std::puts(
             "svm_rebuild_linux [--scope block|function] [--engine jit|interpreter|mixed] "
-            "[--hot-threshold N] [--no-opt] [--decode-timing] [--] guest [args...]\n"
+            "[--hot-threshold N] [--no-opt] [--decode-timing] [--compile-details] [--] guest "
+            "[args...]\n"
             "  [--cache-dir DIR] persists native code across processes (off by default).\n"
             "  [--aot ARTIFACT] loads embedded guest/code; the guest path is optional.\n"
             "Static x86-64 or AArch64 ELF, direct guest==host memory, one guest thread.\n"
@@ -84,6 +88,7 @@ void PrintUsage() {
             "Default engine: jit; compile each requested entry immediately.\n"
             "With --engine mixed, interpret cold blocks and compile after N entry visits "
             "(--hot-threshold, default 8).\n"
-            "--decode-timing adds perturbed diagnostic clocks around the byte decoder only.");
+            "--decode-timing adds perturbed diagnostic clocks around the byte decoder only.\n"
+            "--compile-details also measures formation, IR construction and publication stages.");
 }
 }  // namespace swift::launcher

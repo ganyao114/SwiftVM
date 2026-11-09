@@ -47,12 +47,13 @@ static unsigned X87RegisterWindow(Emitter& builder,
 }
 
 static Value X87Query(Emitter& builder, const StateLayout& layout, unsigned field, Type type) {
-    return Require(builder.LoadUniform(type, {Operand::Uniform(layout.x87_offset + field, type)}));
+    return Require(builder.template EmitUniform<OpCode::LoadUniform>(
+            type, layout.x87_offset + field, type));
 }
 
 static void X87Field(Emitter& builder, u32 offset, Type type, Value value) {
-    Require(builder.StoreUniform(Type::Void,
-                                 {Operand::Uniform(offset, type), Operand::ValueOf(value, type)}));
+    Require(builder.template EmitUniformValue<OpCode::StoreUniform>(
+            Type::Void, offset, type, value, type));
 }
 
 static void X87Call(Emitter& builder, Value state, u64 command, Value raw) {
@@ -107,12 +108,8 @@ static bool X87CheckedCall(Emitter& builder,
     }
     const auto metadata = X87MetadataEncoding(
             layout, X87Opcode(instruction, bytes), static_cast<bool>(address), commit_success);
-    Require(builder.X87Execute(Type::U64,
-                               {Operand::ValueOf(state),
-                                Operand::Immediate(command, Type::U64),
-                                Operand::ValueOf(raw),
-                                Operand::ValueOf(address ? address : builder.X87Zero()),
-                                Operand::Immediate(metadata, Type::U64)}));
+    Require(builder.template EmitX87<OpCode::X87Execute>(
+            Type::U64, state, command, raw, address ? address : builder.X87Zero(), metadata));
     return commit_success;
 }
 
@@ -206,12 +203,12 @@ static void X87Metadata(
         const auto control = X87Query(builder, layout, offsetof(State, control), Type::U16);
         const auto status = X87Query(builder, layout, offsetof(State, status), Type::U16);
         const auto tags = X87Query(builder, layout, offsetof(State, tags), Type::U16);
-        const auto ip = Require(builder.LoadUniform(
-                Type::U64, {Operand::Uniform(layout.x87_ip_offset, Type::U64)}));
-        const auto dp = Require(builder.LoadUniform(
-                Type::U64, {Operand::Uniform(layout.x87_dp_offset, Type::U64)}));
-        const auto opcode = Require(builder.LoadUniform(
-                Type::U16, {Operand::Uniform(layout.x87_opcode_offset, Type::U16)}));
+        const auto ip = Require(builder.template EmitUniform<OpCode::LoadUniform>(
+                Type::U64, layout.x87_ip_offset, Type::U64));
+        const auto dp = Require(builder.template EmitUniform<OpCode::LoadUniform>(
+                Type::U64, layout.x87_dp_offset, Type::U64));
+        const auto opcode = Require(builder.template EmitUniform<OpCode::LoadUniform>(
+                Type::U16, layout.x87_opcode_offset, Type::U16));
         if (small) {
             StoreMemory(builder, address, control, 16);
             StoreMemory(builder, address, status, 16, 2);

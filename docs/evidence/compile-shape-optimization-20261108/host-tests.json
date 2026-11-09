@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "ctest",
+    "--test-dir",
+    "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host",
+    "--output-on-failure",
+    "-R",
+    "^(ir_construction_contract|ir_direct_contract|x86_construction_contract|ir_optimize_contract|arm64_compile_contract)$"
+  ],
+  "exit": 0,
+  "stdout": "Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host\n    Start  8: ir_construction_contract\n1/5 Test  #8: ir_construction_contract .........   Passed    0.01 sec\n    Start  9: x86_construction_contract\n2/5 Test  #9: x86_construction_contract ........   Passed    0.01 sec\n    Start 11: ir_optimize_contract\n3/5 Test #11: ir_optimize_contract .............   Passed    0.22 sec\n    Start 12: arm64_compile_contract\n4/5 Test #12: arm64_compile_contract ...........   Passed    0.04 sec\n    Start 15: ir_direct_contract\n5/5 Test #15: ir_direct_contract ...............   Passed    0.01 sec\n\n100% tests passed, 0 tests failed out of 5\n\nLabel Time Summary:\ncompile     =   0.29 sec*proc (5 tests)\nportable    =   0.29 sec*proc (5 tests)\nunit        =   0.29 sec*proc (5 tests)\n\nTotal Test time (real) =   0.30 sec\n",
+  "stderr": ""
+}

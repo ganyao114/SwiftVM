@@ -1,20 +1,20 @@
+#include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <stdexcept>
+#include <sys/auxv.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <ucontext.h>
+#include <unistd.h>
 #include "arm64_host.h"
+#include "base/error.h"
 #include "runtime/arch/x86/state.h"
 #include "runtime/backend/arm64/abi.h"
 #include "runtime/backend/arm64/patch.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
-#include "base/error.h"
-#include <algorithm>
 #include "signal_time.h"
-#include <cerrno>
-#include <cstring>
-#include <stdexcept>
-#include <sys/mman.h>
-#include <sys/syscall.h>
-#include <unistd.h>
-#include <sys/auxv.h>
-#include <ucontext.h>
 #if defined(__aarch64__)
 #include <asm/hwcap.h>
 #include <asm/sigcontext.h>
@@ -90,12 +90,13 @@ bool RecoverNative(FaultContext& context,
                         context.host_failure->Set(
                                 ErrorKind::System, "patch native unaligned fallback", errno);
                 }
-                std::span<const std::byte> vectors;
-                if (context.pinned_vector_offset != UINT32_MAX) {
-                    const auto* record = FindFPSIMD(*machine);
-                    if (!record) break;
-                    vectors = std::as_bytes(std::span{record->vregs});
-                }
+                const bool needs_fp = context.pinned_vector_offset != UINT32_MAX ||
+                                      context.guest_fp_status != nullptr;
+                const auto* fp = needs_fp ? FindFPSIMD(*machine) : nullptr;
+                if (needs_fp && !fp) break;
+                const auto vectors = context.pinned_vector_offset != UINT32_MAX
+                                             ? std::as_bytes(std::span{fp->vregs})
+                                             : std::span<const std::byte>{};
                 if (!backend::arm64::RestoreGuestState(
                             context,
                             site,
@@ -103,6 +104,7 @@ bool RecoverNative(FaultContext& context,
                             machine->uc_mcontext.pstate,
                             vectors))
                     break;
+                if (context.guest_fp_status) *context.guest_fp_status = fp->fpsr;
                 execution::RaiseGuestFault(context, site, signal, signal_code, host_pc, address);
             }
         }

@@ -1,0 +1,12 @@
+{
+  "parent": {
+    "whole_elf_bytes": 35294936,
+    "llvm_size": "   text\t   data\t    bss\t    dec\t    hex\tfilename\n2936664\t 102096\t  85240\t3124000\t 2fab20\t/Volumes/Data2/swiftvm-middle-results-relocated-20261025/compile-shape-optimization-20261108/parent-before-shape.elf\n",
+    "builder_text_sum_bytes": 203736
+  },
+  "candidate": {
+    "whole_elf_bytes": 35205072,
+    "llvm_size": "   text\t   data\t    bss\t    dec\t    hex\tfilename\n2905324\t 102096\t  83800\t3091220\t 2f2b14\t/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux\n",
+    "builder_text_sum_bytes": 191708
+  }
+}

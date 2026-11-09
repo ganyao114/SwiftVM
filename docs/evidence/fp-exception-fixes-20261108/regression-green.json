@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "su -c 'taskset 10 /data/local/tmp/swiftvm-fp-exception-fixes-20261108/engine-green --native '\"'\"'Native FP environment preservation,SSE status survives native memory fault'\"'\"''"
+  ],
+  "exit": 0,
+  "stdout": "Filters: \"Native FP environment preservation\",\"SSE status survives native memory fault\"\nRandomness seeded to: 2945537711\n===============================================================================\nAll tests passed (2 assertions in 2 test cases)\n\n",
+  "stderr": ""
+}

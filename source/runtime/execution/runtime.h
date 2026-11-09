@@ -7,6 +7,7 @@
 #include "base/error.h"
 #include "runtime/frontend/source.h"
 #include "runtime/ir/types.h"
+#include "timing.h"
 
 namespace swift::runtime::execution {
 
@@ -22,6 +23,8 @@ struct RuntimeOptions {
     std::uint16_t hot_threshold{8};
     frontend::DecodeLimits function_limits{};
     bool decode_timing{};
+    // Additional request-level clocks when decode_timing is enabled.
+    bool compile_details{};
     // Empty keeps persistence entirely disabled.
     std::string cache_directory;
     std::string artifact_path;
@@ -45,6 +48,7 @@ struct RuntimeStats {
             aot_units_loaded{};
     frontend::DecodeTiming
             compile_decode;  // Opt-in diagnostic; ordinary runs read no per-instruction clocks.
+    PublicationTiming publication_detail;
     std::uint64_t compile_without_byte_decode_ns{};
     // O(1) existing-result observations, enabled with decode_timing. IR sizes
     // cover returned owners, not a rejected frontend's already-freed prefix.

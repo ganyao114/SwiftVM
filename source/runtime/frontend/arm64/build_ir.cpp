@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <vector>
 #include "build_ir.h"
+#include "runtime/frontend/timing.h"
 #include "semantics.h"
 #include "sink.h"
 
@@ -216,11 +217,17 @@ BuildResult BuildFunctionIR(std::span<const BlockWindow> windows,
                             ReadyEntryLookup ready,
                             std::vector<runtime::SourceSpan>* sources,
                             std::vector<u64>* continuations) {
-    const auto decoded = DecodeFunction(windows, entry, limits, timing, ready, nullptr);
+    const auto decoded = [&] {
+        runtime::frontend::ScopedBuildTimer formation{
+                timing && timing->stages ? &timing->formation_ns : nullptr};
+        return DecodeFunction(windows, entry, limits, timing, ready, nullptr);
+    }();
     if (!decoded) {
         if (counts) *counts = {};
         return {BuildError::FormationRejected, decoded.error_pc};
     }
+    runtime::frontend::ScopedBuildTimer ir_birth{timing && timing->stages ? &timing->ir_birth_ns
+                                                                          : nullptr};
     return EmitDecoded(decoded.instructions,
                        decoded.blocks,
                        Scope::Function,
@@ -248,22 +255,28 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
         return {BuildError::InvalidInput};
     std::vector<Instruction> instructions;
     std::vector<DecodedBlock> blocks;
-    for (const auto& w : windows) {
-        DecodedBlock b{w.pc, u32(instructions.size()), 0};
-        std::size_t offset{};
-        while (offset < w.bytes.size()) {
-            const auto decoded = DecodeOne(w.bytes.subspan(offset), w.pc + offset, timing);
-            if (!decoded)
-                return {decoded.error == DecodeError::Truncated ? BuildError::Truncated
-                                                                : BuildError::InvalidInput,
-                        w.pc + offset};
-            instructions.push_back(decoded.instruction);
-            ++b.instruction_count;
-            offset += 4;
-            if (decoded.instruction.Boundary()) break;
+    {
+        runtime::frontend::ScopedBuildTimer formation{
+                timing && timing->stages ? &timing->formation_ns : nullptr};
+        for (const auto& w : windows) {
+            DecodedBlock b{w.pc, u32(instructions.size()), 0};
+            std::size_t offset{};
+            while (offset < w.bytes.size()) {
+                const auto decoded = DecodeOne(w.bytes.subspan(offset), w.pc + offset, timing);
+                if (!decoded)
+                    return {decoded.error == DecodeError::Truncated ? BuildError::Truncated
+                                                                    : BuildError::InvalidInput,
+                            w.pc + offset};
+                instructions.push_back(decoded.instruction);
+                ++b.instruction_count;
+                offset += 4;
+                if (decoded.instruction.Boundary()) break;
+            }
+            blocks.push_back(b);
         }
-        blocks.push_back(b);
     }
+    runtime::frontend::ScopedBuildTimer ir_birth{timing && timing->stages ? &timing->ir_birth_ns
+                                                                          : nullptr};
     return EmitDecoded(instructions,
                        blocks,
                        scope,

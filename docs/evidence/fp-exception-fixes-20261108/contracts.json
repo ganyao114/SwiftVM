@@ -1,0 +1,23 @@
+[
+  {
+    "name": "runtime",
+    "sha256": "c478023a98fa119676a113fa2904c3ca6dde92cdac207a9d3f371656361df5b7",
+    "exit": 0,
+    "stdout": "Filters: [native] ~[atomic]\nRandomness seeded to: 639087276\n===============================================================================\nAll tests passed (148 assertions in 10 test cases)\n\n",
+    "stderr": ""
+  },
+  {
+    "name": "fp-links",
+    "sha256": "3977f7a3d54762de57bb189caf14200d70b684583e156d4dbbd05118222ccb6c",
+    "exit": 0,
+    "stdout": "Filters: \"PackedFPStatus\",\"PackedFloatingArithmetic\",\"DeferredPCLinks\",\"LinkedDynamicPC\"\nRandomness seeded to: 2109160330\n===============================================================================\nAll tests passed (4 assertions in 4 test cases)\n\n",
+    "stderr": ""
+  },
+  {
+    "name": "persistence",
+    "sha256": "22142f0deba1ab2151b2ebb30547132e44045f3fa2818cf025bb7f58b474fb42",
+    "exit": 0,
+    "stdout": "Filters: [native]\nRandomness seeded to: 79893495\n===============================================================================\nAll tests passed (45 assertions in 4 test cases)\n\n",
+    "stderr": ""
+  }
+]

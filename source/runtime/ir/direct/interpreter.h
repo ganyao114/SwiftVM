@@ -118,6 +118,58 @@ public:
         return Emit<op>(type, {operands.begin(), operands.size()}, metadata);
     }
 
+    // The frontend uses the same fixed-shape calls for both consumers. Direct
+    // execution retains its existing neutral operation implementation.
+    template <OpCode op> Result EmitImm(Type result,
+                                        std::uint64_t bits,
+                                        Type literal_type,
+                                        OperationMetadata metadata = {}) {
+        static_assert(HasShape<op, Signature::Imm>());
+        return Emit<op>(result, {Operand::Immediate(bits, literal_type)}, metadata);
+    }
+
+    template <OpCode op> Result EmitUniform(Type result,
+                                            std::uint32_t offset,
+                                            Type field_type,
+                                            OperationMetadata metadata = {}) {
+        static_assert(HasShape<op, Signature::Uniform>());
+        return Emit<op>(result, {Operand::Uniform(offset, field_type)}, metadata);
+    }
+
+    template <OpCode op> Result EmitUniformValue(Type result,
+                                                 std::uint32_t offset,
+                                                 Type field_type,
+                                                 Value value,
+                                                 Type view = Type::Void,
+                                                 OperationMetadata metadata = {}) {
+        static_assert(HasShape<op, Signature::Uniform, Signature::Value>());
+        return Emit<op>(result,
+                        {Operand::Uniform(offset, field_type), Operand::ValueOf(value, view)},
+                        metadata);
+    }
+
+    template <OpCode op> Result EmitX87(Type result,
+                                        Value state,
+                                        std::uint64_t command,
+                                        Value raw,
+                                        Value address,
+                                        std::uint64_t detail,
+                                        OperationMetadata metadata = {}) {
+        static_assert(HasShape<op,
+                               Signature::Value,
+                               Signature::Imm,
+                               Signature::Value,
+                               Signature::Value,
+                               Signature::Imm>());
+        return Emit<op>(result,
+                        {Operand::ValueOf(state),
+                         Operand::Immediate(command, Type::U64),
+                         Operand::ValueOf(raw),
+                         Operand::ValueOf(address),
+                         Operand::Immediate(detail, Type::U64)},
+                        metadata);
+    }
+
 #define INST(name, ...)                                                                            \
     Result name(                                                                                   \
             Type type, std::initializer_list<Operand> operands, OperationMetadata metadata = {}) { \
@@ -135,6 +187,19 @@ public:
     bool observed_effects{};
 
 private:
+    template <OpCode op, Signature... arguments> static consteval bool HasShape() {
+        if constexpr (static_cast<std::size_t>(op) >= schemas.size())
+            return false;
+        else {
+            constexpr std::array shape{arguments...};
+            constexpr auto& schema = schemas[static_cast<std::size_t>(op)];
+            if (schema.argument_count != shape.size()) return false;
+            for (std::size_t i = 0; i < shape.size(); ++i)
+                if (schema.arguments[i] != shape[i]) return false;
+            return true;
+        }
+    }
+
     using u64 = std::uint64_t;
     using u128 = unsigned __int128;
 

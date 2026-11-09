@@ -89,6 +89,121 @@ AppendResult Builder::Append(OpCode op,
     return AppendImpl<OpCode::Count>(op, requested, operands, metadata);
 }
 
+Error Builder::CheckFixedAppend(OperationMetadata metadata) const noexcept {
+    if (!storage) return Error::Consumed;
+    if (!storage->active) return Error::NoActiveBlock;
+    if (static_cast<unsigned>(metadata.profile) >
+                static_cast<unsigned>(FlagProfile::LogicalZeroCVA) ||
+        (metadata.discard_omitted_flags && !metadata.flag_outputs))
+        return Error::InvalidRange;
+    return storage->operations.size() == detail::limit ? Error::CapacityOverflow : Error::None;
+}
+
+Error Builder::StoreFixedValue(Value value, Type view, Type& effective) {
+    if (const auto error = storage->ReadType(value, view, effective); error != Error::None)
+        return error;
+    std::size_t words{};
+    return StoreOperand<false>(Operand::ValueOf(value, view), words);
+}
+
+Error Builder::StoreFixedImmediate(std::uint64_t bits, Type type, Type& effective) {
+    if (const auto error = detail::LiteralType(bits, type, effective); error != Error::None)
+        return error;
+    std::size_t words{};
+    return StoreOperand<false>(Operand::Immediate(bits, type), words);
+}
+
+Error Builder::StoreFixedUniform(std::uint32_t offset, Type type) {
+    if (!ValidType(type) || type == Type::Void) return Error::InvalidType;
+    std::size_t words{};
+    return StoreOperand<false>(Operand::Uniform(offset, type), words);
+}
+
+AppendResult Builder::FinishFixedAppend(
+        OpCode op, Type requested, Type first, OperationMetadata metadata, std::size_t first_word) {
+    Type type;
+    if (const auto error =
+                detail::ResultType(schemas[static_cast<std::size_t>(op)], requested, first, type);
+        error != Error::None)
+        return {error};
+    return CommitAppend(op, type, metadata, first_word);
+}
+
+AppendResult Builder::AppendImm(OpCode op,
+                                Type requested,
+                                std::uint64_t bits,
+                                Type literal_type,
+                                OperationMetadata metadata) {
+    if (const auto error = CheckFixedAppend(metadata); error != Error::None) return {error};
+    detail::OperandRollback rollback{storage->operands, storage->operands.size()};
+    Type first;
+    if (const auto error = StoreFixedImmediate(bits, literal_type, first); error != Error::None)
+        return {error};
+    const auto result = FinishFixedAppend(op, requested, first, metadata, rollback.first);
+    rollback.committed = bool(result);
+    return result;
+}
+
+AppendResult Builder::AppendUniform(OpCode op,
+                                    Type requested,
+                                    std::uint32_t offset,
+                                    Type field_type,
+                                    OperationMetadata metadata) {
+    if (const auto error = CheckFixedAppend(metadata); error != Error::None) return {error};
+    detail::OperandRollback rollback{storage->operands, storage->operands.size()};
+    if (const auto error = StoreFixedUniform(offset, field_type); error != Error::None)
+        return {error};
+    const auto result = FinishFixedAppend(op, requested, field_type, metadata, rollback.first);
+    rollback.committed = bool(result);
+    return result;
+}
+
+AppendResult Builder::AppendUniformValue(OpCode op,
+                                         Type requested,
+                                         std::uint32_t offset,
+                                         Type field_type,
+                                         Value value,
+                                         Type view,
+                                         OperationMetadata metadata) {
+    if (const auto error = CheckFixedAppend(metadata); error != Error::None) return {error};
+    detail::OperandRollback rollback{storage->operands, storage->operands.size()};
+    if (const auto error = StoreFixedUniform(offset, field_type); error != Error::None)
+        return {error};
+    Type effective;
+    if (const auto error = StoreFixedValue(value, view, effective); error != Error::None)
+        return {error};
+    const auto result = FinishFixedAppend(op, requested, field_type, metadata, rollback.first);
+    rollback.committed = bool(result);
+    return result;
+}
+
+AppendResult Builder::AppendX87(OpCode op,
+                                Type requested,
+                                Value state,
+                                std::uint64_t command,
+                                Value raw,
+                                Value address,
+                                std::uint64_t detail_bits,
+                                OperationMetadata metadata) {
+    if (const auto error = CheckFixedAppend(metadata); error != Error::None) return {error};
+    detail::OperandRollback rollback{storage->operands, storage->operands.size()};
+    Type first, effective;
+    if (const auto error = StoreFixedValue(state, Type::Void, first); error != Error::None)
+        return {error};
+    if (const auto error = StoreFixedImmediate(command, Type::U64, effective); error != Error::None)
+        return {error};
+    if (const auto error = StoreFixedValue(raw, Type::Void, effective); error != Error::None)
+        return {error};
+    if (const auto error = StoreFixedValue(address, Type::Void, effective); error != Error::None)
+        return {error};
+    if (const auto error = StoreFixedImmediate(detail_bits, Type::U64, effective);
+        error != Error::None)
+        return {error};
+    const auto result = FinishFixedAppend(op, requested, first, metadata, rollback.first);
+    rollback.committed = bool(result);
+    return result;
+}
+
 Error Builder::SetMetadata(NodeId local, OperationMetadata metadata) noexcept {
     if (!storage) return Error::Consumed;
     if (!local || local.value >= storage->operations.size()) return Error::InvalidValue;

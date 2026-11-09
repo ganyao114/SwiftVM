@@ -1,0 +1,6 @@
+{
+  "invoked_path": "/opt/homebrew/opt/llvm@21/bin/clang-format",
+  "resolved_path": "/opt/homebrew/Cellar/llvm/22.1.1/bin/clang-format",
+  "version": "Homebrew clang-format version 22.1.1",
+  "checkpoint_label_correction": "Earlier local format-check labels inferred 21 from the path alias; actual formatter was 22.1.1. Byte comparisons were real."
+}

@@ -1,6 +1,6 @@
-#include "vm.h"
 #include "disk_cache.h"
 #include "timing.h"
+#include "vm.h"
 
 #include "base/error.h"
 
@@ -57,7 +57,7 @@ void VM::RecordUnit(ir::Scope scope,
         unit.fp_mode = thread.fp_mode;
         unit.scope = scope;
         unit.code = compiled;
-        // Publication owns the moved recovery table. Persist its real metadata,
+        // CodeHeap owns the published recovery records. Persist their metadata,
         // while retaining canonical words rather than observing patched RX code.
         unit.code.faults.assign(code.faults.begin(), code.faults.end());
         unit.sources.reserve(sources.size());

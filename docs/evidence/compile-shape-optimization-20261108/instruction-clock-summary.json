@@ -1,0 +1,162 @@
+[
+  {
+    "case": "fp",
+    "scope": "block",
+    "unit": "retired_user_instructions",
+    "parent": {
+      "median": 3104618,
+      "values": [
+        3104618,
+        3104692,
+        3104535
+      ],
+      "representative": {
+        "frontend_ns": 1637252,
+        "compile_decode_ns": 520503,
+        "optimize_ns": 706946,
+        "backend_ns": 1125015,
+        "publication_ns": 82182,
+        "code_release_ns": 9922,
+        "fault_service_ns": 2445
+      }
+    },
+    "candidate": {
+      "median": 3056819,
+      "values": [
+        3056865,
+        3056818,
+        3056819
+      ],
+      "representative": {
+        "frontend_ns": 1615270,
+        "compile_decode_ns": 520503,
+        "optimize_ns": 721743,
+        "backend_ns": 1105785,
+        "publication_ns": 78559,
+        "code_release_ns": 5256,
+        "fault_service_ns": 2445
+      }
+    },
+    "candidate_over_parent": 0.9846039029600421
+  },
+  {
+    "case": "fp",
+    "scope": "function",
+    "unit": "retired_user_instructions",
+    "parent": {
+      "median": 4009186,
+      "values": [
+        4009186,
+        4009165,
+        4009360
+      ],
+      "representative": {
+        "frontend_ns": 1887498,
+        "compile_decode_ns": 513299,
+        "optimize_ns": 978966,
+        "backend_ns": 1499969,
+        "publication_ns": 82388,
+        "code_release_ns": 10566,
+        "fault_service_ns": 2445
+      }
+    },
+    "candidate": {
+      "median": 3956017,
+      "values": [
+        3956017,
+        3956026,
+        3955967
+      ],
+      "representative": {
+        "frontend_ns": 1858112,
+        "compile_decode_ns": 513299,
+        "optimize_ns": 996512,
+        "backend_ns": 1478855,
+        "publication_ns": 80267,
+        "code_release_ns": 5900,
+        "fault_service_ns": 2445
+      }
+    },
+    "candidate_over_parent": 0.9867382057105857
+  },
+  {
+    "case": "x87_bench",
+    "scope": "block",
+    "unit": "retired_user_instructions",
+    "parent": {
+      "median": 182042,
+      "values": [
+        182042,
+        182026,
+        182045
+      ],
+      "representative": {
+        "frontend_ns": 70862,
+        "compile_decode_ns": 18177,
+        "optimize_ns": 26019,
+        "backend_ns": 86628,
+        "publication_ns": 7389,
+        "code_release_ns": 3943,
+        "fault_service_ns": 2445
+      }
+    },
+    "candidate": {
+      "median": 183311,
+      "values": [
+        183324,
+        183311,
+        183311
+      ],
+      "representative": {
+        "frontend_ns": 70492,
+        "compile_decode_ns": 18177,
+        "optimize_ns": 27013,
+        "backend_ns": 86527,
+        "publication_ns": 7901,
+        "code_release_ns": 4177,
+        "fault_service_ns": 2445
+      }
+    },
+    "candidate_over_parent": 1.0069709187989584
+  },
+  {
+    "case": "x87_bench",
+    "scope": "function",
+    "unit": "retired_user_instructions",
+    "parent": {
+      "median": 173154,
+      "values": [
+        173162,
+        173141,
+        173154
+      ],
+      "representative": {
+        "frontend_ns": 63163,
+        "compile_decode_ns": 12240,
+        "optimize_ns": 24578,
+        "backend_ns": 84984,
+        "publication_ns": 5190,
+        "code_release_ns": 3943,
+        "fault_service_ns": 2445
+      }
+    },
+    "candidate": {
+      "median": 174148,
+      "values": [
+        174148,
+        174141,
+        174149
+      ],
+      "representative": {
+        "frontend_ns": 62649,
+        "compile_decode_ns": 12240,
+        "optimize_ns": 25518,
+        "backend_ns": 84859,
+        "publication_ns": 5649,
+        "code_release_ns": 4177,
+        "fault_service_ns": 2445
+      }
+    },
+    "candidate_over_parent": 1.0057405546507734
+  }
+]

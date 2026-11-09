@@ -1,0 +1,129 @@
+{
+  "formatter": "Homebrew clang-format version 22.1.1",
+  "invoked_path": "/opt/homebrew/opt/llvm@21/bin/clang-format",
+  "resolved_path": "/opt/homebrew/Cellar/llvm/22.1.1/bin/clang-format",
+  "sort_includes": false,
+  "checked": 30,
+  "files": [
+    {
+      "path": "source/launcher/linux/options.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/launcher/linux/report.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/allocation_selection.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/code_cache.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/code_heap.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/code_heap.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/code_persistence.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/compile_service.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/compile_service.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/runtime.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/runtime.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/smc.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/smc.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/execution/timing.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/frontend/arm64/build_ir.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/frontend/source.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/frontend/x86/build_ir.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/frontend/x86/semantics_operands.inc",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/frontend/x86/semantics_x87.inc",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/ir/builder.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/ir/builder.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/ir/builder_impl.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/ir/direct/interpreter.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/ir/passes/rewrite.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/tests/rebuild/ir_construction_test.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/tests/rebuild/ir_direct_test.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/tests/rebuild/runtime_engine_test.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/tests/rebuild/x86_construction_test.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "path": "source/runtime/frontend/timing.h",
+      "matches_formatted_bytes": true
+    }
+  ]
+}

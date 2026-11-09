@@ -95,6 +95,9 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
         }
         {
             RuntimeTimer publish{stats.publication_ns};
+            RuntimeTimer registration{options.compile_details && options.decode_timing
+                                              ? &stats.publication_detail.registration_ns
+                                              : nullptr};
             Cache().InsertReady(compiler.EntryPC(), code, compiler.LastOutput()->entries);
         }
         // Registration has consumed extra entries; only now may the backend

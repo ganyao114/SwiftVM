@@ -1,0 +1,21 @@
+{
+  "version": "Homebrew clang-format version 22.1.1",
+  "files": [
+    {
+      "file": "source/runtime/platform/linux/arm64_host.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "file": "source/runtime/execution/fault.h",
+      "matches_formatted_bytes": true
+    },
+    {
+      "file": "source/runtime/execution/runtime.cpp",
+      "matches_formatted_bytes": true
+    },
+    {
+      "file": "source/tests/rebuild/runtime_engine_test.cpp",
+      "matches_formatted_bytes": true
+    }
+  ]
+}

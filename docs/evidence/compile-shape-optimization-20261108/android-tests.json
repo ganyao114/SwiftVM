@@ -1,0 +1,30 @@
+[
+  {
+    "name": "fp-status-links",
+    "exit": 0,
+    "expected_test_cases": 4,
+    "stdout": "Filters: \"PackedFPStatus\",\"PackedFloatingArithmetic\",\"DeferredPCLinks\",\"LinkedDynamicPC\"\nRandomness seeded to: 2149652646\n===============================================================================\nAll tests passed (4 assertions in 4 test cases)\n\n",
+    "stderr": ""
+  },
+  {
+    "name": "runtime",
+    "exit": 0,
+    "expected_test_cases": 8,
+    "stdout": "Filters: [native] ~[atomic]\nRandomness seeded to: 2697523748\n===============================================================================\nAll tests passed (146 assertions in 8 test cases)\n\n",
+    "stderr": ""
+  },
+  {
+    "name": "persistence",
+    "exit": 0,
+    "expected_test_cases": 4,
+    "stdout": "Filters: [native]\nRandomness seeded to: 1868863583\n===============================================================================\nAll tests passed (45 assertions in 4 test cases)\n\n",
+    "stderr": ""
+  },
+  {
+    "name": "avx",
+    "exit": 0,
+    "expected_test_cases": 4,
+    "stdout": "Filters: [native]\nRandomness seeded to: 3036912708\n===============================================================================\nAll tests passed (4 assertions in 4 test cases)\n\n",
+    "stderr": "AVX direct bytes=c4e271b8c2 input_mxcsr=00001f80 raised=20 actual=00001fa0 expected=00001fa0\nAVX native pin=0 raw_fpsr=10 raised=20 mxcsr=00001fa0 expected=00001fa0\nAVX native pin=1 raw_fpsr=10 raised=20 mxcsr=00001fa0 expected=00001fa0\n"
+  }
+]

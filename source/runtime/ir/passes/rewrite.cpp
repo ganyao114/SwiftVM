@@ -35,25 +35,26 @@ bool Numeric32Consumer(const Operation& op) {
 bool ForwardCopy(const Builder& editor,
                  std::span<const Operation> operations,
                  Operand& input,
-                 u64 unit,
+                 CellRange consumer_inputs,
                  NodeId consumer_id,
                  const Operation& consumer,
                  const std::vector<u64>& rows) {
     if (input.kind != OperandKind::Value || input.payload >= operations.size()) return false;
+    const auto unit = input.unit;
     const auto& source = operations[static_cast<std::size_t>(input.payload)];
+    const auto input_type = input.type == Type::Void ? source.type : input.type;
     if (source.opcode == OpCode::BitExtract) {
         const auto meta = consumer.Metadata();
         if (source.type != Type::U8 || Metadata(source) || source.operand_count != 3 ||
             consumer.opcode != OpCode::And || consumer.type != Type::U8 ||
             consumer.operand_count != 2 || source.block != consumer.block ||
-            consumer_id.value - input.payload != 1 || ReadType(input, operations) != Type::U8 ||
+            consumer_id.value - input.payload != 1 || input_type != Type::U8 ||
             (rows[input.payload] & count_mask) != 1 || (rows[input.payload] & pin_bit) ||
             meta.profile != FlagProfile::LogicalZeroCVA || meta.branch_only ||
             (meta.flag_outputs != FlagBits(Flag::Zero) &&
              meta.flag_outputs != FlagBits(Flag::Carry | Flag::Zero)))
             return false;
-        const auto outer_inputs = editor.Operands(consumer_id);
-        auto outer_at = outer_inputs.begin();
+        auto outer_at = consumer_inputs.begin();
         ++outer_at;
         const auto mask = *outer_at;
         if (mask.Kind() != OperandKind::Immediate || mask.Payload() != 1 ||
@@ -79,8 +80,7 @@ bool ForwardCopy(const Builder& editor,
                            source.opcode == OpCode::ZeroExtend32To64 ||
                            source.opcode == OpCode::ZeroExtend64;
     if ((!raw_copy && !normalize) || Metadata(source) ||
-        (!Scalar(source.type) && source.type != Type::V128) ||
-        ReadType(input, operations) != source.type)
+        (!Scalar(source.type) && source.type != Type::V128) || input_type != source.type)
         return false;
     const auto cells = editor.Operands(NodeId{static_cast<std::uint32_t>(input.payload)});
     auto at = cells.begin();
@@ -88,15 +88,15 @@ bool ForwardCopy(const Builder& editor,
     const auto original = *at++;
     if (at != cells.end() || original.Kind() != OperandKind::Value) return false;
     const auto original_id = static_cast<std::uint32_t>(original.Payload());
-    const Operand replacement = Operand::ValueOf({unit, NodeId{original_id}}, original.TypeView());
-    const auto view = ReadType(replacement, operations);
+    const auto& producer = operations[original_id];
+    const auto original_view = original.TypeView();
+    const auto view = original_view == Type::Void ? producer.type : original_view;
     if (raw_copy) {
         if (view != source.type) return false;
     } else {
         if (!Scalar(view)) return false;
         const auto bits =
                 std::min(TypeBits(view), source.opcode == OpCode::ZeroExtend64 ? 64u : 32u);
-        const auto& producer = operations[original_id];
         const bool raw = producer.opcode == OpCode::BitCast ||
                          producer.opcode == OpCode::GetResult ||
                          producer.opcode == OpCode::GetFlags;
@@ -108,8 +108,7 @@ bool ForwardCopy(const Builder& editor,
                 return false;
         }
     }
-    input = Operand::ValueOf({unit, NodeId{static_cast<std::uint32_t>(original.Payload())}},
-                             source.type);
+    input = Operand::ValueOf({unit, NodeId{original_id}}, source.type);
     return true;
 }
 
@@ -267,7 +266,7 @@ Error RewriteValues(Context& context) {
             if (editable && kind == OperandKind::Value) {
                 const auto old_id = static_cast<std::uint32_t>(payload);
                 auto replacement = Operand::ValueOf({unit, NodeId{old_id}}, view);
-                if (ForwardCopy(editor, operations, replacement, unit, id, op, rows)) {
+                if (ForwardCopy(editor, operations, replacement, inputs, id, op, rows)) {
                     const auto new_id = static_cast<std::uint32_t>(replacement.payload);
                     if (!(rows[old_id] & count_mask)) return Error::InvalidValue;
                     if ((rows[new_id] & count_mask) == count_mask) return Error::CapacityOverflow;
@@ -322,8 +321,11 @@ Error RewriteValues(Context& context) {
             }
             const bool combined =
                     (folding &&
-                     (FoldLowByteMask(editor, operations, id, cells, new_count, opcode) ||
-                      FoldExtractShift(editor, operations, id, rows, cells, new_count, opcode))) ||
+                     ((opcode == OpCode::BitInsert &&
+                       FoldLowByteMask(editor, operations, id, cells, new_count, opcode)) ||
+                      ((opcode == OpCode::BitExtract || opcode == OpCode::LsrImm) &&
+                       FoldExtractShift(
+                               editor, operations, id, rows, cells, new_count, opcode)))) ||
                     (vector_draft &&
                      FuseSignedMulWidenLow(
                              editor, operations, id, rows, cells, new_count, opcode)) ||

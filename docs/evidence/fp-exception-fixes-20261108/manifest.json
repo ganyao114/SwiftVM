@@ -1,0 +1,52 @@
+[
+  {
+    "file": "after-source.json",
+    "bytes": 826,
+    "sha256": "3b335bf246e116887cb08de6b8baa288cceb6bda13bef36a20e053e18c49f1c8"
+  },
+  {
+    "file": "before-source.json",
+    "bytes": 729,
+    "sha256": "822ddbccefba92668e335d0553ab441122806df0299afee8520d7bd1eb33f804"
+  },
+  {
+    "file": "candidate-identity.json",
+    "bytes": 207,
+    "sha256": "238c5f8dfcf561477202630db9170561f02ee158f1aa93d4884808e13dc8adec"
+  },
+  {
+    "file": "contracts.json",
+    "bytes": 1145,
+    "sha256": "798fbbf200a5e0bf9c36b6650f49e214a5d1d4de78d3392521d2f110726f88ad"
+  },
+  {
+    "file": "format-check.json",
+    "bytes": 505,
+    "sha256": "01977169a1f4561054220be8f1b608574d58fd3a24eed592bb2f8ee5ef24f41d"
+  },
+  {
+    "file": "phone-cleanup-receipt.json",
+    "bytes": 235,
+    "sha256": "80eb3c8d49b10af596e4977e03708c488509641a886924ac42168fee8b857754"
+  },
+  {
+    "file": "plan.json",
+    "bytes": 858,
+    "sha256": "1eda40921bd799dba7583bc3cd3d43a1a2224d7812cb6b07f01ff367f81f7470"
+  },
+  {
+    "file": "regression-green.json",
+    "bytes": 562,
+    "sha256": "7c4a6dbbff7627f63346470547be0a873795152d5161b411399e2e0b38185a60"
+  },
+  {
+    "file": "regression-red.json",
+    "bytes": 3000,
+    "sha256": "26d35dffce89a6ce527fa8b2e413dad94fe3fe7d4f24a9122b5d9517e1facc82"
+  },
+  {
+    "file": "summary.json",
+    "bytes": 2011,
+    "sha256": "2d2028bad0de883663278555d983f71b494d91120eee7e390b406a0b91cf702f"
+  }
+]

@@ -105,7 +105,7 @@ DispatchSlot& CodeCache::Reserve(std::uint64_t pc) {
         at = EmptyOrMatching(slots, pc);
         if (slots[at].occupied) return slots[at];
     }
-    if (slots.empty() || occupied == slots.size() / 8) {
+    if (slots.empty() || occupied == slots.size() / 4) {
         Grow();
         at = EmptyOrMatching(slots, pc);
     }

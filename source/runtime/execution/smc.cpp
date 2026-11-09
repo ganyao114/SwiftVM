@@ -53,27 +53,53 @@ void CodeWriteRanges(std::span<const MemoryRegion> regions, u64 address, u64 end
 }  // namespace
 
 void Smc::Arm(u64 address, std::size_t length) {
+    const SourceSpan source{address, length};
+    Arm(std::span{&source, 1});
+}
+
+void Smc::Arm(std::span<const SourceSpan> sources) {
     const auto page_size = vm.memory.PageSize();
-    if (!length) return;
-    const auto end = Add(address, length);
+    const auto visit_pages = [&](auto&& visit) {
+        for (const auto& source : sources) {
+            if (!source.size) continue;
+            const auto end = Add(source.pc, source.size);
+            CodeWriteRanges(vm.memory.Regions(), source.pc, end, [&](u64 begin, u64 tail) {
+                const auto last = (tail - 1) & ~(u64{page_size} - 1);
+                for (auto page = begin & ~(u64{page_size} - 1);; page += page_size) {
+                    visit(page);
+                    if (page == last) break;
+                }
+            });
+        }
+    };
+    // The existing sorted records already answer repeated blocks on an armed
+    // page. Do not append duplicates, sort or walk the whole page owner again.
+    const auto known_pages = pages.size();
+    const auto armed = [&](u64 address) {
+        const auto end = pages.begin() + known_pages;
+        const auto found =
+                std::lower_bound(pages.begin(), end, address, [](const Page& row, u64 value) {
+                    return row.address < value;
+                });
+        return found != end && found->address == address && found->armed;
+    };
     std::size_t candidate_pages{};
-    CodeWriteRanges(vm.memory.Regions(), address, end, [&](u64 begin, u64 tail) {
-        const auto count = ((tail - 1) / page_size) - (begin / page_size) + 1;
-        if (count > pages.max_size() - pages.size() - candidate_pages)
+    bool has_candidates{};
+    visit_pages([&](u64 page) {
+        has_candidates = true;
+        if (armed(page)) return;
+        if (candidate_pages == pages.max_size() - known_pages)
             swift::ThrowError("guest code-write page capacity overflow", ErrorKind::ResourceLimit);
-        candidate_pages += static_cast<std::size_t>(count);
+        ++candidate_pages;
     });
-    if (!candidate_pages) return;
+    if (!has_candidates || (!candidate_pages && fully_armed)) return;
     // Recover can only observe an armed page. Establish its miss view here,
     // before protection can admit a signal reader, and never in the handler.
     if (vm.backend.thread_dispatch_cache) vm.empty_l1.Ensure();
     pages.reserve(pages.size() + candidate_pages);
-    CodeWriteRanges(vm.memory.Regions(), address, end, [&](u64 begin, u64 tail) {
-        const auto last = (tail - 1) & ~(u64{page_size} - 1);
-        for (auto page = begin & ~(u64{page_size} - 1);; page += page_size) {
-            pages.push_back({page, false});
-            if (page == last) break;
-        }
+    fully_armed = false;
+    visit_pages([&](u64 page) {
+        if (!armed(page)) pages.push_back({page, false});
     });
     std::sort(pages.begin(), pages.end(), [](const Page& left, const Page& right) {
         return left.address < right.address;
@@ -88,13 +114,19 @@ void Smc::Arm(u64 address, std::size_t length) {
     pages.resize(kept);
     // All records and allocations precede protection, including non-EXEC
     // MAP_SHARED writers of these source pages. Keep existing armed records.
+    bool complete = true;
     for (auto& page : pages) {
+        if (page.armed) continue;
         const auto protection = vm.memory.PageProtection(page.address);
-        if (page.armed || protection < 0 || !(protection & PROT_WRITE)) continue;
+        if (protection < 0 || !(protection & PROT_WRITE)) {
+            complete = false;
+            continue;
+        }
         if (mprotect(reinterpret_cast<void*>(page.address), page_size, protection & ~PROT_WRITE))
             SystemError("protect guest code source/alias");
         page.armed = true;
     }
+    fully_armed = complete;
 }
 
 bool Smc::Recover(std::uintptr_t address) noexcept {
@@ -112,6 +144,7 @@ bool Smc::Recover(std::uintptr_t address) noexcept {
         return false;
     }
     found->armed = false;
+    fully_armed = false;
     vm.thread.faults.smc_pending = 1;
     __atomic_store_n(&vm.thread.native.mask, u64{0}, __ATOMIC_RELAXED);
     __atomic_store_n(&vm.thread.native.slots, vm.Cache().EmptyData(), __ATOMIC_RELEASE);
@@ -134,6 +167,7 @@ bool Smc::PrepareWriteRange(u64 address, std::size_t size) noexcept {
 
 void Smc::Clear() {
     const auto page_size = vm.memory.PageSize();
+    fully_armed = false;
     for (auto& page : pages)
         if (page.armed) {
             const auto protection = vm.memory.PageProtection(page.address);
@@ -145,6 +179,7 @@ void Smc::Clear() {
             page.armed = false;
         }
     pages.clear();  // Retain actual page-record capacity.
+    fully_armed = true;
 }
 
 void Smc::Invalidate() {
