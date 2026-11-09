@@ -1,4 +1,5 @@
 #include "emit.h"
+#include "runtime/exit.h"
 
 #define __ masm.exact.
 
@@ -124,7 +125,14 @@ void Writer::Shadow(bool load) {
     shadow_dirty = false;
 }
 
+void Writer::NativePhase(unsigned phase) {
+    if (!Linked()) return;
+    Immediate(30, phase);
+    ContextMemory(false, 30, abi::ContextOffset(SVM_A64_CTX_PHASE));
+}
+
 void Writer::HelperFPEnvironment(bool guest) {
+    if (!guest) NativePhase(SVM_NATIVE_PHASE_HELPER);
     if (!Linked() || !options.native_fp_environment) return;
     if (!guest) {
         __ mrs(v::x30, v::FPSR);

@@ -50,10 +50,34 @@ constexpr std::uint64_t Arm64SyscallOperation(std::uint64_t number) noexcept {
             return 204;  // sched_getaffinity
         case 124:
             return 24;  // sched_yield
-        case 127:
+        case 121:
             return 143;  // sched_getparam
-        case 132:
+        case 120:
             return 145;  // sched_getscheduler
+        case 129:
+            return 62;  // kill
+        case 130:
+            return 200;  // tkill
+        case 131:
+            return 234;  // tgkill
+        case 132:
+            return 131;  // sigaltstack
+        case 133:
+            return 130;  // rt_sigsuspend
+        case 134:
+            return 13;  // rt_sigaction
+        case 135:
+            return 14;  // rt_sigprocmask
+        case 136:
+            return 127;  // rt_sigpending
+        case 137:
+            return 128;  // rt_sigtimedwait
+        case 138:
+            return 129;  // rt_sigqueueinfo
+        case 139:
+            return 15;  // rt_sigreturn: Service handles the control result.
+        case 240:
+            return 297;  // rt_tgsigqueueinfo
         case 160:
             return 63;  // uname
         case 163:

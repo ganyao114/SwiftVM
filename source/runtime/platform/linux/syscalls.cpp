@@ -2,6 +2,7 @@
 #include "runtime/execution/vm.h"
 #include "syscall_abi.h"
 #include "syscalls.h"
+#include "wait_syscall.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -14,6 +15,7 @@
 #include <sys/mman.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/time.h>
@@ -125,6 +127,69 @@ s64 LinuxSyscalls::Stat(int fd, u64 output, const char* path, int flags) {
     return vm.GuestWrite(output, &guest, sizeof(guest)) ? 0 : -EFAULT;
 }
 
+s64 LinuxSyscalls::HostCall(u64 number, const u64* arguments) {
+    u64 adjusted[6];
+    std::copy_n(arguments, 6, adjusted);
+    const bool relative_wait =
+            number == SYS_futex && (arguments[1] & FUTEX_CMD_MASK) == FUTEX_WAIT && arguments[3];
+    timespec deadline{}, remaining{};
+    if (relative_wait) {
+        if (resumed_deadline) {
+            deadline = restart_deadline;
+        } else {
+            timespec duration{};
+            if (!vm.memory.CopyIn(&duration, arguments[3], sizeof(duration))) return -EFAULT;
+            if (duration.tv_sec < 0 || duration.tv_nsec < 0 || duration.tv_nsec >= 1000000000)
+                return -EINVAL;
+            if (clock_gettime(CLOCK_MONOTONIC, &deadline)) return -errno;
+            const auto carry = (deadline.tv_nsec + duration.tv_nsec) / 1000000000;
+            if (duration.tv_sec > std::numeric_limits<time_t>::max() - deadline.tv_sec - carry)
+                return -EINVAL;
+            deadline.tv_sec += duration.tv_sec + carry;
+            deadline.tv_nsec = (deadline.tv_nsec + duration.tv_nsec) % 1000000000;
+        }
+        adjusted[3] = reinterpret_cast<u64>(&remaining);
+    }
+    resumed_deadline = false;
+    for (;;) {
+        if (relative_wait) {
+            timespec now{};
+            if (clock_gettime(CLOCK_MONOTONIC, &now)) return -errno;
+            remaining.tv_sec = deadline.tv_sec - now.tv_sec;
+            remaining.tv_nsec = deadline.tv_nsec - now.tv_nsec;
+            if (remaining.tv_nsec < 0) {
+                --remaining.tv_sec;
+                remaining.tv_nsec += 1000000000;
+            }
+            if (remaining.tv_sec < 0) remaining = {};
+        }
+        const auto result = vm.signals.WaitSyscall(number, adjusted);
+        if ((result == -EINTR || result == CancelledBeforeCall) && !vm.signals.Pending()) continue;
+        if (relative_wait && (result == -EINTR || result == CancelledBeforeCall))
+            vm.signals.PreserveFutexDeadline(deadline);
+        return result;
+    }
+}
+
+void LinuxSyscalls::RestartPolicy(u64 operation,
+                                  const u64* arguments,
+                                  bool& with_handler,
+                                  bool& without_handler) {
+    with_handler = operation == 0 || operation == 1 || operation == 18 || operation == 20 ||
+                   operation == 318 || (operation == 202 && !arguments[3]);
+    without_handler = with_handler || operation == 202 || operation == 130;
+    if (operation == 0 || operation == 1 || operation == 20) {
+        timeval timeout{};
+        socklen_t size = sizeof(timeout);
+        const int option = operation == 0 ? SO_RCVTIMEO : SO_SNDTIMEO;
+        if (!getsockopt(static_cast<int>(arguments[0]), SOL_SOCKET, option, &timeout, &size)) {
+            if (timeout.tv_sec || timeout.tv_usec) with_handler = without_handler = false;
+        } else if (errno != ENOTSOCK) {
+            swift::ThrowSystemError("query interrupted descriptor restart policy", errno);
+        }
+    }
+}
+
 s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
     const auto number =
             vm.ISA() == GuestISA::Arm64 ? Arm64SyscallOperation(guest_number) : guest_number;
@@ -137,14 +202,12 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
     switch (number) {
         case 0:
             if (!vm.PrepareGuestWrite(args[1], args[2])) return -EFAULT;
-            return Result(
-                    read(static_cast<int>(args[0]), reinterpret_cast<void*>(args[1]), args[2]));
+            return HostCall(SYS_read, args);
         case 1: {
             if (!memory.Contains(args[1], args[2], PROT_READ)) return -EFAULT;
-            const auto count = write(
-                    static_cast<int>(args[0]), reinterpret_cast<const void*>(args[1]), args[2]);
+            const auto count = HostCall(SYS_write, args);
             if (count > 0) vm.FileChanged(static_cast<int>(args[0]));
-            return Result(count);
+            return count;
         }
         case 3:
             return Result(close(static_cast<int>(args[0])));
@@ -194,6 +257,47 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
                 vm.Invalidate();
             return static_cast<s64>(memory.Brk(args[0]));
         }
+        case 13:
+            return vm.signals.Action(static_cast<int>(args[0]), args[1], args[2], args[3]);
+        case 14:
+            return vm.signals.Mask(static_cast<int>(args[0]), args[1], args[2], args[3]);
+        case 127:
+            return vm.signals.PendingMask(args[0], args[1]);
+        case 128:
+            return vm.signals.WaitInfo(args[0], args[1], args[2], args[3]);
+        case 130:
+            return vm.signals.Suspend(args[0], args[1]);
+        case 131:
+            return vm.signals.AltStack(args[0], args[1]);
+        case 62:
+        case 200:
+        case 234:
+        case 129:
+        case 297: {
+            const auto target = static_cast<s64>(args[0]);
+            const auto tid = number == 234 || number == 297 ? static_cast<s64>(args[1]) : 0;
+            if ((target != 0 && target != getpid() && target != syscall(SYS_gettid)) ||
+                (tid && tid != syscall(SYS_gettid)))
+                return -ESRCH;
+            const auto requested = args[number == 234 || number == 297 ? 2 : 1];
+            if (requested > 64) return -EINVAL;
+            const auto signal = static_cast<int>(requested);
+            if (!signal) return 0;
+            GuestSignalInfo info{};
+            const bool queued = number == 129 || number == 297;
+            if (queued && !memory.CopyIn(&info, args[number == 297 ? 3 : 2], sizeof(info)))
+                return -EFAULT;
+            if (queued && info.code >= 0) return -EPERM;
+            info.number = signal;
+            if (!queued) {
+                info.code = number == 62 ? 0 : -6;
+                const auto pid = static_cast<std::int32_t>(getpid());
+                const auto uid = static_cast<std::uint32_t>(getuid());
+                std::memcpy(info.payload.data(), &pid, 4);
+                std::memcpy(info.payload.data() + 4, &uid, 4);
+            }
+            return vm.signals.Queue(signal, info);
+        }
         case 16: {
             if (args[1] == 0x5413) {
                 struct winsize size{};
@@ -210,23 +314,18 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
         case 18: {
             if (!memory.Contains(args[1], args[2], PROT_READ)) return -EFAULT;
             if (args[3] > static_cast<u64>(std::numeric_limits<off_t>::max())) return -EINVAL;
-            const auto count = pwrite(static_cast<int>(args[0]),
-                                      reinterpret_cast<const void*>(args[1]),
-                                      args[2],
-                                      static_cast<off_t>(args[3]));
+            const auto count = HostCall(SYS_pwrite64, args);
             if (count > 0) vm.FileChanged(static_cast<int>(args[0]));
-            return Result(count);
+            return count;
         }
         case 20: {
             if (args[2] > 1024 ||
                 !memory.Contains(
                         args[1], static_cast<std::size_t>(args[2]) * sizeof(iovec), PROT_READ))
                 return -EINVAL;
-            const auto count = writev(static_cast<int>(args[0]),
-                                      reinterpret_cast<const iovec*>(args[1]),
-                                      static_cast<int>(args[2]));
+            const auto count = HostCall(SYS_writev, args);
             if (count > 0) vm.FileChanged(static_cast<int>(args[0]));
-            return Result(count);
+            return count;
         }
         case 24:
             return Result(sched_yield());
@@ -359,13 +458,8 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
             // whereas WAIT/WAIT_BITSET consume an optional time pointer.
             if (timed && args[3] && !memory.Contains(args[3], sizeof(timespec), PROT_READ))
                 return -EFAULT;
-            return Result(syscall(SYS_futex,
-                                  reinterpret_cast<std::uint32_t*>(args[0]),
-                                  operation,
-                                  args[2],
-                                  args[3],
-                                  reinterpret_cast<std::uint32_t*>(args[4]),
-                                  args[5]));
+            if (timed) return HostCall(SYS_futex, args);
+            return Result(syscall(SYS_futex, args[0], args[1], args[2], args[3], args[4], args[5]));
         }
         case 204:
 #if defined(SYS_sched_getaffinity)
@@ -439,8 +533,7 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
         case 318:
 #if defined(SYS_getrandom)
             if (!vm.PrepareGuestWrite(args[0], args[1])) return -EFAULT;
-            return Result(
-                    syscall(SYS_getrandom, reinterpret_cast<void*>(args[0]), args[1], args[2]));
+            return HostCall(SYS_getrandom, args);
 #else
             break;
 #endif
@@ -459,7 +552,7 @@ s64 LinuxSyscalls::Invoke(u64 guest_number, const u64* args) {
     return -ENOSYS;
 }
 
-void LinuxSyscalls::Service() {
+SyscallServiceResult LinuxSyscalls::Service() {
     // The host may write or remap guest memory while servicing a syscall.
     if (vm.ISA() == GuestISA::Arm64) vm.thread.native.arm_state.reservation_valid = 0;
     ++vm.stats.syscalls;
@@ -471,8 +564,32 @@ void LinuxSyscalls::Service() {
                                state.gprs[3],
                                state.gprs[4],
                                state.gprs[5]};
-        state.gprs[0] = static_cast<u64>(Invoke(state.gprs[8], arguments));
-        return;
+        if (state.gprs[8] == 139) {
+            if (!vm.signals.ReturnFrame()) {
+                GuestExceptionInfo fault;
+                fault.isa = GuestISA::Arm64;
+                fault.origin = GuestExceptionOrigin::Semantic;
+                fault.signal_number = 11;
+                fault.instruction_pc = state.pc - 4;
+                fault.address = state.gprs[31];
+                fault.address_valid = true;
+                vm.DeliverException(fault);
+            }
+            return SyscallServiceResult::ResumeGuestContext;
+        }
+        const auto number = state.gprs[8];
+        resumed_deadline = vm.signals.ConsumeRestartDeadline(number, arguments, restart_deadline);
+        auto result = Invoke(number, arguments);
+        const auto operation = Arm64SyscallOperation(number);
+        if (result == CancelledBeforeCall) result = -EINTR;
+        state.gprs[0] = static_cast<u64>(result);
+        if (result == -EINTR && vm.signals.Pending()) {
+            bool with_handler{}, without_handler{};
+            RestartPolicy(operation, arguments, with_handler, without_handler);
+            vm.signals.InterruptSyscall(number, arguments, with_handler, without_handler);
+        }
+        return result == -EINTR ? SyscallServiceResult::Interrupted
+                                : SyscallServiceResult::Completed;
     }
     auto& state = vm.thread.native.state;
     const u64 arguments[6]{state.gprs[x86::RDI],
@@ -481,8 +598,30 @@ void LinuxSyscalls::Service() {
                            state.gprs[x86::R10],
                            state.gprs[x86::R8],
                            state.gprs[x86::R9]};
+    if (state.gprs[x86::RAX] == 15) {
+        if (!vm.signals.ReturnFrame()) {
+            GuestExceptionInfo fault;
+            fault.origin = GuestExceptionOrigin::Semantic;
+            fault.signal_number = 11;
+            fault.instruction_pc = state.pc - 2;
+            fault.address = state.gprs[x86::RSP];
+            fault.address_valid = true;
+            vm.DeliverException(fault);
+        }
+        return SyscallServiceResult::ResumeGuestContext;
+    }
+    const auto number = state.gprs[x86::RAX];
+    resumed_deadline = vm.signals.ConsumeRestartDeadline(number, arguments, restart_deadline);
     state.gprs[x86::RCX] = state.pc;
     state.gprs[x86::R11] = x86::flags::ToRflags(state.packed_flags);
-    state.gprs[x86::RAX] = static_cast<u64>(Invoke(state.gprs[x86::RAX], arguments));
+    auto result = Invoke(number, arguments);
+    if (result == CancelledBeforeCall) result = -EINTR;
+    state.gprs[x86::RAX] = static_cast<u64>(result);
+    if (result == -EINTR && vm.signals.Pending()) {
+        bool with_handler{}, without_handler{};
+        RestartPolicy(number, arguments, with_handler, without_handler);
+        vm.signals.InterruptSyscall(number, arguments, with_handler, without_handler);
+    }
+    return result == -EINTR ? SyscallServiceResult::Interrupted : SyscallServiceResult::Completed;
 }
 }  // namespace swift::runtime::platform

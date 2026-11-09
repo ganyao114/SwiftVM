@@ -29,14 +29,27 @@ li s11, 0
 92:
 .endm
 
-.macro SVM_RV_RESTORE_HOST_FP
+.macro SVM_RV_CAPTURE_GUEST_FP
 ld t0, SVM_RV_CTX_REL(SVM_RV_CTX_FP_ENVIRONMENT)(s1)
 beqz t0, 93f
 frflags t0
 sd t0, SVM_RV_CTX_REL(SVM_RV_CTX_GUEST_FPSR)(s1)
+93:
+.endm
+.macro SVM_RV_RESTORE_HOST_FP_ONLY
+ld t0, SVM_RV_CTX_REL(SVM_RV_CTX_FP_ENVIRONMENT)(s1)
+beqz t0, 96f
 ld t0, SVM_RV_CTX_REL(SVM_RV_CTX_HOST_FCSR)(s1)
 fscsr t0
-93:
+96:
+.endm
+.macro SVM_RV_RESTORE_HOST_FP
+SVM_RV_CAPTURE_GUEST_FP
+SVM_RV_RESTORE_HOST_FP_ONLY
+.endm
+.macro SVM_RV_PHASE value
+li t0, \value
+sd t0, SVM_RV_CTX_REL(SVM_RV_CTX_PHASE)(s1)
 .endm
 
 .macro SVM_RV_INSTALL_GUEST_FP
@@ -59,6 +72,7 @@ sd zero, 0(t0)
 SVM_RV_PUBLISH_FLAGS
 SVM_RV_CLEAR_ACTIVE
 SVM_RV_RESTORE_HOST_FP
+SVM_RV_PHASE SVM_NATIVE_PHASE_RUNTIME
 ld a0, SVM_RV_CTX_REL(SVM_RV_CTX_OPAQUE)(s1)
 addi a1, s1, -SVM_RV_CTX_STATE
 ld t0, SVM_RV_CTX_REL(SVM_RV_CTX_RESOLVE)(s1)
@@ -70,6 +84,7 @@ ld t0, SVM_RV_CTX_REL(SVM_RV_CTX_ACTIVE)(s1)
 ld t1, SVM_RV_CTX_REL(SVM_RV_CTX_ANCHOR)(s1)
 fence rw,w
 sd t1, 0(t0)
+SVM_RV_PHASE SVM_NATIVE_PHASE_GUEST
 jr a0
 95:
 li a0, SVM_NATIVE_EXIT_RESOLVE_FAILURE
@@ -173,6 +188,8 @@ fsd fs9, 184(sp)
 fsd fs10, 192(sp)
 fsd fs11, 200(sp)
 addi s1, a0, SVM_RV_CTX_STATE
+SVM_RV_PHASE SVM_NATIVE_PHASE_ENTERING
+sd sp, SVM_RV_CTX_REL(SVM_RV_CTX_ROOT_SP)(s1)
 ld t0, SVM_RV_CTX_REL(SVM_RV_CTX_FP_ENVIRONMENT)(s1)
 beqz t0, 4f
 frcsr t0
@@ -227,9 +244,25 @@ SVM_RV_RESOLVE_AND_ENTER
 .global SvmNativeExit
 .type SvmNativeExit, @function
 SvmNativeExit:
+SVM_RV_PHASE SVM_NATIVE_PHASE_LEAVING
 SVM_RV_PUBLISH_FLAGS
 SVM_RV_CLEAR_ACTIVE
-SVM_RV_RESTORE_HOST_FP
+SVM_RV_CAPTURE_GUEST_FP
+j .Lsvm_restore_host_root
+.size SvmNativeExit, .-SvmNativeExit
+.p2align 2
+.global SvmNativeExceptionExit
+.type SvmNativeExceptionExit, @function
+SvmNativeExceptionExit:
+addi s1, a0, SVM_RV_CTX_STATE
+SVM_RV_PHASE SVM_NATIVE_PHASE_LEAVING
+li a0, SVM_NATIVE_EXIT_GUEST_EXCEPTION
+.Lsvm_restore_host_root:
+ld sp, SVM_RV_CTX_REL(SVM_RV_CTX_ROOT_SP)(s1)
+SVM_RV_CLEAR_ACTIVE
+SVM_RV_RESTORE_HOST_FP_ONLY
+sd zero, SVM_RV_CTX_REL(SVM_RV_CTX_ROOT_SP)(s1)
+sd zero, SVM_RV_CTX_REL(SVM_RV_CTX_PHASE)(s1)
 ld ra, 0(sp)
 ld s0, 8(sp)
 ld s1, 16(sp)
@@ -257,7 +290,7 @@ fld fs10, 192(sp)
 fld fs11, 200(sp)
 addi sp, sp, SVM_RV_ROOT_FRAME_BYTES
 ret
-.size SvmNativeExit, .-SvmNativeExit
+.size SvmNativeExceptionExit, .-SvmNativeExceptionExit
 
 .option pop
 .section .note.GNU-stack,"",@progbits

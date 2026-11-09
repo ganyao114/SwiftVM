@@ -10,14 +10,6 @@ void SynchronizeCode(std::uint8_t* writable,
                      const std::uint8_t* executable,
                      std::size_t bytes) noexcept;
 
-struct FaultRecovery {
-    std::uint8_t test_bits{}, test_register{}, parity_register{}, carry_direct{};
-};
-
-constexpr FaultRecovery DecodeFaultRecovery(const backend::FaultSite& site) noexcept {
-    return {site.recovery[0], site.recovery[1], site.recovery[2], site.recovery[3]};
-}
-
 // back_bytes is the actual DATA-to-transfer-head distance. Static links only.
 void PatchNativeLink(std::uintptr_t* writable,
                      const std::uintptr_t* executable,

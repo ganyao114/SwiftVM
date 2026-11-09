@@ -1,10 +1,39 @@
+#include "abi_layout.inc"
 #include "emit.h"
+#include "runtime/exit.h"
 
 #define __ masm.exact.
 
 namespace swift::runtime::backend::arm64 {
 
 namespace detail {
+void Writer::HandleGuestSafepointFamily(OpContext& ctx) {
+    if (!Linked() || options.pc_offset == UINT32_MAX) Reject(CompileError::UnsupportedOperand);
+    const auto resume_pc = IntegerImmediate(ctx.cursor.Take());
+    ContextMemory(true, 16, abi::ContextOffset(SVM_A64_CTX_PENDING_EVENTS));
+    const auto skip = masm.Here();
+    __ cbz(v::x16, std::int64_t{0});
+    // This exit has no native successor. Its state publication must not change
+    // the writer's knowledge of the ordinary, unexecuted fast-path shadow.
+    const auto dirty = shadow_dirty, packed = packed_current;
+    const auto matching = nzcv_matches;
+    const auto parity_source = deferred_parity;
+    const auto carry_source = direct_carry;
+    // Only delivery observes flags. The zero-pending path keeps the existing
+    // raw carriers; allocation still preserves every architectural flag.
+    Shadow(false);
+    Immediate(0, resume_pc);
+    PCMemory(false);
+    Immediate(0, runtime::ExitValue(runtime::NativeExit::GuestEvents));
+    Epilogue();
+    shadow_dirty = dirty;
+    packed_current = packed;
+    nzcv_matches = matching;
+    deferred_parity = parity_source;
+    direct_carry = carry_source;
+    masm.Patch(skip, masm.Here());
+}
+
 void Writer::StackAdjust(bool subtract) {
     const auto spill_frame = output.frame_bytes - (Linked() ? 0 : 16);
     const u32 high = spill_frame >> 12, low = spill_frame & 4095;

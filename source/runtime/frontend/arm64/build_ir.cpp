@@ -110,7 +110,8 @@ BuildResult EmitDecoded(std::span<const Instruction> instructions,
             for (u32 j = 0; j < b.instruction_count; ++j) {
                 const auto& inst = instructions[b.first_instruction + j];
                 if (inst.PC() != pc) throw detail::Rejected{BuildError::InvalidInput};
-                semantics.Execute(inst);
+                semantics.Execute(inst,
+                                  j && j % runtime::frontend::GuestEventInstructionBudget == 0);
                 ++total;
                 bytes += 4;
                 pc += 4;
@@ -263,10 +264,14 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
             std::size_t offset{};
             while (offset < w.bytes.size()) {
                 const auto decoded = DecodeOne(w.bytes.subspan(offset), w.pc + offset, timing);
-                if (!decoded)
+                if (!decoded) {
+                    if (scope == Scope::Block && b.instruction_count &&
+                        target.Has(TargetFeature::GuestEvents))
+                        break;
                     return {decoded.error == DecodeError::Truncated ? BuildError::Truncated
-                                                                    : BuildError::InvalidInput,
+                                                                    : BuildError::InvalidEncoding,
                             w.pc + offset};
+                }
                 instructions.push_back(decoded.instruction);
                 ++b.instruction_count;
                 offset += 4;

@@ -61,6 +61,19 @@ void WriteReport(std::FILE* stream,
     r.Number("optimize", options.optimize);
     r.Number("runtime_completed", bool(result));
     r.Number("exit_code", result.exit_code);
+    r.Text("stop_reason",
+           result.reason == runtime::GuestStopReason::GuestExit                ? "guest_exit"
+           : result.reason == runtime::GuestStopReason::GuestSignalTermination ? "guest_signal"
+           : result.reason == runtime::GuestStopReason::UnhandledGuestEvent    ? "unhandled_event"
+                                                                               : "host_failure");
+    r.Number("termination_signal", result.termination_signal);
+    r.Number("cleanup_failed", bool(result.cleanup_failure));
+    r.Optional("exception_pc",
+               result.exception ? result.exception->info.instruction_pc : 0,
+               bool(result.exception));
+    r.Optional("exception_address",
+               result.exception ? result.exception->info.address : 0,
+               result.exception && result.exception->info.address_valid);
     r.Text("engine",
            options.mode == ExecutionMode::JitOnly         ? "jit"
            : options.mode == ExecutionMode::InterpretOnly ? "interpreter"

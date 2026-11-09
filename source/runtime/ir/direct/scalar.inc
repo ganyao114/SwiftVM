@@ -13,7 +13,13 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
     const auto type = requested != Type::Void ? requested : a.empty() ? Type::Void : View(a[0]);
     const auto read = [&](std::size_t i) { return static_cast<u64>(Read(a[i])); };
     const auto raw = [&](std::size_t i) { return static_cast<u64>(Raw(a[i])); };
-    if constexpr (op == OpCode::ReadSystem || op == OpCode::ReadSystemPair) {
+    if constexpr (op == OpCode::GuestSafepoint) {
+        if (services.guest_events && services.guest_events(services.opaque)) {
+            environment.pc = a[0].payload;
+            throw Exit{ExitKind::Service, 0, runtime::ExitValue(runtime::NativeExit::GuestEvents)};
+        }
+        return {};
+    } else if constexpr (op == OpCode::ReadSystem || op == OpCode::ReadSystemPair) {
         using Query = runtime::x86::CpuQueryResult (*)(u64, u64) noexcept;
         const auto pair = reinterpret_cast<Query>(a[1].payload)(a[0].payload, 0);
         observed_effects = true;
@@ -52,7 +58,10 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
         MemoryWrite(address, a[cursor], op == OpCode::StoreMemoryTSO);
         return {};
     } else if constexpr (op == OpCode::CheckMemoryAlignment) {
-        if (read(0) & read(1)) throw Exit{ExitKind::Fault, read(0)};
+        if (read(0) & read(1))
+            throw Exit{ExitKind::Fault,
+                       read(0),
+                       runtime::ExitValue(runtime::NativeExit::AlignmentFault)};
         return {};
     } else if constexpr (op == OpCode::Nop || op == OpCode::UniformBarrier ||
                          op == OpCode::XchgBarrier || op == OpCode::FaultLocation)
@@ -229,18 +238,20 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
     } else if constexpr (op == OpCode::Div) {
         std::size_t cursor = 1;
         const auto divisor = static_cast<u64>(Expression(a, cursor));
-        if (!divisor) throw Exit{ExitKind::Fault};
+        if (!divisor)
+            throw Exit{ExitKind::Fault, 0, runtime::ExitValue(runtime::NativeExit::DivideFault)};
         return Number(read(0) / divisor, type);
     } else if constexpr (op == OpCode::SignedDiv64) {
         const auto dividend = std::bit_cast<std::int64_t>(read(0));
         const auto divisor = std::bit_cast<std::int64_t>(read(1));
         if (!divisor || (dividend == std::numeric_limits<std::int64_t>::min() && divisor == -1))
-            throw Exit{ExitKind::Fault};
+            throw Exit{ExitKind::Fault, 0, runtime::ExitValue(runtime::NativeExit::DivideFault)};
         return Number(static_cast<u64>(dividend / divisor), Type::U64);
     } else if constexpr (op == OpCode::Div128) {
         const unsigned width = TypeBits(View(a[0]));
         const auto high = read(0), low = read(1), divisor = read(2);
-        if (!divisor) throw Exit{ExitKind::Fault};
+        if (!divisor)
+            throw Exit{ExitKind::Fault, 0, runtime::ExitValue(runtime::NativeExit::DivideFault)};
         const u128 dividend = (u128{high} << width) | low;
         u128 quotient{}, remainder{};
         if (read(3)) {
@@ -252,13 +263,16 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
             remainder = absolute % d;
             const auto limit = u128{1} << (width - 1);
             if (quotient > limit || (!(minus ^ divisor_minus) && quotient == limit))
-                throw Exit{ExitKind::Fault};
+                throw Exit{
+                        ExitKind::Fault, 0, runtime::ExitValue(runtime::NativeExit::DivideFault)};
             if (minus ^ divisor_minus) quotient = -quotient;
             if (minus) remainder = -remainder;
         } else {
             quotient = dividend / divisor;
             remainder = dividend % divisor;
-            if (quotient > Mask(width)) throw Exit{ExitKind::Fault};
+            if (quotient > Mask(width))
+                throw Exit{
+                        ExitKind::Fault, 0, runtime::ExitValue(runtime::NativeExit::DivideFault)};
         }
         auto out = Number(quotient & Mask(width), Type::U64);
         out.number.extra = static_cast<u64>(remainder) & Mask(width);

@@ -31,7 +31,8 @@ public:
                            services.read,
                            services.write,
                            services.atomic,
-                           services.cpuid})
+                           services.cpuid,
+                           services.guest_events})
             , state(state)
             , services(services) {}
 
@@ -215,6 +216,9 @@ StepResult InterpretDecoded(const Instruction& decoded,
     try {
         if (!Sem::AllowedPrefixes(instruction, source))
             throw detail::Rejected{BuildError::Unsupported};
+        runtime::ir::TargetInfo event_target;
+        if (services.guest_events)
+            event_target.features = static_cast<u64>(runtime::ir::TargetFeature::GuestEvents);
         Sem::Execute(sink,
                      layout,
                      instruction,
@@ -222,7 +226,7 @@ StepResult InterpretDecoded(const Instruction& decoded,
                      pending,
                      result.pc,
                      next,
-                     {},
+                     event_target,
                      flow,
                      ended,
                      InstructionRange{std::span<const Instruction>{&decoded, 1}},

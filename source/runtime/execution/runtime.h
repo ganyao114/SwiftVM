@@ -1,10 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <string>
 
 #include "base/error.h"
+#include "runtime/exception.h"
 #include "runtime/frontend/source.h"
 #include "runtime/ir/types.h"
 #include "timing.h"
@@ -25,6 +27,13 @@ struct RuntimeOptions {
     bool decode_timing{};
     // Additional request-level clocks when decode_timing is enabled.
     bool compile_details{};
+    // Only the standalone launcher forwards guest job-control/default fatal
+    // actions to its host process. Embedders retain ownership of that policy.
+    bool forward_process_signals{};
+    // A cold Runtime callback may inspect/edit the borrowed context and resume
+    // via dispatch. Stop returns an owning snapshot; GuestOS uses Linux policy.
+    GuestExceptionHandler exception_handler{};
+    void* exception_opaque{};
     // Empty keeps persistence entirely disabled.
     std::string cache_directory;
     std::string artifact_path;
@@ -82,8 +91,14 @@ struct RunResult {
     RuntimeStats stats;
     std::string error;
     swift::Failure failure;  // Host/runtime failure, independent of a legitimate guest exit code.
+    GuestStopReason reason{GuestStopReason::GuestExit};
+    int termination_signal{};
+    std::unique_ptr<GuestExceptionSnapshot> exception;
+    swift::Failure cleanup_failure;
 
-    explicit operator bool() const noexcept { return error.empty(); }
+    explicit operator bool() const noexcept {
+        return reason == GuestStopReason::GuestExit && !failure && !cleanup_failure;
+    }
 };
 
 RunResult RunGuest(const std::string& executable,

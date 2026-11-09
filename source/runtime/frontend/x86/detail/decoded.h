@@ -247,6 +247,7 @@ struct DecoderAccess {
         out.operand_bits = static_cast<std::uint8_t>(16u << FLAG_GET_OPSIZE(raw.flags));
         out.flow = DecodeFlow(raw.meta);
         out.unit_boundary = out.flow != FlowKind::Linear || out.opcode == Op::CPUID ||
+                            out.opcode == Op::UD2 || out.opcode == Op::INT_3 ||
                             out.opcode == Op::LDMXCSR || out.opcode == Op::STOS ||
                             out.opcode == Op::MOVS || out.opcode == Op::LODS ||
                             out.opcode == Op::CMPS || out.opcode == Op::SCAS;

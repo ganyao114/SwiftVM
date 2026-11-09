@@ -1,4 +1,5 @@
 #include "emit.h"
+#include "runtime/exit.h"
 
 #define __ masm.exact.
 
@@ -21,6 +22,7 @@ void Writer::OrderedMemory(
     const bool imm9 = RcpcImm9();
     const MemOperand memory{Base(address), imm9 ? offset : 0};
     const auto emit_ordered = [&] {
+        const auto first = static_cast<u32>(output.words.size());
         if (imm9) {
             if (load) {
                 if (bits == 8)
@@ -59,6 +61,7 @@ void Writer::OrderedMemory(
             else
                 __ stlr(R(value, bits), memory);
         }
+        RecordGuestAccess(first, load ? 1 : 2, bits / 8);
     };
     if (recover) {
         unaligned_word = static_cast<u32>(output.words.size());
@@ -69,11 +72,11 @@ void Writer::OrderedMemory(
     if (!size) return;
     __ b(3);
     if (load) {
-        Memory(true, bits, value, address);
+        GuestMemory(true, bits, value, address);
         __ dmb(v::InnerShareable, v::BarrierReads);
     } else {
         __ dmb(v::InnerShareable, v::BarrierAll);
-        Memory(false, bits, value, address);
+        GuestMemory(false, bits, value, address);
     }
 }
 
@@ -89,7 +92,10 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
     auto& saved = ctx.saved;
     if (vector) {
         if (!options.private_uniforms) Shadow(false);
-        VectorMemory(true, destination, Expression(cursor, 16, 17));
+        const auto address = Expression(cursor, 16, 17);
+        fault_parity = static_cast<std::uint8_t>(deferred_parity);
+        fault_carry = direct_carry;
+        GuestVectorMemory(true, destination, address);
         if (operation.opcode == OpCode::LoadMemoryTSO)
             __ dmb(v::InnerShareable, v::BarrierReads);  // DMB ISHLD.
         return;
@@ -137,6 +143,7 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
                         __ ldapursw(X(next_home.reg),
                                     MemOperand(Base(address),
                                                offset));  // LDAPURSH W / LDAPURSW X.
+                    RecordGuestAccess(unaligned_word, 1, width / 8);
                     elided_consumer = consumer;
                     saved = true;
                     return;
@@ -147,7 +154,7 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
     if (ordered)
         OrderedMemory(true, width, destination, address, offset);
     else
-        Memory(true, width, destination, address);
+        GuestMemory(true, width, destination, address);
 }
 
 void Writer::HandleStoreMemoryFamily(OpContext& ctx) {
@@ -182,14 +189,14 @@ void Writer::HandleStoreMemoryFamily(OpContext& ctx) {
     if (vector_input) {
         CompleteLocalFlags();
         if (operation.opcode == OpCode::StoreMemoryTSO) __ dmb(v::InnerShareable, v::BarrierAll);
-        VectorMemory(false, value, address, static_cast<u32>(offset) / 16);
+        GuestVectorMemory(false, value, address, static_cast<u32>(offset) / 16);
     } else {
         fault_parity = static_cast<std::uint8_t>(deferred_parity);
         fault_carry = direct_carry;
         if (ordered)
             OrderedMemory(false, bits, value, address, offset);
         else
-            Memory(false, bits, value, address);
+            GuestMemory(false, bits, value, address);
     }
     if (!options.private_uniforms) Shadow(true);  // Generic raw pointers may alias the flags field.
 }
@@ -206,8 +213,21 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
         Immediate(17, bits);
         __ and_(v::x0, X(address), Operand(v::x17));
     }
-    __ cbz(v::x0, 2);
-    __ brk(0);  // CBZ x0,+8; BRK on a guest fault.
+    const auto aligned = masm.Here();
+    __ cbz(v::x0, std::int64_t{0});
+    const auto dirty = shadow_dirty, packed = packed_current;
+    const auto matching = nzcv_matches;
+    Shadow(false);
+    if (has_fault_location && options.pc_offset != UINT32_MAX) {
+        Immediate(0, fault_location);
+        PCMemory(false);
+    }
+    Immediate(0, ExitValue(NativeExit::AlignmentFault));
+    Epilogue();
+    shadow_dirty = dirty;
+    packed_current = packed;
+    nzcv_matches = matching;
+    masm.Patch(aligned, masm.Here());
 }
 
 void Writer::HandleMemoryBarrierTSOFamily(OpContext& /*ctx*/) {

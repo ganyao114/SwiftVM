@@ -1399,3 +1399,29 @@ TEST_CASE("FP status invalidates only its bound Uniform field", "[compile][float
     CHECK(optimized.program.Operations()[unchanged.node.value].opcode == OpCode::ZeroExtend64);
     CHECK(optimized.program.Operands(unchanged.node).front().Payload() == gpr.node.value);
 }
+
+TEST_CASE("Guest safepoint retains predecessor flags", "[compile][ir-optimize]") {
+    Builder builder{Scope::Function};
+    const auto first = builder.CreateBlock(), second = builder.CreateBlock();
+    REQUIRE(bool(first));
+    REQUIRE(bool(second));
+    CHECK(builder.BeginBlock(first.block) == Error::None);
+    const auto left = Literal(builder, 7), right = Literal(builder, 9);
+    const auto producer = Emit(builder,
+                               OpCode::Add,
+                               Type::U64,
+                               {Operand::ValueOf(left), Operand::ValueOf(right)},
+                               {FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry, false});
+    CHECK(builder.EndBlock(Terminal::Jump(second.block)) == Error::None);
+    CHECK(builder.BeginBlock(second.block) == Error::None);
+    Emit(builder, OpCode::GuestSafepoint, Type::Void, {Operand::Immediate(0x1234, Type::U64)});
+    Emit(builder, OpCode::ClearFlags, Type::Void, {Operand::Flags(Flag::All)});
+    CHECK(builder.EndBlock(Terminal::Return()) == Error::None);
+    auto result = Optimize(Submit(builder));
+    REQUIRE(bool(result));
+    const auto& retained = result.program.Operations()[producer.node.value];
+    CHECK(retained.opcode == OpCode::Add);
+    CHECK(retained.flag_outputs == FlagBits(Flag::All));
+    const auto& observation = result.program.Operations()[result.program.Blocks()[1].first_node];
+    CHECK(observation.opcode == OpCode::GuestSafepoint);
+}

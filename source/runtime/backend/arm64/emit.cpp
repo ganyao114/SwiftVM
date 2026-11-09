@@ -112,23 +112,10 @@ bool Writer::Run() try {
                 has_fault_location = true;
                 continue;
             }
-            const auto first = static_cast<u32>(output.words.size());
             unaligned_word = UINT32_MAX;
             fault_parity = fault_carry = 0;
             const auto effects = EffectsFor(operation.opcode, operation.Metadata());
             Emit(operation, effects);
-            if (options.fault_locations && has_fault_location &&
-                HasAnyEffect(effects, Effect::MayFault)) {
-                output.faults.push_back(
-                        {first * 4,
-                         static_cast<u32>(output.words.size()) * 4,
-                         fault_location,
-                         unaligned_word == UINT32_MAX ? UINT32_MAX : unaligned_word * 4});
-                output.faults.back().recovery[2] = fault_parity;
-                output.faults.back().recovery[3] = fault_carry;
-                if (deferred_test.active)
-                    deferred_test.sites[deferred_test.site_count++] = output.faults.size() - 1;
-            }
         }
         if (pending_save) Reject(CompileError::UnsupportedFlags);
         if (!masm.local_fixups.empty()) Reject(CompileError::InvalidProgram);
@@ -233,12 +220,13 @@ void Writer::Emit(const Operation& operation, Effect effects) {
     const bool memory =
             operation.opcode == OpCode::LoadMemory || operation.opcode == OpCode::LoadMemoryTSO ||
             operation.opcode == OpCode::StoreMemory || operation.opcode == OpCode::StoreMemoryTSO;
-    if (reads_flags || legacy_mask ||
-        HasAnyEffect(effects, Effect::Unknown | Effect::External | Effect::Control) ||
-        (metadata == OperationMetadata{} && HasAnyEffect(effects, Effect::WriteFlags)) ||
-        (HasAnyEffect(effects, Effect::MayFault) && (!has_fault_location || !memory || vector)) ||
-        operation.opcode == OpCode::Div128 || operation.opcode == OpCode::Cpuid ||
-        operation.opcode == OpCode::ReadSystem)
+    if (operation.opcode != OpCode::GuestSafepoint &&
+        (reads_flags || legacy_mask ||
+         HasAnyEffect(effects, Effect::Unknown | Effect::External | Effect::Control) ||
+         (metadata == OperationMetadata{} && HasAnyEffect(effects, Effect::WriteFlags)) ||
+         (HasAnyEffect(effects, Effect::MayFault) && (!has_fault_location || !memory || vector)) ||
+         operation.opcode == OpCode::Div128 || operation.opcode == OpCode::Cpuid ||
+         operation.opcode == OpCode::ReadSystem))
         CompleteLocalFlags();
     else if ((metadata.flag_outputs & pf_af) && !replaces_pf)
         CompleteParity();

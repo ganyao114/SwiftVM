@@ -117,13 +117,10 @@ SVM_CHECK_CONTEXT(fp_environment, SVM_LA_CTX_FP_ENVIRONMENT);
 SVM_CHECK_CONTEXT(probe_steps, SVM_LA_CTX_PROBES);
 SVM_CHECK_CONTEXT(atomic_service, SVM_LA_CTX_ATOMIC_SERVICE);
 SVM_CHECK_CONTEXT(l1, SVM_LA_CTX_L1);
+SVM_CHECK_CONTEXT(root_sp, SVM_LA_CTX_ROOT_SP);
+SVM_CHECK_CONTEXT(phase, SVM_LA_CTX_PHASE);
+SVM_CHECK_CONTEXT(pending_events, SVM_LA_CTX_PENDING_EVENTS);
+SVM_CHECK_CONTEXT(faults, SVM_LA_CTX_FAULTS);
 #undef SVM_CHECK_CONTEXT
-
-void RestoreGuestState(execution::FaultContext& context, std::span<const std::byte> gprs) noexcept {
-    if (context.flags_offset == UINT32_MAX) return;
-    std::memcpy(reinterpret_cast<std::uint8_t*>(context.state) + context.flags_offset,
-                gprs.data() + SVM_LA_FLAGS_REG * 8,
-                8);
-}
 
 }  // namespace swift::runtime::backend::loongarch64

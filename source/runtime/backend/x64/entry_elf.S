@@ -22,6 +22,7 @@
 1:
 .endm
 SVM_FUNCTION SvmRunNative
+ mov qword ptr [rdi+SVM_X64_CTX_PHASE],SVM_NATIVE_PHASE_ENTERING
  push rbx
  push rbp
  push r12
@@ -30,6 +31,7 @@ SVM_FUNCTION SvmRunNative
  push r15
  sub rsp,24
  mov qword ptr [rsp],rdi
+ mov qword ptr [rdi+SVM_X64_CTX_ROOT_SP],rsp
  stmxcsr dword ptr [rsp+8]
  stmxcsr dword ptr [rdi+SVM_X64_CTX_HOST_MXCSR]
  lea r12,[rdi+SVM_X64_CTX_STATE]
@@ -113,6 +115,7 @@ SVM_FUNCTION \name
  mov rax,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
  mov rcx,qword ptr [r12+SVM_X64_CTX_ANCHOR-SVM_X64_CTX_STATE]
  mov qword ptr [rax],rcx
+ mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_GUEST
  jmp r11
 SVM_END \name
 .endm
@@ -135,6 +138,7 @@ SVM_END SvmNativePending
  mov qword ptr [rax],0
  stmxcsr dword ptr [r12+SVM_X64_CTX_GUEST_MXCSR-SVM_X64_CTX_STATE]
  ldmxcsr dword ptr [r12+SVM_X64_CTX_HOST_MXCSR-SVM_X64_CTX_STATE]
+ mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_RUNTIME
  lea rsi,[r12-SVM_X64_CTX_STATE]
  mov rdi,qword ptr [rsi]
  call qword ptr [rsi+8]
@@ -150,14 +154,28 @@ SVM_END SvmNativePending
  mov rax,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
  mov rcx,qword ptr [r12+SVM_X64_CTX_ANCHOR-SVM_X64_CTX_STATE]
  mov qword ptr [rax],rcx
+ mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_GUEST
  jmp r11
 .Lfailed:
  mov eax,SVM_NATIVE_EXIT_RESOLVE_FAILURE
  jmp SvmNativeExit
 SVM_FUNCTION SvmNativeExit
+ mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_LEAVING
  PUBLISH_FLAGS
  stmxcsr dword ptr [r12+SVM_X64_CTX_GUEST_MXCSR-SVM_X64_CTX_STATE]
+ jmp .Lrestore_host_root
+SVM_END SvmNativeExit
+SVM_FUNCTION SvmNativeExceptionExit
+ lea r12,[rdi+SVM_X64_CTX_STATE]
+ mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_LEAVING
+ mov eax,SVM_NATIVE_EXIT_GUEST_EXCEPTION
+.Lrestore_host_root:
+ mov rsp,qword ptr [r12+SVM_X64_CTX_ROOT_SP-SVM_X64_CTX_STATE]
+ mov rcx,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
+ mov qword ptr [rcx],0
  ldmxcsr dword ptr [rsp+8]
+ mov qword ptr [r12+SVM_X64_CTX_ROOT_SP-SVM_X64_CTX_STATE],0
+ mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_RUNTIME
  add rsp,24
  pop r15
  pop r14
@@ -166,6 +184,6 @@ SVM_FUNCTION SvmNativeExit
  pop rbp
  pop rbx
  ret
-SVM_END SvmNativeExit
+SVM_END SvmNativeExceptionExit
 .section .note.GNU-stack,"",@progbits
 #endif

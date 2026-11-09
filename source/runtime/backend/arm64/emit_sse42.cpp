@@ -1,6 +1,7 @@
 #include "emit.h"
-#include "vector_helper.h"
 #include "runtime/arch/x86/sse42_string.h"
+#include "runtime/exit.h"
+#include "vector_helper.h"
 
 #define __ masm.exact.
 
@@ -35,6 +36,7 @@ void Writer::HandleStringFamily(OpContext& ctx) {
     const auto lengths = explicit_lengths ? ctx.cursor.Take() : CellView{};
     const auto control = IntegerImmediate(ctx.cursor.Take());
     if (control > (explicit_lengths ? 511u : 255u)) Reject(CompileError::UnsupportedOperand);
+    HelperFPEnvironment(false);
     VectorMove(0, VectorValue(left, 0));
     VectorMove(1, VectorValue(right, 1));
     const auto temporary = VectorTemporary();
@@ -54,8 +56,10 @@ void Writer::HandleStringFamily(OpContext& ctx) {
             explicit_lengths ? HostSymbol::ArmStringExplicit : HostSymbol::ArmStringImplicit);
     HostAddress(30, VectorHelperBridge(), HostSymbol::ArmVectorBridge);
     __ blr(v::x30);
+    HelperFPEnvironment(true);
     __ add(v::sp, v::sp, Operand(48));
     __ fmov(X(ctx.destination), D(0));
+    NativePhase(SVM_NATIVE_PHASE_GUEST);
 }
 
 void Writer::HandleSse42FlagsFamily(OpContext& ctx) {

@@ -501,6 +501,26 @@ static void SystemCall(Emitter& builder,
     ended = true;
 }
 
+static void SoftwareException(Emitter& builder,
+                              StateLayout layout,
+                              const InstructionData& instruction,
+                              PendingFlags& pending,
+                              u64 pc,
+                              u64 next_pc,
+                              bool& ended) {
+    for (const auto& operand : instruction.ops)
+        if (operand.type != GuestOperandKind::None) Unsupported();
+    const bool breakpoint = instruction.opcode == Op::INT_3;
+    pending.Flush(builder);
+    StorePC(builder, layout, Constant(builder, breakpoint ? next_pc : pc));
+    EndDispatch(builder,
+                runtime::SemanticExceptionExit(
+                        breakpoint ? runtime::GuestExceptionKind::Breakpoint
+                                   : runtime::GuestExceptionKind::IllegalInstruction,
+                        breakpoint ? instruction.size : 0));
+    ended = true;
+}
+
 template <class Flow> static void Jump(Emitter& builder,
                                        StateLayout layout,
                                        const InstructionData& instruction,

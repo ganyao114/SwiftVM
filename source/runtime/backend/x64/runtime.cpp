@@ -113,15 +113,10 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     return o;
 }
 
-bool RestoreGuestState(execution::FaultContext& c,
-                       const FaultSite& s,
-                       std::span<const std::byte> regs) noexcept {
-    if (s.recovery[0] > 1 || regs.size() < 16 * 8) return false;
-    if (c.flags_offset != UINT32_MAX && !s.recovery[0])
-        std::memcpy(static_cast<std::uint8_t*>(c.state) + c.flags_offset, regs.data() + 3 * 8, 8);
-    return true;
-}
-
+static_assert(offsetof(execution::NativeRunContext, root_sp) == SVM_X64_CTX_ROOT_SP);
+static_assert(offsetof(execution::NativeRunContext, phase) == SVM_X64_CTX_PHASE);
+static_assert(offsetof(execution::NativeRunContext, pending_events) == SVM_X64_CTX_PENDING_EVENTS);
+static_assert(offsetof(execution::NativeRunContext, faults) == SVM_X64_CTX_FAULTS);
 static_assert(offsetof(execution::NativeRunContext, state) == SVM_X64_CTX_STATE);
 static_assert(offsetof(execution::NativeRunContext, guest_fpsr) == SVM_X64_CTX_GUEST_FPSR);
 static_assert(offsetof(execution::NativeRunContext, l1) == SVM_X64_CTX_L1);

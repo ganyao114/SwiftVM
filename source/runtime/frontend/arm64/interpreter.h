@@ -17,6 +17,7 @@ struct DirectServices {
     AccessResult (*read)(void*, std::uint64_t, std::span<std::uint8_t>, bool) noexcept {};
     AccessResult (*write)(void*, std::uint64_t, std::span<const std::uint8_t>, bool) noexcept {};
     AccessResult (*atomic)(void*, const AtomicRequest&, AtomicValue&) noexcept {};
+    bool (*guest_events)(void*) noexcept {};
 };
 
 using runtime::frontend::StepKind;

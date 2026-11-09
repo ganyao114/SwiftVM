@@ -1,6 +1,7 @@
 #pragma once
 
 #include "runtime/exit.h"
+#include "runtime/frontend/guest_events.h"
 
 #include <algorithm>
 #include <array>
@@ -11,8 +12,8 @@
 
 #include "build_ir.h"
 #include "instruction.h"
-#include "runtime/arch/x86/x87.h"
 #include "runtime/arch/x86/flags.h"
+#include "runtime/arch/x86/x87.h"
 
 namespace swift::x86 {
 std::uint8_t DisabledCetHintSize(std::span<const std::uint8_t>) noexcept;
@@ -50,6 +51,8 @@ template <class Sink> struct Semantics {
 
     [[noreturn]] static void Unsupported() { throw Rejected{BuildError::Unsupported}; }
 
+    // These class fragments declare types used by later fragments.
+    // clang-format off
 #include "semantics_operands.inc"
 #include "semantics_integer.inc"
 #include "semantics_scalar_ext.inc"
@@ -66,5 +69,6 @@ template <class Sink> struct Semantics {
 #include "semantics_mmx.inc"
 #include "semantics_avx.inc"
 #include "semantics_dispatch.inc"
+    // clang-format on
 };
 }  // namespace swift::x86::detail

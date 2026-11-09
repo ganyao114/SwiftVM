@@ -710,13 +710,15 @@ void NEONMultiMemory(const vixl::aarch64::Instruction* instr, bool post_index) {
     };
     if (!interleaved) {
         const auto type = q ? Type::V128 : Type::U64;
-        for (u32 reg = 0; reg < registers; ++reg) {
-            const u8 code = (rt + reg) & 31;
-            if (load)
-                WriteVRegister(code, ReadMemory(Input{address(reg * bytes)}, type));
-            else
-                WriteMemory(address(reg * bytes), ReadVRegister(code, type));
-        }
+        if (load) {
+            // Keep every old Q register visible until the last read succeeds.
+            Value loaded[4];
+            for (u32 reg = 0; reg < registers; ++reg)
+                loaded[reg] = ReadMemory(Input{address(reg * bytes)}, type);
+            for (u32 reg = 0; reg < registers; ++reg) WriteVRegister((rt + reg) & 31, loaded[reg]);
+        } else
+            for (u32 reg = 0; reg < registers; ++reg)
+                WriteMemory(address(reg * bytes), ReadVRegister((rt + reg) & 31, type));
     } else if (registers == 2 && q) {
         const u32 bits = 8u << size;
         if (load) {
@@ -818,13 +820,19 @@ void NEONSingleMemory(const vixl::aarch64::Instruction* instr, bool post_index) 
     auto base = ReadXRegister(rn, Reg31IsStackPointer);
     auto offset = post_index && instr->GetRm() != 31 ? ReadXRegister(instr->GetRm())
                                                      : ImmValue(bytes * count, Type::U64);
+    // Lane and replicate loads share the same all-reads-before-Q-commit rule.
+    Value loaded[4];
+    if (load)
+        for (u32 reg = 0; reg < count; ++reg) {
+            auto address =
+                    reg ? this->Add(base, SingleOperand(Imm{u64{reg * bytes}})).WithView(Type::U64)
+                        : base;
+            loaded[reg] = ReadMemory(Input{address}, type);
+        }
     for (u32 reg = 0; reg < count; ++reg) {
         const u8 code = (rt + reg) & 31;
-        auto address =
-                reg ? this->Add(base, SingleOperand(Imm{u64{reg * bytes}})).WithView(Type::U64)
-                    : base;
         if (load) {
-            auto value = Widen(ReadMemory(Input{address}, type));
+            auto value = Widen(loaded[reg]);
             if (replicate) {
                 for (u32 shift = bits; shift < 64; shift *= 2) {
                     auto copy = this->LslImm(value, Imm{shift}).WithView(Type::U64);
@@ -843,6 +851,9 @@ void NEONSingleMemory(const vixl::aarch64::Instruction* instr, bool post_index) 
                 this->StoreUniform(Uniform{uniform_offset, Type::U64}, value);
             }
         } else {
+            auto address =
+                    reg ? this->Add(base, SingleOperand(Imm{u64{reg * bytes}})).WithView(Type::U64)
+                        : base;
             auto value = ReadVHalf(code, position >= 64);
             value = this->LsrImm(value, Imm{position % 64}).WithView(Type::U64);
             value = this->And(value, SingleOperand(Imm{mask})).WithView(Type::U64);

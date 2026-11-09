@@ -76,7 +76,9 @@ void Writer::Restore() {
 
 void Writer::Exit(u64 reason) {
     PublishFlags();
-    if (reason && options.pc_offset != UINT32_MAX) {
+    const auto kind = static_cast<NativeExit>(reason & 0xff);
+    if (reason && kind != NativeExit::GuestException && kind != NativeExit::GuestEvents &&
+        kind != NativeExit::SemanticException && options.pc_offset != UINT32_MAX) {
         mov(rax, guest_pc);
         mov(qword[r12 + options.pc_offset], rax);
     }
@@ -221,6 +223,7 @@ void Writer::Run() {
         block = BlockId{b};
         L(blocks[b]);
         static_pc_known = false;
+        has_fault_location = false;
         terminated = false;
         const auto& body = source.Blocks()[b];
         for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
@@ -228,6 +231,7 @@ void Writer::Run() {
             const auto& op = source.Operations()[i];
             if (op.opcode == OpCode::FaultLocation) {
                 guest_pc = source.Operands(current).front().Payload();
+                has_fault_location = true;
                 continue;
             }
             if (op.opcode == OpCode::EntryPoint) {
@@ -247,7 +251,6 @@ void Writer::Run() {
             c.vector_result = op.type == ir::Type::V128;
             c.destination = rax;
             c.vector = xmm0;
-            const auto first = getSize();
             fault_committed_flags = false;
             Dispatch(c);
             WriteResult(c);
@@ -256,11 +259,6 @@ void Writer::Run() {
                 op.opcode != OpCode::And && op.opcode != OpCode::Or && op.opcode != OpCode::Xor &&
                 op.opcode != OpCode::AndNot && op.opcode != OpCode::Not)
                 Reject(CompileError::UnsupportedFlags);
-            if (options.fault_locations && getSize() > first &&
-                HasAnyEffect(EffectsFor(op.opcode, op.Metadata()), Effect::MayFault)) {
-                output.faults.push_back({u32(first), u32(getSize()), guest_pc});
-                output.faults.back().recovery[0] = fault_committed_flags;
-            }
         }
         if (!terminated) Terminal(body.terminal);
     }

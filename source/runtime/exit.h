@@ -17,10 +17,38 @@ enum class NativeExit : std::uint64_t {
     AlignmentFault = SVM_NATIVE_EXIT_ALIGNMENT_FAULT,
     MemoryFault = SVM_NATIVE_EXIT_MEMORY_FAULT,
     FloatingFault = SVM_NATIVE_EXIT_FLOATING_FAULT,
+    GuestException = SVM_NATIVE_EXIT_GUEST_EXCEPTION,
+    GuestEvents = SVM_NATIVE_EXIT_GUEST_EVENTS,
+    SemanticException = SVM_NATIVE_EXIT_SEMANTIC_EXCEPTION,
+};
+
+enum class GuestExceptionKind : std::uint8_t {
+    Memory,
+    Alignment,
+    Divide,
+    IllegalInstruction,
+    FloatingPoint,
+    Breakpoint,
+    AsyncSignal,
+};
+
+enum class NativePhase : std::uint64_t {
+    Runtime = SVM_NATIVE_PHASE_RUNTIME,
+    Entering = SVM_NATIVE_PHASE_ENTERING,
+    Guest = SVM_NATIVE_PHASE_GUEST,
+    Helper = SVM_NATIVE_PHASE_HELPER,
+    HostWait = SVM_NATIVE_PHASE_HOST_WAIT,
+    Leaving = SVM_NATIVE_PHASE_LEAVING,
 };
 
 constexpr std::uint64_t ExitValue(NativeExit value) noexcept {
     return static_cast<std::uint64_t>(value);
+}
+
+constexpr std::uint64_t SemanticExceptionExit(GuestExceptionKind kind,
+                                              unsigned instruction_bytes = 0) noexcept {
+    return ExitValue(NativeExit::SemanticException) | (static_cast<std::uint64_t>(kind) << 8) |
+           (static_cast<std::uint64_t>(instruction_bytes) << 16);
 }
 
 }  // namespace swift::runtime

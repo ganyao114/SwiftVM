@@ -1,8 +1,11 @@
 #include "base/error.h"
+#include "runtime/arch/x86/state.h"
 #include "runtime/arch/x86/x87.h"
+#include "runtime/exit.h"
 #include "runtime/externals/distorm/distorm.h"
 #include "runtime/externals/distorm/mnemonics.h"
 #include "runtime/frontend/x86/detail/decoded.h"
+#include "runtime/frontend/x86/interpreter.h"
 #include "tests/support/check.h"
 #include "tests/support/guest_memory.h"
 #include "tests/support/native_code.h"
@@ -162,7 +165,7 @@ void RejectedBytesCannotPublishAProgram() {
     };
     reject({});
     const std::uint8_t truncated[]{0x48, 0xb8, 1};
-    const std::uint8_t unsupported[]{0x0f, 0x0b, 0x90};  // UD2, followed by unfetched padding.
+    const std::uint8_t unsupported[]{0xf4, 0x90, 0x90};  // HLT, followed by unfetched padding.
     const std::uint8_t address32[]{0x67, 0x8b, 0x00};
     const std::uint8_t fs[]{0x64, 0x48, 0x8b, 0x00};
     const std::uint8_t lock[]{0xf0, 0x48, 0x89, 0x00};
@@ -192,13 +195,13 @@ void QualificationCountsTheActualAbandonedPrefix() {
         CHECK(result.error == swift::x86::BuildError::Unsupported && !result.program);
         return result;
     };
-    const std::uint8_t ud2[]{0x0f, 0x0b};
-    const auto empty = reject(ud2);
+    const std::uint8_t hlt[]{0xf4, 0x90};
+    const auto empty = reject(hlt);
     CHECK(empty.instruction_count == 0 && empty.decoded_bytes == 0 && empty.error_pc == 0x4000);
     CHECK(collected.nodes == 0 && collected.value_uses == 0 && collected.operand_words == 0);
     CHECK(collected.blocks == 1);  // The actual declared/open block still exists.
     const std::uint8_t prefix[]{
-            0x48, 0xb8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x0f, 0x0b};
+            0x48, 0xb8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0xf4, 0x90};
     const auto partial = reject(prefix);
     CHECK(partial.instruction_count == 1 && partial.decoded_bytes == 10 &&
           partial.error_pc == 0x400a);
@@ -550,7 +553,7 @@ void IntegerAluAndDeferredFlags() {
     }
     CHECK(writers == 2);  // The later SUB cannot discard flags visible at the MOV fault.
     for (const auto& bytes :
-         {std::vector<std::uint8_t>{0x0f, 0x0b},           // UD2
+         {std::vector<std::uint8_t>{0xf4},                 // HLT
           std::vector<std::uint8_t>{0xd9, 0xee},           // x87 FLDZ
           std::vector<std::uint8_t>{0x0f, 0x58, 0xc0}}) {  // ADDPS floating arithmetic
         const BlockWindow unsupported{0x5000, bytes};
@@ -635,7 +638,7 @@ void ExternalEntriesAndReadyFrontiers() {
     const auto entries = count_entries(bounded.program);
     CHECK(std::find(entries.begin(), entries.end(), 0x2004) ==
           entries.end());  // Empty budget frontier cannot call itself.
-    const std::uint8_t noreturn[]{0xe8, 0xfb, 0x0f, 0x00, 0x00, 0xcc};
+    const std::uint8_t noreturn[]{0xe8, 0xfb, 0x0f, 0x00, 0x00, 0xf4};
     const BlockWindow padded{0x3000, noreturn};
     const auto before_trap =
             swift::x86::BuildFunctionIR({&padded, 1}, padded.pc, layout, {}, known);
@@ -1505,7 +1508,7 @@ void PackedSseAndLandingHints() {
     inspect(function);
     CHECK(function_timing.calls == 21);
     // Recognition does not swallow another instruction's failure or a partial hint.
-    const std::array<std::uint8_t, 6> bad{0xf3, 0x0f, 0x1e, 0xfa, 0x0f, 0x0b};
+    const std::array<std::uint8_t, 6> bad{0xf3, 0x0f, 0x1e, 0xfa, 0xf4, 0x90};
     const BlockWindow unsupported{0x7000, bad};
     CHECK(!BuildIR({&unsupported, 1}, Scope::Block, vector_layout).program);
     const BlockWindow truncated{0x7100, std::span{bad}.first(3)};
@@ -1894,4 +1897,112 @@ TEST_CASE("HalfPackedSingleMemoryKeepsTheOtherHalf", "[compile][x86-construction
 
 TEST_CASE("X87WindowsKeepTheirFirstServicePC", "[compile][x86-construction]") {
     CHECK_NOTHROW(X87WindowsKeepTheirFirstServicePC());
+}
+
+TEST_CASE("Guest event source boundaries", "[compile][x86-construction]") {
+    const auto points = [](const auto& code, std::uint64_t pc, Scope scope, TargetMode mode) {
+        const BlockWindow window{pc, code};
+        const auto result =
+                BuildIR({&window, 1},
+                        scope,
+                        layout,
+                        {mode, 0, static_cast<std::uint64_t>(TargetFeature::GuestEvents)});
+        REQUIRE(bool(result));
+        std::vector<std::uint64_t> actual;
+        for (const auto& op : result.program.Operations())
+            if (op.opcode == OpCode::GuestSafepoint)
+                actual.push_back(result.program.Operands(op).front().Payload());
+        return actual;
+    };
+    for (auto mode : {TargetMode::Known, TargetMode::Unknown, TargetMode::EarlyOff})
+        for (auto scope : {Scope::Block, Scope::Function}) {
+            const std::array<std::uint8_t, 2> forward{0xeb, 0x10}, loop{0xe2, 0xfe},
+                    indirect{0xff, 0xd0};
+            CHECK(points(forward, 0x1800, scope, mode).empty());
+            CHECK(points(loop, 0x1800, scope, mode) == std::vector<std::uint64_t>{0x1800});
+            CHECK(points(indirect, 0x1800, scope, mode) == std::vector<std::uint64_t>{0x1800});
+            const std::array<std::uint8_t, 1> nop{0x90}, ret{0xc3};
+            CHECK(points(nop, 0x1fff, scope, mode) == std::vector<std::uint64_t>{0x1fff});
+            CHECK(points(ret, 0x1800, scope, mode) == std::vector<std::uint64_t>{0x1800});
+            const std::vector<std::uint8_t> linear(257, 0x90);
+            CHECK(points(linear, 0x1200, scope, mode) == std::vector<std::uint64_t>{0x1300});
+            const std::array<std::uint8_t, 2> rep{0xf3, 0xaa};
+            CHECK(points(rep, 0x1800, scope, mode) == std::vector<std::uint64_t>{0x1800});
+        }
+}
+
+TEST_CASE("Guest events stop LOOP before its counter effect", "[compile][x86-construction]") {
+    const std::array<std::uint8_t, 2> bytes{0xe2, 0xfe};
+    const auto decoded = swift::x86::DecodeOne(bytes, 0x1800);
+    REQUIRE(bool(decoded));
+    swift::runtime::x86::GuestState state;
+    state.pc = 0x1800;
+    state.gprs[swift::runtime::x86::RCX] = 9;
+    const auto flags = state.packed_flags;
+    swift::x86::DirectServices services;
+    services.guest_events = [](void*) noexcept { return true; };
+    const auto result = swift::x86::InterpretDecoded(decoded.instruction, bytes, state, services);
+    CHECK(result.kind == swift::x86::StepKind::Service);
+    CHECK(result.service == swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents));
+    CHECK(state.pc == 0x1800);
+    CHECK(state.gprs[swift::runtime::x86::RCX] == 9);
+    CHECK(state.packed_flags == flags);
+}
+
+TEST_CASE("Direct frontend preserves divide and alignment fault kinds",
+          "[compile][x86-construction]") {
+    const auto fault = [](auto bytes, swift::runtime::NativeExit cause) {
+        const auto decoded = swift::x86::DecodeOne(bytes, 0x1800);
+        REQUIRE(bool(decoded));
+        swift::runtime::x86::GuestState state;
+        state.pc = 0x1800;
+        state.gprs[swift::runtime::x86::RAX] = 1;
+        const auto result = swift::x86::InterpretDecoded(decoded.instruction, bytes, state, {});
+        CHECK(result.kind == swift::x86::StepKind::Fault);
+        CHECK(result.service == swift::runtime::ExitValue(cause));
+        CHECK(state.pc == 0x1800);
+    };
+    fault(std::array<std::uint8_t, 2>{0xf7, 0xf1}, swift::runtime::NativeExit::DivideFault);
+    fault(std::array<std::uint8_t, 3>{0x0f, 0x28, 0x00},
+          swift::runtime::NativeExit::AlignmentFault);
+}
+
+TEST_CASE("x86 software exceptions preserve ISA fault and resume PCs",
+          "[compile][x86-construction]") {
+    using swift::runtime::GuestExceptionKind;
+    for (const auto& bytes : {std::vector<std::uint8_t>{0x0f, 0x0b},
+                              std::vector<std::uint8_t>{0xcc},
+                              std::vector<std::uint8_t>{0x66, 0xcc}}) {
+        const bool breakpoint = bytes.back() == 0xcc;
+        constexpr std::uint64_t pc = 0x1800;
+        const auto resume = pc + (breakpoint ? bytes.size() : 0);
+        const auto service = swift::runtime::SemanticExceptionExit(
+                breakpoint ? GuestExceptionKind::Breakpoint
+                           : GuestExceptionKind::IllegalInstruction,
+                breakpoint ? bytes.size() : 0);
+        const auto decoded = swift::x86::DecodeOne(bytes, pc);
+        REQUIRE(bool(decoded));
+        CHECK(decoded.instruction.View().Size() == bytes.size());
+        CHECK(decoded.instruction.View().UnitBoundary());
+        for (auto scope : {Scope::Block, Scope::Function}) {
+            const BlockWindow window{pc, bytes};
+            const auto built = BuildIR({&window, 1}, scope, layout);
+            REQUIRE(bool(built));
+            CHECK(built.instruction_count == 1 && built.decoded_bytes == bytes.size());
+            CHECK(StoresImmediate(built.program, layout.pc_offset, resume));
+            const auto& terminal = built.program.Blocks()[0].terminal;
+            CHECK(terminal.kind == TerminalKind::Return && terminal.HasValue());
+            const auto& result = built.program.Operations()[terminal.value.value];
+            CHECK(result.opcode == OpCode::LoadImm);
+            CHECK(built.program.Operands(result).front().Payload() == service);
+        }
+        swift::runtime::x86::GuestState state;
+        state.pc = pc;
+        state.gprs[swift::runtime::x86::RAX] = 123;
+        const auto flags = state.packed_flags;
+        const auto step = swift::x86::InterpretDecoded(decoded.instruction, bytes, state, {});
+        CHECK(step.kind == swift::x86::StepKind::Service && step.service == service);
+        CHECK(step.pc == pc && step.next_pc == resume && state.pc == resume);
+        CHECK(state.gprs[swift::runtime::x86::RAX] == 123 && state.packed_flags == flags);
+    }
 }

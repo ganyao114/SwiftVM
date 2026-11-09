@@ -26,5 +26,7 @@ struct GuestThread {
     std::uint64_t clear_child_tid{};
     bool exited{}, interpret_requested{};
     int exit_code{};
+    GuestStopReason stop_reason{GuestStopReason::GuestExit};
+    int termination_signal{};
 };
 }  // namespace swift::runtime::execution

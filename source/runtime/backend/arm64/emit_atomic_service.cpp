@@ -88,6 +88,7 @@ u32 Writer::UnalignedAtomicService(OpContext& ctx,
     ReloadPinned();
     Shadow(true);
     RestoreHelperNZCV();
+    NativePhase(SVM_NATIVE_PHASE_GUEST);
     nzcv_matches = 0;
     __ ldr(v::x0, MemOperand(v::sp, status_slot));
     const auto success = masm.Here();

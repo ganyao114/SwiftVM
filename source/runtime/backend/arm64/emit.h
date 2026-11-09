@@ -89,6 +89,7 @@ private:
 
 #undef A64_EMIT_OP
     void HandleStringFamily(OpContext&);
+    void HandleGuestSafepointFamily(OpContext&);
     void HandleSse42FlagsFamily(OpContext&);
 
     void HandleCryptoFamily(OpContext&);
@@ -116,6 +117,36 @@ private:
 
     void HandleZeroFamily(OpContext&);
     void HandleLoadImmFamily(OpContext&);
+
+    void RecordGuestAccess(u32 first, unsigned access, unsigned bytes) {
+        if (!options.fault_locations || !has_fault_location) return;
+        output.faults.push_back({first * 4,
+                                 first * 4 + 4,
+                                 fault_location,
+                                 unaligned_word == first ? first * 4 : UINT32_MAX});
+        auto& site = output.faults.back();
+        site.recovery[2] = fault_parity;
+        site.recovery[3] = fault_carry;
+        site.recovery[4] = static_cast<std::uint8_t>(access);
+        site.recovery[5] = static_cast<std::uint8_t>(bytes);
+        if (deferred_test.active && deferred_test.site_count < deferred_test.sites.size())
+            deferred_test.sites[deferred_test.site_count++] = output.faults.size() - 1;
+    }
+
+    void GuestMemory(
+            bool load, unsigned bits, unsigned value, unsigned address, std::uint32_t offset = 0) {
+        const auto first = static_cast<u32>(output.words.size());
+        Memory(load, bits, value, address, offset);
+        RecordGuestAccess(first, load ? 1 : 2, bits / 8);
+    }
+
+    void GuestVectorMemory(bool load, unsigned value, unsigned address, std::uint32_t offset = 0) {
+        const auto first = static_cast<u32>(output.words.size());
+        VectorMemory(load, value, address, offset);
+        RecordGuestAccess(first, load ? 1 : 2, 16);
+    }
+
+    void NativePhase(unsigned phase);
     void HandleLoadMemoryFamily(OpContext&);
     void HandleStoreMemoryFamily(OpContext&);
     void HandleCompareAndSwapFamily(OpContext&);

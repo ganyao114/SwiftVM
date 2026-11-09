@@ -12,7 +12,10 @@ const swift::runtime::execution::HostBackendOps& TestBackendOps() {
     return operations;
 }
 
-void BindFaultCallbacks(swift::runtime::execution::FaultContext& context) {
+void BindFaultCallbacks(swift::runtime::execution::FaultContext& context,
+                        swift::runtime::execution::NativeRunContext& native) {
+    context.native = &native;
+    native.faults = &context;
     context.patch_ordered = TestBackendOps().patch_fault;
     context.recover_native = TestBackendOps().recover_native;
 }

@@ -58,7 +58,10 @@ StepResult InterpretDecoded(const Instruction& instruction,
         return out;
     }
     detail::DirectSink sink{state, services};
-    detail::Semantics<detail::DirectSink> semantics{sink, {}, {}};
+    runtime::ir::TargetInfo event_target;
+    if (services.guest_events)
+        event_target.features = static_cast<std::uint64_t>(runtime::ir::TargetFeature::GuestEvents);
+    detail::Semantics<detail::DirectSink> semantics{sink, {}, event_target};
     try {
         semantics.Execute(instruction);
         using K = typename decltype(semantics)::Control::Kind;

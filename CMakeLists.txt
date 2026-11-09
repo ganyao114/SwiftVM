@@ -97,6 +97,7 @@ target_compile_features(svm_system_query PUBLIC cxx_std_20)
 
 add_library(svm_arm64 STATIC
     source/runtime/backend/arm64/allocate.cpp
+    source/runtime/backend/arm64/recovery.cpp
     source/runtime/backend/arm64/allocation_selection.cpp
     source/runtime/backend/arm64/helper_calls.cpp
     source/runtime/backend/arm64/assembler.cpp
@@ -173,6 +174,7 @@ target_include_directories(svm_biscuit_exact PUBLIC source/runtime/externals/bis
 target_compile_features(svm_biscuit_exact PUBLIC cxx_std_20)
 add_library(svm_riscv64 STATIC
     source/runtime/backend/riscv64/allocate.cpp
+    source/runtime/backend/riscv64/recovery.cpp
     source/runtime/backend/riscv64/compile.cpp
     source/runtime/backend/riscv64/patch.cpp
     source/runtime/backend/riscv64/relocate.cpp
@@ -197,6 +199,7 @@ add_subdirectory(source/runtime/externals/xbyak_loongarch64)
 add_library(svm_loongarch64 STATIC
     source/runtime/backend/loongarch64/assembler.cpp
     source/runtime/backend/loongarch64/allocate.cpp
+    source/runtime/backend/loongarch64/recovery.cpp
     source/runtime/backend/loongarch64/atomic_helpers.cpp
     source/runtime/backend/loongarch64/call_helpers.cpp
     source/runtime/backend/loongarch64/compile.cpp
@@ -220,6 +223,7 @@ endif()
 
 add_library(svm_x64 STATIC
     source/runtime/backend/x64/allocate.cpp
+    source/runtime/backend/x64/recovery.cpp
     source/runtime/backend/x64/compile.cpp
     source/runtime/backend/x64/emit.cpp
     source/runtime/backend/x64/emit_operand.cpp
@@ -288,6 +292,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/execution/dispatch.cpp
         source/runtime/execution/dispatch_cache.cpp
         source/runtime/execution/fault.cpp
+        source/runtime/execution/exception.cpp
         source/runtime/execution/guest_execution.cpp
         source/runtime/execution/memory.cpp
         source/runtime/execution/mem_map.cpp
@@ -307,6 +312,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR ANDROID)
         source/runtime/platform/linux/safe_access.cpp
         source/runtime/platform/linux/faultable_atomic.cpp
         source/runtime/platform/linux/signals.cpp
+        source/runtime/platform/linux/guest_signals.cpp
+        source/runtime/platform/linux/signal_frame_x86.cpp
+        source/runtime/platform/linux/signal_frame_arm64.cpp
+        source/runtime/platform/linux/wait_syscall.cpp
+        source/runtime/platform/linux/wait_syscall.S
         source/runtime/platform/linux/run_guest.cpp)
     target_link_libraries(svm_execution PUBLIC svm_x86_ir svm_arm64_ir svm_ir_optimize svm_code_image
         PRIVATE svm_base svm_disk_cache svm_aot_artifact svm_artifact_file Threads::Threads)

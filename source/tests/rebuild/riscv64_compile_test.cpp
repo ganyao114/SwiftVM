@@ -1,13 +1,13 @@
-#include "runtime/backend/riscv64/allocate.h"
-#include "tests/support/ir_builder.h"
-#include "tests/support/check.h"
-#include "tests/support/test_mode.h"
-#include "tests/support/native_code.h"
-#include "tests/support/guest_memory.h"
-#include "runtime/backend/riscv64/compile.h"
 #include "runtime/arch/x86/cpu.h"
 #include "runtime/arch/x86/flags.h"
+#include "runtime/backend/riscv64/allocate.h"
+#include "runtime/backend/riscv64/compile.h"
 #include "runtime/ir/builder.h"
+#include "tests/support/check.h"
+#include "tests/support/guest_memory.h"
+#include "tests/support/ir_builder.h"
+#include "tests/support/native_code.h"
+#include "tests/support/test_mode.h"
 
 #include <array>
 #include <cstddef>
@@ -805,3 +805,19 @@ TEST_CASE("NaNsAndFusedArithmetic", "[compile][riscv64-compile][native]") {
 TEST_CASE("HelperABI", "[compile][riscv64-compile][native]") { CHECK_NOTHROW(HelperABI()); }
 
 TEST_CASE("FaultMetadata", "[compile][riscv64-compile][native]") { CHECK_NOTHROW(FaultMetadata()); }
+
+TEST_CASE("Guest safepoint requires a linked execution context", "[compile][riscv64-compile]") {
+    for (auto scope : {Scope::Block, Scope::Function}) {
+        Builder builder{scope};
+        Begin(builder);
+        Emit(builder, OpCode::GuestSafepoint, Type::Void, {Imm(0x1234)});
+        auto program = Return(builder, Literal(builder, 42));
+        CHECK(!rv::Compile(program, Options()));
+        auto options = Options();
+        options.dispatcher = 0x1000;
+        options.exit_handler = 0x2000;
+        const auto code = rv::Compile(program, options);
+        REQUIRE(bool(code));
+        CHECK(!code.words.empty() && code.faults.empty() && code.links.empty());
+    }
+}

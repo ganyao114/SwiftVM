@@ -1,7 +1,9 @@
 #pragma once
 
-#include "compile.h"
+#include "recovery.h"
+
 #include "allocate.h"
+#include "compile.h"
 #include "runtime/execution/host_backend.h"
 
 #include <span>
@@ -20,7 +22,5 @@ private:
     backend::CompileResult output;
     Allocation allocation;
 };
-
-void RestoreGuestState(execution::FaultContext&, std::span<const std::byte> gprs) noexcept;
 
 }  // namespace swift::runtime::backend::riscv64

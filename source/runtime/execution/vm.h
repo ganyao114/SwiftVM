@@ -16,6 +16,7 @@
 #include "runtime.h"
 #include "runtime/frontend/arm64/interpreter.h"
 #include "runtime/frontend/x86/interpreter.h"
+#include "runtime/platform/linux/guest_signals.h"
 #include "runtime/platform/linux/loader.h"
 #include "runtime/platform/linux/syscalls.h"
 #include "smc.h"
@@ -65,10 +66,17 @@ public:
     // when Release reports a failure; no resource is transferred to a registry.
     MappingRelease Close() noexcept;
 
+    GuestStopReason StopReason() const noexcept { return thread.stop_reason; }
+
+    int TerminationSignal() const noexcept { return thread.termination_signal; }
+
+    std::unique_ptr<GuestExceptionSnapshot> CaptureException() const;
+
 private:
     friend class CompileService;
     friend class Smc;
     friend class platform::LinuxSyscalls;
+    friend class platform::GuestSignals;
     RuntimeOptions options;
     RuntimeStats& stats;
     HostBackendOps backend;
@@ -80,6 +88,7 @@ private:
     GuestThread thread;
     platform::LoadedImage image;
     platform::LinuxSyscalls syscalls;
+    platform::GuestSignals signals;
     Smc smc;
     std::unique_ptr<DiskCache> disk_cache;
     CodeImageKey image_key;
@@ -121,6 +130,13 @@ private:
     void RefreshNative(NativeRunContext&) noexcept;
     void MergeFPStatus() noexcept;
     void UpdateFPEnvironment(bool architectural_write = false);
+
+    void RestoreGuestFP() { UpdateFPEnvironment(true); }
+
+    void DeliverException(const GuestExceptionInfo&);
+    void DeliverPending();
+    void RaiseSemanticException(NativeExit, std::uint64_t instruction_pc);
+    void RaiseEncodedException(std::uint64_t);
     void PrepareLoaded(std::span<const std::string>,
                        std::span<const std::string>,
                        const Digest* guest_identity,
@@ -144,6 +160,7 @@ private:
     static bool RecoverCodeWrite(void*, std::uintptr_t) noexcept;
     static std::uint64_t AtomicBridge(void*, AtomicCall*) noexcept;
     bool HandleArmStateService();
+    void ServiceArmState();
     bool PrepareGuestWrite(std::uint64_t, std::size_t);
     bool GuestWrite(std::uint64_t, const void*, std::size_t);
     void FileChanged(int);

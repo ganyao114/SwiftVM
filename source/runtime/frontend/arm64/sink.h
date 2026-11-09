@@ -69,12 +69,16 @@ public:
 class DirectSink : public direct::Interpreter {
 public:
     DirectSink(runtime::arm64::GuestState& state, const DirectServices& services)
-            : Interpreter(
-                      {{reinterpret_cast<std::uint8_t*>(&state), sizeof(state)},
-                       state.packed_flags,
-                       state.pc,
-                       state.numeric_control},
-                      {services.opaque, services.read, services.write, services.atomic, nullptr})
+            : Interpreter({{reinterpret_cast<std::uint8_t*>(&state), sizeof(state)},
+                           state.packed_flags,
+                           state.pc,
+                           state.numeric_control},
+                          {services.opaque,
+                           services.read,
+                           services.write,
+                           services.atomic,
+                           nullptr,
+                           services.guest_events})
             , state(state) {}
 
     template <runtime::ir::OpCode op> Result Emit(runtime::ir::Type type,

@@ -2,8 +2,8 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <iterator>
+#include <limits>
 #include <span>
 
 namespace swift::runtime::ir {
@@ -128,17 +128,20 @@ enum class TargetFeature : std::uint64_t {
     // The execution owner accepts complete external entries into nonempty
     // source blocks, sharing one native unit and its lifetime.
     ExternalEntries = UINT64_C(1) << 6,
+    // Execution-owned guest event delivery, independent of host lowering knowledge.
+    GuestEvents = UINT64_C(1) << 7,
 };
 
 // Immutable target capabilities, consumed by the frontend without a host-ISA
-// dependency. Unknown/EarlyOff preserve the bits but do not enable a feature.
+// dependency. Execution requirements also apply to Unknown/EarlyOff consumers.
 struct TargetInfo {
     TargetMode mode{TargetMode::Unknown};
     std::uint32_t target{};
     std::uint64_t features{};
 
     constexpr bool Has(TargetFeature feature) const noexcept {
-        return mode == TargetMode::Known && (features & static_cast<std::uint64_t>(feature));
+        return (mode == TargetMode::Known || feature == TargetFeature::GuestEvents) &&
+               (features & static_cast<std::uint64_t>(feature));
     }
 
     friend constexpr bool operator==(TargetInfo, TargetInfo) = default;

@@ -701,3 +701,12 @@ INST(X87Execute,
 INST(ReadSystemPair, Value, Explicit, (Effect::Unknown), Imm, Imm)
 // One architectural metadata commit, including legacy fused x87 windows.
 INST(X87CommitMetadata, Void, Void, (Effect::WriteGuestState), Value, Imm, Value, Imm)
+
+// A complete restartable guest boundary. The immediate is the actual resume PC.
+// Pending delivery observes every architectural field and flag, even when the
+// fast native path merely checks the execution owner's ready request.
+INST(GuestSafepoint,
+     Void,
+     Void,
+     (Effect::ReadGuestState | Effect::ReadFlags | Effect::Control),
+     Imm)

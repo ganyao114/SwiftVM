@@ -12,7 +12,30 @@ template <class Flow>
                                                       Flow& flow,
                                                       bool& ended,
                                                       InstructionRange following,
-                                                      std::span<const std::uint8_t> available) {
+                                                      std::span<const std::uint8_t> available,
+                                                      bool budget_safepoint = false) {
+    if (target.Has(TargetFeature::GuestEvents)) {
+        using runtime::frontend::CrossesGuestEventWindow;
+        using runtime::frontend::GuestEventTransfer;
+        bool observe = budget_safepoint || CrossesGuestEventWindow(pc, next_pc);
+        if (instruction.flow == FlowKind::Return)
+            observe = true;
+        else if (instruction.flow == FlowKind::Jump || instruction.flow == FlowKind::Call ||
+                 instruction.flow == FlowKind::Conditional)
+            observe |=
+                    !Direct(instruction) || GuestEventTransfer(pc, next_pc + instruction.immediate);
+        // Each self-dispatch reaches this boundary before the next REP element.
+        if (instruction.opcode == Op::MOVS || instruction.opcode == Op::LODS ||
+            instruction.opcode == Op::CMPS || instruction.opcode == Op::SCAS ||
+            instruction.opcode == Op::STOS)
+            observe |= (instruction.flags &
+                        (InstructionFlag::Repeat | InstructionFlag::RepeatNotEqual)) != 0;
+        if (observe) {
+            pending.Flush(builder);
+            builder.PublishRegisters();
+            Require(builder.template EmitImm<OpCode::GuestSafepoint>(Type::Void, pc, Type::U64));
+        }
+    }
     unsigned consumed = 1;
     if (Conditional(instruction.opcode)) {
         if (!Direct(instruction)) Unsupported();
@@ -402,6 +425,10 @@ template <class Flow>
                 break;
             case Op::SYSCALL:
                 SystemCall(builder, layout, instruction, pending, next_pc, ended);
+                break;
+            case Op::UD2:
+            case Op::INT_3:
+                SoftwareException(builder, layout, instruction, pending, pc, next_pc, ended);
                 break;
             case Op::LDMXCSR:
             case Op::STMXCSR:

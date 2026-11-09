@@ -15,26 +15,34 @@ void Writer::Atomic(OpContext& c) {
     if (compare) {
         Read(c.Arg(2), rcx);
         mov(rax, rsi);
+        const auto first = static_cast<u32>(getSize());
         lock();
         cmpxchg(ptr[rdi], R(rcx, n));
+        RecordGuestAccess(first, 3, n / 8);
         return;
     }
     if (c.operation.opcode == OpCode::AtomicExchange) {
         mov(rax, rsi);
+        const auto first = static_cast<u32>(getSize());
         xchg(ptr[rdi], R(rax, n));
+        RecordGuestAccess(first, 3, n / 8);
         return;
     }
     if (c.operation.opcode == OpCode::AtomicFetchAdd) {
         mov(rax, rsi);
+        const auto first = static_cast<u32>(getSize());
         lock();
         xadd(ptr[rdi], R(rax, n));
+        RecordGuestAccess(first, 3, n / 8);
         return;
     }
     const auto kind = static_cast<AtomicRMWOp>(c.Arg(0).Payload());
     if (c.Arg(0).Payload() > 11) Reject(CompileError::UnsupportedOperand);
     Read(c.Arg(3), rdx);
     and_(edx, 1);
+    const auto first_load = static_cast<u32>(getSize());
     Load(rax, rdi, 0, n);
+    RecordGuestAccess(first_load, 3, n / 8);
     Label repeat;
     L(repeat);
     mov(rcx, rax);
@@ -85,8 +93,10 @@ void Writer::Atomic(OpContext& c) {
                 cmova(rcx, rsi);
             break;
     }
+    const auto first_store = static_cast<u32>(getSize());
     lock();
     cmpxchg(ptr[rdi], R(rcx, n));
+    RecordGuestAccess(first_store, 3, n / 8);
     jne(repeat, T_NEAR);
 }
 
@@ -115,8 +125,10 @@ void Writer::Handle(Op<OpCode::CompareAndSwap128>, OpContext& c) {
         mov(r10, rbx);
         Read(c.Arg(3), rbx);
         Read(c.Arg(4), rcx);
+        const auto first = static_cast<u32>(getSize());
         lock();
         cmpxchg16b(ptr[rdi]);
+        RecordGuestAccess(first, 3, 16);
         mov(rbx, r10);
         movq(xmm0, rax);
         movq(xmm1, rdx);

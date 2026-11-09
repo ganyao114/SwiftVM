@@ -1,7 +1,9 @@
 #pragma once
 
-#include "compile.h"
+#include "recovery.h"
+
 #include "allocate.h"
+#include "compile.h"
 #include "runtime/execution/host_backend.h"
 
 #include <span>
@@ -25,10 +27,5 @@ private:
 
 // Borrowed architectural register bytes, not a Linux ucontext. Every view
 // remains owned by the platform's signal frame for this one recovery call.
-bool RestoreGuestState(execution::FaultContext&,
-                       const backend::FaultSite&,
-                       std::span<const std::byte> gprs,
-                       std::uint64_t native_flags,
-                       std::span<const std::byte> vectors) noexcept;
 
 }  // namespace swift::runtime::backend::arm64

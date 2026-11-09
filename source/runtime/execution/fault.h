@@ -2,27 +2,32 @@
 
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
-#include <setjmp.h>
 #include <signal.h>
 #include <sys/types.h>
 
 #include "guest_execution.h"
 #include "runtime/arch/x86/state.h"
 #include "runtime/backend/code.h"
+#include "runtime/exception.h"
 
 namespace swift {
 struct Failure;
 }
 
+namespace swift::runtime::platform {
+bool EnsureManagedSignal(int) noexcept;
+}
+
 namespace swift::runtime::execution {
+struct NativeRunContext;
 using x86::GuestState;
 using NativeCode = backend::NativeCode;
 
-// Owned by Process, not a mutable automatic in the sigsetjmp frame. Only
-// the one registered guest thread may execute code through this context.
+// Owned by the guest thread. The host handler borrows it through this host
+// thread's activation; native exceptions return through the root ABI.
 struct FaultContext {
-    sigjmp_buf jump;
     std::atomic<const NativeCode*> active{};
     // Optional linked-native lookup, read only while active is non-null.
     // The offsets describe the actual private state layout; UINT32_MAX
@@ -58,18 +63,32 @@ struct FaultContext {
     // Optional borrowed raw FP status slot. The host adapter captures it
     // from the signal frame before leaving native code; the VM merges it.
     std::uint64_t* guest_fp_status{};
+    NativeRunContext* native{};
+    GuestISA guest_isa{GuestISA::X86_64};
+    GuestExceptionInfo exception;
+    bool exception_pending{};
+    // The host adapter passes only routed asynchronous events. The platform
+    // guest OS owns queue/mask policy, including per-signo RT pressure.
+    bool (*queue_signal)(void*, int, siginfo_t*, void*) noexcept {};
+    void* signal_opaque{};
 };
 
-[[noreturn]] void RaiseGuestFault(FaultContext&,
-                                  const backend::FaultSite&,
-                                  int signal,
-                                  int code,
-                                  std::uintptr_t host_pc,
-                                  std::uintptr_t address) noexcept;
+void RecordGuestFault(FaultContext&,
+                      const backend::FaultSite&,
+                      int signal,
+                      int code,
+                      std::uintptr_t host_pc,
+                      std::uintptr_t address) noexcept;
 
-// Construct before the one sigsetjmp in Run. Execution ownership, registration
-// and previous actions survive native recovery to that frame. Ownership is
-// released only after the fault service has restored the host handlers.
+// Semantic access failures replace the previous event's access hints. Called
+// only on failure; successful direct accesses perform no recovery bookkeeping.
+void RecordMemoryFault(FaultContext&,
+                       std::uint64_t address,
+                       GuestExceptionAccess,
+                       std::size_t bytes = 0) noexcept;
+
+// The scope owns execution and the thread activation. Process handlers have
+// their own lifetime and never borrow this stack object.
 class FaultScope {
 public:
     FaultScope(FaultContext&, GuestState&);
@@ -81,8 +100,8 @@ public:
 private:
     GuestExecutionLock execution_lock;
     FaultContext& context;
-    std::array<struct sigaction, 3> previous{};
     static void Handle(int, siginfo_t*, void*) noexcept;
-    void Chain(int, siginfo_t*, void*) const noexcept;
+    static void Chain(int, siginfo_t*, void*) noexcept;
+    friend bool platform::EnsureManagedSignal(int) noexcept;
 };
 }  // namespace swift::runtime::execution

@@ -5,8 +5,8 @@
 #include <span>
 
 #include "region.h"
-#include "runtime/ir/direct/services.h"
 #include "runtime/frontend/direct.h"
+#include "runtime/ir/direct/services.h"
 
 namespace swift::runtime::x86 {
 struct GuestState;
@@ -44,6 +44,7 @@ struct DirectServices {
                                 unsigned kind,
                                 std::uint64_t address,
                                 std::uint64_t requested) noexcept {};
+    bool (*guest_events)(void*) noexcept {};
 };
 
 using runtime::frontend::StepKind;

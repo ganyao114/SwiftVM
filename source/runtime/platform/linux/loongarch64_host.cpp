@@ -1,18 +1,50 @@
 #include "loongarch64_host.h"
+#include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 #include "signal_time.h"
 
 #include <ucontext.h>
+#if defined(__loongarch64)
+#include <asm/sigcontext.h>
+#endif
 
 namespace swift::runtime::platform {
 namespace {
+#if defined(__loongarch64)
+const std::uint32_t* FindFCSR(const ucontext_t& machine) noexcept {
+    const auto* records = reinterpret_cast<const std::byte*>(machine.uc_mcontext.__extcontext);
+    // Linux places each payload immediately after sctx_info. Bound traversal;
+    // unknown records retain their kernel size and are skipped, never copied.
+    constexpr std::size_t limit = 16384;
+    for (std::size_t at = 0; at + sizeof(sctx_info) <= limit;) {
+        const auto* head = reinterpret_cast<const sctx_info*>(records + at);
+        if (!head->magic || head->size < sizeof(sctx_info) || (head->size & 15) ||
+            head->size > limit - at)
+            return nullptr;
+        const auto* payload = records + at + sizeof(sctx_info);
+        if (head->magic == FPU_CTX_MAGIC && head->size >= sizeof(sctx_info) + sizeof(fpu_context))
+            return &reinterpret_cast<const fpu_context*>(payload)->fcsr;
+        if (head->magic == LSX_CTX_MAGIC && head->size >= sizeof(sctx_info) + sizeof(lsx_context))
+            return &reinterpret_cast<const lsx_context*>(payload)->fcsr;
+        if (head->magic == LASX_CTX_MAGIC && head->size >= sizeof(sctx_info) + sizeof(lasx_context))
+            return &reinterpret_cast<const lasx_context*>(payload)->fcsr;
+        at += head->size;
+    }
+    return nullptr;
+}
+#endif
 bool RecoverNative(execution::FaultContext& context,
                    int signal,
                    int signal_code,
                    std::uintptr_t address,
                    void* raw) noexcept {
 #if defined(__loongarch64)
-    const auto& machine = *static_cast<const ucontext_t*>(raw);
+    auto* native = context.native;
+    if (!native || !native->root_sp ||
+        native->phase.load(std::memory_order_relaxed) != SVM_NATIVE_PHASE_GUEST ||
+        (signal != SIGSEGV && signal != SIGBUS))
+        return false;
+    auto& machine = *static_cast<ucontext_t*>(raw);
     const auto pc = static_cast<std::uintptr_t>(machine.uc_mcontext.__pc);
     const auto* code = context.active.load();
     if (!code) return false;
@@ -22,6 +54,7 @@ bool RecoverNative(execution::FaultContext& context,
     if (pc < base || pc - base >= code->bytes) return false;
     for (const auto& site : code->faults) {
         if (pc - base < site.first_offset || pc - base >= site.last_offset) continue;
+        if (!(site.recovery[4] & 7)) continue;
         if (signal == SIGSEGV && signal_code == SEGV_ACCERR && context.recover_code_write) {
             SignalTimer timer{context.service_ns};
             if (context.recover_code_write(context.code_write_opaque, address)) {
@@ -29,9 +62,19 @@ bool RecoverNative(execution::FaultContext& context,
                 return true;
             }
         }
+        const auto* fp = native->fp_environment ? FindFCSR(machine) : nullptr;
+        if (native->fp_environment && !fp) return false;
         backend::loongarch64::RestoreGuestState(
                 context, std::as_bytes(std::span{machine.uc_mcontext.__gregs}));
-        execution::RaiseGuestFault(context, site, signal, signal_code, pc, address);
+        if (fp) native->guest_fpsr = *fp & 0x1f0000;
+        execution::RecordGuestFault(context, site, signal, signal_code, pc, address);
+        context.exception.native_offset = static_cast<std::uint32_t>(pc - base);
+        native->phase.store(SVM_NATIVE_PHASE_LEAVING, std::memory_order_relaxed);
+        machine.uc_mcontext.__gregs[4] = reinterpret_cast<std::uintptr_t>(native);
+        machine.uc_mcontext.__gregs[3] = native->root_sp;
+        machine.uc_mcontext.__pc =
+                reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExceptionExit);
+        return true;
     }
 #else
     (void)context;

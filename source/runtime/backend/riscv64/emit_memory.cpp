@@ -65,11 +65,23 @@ void Writer::Memory(OpContext& ctx) {
         as.BNE(t0, x0, &unaligned);
     }
     if (store) {
+        const auto first = static_cast<u32>(output.words.size() * 4);
         Store(a1, a0, 0, std::min(bits, 64u));
-        if (bits == 128) Store(a2, a0, 8, 64);
+        RecordGuestAccess(first, store ? 2 : 1, std::min(bits, 64u) / 8);
+        if (bits == 128) {
+            const auto first = static_cast<u32>(output.words.size() * 4);
+            Store(a2, a0, 8, 64);
+            RecordGuestAccess(first, store ? 2 : 1, 8);
+        }
     } else {
+        const auto first = static_cast<u32>(output.words.size() * 4);
         Load(ctx.destination, a0, 0, std::min(bits, 64u));
-        if (bits == 128) Load(ctx.high, a0, 8, 64);
+        RecordGuestAccess(first, store ? 2 : 1, std::min(bits, 64u) / 8);
+        if (bits == 128) {
+            const auto first = static_cast<u32>(output.words.size() * 4);
+            Load(ctx.high, a0, 8, 64);
+            RecordGuestAccess(first, store ? 2 : 1, 8);
+        }
     }
     if (bits >= 16) {
         as.J(&done);
@@ -82,9 +94,13 @@ void Writer::Memory(OpContext& ctx) {
             if (store) {
                 const auto source = byte < 8 ? a1 : a2;
                 if (byte % 8) as.SRLI(source, source, 8);
+                const auto first = static_cast<u32>(output.words.size() * 4);
                 as.SB(source, byte, a0);
+                RecordGuestAccess(first, store ? 2 : 1, 1);
             } else {
+                const auto first = static_cast<u32>(output.words.size() * 4);
                 as.LBU(t0, byte, a0);
+                RecordGuestAccess(first, store ? 2 : 1, 1);
                 if (byte % 8) as.SLLI(t0, t0, (byte % 8) * 8);
                 const auto destination = byte < 8 ? ctx.destination : ctx.high;
                 as.OR(destination, destination, t0);

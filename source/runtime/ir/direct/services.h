@@ -36,6 +36,8 @@ struct Services {
                           bool ordered) noexcept {};
     AccessResult (*atomic)(void*, const AtomicRequest&, AtomicValue& observed) noexcept {};
     CpuResult (*cpuid)(void*, std::uint32_t leaf, std::uint32_t subleaf) noexcept {};
+    // Read-only readiness query. True exits before the next guest effect.
+    bool (*guest_events)(void*) noexcept {};
 };
 
 }  // namespace swift::runtime::ir::direct

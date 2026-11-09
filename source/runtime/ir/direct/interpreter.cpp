@@ -1,4 +1,5 @@
 #include "interpreter.h"
+#include "runtime/exit.h"
 
 #include <algorithm>
 #include <array>

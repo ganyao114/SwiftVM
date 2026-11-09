@@ -2,8 +2,8 @@
 
 // Private implementation surface for the one RV64 word writer. Handlers
 // consume the original Program and its fixed homes; no lowered IR is built.
-#include "compile.h"
 #include "allocate.h"
+#include "compile.h"
 #include "relocate.h"
 
 #include <array>
@@ -97,6 +97,15 @@ public:
     void Predicate(OpContext&);
     void BitField(OpContext&);
     void CountBits(OpContext&);
+
+    void RecordGuestAccess(u32 first, unsigned access, unsigned bytes) {
+        if (!options.fault_locations || !has_fault_location) return;
+        output.faults.push_back({first, first + 4, guest_pc});
+        auto& site = output.faults.back();
+        site.recovery[4] = static_cast<std::uint8_t>(access);
+        site.recovery[5] = static_cast<std::uint8_t>(bytes);
+    }
+
     void Memory(OpContext&);
     void Uniform(OpContext&);
     void SelectValue(OpContext&);
@@ -113,6 +122,7 @@ public:
     NodeId current;
     BlockId block;
     u64 guest_pc{};
+    bool has_fault_location{};
     bool static_pc_known{}, terminated{};
     u64 static_pc{};
 

@@ -55,15 +55,19 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
                            backend}}
         , compiler(*this)
         , syscalls(*this)
+        , signals(*this)
         , smc(*this) {
     stats.compile_decode.stages = options.decode_timing && options.compile_details;
     auto& native = thread.native;
     auto& faults = thread.faults;
+    backend.target.features |= static_cast<u64>(ir::TargetFeature::GuestEvents);
     native.opaque = this;
     native.resolve = ResolveBridge;
     native.atomic_service = AtomicBridge;
     native.active = &faults.active;
     native.anchor = &thread.anchor;
+    native.faults = &faults;
+    faults.native = &native;
     native.pinned_uniform_slots = backend.pinned_uniform_slots;
     native.fp_environment = 1;
     native.native_nzcv = backend.capabilities.native_nzcv;
@@ -291,6 +295,8 @@ void VM::Execute() {
         if (options.mode == ExecutionMode::InterpretOnly ||
             (options.mode == ExecutionMode::Mixed && !backend.compile)) {
             while (!thread.exited && !host_returned) {
+                DeliverPending();
+                if (thread.exited) break;
                 if (host_call_active && PC() == host_return_pc) {
                     host_returned = true;
                     break;
@@ -309,40 +315,67 @@ void VM::Execute() {
             stats.pinned_uniform_slots = backend.pinned_uniform_slots;
             stats.native_nzcv = backend.capabilities.native_nzcv;
             stats.thread_dispatch_cache = backend.thread_dispatch_cache;
-            // All mutable recovery state is in GuestThread, before this jump point.
-            // Native and its cold resolver end active before creating C++ owners.
-            if (sigsetjmp(thread.faults.jump, 1)) {
-                if (ISA() == GuestISA::Arm64) thread.native.arm_state.reservation_valid = 0;
-                if (backend.restore_host_fp) backend.restore_host_fp(thread.native);
-                MergeFPStatus();
-                if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
-                swift::ThrowError(swift::Format("guest memory/alignment fault signal={} code={} "
-                                                "pc={:#x} host_pc={:#x} address={:#x}",
-                                                static_cast<int>(thread.faults.signal_number),
-                                                static_cast<int>(thread.faults.signal_code),
-                                                PC(),
-                                                thread.faults.host_pc.load(),
-                                                thread.faults.address.load()),
-                                  ErrorKind::GuestFault);
-            }
             while (!thread.exited && !host_returned) {
+                DeliverPending();
+                if (thread.exited) break;
                 // Unmasked SSE exceptions use the common direct numerical consumer.
                 // Its instruction boundary aggregates every lane before committing.
                 if (ISA() == GuestISA::X86_64 && (NumericControl() & 0x1f80) != 0x1f80) {
                     Interpret(true);
                     continue;
                 }
-                const auto reason = static_cast<NativeExit>(SvmRunNative(&thread.native));
+                const auto status = SvmRunNative(&thread.native);
+                const auto reason = static_cast<NativeExit>(status & 255);
+                thread.native.phase.store(SVM_NATIVE_PHASE_RUNTIME, std::memory_order_release);
                 if (reason != NativeExit::FPEnvironment) MergeFPStatus();
                 thread.faults.active.store(nullptr);
                 if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
                 if (reason == NativeExit::Syscall)
                     syscalls.Service();
+                else if (reason == NativeExit::GuestException)
+                    DeliverException(thread.faults.exception);
+                else if (reason == NativeExit::GuestEvents)
+                    DeliverPending();
+                else if (reason == NativeExit::SemanticException)
+                    RaiseEncodedException(status);
                 else if (reason == NativeExit::ResolveFailure) {
                     if (host_returned) break;
-                    if (thread.interpret_requested) {
+                    if (ISA() == GuestISA::Arm64 && (PC() & 3)) {
+                        RaiseSemanticException(NativeExit::AlignmentFault, PC());
+                    } else if (thread.interpret_requested) {
                         thread.interpret_requested = false;
                         Interpret(true);
+                    } else if (compiler.Diagnostic().stage == CompileStage::Frontend &&
+                               compiler.Diagnostic().frontend_error ==
+                                       frontend::BuildError::InvalidEncoding) {
+                        PC() = compiler.Diagnostic().pc;
+                        RaiseEncodedException(
+                                SemanticExceptionExit(GuestExceptionKind::IllegalInstruction));
+                    } else if (compiler.Diagnostic().stage == CompileStage::Source &&
+                               compiler.Failure() == CompileFailure::InvalidInput) {
+                        GuestExceptionInfo event;
+                        event.isa = ISA();
+                        event.origin = GuestExceptionOrigin::Semantic;
+                        event.instruction_pc = event.address = PC();
+                        event.address_valid = true;
+                        event.kind = GuestExceptionKind::Memory;
+                        event.access = GuestExceptionAccess::Execute;
+                        event.signal_number = SIGSEGV;
+                        DeliverException(event);
+                    } else if (compiler.Diagnostic().stage == CompileStage::Frontend &&
+                               compiler.Diagnostic().frontend_error ==
+                                       frontend::BuildError::Truncated) {
+                        GuestExceptionInfo event;
+                        event.isa = ISA();
+                        event.origin = GuestExceptionOrigin::Semantic;
+                        event.instruction_pc = PC();
+                        event.address = PC() + memory.CodeAt(PC()).size();
+                        event.address_valid = true;
+                        event.kind = GuestExceptionKind::Memory;
+                        event.access = GuestExceptionAccess::Execute;
+                        event.signal_number = SIGSEGV;
+                        if (ISA() == GuestISA::X86_64) event.exception_vector = 14;
+                        DeliverException(event);
                     } else
                         swift::ThrowError(compiler.DescribeFailure(),
                                           compiler.Failure() == CompileFailure::Unsupported
@@ -351,22 +384,19 @@ void VM::Execute() {
                 } else if (reason == NativeExit::FPEnvironment)
                     UpdateFPEnvironment(true);
                 else if (reason == NativeExit::StateService) {
-                    if (ISA() == GuestISA::Arm64) {
-                        if (!HandleArmStateService())
-                            throw swift::RuntimeError(thread.bridge_failure);
-                    } else
+                    if (ISA() == GuestISA::Arm64)
+                        ServiceArmState();
+                    else
                         Interpret();
                 } else if (reason == NativeExit::X87Fault)
-                    swift::ThrowError("x87 unsupported command or unmasked exception");
+                    RaiseSemanticException(reason, PC());
                 else if (reason == NativeExit::UnsupportedAtomic)
                     swift::ThrowError("native atomic access is unsupported",
                                       ErrorKind::Unsupported);
-                else if (reason == NativeExit::DivideFault)
-                    swift::ThrowError("guest integer division fault", ErrorKind::GuestFault);
-                else if (reason == NativeExit::AlignmentFault)
-                    swift::ThrowError("guest memory alignment fault", ErrorKind::GuestFault);
-                else if (reason == NativeExit::MemoryFault)
-                    swift::ThrowError("guest memory access fault", ErrorKind::GuestFault);
+                else if (reason == NativeExit::DivideFault ||
+                         reason == NativeExit::AlignmentFault ||
+                         reason == NativeExit::MemoryFault || reason == NativeExit::FloatingFault)
+                    RaiseSemanticException(reason, PC());
                 else if (reason != NativeExit::Continue)
                     swift::ThrowError("unknown native dispatch exit reason",
                                       ErrorKind::InvalidState);
@@ -430,8 +460,12 @@ std::uint64_t VM::AtomicBridge(void* opaque, AtomicCall* call) noexcept {
     const auto status = ExecuteAtomic(vm.memory, vm.smc, *call);
     if (status != AtomicStatus::Unsupported && vm.ISA() == GuestISA::Arm64)
         vm.thread.native.arm_state.reservation_valid = 0;
-    if (status == AtomicStatus::Fault)
-        vm.thread.faults.address.store(call->fault_address, std::memory_order_relaxed);
+    if (status == AtomicStatus::Fault) {
+        RecordMemoryFault(vm.thread.faults,
+                          call->fault_address,
+                          GuestExceptionAccess::Atomic,
+                          call->request.bits / 8);
+    }
     return static_cast<std::uint64_t>(status);
 }
 
@@ -446,6 +480,9 @@ void VM::FileChanged(int fd) {
 front::DirectServices VM::DirectServices() noexcept {
     front::DirectServices services{this, Fetch, Read, Write, Atomic, Cpu};
     services.state_image = StateImage;
+    services.guest_events = [](void* raw) noexcept {
+        return static_cast<VM*>(raw)->signals.Pending();
+    };
     return services;
 }
 
@@ -454,9 +491,13 @@ front::CodeReadResult VM::Fetch(void* opaque,
                                 std::span<std::uint8_t> destination) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
     std::size_t copied{};
+    const auto failure = [&](u64 address) {
+        RecordMemoryFault(vm.thread.faults, address, GuestExceptionAccess::Execute);
+        return front::CodeReadResult{{front::AccessStatus::Fault, address}, copied};
+    };
     while (copied < destination.size() && pc <= UINT64_MAX - copied) {
         const auto mode = vm.memory.ClassifySource(pc + copied);
-        if (!mode) return {{front::AccessStatus::Fault, pc + copied}, copied};
+        if (!mode) return failure(pc + copied);
         if (*mode == SourceMode::Volatile)
             return {{front::AccessStatus::UnsupportedBeforeAccess, pc + copied}, copied};
         const auto source = vm.memory.CodeAt(pc + copied);
@@ -471,10 +512,8 @@ front::CodeReadResult VM::Fetch(void* opaque,
         }
         copied += count;
     }
-    return {{copied == destination.size() ? front::AccessStatus::Completed
-                                          : front::AccessStatus::Fault,
-             pc + copied},
-            copied};
+    if (copied != destination.size()) return failure(pc + copied);
+    return {{front::AccessStatus::Completed, pc + copied}, copied};
 }
 
 front::AccessResult VM::Read(void* opaque,
@@ -486,6 +525,7 @@ front::AccessResult VM::Read(void* opaque,
     if (!vm.memory.CopyIn(bytes.data(), address, bytes.size())) {
         if (errno && errno != EFAULT)
             vm.thread.bridge_failure.Set(ErrorKind::System, "read guest bytes", errno);
+        RecordMemoryFault(vm.thread.faults, address, GuestExceptionAccess::Read, bytes.size());
         return {front::AccessStatus::Fault, address};
     }
     if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -504,15 +544,18 @@ front::AccessResult VM::Write(void* opaque,
         if (!vm.GuestWrite(address, bytes.data(), bytes.size())) {
             if (errno && errno != EFAULT)
                 vm.thread.bridge_failure.Set(ErrorKind::System, "write guest bytes", errno);
+            RecordMemoryFault(vm.thread.faults, address, GuestExceptionAccess::Write, bytes.size());
             return {front::AccessStatus::Fault, address};
         }
         if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
         return {front::AccessStatus::Completed, 0, changed};
     } catch (const std::exception& failure) {
         vm.thread.bridge_failure.Capture(failure);
+        RecordMemoryFault(vm.thread.faults, address, GuestExceptionAccess::Write, bytes.size());
         return {front::AccessStatus::Fault, address};
     } catch (...) {
         vm.thread.bridge_failure.Set(ErrorKind::Runtime, "unknown guest write service failure");
+        RecordMemoryFault(vm.thread.faults, address, GuestExceptionAccess::Write, bytes.size());
         return {front::AccessStatus::Fault, address};
     }
 }
@@ -551,7 +594,10 @@ void VM::Interpret(bool block) {
             }};
     frontend::StepResult step;
     if (ISA() == GuestISA::Arm64) {
-        const ::swift::arm64::DirectServices services{this, Fetch, Read, Write, Atomic};
+        ::swift::arm64::DirectServices services{this, Fetch, Read, Write, Atomic};
+        services.guest_events = [](void* raw) noexcept {
+            return static_cast<VM*>(raw)->signals.Pending();
+        };
         step = block ? ::swift::arm64::InterpretBlock(
                                thread.native.arm_state, services, 256, nullptr, ready)
                      : ::swift::arm64::InterpretOne(thread.native.arm_state, services);
@@ -568,20 +614,22 @@ void VM::Interpret(bool block) {
         case front::StepKind::Completed:
             return;
         case front::StepKind::Service:
-            if (step.service == ExitValue(NativeExit::Syscall))
+            if ((step.service & 255) == ExitValue(NativeExit::SemanticException))
+                RaiseEncodedException(step.service);
+            else if (step.service == ExitValue(NativeExit::Syscall))
                 syscalls.Service();
             else if (step.service == ExitValue(NativeExit::FPEnvironment))
                 UpdateFPEnvironment(true);
             else if (step.service == ExitValue(NativeExit::StateService) &&
                      ISA() == GuestISA::Arm64) {
-                if (!HandleArmStateService()) throw swift::RuntimeError(thread.bridge_failure);
-            } else if (step.service == ExitValue(NativeExit::FloatingFault))
-                swift::ThrowError(swift::Format("guest SSE floating exception pc={:#x} mxcsr={:#x}",
-                                                PC(),
-                                                NumericControl()),
-                                  ErrorKind::GuestFault);
-            else if (step.service == ExitValue(NativeExit::X87Fault))
-                swift::ThrowError("x87 unsupported command or unmasked exception");
+                ServiceArmState();
+            } else if (step.service == ExitValue(NativeExit::GuestEvents))
+                DeliverPending();
+            else if (step.service == ExitValue(NativeExit::FloatingFault) ||
+                     step.service == ExitValue(NativeExit::X87Fault) ||
+                     step.service == ExitValue(NativeExit::DivideFault) ||
+                     step.service == ExitValue(NativeExit::AlignmentFault))
+                RaiseSemanticException(static_cast<NativeExit>(step.service), PC());
             else
                 swift::ThrowError("unknown interpreted service event", ErrorKind::InvalidState);
             return;
@@ -589,6 +637,18 @@ void VM::Interpret(bool block) {
             break;
     }
     if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
+    if (step.kind == front::StepKind::Fault) {
+        thread.faults.address.store(step.fault_address, std::memory_order_relaxed);
+        RaiseSemanticException(
+                step.service ? static_cast<NativeExit>(step.service) : NativeExit::MemoryFault,
+                step.pc);
+        return;
+    }
+    if (step.kind == front::StepKind::InvalidEncoding) {
+        PC() = step.pc;
+        RaiseEncodedException(SemanticExceptionExit(GuestExceptionKind::IllegalInstruction));
+        return;
+    }
     swift::ThrowError(
             swift::Format("{} direct execution rejected pc={:#x} kind={} address={:#x}",
                           ISA() == GuestISA::Arm64 ? "AArch64" : "x86",

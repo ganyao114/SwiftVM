@@ -1,6 +1,21 @@
+#include "abi_layout.inc"
 #include "emit.h"
 
 namespace swift::runtime::backend::x64::detail {
+void Writer::Handle(Op<OpCode::GuestSafepoint>, OpContext& c) {
+    if (!Linked() || options.pc_offset == UINT32_MAX) Reject(CompileError::UnsupportedOperand);
+    Label ready;
+    cmp(qword[r12 + SVM_X64_CTX_PENDING_EVENTS - SVM_X64_CTX_STATE], 0);
+    je(ready, T_NEAR);
+    const auto previous_pc = guest_pc;
+    guest_pc = c.Arg(0).Payload();
+    mov(rax, guest_pc);
+    mov(qword[r12 + options.pc_offset], rax);
+    Exit(runtime::ExitValue(runtime::NativeExit::GuestEvents));
+    guest_pc = previous_pc;
+    L(ready);
+}
+
 void Writer::SelectValue(OpContext& c) {
     if (c.operation.opcode == OpCode::CondSelect)
         Condition(rax, static_cast<ir::Condition>(c.Arg(0).Payload()));

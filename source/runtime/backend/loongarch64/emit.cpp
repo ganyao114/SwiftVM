@@ -1,5 +1,6 @@
 #include "abi_layout.inc"
 #include "emit.h"
+#include "runtime/exit.h"
 
 #include <algorithm>
 
@@ -70,7 +71,8 @@ void Writer::Restore() {
 }
 
 void Writer::Exit(u64 reason) {
-    if (reason >= 6 && options.pc_offset != UINT32_MAX) {
+    if (reason >= ExitValue(NativeExit::UnsupportedAtomic) &&
+        reason <= ExitValue(NativeExit::FloatingFault) && options.pc_offset != UINT32_MAX) {
         as.LI(t0, guest_pc);
         Store(t0, state, options.pc_offset, 64);
     }
@@ -134,6 +136,10 @@ void Writer::Call(std::uintptr_t target, HostSymbol symbol) {
 }
 
 void Writer::CallRegister(GPR target) {
+    if (options.dispatcher && options.exit_handler) {
+        as.LI(t6, SVM_NATIVE_PHASE_HELPER);
+        Store(t6, state, SVM_LA_CTX_REL(SVM_LA_CTX_PHASE), 64);
+    }
     if (options.flags_offset != UINT32_MAX) Store(packed_flags, state, options.flags_offset, 64);
     if (options.native_fp_environment && options.dispatcher && options.exit_handler) {
         as.FRCSR(t6);
@@ -164,6 +170,10 @@ void Writer::CallRegister(GPR target) {
         as.ANDI(t0, t0, 3);
         as.SLLI(t0, t0, 8);
         as.FSCSR(t0);
+    }
+    if (options.dispatcher && options.exit_handler) {
+        as.LI(t6, SVM_NATIVE_PHASE_GUEST);
+        Store(t6, state, SVM_LA_CTX_REL(SVM_LA_CTX_PHASE), 64);
     }
 }
 
@@ -269,6 +279,7 @@ void Writer::Run() {
     for (const auto index : allocation.block_order) {
         block = BlockId{index};
         static_pc_known = terminated = false;
+        has_fault_location = false;
         const auto& body = source.Blocks()[index];
         if (body.node_count && source.Operations()[body.first_node].opcode == OpCode::EntryPoint) {
             const auto pc = (*source.Operands(NodeId{body.first_node}).begin()).Payload();
@@ -295,14 +306,12 @@ void Writer::Run() {
                 if (ctx.count < ctx.args.size()) ctx.args[ctx.count] = operand;
                 ++ctx.count;
             }
-            if (op.opcode == OpCode::FaultLocation) guest_pc = ctx.Arg(0).Payload();
-            const auto first = static_cast<u32>(output.words.size() * 4);
+            if (op.opcode == OpCode::FaultLocation) {
+                guest_pc = ctx.Arg(0).Payload();
+                has_fault_location = true;
+            }
             Dispatch(ctx);
             FinishResult(ctx);
-            const auto last = static_cast<u32>(output.words.size() * 4);
-            if (options.fault_locations && HasAnyEffect(EffectsFor(op.opcode), Effect::MayFault) &&
-                first != last)
-                output.faults.push_back({first, last, guest_pc});
         }
         if (!terminated) Terminal(body.terminal);
     }

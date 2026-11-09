@@ -1,5 +1,5 @@
-#include "tests/support/arm64_fixture.h"
 #include "runtime/exit.h"
+#include "tests/support/arm64_fixture.h"
 
 namespace {
 using namespace swift::tests::arm64_fixture;
@@ -1703,4 +1703,32 @@ TEST_CASE("CpuQueryPairLifetime", "[compile][native][arm64]") {
 
 TEST_CASE("NarrowLogicalImmediates", "[compile][native][arm64]") {
     CHECK_NOTHROW(NarrowLogicalImmediates());
+}
+
+TEST_CASE("Guest safepoint prevents an early architectural pin overwrite", "[compile][arm64]") {
+    using swift::runtime::x86::GuestState;
+    Builder builder{Scope::Block};
+    Need(builder.BeginBlock(Create(builder)));
+    const auto future = Constant(builder, 0xabcdef);
+    Need(builder.Emit<OpCode::GuestSafepoint>(Type::Void, {Operand::Immediate(0x1200, Type::U64)}));
+    Store(builder, offsetof(GuestState, gprs), future);
+    Need(builder.EndBlock(Terminal::Return(Constant(builder, 42))));
+    auto program = Submit(builder);
+    arm64::CompileOptions options;
+    options.dispatcher = 0x1000;
+    options.exit_handler = 0x2000;
+    options.pc_offset = offsetof(GuestState, pc);
+    options.flags_offset = offsetof(GuestState, packed_flags);
+    options.pinned_uniform_offset = offsetof(GuestState, gprs);
+    options.private_uniforms = true;
+    const auto allocation = arm64::AllocateBlock(program, &options);
+    REQUIRE(bool(allocation));
+    CHECK(allocation.homes[future.node.value].reg != arm64::abi::PinnedUniformRegister(0, 8));
+    const auto code = arm64::Compile(program, options);
+    REQUIRE(bool(code));
+    CHECK(code.faults.empty());
+    CHECK(code.links.empty());
+    CHECK(!code.words.empty());
+    // The fixed callback addresses qualify emission only, not execution.
+    CHECK(!arm64::Compile(program));
 }

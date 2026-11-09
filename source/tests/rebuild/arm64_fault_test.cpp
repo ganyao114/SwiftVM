@@ -62,8 +62,9 @@ void FaultMetadataAndRecovery() {
                   (code.words[WordOffset(byte.first_offset)] & 0xfffffc00u) == 0x38bfc000u &&
                   WordOffset(vector.unaligned_offset) == UINT32_MAX &&
                   WordOffset(vector.fallback_offset) == UINT32_MAX &&
-                  code.words[WordOffset(vector.last_offset) - 1] == 0xd50339bfu,
-          "byte accesses need no alignment rescue and V128 retains its half barrier");
+                  vector.last_offset == vector.first_offset + 4 &&
+                  code.words[WordOffset(vector.last_offset)] == 0xd50339bfu,
+          "fault rows contain only guest accesses; the V128 half barrier remains outside");
 
     Builder halfwords{Scope::Block};
     Need(halfwords.BeginBlock(Create(halfwords)));
@@ -989,8 +990,7 @@ void FunctionDeferredTestFaults() {
                       mprotect(memory + page * 2, page, PROT_NONE) == 0,
               "TEST fault scene permissions");
 
-        // State mutated by native code or siglongjmp lives outside its automatic
-        // frame, just as the runtime's Process-owned contexts do.
+        // The native root and fault service borrow the same stable scene state.
         struct Scene {
             execution::FaultContext faults;
             execution::NativeRunContext native;
@@ -1028,7 +1028,7 @@ void FunctionDeferredTestFaults() {
                    ((value >> 63) << 31);
         };
         {
-            BindFaultCallbacks(scene->faults);
+            BindFaultCallbacks(scene->faults, scene->native);
             execution::FaultScope scope(scene->faults, scene->native.state);
             const auto run = [&](u64 input, u64 expected_pc, u64 expected_flags) {
                 scene->native.state = {};
@@ -1037,12 +1037,13 @@ void FunctionDeferredTestFaults() {
                 scene->native.state.gprs[swift::runtime::x86::R10] = input;
                 scene->resolves = 0;
                 scene->faults.signal_number = 0;
-                if (sigsetjmp(scene->faults.jump, 1) == 0) {
-                    Check(execution::SvmRunNative(&scene->native) == 0 && !expected_pc,
-                          "zero TEST exit returns through the real native ABI");
-                } else
-                    Check(expected_pc && scene->faults.signal_number == SIGSEGV,
-                          "tagged TEST faults return through the registered signal owner");
+                const auto returned = execution::SvmRunNative(&scene->native);
+                Check(expected_pc
+                              ? returned == swift::runtime::ExitValue(
+                                                    swift::runtime::NativeExit::GuestException) &&
+                                        scene->faults.signal_number == SIGSEGV
+                              : returned == 0,
+                      "TEST zero/fault exits return normally through the native root ABI");
                 Check(scene->resolves == 1 && scene->native.state.packed_flags == expected_flags &&
                               (!expected_pc || scene->native.state.pc == expected_pc),
                       "TEST fault/exit publishes exact flags, reserved bits and PC");
@@ -1360,7 +1361,7 @@ void BlockDeferredTestBoundaries() {
                    ((value >> 63) << 31);
         };
         {
-            BindFaultCallbacks(scene->faults);
+            BindFaultCallbacks(scene->faults, scene->native);
             execution::FaultScope scope(scene->faults, scene->native.state);
             const auto run = [&](u64 input,
                                  u64 fault_pc,
@@ -1381,13 +1382,12 @@ void BlockDeferredTestBoundaries() {
                 scene->faults.smc_pending = 0;
                 scene->native.slots = cold_stop ? nullptr : scene->slots.data();
                 scene->native.dispatcher_entries = scene->native.cache_hits = 0;
-                if (sigsetjmp(scene->faults.jump, 1) == 0) {
-                    const auto returned = execution::SvmRunNative(&scene->native);
-                    Check(!fault_pc && returned == (scene->expect_cold ? 2u : 0u),
-                          "Block TEST reaches its actual zero/cold exit");
-                } else
-                    Check(fault_pc && scene->faults.signal_number == SIGSEGV,
-                          "Block TEST fault uses the actual signal owner");
+                const auto returned = execution::SvmRunNative(&scene->native);
+                Check(fault_pc ? returned == swift::runtime::ExitValue(
+                                                     swift::runtime::NativeExit::GuestException) &&
+                                         scene->faults.signal_number == SIGSEGV
+                               : returned == (scene->expect_cold ? 2u : 0u),
+                      "Block TEST zero/cold/fault returns through the native root ABI");
                 Check(scene->native.state.pc == (fault_pc             ? fault_pc
                                                  : scene->expect_cold ? entry_pc
                                                                       : exit_pc) &&
@@ -1578,7 +1578,7 @@ void LocalFlagsFaults() {
         const auto expected_flags = ReferenceArithmetic(
                 OpCode::Add, ~u64{}, 1, 64, metadata.profile, metadata.flag_outputs, initial);
         {
-            BindFaultCallbacks(scene->faults);
+            BindFaultCallbacks(scene->faults, scene->native);
             execution::FaultScope scope(scene->faults, scene->native.state);
             const auto run = [&](u64 first_address,
                                  u64 second_address,
@@ -1596,13 +1596,12 @@ void LocalFlagsFaults() {
                 scene->native.state.gprs[swift::runtime::x86::R11] = third_address;
                 scene->resolves = 0;
                 scene->faults.signal_number = 0;
-                if (sigsetjmp(scene->faults.jump, 1) == 0) {
-                    const auto returned = execution::SvmRunNative(&scene->native);
-                    Check(!fault_pc && returned == 42,
-                          "local flags complete before the real Return42 exit");
-                } else
-                    Check(fault_pc && scene->faults.signal_number == SIGSEGV,
-                          "local PF/carry faults use the registered signal owner");
+                const auto returned = execution::SvmRunNative(&scene->native);
+                Check(fault_pc ? returned == swift::runtime::ExitValue(
+                                                     swift::runtime::NativeExit::GuestException) &&
+                                         scene->faults.signal_number == SIGSEGV
+                               : returned == 42,
+                      "local PF/carry fault exits return normally with the root frame restored");
                 Check(scene->resolves == 1 &&
                               scene->native.state.pc == (fault_pc ? fault_pc : entry_pc) &&
                               scene->native.state.gprs[swift::runtime::x86::RAX] == expected_rax &&
@@ -1854,7 +1853,7 @@ void VectorPinBoundaries() {
         scene->native.pc_offset = options.pc_offset;
         scene->native.native_nzcv = true;
         {
-            BindFaultCallbacks(scene->faults);
+            BindFaultCallbacks(scene->faults, scene->native);
             execution::FaultScope scope(scene->faults, scene->native.state);
             for (unsigned mode = 0; mode < 3; ++mode) {
                 scene->native.state = {};
@@ -1873,13 +1872,12 @@ void VectorPinBoundaries() {
                 scene->fail_next = mode == 2;
                 scene->root_published = scene->cold_published = false;
                 scene->faults.signal_number = 0;
-                if (sigsetjmp(scene->faults.jump, 1) == 0) {
-                    const auto returned = execution::SvmRunNative(&scene->native);
-                    Check(mode && returned == (mode == 2 ? 2u : 42u),
-                          "vector pins survive cold success and failure Return reasons");
-                } else
-                    Check(!mode && scene->faults.signal_number == SIGSEGV,
-                          "vector pins recover through the actual fatal owner");
+                const auto returned = execution::SvmRunNative(&scene->native);
+                Check(mode ? returned == (mode == 2 ? 2u : 42u)
+                           : returned == swift::runtime::ExitValue(
+                                                 swift::runtime::NativeExit::GuestException) &&
+                                      scene->faults.signal_number == SIGSEGV,
+                      "vector cold/fault exits restore the native root without longjmp");
                 Check(scene->root_published && scene->resolves == (mode ? 2u : 1u) &&
                               (!mode || scene->cold_published) &&
                               scene->native.state.pc == (mode ? next_pc : fault_pc) &&

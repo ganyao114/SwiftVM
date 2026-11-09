@@ -50,18 +50,24 @@ void Writer::Memory(OpContext& c) {
     auto at = c.operands.begin();
     Expression(at, c.operands.end(), rdi);
     if (load) {
+        const auto first = static_cast<u32>(getSize());
         if (c.vector_result)
             movdqu(xmm0, ptr[rdi]);
         else
             Load(rax, rdi, 0, c.width);
+        RecordGuestAccess(first, 1, c.vector_result ? 16 : c.width / 8);
     } else {
         const auto v = *at;
         if (View(v) == ir::Type::V128) {
             ReadVector(v, xmm0);
+            const auto first = static_cast<u32>(getSize());
             movdqu(ptr[rdi], xmm0);
+            RecordGuestAccess(first, 2, 16);
         } else {
             Read(v, rax);
+            const auto first = static_cast<u32>(getSize());
             Store(rax, rdi, 0, TypeBits(View(v)));
+            RecordGuestAccess(first, 2, TypeBits(View(v)) / 8);
         }
     }
 }

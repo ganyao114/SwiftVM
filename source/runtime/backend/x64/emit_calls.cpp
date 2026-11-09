@@ -1,11 +1,14 @@
+#include "abi_layout.inc"
 #include "emit.h"
 #include "helpers.h"
 #include "relocate.h"
 #include "runtime/arch/x86/sse42_string.h"
 #include "runtime/arch/x86/x87.h"
+#include "runtime/exit.h"
 
 namespace swift::runtime::backend::x64::detail {
 void Writer::PrepareCall() {
+    if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_HELPER);
     saved_scalar.clear();
     saved_vectors.clear();
     const auto pos = allocation.homes[current.value].definition_position;
@@ -47,6 +50,7 @@ void Writer::FinishCall() {
     for (auto reg : saved_scalar)
         mov(Reg64(reg), qword[rsp + allocation.call_offset + 192 + (reg - 8) * 8]);
     if (options.flags_offset != UINT32_MAX) mov(rbx, qword[r12 + options.flags_offset]);
+    if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_GUEST);
     in_call = false;
 }
 

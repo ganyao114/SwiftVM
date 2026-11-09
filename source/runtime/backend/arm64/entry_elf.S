@@ -136,15 +136,31 @@ stp x16, x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HOST_FPCR)]
 20:
 .endm
 
-.macro SVM_RESTORE_HOST_FP
+.macro SVM_CAPTURE_GUEST_FP
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
 cbz x16, 21f
 mrs x17, fpsr
 str x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_GUEST_FPSR)]
+21:
+.endm
+
+.macro SVM_RESTORE_HOST_FP_ONLY
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_FP_ENVIRONMENT)]
+cbz x16, 28f
 ldp x16, x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_HOST_FPCR)]
 msr fpcr, x16
 msr fpsr, x17
-21:
+28:
+.endm
+
+.macro SVM_RESTORE_HOST_FP
+SVM_CAPTURE_GUEST_FP
+SVM_RESTORE_HOST_FP_ONLY
+.endm
+
+.macro SVM_PHASE value
+mov x16, #\value
+str x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PHASE)]
 .endm
 
 .macro SVM_INSTALL_GUEST_FP
@@ -167,6 +183,7 @@ ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ACTIVE)]
 stlr xzr, [x16]
 
 SVM_RESTORE_HOST_FP
+SVM_PHASE SVM_NATIVE_PHASE_RUNTIME
 ldp x0, x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_OPAQUE)]
 sub x1, x19, #SVM_A64_CTX_STATE
 blr x16
@@ -193,6 +210,7 @@ cbz x17, 11f
 
 SVM_RESTORE_NATIVE_NZCV
 11:
+SVM_PHASE SVM_NATIVE_PHASE_GUEST
 br x0
 3:
 mov x0, #SVM_NATIVE_EXIT_RESOLVE_FAILURE
@@ -299,6 +317,9 @@ stp d10, d11, [sp, #112]
 stp d12, d13, [sp, #128]
 stp d14, d15, [sp, #144]
 add x19, x0, #SVM_A64_CTX_STATE
+SVM_PHASE SVM_NATIVE_PHASE_ENTERING
+mov x16, sp
+str x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ROOT_SP)]
 
 SVM_SAVE_HOST_FP
 SVM_INSTALL_GUEST_FP
@@ -429,13 +450,32 @@ b SvmNativePending
 .global SvmNativeExit
 .type SvmNativeExit, %function
 SvmNativeExit:
+SVM_PHASE SVM_NATIVE_PHASE_LEAVING
 SVM_PUBLISH_PINNED
 
 SVM_PUBLISH_VECTORS
 ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ACTIVE)]
 stlr xzr, [x16]
 
-SVM_RESTORE_HOST_FP
+SVM_CAPTURE_GUEST_FP
+b .Lsvm_restore_host_root
+.size SvmNativeExit, .-SvmNativeExit
+
+.p2align 2
+.global SvmNativeExceptionExit
+.type SvmNativeExceptionExit, %function
+SvmNativeExceptionExit:
+add x19, x0, #SVM_A64_CTX_STATE
+SVM_PHASE SVM_NATIVE_PHASE_LEAVING
+mov x0, #SVM_NATIVE_EXIT_GUEST_EXCEPTION
+.Lsvm_restore_host_root:
+ldr x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ROOT_SP)]
+mov sp, x16
+ldur x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ACTIVE)]
+stlr xzr, [x16]
+SVM_RESTORE_HOST_FP_ONLY
+str xzr, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_ROOT_SP)]
+str xzr, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PHASE)]
 ldp x19, x20, [sp]
 ldp x21, x22, [sp, #16]
 ldp x23, x24, [sp, #32]
@@ -448,7 +488,7 @@ ldp d12, d13, [sp, #128]
 ldp d14, d15, [sp, #144]
 add sp, sp, #SVM_A64_ROOT_FRAME_BYTES
 ret
-.size SvmNativeExit, .-SvmNativeExit
+.size SvmNativeExceptionExit, .-SvmNativeExceptionExit
 
 #endif
 #if defined(__ELF__)

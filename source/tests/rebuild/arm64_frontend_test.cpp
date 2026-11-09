@@ -1,5 +1,6 @@
 #include <bit>
 #include "runtime/arch/arm64/service.h"
+#include "runtime/exit.h"
 #include "runtime/frontend/arm64/build_ir.h"
 #include "tests/support/arm64_guest_fixture.h"
 
@@ -40,6 +41,56 @@ template <class T> void Set(State& s, unsigned r, T value, unsigned lane = 0) {
     std::memcpy(s.q[r] + lane * sizeof(T), &value, sizeof(value));
 }
 }  // namespace
+
+TEST_CASE("ARM guest events precede control effects and survive unknown targets",
+          "[compile][arm-frontend]") {
+    const Code branch{[](auto& a) { a.bl(0); }};
+    const Code indirect{[](auto& a) { a.blr(x3); }};
+    const Code forward{[](auto& a) { a.b(8); }};
+    const Code nop{[](auto& a) { a.nop(); }};
+    const Code linear{[](auto& a) {
+        for (unsigned i = 0; i != 257; ++i) a.nop();
+    }};
+    for (auto mode : {ir::TargetMode::Known, ir::TargetMode::Unknown, ir::TargetMode::EarlyOff})
+        for (auto scope : {ir::Scope::Block, ir::Scope::Function}) {
+            const auto points = [&](const Code& code, U64 pc) {
+                const front::BlockWindow window{pc, code.View()};
+                const auto result =
+                        front::BuildIR({&window, 1},
+                                       scope,
+                                       {},
+                                       {mode, 0, static_cast<U64>(ir::TargetFeature::GuestEvents)});
+                REQUIRE(bool(result));
+                std::vector<U64> actual;
+                for (const auto& op : result.program.Operations())
+                    if (op.opcode == ir::OpCode::GuestSafepoint)
+                        actual.push_back(result.program.Operands(op).front().Payload());
+                if (!actual.empty())
+                    CHECK(result.program.Operations().front().opcode ==
+                                  ir::OpCode::GuestSafepoint ||
+                          actual.front() != pc);
+                return actual;
+            };
+            CHECK(points(branch, CodeBase) == std::vector<U64>{CodeBase});
+            CHECK(points(indirect, CodeBase) == std::vector<U64>{CodeBase});
+            CHECK(points(forward, CodeBase).empty());
+            CHECK(points(nop, CodeBase + 4092) == std::vector<U64>{CodeBase + 4092});
+            CHECK(points(linear, CodeBase) == std::vector<U64>{CodeBase + 1024});
+        }
+    State state;
+    state.pc = CodeBase;
+    state.gprs[30] = 0x12345678;
+    front::DirectServices services;
+    services.guest_events = [](void*) noexcept { return true; };
+    const auto decoded = front::DecodeOne(branch.View(), CodeBase);
+    REQUIRE(bool(decoded));
+    const auto stopped =
+            front::InterpretDecoded(decoded.instruction, branch.View(), state, services);
+    CHECK(stopped.kind == front::StepKind::Service);
+    CHECK(stopped.service == swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents));
+    CHECK(state.pc == CodeBase);
+    CHECK(state.gprs[30] == 0x12345678);
+}
 
 TEST_CASE("ARM frontend preserves SP ZR W writes and canonical no-borrow flags",
           "[compile][arm-frontend]") {
@@ -225,6 +276,37 @@ TEST_CASE("ARM region formation handles conditional edges and direct loop backed
     CHECK(block.next_pc == CodeBase + 8 && timing.calls == 2);
 }
 
+TEST_CASE("ARM NEON multi-register loads wait for all reads before committing Q registers",
+          "[compile][arm-frontend]") {
+    const Code multiple{
+            [](auto& a) { a.ld1(v0.V16B(), v1.V16B(), MemOperand(x0, 32, PostIndex)); }};
+    const Code lane{[](auto& a) { a.ld2(v0.V16B(), v1.V16B(), 1, MemOperand(x0, 2, PostIndex)); }};
+    const Code replicate{
+            [](auto& a) { a.ld2r(v0.V16B(), v1.V16B(), MemOperand(x0, 2, PostIndex)); }};
+    const auto second_read_fault = [](const Code& code, std::size_t first_bytes) {
+        Build(code);
+        Build(code, ir::Scope::Function);
+        State state;
+        state.pc = CodeBase;
+        // The first read succeeds; the second starts beyond the fixture.
+        state.gprs[0] = DataBase + 256 - first_bytes;
+        std::memset(state.q[0], 0xa5, sizeof(state.q[0]));
+        std::memset(state.q[1], 0x5a, sizeof(state.q[1]));
+        const auto before = state;
+        Memory memory{code};
+        std::memset(memory.data.data() + 256 - first_bytes, 0x3c, first_bytes);
+        const auto result = front::InterpretOne(state, memory.Services());
+        CHECK(result.kind == front::StepKind::Fault);
+        CHECK(result.fault_address == DataBase + 256);
+        CHECK(memory.reads == 1 && memory.writes == 0);
+        CHECK(std::memcmp(state.q, before.q, sizeof(state.q)) == 0);
+        CHECK(state.pc == before.pc && state.gprs[0] == before.gprs[0]);
+    };
+    second_read_fault(multiple, 16);
+    second_read_fault(lane, 1);
+    second_read_fault(replicate, 1);
+}
+
 TEST_CASE("ARM NEON arithmetic and dot preserve lane shape and overlap",
           "[compile][arm-frontend]") {
     const Code code{[](auto& a) {
@@ -372,7 +454,7 @@ TEST_CASE("ARM system writes stop at FP rebinding and invalid stops do not execu
     CHECK(result.service == 3);
     CHECK(state.fpcr == (1u << 24));
     CHECK(state.pc == CodeBase + 4);
-    const Code illegal{[](auto& a) { a.brk(0); }};
+    const Code illegal{[](auto& a) { a.hlt(0); }};
     State bad;
     bad.pc = CodeBase;
     Memory other{illegal};
@@ -381,4 +463,39 @@ TEST_CASE("ARM system writes stop at FP rebinding and invalid stops do not execu
     CHECK(!front::BuildIR(w, ir::Scope::Block));
     CHECK(!front::DecodeOne(illegal.View(), CodeBase + 1));
     CHECK(!front::DecodeOne(illegal.View().first(3), CodeBase));
+}
+
+TEST_CASE("ARM BRK returns an encoded exception at the faulting instruction",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) { a.brk(17); }};
+    const auto service =
+            swift::runtime::SemanticExceptionExit(swift::runtime::GuestExceptionKind::Breakpoint);
+    const front::BlockWindow window{CodeBase, code.View()};
+    for (auto scope : {ir::Scope::Block, ir::Scope::Function}) {
+        const auto result = front::BuildIR({&window, 1}, scope);
+        REQUIRE(bool(result));
+        CHECK(result.instruction_count == 1 && result.decoded_bytes == 4);
+        const auto& terminal = result.program.Blocks()[0].terminal;
+        CHECK(terminal.kind == ir::TerminalKind::Return && terminal.HasValue());
+        const auto& returned = result.program.Operations()[terminal.value.value];
+        CHECK(returned.opcode == ir::OpCode::LoadImm);
+        CHECK(result.program.Operands(returned).front().Payload() == service);
+    }
+    State state;
+    state.pc = CodeBase;
+    state.gprs[0] = 123;
+    const auto flags = state.packed_flags;
+    Memory memory{code};
+    const auto step = front::InterpretOne(state, memory.Services());
+    CHECK(step.kind == front::StepKind::Service && step.service == service);
+    CHECK(step.pc == CodeBase && step.next_pc == CodeBase && state.pc == CodeBase);
+    CHECK(state.gprs[0] == 123 && state.packed_flags == flags);
+    // An unallocated encoding remains a decoder error, separate from a valid
+    // but unsupported instruction such as HLT, and from BRK's semantic event.
+    auto invalid = code;
+    invalid.words[0] = 0;
+    CHECK(front::DecodeOne(invalid.View(), CodeBase).error == front::DecodeError::InvalidEncoding);
+    Memory invalid_memory{invalid};
+    CHECK(front::InterpretOne(state, invalid_memory.Services()).kind ==
+          front::StepKind::InvalidEncoding);
 }

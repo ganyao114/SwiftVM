@@ -38,8 +38,11 @@ bool VM::HandleArmStateService() {
         if (!thread.bridge_failure) thread.bridge_failure.Set(kind, operation, saved_errno);
         return false;
     };
-    const auto access_fault = [&](u64 address, const char* operation) {
-        thread.faults.address.store(address, std::memory_order_relaxed);
+    const auto access_fault = [&](u64 address,
+                                  const char* operation,
+                                  GuestExceptionAccess access,
+                                  std::size_t bytes) {
+        RecordMemoryFault(thread.faults, address, access, bytes);
         const auto saved = errno;
         return fail(saved && saved != EFAULT ? ErrorKind::System : ErrorKind::GuestFault,
                     operation,
@@ -49,6 +52,8 @@ bool VM::HandleArmStateService() {
         if (request.kind == Kind::LoadExclusive || request.kind == Kind::StoreExclusive) {
             const auto bytes = request.TransferBytes();
             const auto address = read_register(request.address_register, true);
+            const auto access = request.kind == Kind::LoadExclusive ? GuestExceptionAccess::Read
+                                                                    : GuestExceptionAccess::Atomic;
             const auto monitor = thread.arm_reservation;
             const bool matching =
                     state.reservation_valid && monitor.address == address && monitor.bytes == bytes;
@@ -60,14 +65,15 @@ bool VM::HandleArmStateService() {
                 return complete();
             }
             if (address & (bytes - 1)) {
-                thread.faults.address.store(address, std::memory_order_relaxed);
+                RecordMemoryFault(thread.faults, address, access, bytes);
+                thread.faults.exception.kind = GuestExceptionKind::Alignment;
                 return fail(ErrorKind::GuestFault, "unaligned ARM exclusive access");
             }
             const int protection =
                     request.kind == Kind::LoadExclusive ? PROT_READ : PROT_READ | PROT_WRITE;
             if (!memory.Accessible(address, bytes, protection)) {
                 errno = EFAULT;
-                return access_fault(address, "ARM exclusive memory access fault");
+                return access_fault(address, "ARM exclusive memory access fault", access, bytes);
             }
             // There is no external-writer monitor. Shared mappings and file
             // truncation/ABA domains cannot acquire a software reservation.
@@ -78,7 +84,7 @@ bool VM::HandleArmStateService() {
                 AtomicValue observed{};
                 errno = 0;
                 if (!memory.CopyIn(&observed, address, bytes))
-                    return access_fault(address, "read ARM exclusive value");
+                    return access_fault(address, "read ARM exclusive value", access, bytes);
                 if (request.ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
                 if (request.pair && request.size_log2 == 2) {
                     write_register(request.first_register, std::uint32_t(observed.low));
@@ -109,7 +115,8 @@ bool VM::HandleArmStateService() {
             const auto status = AtomicStatus(AtomicBridge(this, &packet));
             if (status == AtomicStatus::Fault) {
                 errno = EFAULT;
-                return access_fault(packet.fault_address, "write ARM exclusive value");
+                return access_fault(
+                        packet.fault_address, "write ARM exclusive value", access, bytes);
             }
             if (status != AtomicStatus::Completed)
                 return fail(ErrorKind::Unsupported, "ARM store-exclusive service unavailable");
@@ -141,7 +148,10 @@ bool VM::HandleArmStateService() {
             std::uint8_t probe;
             errno = 0;
             if (!memory.CopyIn(&probe, address, 1))
-                return access_fault(address, "ARM cache-maintenance address fault");
+                return access_fault(address,
+                                    "ARM cache-maintenance address fault",
+                                    GuestExceptionAccess::Read,
+                                    1);
             std::atomic_thread_fence(std::memory_order_seq_cst);
             // Host native publication already owns actual I-cache maintenance.
             // Retire translations for the guest line and its executable aliases.

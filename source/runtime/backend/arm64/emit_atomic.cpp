@@ -22,7 +22,9 @@ void Writer::HandleCompareAndSwap128Family(OpContext& ctx) {
     Move(0, Read(address, 0));
     const MemOperand memory(v::x0);
     const auto retry = masm.Here();
+    auto access = masm.Here();
     __ ldaxp(v::x16, v::x17, memory);
+    RecordGuestAccess(access, 3, 16);
     __ umov(v::x30, Lanes(0, 64), 0);
     __ eor(v::x30, v::x30, Operand(v::x16));
     const auto low_mismatch = masm.Here();
@@ -33,7 +35,9 @@ void Writer::HandleCompareAndSwap128Family(OpContext& ctx) {
     __ cbnz(v::x30, std::int64_t{0});
     __ umov(v::x16, Lanes(1, 64), 0);
     __ umov(v::x17, Lanes(1, 64), 1);
+    access = masm.Here();
     __ stlxp(v::w30, v::x16, v::x17, memory);
+    RecordGuestAccess(access, 3, 16);
     __ cbnz(v::w30, static_cast<std::int64_t>(retry) - masm.Here());
     VectorMove(ctx.destination, 0);
     const auto done = masm.Here();
@@ -42,7 +46,9 @@ void Writer::HandleCompareAndSwap128Family(OpContext& ctx) {
     masm.Patch(high_mismatch, masm.Here());
     // A failed comparison retains the locked write cycle, including its
     // permission and SMC checks. Failed exclusive stores restart the load.
+    access = masm.Here();
     __ stlxp(v::w30, v::x16, v::x17, memory);
+    RecordGuestAccess(access, 3, 16);
     __ cbnz(v::w30, static_cast<std::int64_t>(retry) - masm.Here());
     __ ins(Lanes(ctx.destination, 64), 0, v::x16);
     __ ins(Lanes(ctx.destination, 64), 1, v::x17);
@@ -177,20 +183,24 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
     const auto native_width = width == 64 ? 64u : 32u;
     const MemOperand memory(v::x0);
     const auto load_exclusive = [&] {
+        const auto first = masm.Here();
         if (width == 8)
             __ ldaxrb(v::w16, memory);
         else if (width == 16)
             __ ldaxrh(v::w16, memory);
         else
             __ ldaxr(R(16, native_width), memory);
+        RecordGuestAccess(first, 3, width / 8);
     };
     const auto store_exclusive = [&](unsigned value) {
+        const auto first = masm.Here();
         if (width == 8)
             __ stlxrb(v::w30, W(value), memory);
         else if (width == 16)
             __ stlxrh(v::w30, W(value), memory);
         else
             __ stlxr(v::w30, R(value, native_width), memory);
+        RecordGuestAccess(first, 3, width / 8);
     };
     const auto retry_branch = [&](u32 target) {
         __ cbnz(v::w30, static_cast<std::int64_t>(target) - masm.Here());
@@ -199,6 +209,7 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
         Move(17, Read(extra, 17, width, false, native_width));
         if (options.lse_atomics) {
             Move(16, Read(input, 16, width, false, native_width));
+            const auto first = masm.Here();
             if (width == 8)
                 __ casalb(v::w16, v::w17, memory);
             else if (width == 16)
@@ -207,6 +218,7 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
                 __ casal(R(16, native_width),
                          R(17, native_width),
                          memory);  // CASAL expected/old16,desired17,[x0].
+            RecordGuestAccess(first, 3, width / 8);
         } else {
             const auto retry = static_cast<u32>(output.words.size());
             Move(30, Read(input, 30, width, false, native_width));
@@ -270,6 +282,7 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
                 }
             // Exact byte/halfword/register forms; the shared address
             // and acquire/release ordering are unchanged.
+            const auto first = masm.Here();
             EmitLseAtomic(masm.exact,
                           kind,
                           exchange,
@@ -277,6 +290,7 @@ void Writer::HandleCompareAndSwapFamily(OpContext& ctx) {
                           R(17, native_width),
                           R(16, native_width),
                           memory);
+            RecordGuestAccess(first, 3, width / 8);
         } else {
             const auto retry = static_cast<u32>(output.words.size());
             // Reload operand/carry on retry: value17 and carry30

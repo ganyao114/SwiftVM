@@ -5,12 +5,12 @@
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 
-#include "signal_time.h"
 #include <cerrno>
 #include <cstring>
 #include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
+#include "signal_time.h"
 
 namespace swift::runtime::platform {
 namespace {
@@ -23,7 +23,12 @@ bool RecoverNative(FaultContext& context,
                    std::uintptr_t address,
                    void* raw) noexcept {
 #if defined(__riscv) && __riscv_xlen == 64
-    const auto& machine = *static_cast<const ucontext_t*>(raw);
+    auto* native = context.native;
+    if (!native || !native->root_sp ||
+        native->phase.load(std::memory_order_relaxed) != SVM_NATIVE_PHASE_GUEST ||
+        (signal != SIGSEGV && signal != SIGBUS))
+        return false;
+    auto& machine = *static_cast<ucontext_t*>(raw);
     // Linux's first general-context word is the faulting PC; x1..x31
     // retain their architectural indices, including the packed flags home.
     const auto host_pc = static_cast<std::uintptr_t>(machine.uc_mcontext.__gregs[0]);
@@ -36,6 +41,7 @@ bool RecoverNative(FaultContext& context,
     const auto offset = host_pc - base;
     for (const auto& site : code->faults) {
         if (offset < site.first_offset || offset >= site.last_offset) continue;
+        if (!(site.recovery[4] & 7)) continue;
         if (signal == SIGSEGV && signal_code == SEGV_ACCERR && context.recover_code_write) {
             SignalTimer elapsed{context.service_ns};
             const bool recovered = context.recover_code_write(context.code_write_opaque, address);
@@ -46,7 +52,16 @@ bool RecoverNative(FaultContext& context,
         }
         backend::riscv64::RestoreGuestState(context,
                                             std::as_bytes(std::span{machine.uc_mcontext.__gregs}));
-        execution::RaiseGuestFault(context, site, signal, signal_code, host_pc, address);
+        if (native->fp_environment)
+            native->guest_fpsr = machine.uc_mcontext.__fpregs.__d.__fcsr & 31;
+        execution::RecordGuestFault(context, site, signal, signal_code, host_pc, address);
+        context.exception.native_offset = static_cast<std::uint32_t>(host_pc - base);
+        native->phase.store(SVM_NATIVE_PHASE_LEAVING, std::memory_order_relaxed);
+        machine.uc_mcontext.__gregs[10] = reinterpret_cast<std::uintptr_t>(native);
+        machine.uc_mcontext.__gregs[2] = native->root_sp;
+        machine.uc_mcontext.__gregs[0] =
+                reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExceptionExit);
+        return true;
     }
 #else
     (void)context;

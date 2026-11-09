@@ -1,10 +1,10 @@
-#include "host_runtime.h"
-#include "runtime/execution/vm.h"
-#include "runtime/execution/timing.h"
 #include "aot/artifact.h"
+#include "host_runtime.h"
+#include "runtime/execution/timing.h"
+#include "runtime/execution/vm.h"
 
-#include <chrono>
 #include <array>
+#include <chrono>
 #include <exception>
 #include "base/error.h"
 #include "base/format.h"
@@ -19,6 +19,10 @@ RunResult RunGuest(const std::string& executable,
     int code = 125;
     std::string error;
     swift::Failure recorded;
+    swift::Failure cleanup_failure;
+    GuestStopReason stopped{GuestStopReason::GuestExit};
+    int termination_signal{};
+    std::unique_ptr<GuestExceptionSnapshot> snapshot;
     const auto begin = Clock::now();
     try {
         const auto binding_begin = Clock::now();
@@ -54,6 +58,16 @@ RunResult RunGuest(const std::string& executable,
         } catch (const std::exception& failure) {
             recorded.Capture(failure);
             error = failure.what();
+            stopped = GuestStopReason::HostFailure;
+        }
+        if (vm.StopReason() != GuestStopReason::GuestExit) {
+            stopped = vm.StopReason();
+            termination_signal = vm.TerminationSignal();
+            snapshot = vm.CaptureException();
+            if (error.empty())
+                error = swift::Format("guest event signal={} pc={:#x}",
+                                      termination_signal,
+                                      snapshot ? snapshot->info.instruction_pc : 0);
         }
         const auto released = vm.Close();
         if (!released.Complete()) {
@@ -63,14 +77,14 @@ RunResult RunGuest(const std::string& executable,
                     released.remaining_views,
                     released.unmap_error,
                     released.close_error);
-            if (!recorded)
-                recorded.Set(ErrorKind::System,
-                             "native mapping release failed",
-                             released.unmap_error ? released.unmap_error : released.close_error);
+            cleanup_failure.Set(ErrorKind::System,
+                                "native mapping release failed",
+                                released.unmap_error ? released.unmap_error : released.close_error);
         }
     } catch (const std::exception& failure) {
         recorded.Capture(failure);
         error = failure.what();
+        stopped = GuestStopReason::HostFailure;
     }
     stats.run_lifetime_ns = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - begin).count());
@@ -79,7 +93,14 @@ RunResult RunGuest(const std::string& executable,
                 stats.compile_request_ns > stats.compile_decode.nanoseconds
                         ? stats.compile_request_ns - stats.compile_decode.nanoseconds
                         : 0;
-    return {code, stats, std::move(error), recorded};
+    return {code,
+            stats,
+            std::move(error),
+            recorded,
+            stopped,
+            termination_signal,
+            std::move(snapshot),
+            cleanup_failure};
 }
 #if !defined(__aarch64__) && !(defined(__riscv) && __riscv_xlen == 64) && !defined(__x86_64__) &&  \
         !defined(__loongarch64)
@@ -100,5 +121,7 @@ extern "C" void SvmNativePending() noexcept {}
 extern "C" void SvmNativePendingCounted() noexcept {}
 
 extern "C" void SvmNativeExit() noexcept {}
+
+extern "C" void SvmNativeExceptionExit() noexcept {}
 #endif
 }  // namespace swift::runtime::execution

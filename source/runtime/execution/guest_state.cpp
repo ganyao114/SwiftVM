@@ -41,6 +41,7 @@ void VM::ConfigureGuest(GuestISA isa) {
     native.flags_offset = layout.flags_offset;
     native.pc_offset = layout.pc_offset;
     auto& fault = thread.faults;
+    fault.guest_isa = isa;
     fault.pinned_uniform_offset = static_cast<std::uint32_t>(native.pinned_uniform_offset);
     fault.pinned_vector_offset = static_cast<std::uint32_t>(native.pinned_vector_offset);
     fault.flags_offset = layout.flags_offset;

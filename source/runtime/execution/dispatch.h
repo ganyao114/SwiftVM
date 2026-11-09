@@ -14,6 +14,7 @@
 #include "runtime/exit.h"
 
 namespace swift::runtime::execution {
+struct FaultContext;
 using x86::GuestState;
 using NativeCode = backend::NativeCode;
 
@@ -87,9 +88,16 @@ struct NativeRunContext {
     // Backends translate it only at architectural status observers.
     std::uint64_t guest_fpsr{};
     DispatchEntry* l1{};
+
+    // Root ABI recovery storage. Unit spills and helper frames never change
+    // the saved root frame. Only Guest phase permits a native exception exit.
+    std::uintptr_t root_sp{};
+    std::atomic<std::uint64_t> phase{SVM_NATIVE_PHASE_RUNTIME};
+    std::atomic<std::uint64_t> pending_events{};
+    FaultContext* faults{};
 };
 
-static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1040);
+static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1072);
 static_assert(sizeof(std::atomic<const NativeCode*>) == 8 &&
               std::atomic<const NativeCode*>::is_always_lock_free);
 static_assert(offsetof(NativeRunContext, opaque) == 0 && offsetof(NativeRunContext, resolve) == 8);
@@ -112,6 +120,10 @@ static_assert(offsetof(NativeRunContext, atomic_service) == 152);
 static_assert(offsetof(NativeRunContext, state) == 160);
 static_assert(offsetof(NativeRunContext, guest_fpsr) == 1024);
 static_assert(offsetof(NativeRunContext, l1) == SVM_DISPATCH_CTX_L1);
+static_assert(offsetof(NativeRunContext, root_sp) == 1040);
+static_assert(offsetof(NativeRunContext, phase) == 1048);
+static_assert(offsetof(NativeRunContext, pending_events) == 1056);
+static_assert(offsetof(NativeRunContext, faults) == 1064);
 
 // Linked units enter/leave through these thunks. Only SvmNativeExit returns to C++;
 // the root frame owns the one save of x19..x30 and host d8..d15 across all
@@ -139,5 +151,6 @@ extern "C" void SvmNativeL2DispatchNZCVCounted() noexcept;
 extern "C" void SvmNativePending() noexcept;
 extern "C" void SvmNativePendingCounted() noexcept;
 extern "C" void SvmNativeExit() noexcept;
+extern "C" void SvmNativeExceptionExit() noexcept;
 
 }  // namespace swift::runtime::execution

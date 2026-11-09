@@ -60,7 +60,8 @@ public:
             : Builder(scope, target, std::move(reusable))
             , layout(layout)
             , private_gprs(target.Has(TargetFeature::PrivateGPRState))
-            , private_vectors(target.Has(TargetFeature::PrivateVectorState)) {}
+            , private_vectors(target.Has(TargetFeature::PrivateVectorState))
+            , guest_events(target.Has(TargetFeature::GuestEvents)) {}
 
     Error BeginBlock(BlockRef block) {
         const auto error = Builder::BeginBlock(block);
@@ -136,7 +137,7 @@ private:
     std::array<NodeId, 16> vectors;
     std::uint16_t valid_vectors{}, dirty_vectors{};
     const StateLayout layout;
-    const bool private_gprs, private_vectors;
+    const bool private_gprs, private_vectors, guest_events;
     template <class> friend struct detail::Semantics;
 };
 
@@ -488,6 +489,9 @@ std::pair<runtime::x86::X87Command, unsigned> Emitter::X87Window(
         const auto& record = at == 0   ? instruction
                              : at == 1 ? second_instruction
                                        : third_instruction;
+        if (guest_events &&
+            runtime::frontend::CrossesGuestEventWindow(instruction.addr, record.addr + record.size))
+            return false;
         return record.addr == instruction.addr + at * 2 && record.size == 2 &&
                record.opcode == opcode && available[at * 2] == low && available[at * 2 + 1] == high;
     };
@@ -709,21 +713,31 @@ BuildResult EmitDecoded(InstructionRange instructions,
                 if (x87_following)
                     --x87_following;
                 else
-                    x87_following = Sem::Execute(builder,
-                                                 layout,
-                                                 instruction,
-                                                 bytes,
-                                                 pending,
-                                                 pc,
-                                                 next_pc,
-                                                 target,
-                                                 cfg_flow,
-                                                 ended,
-                                                 instructions.subspan(slice.first_instruction + i,
-                                                                      slice.instruction_count - i),
-                                                 window.bytes.subspan(static_cast<std::size_t>(
-                                                         pc - window.pc))) -
-                                    1;
+                    x87_following =
+                            Sem::Execute(
+                                    builder,
+                                    layout,
+                                    instruction,
+                                    bytes,
+                                    pending,
+                                    pc,
+                                    next_pc,
+                                    target,
+                                    cfg_flow,
+                                    ended,
+                                    instructions.subspan(
+                                            slice.first_instruction + i,
+                                            target.Has(TargetFeature::GuestEvents)
+                                                    ? std::min<std::size_t>(
+                                                              slice.instruction_count - i,
+                                                              runtime::frontend::
+                                                                              GuestEventInstructionBudget -
+                                                                      i % runtime::frontend::
+                                                                                      GuestEventInstructionBudget)
+                                                    : slice.instruction_count - i),
+                                    window.bytes.subspan(static_cast<std::size_t>(pc - window.pc)),
+                                    i && i % runtime::frontend::GuestEventInstructionBudget == 0) -
+                            1;
                 decoded += instruction.size;
                 ++instruction_count;
                 pc = next_pc;
@@ -895,6 +909,12 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
             while (!bytes.empty()) {
                 const auto parsed = DecodeOne(bytes, pc, timing, model);
                 if (!parsed) {
+                    // The execution owner can dispatch at this real prefix
+                    // frontier. Diagnose the bad instruction only when its
+                    // own PC is reached, after the prefix actually executes.
+                    if (scope == Scope::Block && slice.instruction_count &&
+                        target.Has(TargetFeature::GuestEvents))
+                        break;
                     failure = {block,
                                parsed.error == DecodeError::Truncated ? BuildError::Truncated
                                : parsed.error == DecodeError::UnsupportedGuestFeature

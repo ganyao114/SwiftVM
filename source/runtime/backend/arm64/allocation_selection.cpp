@@ -90,7 +90,10 @@ namespace swift::runtime::backend::arm64::detail {
             if (!pc_tail && field.Payload() < std::uint64_t{options->pc_offset} + 8 &&
                 options->pc_offset < field.Payload() + bytes)
                 result.publish_entry_pc = true;
-        } else if (HasAnyEffect(effects, Effect::ReadGuestState | Effect::WriteGuestState))
+        } else if (operation.opcode != OpCode::GuestSafepoint &&
+                   HasAnyEffect(effects, Effect::ReadGuestState | Effect::WriteGuestState))
+            // A safepoint observes registers and flags, but takes its PC from
+            // its immediate on the cold exit. It never reads the state PC.
             result.publish_entry_pc = true;
     }
     NodeId pc_literal;
@@ -316,6 +319,7 @@ bool Allocator::SelectHomes() {
                 case OpCode::Nop:
                 case OpCode::LoadImm:
                 case OpCode::FaultLocation:
+                case OpCode::GuestSafepoint:
                 case OpCode::EntryPoint:
                     break;
                 default:

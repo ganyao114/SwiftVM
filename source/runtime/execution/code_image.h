@@ -12,7 +12,7 @@ namespace swift::runtime::execution {
 struct HostBackendOps;
 struct RuntimeOptions;
 
-inline constexpr std::uint32_t CodeImageFormatVersion = 1;
+inline constexpr std::uint32_t CodeImageFormatVersion = 2;
 
 struct CodeImageKey {
     Digest build_id{}, guest_id{}, configuration{};

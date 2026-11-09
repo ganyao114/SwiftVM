@@ -248,6 +248,7 @@ void EmitReservation(Writer& writer, AtomicKind kind, unsigned bits) {
     }
     Label retry, write;
     as.Bind(&retry);
+    const auto first_load = static_cast<u32>(writer.output.words.size() * 4);
     if (bits == 64)
         as.LR_D(Ordering::AQ, t0, a0);
     else if (bits == 32) {
@@ -258,6 +259,7 @@ void EmitReservation(Writer& writer, AtomicKind kind, unsigned bits) {
         as.SRL(t0, t1, t5);
         as.AND(t0, t0, t4);
     }
+    writer.RecordGuestAccess(first_load, 3, bits / 8);
     Replacement(writer, kind, bits, write);
     as.Bind(&write);
     if (bits < 32) {
@@ -270,6 +272,7 @@ void EmitReservation(Writer& writer, AtomicKind kind, unsigned bits) {
         as.SC_W(Ordering::RL, t3, t2, a0);
     else
         as.SC_D(Ordering::RL, t3, t2, a0);
+    writer.RecordGuestAccess(static_cast<u32>(writer.output.words.size() * 4 - 4), 3, bits / 8);
     as.BNE(t3, x0, &retry);
 }
 
@@ -337,9 +340,10 @@ void Writer::Atomic(OpContext& ctx) {
     // Full fences include the comparison-mismatch path and surround ordinary
     // guest accesses, in addition to the acquire/release atomic instruction.
     as.FENCE(FenceOrder::RW, FenceOrder::RW);
-    if (ctx.width >= 32 && kind >= AtomicKind::Exchange && kind <= AtomicKind::Xor)
+    if (ctx.width >= 32 && kind >= AtomicKind::Exchange && kind <= AtomicKind::Xor) {
         EmitAmo(as, kind, ctx.width);
-    else
+        RecordGuestAccess(static_cast<u32>(output.words.size() * 4 - 4), 3, ctx.width / 8);
+    } else
         EmitReservation(*this, kind, ctx.width);
     as.FENCE(FenceOrder::RW, FenceOrder::RW);
     as.MV(ctx.destination, t0);

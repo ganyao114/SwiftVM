@@ -4,6 +4,9 @@ set(CATCH_INSTALL_DOCS OFF CACHE BOOL "" FORCE)
 set(CATCH_INSTALL_EXTRAS OFF CACHE BOOL "" FORCE)
 set(CATCH_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(CATCH_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+# Runtime recovery tests deliberately own POSIX delivery. Catch's additional
+# fatal-signal handlers would replace that owner between individual cases.
+set(CATCH_CONFIG_NO_POSIX_SIGNALS ON CACHE BOOL "" FORCE)
 add_subdirectory(externals/catch EXCLUDE_FROM_ALL)
 # Catch's compiled stringification support must use the same language feature
 # set as its C++20 consumers (not a C++14 library with C++17-only declarations).
@@ -104,7 +107,8 @@ svm_native_test(pipeline_native_contract svm_compile_pipeline_test)
 svm_native_test(riscv64_native_contract svm_riscv64_compile_test)
 if(TARGET svm_execution)
     svm_test_target(svm_runtime_engine_test ISA host SOURCES
-        rebuild/runtime_engine_test.cpp rebuild/guest_execution_test.cpp rebuild/dispatch_cache_test.cpp
+        rebuild/guest_signal_test.cpp
+        rebuild/runtime_engine_test.cpp rebuild/guest_execution_test.cpp rebuild/dispatch_cache_test.cpp rebuild/exception_recovery_test.cpp
         LIBRARIES svm_execution Threads::Threads)
     svm_test(runtime_engine_contract svm_runtime_engine_test)
     svm_native_test(runtime_engine_native_contract svm_runtime_engine_test)

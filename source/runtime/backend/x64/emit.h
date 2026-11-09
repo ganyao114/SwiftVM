@@ -63,6 +63,16 @@ public:
     void CaptureFlags(OpContext&);
     void Reject(CompileError);
     void Uniform(OpContext&);
+
+    void RecordGuestAccess(u32 first, unsigned access, unsigned bytes) {
+        if (!options.fault_locations || !has_fault_location) return;
+        output.faults.push_back({first, static_cast<u32>(getSize()), guest_pc});
+        auto& site = output.faults.back();
+        site.recovery[0] = fault_committed_flags;
+        site.recovery[4] = static_cast<std::uint8_t>(access);
+        site.recovery[5] = static_cast<std::uint8_t>(bytes);
+    }
+
     void Memory(OpContext&);
     void Arithmetic(OpContext&);
     void Logical(OpContext&);
@@ -96,6 +106,7 @@ public:
     NodeId current;
     BlockId block;
     u64 guest_pc{};
+    bool has_fault_location{};
     bool static_pc_known{}, terminated{};
     u64 static_pc{};
     std::uint32_t frame_bytes{}, mxcsr_slot{};

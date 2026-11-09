@@ -47,7 +47,7 @@ inline std::vector<std::uint8_t> Guest() {
     code(Nine, {0xb8, 9, 0, 0, 0, 0xc3});
     code(Cpu, {0x31, 0xc0, 0x31, 0xc9, 0x0f, 0xa2, 0xc3});
     code(Read, {0x48, 0x8b, 0x07, 0xc3});
-    code(Unsupported, {0x0f, 0x0b});
+    code(Unsupported, {0xf4, 0x90});  // HLT remains a legal, unsupported instruction.
     code(Main, {0xc3});
     const std::uint64_t initial = 40;
     std::memcpy(bytes.data() + DataOffset, &initial, sizeof(initial));

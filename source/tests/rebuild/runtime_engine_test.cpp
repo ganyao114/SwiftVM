@@ -376,12 +376,10 @@ void ArmGuestFaultState() {
             options.hot_threshold = 0;
             execution::RuntimeStats stats;
             execution::VM vm{options, stats, host.Bind()};
-            bool guest_fault{};
-            try {
-                (void)vm.Run(guest.Path(), argv, {});
-            } catch (const swift::RuntimeError& error) {
-                guest_fault = error.Kind() == swift::ErrorKind::GuestFault;
-            }
+            (void)vm.Run(guest.Path(), argv, {});
+            const bool guest_fault =
+                    vm.StopReason() == swift::runtime::GuestStopReason::GuestSignalTermination &&
+                    vm.TerminationSignal() == SIGSEGV;
             Check(guest_fault && vm.ISA() == swift::runtime::GuestISA::Arm64 &&
                           vm.ArmState().pc ==
                                   0x400000 + sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr) + 12 &&
@@ -390,6 +388,133 @@ void ArmGuestFaultState() {
                   "ARM guest faults retain exact PC and committed Uniform/pinned state");
             Check(vm.Close().Complete(), "ARM fault VM releases its actual owners");
         }
+    }
+}
+
+void EmbeddedExceptionContext() {
+    constexpr std::uint8_t load[]{0x4c, 0x8b, 0x20};  // MOV R12,[RAX].
+    std::vector<std::uint8_t> code(std::begin(load), std::end(load));
+    code.insert(code.end(), std::begin(exit_program), std::end(exit_program));
+    GuestFile guest{code, PF_R | PF_X};
+
+    struct Recovery {
+        std::uint64_t address{}, fault_pc{};
+        unsigned calls{};
+    } recovery;
+
+    execution::RuntimeOptions options;
+    options.exception_opaque = &recovery;
+    options.exception_handler = [](void* opaque,
+                                   swift::runtime::GuestContextView view,
+                                   const swift::runtime::GuestExceptionInfo& event) {
+        auto& recovery = *static_cast<Recovery*>(opaque);
+        ++recovery.calls;
+        recovery.fault_pc = event.instruction_pc;
+        auto& state = *std::get<x86::GuestState*>(view);
+        state.gprs[x86::RAX] = recovery.address;
+        state.mxcsr &= ~0x3fu;
+        return swift::runtime::GuestExceptionDisposition::Resume;
+    };
+    swift::runtime::platform::HostRuntime host{false};
+    execution::RuntimeStats stats;
+    execution::VM vm{options, stats, host.Bind()};
+    vm.PrepareGuest(guest.Path());
+    recovery.address = vm.Memory().Map(
+            0, vm.Memory().PageSize(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+    const std::uint64_t data = 0x8877665544332211;
+    Check(recovery.address != UINT64_MAX && vm.Memory().CopyOut(recovery.address, &data, 8),
+          "initialize embedding recovery data");
+    const auto pc = vm.State().pc;
+    vm.State().gprs[x86::RAX] = 0;
+    vm.State().mxcsr |= 0x24;
+    Check(vm.RunPrepared() == 42 && recovery.calls == 1 && recovery.fault_pc == pc &&
+                  vm.State().gprs[x86::R12] == data && !(vm.State().mxcsr & 0x3f) &&
+                  stats.interpreted_steps == 0,
+          "embedding callback edits canonical state and resumes the faulting PC via JIT");
+    Check(vm.Close().Complete(), "embedding recovery releases native owners");
+
+    execution::RuntimeOptions capture;
+    capture.exception_handler =
+            [](void*, swift::runtime::GuestContextView, const swift::runtime::GuestExceptionInfo&) {
+                return swift::runtime::GuestExceptionDisposition::Stop;
+            };
+    const auto result = execution::RunGuest(guest.Path(), {}, {}, capture);
+    Check(result.reason == swift::runtime::GuestStopReason::UnhandledGuestEvent &&
+                  result.exception && !result.failure && !result.cleanup_failure &&
+                  result.exception->info.instruction_pc == pc &&
+                  result.exception->info.address_valid && !result.exception->info.address &&
+                  std::get<x86::GuestState>(result.exception->state).pc == pc,
+          "an unhandled embedding event retains a complete snapshot after VM destruction");
+
+    // Two different direct accesses fault in one VM. The second event must
+    // describe its own read rather than retaining the handled byte-store hint.
+    constexpr std::uint8_t accesses[]{0xc6, 0x00, 0x7f, 0x8b, 0x0a};
+    std::vector<std::uint8_t> direct_code(std::begin(accesses), std::end(accesses));
+    direct_code.insert(direct_code.end(), std::begin(exit_program), std::end(exit_program));
+    GuestFile direct_guest{direct_code, PF_R | PF_X};
+
+    struct AccessRecovery {
+        std::uint64_t address{};
+        std::array<swift::runtime::GuestExceptionInfo, 2> events;
+        unsigned calls{};
+    } access_recovery;
+
+    execution::RuntimeOptions direct_options;
+    direct_options.mode = execution::ExecutionMode::InterpretOnly;
+    direct_options.exception_opaque = &access_recovery;
+    direct_options.exception_handler = [](void* opaque,
+                                          swift::runtime::GuestContextView view,
+                                          const swift::runtime::GuestExceptionInfo& event) {
+        auto& recovery = *static_cast<AccessRecovery*>(opaque);
+        if (recovery.calls == recovery.events.size())
+            return swift::runtime::GuestExceptionDisposition::Stop;
+        recovery.events[recovery.calls] = event;
+        auto& state = *std::get<x86::GuestState*>(view);
+        state.gprs[recovery.calls++ == 0 ? x86::RAX : x86::RDX] = recovery.address;
+        return swift::runtime::GuestExceptionDisposition::Resume;
+    };
+    execution::RuntimeStats direct_stats;
+    execution::VM direct_vm{direct_options, direct_stats, host.Bind()};
+    direct_vm.PrepareGuest(direct_guest.Path());
+    access_recovery.address = direct_vm.Memory().Map(
+            0, direct_vm.Memory().PageSize(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+    Check(access_recovery.address != UINT64_MAX &&
+                  direct_vm.Memory().CopyOut(access_recovery.address, &data, sizeof(data)),
+          "initialize direct sequential-fault recovery data");
+    direct_vm.State().gprs[x86::RAX] = direct_vm.State().gprs[x86::RDX] = 0;
+    Check(direct_vm.RunPrepared() == 42 && access_recovery.calls == 2 &&
+                  direct_stats.interpreted_steps != 0 && direct_stats.native_bytes == 0,
+          "direct execution resumes the byte store and then the word load");
+    Check(access_recovery.events[0].access == swift::runtime::GuestExceptionAccess::Write &&
+                  access_recovery.events[0].access_bytes == 1 &&
+                  access_recovery.events[1].access == swift::runtime::GuestExceptionAccess::Read &&
+                  access_recovery.events[1].access_bytes == 4 &&
+                  access_recovery.events[0].address_valid &&
+                  access_recovery.events[1].address_valid && !access_recovery.events[0].address &&
+                  !access_recovery.events[1].address && !access_recovery.events[0].signal_code &&
+                  !access_recovery.events[1].signal_code,
+          "each semantic fault reports current access facts without prior signal metadata");
+    Check(direct_vm.Close().Complete(), "direct recovery releases memory owners");
+}
+
+void IllegalDecodePrefix() {
+    constexpr std::uint32_t instructions[]{0xd2800220, 0x00000000};  // MOV X0,17; UDF #0.
+    const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(instructions),
+                                              sizeof(instructions)};
+    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+    const auto fault_pc = 0x400000 + sizeof(Elf64_Ehdr) + sizeof(Elf64_Phdr) + 4;
+    for (const auto scope :
+         {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function}) {
+        execution::RuntimeOptions options;
+        options.scope = scope;
+        const auto result = execution::RunGuest(guest.Path(), {}, {}, options);
+        Check(result.reason == swift::runtime::GuestStopReason::GuestSignalTermination &&
+                      result.termination_signal == SIGILL && result.exception && !result.failure &&
+                      result.stats.interpreted_steps == 0 &&
+                      result.exception->info.instruction_pc == fault_pc &&
+                      std::get<swift::runtime::arm64::GuestState>(result.exception->state)
+                                      .gprs[0] == 17,
+              "a bad decode is delivered only after its valid native prefix executes");
     }
 }
 
@@ -495,12 +620,12 @@ void SSEExceptionState() {
         const auto original_pc = vm.State().pc;
         vm.State().mxcsr &= ~(1u << 7);
         vm.State().xmm[0][15] = 0xa5;
-        bool fault{};
-        try {
-            (void)vm.RunPrepared();
-        } catch (const swift::RuntimeError& failure) {
-            fault = failure.Kind() == swift::ErrorKind::GuestFault;
-        }
+        (void)vm.RunPrepared();
+        const auto snapshot = vm.CaptureException();
+        const bool fault =
+                vm.StopReason() == swift::runtime::GuestStopReason::GuestSignalTermination &&
+                vm.TerminationSignal() == SIGFPE && snapshot &&
+                snapshot->info.kind == swift::runtime::GuestExceptionKind::FloatingPoint;
         Check(fault && vm.State().pc == original_pc && (vm.State().mxcsr & 1) &&
                       vm.State().xmm[0][0] == 0 && vm.State().xmm[0][15] == 0xa5,
               "unmasked SSE invalid traps before destination commit");
@@ -549,19 +674,15 @@ NativeFPResult RunWithHostFP(execution::VM& vm) {
     const ScopedHostFP restore;
     NativeFPResult result;
     host_fp_fixture.Write();
-    try {
-        result.exit_code = vm.RunPrepared();
-        result.host = HostFPState::Read();
-    } catch (const swift::RuntimeError& failure) {
-        result.host = HostFPState::Read();
-        restore.saved.Write();
-        result.guest_fault = failure.Kind() == swift::ErrorKind::GuestFault;
-        (void)std::sscanf(failure.what(),
-                          "guest memory/alignment fault signal=%d code=%d",
-                          &result.signal_number,
-                          &result.signal_code);
-    }
+    result.exit_code = vm.RunPrepared();
+    result.host = HostFPState::Read();
     restore.saved.Write();
+    if (const auto snapshot = vm.CaptureException()) {
+        result.guest_fault =
+                vm.StopReason() == swift::runtime::GuestStopReason::GuestSignalTermination;
+        result.signal_number = snapshot->info.signal_number;
+        result.signal_code = snapshot->info.signal_code;
+    }
     return result;
 }
 
@@ -720,12 +841,12 @@ void AtomicFaultBeforeCommit() {
         Check(vm.Memory().Protect(buffer + page, page, PROT_READ) == 0,
               "protect atomic second page");
         vm.State().gprs[0] = address;
-        bool fault{};
-        try {
-            (void)vm.RunPrepared();
-        } catch (const swift::RuntimeError& failure) {
-            fault = failure.Kind() == swift::ErrorKind::GuestFault;
-        }
+        (void)vm.RunPrepared();
+        const auto snapshot = vm.CaptureException();
+        const bool fault =
+                vm.StopReason() == swift::runtime::GuestStopReason::GuestSignalTermination &&
+                vm.TerminationSignal() == SIGSEGV && snapshot &&
+                snapshot->info.kind == swift::runtime::GuestExceptionKind::Memory;
         std::array<std::uint8_t, 4> actual{};
         Check(fault && vm.State().pc == pc && vm.State().gprs[0] == address &&
                       vm.Memory().CopyIn(actual.data(), address, actual.size()) && actual == input,
@@ -868,10 +989,13 @@ void Atomic128RejectBeforeCommit() {
                 failure = error.Kind();
             }
             std::array<std::uint64_t, 4> actual{};
-            Check(failure == (rejection == Rejection::SharedWithoutHardware
-                                      ? swift::ErrorKind::Unsupported
-                                      : swift::ErrorKind::GuestFault) &&
-                          state.pc == pc &&
+            const bool expected_failure =
+                    rejection == Rejection::SharedWithoutHardware
+                            ? failure == swift::ErrorKind::Unsupported
+                            : vm.StopReason() == swift::runtime::GuestStopReason::
+                                                         GuestSignalTermination &&
+                                      vm.TerminationSignal() == SIGSEGV;
+            Check(expected_failure && state.pc == pc &&
                           x86::flags::ToRflags(state.packed_flags) ==
                                   x86::flags::ToRflags(before.packed_flags) &&
                           std::equal(std::begin(state.gprs),
@@ -967,8 +1091,17 @@ TEST_CASE("Atomic faults before commit", "[native][execution][atomic]") {
     CHECK_NOTHROW(AtomicFaultBeforeCommit());
 }
 
+TEST_CASE("Embedding exception callback and owning snapshot",
+          "[native][execution][exception-api]") {
+    CHECK_NOTHROW(EmbeddedExceptionContext());
+}
+
 TEST_CASE("CMPXCHG16B owner", "[native][execution][atomic][atomic128]") {
     CHECK_NOTHROW(Atomic128Owner());
+}
+
+TEST_CASE("Illegal decode retains executed prefix", "[native][execution][exception-api]") {
+    CHECK_NOTHROW(IllegalDecodePrefix());
 }
 
 TEST_CASE("CMPXCHG16B rejects before commit", "[native][execution][atomic][atomic128]") {

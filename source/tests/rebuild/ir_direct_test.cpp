@@ -1,3 +1,4 @@
+#include "runtime/exit.h"
 #include "runtime/ir/direct/interpreter.h"
 #include "tests/support/check.h"
 #include "tests/support/guest_memory.h"
@@ -277,4 +278,82 @@ TEST_CASE("SelectedMemory", "[compile][ir-direct]") { CHECK_NOTHROW(SelectedMemo
 
 TEST_CASE("FaultKeepsCompletedEffects", "[compile][ir-direct]") {
     CHECK_NOTHROW(FaultKeepsCompletedEffects());
+}
+
+TEST_CASE("Guest safepoint uses owner readiness and the explicit PC", "[compile][ir-direct]") {
+    Machine machine;
+    bool ready{};
+    auto services = machine.Services();
+    services.opaque = &ready;
+    services.guest_events = [](void* opaque) noexcept { return *static_cast<bool*>(opaque); };
+    direct::Interpreter interpreter({machine.uniforms, machine.flags, machine.pc, machine.mxcsr},
+                                    services);
+    const auto flags = machine.flags;
+    Need(interpreter.Emit<OpCode::GuestSafepoint>(Type::Void,
+                                                  {Operand::Immediate(0x4567, Type::U64)}));
+    CHECK(machine.pc == 0x1200);
+    ready = true;
+    bool delivered{};
+    try {
+        Need(interpreter.Emit<OpCode::GuestSafepoint>(Type::Void,
+                                                      {Operand::Immediate(0x4567, Type::U64)}));
+    } catch (const direct::Exit& exit) {
+        delivered =
+                exit.kind == direct::ExitKind::Service &&
+                exit.service == swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents);
+    }
+    CHECK(delivered);
+    CHECK(machine.pc == 0x4567);
+    CHECK(machine.flags == flags);
+    CHECK(machine.mxcsr == 0x5f80);
+}
+
+TEST_CASE("Direct arithmetic and alignment faults keep their cause", "[compile][ir-direct]") {
+    Machine machine;
+    direct::Interpreter interpreter({machine.uniforms, machine.flags, machine.pc, machine.mxcsr},
+                                    machine.Services());
+    const auto literal = [&](u64 value) {
+        return Need(interpreter.Emit<OpCode::LoadImm>(Type::U64,
+                                                      {Operand::Immediate(value, Type::U64)}));
+    };
+    const auto one = literal(1), zero = literal(0);
+    const auto fault = [&](auto body, swift::runtime::NativeExit cause, u64 address = 0) {
+        bool matched{};
+        try {
+            body();
+        } catch (const direct::Exit& exit) {
+            matched = exit.kind == direct::ExitKind::Fault && exit.address == address &&
+                      exit.service == swift::runtime::ExitValue(cause);
+        }
+        CHECK(matched);
+        CHECK(machine.pc == 0x1200 && machine.mxcsr == 0x5f80);
+    };
+    fault(
+            [&] {
+                Need(interpreter.Emit<OpCode::Div>(
+                        Type::U64, {Operand::ValueOf(one), Operand::ValueOf(zero)}));
+            },
+            swift::runtime::NativeExit::DivideFault);
+    fault(
+            [&] {
+                Need(interpreter.Emit<OpCode::SignedDiv64>(
+                        Type::U64, {Operand::ValueOf(one), Operand::ValueOf(zero)}));
+            },
+            swift::runtime::NativeExit::DivideFault);
+    fault(
+            [&] {
+                Need(interpreter.Emit<OpCode::Div128>(Type::U64,
+                                                      {Operand::ValueOf(one),
+                                                       Operand::ValueOf(zero),
+                                                       Operand::ValueOf(one),
+                                                       Operand::Immediate(0, Type::U8)}));
+            },
+            swift::runtime::NativeExit::DivideFault);
+    fault(
+            [&] {
+                Need(interpreter.Emit<OpCode::CheckMemoryAlignment>(
+                        Type::Void, {Operand::ValueOf(one), Operand::Immediate(15, Type::U64)}));
+            },
+            swift::runtime::NativeExit::AlignmentFault,
+            1);
 }

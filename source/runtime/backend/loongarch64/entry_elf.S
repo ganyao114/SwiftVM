@@ -27,16 +27,29 @@ or $r31, $zero, $zero
 92:
 .endm
 
-.macro SVM_LA_RESTORE_HOST_FP
+.macro SVM_LA_CAPTURE_GUEST_FP
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_FP_ENVIRONMENT)
 beqz $t0, 93f
 movfcsr2gr $t0, $fcsr0
 li.d $t1, 0x1f0000
 and $t0, $t0, $t1
 st.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_GUEST_FPSR)
+93:
+.endm
+.macro SVM_LA_RESTORE_HOST_FP_ONLY
+ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_FP_ENVIRONMENT)
+beqz $t0, 96f
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_HOST_FCSR)
 movgr2fcsr $fcsr0, $t0
-93:
+96:
+.endm
+.macro SVM_LA_RESTORE_HOST_FP
+SVM_LA_CAPTURE_GUEST_FP
+SVM_LA_RESTORE_HOST_FP_ONLY
+.endm
+.macro SVM_LA_PHASE value
+li.d $t0, \value
+st.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_PHASE)
 .endm
 
 .macro SVM_LA_INSTALL_GUEST_FP
@@ -59,6 +72,7 @@ st.d $zero, $t0, 0
 SVM_LA_PUBLISH_FLAGS
 SVM_LA_CLEAR_ACTIVE
 SVM_LA_RESTORE_HOST_FP
+SVM_LA_PHASE SVM_NATIVE_PHASE_RUNTIME
 ld.d $a0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_OPAQUE)
 addi.d $a1, $r22, -SVM_LA_CTX_STATE
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_RESOLVE)
@@ -70,6 +84,7 @@ ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_ACTIVE)
 ld.d $t1, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_ANCHOR)
 dbar 0
 st.d $t1, $t0, 0
+SVM_LA_PHASE SVM_NATIVE_PHASE_GUEST
 jirl $zero, $a0, 0
 95:
 li.d $a0, SVM_NATIVE_EXIT_RESOLVE_FAILURE
@@ -168,6 +183,8 @@ fst.d $f29, $sp, 136
 fst.d $f30, $sp, 144
 fst.d $f31, $sp, 152
 addi.d $r22, $a0, SVM_LA_CTX_STATE
+SVM_LA_PHASE SVM_NATIVE_PHASE_ENTERING
+st.d $sp, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_ROOT_SP)
 ld.d $t0, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_FP_ENVIRONMENT)
 beqz $t0, 4f
 movfcsr2gr $t0, $fcsr0
@@ -221,9 +238,25 @@ SVM_LA_RESOLVE_AND_ENTER
 .global SvmNativeExit
 .type SvmNativeExit, @function
 SvmNativeExit:
+SVM_LA_PHASE SVM_NATIVE_PHASE_LEAVING
 SVM_LA_PUBLISH_FLAGS
 SVM_LA_CLEAR_ACTIVE
-SVM_LA_RESTORE_HOST_FP
+SVM_LA_CAPTURE_GUEST_FP
+b .Lsvm_restore_host_root
+.size SvmNativeExit, .-SvmNativeExit
+.p2align 2
+.global SvmNativeExceptionExit
+.type SvmNativeExceptionExit, @function
+SvmNativeExceptionExit:
+addi.d $r22, $a0, SVM_LA_CTX_STATE
+SVM_LA_PHASE SVM_NATIVE_PHASE_LEAVING
+li.d $a0, SVM_NATIVE_EXIT_GUEST_EXCEPTION
+.Lsvm_restore_host_root:
+ld.d $sp, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_ROOT_SP)
+SVM_LA_CLEAR_ACTIVE
+SVM_LA_RESTORE_HOST_FP_ONLY
+st.d $zero, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_ROOT_SP)
+st.d $zero, $r22, SVM_LA_CTX_REL(SVM_LA_CTX_PHASE)
 ld.d $ra, $sp, 0
 ld.d $r22, $sp, 8
 ld.d $r23, $sp, 16
@@ -245,6 +278,6 @@ fld.d $f30, $sp, 144
 fld.d $f31, $sp, 152
 addi.d $sp, $sp, SVM_LA_ROOT_FRAME_BYTES
 jirl $zero, $ra, 0
-.size SvmNativeExit, .-SvmNativeExit
+.size SvmNativeExceptionExit, .-SvmNativeExceptionExit
 .section .note.GNU-stack,"",@progbits
 #endif

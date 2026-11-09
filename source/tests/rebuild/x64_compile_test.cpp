@@ -1483,3 +1483,19 @@ TEST_CASE("FloatingCompareStatus", "[compile][x64-compile][native]") {
 TEST_CASE("FloatingRoundFusedStatus", "[compile][x64-compile][native]") {
     CHECK_NOTHROW(FloatingRoundFusedStatus());
 }
+
+TEST_CASE("Guest safepoint requires a linked execution context", "[compile][x64-compile]") {
+    for (auto scope : {Scope::Block, Scope::Function}) {
+        Builder builder{scope};
+        Begin(builder);
+        Emit(builder, OpCode::GuestSafepoint, Type::Void, {Imm(0x1234)});
+        auto program = Return(builder, Literal(builder, 42));
+        CHECK(!x64::Compile(program, Options()));
+        auto options = Options();
+        options.dispatcher = 0x1000;
+        options.exit_handler = 0x2000;
+        const auto code = x64::Compile(program, options);
+        REQUIRE(bool(code));
+        CHECK(!code.words.empty() && code.faults.empty() && code.links.empty());
+    }
+}

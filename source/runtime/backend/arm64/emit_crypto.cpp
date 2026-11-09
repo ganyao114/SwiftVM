@@ -1,6 +1,7 @@
 #include "emit.h"
-#include "vector_helper.h"
 #include "runtime/arch/x86/vector_crypto.h"
+#include "runtime/exit.h"
+#include "vector_helper.h"
 
 #define __ masm.exact.
 
@@ -108,6 +109,7 @@ void Writer::HandleCryptoFamily(OpContext& ctx) {
         __ eor(Lanes(first_temp, 8), Lanes(first_temp, 8), Lanes(first_temp, 8));
 
     if (!native) {
+        HelperFPEnvironment(false);
         // RawValue/VectorValue above use the original spill SP. Only after
         // those reads does this call own its 48-byte argument snapshot.
         __ sub(v::sp, v::sp, Operand(48));
@@ -119,8 +121,10 @@ void Writer::HandleCryptoFamily(OpContext& ctx) {
         HostAddress(0, reinterpret_cast<std::uintptr_t>(&ExecuteCrypto), HostSymbol::ArmCrypto);
         HostAddress(30, VectorHelperBridge(), HostSymbol::ArmVectorBridge);
         __ blr(v::x30);
+        HelperFPEnvironment(true);
         __ add(v::sp, v::sp, Operand(48));
         VectorMove(ctx.destination, 0);
+        NativePhase(SVM_NATIVE_PHASE_GUEST);
         return;
     }
 

@@ -6,6 +6,7 @@
 #include "instruction.h"
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/exit.h"
+#include "runtime/frontend/guest_events.h"
 #include "state_service.h"
 
 #include <algorithm>
@@ -126,11 +127,26 @@ public:
     Semantics(Sink& sink, StateLayout layout, TargetInfo target)
             : sink(sink), layout(layout), target(target) {}
 
-    void Execute(const Instruction& instruction) {
+    void Execute(const Instruction& instruction, bool budget_safepoint = false) {
         current_pc = instruction.PC();
         current_word = instruction.Word();
         end_decode_ = false;
         control = {};
+        if (target.Has(TargetFeature::GuestEvents)) {
+            using runtime::frontend::CrossesGuestEventWindow;
+            using runtime::frontend::GuestEventTransfer;
+            bool observe = budget_safepoint || CrossesGuestEventWindow(current_pc, NextPC());
+            const auto flow = instruction.Flow();
+            if (flow == FlowKind::Return)
+                observe = true;
+            else if (flow == FlowKind::Jump || flow == FlowKind::Call ||
+                     flow == FlowKind::Conditional) {
+                u64 destination{};
+                observe |= !instruction.RelativeTarget(destination) ||
+                           GuestEventTransfer(current_pc, destination);
+            }
+            if (observe) Emit<OpCode::GuestSafepoint>(Imm{current_pc});
+        }
         using Handler = void (Semantics::*)(const vixl::aarch64::Instruction*);
         static constexpr std::array<Handler, static_cast<std::size_t>(Family::Count)> handlers{
 #define ARM_FAMILY(name) static_cast<Handler>(&Semantics::Visit##name),
@@ -461,12 +477,24 @@ private:
     bool IsFunctionMode() const { return true; }
 
     void Interrupt(InterruptReason reason, u64 resume) {
-        if (reason != InterruptReason::SVC)
-            throw Rejected{reason == InterruptReason::ILL_CODE ? BuildError::InvalidEncoding
-                                                               : BuildError::Unsupported};
+        u64 service;
+        switch (reason) {
+            case InterruptReason::SVC:
+                service = runtime::ExitValue(runtime::NativeExit::Syscall);
+                break;
+            case InterruptReason::BRK:
+                service = runtime::SemanticExceptionExit(runtime::GuestExceptionKind::Breakpoint);
+                break;
+            case InterruptReason::ILL_CODE:
+                service = runtime::SemanticExceptionExit(
+                        runtime::GuestExceptionKind::IllegalInstruction);
+                break;
+            default:
+                throw Rejected{BuildError::Unsupported};
+        }
         control.kind = Control::Kind::Service;
         control.yes = resume;
-        control.service = runtime::ExitValue(runtime::NativeExit::Syscall);
+        control.service = service;
         end_decode_ = true;
     }
 

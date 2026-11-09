@@ -12,6 +12,7 @@
 #include "runtime/arch/x86/state.h"
 #include "runtime/backend/arm64/abi.h"
 #include "runtime/backend/arm64/patch.h"
+#include "runtime/backend/arm64/recovery.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 #include "signal_time.h"
@@ -49,6 +50,11 @@ bool RecoverNative(FaultContext& context,
                    std::uintptr_t address,
                    void* raw) noexcept {
 #if defined(__aarch64__)
+    auto* native = context.native;
+    if (!native || !native->root_sp ||
+        native->phase.load(std::memory_order_relaxed) != SVM_NATIVE_PHASE_GUEST ||
+        (signal != SIGSEGV && signal != SIGBUS))
+        return false;
     auto* machine = static_cast<ucontext_t*>(raw);
     const auto host_pc = static_cast<std::uintptr_t>(machine->uc_mcontext.pc);
     const auto* code = context.active.load();
@@ -61,10 +67,11 @@ bool RecoverNative(FaultContext& context,
         if (host_pc >= base && host_pc - base < code->bytes && !((host_pc - base) & 3)) {
             const auto offset = host_pc - base;
             for (const auto& site : code->faults) {
-                const auto recipe = backend::arm64::DecodeFaultRecovery(site);
+                if (!(site.recovery[4] & 7)) continue;
                 const auto fallback = std::uint64_t{site.fallback_offset};
                 const bool has_fallback = fallback != UINT32_MAX && fallback + 12 <= code->bytes;
-                const bool cold = has_fallback && offset >= fallback && offset - fallback < 12;
+                const auto cold_access = fallback + ((site.recovery[4] & 2) ? 4 : 0);
+                const bool cold = has_fallback && offset == cold_access;
                 if (!cold && (offset < site.first_offset || offset >= site.last_offset)) continue;
                 if (signal == SIGSEGV && signal_code == SEGV_ACCERR && context.recover_code_write) {
                     platform::SignalTimer service{context.service_ns};
@@ -91,6 +98,7 @@ bool RecoverNative(FaultContext& context,
                                 ErrorKind::System, "patch native unaligned fallback", errno);
                 }
                 const bool needs_fp = context.pinned_vector_offset != UINT32_MAX ||
+                                      native->fp_environment != 0 ||
                                       context.guest_fp_status != nullptr;
                 const auto* fp = needs_fp ? FindFPSIMD(*machine) : nullptr;
                 if (needs_fp && !fp) break;
@@ -104,8 +112,16 @@ bool RecoverNative(FaultContext& context,
                             machine->uc_mcontext.pstate,
                             vectors))
                     break;
+                if (native->fp_environment) native->guest_fpsr = fp->fpsr;
                 if (context.guest_fp_status) *context.guest_fp_status = fp->fpsr;
-                execution::RaiseGuestFault(context, site, signal, signal_code, host_pc, address);
+                execution::RecordGuestFault(context, site, signal, signal_code, host_pc, address);
+                context.exception.native_offset = static_cast<std::uint32_t>(host_pc - base);
+                native->phase.store(SVM_NATIVE_PHASE_LEAVING, std::memory_order_relaxed);
+                machine->uc_mcontext.regs[0] = reinterpret_cast<std::uintptr_t>(native);
+                machine->uc_mcontext.sp = native->root_sp;
+                machine->uc_mcontext.pc =
+                        reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExceptionExit);
+                return true;
             }
         }
     }

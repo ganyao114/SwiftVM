@@ -52,6 +52,7 @@ void Writer::HandleCallLambdaFamily(OpContext& ctx) {
     HelperFPEnvironment(true);
     ReloadPinned();
     Shadow(true);
+    NativePhase(SVM_NATIVE_PHASE_GUEST);
     nzcv_matches = 0;
     if (ctx.operation.type != Type::Void) {
         Move(ctx.destination, 0);
@@ -83,6 +84,7 @@ void Writer::HandleReadSystemFamily(OpContext& ctx) {
         Move(ctx.destination, 0);
     nzcv_matches = 0;
     RestoreHelperNZCV();
+    NativePhase(SVM_NATIVE_PHASE_GUEST);
 }
 
 void Writer::HandleDiv128Family(OpContext& ctx) {
@@ -110,6 +112,7 @@ void Writer::HandleDiv128Family(OpContext& ctx) {
     // crosses its C++ frame. Test before restoring FP controls clobbers x17.
     const auto valid = masm.Here();
     __ cbnz(v::x17, std::int64_t{0});
+    HelperFPEnvironment(true);
     if (has_fault_location && options.pc_offset != UINT32_MAX) {
         Immediate(0, fault_location);
         PCMemory(false);
@@ -122,6 +125,7 @@ void Writer::HandleDiv128Family(OpContext& ctx) {
     Memory(false, 64, 16, 31, home.extra_slot - 1);
     Move(destination, 0);
     RestoreHelperNZCV();
+    NativePhase(SVM_NATIVE_PHASE_GUEST);
 }
 
 void Writer::HandleDiv128RemainderFamily(OpContext& ctx) {
@@ -157,6 +161,7 @@ void Writer::HandleCpuidFamily(OpContext& ctx) {
     Memory(false, 64, 16, 31, home.extra_slot - 1);
     Move(destination, 0);
     RestoreHelperNZCV();
+    NativePhase(SVM_NATIVE_PHASE_GUEST);
 }
 
 void Writer::HandleCpuidUpperFamily(OpContext& ctx) {
@@ -254,6 +259,7 @@ void Writer::HandleX87OpFamily(OpContext& ctx) {
     PublishPinned();
     HelperFPEnvironment(false);
 #endif
+    NativePhase(SVM_NATIVE_PHASE_HELPER);
     Move(0, Read(state, 0));
     Immediate(16, command);
     Move(17, Read(raw, 17));
@@ -264,6 +270,7 @@ void Writer::HandleX87OpFamily(OpContext& ctx) {
     nzcv_matches = 0;
     RestoreHelperNZCV();
 #endif
+    NativePhase(SVM_NATIVE_PHASE_GUEST);
     const auto success = masm.Here();
     __ cbz(v::x0, std::int64_t{0});
     if (checked) {

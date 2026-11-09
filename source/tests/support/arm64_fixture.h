@@ -1,9 +1,10 @@
 #pragma once
-#include "runtime/backend/arm64/compile.h"
-#include "runtime/backend/arm64/abi.h"
-#include "runtime/backend/arm64/patch.h"
-#include "runtime/arch/x86/x87.h"
 #include "runtime/arch/x86/state.h"
+#include "runtime/arch/x86/x87.h"
+#include "runtime/backend/arm64/abi.h"
+#include "runtime/backend/arm64/compile.h"
+#include "runtime/backend/arm64/patch.h"
+#include "runtime/backend/arm64/recovery.h"
 #include "runtime/ir/builder.h"
 
 #include <algorithm>
@@ -17,22 +18,22 @@
 #include <vector>
 
 #if defined(__aarch64__) && defined(__ANDROID__)
-#include "runtime/execution/dispatch.h"
-#include "runtime/execution/fault.h"
-#include "runtime/execution/code_heap.h"
-#include "runtime/execution/code_cache.h"
-#include "runtime/platform/linux/arm64_host.h"
 #include <asm/hwcap.h>
 #include <sys/auxv.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include "runtime/execution/code_cache.h"
+#include "runtime/execution/code_heap.h"
+#include "runtime/execution/dispatch.h"
+#include "runtime/execution/fault.h"
+#include "runtime/platform/linux/arm64_host.h"
 #endif
 
-#include "tests/support/check.h"
-#include "tests/support/test_mode.h"
-#include "tests/support/native_code.h"
-#include "tests/support/ir_builder.h"
 #include "runtime/backend/arm64/allocate.h"
+#include "tests/support/check.h"
+#include "tests/support/ir_builder.h"
+#include "tests/support/native_code.h"
+#include "tests/support/test_mode.h"
 
 namespace swift::tests::arm64_fixture {
 using namespace runtime::ir;
@@ -54,7 +55,7 @@ std::uint32_t WordOffset(runtime::backend::NativeOffset offset) noexcept;
 #if defined(__aarch64__) && defined(__ANDROID__)
 namespace execution = ::swift::runtime::execution;
 const runtime::execution::HostBackendOps& TestBackendOps();
-void BindFaultCallbacks(runtime::execution::FaultContext&);
+void BindFaultCallbacks(runtime::execution::FaultContext&, runtime::execution::NativeRunContext&);
 void PatchLinkWords(std::uintptr_t*, const std::uintptr_t*, std::uintptr_t, std::uint32_t);
 void UnlinkWords(std::uintptr_t*, const std::uintptr_t*, std::uint32_t);
 #endif

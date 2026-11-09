@@ -897,3 +897,19 @@ TEST_CASE("AtomicMinMax", "[compile][loongarch64-compile][native]") {
 TEST_CASE("PersistentHelpers", "[compile][loongarch64-compile][native]") {
     CHECK_NOTHROW(PersistentHelpers());
 }
+
+TEST_CASE("Guest safepoint requires a linked execution context", "[compile][loongarch64-compile]") {
+    for (auto scope : {Scope::Block, Scope::Function}) {
+        Builder builder{scope};
+        Begin(builder);
+        Emit(builder, OpCode::GuestSafepoint, Type::Void, {Imm(0x1234)});
+        auto program = Return(builder, Literal(builder, 42));
+        CHECK(!la::Compile(program, Options()));
+        auto options = Options();
+        options.dispatcher = 0x1000;
+        options.exit_handler = 0x2000;
+        const auto code = la::Compile(program, options);
+        REQUIRE(bool(code));
+        CHECK(!code.words.empty() && code.faults.empty() && code.links.empty());
+    }
+}

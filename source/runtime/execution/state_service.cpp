@@ -1,6 +1,6 @@
-#include "vm.h"
-#include "runtime/arch/x86/save_state.h"
 #include <cstring>
+#include "runtime/arch/x86/save_state.h"
+#include "vm.h"
 
 namespace swift::runtime::execution {
 namespace front = ::swift::x86;
@@ -10,13 +10,17 @@ front::AccessResult VM::StateImage(void* opaque,
                                    std::uint64_t address,
                                    std::uint64_t requested) noexcept {
     auto& vm = *static_cast<VM*>(opaque);
+    const auto invalid_image = [&] {
+        RecordMemoryFault(vm.thread.faults, address, GuestExceptionAccess::Unknown);
+        return front::AccessResult{front::AccessStatus::Fault, address};
+    };
     using x86::StateImageKind;
     const auto kind = static_cast<StateImageKind>(raw_kind & 255);
     const bool wide = (raw_kind & 256) != 0;
     const bool compact_save = kind == StateImageKind::XSaveCompact;
     const bool extended = kind == StateImageKind::XSave || kind == StateImageKind::XSaveOpt ||
                           compact_save || kind == StateImageKind::XRestore;
-    if (address & (extended ? 63 : 15)) return {front::AccessStatus::Fault, address};
+    if (address & (extended ? 63 : 15)) return invalid_image();
     const auto selected = requested & x86::GuestXcr0;
     x86::StateImage image{};
     const auto read = [&](std::size_t first, std::size_t size) {
@@ -28,8 +32,7 @@ front::AccessResult VM::StateImage(void* opaque,
         changed |= result.code_changed;
         return result;
     };
-    if (address > UINT64_MAX - (extended ? x86::XsaveBytes : 512))
-        return {front::AccessStatus::Fault, address};
+    if (address > UINT64_MAX - (extended ? x86::XsaveBytes : 512)) return invalid_image();
     if (kind == StateImageKind::FxSave) {
         x86::ExportLegacyState(
                 vm.thread.native.state, std::span<std::uint8_t, 512>{image.data(), 512}, wide);
@@ -42,7 +45,7 @@ front::AccessResult VM::StateImage(void* opaque,
                                     std::span<const std::uint8_t, 512>{image.data(), 512},
                                     3,
                                     wide))
-            return {front::AccessStatus::Fault, address};
+            return invalid_image();
         return {};
     }
     if (kind == StateImageKind::XSave || kind == StateImageKind::XSaveOpt || compact_save) {
@@ -94,16 +97,16 @@ front::AccessResult VM::StateImage(void* opaque,
     std::uint64_t present{}, format{};
     std::memcpy(&present, image.data() + 512, 8);
     std::memcpy(&format, image.data() + 520, 8);
-    if (present & ~x86::GuestXcr0) return {front::AccessStatus::Fault, address};
+    if (present & ~x86::GuestXcr0) return invalid_image();
     const bool compact = (format & x86::XsaveCompactedFormat) != 0;
     if (compact) {
         if ((format & ~(x86::XsaveCompactedFormat | x86::GuestXcr0)) || (present & ~format))
-            return {front::AccessStatus::Fault, address};
+            return invalid_image();
     } else if (format)
-        return {front::AccessStatus::Fault, address};
+        return invalid_image();
     // Standard XRSTOR checks header bytes 8..23; compacted checks 16..63.
     for (unsigned i = 528; i < (compact ? 576 : 536); ++i)
-        if (image[i]) return {front::AccessStatus::Fault, address};
+        if (image[i]) return invalid_image();
     const auto fetch = selected & present;
     const auto load_mxcsr = compact ? (fetch & 2) : (selected & 6);
     if (fetch & 1) {
@@ -129,7 +132,7 @@ front::AccessResult VM::StateImage(void* opaque,
     auto restored = vm.thread.native.state;
     if (!x86::ImportLegacyState(
                 restored, std::span<const std::uint8_t, 512>{image.data(), 512}, fetch & 3, wide))
-        return {front::AccessStatus::Fault, address};
+        return invalid_image();
     if ((selected & 1) && !(present & 1)) {
         restored.x87 = {};
         restored.x87_ip = restored.x87_dp = 0;
@@ -145,7 +148,7 @@ front::AccessResult VM::StateImage(void* opaque,
     if (selected & (compact ? 2 : 6)) {
         std::uint32_t mxcsr = 0x1f80;
         if (load_mxcsr) std::memcpy(&mxcsr, image.data() + 24, 4);
-        if (mxcsr & ~x86::GuestMxcsrMask) return {front::AccessStatus::Fault, address};
+        if (mxcsr & ~x86::GuestMxcsrMask) return invalid_image();
         restored.mxcsr = mxcsr;
     }
     vm.thread.native.state = restored;

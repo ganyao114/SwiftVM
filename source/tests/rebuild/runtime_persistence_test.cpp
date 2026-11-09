@@ -1,17 +1,17 @@
-#include "tests/support/test_mode.h"
 #include "runtime/execution/disk_cache.h"
 #include "runtime/execution/offline_compile.h"
 #include "runtime/execution/vm.h"
 #include "runtime/platform/linux/artifact_file.h"
 #include "runtime/platform/linux/host_runtime.h"
+#include "tests/support/test_mode.h"
 
-#include <catch2/catch_test_macros.hpp>
 #include <array>
 #include <cerrno>
 #include <cstdlib>
 #include <cstring>
-#include <elf.h>
 #include <filesystem>
+#include <catch2/catch_test_macros.hpp>
+#include <elf.h>
 #include <unistd.h>
 
 namespace {
@@ -209,16 +209,13 @@ TEST_CASE("AOT publication retains the actual native guest fault contract",
     execution::RuntimeStats stats;
     execution::VM vm{options, stats, host.Bind()};
     vm.PrepareGuest(bytes, "fault-fixture.elf", {}, {}, &image);
-    bool faulted{};
-    try {
-        (void)vm.RunPrepared();
-    } catch (const swift::RuntimeError& error) {
-        faulted = true;
-        CHECK(error.Kind() == swift::ErrorKind::GuestFault);
-        CHECK(std::string_view(error.what()).find("pc=0x400078") != std::string_view::npos);
-        CHECK(std::string_view(error.what()).find("address=0x1") != std::string_view::npos);
-    }
-    CHECK(faulted);
+    (void)vm.RunPrepared();
+    CHECK(vm.StopReason() == swift::runtime::GuestStopReason::GuestSignalTermination);
+    const auto snapshot = vm.CaptureException();
+    REQUIRE(snapshot);
+    CHECK(snapshot->info.instruction_pc == 0x400078);
+    CHECK(snapshot->info.address_valid);
+    CHECK(snapshot->info.address == 1);
     CHECK(stats.compile_attempts == 0);
     CHECK(stats.aot_units_loaded == image.units.size());
     CHECK(stats.native_bytes > 0);

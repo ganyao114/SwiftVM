@@ -1,6 +1,8 @@
 #pragma once
-#include "compile.h"
+
 #include "allocate.h"
+#include "compile.h"
+#include "recovery.h"
 #include "runtime/execution/host_backend.h"
 
 namespace swift::runtime::backend::x64 {
@@ -16,7 +18,4 @@ private:
     std::uint64_t features{};
 };
 
-bool RestoreGuestState(execution::FaultContext&,
-                       const FaultSite&,
-                       std::span<const std::byte>) noexcept;
 }  // namespace swift::runtime::backend::x64
