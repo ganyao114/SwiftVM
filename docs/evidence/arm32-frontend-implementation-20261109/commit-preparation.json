@@ -1,0 +1,8 @@
+{
+  "scope": "Commit preparation only; measured source evidence is retained unchanged.",
+  "change": "Remove a trailing blank line from the generated decode table and make its generator produce that form. C++ tokens are unchanged.",
+  "measured_table_sha256": "f325ca656cc288acb8d831a73edbc55161a39efc7c4b37044d390e554f588257",
+  "committed_table_sha256": "7bb0efce84cd0e67bb0ae1439f712713c645af8d6b6816a2a8bebf46b842594a",
+  "generator_idempotent": true,
+  "functional_changes_since_final_validation": false
+}

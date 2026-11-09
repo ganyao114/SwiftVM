@@ -1,0 +1,47 @@
+{
+  "device_directory": "/data/local/tmp/svm-arm32-20261109",
+  "directory_removed": true,
+  "allocated_kib_before": 337255,
+  "remaining_bytes": 0,
+  "active_owned_processes": [],
+  "errors": [],
+  "archived_artifacts": [
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109/artifacts/guest-thumb.elf.aot",
+      "bytes": 230720,
+      "sha256": "716211c49b4cb89352d6e9c10f5721bef45bdf2bafbb847f140c88ec2aa85f30"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109/artifacts/guest-arm32.elf.aot",
+      "bytes": 229936,
+      "sha256": "4b8c132ac3b75f115c3ca8ab217efb295d394845e2cc0c59252a29e32cf4cf2b"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109/artifacts/disk-cache-final-01-function/be954742f8d31ad28e6b3829bae50211e0b376a31c96ffa0c5b81d4f20019712.svmcache",
+      "bytes": 17846,
+      "sha256": "0bafc9aaff1661d5146d6c49996fbb37aefa3645f4a1f0720e73a816569b8fea"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109/artifacts/disk-cache-final-01-function/bc46820f7b6643e30aa67a7587bcd54a794915ff6fec3c2e80cb2c7d93c9df97.svmcache",
+      "bytes": 17846,
+      "sha256": "b4697fd6630304f2d215de20e593de0ff802d00828376ab0f92e4b2548a454be"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109/artifacts/disk-cache-final-01-block/58cd11841f92abda572dd72851c14a6c87c9654bc8ab07b8c24fdc6e25fe4159.svmcache",
+      "bytes": 24583,
+      "sha256": "7410d308e9ec078e9999c7645263f4b1944e9a05b6981e9c4a47313424ee4499"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109/artifacts/disk-cache-final-01-block/94c2a56e939bcd34336b1b0c291275deb3e644d14bc973972c6bab8c2be85f3f.svmcache",
+      "bytes": 24583,
+      "sha256": "5f260ff0ee8502c857df2496f19ae7bc868c23c56b0563c855f94c3664d16798"
+    }
+  ],
+  "stripped_candidate_snapshot": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109/candidate-svm_rebuild_linux",
+    "bytes": 4799608,
+    "sha256": "d26abbae1c7780a3772eb91f366011730e4773a48e08139491b705c9ab190a40"
+  },
+  "build_cache_reused": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction",
+  "system_tmp_results_created": false
+}

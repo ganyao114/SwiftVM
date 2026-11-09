@@ -1,0 +1,18 @@
+Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+    Start 10: arm64_frontend_contract
+1/4 Test #10: arm64_frontend_contract ..........   Passed    0.02 sec
+    Start 11: arm32_frontend_contract
+2/4 Test #11: arm32_frontend_contract ..........   Passed    0.02 sec
+    Start 28: code_image_contract
+3/4 Test #28: code_image_contract ..............   Passed    0.61 sec
+    Start 31: aot_artifact_contract
+4/4 Test #31: aot_artifact_contract ............   Passed    0.39 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Label Time Summary:
+compile     =   1.04 sec*proc (4 tests)
+portable    =   1.04 sec*proc (4 tests)
+unit        =   1.04 sec*proc (4 tests)
+
+Total Test time (real) =   1.04 sec

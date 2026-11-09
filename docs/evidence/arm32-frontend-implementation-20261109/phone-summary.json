@@ -1,0 +1,61 @@
+{
+  "all_passed": true,
+  "cases": 47,
+  "device": "bf1359ff",
+  "affinity": "CPU4/taskset 10",
+  "frequency_limits_unchanged": true,
+  "regression": {
+    "block": {
+      "baseline": {
+        "compile_ns": 12543608,
+        "compile_without_byte_decode_ns": 11361692,
+        "frontend_ns": 4459680,
+        "optimize_ns": 2064418,
+        "backend_ns": 3410776,
+        "publication_ns": 2052042,
+        "native_bytes": 87032,
+        "spill_slots": 2,
+        "emitted_guest_instructions": 2838
+      },
+      "candidate": {
+        "compile_ns": 12616006,
+        "compile_without_byte_decode_ns": 11476264,
+        "frontend_ns": 4686302,
+        "optimize_ns": 1911912,
+        "backend_ns": 3395713,
+        "publication_ns": 2095960,
+        "native_bytes": 87032,
+        "spill_slots": 2,
+        "emitted_guest_instructions": 2838
+      },
+      "compile_ratio": 1.0057717046004626,
+      "compile_excluding_decode_ratio": 1.0100840614232458
+    },
+    "function": {
+      "baseline": {
+        "compile_ns": 11934948,
+        "compile_without_byte_decode_ns": 10735273,
+        "frontend_ns": 4884007,
+        "optimize_ns": 2225778,
+        "backend_ns": 3567081,
+        "publication_ns": 1013705,
+        "native_bytes": 70604,
+        "spill_slots": 3,
+        "emitted_guest_instructions": 3150
+      },
+      "candidate": {
+        "compile_ns": 12099634,
+        "compile_without_byte_decode_ns": 10941151,
+        "frontend_ns": 4954944,
+        "optimize_ns": 2146145,
+        "backend_ns": 3517766,
+        "publication_ns": 1040156,
+        "native_bytes": 70604,
+        "spill_slots": 3,
+        "emitted_guest_instructions": 3150
+      },
+      "compile_ratio": 1.0137986357376672,
+      "compile_excluding_decode_ratio": 1.0191777144372574
+    }
+  }
+}

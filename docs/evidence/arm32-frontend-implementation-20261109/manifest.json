@@ -1,0 +1,81 @@
+{
+  "completed_at_utc": "2026-11-09T16:03:43.595282+00:00",
+  "source_tree": "/Volumes/Data2/SwiftVM-submit-20261104",
+  "head": "2f7ae360cb4030e8ff165f77cbd0f9d831a70a69",
+  "reference_revision": "5a76f6930935bc07a2aa5158f3ee515c34ca14fd",
+  "host_tests": {
+    "command": [
+      "ctest",
+      "--test-dir",
+      "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host",
+      "-R",
+      "^(arm32_frontend_contract|arm64_frontend_contract|code_image_contract|aot_artifact_contract)$",
+      "--output-on-failure"
+    ],
+    "exit": 0
+  },
+  "independent_arm_oracle": [
+    {
+      "guest": "guest-arm32.elf",
+      "sha256": "108008621b3203a307c3c717d8fcc8b7dba6db2c4cc69d1a2dd748b1fd73e7bb",
+      "command": [
+        "/usr/local/bin/docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--mount",
+        "type=bind,source=/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109,target=/work,readonly",
+        "swiftvm-middle-rv64-env:20261024-v6",
+        "qemu-arm",
+        "/work/guest-arm32.elf"
+      ],
+      "exit": 0,
+      "stdout": "1ef52f03\n"
+    },
+    {
+      "guest": "guest-thumb.elf",
+      "sha256": "8f295d5eeff2356d79d43cd31dd95e8f7d9f7107ff8ae98abe0f0405a2e8c85d",
+      "command": [
+        "/usr/local/bin/docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--mount",
+        "type=bind,source=/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109,target=/work,readonly",
+        "swiftvm-middle-rv64-env:20261024-v6",
+        "qemu-arm",
+        "/work/guest-thumb.elf"
+      ],
+      "exit": 0,
+      "stdout": "1ef52f03\n"
+    },
+    {
+      "guest": "kuser-guest.elf",
+      "sha256": "1589d840db98d97e63177ba0ee5a4054c2acabbde9265b2cc693687bb8920142",
+      "command": [
+        "/usr/local/bin/docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--mount",
+        "type=bind,source=/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109,target=/work,readonly",
+        "swiftvm-middle-rv64-env:20261024-v6",
+        "qemu-arm",
+        "/work/kuser-guest.elf"
+      ],
+      "exit": 0,
+      "stdout": "arm32 kuser ok\n"
+    }
+  ],
+  "oracle_version": "qemu-arm version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)\nCopyright (c) 2003-2025 Fabrice Bellard and the QEMU Project developers\n",
+  "raw_results": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109",
+  "baseline_launcher": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/arm32-frontend-20261109/baseline-svm_rebuild_linux",
+    "sha256": "1b283883ef0a6388886ad999ec9f6fdd9635cecac21f0b42e9bf1f1b332f53bd"
+  },
+  "scope": "ARMv7-A little-endian user mode; not exhaustive per-encoding oracle coverage",
+  "reference_jit_compile_ratio_measured": false
+}

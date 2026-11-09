@@ -1,0 +1,32 @@
+{
+  "svm_arm32_frontend_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_arm32_frontend_test",
+    "sha256": "0746a4a7f07a71d2dde058f1ea44758cad8ecdd7b264e3a1f760dfc24ca7ffb2",
+    "bytes": 53599744
+  },
+  "svm_arm32_runtime_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_arm32_runtime_test",
+    "sha256": "bab9d73d67eb3f1b6869f010c5be9774268de8d77b803040e3c06d124f01f701",
+    "bytes": 60589936
+  },
+  "svm_runtime_engine_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_engine_test",
+    "sha256": "ba11cf0b5074e30b64d70d5f9bb9a3057a9d132bf02a43369f827691b94f0edd",
+    "bytes": 62822656
+  },
+  "svm_runtime_persistence_test": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_persistence_test",
+    "sha256": "dbc134edbe53c771a0660856a13f55b2f4f5d4a5b7d9ca2519b8ca1ae889d07f",
+    "bytes": 62867696
+  },
+  "svm_rebuild_linux": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "sha256": "2b2e582d0a842316effc17d2e6b5b977eb1395351605ec8613ac4d852e52015d",
+    "bytes": 50159184
+  },
+  "svm_aot": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_aot",
+    "sha256": "43f2a14abf74f602c6080116c7881270d46c472eb38249058965748c61a4a3b6",
+    "bytes": 51267720
+  }
+}

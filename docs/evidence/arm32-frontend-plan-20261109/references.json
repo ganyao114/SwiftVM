@@ -1,0 +1,242 @@
+{
+  "created_utc": "2026-11-09T14:37:11.833750+00:00",
+  "status": "plan only; no product implementation or benchmark",
+  "svm_commit": "2f7ae360cb4030e8ff165f77cbd0f9d831a70a69",
+  "reference_repository": "https://github.com/ganyao114/dynarmic-interp",
+  "reference_revision": "5a76f6930935bc07a2aa5158f3ee515c34ca14fd",
+  "reference_checkout": "/Volumes/Data2/swiftvm-frontends-cache/dynarmic-interp-5a76f693",
+  "reference_checkout_du_kib": 7888,
+  "decoder_pattern_rows": {
+    "arm": 261,
+    "thumb16": 79,
+    "thumb32": 239,
+    "vfp": 62,
+    "asimd": 147
+  },
+  "decoder_pattern_rows_total": 788,
+  "pattern_count_is_not_instruction_coverage": true,
+  "reference_sources": {
+    "LICENSE.txt": {
+      "sha256": "14ef8e5ce8e564bbbe28bc7a306de80c786124de34955b2b4e868cb64bbe9faa",
+      "bytes": 651
+    },
+    "src/dynarmic/frontend/A32/a32_location_descriptor.h": {
+      "sha256": "89ade2aec5eedb1843dc2bfa148b705637215ac3927e9a407c0108a680c381bd",
+      "bytes": 5429
+    },
+    "src/dynarmic/frontend/A32/ITState.h": {
+      "sha256": "892d9acf6ace76fff993338ee48f20274f54ead1f01aab39d63f66d4d592c124",
+      "bytes": 1377
+    },
+    "src/dynarmic/frontend/A32/a32_ir_emitter.cpp": {
+      "sha256": "bf885d41e83798f2b4ad92ceaf058f6052d66030648bdd9042f2d98d9bb4c1a8",
+      "bytes": 17278
+    },
+    "src/dynarmic/frontend/A32/translate/conditional_state.cpp": {
+      "sha256": "f2013288c9360b693d9957284d4b274c056435ca8e9ccdd3f5e52c95b9c419ac",
+      "bytes": 2907
+    },
+    "src/dynarmic/frontend/A32/translate/translate_arm.cpp": {
+      "sha256": "5518a27ff8fb110a6b67f57e061c41a99c423599ab73d3316771073bd65e885c",
+      "bytes": 4434
+    },
+    "src/dynarmic/frontend/A32/translate/translate_thumb.cpp": {
+      "sha256": "3ee497bfc36e6e5ae28ae8bcdc5b3bddfcaf1f4a58f23539459ca1eb6b6ee365",
+      "bytes": 8963
+    },
+    "src/dynarmic/frontend/A32/translate/impl/a32_translate_impl.cpp": {
+      "sha256": "5d548d1249bcebc37005d98085a76c1f5476397427f080482cbddf7f777250e6",
+      "bytes": 3493
+    },
+    "src/dynarmic/frontend/A32/translate/impl/data_processing.cpp": {
+      "sha256": "f2916ba8f409b52e138c15e88929717a3d8f42d73b4fc197290aecd2ad70853d",
+      "bytes": 32547
+    },
+    "src/dynarmic/frontend/A32/translate/impl/load_store.cpp": {
+      "sha256": "b89d81612f194bf2e2a711c3110142284c83bbccee88124930c0a82e22dd1672",
+      "bytes": 29131
+    },
+    "src/dynarmic/frontend/A32/translate/impl/synchronization.cpp": {
+      "sha256": "9534b9cf3ef94a9f465e3fd4b6d4fc2f450d3c245101c9dabdc54ae8baef0a50",
+      "bytes": 12453
+    },
+    "src/dynarmic/frontend/A32/translate/impl/thumb16.cpp": {
+      "sha256": "dceddb07978bb144ee5c1f7cb73187a9829a7d792280fe1df10308507085172a",
+      "bytes": 31013
+    },
+    "src/dynarmic/frontend/A32/translate/impl/vfp.cpp": {
+      "sha256": "4493abc1efa95039a74ebb49b372f5a9e3f6afaf2c31625d92707f4ffe8c2555",
+      "bytes": 49056
+    },
+    "src/dynarmic/frontend/A32/translate/impl/asimd_three_regs.cpp": {
+      "sha256": "ac2af5bf6c5ec9b3ab65c6380f2201d6895ab6b67fc7fbb15624b7cd0be28706",
+      "bytes": 36876
+    },
+    "src/dynarmic/frontend/decoder/matcher.h": {
+      "sha256": "256c7d59817536fa26d28c6c8dfb273437f9163c82f780d104232565d79b9787",
+      "bytes": 2277
+    },
+    "src/dynarmic/interpreter/A32/interpreter_arm.cpp": {
+      "sha256": "7de3bbaa22334d81d5e37f4ba94e8da2e1386317cf6d5ebd6b5146191458b4c8",
+      "bytes": 4113
+    },
+    "src/dynarmic/interpreter/A32/interpreter_visitor.h": {
+      "sha256": "57e6984ac4e4a7677b3ef46ae3fb634cfdb474d2a2d2cb588b38c0fb4f6d13ac",
+      "bytes": 29731
+    },
+    "src/dynarmic/interpreter/A32/a32_interpreter.cpp": {
+      "sha256": "d3734b15eeeeae1986e657cc523036545a6fd35a314fd53671c7eaa4a6f863a4",
+      "bytes": 86872
+    },
+    "src/dynarmic/interface/A32/config.h": {
+      "sha256": "05dadec1308ad0c02f7248bcb04cc994d4826a283816f2a4efa88a76b107848e",
+      "bytes": 13045
+    },
+    "docs/template-interpreter-validation.md": {
+      "sha256": "bd3de8b24fb00a6bb9dc7a5778985533cdb9fb4d53186cfde63cbbc9addf9990",
+      "bytes": 1759
+    },
+    "src/dynarmic/frontend/A32/decoder/arm.h": {
+      "sha256": "914542b85737c59c92b4af76d6ec306279d71b1f40e04b0b435e6b46ab2a0749",
+      "bytes": 2383
+    },
+    "src/dynarmic/frontend/A32/decoder/arm.inc": {
+      "sha256": "9529d654d1f702080102c7745606434dd5de368974ffbcc674d849cbbd2ab215",
+      "bytes": 24439
+    },
+    "src/dynarmic/frontend/A32/decoder/thumb16.h": {
+      "sha256": "cd12ec8b2498a33ac12cdc65a48c6f89ef3361997787db6888056d254c1b5cb2",
+      "bytes": 1156
+    },
+    "src/dynarmic/frontend/A32/decoder/thumb16.inc": {
+      "sha256": "7f40836528b48fd345d65746b15a88879db8c12043bd8b5c5443ada2096ab49e",
+      "bytes": 6641
+    },
+    "src/dynarmic/frontend/A32/decoder/thumb32.h": {
+      "sha256": "7819c7418703474ac8dba1f47492b1888b5dd57520c4ed307c39452e2789ce1c",
+      "bytes": 1134
+    },
+    "src/dynarmic/frontend/A32/decoder/thumb32.inc": {
+      "sha256": "3be66be8c6953d32c914410b3d734c16624e147d2de45e4b9916a9525967192e",
+      "bytes": 24256
+    },
+    "src/dynarmic/frontend/A32/decoder/vfp.h": {
+      "sha256": "a3bf32361a6cfccda142b95ec933e90449b18c32fce14eb12364557c8ff21840",
+      "bytes": 1734
+    },
+    "src/dynarmic/frontend/A32/decoder/vfp.inc": {
+      "sha256": "5f6b16edbcd2901e08a0bac1c26a2f1a8560f8fa9952f8378bd5555f4ba1c468",
+      "bytes": 6384
+    },
+    "src/dynarmic/frontend/A32/decoder/asimd.h": {
+      "sha256": "f9fc42db9bdbef91cba957da781b4caafd11a2d4d5e4ba1d3b7c8ffc42190186",
+      "bytes": 2446
+    },
+    "src/dynarmic/frontend/A32/decoder/asimd.inc": {
+      "sha256": "ed3b461bb429d361ed42db0ea88c30f771f43afc44db5c3f5cce54e66ff8fe95",
+      "bytes": 15896
+    }
+  },
+  "svm_sources": {
+    "source/runtime/arch/guest.h": {
+      "sha256": "99bd8a2c5480ec41dfc3432733fc4d218f8a672b1a705fc3f628aaa079100e43",
+      "bytes": 668
+    },
+    "source/runtime/arch/arm64/state.h": {
+      "sha256": "b69730da181b869f336276a565baf68be56ae1ab1c832a8724e2125c9e56a1a8",
+      "bytes": 1112
+    },
+    "source/runtime/frontend/arm64/decode.cpp": {
+      "sha256": "d242b63d1ed933f2b81a2df903a86745635811839e4fd9dc635cdfd50969eeaa",
+      "bytes": 3726
+    },
+    "source/runtime/frontend/arm64/semantics.h": {
+      "sha256": "456834b5dc8169870af305a343f2651a57c38cb875fedc9f27e1a404b5424045",
+      "bytes": 20567
+    },
+    "source/runtime/frontend/arm64/sink.h": {
+      "sha256": "7746401e2a06f777310c2952448c920be8b8623073ca29839e6d78a29bb0d64d",
+      "bytes": 5911
+    },
+    "source/runtime/frontend/arm64/build_ir.cpp": {
+      "sha256": "da0b26e5ec011501da45065bb62fd3df4e8d8715e3e01b3d5ff52647fd0782a4",
+      "bytes": 13687
+    },
+    "source/runtime/frontend/arm64/interpreter.cpp": {
+      "sha256": "6d2780cef80188becc5d776f603435485fbaf6f73b7496869ba10f527c38a112",
+      "bytes": 6068
+    },
+    "source/runtime/ir/direct/interpreter.h": {
+      "sha256": "5703372175edeca9ed49132dbeb2b5720066e2582b991934f2a15f4d3dbdd201",
+      "bytes": 8500
+    },
+    "source/runtime/ir/direct/scalar.inc": {
+      "sha256": "e07eccd3cd7803bf78c0f76cb0a1434c86675ace63b7e1b61e9c53bd56eefdac",
+      "bytes": 19186
+    },
+    "source/runtime/execution/dispatch.h": {
+      "sha256": "d565571c7dd29ae3817f15edc37e16d54d7a4b00e7dc78c7a971cd55945fd1d2",
+      "bytes": 8269
+    },
+    "source/runtime/execution/guest_state.cpp": {
+      "sha256": "8f0ec320586a30351aa14673ff4e0d366ce8f6d7b62b6b7cbee95fe0860f20b5",
+      "bytes": 1948
+    },
+    "source/runtime/execution/frontend_service.cpp": {
+      "sha256": "f128026ab2cd9c3c857545e8a98367f2e9f73646a517bc31de1cb9aee8bce8ce",
+      "bytes": 5563
+    },
+    "source/runtime/execution/compile_service.cpp": {
+      "sha256": "1a02bef48d41d848442e8254cfbf487aa3f95cdeffe18e154107796e5e3a08e9",
+      "bytes": 12292
+    },
+    "source/runtime/execution/code_cache.cpp": {
+      "sha256": "ae45f923c688150e1fe126faaf8cd2391769df96d19fc1264afc0edb971975a7",
+      "bytes": 5541
+    },
+    "source/runtime/execution/code_image.h": {
+      "sha256": "a76a6b0d3476cc9a9bf2e800ae57fce5591d7b00090d62d41540bd0c6dc08118",
+      "bytes": 2089
+    },
+    "source/runtime/execution/code_image.cpp": {
+      "sha256": "801e85e1bfe91f7c8f2a50c6c940439e6eebccf291aa6daa9f9bbac965b38931",
+      "bytes": 17341
+    },
+    "source/runtime/execution/code_identity.cpp": {
+      "sha256": "caa70e57dfd82fc3bb54b25daed454e15d55e1a2b9503780fb41e32513d280e0",
+      "bytes": 3121
+    },
+    "source/runtime/execution/memory.cpp": {
+      "sha256": "038bfc4864a5f30950bb023077fac02e147c0bd280c657956007e3e9a6217cfe",
+      "bytes": 17073
+    },
+    "source/runtime/execution/arm_state_service.cpp": {
+      "sha256": "1ba5aaf6188f0cb8f2070cb68c03ec9ce54995ba303147c8c2713becf1fd964a",
+      "bytes": 8418
+    },
+    "source/runtime/platform/linux/loader.cpp": {
+      "sha256": "879a1b649e6d10aea4390ac1abb2d65e2fff720d36a0595d26069a5755dd7d94",
+      "bytes": 12100
+    },
+    "source/runtime/platform/linux/guest_signals.cpp": {
+      "sha256": "8f585f17c9b89b8ece55bb9df578ae66b04a74f6f59cd361873f4c856d5a8dab",
+      "bytes": 26752
+    },
+    "source/runtime/platform/linux/signal_frame.h": {
+      "sha256": "68b2326230fd7ec80a6ca07921411d948b6e6e6d91e4c788527dcc22558ff226",
+      "bytes": 2493
+    },
+    "source/aot/guest_call.h": {
+      "sha256": "95ef022a049ae53d409ecd5e869e9e04fcd793c98d3492a327364dabc56413e9",
+      "bytes": 16619
+    },
+    "source/aot/abi_sysv.h": {
+      "sha256": "5256fa6269a8a196e03c61b56d6f4a3b2edea8329a6706915c2a98c771865c35",
+      "bytes": 28444
+    }
+  },
+  "primary_abi_sources": [
+    "https://www.kernel.org/doc/html/latest/arch/arm/kernel_user_helpers.html",
+    "https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst"
+  ]
+}
