@@ -1,0 +1,13 @@
+{
+  "created_utc": "2026-11-09T12:47:16.338036+00:00",
+  "implementation_commit": "c750c99e6b815504b3f75713d7efdedc0038c368",
+  "baseline_commit": "a5a2b93cc72e217dde4b1bb50f292284f24b4973",
+  "branch": "refactor/middle-pipeline-rebuild-parity",
+  "measurement_snapshot_matches_committed_source": true,
+  "source_files": 48,
+  "measured_runner_sha256": "f534cbee0f05dd9bc33d3f7041a0e4dc1cdab5b9c776fa68af199a1539e91902",
+  "original_evidence_preserved": true,
+  "performance_samples_added_during_submission": 0,
+  "compile_improvement_established": false,
+  "pushed": false
+}

@@ -256,7 +256,11 @@ pending 由 VM 在事件选取和 guest mask 处理后清除，避免“先清�
 
 **poll 有正常路径成本**，还可能减少跨观察点的 flags 裁剪与 pin 合并空间。不能沿用当前无完整异步交付版本的 benchmark 宣称零损耗。禁用 guest 事件的嵌入模式可以省略 poll，但它必须是明确的编译能力配置、进入 cache identity；启用时撤销旧入口并按新配置编译，不能只翻一个 runtime bool。
 
-间接 CALL/JMP/RET 前仍有检查，端到端间接派发 benchmark 必须包含它，不能因为检查位于 lookup 之外就扣除这项成本。
+间接 CALL/JMP/RET 提交 `GuestDispatchSafepoint`，仍保持完整 guest state/flags observer 合同。ARM64 在发码时检查最终 PC store 的直接 producer：确定动态尾经过 L1 时，以线程 L1 指针切换到完整索引范围的 `PROT_NONE` 视图代替前置 poll；常量折叠、双常量 Select、Callback 或未记录故障位置时仍发普通检查。这个决定在现有发码中完成，不增加 IR 分析 pass。其它后端目前保留前置 poll，并支持共享 dispatcher 的中断视图故障恢复。
+
+内部中断须同时匹配所属保护范围和精确 lookup PC。恢复完成后的目标 PC、pins、flags 和 FP 状态后走独立 GuestEvents 出口，不作为 guest SIGSEGV。请求取消后在途 lookup 仍可能持有保护指针，因此不能要求 pending 仍非零。派发未经过 L1 的直接边、Function 内循环、预算/窗口和 REP 观察点继续保留；HostWait 沿用既有唤醒协议。不能用 null 指针替代保护视图，也不改写共享代码。完整实现和本轮测量见 [L1 中断视图记录](l1-dispatch-interrupt-2026-11-09.md)。
+
+端到端间接派发 benchmark 必须包含实际启用的观察合同；不能将 lookup 之外的剩余成本扣除，也不能据两条 poll 指令的消失宣称完整 observer 或所有循环检查已移除。
 
 ## 8. Guest OS 交付与恢复
 

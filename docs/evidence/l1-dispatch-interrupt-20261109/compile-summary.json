@@ -1,0 +1,122 @@
+{
+  "call": {
+    "block": {
+      "parent": {
+        "samples_ms": [
+          2.435557,
+          2.367387,
+          2.279432
+        ],
+        "median_ms": 2.367387
+      },
+      "candidate": {
+        "samples_ms": [
+          2.111708,
+          2.35239,
+          2.137599
+        ],
+        "median_ms": 2.137599
+      },
+      "candidate_over_parent": 0.9029360218671472
+    },
+    "function": {
+      "parent": {
+        "samples_ms": [
+          2.134105,
+          2.336716,
+          2.204786
+        ],
+        "median_ms": 2.204786
+      },
+      "candidate": {
+        "samples_ms": [
+          2.184529,
+          2.437402,
+          2.511619
+        ],
+        "median_ms": 2.437402
+      },
+      "candidate_over_parent": 1.1055050240703634
+    }
+  },
+  "coremark20": {
+    "block": {
+      "parent": {
+        "samples_ms": [
+          74.76304,
+          40.221113,
+          40.605564
+        ],
+        "median_ms": 40.605564
+      },
+      "candidate": {
+        "samples_ms": [
+          39.366062,
+          73.309591,
+          38.82247
+        ],
+        "median_ms": 39.366062
+      },
+      "candidate_over_parent": 0.9694745774249065
+    },
+    "function": {
+      "parent": {
+        "samples_ms": [
+          66.031129,
+          50.066754,
+          67.19888
+        ],
+        "median_ms": 66.031129
+      },
+      "candidate": {
+        "samples_ms": [
+          68.354058,
+          83.49578,
+          50.777579
+        ],
+        "median_ms": 68.354058
+      },
+      "candidate_over_parent": 1.035179301568507
+    }
+  },
+  "x87": {
+    "block": {
+      "parent": {
+        "samples_ms": [
+          0.696508,
+          0.803752,
+          0.7225
+        ],
+        "median_ms": 0.7225
+      },
+      "candidate": {
+        "samples_ms": [
+          0.672919,
+          0.834375,
+          0.705518
+        ],
+        "median_ms": 0.705518
+      },
+      "candidate_over_parent": 0.9764955017301037
+    },
+    "function": {
+      "parent": {
+        "samples_ms": [
+          0.661878,
+          0.640105,
+          0.69026
+        ],
+        "median_ms": 0.661878
+      },
+      "candidate": {
+        "samples_ms": [
+          0.670152,
+          0.744583,
+          0.974952
+        ],
+        "median_ms": 0.744583
+      },
+      "candidate_over_parent": 1.1249550521395182
+    }
+  }
+}

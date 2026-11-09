@@ -1,0 +1,28 @@
+{
+  "created_utc": "2026-11-09T12:27:59.809230+00:00",
+  "parent_commit": "a5a2b93c",
+  "candidate_working_tree": true,
+  "device": "bf1359ff",
+  "cpu": 4,
+  "namespace": "/data/local/tmp/swiftvm-l1-interrupt-20261109/accepted",
+  "frequency_policy_changed": false,
+  "runtime_cases": [
+    "call-mono",
+    "call-64-permuted",
+    "jump-mono",
+    "jump-64-permuted"
+  ],
+  "runtime_samples": 48,
+  "compile_cases": [
+    "call",
+    "coremark20",
+    "x87"
+  ],
+  "compile_samples": 36,
+  "repetitions": 3,
+  "order": "rotate parent/candidate and block/function per repetition/case; all samples retained; no threshold rerun",
+  "compile_endpoint": "complete SVM compile ownership incl initialization and release; subtract only actual byte parser",
+  "PMU": "warmed second guest round, exact TID, pinned CPU4, user cycles/instructions/branch-misses group; require enabled==running",
+  "fex_comparison": "no new FEX measurements; parent/final delta only",
+  "harness_sha256": "7c6ffeeee88892e5e6943713c497910f5dae89d4c19856aca5ed4d4e06cd933c"
+}

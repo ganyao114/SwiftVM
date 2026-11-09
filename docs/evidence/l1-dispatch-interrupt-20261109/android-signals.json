@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "su -c '/data/local/tmp/swiftvm-l1-interrupt-20261109/accepted/engine --native '\"'\"'[signals]'\"'\"' --reporter compact'"
+  ],
+  "exit": 0,
+  "elapsed": 0.3228165409527719,
+  "stdout": "Filters: [signals]\nRNG seed: 1050882960\nAll tests passed (71 assertions in 5 test cases)\n\n\n",
+  "stderr": ""
+}

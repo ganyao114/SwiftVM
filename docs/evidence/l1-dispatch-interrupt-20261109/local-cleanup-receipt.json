@@ -1,0 +1,48 @@
+{
+  "removed_reproducible_duplicates": [
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/parent",
+      "bytes": 35651368,
+      "sha256": "38da77e92875cc50e1d902dbf7c641fb3eb3135bce5b0f48ff5efbe7701b02c9"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/checkpoints/formatted-before-drain-fix/parent",
+      "bytes": 35651368,
+      "sha256": "38da77e92875cc50e1d902dbf7c641fb3eb3135bce5b0f48ff5efbe7701b02c9"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/final/parent",
+      "bytes": 35651368,
+      "sha256": "38da77e92875cc50e1d902dbf7c641fb3eb3135bce5b0f48ff5efbe7701b02c9"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/pmu-region",
+      "bytes": 5496824,
+      "sha256": "f4472286e5351d517861f3f630ce36f31471263e2e4049fb8e2388d0004b4fd0"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/checkpoints/formatted-before-drain-fix/pmu-region",
+      "bytes": 5496824,
+      "sha256": "f4472286e5351d517861f3f630ce36f31471263e2e4049fb8e2388d0004b4fd0"
+    },
+    {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/final/pmu-region",
+      "bytes": 5496824,
+      "sha256": "f4472286e5351d517861f3f630ce36f31471263e2e4049fb8e2388d0004b4fd0"
+    }
+  ],
+  "removed_logical_bytes": 123444576,
+  "df_before": "Filesystem    1024-blocks      Used Available Capacity  iused     ifree %iused  Mounted on\n/dev/disk11s1   999155012 944884644  54065980    95% 10738449 540659800    2%   /Volumes/Data2\n",
+  "df_after": "Filesystem    1024-blocks      Used Available Capacity  iused     ifree %iused  Mounted on\n/dev/disk11s1   999155012 944764136  54186488    95% 10738443 541864880    2%   /Volumes/Data2\n",
+  "results_du": "52120\t/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109\n",
+  "kept": [
+    "candidate-svm_rebuild_linux.gz",
+    "candidate-measured.gz",
+    "final-implementation.patch.gz",
+    "measured-implementation.patch.gz",
+    "all raw measurements and kernel results"
+  ],
+  "parent_archive": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/exception-recovery-20261109/candidate-svm_rebuild_linux.gz",
+  "controller_archive": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/pmu-region.gz",
+  "errors": []
+}

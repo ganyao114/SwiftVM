@@ -1,0 +1,78 @@
+{
+  "head": "a5a2b93cc72e217dde4b1bb50f292284f24b4973",
+  "all_passed": true,
+  "total_cases_passed": 27,
+  "architectures": [
+    {
+      "arch": "x64",
+      "all_passed": true,
+      "cases_passed": 9,
+      "result": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/cross/x64/kernel-01/results.json",
+      "source_changes_after_freeze": [],
+      "cleanup": {
+        "owned_pid": 13457,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 5127349,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "errors": []
+      },
+      "build": {
+        "arch": "x64",
+        "exit": 0,
+        "elapsed_seconds": 16.43369595799595
+      }
+    },
+    {
+      "arch": "riscv64",
+      "all_passed": true,
+      "cases_passed": 9,
+      "result": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/cross/riscv64/kernel-01/results.json",
+      "source_changes_after_freeze": [],
+      "cleanup": {
+        "owned_pid": 13593,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 5567030,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "old_inputs_modified": false,
+        "errors": []
+      },
+      "build": {
+        "arch": "riscv64",
+        "exit": 0,
+        "elapsed_seconds": 15.097836541943252
+      }
+    },
+    {
+      "arch": "loongarch64",
+      "all_passed": true,
+      "cases_passed": 9,
+      "result": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/cross/loongarch64/kernel-01/results.json",
+      "source_changes_after_freeze": [],
+      "cleanup": {
+        "owned_pid": 13799,
+        "running": false,
+        "qemu_exit": 0,
+        "deadline": false,
+        "temporary_initrd_removed_bytes": 13287441,
+        "temporary_initrd_remaining": false,
+        "expanded_rootfs_created": false,
+        "old_inputs_modified": false,
+        "errors": []
+      },
+      "build": {
+        "arch": "loongarch64",
+        "exit": 0,
+        "elapsed_seconds": 12.672229625284672
+      }
+    }
+  ],
+  "scope": "Functional generated-code recovery on real Linux kernels, QEMU TCG 2 vCPUs; no physical hardware or performance claim. Only dispatch-interrupt 2, exception-api 2, signals 5 per architecture.",
+  "phone_used": false,
+  "committed": false
+}

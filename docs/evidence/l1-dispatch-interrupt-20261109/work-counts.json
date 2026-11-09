@@ -1,0 +1,234 @@
+[
+  {
+    "case": "call",
+    "scope": "block",
+    "parent": {
+      "ir_nodes": [
+        688
+      ],
+      "spill_slots": [
+        0
+      ],
+      "native_bytes": [
+        7080
+      ],
+      "fault_sites": [
+        48
+      ],
+      "code_units_published": [
+        46
+      ]
+    },
+    "candidate": {
+      "ir_nodes": [
+        688
+      ],
+      "spill_slots": [
+        0
+      ],
+      "native_bytes": [
+        6576
+      ],
+      "fault_sites": [
+        53
+      ],
+      "code_units_published": [
+        46
+      ]
+    }
+  },
+  {
+    "case": "call",
+    "scope": "function",
+    "parent": {
+      "ir_nodes": [
+        684
+      ],
+      "spill_slots": [
+        0
+      ],
+      "native_bytes": [
+        7016
+      ],
+      "fault_sites": [
+        48
+      ],
+      "code_units_published": [
+        45
+      ]
+    },
+    "candidate": {
+      "ir_nodes": [
+        684
+      ],
+      "spill_slots": [
+        0
+      ],
+      "native_bytes": [
+        6512
+      ],
+      "fault_sites": [
+        53
+      ],
+      "code_units_published": [
+        45
+      ]
+    }
+  },
+  {
+    "case": "coremark20",
+    "scope": "block",
+    "parent": {
+      "ir_nodes": [
+        36285
+      ],
+      "spill_slots": [
+        22
+      ],
+      "native_bytes": [
+        425408
+      ],
+      "fault_sites": [
+        4734
+      ],
+      "code_units_published": [
+        2051
+      ]
+    },
+    "candidate": {
+      "ir_nodes": [
+        36285,
+        36341
+      ],
+      "spill_slots": [
+        22
+      ],
+      "native_bytes": [
+        403504,
+        404860
+      ],
+      "fault_sites": [
+        4953,
+        4955
+      ],
+      "code_units_published": [
+        2051,
+        2053
+      ]
+    }
+  },
+  {
+    "case": "coremark20",
+    "scope": "function",
+    "parent": {
+      "ir_nodes": [
+        52236
+      ],
+      "spill_slots": [
+        30
+      ],
+      "native_bytes": [
+        515220
+      ],
+      "fault_sites": [
+        6445
+      ],
+      "code_units_published": [
+        676
+      ]
+    },
+    "candidate": {
+      "ir_nodes": [
+        52236
+      ],
+      "spill_slots": [
+        30
+      ],
+      "native_bytes": [
+        488820
+      ],
+      "fault_sites": [
+        6708
+      ],
+      "code_units_published": [
+        676
+      ]
+    }
+  },
+  {
+    "case": "x87",
+    "scope": "block",
+    "parent": {
+      "ir_nodes": [
+        52
+      ],
+      "spill_slots": [
+        0
+      ],
+      "native_bytes": [
+        2136
+      ],
+      "fault_sites": [
+        1
+      ],
+      "code_units_published": [
+        3
+      ]
+    },
+    "candidate": {
+      "ir_nodes": [
+        52
+      ],
+      "spill_slots": [
+        0
+      ],
+      "native_bytes": [
+        2136
+      ],
+      "fault_sites": [
+        1
+      ],
+      "code_units_published": [
+        3
+      ]
+    }
+  },
+  {
+    "case": "x87",
+    "scope": "function",
+    "parent": {
+      "ir_nodes": [
+        51
+      ],
+      "spill_slots": [
+        0
+      ],
+      "native_bytes": [
+        2004
+      ],
+      "fault_sites": [
+        1
+      ],
+      "code_units_published": [
+        1
+      ]
+    },
+    "candidate": {
+      "ir_nodes": [
+        51
+      ],
+      "spill_slots": [
+        0
+      ],
+      "native_bytes": [
+        2004
+      ],
+      "fault_sites": [
+        1
+      ],
+      "code_units_published": [
+        1
+      ]
+    }
+  }
+]

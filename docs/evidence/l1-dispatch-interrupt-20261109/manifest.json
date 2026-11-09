@@ -1,0 +1,126 @@
+{
+  "README.md": {
+    "bytes": 2121,
+    "sha256": "5517fc04d134615e0d96914f1d8c8c812626ec351c2890ee90b9b774393f8bb6"
+  },
+  "android-dispatch-cache.json": {
+    "bytes": 388,
+    "sha256": "509f48406bc5ee69f6ffa76d8f19f517cf7e7757cfee0e6880b207925098ef53"
+  },
+  "android-dispatch-interrupt.json": {
+    "bytes": 395,
+    "sha256": "63363cce8bcbb4281aac4b2ff9680699def88ed7c1f0c8df9cf1885be798828c"
+  },
+  "android-exceptions.json": {
+    "bytes": 408,
+    "sha256": "44bea4d2973a361907ea6e3470f12994a60b24b62ec2e9c12c1dfdab70d76e61"
+  },
+  "android-persistence.json": {
+    "bytes": 375,
+    "sha256": "13177ae151322ff19132371a362704c96cd0db90bb26b3393f26ba85bdf9f665"
+  },
+  "android-signals.json": {
+    "bytes": 372,
+    "sha256": "aed9aea8ed5bec6ba770e0e42433d7416f8e12577f236f348d295a01a05344b2"
+  },
+  "candidate-identity.json": {
+    "bytes": 342,
+    "sha256": "947f8f6306dcaade7ca61905c20e1ae9f707999656826aeeb92de59326044728"
+  },
+  "checkpoint-note.json": {
+    "bytes": 623,
+    "sha256": "2afba9a6fb622b801df3cc6f9c1517799e06bf7ad861f22cd75bc689e294d0ef"
+  },
+  "compile-policy-after.json": {
+    "bytes": 441,
+    "sha256": "90baf08e1429a033dc2a1eb9c69ff93a70ecf77b285b1d86a0ab3a2933700d17"
+  },
+  "compile-policy-before.json": {
+    "bytes": 443,
+    "sha256": "8fc6ae1b32ffad944e7bdaf4c975c4074498246ed1f6772f1d3f29148644a8e3"
+  },
+  "compile-records.json": {
+    "bytes": 137490,
+    "sha256": "13ddd31e89c430c5da058d9f3a2fdc2b964e466599452ad80ef5e7a522fdeb72"
+  },
+  "compile-summary.json": {
+    "bytes": 2332,
+    "sha256": "a1e8d997b18f03a7a619acb5ba760b8ab35c8e57c1624b6e679c09f0bbb52005"
+  },
+  "cross-drain-summary.json": {
+    "bytes": 2681,
+    "sha256": "832c120862fa7cfb3f9b553eea2f15d7332733376a2737c69a08ac581977832a"
+  },
+  "cross-summary.json": {
+    "bytes": 2507,
+    "sha256": "8b472635607327f9cbe3c869fc30ed43a2067988d2d1e0f5c39b9b4291d93eb7"
+  },
+  "final-source-freeze.json": {
+    "bytes": 5505,
+    "sha256": "4285b9d8708512443353c920ec51c2887df6224ec5d1df1b87de1e3e47bfdc1a"
+  },
+  "format-check.json": {
+    "bytes": 3692,
+    "sha256": "24fa47c35b2ac75ca88d2fa73e2815602550dbb7f44608ced66e0c9e9abdf6fb"
+  },
+  "frontend-contracts.log": {
+    "bytes": 625,
+    "sha256": "43bb265a116ed1bf7b51f379613978cd0dc0f0bb4132b498c1008dc5d17d940b"
+  },
+  "host-contracts-final.log": {
+    "bytes": 515,
+    "sha256": "e95404d95d0ed3972f4e052989088317751f5a560708fdcf9781573cb895d4a5"
+  },
+  "hot-cases.json": {
+    "bytes": 1407,
+    "sha256": "fa3d11c4b4f71a6499bf1185f2fd086e3680e77736c685c5bad4613cb27bb077"
+  },
+  "hot-policy-after.json": {
+    "bytes": 443,
+    "sha256": "a1ca9a6aeb1904213c876b976f9b66d41d749298b28709433051e8c982c9cb81"
+  },
+  "hot-policy-before.json": {
+    "bytes": 443,
+    "sha256": "1c6e69e8b589ca3a50d6b71e90c00d0cc5d66a3336d6bc4cd6b14ce39d13d63d"
+  },
+  "hot-records.json": {
+    "bytes": 178763,
+    "sha256": "afab3e55f6dc85e5fc413387c905f3494ebe4d9fc05989f7fc38b1352e34dbc3"
+  },
+  "hot-summary.json": {
+    "bytes": 4686,
+    "sha256": "dd0bef907e90b2abf09162b3ab2e4a0fe5681427a8338cc556cbb0586ed93763"
+  },
+  "inputs.json": {
+    "bytes": 2886,
+    "sha256": "8948d88241c878dcd5b928b91ff6c39c43061c6cf90fb54941a952fa0bc781ee"
+  },
+  "local-cleanup-receipt.json": {
+    "bytes": 2597,
+    "sha256": "c0a81168c544d6bd61d4244abc987eb86f2919d3107fa3b06928e8e2212e93b0"
+  },
+  "phone-cleanup-receipt.json": {
+    "bytes": 1471,
+    "sha256": "8a0ef52fc4e2daf4b86a8b94d227a29eedbe25b9a9269b7ece1714069e8b5074"
+  },
+  "plan.json": {
+    "bytes": 1045,
+    "sha256": "38e23c050695e5515942d75e4454c70d878537d9690750261ae86dd08a4adf02"
+  },
+  "source-match.json": {
+    "bytes": 166,
+    "sha256": "bbae2a18c1ab2c31c9b8658031163dac2f9f3a5b8873f64ef32963ccc4dcf4d3"
+  },
+  "submission.json": {
+    "bytes": 576,
+    "sha256": "c93fd2026bfe487f681e1f9c93a15d06b069eb86eca0f2cecffe606ee8c46d06"
+  },
+  "verification.json": {
+    "bytes": 808,
+    "sha256": "c38f10be0635212f458d77c01efa9c098c17eb78f93e01fa80d86e5a8e646fe4"
+  },
+  "work-counts.json": {
+    "bytes": 3373,
+    "sha256": "d2fff31487f321d6c5511f3c027e6d0557dbb9ff934b5a1ae54fa39770edf0e4"
+  }
+}

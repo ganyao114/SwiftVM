@@ -1,0 +1,162 @@
+{
+  "call-mono": {
+    "block": {
+      "parent": {
+        "guest_ns": 8.544003009796143,
+        "cycles": 9.810715675354004,
+        "instructions": 49.00783061981201,
+        "branch_misses": 5.221366882324219e-05
+      },
+      "candidate": {
+        "guest_ns": 8.214016675949097,
+        "cycles": 9.169381380081177,
+        "instructions": 45.007864475250244,
+        "branch_misses": 7.200241088867188e-05
+      },
+      "candidate_over_parent": {
+        "guest_ns": 0.9613780176026742,
+        "cycles": 0.9346292037711422,
+        "instructions": 0.9183810812685772
+      }
+    },
+    "function": {
+      "parent": {
+        "guest_ns": 8.514411687850952,
+        "cycles": 9.809411764144897,
+        "instructions": 49.00781178474426,
+        "branch_misses": 6.079673767089844e-05
+      },
+      "candidate": {
+        "guest_ns": 8.208776473999023,
+        "cycles": 9.184489965438843,
+        "instructions": 45.005611419677734,
+        "branch_misses": 8.225440979003906e-05
+      },
+      "candidate_over_parent": {
+        "guest_ns": 0.9641037777997,
+        "cycles": 0.9362936520831705,
+        "instructions": 0.9183354608313203
+      }
+    }
+  },
+  "call-64-permuted": {
+    "block": {
+      "parent": {
+        "guest_ns": 17.245598077774048,
+        "cycles": 19.83661460876465,
+        "instructions": 49.0079779624939,
+        "branch_misses": 0.4026811122894287
+      },
+      "candidate": {
+        "guest_ns": 15.299432039260864,
+        "cycles": 17.08865714073181,
+        "instructions": 45.00801181793213,
+        "branch_misses": 0.35018277168273926
+      },
+      "candidate_over_parent": {
+        "guest_ns": 0.8871499828688816,
+        "cycles": 0.8614704412909916,
+        "instructions": 0.9183813266561831
+      }
+    },
+    "function": {
+      "parent": {
+        "guest_ns": 17.207388877868652,
+        "cycles": 19.525789976119995,
+        "instructions": 49.007956743240356,
+        "branch_misses": 0.3915557861328125
+      },
+      "candidate": {
+        "guest_ns": 15.810442447662354,
+        "cycles": 17.91328525543213,
+        "instructions": 45.00799059867859,
+        "branch_misses": 0.39129161834716797
+      },
+      "candidate_over_parent": {
+        "guest_ns": 0.9188170593387944,
+        "cycles": 0.9174166718652635,
+        "instructions": 0.9183812913172823
+      }
+    }
+  },
+  "jump-mono": {
+    "block": {
+      "parent": {
+        "guest_ns": 6.096884489059448,
+        "cycles": 7.01437783241272,
+        "instructions": 35.00783061981201,
+        "branch_misses": 5.888938903808594e-05
+      },
+      "candidate": {
+        "guest_ns": 5.860055685043335,
+        "cycles": 6.790987491607666,
+        "instructions": 33.007864475250244,
+        "branch_misses": 3.933906555175781e-05
+      },
+      "candidate_over_parent": {
+        "guest_ns": 0.9611557666147209,
+        "cycles": 0.9681525081564911,
+        "instructions": 0.942870891764715
+      }
+    },
+    "function": {
+      "parent": {
+        "guest_ns": 6.009265661239624,
+        "cycles": 6.856032609939575,
+        "instructions": 34.00781178474426,
+        "branch_misses": 6.29425048828125e-05
+      },
+      "candidate": {
+        "guest_ns": 5.811750888824463,
+        "cycles": 6.694414138793945,
+        "instructions": 32.007845640182495,
+        "branch_misses": 4.267692565917969e-05
+      },
+      "candidate_over_parent": {
+        "guest_ns": 0.9671316291291377,
+        "cycles": 0.9764268228667229,
+        "instructions": 0.9411909782016924
+      }
+    }
+  },
+  "jump-64-permuted": {
+    "block": {
+      "parent": {
+        "guest_ns": 17.112319707870483,
+        "cycles": 19.551952362060547,
+        "instructions": 35.00575280189514,
+        "branch_misses": 0.4274928569793701
+      },
+      "candidate": {
+        "guest_ns": 14.829362392425537,
+        "cycles": 17.224963665008545,
+        "instructions": 33.00801181793213,
+        "branch_misses": 0.37387967109680176
+      },
+      "candidate_over_parent": {
+        "guest_ns": 0.866589839693391,
+        "cycles": 0.8809843306713763,
+        "instructions": 0.942931066351618
+      }
+    },
+    "function": {
+      "parent": {
+        "guest_ns": 16.615862607955933,
+        "cycles": 19.27955436706543,
+        "instructions": 35.976706743240356,
+        "branch_misses": 0.40638279914855957
+      },
+      "candidate": {
+        "guest_ns": 17.193071603775024,
+        "cycles": 18.625296592712402,
+        "instructions": 33.97674059867859,
+        "branch_misses": 0.39171338081359863
+      },
+      "candidate_over_parent": {
+        "guest_ns": 1.0347384309462642,
+        "cycles": 0.966064683763092,
+        "instructions": 0.9444094158246561
+      }
+    }
+  }
+}

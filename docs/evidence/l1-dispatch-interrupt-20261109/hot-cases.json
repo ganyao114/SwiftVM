@@ -1,0 +1,42 @@
+[
+  {
+    "name": "call-mono",
+    "iterations": 4194304,
+    "expected_checksum": 4194304,
+    "binary": {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/guest/call-mono.elf",
+      "bytes": 14376,
+      "sha256": "68b7ab3c1d2ee8c569fb5380391d70976d434b1766ee86f2e88ebf1a5e8aea05"
+    }
+  },
+  {
+    "name": "call-64-permuted",
+    "iterations": 4194304,
+    "expected_checksum": 136314880,
+    "binary": {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/guest/call-64-permuted.elf",
+      "bytes": 16768,
+      "sha256": "70a5129d776f603933b2ae471a1983e08d3e7b42b238705cf7d24397bf8e2979"
+    }
+  },
+  {
+    "name": "jump-mono",
+    "iterations": 4194304,
+    "expected_checksum": 4194304,
+    "binary": {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/guest/jump-mono.elf",
+      "bytes": 14392,
+      "sha256": "2645898c74329029e0c22a3582c45d0afd913ce7c538adb0f3972cc161cf3ac9"
+    }
+  },
+  {
+    "name": "jump-64-permuted",
+    "iterations": 4194304,
+    "expected_checksum": 136314880,
+    "binary": {
+      "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/guest/jump-64-permuted.elf",
+      "bytes": 17280,
+      "sha256": "5b42862f576a963f9523453c504a225243dbf17592c3a5e27dbea35d61ff4375"
+    }
+  }
+]

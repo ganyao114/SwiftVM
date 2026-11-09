@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "su -c '/data/local/tmp/swiftvm-l1-interrupt-20261109/accepted/persistence --native '\"'\"'[native]'\"'\"' --reporter compact'"
+  ],
+  "exit": 0,
+  "elapsed": 0.1872176663018763,
+  "stdout": "Filters: [native]\nRNG seed: 2801595051\nAll tests passed (46 assertions in 4 test cases)\n\n\n",
+  "stderr": ""
+}

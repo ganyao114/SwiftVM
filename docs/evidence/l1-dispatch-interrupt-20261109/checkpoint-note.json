@@ -1,0 +1,10 @@
+{
+  "pre_format": "root-level first observations; retained separately",
+  "formatted_before_drain_fix": "checkpoints/formatted-before-drain-fix/; retained separately",
+  "final_batch": "final/; empty-drain restoration fix and final formatted sources, exact rebuilt products",
+  "reasons": [
+    "six files needed whitespace formatting; source_location changes ELF identity",
+    "review found empty TakePending must restore the normal L1 after cancellation; targeted regression added"
+  ],
+  "selection": "all checkpoints retained; only final/ used for final report; no pooling, fastest selection or repeat-to-threshold"
+}

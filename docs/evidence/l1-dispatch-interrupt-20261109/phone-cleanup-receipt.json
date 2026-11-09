@@ -1,0 +1,25 @@
+{
+  "created_utc": "2026-11-09T12:35:25.501750+00:00",
+  "namespace": "/data/local/tmp/swiftvm-l1-interrupt-20261109",
+  "active_owned_processes_before": [],
+  "read_only_magisk_log_observers": [
+    "27996 app_process /system/bin com.android.commands.content.Content call --uri content://com.topjohnwu.magisk.provider --user 0 --method log --extra from.uid:i:2000 --extra to.uid:i:0 --extra pid:i:27992 --extra policy:i:2 --extra target:i:-1 --extra context:s: --extra gids:s: --extra command:s:du -sk /data/local/tmp/swiftvm-l1-interrupt-20261109 --extra notify:b:true"
+  ],
+  "precheck_note": "Attempt01 stopped before deletion because a Magisk command-log notification contained the namespace; classified separately after confirming no open file. No benchmark process was active.",
+  "owned_open_files_before": [],
+  "namespace_removed": true,
+  "namespace_remaining_bytes": 0,
+  "released_allocated_bytes_du": 530967552,
+  "df_available_before_bytes": 6028697600,
+  "df_available_after_bytes": 6561005568,
+  "df_available_delta_bytes": 532307968,
+  "df_limit": "Android services may write concurrently; du and df retained independently",
+  "final_product_sha256": "f534cbee0f05dd9bc33d3f7041a0e4dc1cdab5b9c776fa68af199a1539e91902",
+  "preserved_evidence": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109",
+  "frequency_policy_changed": false,
+  "policy_after_khz": [
+    "614400",
+    "1171200"
+  ],
+  "cleanup_errors": []
+}

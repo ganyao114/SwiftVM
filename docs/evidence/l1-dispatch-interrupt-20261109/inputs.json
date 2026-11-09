@@ -1,0 +1,62 @@
+{
+  "bench-suite": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/bench_suite_x86_64",
+    "bytes": 6272,
+    "sha256": "df60aa3f57d40ed3eb0b44d124f2cb8c9d15899f90021b6d20e94be179240a6d"
+  },
+  "coremark": {
+    "path": "/Volumes/Data2/swiftvm-middle-preserved-20261025/active-results/r7-block-emission-owner-v5-pmu-inputs/coremark-O2-x86_64",
+    "bytes": 1921016,
+    "sha256": "d92d8d77b15714c59cb028cf412017ce0ee4425299ffe97536c6ef4a6c0bcbba"
+  },
+  "x87-bench": {
+    "path": "/Volumes/Data2/SwiftVM/source/translator/linux/tests/x87_bench_x86_64",
+    "bytes": 184,
+    "sha256": "60350fb2a0828e63934a3c8e4890302448d028ce8875a17dfa96b141f91bfabb"
+  },
+  "parent": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/final/parent",
+    "bytes": 35651368,
+    "sha256": "38da77e92875cc50e1d902dbf7c641fb3eb3135bce5b0f48ff5efbe7701b02c9"
+  },
+  "candidate": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_rebuild_linux",
+    "bytes": 35788096,
+    "sha256": "f534cbee0f05dd9bc33d3f7041a0e4dc1cdab5b9c776fa68af199a1539e91902"
+  },
+  "pmu-region": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/l1-dispatch-interrupt-20261109/final/pmu-region",
+    "bytes": 5496824,
+    "sha256": "f4472286e5351d517861f3f630ce36f31471263e2e4049fb8e2388d0004b4fd0"
+  },
+  "engine": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_engine_test",
+    "bytes": 48707416,
+    "sha256": "c892056c68397e571e9b4e1cc13e179595d07d908c6d4043eec55268e50f05c3"
+  },
+  "persistence": {
+    "path": "/Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-android/svm_runtime_persistence_test",
+    "bytes": 48759968,
+    "sha256": "12aec49e8978204d1181d97dc91e7d4c62f5dc7257d872c0ea50d5b1295af551"
+  },
+  "call-mono.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/guest/call-mono.elf",
+    "bytes": 14376,
+    "sha256": "68b7ab3c1d2ee8c569fb5380391d70976d434b1766ee86f2e88ebf1a5e8aea05"
+  },
+  "call-64-permuted.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/guest/call-64-permuted.elf",
+    "bytes": 16768,
+    "sha256": "70a5129d776f603933b2ae471a1983e08d3e7b42b238705cf7d24397bf8e2979"
+  },
+  "jump-mono.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/guest/jump-mono.elf",
+    "bytes": 14392,
+    "sha256": "2645898c74329029e0c22a3582c45d0afd913ce7c538adb0f3972cc161cf3ac9"
+  },
+  "jump-64-permuted.elf": {
+    "path": "/Volumes/Data2/swiftvm-middle-results-relocated-20261025/indirect-dispatch-20261107/guest/jump-64-permuted.elf",
+    "bytes": 17280,
+    "sha256": "5b42862f576a963f9523453c504a225243dbf17592c3a5e27dbea35d61ff4375"
+  }
+}

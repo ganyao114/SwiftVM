@@ -4,7 +4,7 @@
 
 基线为 `cbd06547a2d9e5259f65bc99a69e95c055aa8bcb`。实现位于 `SwiftVM-submit-20261104` 工作树；没有改动冻结的 `SwiftVM` 参考树。本轮尚未提交。
 
-本文的测量数据保留初次 L1 验收快照；资源创建后续改为按需，见[最新实现与实测](dispatch-resource-optimization-2026-11-08.md)。下文生命周期说明已同步最终实现，“尚未提交”等描述记录测量当时的状态。
+本文的测量数据保留初次 L1 验收快照；资源创建后续改为按需，见[资源优化](dispatch-resource-optimization-2026-11-08.md)。后续的每线程中断视图、信号恢复与当前 ABI 见 [L1 中断视图](l1-dispatch-interrupt-2026-11-09.md)。下文“尚未提交”等描述记录测量当时的状态。
 
 ## 数据与职责
 
@@ -26,7 +26,7 @@
 - 每线程 `2^20` 项 × 16 B，映射容量为 16 MiB；RW anonymous mmap，按页需求分配。实际动态单元发布前建立；纯静态 JIT 和解释器独占模式可以不建立。磁盘 / AOT 恢复保守准备映射。没有预先遍历清零整表。
 - 索引为 `pc & ((1<<20)-1)`，以字节 PC 低位索引；tag 比较完整 64 位 PC。64 B 对齐目标不再被旧 `pc[5:2]` 索引压到一个槽。相距 1 MiB 的 PC 仍可能冲突，按完整 tag 失配进入 L2。
 - 项仅有 `{pc, host_entry}`。普通空项 tag=0；slot0 单独用 UINT64_MAX。二者的索引关系保证空项不会命中自己的槽，PC0 与 UINT64_MAX 都可用。
-- `NativeRunContext::l1` 使用末尾原有 padding：offset1032，context 大小仍为1040。没有新增永久保留寄存器。
+- `NativeRunContext::l1` 使用原有 padding：offset1032。首次 L1 验收时 context 大小为1040；后续增加 root 异常恢复字段后为1072，本轮改为原位 lock-free atomic 指针，大小不再增加。没有新增永久保留寄存器。
 - 热路径没有有效位/epoch/模式比较。ARM64 inline 核心七条指令，非置标志 SUB/CBNZ 保留 guest NZCV；x7 只携带本次选中的槽地址，x8..x15 pin16 不受影响。各动态出口保留各自的间接 BR。
 
 ### L2 与 miss

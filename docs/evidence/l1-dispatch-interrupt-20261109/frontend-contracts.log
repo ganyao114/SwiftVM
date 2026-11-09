@@ -1,0 +1,16 @@
+Test project /Volumes/Data2/swiftvm-middle-build-cache/reconstruction/submit-host
+    Start  9: x86_construction_contract
+1/3 Test  #9: x86_construction_contract ........   Passed    1.29 sec
+    Start 10: arm64_frontend_contract
+2/3 Test #10: arm64_frontend_contract ..........   Passed    0.40 sec
+    Start 15: ir_direct_contract
+3/3 Test #15: ir_direct_contract ...............   Passed    0.39 sec
+
+100% tests passed, 0 tests failed out of 3
+
+Label Time Summary:
+compile     =   2.08 sec*proc (3 tests)
+portable    =   2.08 sec*proc (3 tests)
+unit        =   2.08 sec*proc (3 tests)
+
+Total Test time (real) =   2.08 sec

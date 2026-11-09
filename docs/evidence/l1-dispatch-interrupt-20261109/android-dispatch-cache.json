@@ -1,0 +1,13 @@
+{
+  "argv": [
+    "adb",
+    "-s",
+    "bf1359ff",
+    "shell",
+    "su -c '/data/local/tmp/swiftvm-l1-interrupt-20261109/accepted/engine --native '\"'\"'[dispatch-cache]'\"'\"' --reporter compact'"
+  ],
+  "exit": 0,
+  "elapsed": 0.13762291707098484,
+  "stdout": "Filters: [dispatch-cache]\nRNG seed: 1326513616\nAll tests passed (160 assertions in 3 test cases)\n\n\n",
+  "stderr": ""
+}

@@ -1,0 +1,24 @@
+{
+  "functional_checks_passed": true,
+  "host_contract_targets_passed": 5,
+  "phone_final_test_cases": {
+    "dispatch_interrupt": 2,
+    "exception_and_api": 7,
+    "signals": 5,
+    "dispatch_cache": 3,
+    "persistence": 4
+  },
+  "cross_system_kernel_initial_cases": 27,
+  "cross_system_kernel_final_drain_cases": 6,
+  "hot_observations": 48,
+  "compile_observations": 36,
+  "observations_are_fixed3_no_pooling": true,
+  "new_fex_measurements": false,
+  "compile_improvement_established": false,
+  "source_changes_after_final_freeze": [],
+  "exact_measured_runner_sha256": "f534cbee0f05dd9bc33d3f7041a0e4dc1cdab5b9c776fa68af199a1539e91902",
+  "candidate_normal_hot_samples_interrupt_count": 0,
+  "phone_cleanup_complete": true,
+  "committed": false,
+  "head": "a5a2b93cc72e217dde4b1bb50f292284f24b4973"
+}

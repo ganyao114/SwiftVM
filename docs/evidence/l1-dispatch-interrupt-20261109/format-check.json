@@ -1,0 +1,155 @@
+{
+  "formatter": "/opt/homebrew/opt/llvm@21/bin/clang-format",
+  "version": "Homebrew clang-format version 22.1.1",
+  "files": [
+    {
+      "path": "source/launcher/linux/report.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/allocation_selection.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_control.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/arm64/emit_dispatch.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/code.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/loongarch64/emit_control.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/riscv64/emit_control.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/backend/x64/emit_control.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/code_image.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/code_image.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch_cache.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/dispatch_cache.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/fault.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/fault.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/runtime.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/runtime.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/smc.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/execution/vm.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/frontend/arm64/semantics.h",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/ir/passes/rewrite.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/platform/linux/arm64_host.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/platform/linux/guest_signals.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/platform/linux/loongarch64_host.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/platform/linux/riscv64_host.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/platform/linux/run_guest.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/platform/linux/signals.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/runtime/platform/linux/x64_host.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/tests/rebuild/arm64_compile_test.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/tests/rebuild/arm64_frontend_test.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/tests/rebuild/dispatch_cache_test.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/tests/rebuild/exception_recovery_test.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/tests/rebuild/ir_direct_test.cpp",
+      "formatted": true
+    },
+    {
+      "path": "source/tests/rebuild/x86_construction_test.cpp",
+      "formatted": true
+    }
+  ],
+  "all_passed": true
+}
