@@ -1,3 +1,4 @@
+#include <catch2/generators/catch_generators.hpp>
 #include "runtime/exit.h"
 #include "tests/support/arm64_fixture.h"
 
@@ -1707,10 +1708,11 @@ TEST_CASE("NarrowLogicalImmediates", "[compile][native][arm64]") {
 
 TEST_CASE("Guest safepoint prevents an early architectural pin overwrite", "[compile][arm64]") {
     using swift::runtime::x86::GuestState;
+    const auto marker = GENERATE(OpCode::GuestSafepoint, OpCode::GuestDispatchSafepoint);
     Builder builder{Scope::Block};
     Need(builder.BeginBlock(Create(builder)));
     const auto future = Constant(builder, 0xabcdef);
-    Need(builder.Emit<OpCode::GuestSafepoint>(Type::Void, {Operand::Immediate(0x1200, Type::U64)}));
+    Need(builder.Append(marker, Type::Void, {Operand::Immediate(0x1200, Type::U64)}));
     Store(builder, offsetof(GuestState, gprs), future);
     Need(builder.EndBlock(Terminal::Return(Constant(builder, 42))));
     auto program = Submit(builder);
@@ -1731,4 +1733,90 @@ TEST_CASE("Guest safepoint prevents an early architectural pin overwrite", "[com
     CHECK(!code.words.empty());
     // The fixed callback addresses qualify emission only, not execution.
     CHECK(!arm64::Compile(program));
+}
+
+TEST_CASE("Dynamic dispatch defers its event poll to the exact L1 probe", "[compile][arm64]") {
+    using swift::runtime::backend::FaultSiteKind;
+    using swift::runtime::x86::GuestState;
+    enum class Tail { Dynamic, Constant, ConstantSelect };
+    const auto scope = GENERATE(Scope::Block, Scope::Function);
+    const auto build = [scope](OpCode marker, Tail tail) {
+        Builder builder{scope};
+        Need(builder.BeginBlock(Create(builder)));
+        if (marker != OpCode::Nop)
+            Need(builder.Append(marker, Type::Void, {Operand::Immediate(0x1200, Type::U64)}));
+        auto target = tail == Tail::Dynamic ? Load(builder, offsetof(GuestState, gprs))
+                                            : Constant(builder, 0x1400);
+        if (tail == Tail::ConstantSelect) {
+            const auto input = Load(builder, offsetof(GuestState, gprs));
+            const auto condition =
+                    Need(builder.Emit<OpCode::TestZero>(Type::Bool, {Operand::ValueOf(input)}));
+            const auto alternate = Constant(builder, 0x1600);
+            target = Need(builder.Emit<OpCode::Select>(Type::U64,
+                                                       {Operand::ValueOf(condition),
+                                                        Operand::ValueOf(target),
+                                                        Operand::ValueOf(alternate)}));
+        }
+        Store(builder, offsetof(GuestState, pc), target);
+        Need(builder.EndBlock(Terminal::Dispatch()));
+        return Submit(builder);
+    };
+    arm64::CompileOptions options;
+    options.dispatcher = 0x1000;
+    options.exit_handler = 0x2000;
+    options.l2_dispatcher = 0x3000;
+    options.pc_offset = offsetof(GuestState, pc);
+    options.flags_offset = offsetof(GuestState, packed_flags);
+    options.pinned_uniform_offset = offsetof(GuestState, gprs);
+    options.fault_locations = options.private_uniforms = options.deferred_pc = true;
+    options.native_nzcv = options.local_flags = true;
+    const auto compile = [&](OpCode marker, Tail tail) {
+        return arm64::Compile(build(marker, tail), options);
+    };
+    for (const auto mode : {arm64::DispatchMode::Inline, arm64::DispatchMode::InlineCounted}) {
+        options.dispatch_mode = mode;
+        const auto bare = compile(OpCode::Nop, Tail::Dynamic);
+        const auto interruptible = compile(OpCode::GuestDispatchSafepoint, Tail::Dynamic);
+        const auto explicit_poll = compile(OpCode::GuestSafepoint, Tail::Dynamic);
+        REQUIRE(bool(bare));
+        REQUIRE(bool(interruptible));
+        REQUIRE(bool(explicit_poll));
+        CHECK(interruptible.words == bare.words);
+        CHECK(explicit_poll.words.size() > interruptible.words.size());
+        REQUIRE(interruptible.faults.size() == 1);
+        const auto& site = interruptible.faults.front();
+        CHECK(site.Kind() == FaultSiteKind::DispatchInterrupt);
+        CHECK(site.last_offset == site.first_offset + 4);
+        CHECK(interruptible.words[WordOffset(site.first_offset)] ==
+              0xa94044f0u);  // LDP x16,x17,[x7].
+        CHECK(site.guest_pc == 0);
+        CHECK(interruptible.links.empty());
+
+        for (const auto tail : {Tail::Constant, Tail::ConstantSelect}) {
+            const auto fallback = compile(OpCode::GuestDispatchSafepoint, tail);
+            const auto ordinary = compile(OpCode::GuestSafepoint, tail);
+            REQUIRE(bool(fallback));
+            REQUIRE(bool(ordinary));
+            CHECK(fallback.words == ordinary.words);
+            CHECK(fallback.faults.empty());
+            CHECK(!fallback.links.empty());
+        }
+    }
+    options.dispatch_mode = arm64::DispatchMode::Callback;
+    auto fallback = compile(OpCode::GuestDispatchSafepoint, Tail::Dynamic);
+    auto ordinary = compile(OpCode::GuestSafepoint, Tail::Dynamic);
+    REQUIRE(bool(fallback));
+    REQUIRE(bool(ordinary));
+    CHECK(fallback.words == ordinary.words);
+    CHECK(fallback.faults.empty());
+
+    options.dispatch_mode = arm64::DispatchMode::Inline;
+    options.fault_locations = false;
+    options.deferred_pc = false;
+    fallback = compile(OpCode::GuestDispatchSafepoint, Tail::Dynamic);
+    ordinary = compile(OpCode::GuestSafepoint, Tail::Dynamic);
+    REQUIRE(bool(fallback));
+    REQUIRE(bool(ordinary));
+    CHECK(fallback.words == ordinary.words);
+    CHECK(fallback.faults.empty());
 }

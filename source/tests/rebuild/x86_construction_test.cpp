@@ -17,6 +17,7 @@
 #include <iterator>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -1900,6 +1901,8 @@ TEST_CASE("X87WindowsKeepTheirFirstServicePC", "[compile][x86-construction]") {
 }
 
 TEST_CASE("Guest event source boundaries", "[compile][x86-construction]") {
+    using Point = std::pair<OpCode, std::uint64_t>;
+    const auto point = [](OpCode op, std::uint64_t pc) { return std::vector<Point>{{op, pc}}; };
     const auto points = [](const auto& code, std::uint64_t pc, Scope scope, TargetMode mode) {
         const BlockWindow window{pc, code};
         const auto result =
@@ -1908,26 +1911,37 @@ TEST_CASE("Guest event source boundaries", "[compile][x86-construction]") {
                         layout,
                         {mode, 0, static_cast<std::uint64_t>(TargetFeature::GuestEvents)});
         REQUIRE(bool(result));
-        std::vector<std::uint64_t> actual;
+        std::vector<Point> actual;
         for (const auto& op : result.program.Operations())
-            if (op.opcode == OpCode::GuestSafepoint)
-                actual.push_back(result.program.Operands(op).front().Payload());
+            if (op.opcode == OpCode::GuestSafepoint || op.opcode == OpCode::GuestDispatchSafepoint)
+                actual.emplace_back(op.opcode, result.program.Operands(op).front().Payload());
         return actual;
     };
     for (auto mode : {TargetMode::Known, TargetMode::Unknown, TargetMode::EarlyOff})
         for (auto scope : {Scope::Block, Scope::Function}) {
             const std::array<std::uint8_t, 2> forward{0xeb, 0x10}, loop{0xe2, 0xfe},
-                    indirect{0xff, 0xd0};
+                    indirect{0xff, 0xd0}, indirect_jump{0xff, 0xe0};
             CHECK(points(forward, 0x1800, scope, mode).empty());
-            CHECK(points(loop, 0x1800, scope, mode) == std::vector<std::uint64_t>{0x1800});
-            CHECK(points(indirect, 0x1800, scope, mode) == std::vector<std::uint64_t>{0x1800});
+            CHECK(points(loop, 0x1800, scope, mode) == point(OpCode::GuestSafepoint, 0x1800));
+            CHECK(points(indirect, 0x1800, scope, mode) ==
+                  point(OpCode::GuestDispatchSafepoint, 0x1800));
+            CHECK(points(indirect_jump, 0x1800, scope, mode) ==
+                  point(OpCode::GuestDispatchSafepoint, 0x1800));
             const std::array<std::uint8_t, 1> nop{0x90}, ret{0xc3};
-            CHECK(points(nop, 0x1fff, scope, mode) == std::vector<std::uint64_t>{0x1fff});
-            CHECK(points(ret, 0x1800, scope, mode) == std::vector<std::uint64_t>{0x1800});
+            CHECK(points(nop, 0x1fff, scope, mode) == point(OpCode::GuestSafepoint, 0x1fff));
+            CHECK(points(ret, 0x1800, scope, mode) ==
+                  point(OpCode::GuestDispatchSafepoint, 0x1800));
+            CHECK(points(indirect, 0x1fff, scope, mode) == point(OpCode::GuestSafepoint, 0x1fff));
+            CHECK(points(ret, 0x1fff, scope, mode) == point(OpCode::GuestSafepoint, 0x1fff));
             const std::vector<std::uint8_t> linear(257, 0x90);
-            CHECK(points(linear, 0x1200, scope, mode) == std::vector<std::uint64_t>{0x1300});
+            CHECK(points(linear, 0x1200, scope, mode) == point(OpCode::GuestSafepoint, 0x1300));
+            auto budget_indirect = linear;
+            budget_indirect.pop_back();
+            budget_indirect.insert(budget_indirect.end(), indirect.begin(), indirect.end());
+            CHECK(points(budget_indirect, 0x1200, scope, mode) ==
+                  point(OpCode::GuestSafepoint, 0x1300));
             const std::array<std::uint8_t, 2> rep{0xf3, 0xaa};
-            CHECK(points(rep, 0x1800, scope, mode) == std::vector<std::uint64_t>{0x1800});
+            CHECK(points(rep, 0x1800, scope, mode) == point(OpCode::GuestSafepoint, 0x1800));
         }
 }
 

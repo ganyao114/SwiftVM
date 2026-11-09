@@ -123,5 +123,7 @@ extern "C" void SvmNativePendingCounted() noexcept {}
 extern "C" void SvmNativeExit() noexcept {}
 
 extern "C" void SvmNativeExceptionExit() noexcept {}
+
+extern "C" void SvmNativeEventExit() noexcept {}
 #endif
 }  // namespace swift::runtime::execution

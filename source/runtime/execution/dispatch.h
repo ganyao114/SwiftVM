@@ -87,7 +87,7 @@ struct NativeRunContext {
     // Raw host exception status survives cold lookup and numerical helpers.
     // Backends translate it only at architectural status observers.
     std::uint64_t guest_fpsr{};
-    DispatchEntry* l1{};
+    std::atomic<DispatchEntry*> l1{};
 
     // Root ABI recovery storage. Unit spills and helper frames never change
     // the saved root frame. Only Guest phase permits a native exception exit.
@@ -120,6 +120,8 @@ static_assert(offsetof(NativeRunContext, atomic_service) == 152);
 static_assert(offsetof(NativeRunContext, state) == 160);
 static_assert(offsetof(NativeRunContext, guest_fpsr) == 1024);
 static_assert(offsetof(NativeRunContext, l1) == SVM_DISPATCH_CTX_L1);
+static_assert(sizeof(std::atomic<DispatchEntry*>) == 8 &&
+              std::atomic<DispatchEntry*>::is_always_lock_free);
 static_assert(offsetof(NativeRunContext, root_sp) == 1040);
 static_assert(offsetof(NativeRunContext, phase) == 1048);
 static_assert(offsetof(NativeRunContext, pending_events) == 1056);
@@ -152,5 +154,6 @@ extern "C" void SvmNativePending() noexcept;
 extern "C" void SvmNativePendingCounted() noexcept;
 extern "C" void SvmNativeExit() noexcept;
 extern "C" void SvmNativeExceptionExit() noexcept;
+extern "C" void SvmNativeEventExit() noexcept;
 
 }  // namespace swift::runtime::execution

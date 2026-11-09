@@ -96,10 +96,12 @@ void VM::ObserveFinal() noexcept {
     stats.unaligned_recoveries = faults.unaligned_recoveries.load(std::memory_order_relaxed);
     stats.unaligned_patches = faults.unaligned_patches.load(std::memory_order_relaxed);
     stats.smc_write_faults = faults.smc_write_faults.load(std::memory_order_relaxed);
+    stats.dispatch_interrupts = faults.dispatch_interrupts.load(std::memory_order_relaxed);
     stats.dispatches = thread.native.dispatcher_entries;
     stats.cache_hits = thread.native.cache_hits;
     stats.directory_probe_steps = thread.native.probe_steps;
     stats.thread_l1_bytes = thread.l1.Data() ? DispatchCache::Bytes : 0;
+    stats.dispatch_interrupt_bytes = interrupt_l1.Data() ? DispatchCache::Bytes : 0;
     for (const auto& cache : caches) {
         stats.patched_links += cache.Patched();
         stats.pending_links += cache.Pending();
@@ -112,6 +114,10 @@ void VM::ObserveFinal() noexcept {
 void VM::EnsureThreadDispatch() {
     if (!backend.thread_dispatch_cache || thread.l1.Data()) return;
     thread.l1.Ensure();
+    interrupt_l1.Ensure();
+    thread.faults.dispatch_interrupt_bytes = DispatchCache::Bytes;
+    thread.faults.dispatch_interrupt_base.store(
+            reinterpret_cast<std::uintptr_t>(interrupt_l1.Data()), std::memory_order_release);
     stats.thread_dispatch_cache = true;
     RefreshNative(thread.native);
 }
@@ -131,8 +137,12 @@ MappingRelease VM::Close() noexcept {
         for (auto& cache : caches) cache.Release();
         thread.anchor = {};
         RefreshNative(thread.native);
-        thread.native.l1 = nullptr;
+        thread.native.l1.store(nullptr, std::memory_order_relaxed);
+        thread.faults.dispatch_interrupt_base.store(0, std::memory_order_relaxed);
+        thread.faults.dispatch_interrupt_bytes = 0;
+        thread.faults.dispatch_resume_l1.store(0, std::memory_order_relaxed);
         native = Merge(thread.l1.Release(), empty_l1.Release());
+        native = Merge(native, interrupt_l1.Release());
         compiler.Release();
         native = Merge(native, heap.Release());
     }

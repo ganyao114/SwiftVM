@@ -1,4 +1,5 @@
 #include <bit>
+#include <utility>
 #include "runtime/arch/arm64/service.h"
 #include "runtime/exit.h"
 #include "runtime/frontend/arm64/build_ir.h"
@@ -46,11 +47,19 @@ TEST_CASE("ARM guest events precede control effects and survive unknown targets"
           "[compile][arm-frontend]") {
     const Code branch{[](auto& a) { a.bl(0); }};
     const Code indirect{[](auto& a) { a.blr(x3); }};
+    const Code indirect_jump{[](auto& a) { a.br(x3); }};
+    const Code ret{[](auto& a) { a.ret(); }};
     const Code forward{[](auto& a) { a.b(8); }};
     const Code nop{[](auto& a) { a.nop(); }};
     const Code linear{[](auto& a) {
         for (unsigned i = 0; i != 257; ++i) a.nop();
     }};
+    const Code budget_indirect{[](auto& a) {
+        for (unsigned i = 0; i != 256; ++i) a.nop();
+        a.blr(x3);
+    }};
+    using Point = std::pair<ir::OpCode, U64>;
+    const auto point = [](ir::OpCode op, U64 pc) { return std::vector<Point>{{op, pc}}; };
     for (auto mode : {ir::TargetMode::Known, ir::TargetMode::Unknown, ir::TargetMode::EarlyOff})
         for (auto scope : {ir::Scope::Block, ir::Scope::Function}) {
             const auto points = [&](const Code& code, U64 pc) {
@@ -61,35 +70,48 @@ TEST_CASE("ARM guest events precede control effects and survive unknown targets"
                                        {},
                                        {mode, 0, static_cast<U64>(ir::TargetFeature::GuestEvents)});
                 REQUIRE(bool(result));
-                std::vector<U64> actual;
+                std::vector<Point> actual;
                 for (const auto& op : result.program.Operations())
-                    if (op.opcode == ir::OpCode::GuestSafepoint)
-                        actual.push_back(result.program.Operands(op).front().Payload());
+                    if (op.opcode == ir::OpCode::GuestSafepoint ||
+                        op.opcode == ir::OpCode::GuestDispatchSafepoint)
+                        actual.emplace_back(op.opcode,
+                                            result.program.Operands(op).front().Payload());
                 if (!actual.empty())
-                    CHECK(result.program.Operations().front().opcode ==
-                                  ir::OpCode::GuestSafepoint ||
-                          actual.front() != pc);
+                    CHECK(result.program.Operations().front().opcode == actual.front().first ||
+                          actual.front().second != pc);
                 return actual;
             };
-            CHECK(points(branch, CodeBase) == std::vector<U64>{CodeBase});
-            CHECK(points(indirect, CodeBase) == std::vector<U64>{CodeBase});
+            CHECK(points(branch, CodeBase) == point(ir::OpCode::GuestSafepoint, CodeBase));
+            CHECK(points(indirect, CodeBase) ==
+                  point(ir::OpCode::GuestDispatchSafepoint, CodeBase));
+            CHECK(points(indirect_jump, CodeBase) ==
+                  point(ir::OpCode::GuestDispatchSafepoint, CodeBase));
+            CHECK(points(ret, CodeBase) == point(ir::OpCode::GuestDispatchSafepoint, CodeBase));
             CHECK(points(forward, CodeBase).empty());
-            CHECK(points(nop, CodeBase + 4092) == std::vector<U64>{CodeBase + 4092});
-            CHECK(points(linear, CodeBase) == std::vector<U64>{CodeBase + 1024});
+            CHECK(points(nop, CodeBase + 4092) ==
+                  point(ir::OpCode::GuestSafepoint, CodeBase + 4092));
+            CHECK(points(indirect, CodeBase + 4092) ==
+                  point(ir::OpCode::GuestSafepoint, CodeBase + 4092));
+            CHECK(points(linear, CodeBase) == point(ir::OpCode::GuestSafepoint, CodeBase + 1024));
+            CHECK(points(budget_indirect, CodeBase) ==
+                  point(ir::OpCode::GuestSafepoint, CodeBase + 1024));
         }
-    State state;
-    state.pc = CodeBase;
-    state.gprs[30] = 0x12345678;
     front::DirectServices services;
     services.guest_events = [](void*) noexcept { return true; };
-    const auto decoded = front::DecodeOne(branch.View(), CodeBase);
-    REQUIRE(bool(decoded));
-    const auto stopped =
-            front::InterpretDecoded(decoded.instruction, branch.View(), state, services);
-    CHECK(stopped.kind == front::StepKind::Service);
-    CHECK(stopped.service == swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents));
-    CHECK(state.pc == CodeBase);
-    CHECK(state.gprs[30] == 0x12345678);
+    for (const auto* code : {&branch, &indirect, &ret}) {
+        State state;
+        state.pc = CodeBase;
+        state.gprs[30] = 0x12345678;
+        const auto decoded = front::DecodeOne(code->View(), CodeBase);
+        REQUIRE(bool(decoded));
+        const auto stopped =
+                front::InterpretDecoded(decoded.instruction, code->View(), state, services);
+        CHECK(stopped.kind == front::StepKind::Service);
+        CHECK(stopped.service ==
+              swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents));
+        CHECK(state.pc == CodeBase);
+        CHECK(state.gprs[30] == 0x12345678);
+    }
 }
 
 TEST_CASE("ARM frontend preserves SP ZR W writes and canonical no-borrow flags",

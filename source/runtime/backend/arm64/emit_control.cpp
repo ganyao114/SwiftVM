@@ -7,6 +7,14 @@
 namespace swift::runtime::backend::arm64 {
 
 namespace detail {
+void Writer::HandleGuestDispatchSafepointFamily(OpContext& ctx) {
+    if (InterruptibleDispatch()) {
+        (void)IntegerImmediate(ctx.cursor.Take());
+        return;
+    }
+    HandleGuestSafepointFamily(ctx);
+}
+
 void Writer::HandleGuestSafepointFamily(OpContext& ctx) {
     if (!Linked() || options.pc_offset == UINT32_MAX) Reject(CompileError::UnsupportedOperand);
     const auto resume_pc = IntegerImmediate(ctx.cursor.Take());

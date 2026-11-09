@@ -13,7 +13,7 @@ Interpreter::Value Interpreter::Handle(Type requested, std::span<const Operand> 
     const auto type = requested != Type::Void ? requested : a.empty() ? Type::Void : View(a[0]);
     const auto read = [&](std::size_t i) { return static_cast<u64>(Read(a[i])); };
     const auto raw = [&](std::size_t i) { return static_cast<u64>(Raw(a[i])); };
-    if constexpr (op == OpCode::GuestSafepoint) {
+    if constexpr (op == OpCode::GuestSafepoint || op == OpCode::GuestDispatchSafepoint) {
         if (services.guest_events && services.guest_events(services.opaque)) {
             environment.pc = a[0].payload;
             throw Exit{ExitKind::Service, 0, runtime::ExitValue(runtime::NativeExit::GuestEvents)};

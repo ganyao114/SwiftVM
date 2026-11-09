@@ -97,7 +97,7 @@ addi.d $t4, $t4, 1
 st.d $t4, $r22, SVM_LA_CTX_REL(\field)
 .endm
 
-.macro SVM_LA_DISPATCH counted=0
+.macro SVM_LA_DISPATCH name, counted=0
 .if \counted
 SVM_LA_COUNT SVM_LA_CTX_DISPATCHES
 .endif
@@ -108,6 +108,9 @@ beqz $t6, 6f
 bstrpick.d $t2, $a0, (SVM_DISPATCH_L1_BITS - 1), 0
 slli.d $t2, $t2, SVM_DISPATCH_L1_ENTRY_SHIFT
 add.d $t6, $t6, $t2
+.global \name\()L1Probe
+.hidden \name\()L1Probe
+\name\()L1Probe:
 ld.d $t5, $t6, 0
 bne $t5, $a0, 6f
 ld.d $t5, $t6, 8
@@ -199,14 +202,14 @@ SVM_LA_RESOLVE_AND_ENTER
 .global SvmNativeDispatch
 .type SvmNativeDispatch, @function
 SvmNativeDispatch:
-SVM_LA_DISPATCH 0
+SVM_LA_DISPATCH SvmNativeDispatch, 0
 .size SvmNativeDispatch, .-SvmNativeDispatch
 
 .p2align 2
 .global SvmNativeDispatchCounted
 .type SvmNativeDispatchCounted, @function
 SvmNativeDispatchCounted:
-SVM_LA_DISPATCH 1
+SVM_LA_DISPATCH SvmNativeDispatchCounted, 1
 .size SvmNativeDispatchCounted, .-SvmNativeDispatchCounted
 
 .p2align 2
@@ -244,6 +247,15 @@ SVM_LA_CLEAR_ACTIVE
 SVM_LA_CAPTURE_GUEST_FP
 b .Lsvm_restore_host_root
 .size SvmNativeExit, .-SvmNativeExit
+.p2align 2
+.global SvmNativeEventExit
+.type SvmNativeEventExit, @function
+SvmNativeEventExit:
+addi.d $r22, $a0, SVM_LA_CTX_STATE
+SVM_LA_PHASE SVM_NATIVE_PHASE_LEAVING
+li.d $a0, SVM_NATIVE_EXIT_GUEST_EVENTS
+b .Lsvm_restore_host_root
+.size SvmNativeEventExit, .-SvmNativeEventExit
 .p2align 2
 .global SvmNativeExceptionExit
 .type SvmNativeExceptionExit, @function

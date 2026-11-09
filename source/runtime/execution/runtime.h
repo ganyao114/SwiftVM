@@ -72,7 +72,7 @@ struct RuntimeStats {
     std::uint64_t code_units_published{}, static_links{}, patched_links{}, pending_links{},
             pending_targets{};
     std::uint64_t link_relocation_rows{}, link_relocation_capacity{};
-    std::uint64_t thread_l1_bytes{};
+    std::uint64_t thread_l1_bytes{}, dispatch_interrupt_bytes{}, dispatch_interrupts{};
     std::uint64_t smc_write_faults{}, smc_function_single_block_attempts{};
     std::uint64_t smc_file_write_invalidations{};
     std::uint64_t fault_sites{}, unaligned_recoveries{}, unaligned_patches{};

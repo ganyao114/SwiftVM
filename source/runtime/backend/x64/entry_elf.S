@@ -63,6 +63,9 @@ SVM_FUNCTION \name
  and eax,(1<<SVM_DISPATCH_L1_BITS)-1
  shl rax,SVM_DISPATCH_L1_ENTRY_SHIFT
  add r8,rax
+ .globl \name\()L1Probe
+ .hidden \name\()L1Probe
+\name\()L1Probe:
  cmp qword ptr [r8],rdi
  jne .Ll2\@
  mov r11,qword ptr [r8+8]
@@ -165,6 +168,12 @@ SVM_FUNCTION SvmNativeExit
  stmxcsr dword ptr [r12+SVM_X64_CTX_GUEST_MXCSR-SVM_X64_CTX_STATE]
  jmp .Lrestore_host_root
 SVM_END SvmNativeExit
+SVM_FUNCTION SvmNativeEventExit
+ lea r12,[rdi+SVM_X64_CTX_STATE]
+ mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_LEAVING
+ mov eax,SVM_NATIVE_EXIT_GUEST_EVENTS
+ jmp .Lrestore_host_root
+SVM_END SvmNativeEventExit
 SVM_FUNCTION SvmNativeExceptionExit
  lea r12,[rdi+SVM_X64_CTX_STATE]
  mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_LEAVING

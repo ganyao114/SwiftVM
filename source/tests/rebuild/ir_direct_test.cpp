@@ -281,31 +281,33 @@ TEST_CASE("FaultKeepsCompletedEffects", "[compile][ir-direct]") {
 }
 
 TEST_CASE("Guest safepoint uses owner readiness and the explicit PC", "[compile][ir-direct]") {
-    Machine machine;
-    bool ready{};
-    auto services = machine.Services();
-    services.opaque = &ready;
-    services.guest_events = [](void* opaque) noexcept { return *static_cast<bool*>(opaque); };
-    direct::Interpreter interpreter({machine.uniforms, machine.flags, machine.pc, machine.mxcsr},
-                                    services);
-    const auto flags = machine.flags;
-    Need(interpreter.Emit<OpCode::GuestSafepoint>(Type::Void,
-                                                  {Operand::Immediate(0x4567, Type::U64)}));
-    CHECK(machine.pc == 0x1200);
-    ready = true;
-    bool delivered{};
-    try {
-        Need(interpreter.Emit<OpCode::GuestSafepoint>(Type::Void,
-                                                      {Operand::Immediate(0x4567, Type::U64)}));
-    } catch (const direct::Exit& exit) {
-        delivered =
-                exit.kind == direct::ExitKind::Service &&
-                exit.service == swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents);
-    }
-    CHECK(delivered);
-    CHECK(machine.pc == 0x4567);
-    CHECK(machine.flags == flags);
-    CHECK(machine.mxcsr == 0x5f80);
+    const auto run = []<OpCode op> {
+        Machine machine;
+        bool ready{};
+        auto services = machine.Services();
+        services.opaque = &ready;
+        services.guest_events = [](void* opaque) noexcept { return *static_cast<bool*>(opaque); };
+        direct::Interpreter interpreter(
+                {machine.uniforms, machine.flags, machine.pc, machine.mxcsr}, services);
+        const auto flags = machine.flags;
+        Need(interpreter.Emit<op>(Type::Void, {Operand::Immediate(0x4567, Type::U64)}));
+        CHECK(machine.pc == 0x1200);
+        ready = true;
+        bool delivered{};
+        try {
+            Need(interpreter.Emit<op>(Type::Void, {Operand::Immediate(0x4567, Type::U64)}));
+        } catch (const direct::Exit& exit) {
+            delivered = exit.kind == direct::ExitKind::Service &&
+                        exit.service ==
+                                swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents);
+        }
+        CHECK(delivered);
+        CHECK(machine.pc == 0x4567);
+        CHECK(machine.flags == flags);
+        CHECK(machine.mxcsr == 0x5f80);
+    };
+    run.operator()<OpCode::GuestSafepoint>();
+    run.operator()<OpCode::GuestDispatchSafepoint>();
 }
 
 TEST_CASE("Direct arithmetic and alignment faults keep their cause", "[compile][ir-direct]") {

@@ -153,6 +153,8 @@ void WriteReport(std::FILE* stream,
     r.Number("native_nzcv", s.native_nzcv);
     r.Number("pinned_uniform_slots", s.pinned_uniform_slots);
     r.Number("smc_write_faults", s.smc_write_faults);
+    r.Number("dispatch_interrupts", s.dispatch_interrupts);
+    r.Number("dispatch_interrupt_virtual_bytes", s.dispatch_interrupt_bytes);
     r.Number("smc_function_single_block_attempts", s.smc_function_single_block_attempts);
     r.Number("smc_file_write_invalidations", s.smc_file_write_invalidations);
     r.Optional("compile_decode_ns", s.compile_decode.nanoseconds, options.decode_timing);

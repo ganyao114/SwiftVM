@@ -415,7 +415,7 @@ void ArmSignalReturn(ir::Scope scope) {
     Check(vm.Close().Complete(), "ARM64 signal fixture releases all VM mappings");
 }
 
-void AsyncSignalReturn(ir::Scope scope) {
+void AsyncSignalReturn(ir::Scope scope, bool indirect = false) {
     swift::runtime::platform::HostRuntime host{false};
     execution::RuntimeOptions options;
     options.mode = execution::ExecutionMode::JitOnly;
@@ -427,10 +427,16 @@ void AsyncSignalReturn(ir::Scope scope) {
             memory.Map(0, memory.PageSize(), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
     Check(data != UINT64_MAX, "allocate asynchronous signal observations");
     const auto output = data + 64;
+    const auto target_slot = data + 512;
     GuestCode code;
     code.Install(10, data, output);  // SIGUSR1.
+    if (indirect) code.MovAbs(13, target_slot);
     const auto loop = code.PC();
-    code.Emit({0x48, 0xff, 0x43, Loaded, 0xeb, 0xfa});  // INC [RBX+16]; JMP loop.
+    code.Emit({0x48, 0xff, 0x43, Loaded});  // INC [RBX+16].
+    if (indirect)
+        code.Emit({0x41, 0xff, 0x65, 0});  // JMP qword [R13]: real dynamic L1 dispatch.
+    else
+        code.Emit({0xeb, 0xfa});  // JMP loop.
     const auto continuation = code.PC();
     code.Exit(42);
     const auto handler = code.PC();
@@ -439,7 +445,9 @@ void AsyncSignalReturn(ir::Scope scope) {
     code.Emit({0xc3});
     const auto restorer = code.Restorer();
     const std::array<std::uint64_t, 4> action{handler, sa_siginfo | sa_restorer, restorer, 0};
-    Check(memory.CopyOut(data, action.data(), sizeof(action)), "initialize async Linux sigaction");
+    Check(memory.CopyOut(data, action.data(), sizeof(action)) &&
+                  (!indirect || memory.CopyOut(target_slot, &loop, sizeof(loop))),
+          "initialize async Linux sigaction and indirect target");
     vm.PrepareGuest(code.Image(), "async-exception-recovery-test");
     const auto target_thread = syscall(SYS_gettid);
     std::atomic<bool> done{}, sent{};
@@ -488,16 +496,24 @@ void AsyncSignalReturn(ir::Scope scope) {
                   (scope != ir::Scope::Function || stats.function_attempts != 0),
           "asynchronous Block/Function delivery uses native safepoints without interpretation");
     Check(vm.Close().Complete(), "async signal fixture releases all VM mappings");
+#if defined(__aarch64__)
+    if (indirect) {
+        Check(observed[SavedRip / 8] == loop,
+              "L1 interruption resumes after the indirect jump at its actual target");
+        Check(stats.dispatch_interrupts > 0,
+              "the asynchronous request exits through the protected L1 lookup");
+    }
+#endif
 }
 
-void BoundedAsyncSignalReturn(ir::Scope scope) {
+void BoundedAsyncSignalReturn(ir::Scope scope, bool indirect = false) {
     // An implementation that never polls must fail this case without hanging
     // the runner. The isolated child owns the VM, sender and signal actions.
     const auto child = fork();
     Check(child >= 0, "fork isolated asynchronous recovery case");
     if (!child) {
         try {
-            AsyncSignalReturn(scope);
+            AsyncSignalReturn(scope, indirect);
             _exit(0);
         } catch (const std::exception& error) {
             std::fprintf(stderr, "async recovery child: %s\n", error.what());
@@ -671,4 +687,11 @@ TEST_CASE("Native nested guest signals restore alternate stacks and signal masks
           "[native][execution][exception][nested]") {
     if (!swift::tests::NativeMode()) return;
     NestedSignalReturn();
+}
+
+TEST_CASE("Native asynchronous signal leaves an indirect loop through its selected L1 view",
+          "[native][execution][dispatch-interrupt]") {
+    if (!swift::tests::NativeMode()) return;
+    for (const auto scope : {ir::Scope::Block, ir::Scope::Function})
+        BoundedAsyncSignalReturn(scope, true);
 }

@@ -43,6 +43,60 @@ const fpsimd_context* FindFPSIMD(const ucontext_t& machine) noexcept {
     return nullptr;
 }
 
+extern "C" void SvmNativeDispatchL1Probe() noexcept;
+extern "C" void SvmNativeDispatchCountedL1Probe() noexcept;
+extern "C" void SvmNativeDispatchNZCVL1Probe() noexcept;
+extern "C" void SvmNativeDispatchNZCVCountedL1Probe() noexcept;
+
+bool IsDispatchProbe(std::uintptr_t pc) noexcept {
+    return pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchL1Probe) ||
+           pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchCountedL1Probe) ||
+           pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchNZCVL1Probe) ||
+           pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchNZCVCountedL1Probe);
+}
+
+bool RestoreNativeState(FaultContext& context,
+                        const backend::FaultSite& site,
+                        const ucontext_t& machine) noexcept {
+    auto* native = context.native;
+    const bool needs_fp = context.pinned_vector_offset != UINT32_MAX ||
+                          native->fp_environment != 0 || context.guest_fp_status != nullptr;
+    const auto* fp = needs_fp ? FindFPSIMD(machine) : nullptr;
+    if (needs_fp && !fp) return false;
+    const auto vectors = context.pinned_vector_offset != UINT32_MAX
+                                 ? std::as_bytes(std::span{fp->vregs})
+                                 : std::span<const std::byte>{};
+    if (!backend::arm64::RestoreGuestState(context,
+                                           site,
+                                           std::as_bytes(std::span{machine.uc_mcontext.regs}),
+                                           machine.uc_mcontext.pstate,
+                                           vectors))
+        return false;
+    if (native->fp_environment) native->guest_fpsr = fp->fpsr;
+    if (context.guest_fp_status) *context.guest_fp_status = fp->fpsr;
+    return true;
+}
+
+void LeaveNative(FaultContext& context, ucontext_t& machine, void (*exit)() noexcept) noexcept {
+    auto* native = context.native;
+    native->phase.store(SVM_NATIVE_PHASE_LEAVING, std::memory_order_relaxed);
+    machine.uc_mcontext.regs[0] = reinterpret_cast<std::uintptr_t>(native);
+    machine.uc_mcontext.sp = native->root_sp;
+    machine.uc_mcontext.pc = reinterpret_cast<std::uintptr_t>(exit);
+}
+
+bool RecoverDispatchInterrupt(FaultContext& context,
+                              const backend::FaultSite& site,
+                              ucontext_t& machine) noexcept {
+    if (!context.guest_pc || !RestoreNativeState(context, site, machine)) return false;
+    // The CALL/RET has completed. x0 carries the selected target even when
+    // deferred PC publication leaves state.pc at the source instruction.
+    *context.guest_pc = machine.uc_mcontext.regs[0];
+    context.dispatch_interrupts.fetch_add(1, std::memory_order_relaxed);
+    LeaveNative(context, machine, execution::SvmNativeEventExit);
+    return true;
+}
+
 #endif
 bool RecoverNative(FaultContext& context,
                    int signal,
@@ -51,12 +105,21 @@ bool RecoverNative(FaultContext& context,
                    void* raw) noexcept {
 #if defined(__aarch64__)
     auto* native = context.native;
-    if (!native || !native->root_sp ||
-        native->phase.load(std::memory_order_relaxed) != SVM_NATIVE_PHASE_GUEST ||
-        (signal != SIGSEGV && signal != SIGBUS))
-        return false;
+    if (!native || !native->root_sp || (signal != SIGSEGV && signal != SIGBUS)) return false;
+    const auto phase = native->phase.load(std::memory_order_relaxed);
+    if (phase != SVM_NATIVE_PHASE_GUEST && phase != SVM_NATIVE_PHASE_ENTERING) return false;
     auto* machine = static_cast<ucontext_t*>(raw);
     const auto host_pc = static_cast<std::uintptr_t>(machine->uc_mcontext.pc);
+    const bool interrupt = signal == SIGSEGV && signal_code == SEGV_ACCERR &&
+                           execution::IsDispatchInterrupt(context, address);
+    if (interrupt && IsDispatchProbe(host_pc)) {
+        // The shared dispatcher lies outside the code cache. At this exact
+        // probe the complete fixed ABI is established, including during entry.
+        backend::FaultSite site;
+        site.SetKind(backend::FaultSiteKind::DispatchInterrupt);
+        return RecoverDispatchInterrupt(context, site, *machine);
+    }
+    if (phase != SVM_NATIVE_PHASE_GUEST) return false;
     const auto* code = context.active.load();
     if (code) {
         if (context.lookup_native) code = context.lookup_native(context.lookup_opaque, host_pc);
@@ -67,6 +130,11 @@ bool RecoverNative(FaultContext& context,
         if (host_pc >= base && host_pc - base < code->bytes && !((host_pc - base) & 3)) {
             const auto offset = host_pc - base;
             for (const auto& site : code->faults) {
+                if (site.Kind() == backend::FaultSiteKind::DispatchInterrupt) {
+                    if (interrupt && offset >= site.first_offset && offset < site.last_offset)
+                        return RecoverDispatchInterrupt(context, site, *machine);
+                    continue;
+                }
                 if (!(site.recovery[4] & 7)) continue;
                 const auto fallback = std::uint64_t{site.fallback_offset};
                 const bool has_fallback = fallback != UINT32_MAX && fallback + 12 <= code->bytes;
@@ -97,30 +165,10 @@ bool RecoverNative(FaultContext& context,
                         context.host_failure->Set(
                                 ErrorKind::System, "patch native unaligned fallback", errno);
                 }
-                const bool needs_fp = context.pinned_vector_offset != UINT32_MAX ||
-                                      native->fp_environment != 0 ||
-                                      context.guest_fp_status != nullptr;
-                const auto* fp = needs_fp ? FindFPSIMD(*machine) : nullptr;
-                if (needs_fp && !fp) break;
-                const auto vectors = context.pinned_vector_offset != UINT32_MAX
-                                             ? std::as_bytes(std::span{fp->vregs})
-                                             : std::span<const std::byte>{};
-                if (!backend::arm64::RestoreGuestState(
-                            context,
-                            site,
-                            std::as_bytes(std::span{machine->uc_mcontext.regs}),
-                            machine->uc_mcontext.pstate,
-                            vectors))
-                    break;
-                if (native->fp_environment) native->guest_fpsr = fp->fpsr;
-                if (context.guest_fp_status) *context.guest_fp_status = fp->fpsr;
+                if (!RestoreNativeState(context, site, *machine)) break;
                 execution::RecordGuestFault(context, site, signal, signal_code, host_pc, address);
                 context.exception.native_offset = static_cast<std::uint32_t>(host_pc - base);
-                native->phase.store(SVM_NATIVE_PHASE_LEAVING, std::memory_order_relaxed);
-                machine->uc_mcontext.regs[0] = reinterpret_cast<std::uintptr_t>(native);
-                machine->uc_mcontext.sp = native->root_sp;
-                machine->uc_mcontext.pc =
-                        reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExceptionExit);
+                LeaveNative(context, *machine, execution::SvmNativeExceptionExit);
                 return true;
             }
         }

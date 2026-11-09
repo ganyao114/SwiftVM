@@ -18,8 +18,25 @@ bool VM::RecoverCodeWrite(void* opaque, std::uintptr_t address) noexcept {
 void VM::RefreshNative(NativeRunContext& context) noexcept {
     context.mask = thread.faults.smc_pending ? 0 : Cache().Mask();
     context.slots = thread.faults.smc_pending ? Cache().EmptyData() : Cache().Data();
-    context.l1 = thread.faults.smc_pending ? empty_l1.Data() : thread.l1.Data();
+    auto* normal = thread.faults.smc_pending ? empty_l1.Data() : thread.l1.Data();
+    thread.faults.dispatch_resume_l1.store(reinterpret_cast<std::uintptr_t>(normal),
+                                           std::memory_order_release);
+    RefreshDispatchView();
     context.anchor = &thread.anchor;
+}
+
+void VM::RefreshDispatchView() noexcept {
+    auto& native = thread.native;
+    const auto interrupt = thread.faults.dispatch_interrupt_base.load(std::memory_order_acquire);
+    const auto normal = thread.faults.dispatch_resume_l1.load(std::memory_order_acquire);
+    const auto selected =
+            interrupt && native.pending_events.load(std::memory_order_acquire) ? interrupt : normal;
+    native.l1.store(reinterpret_cast<DispatchEntry*>(selected), std::memory_order_release);
+    // Ingress can interrupt the normal-view store above after its pending
+    // read. Recheck so that the resumed owner never overwrites a new request.
+    // A concurrently cancelled request may leave a harmless stale trap view.
+    if (interrupt && native.pending_events.load(std::memory_order_acquire))
+        native.l1.store(reinterpret_cast<DispatchEntry*>(interrupt), std::memory_order_release);
 }
 
 void VM::ObserveCache() noexcept {

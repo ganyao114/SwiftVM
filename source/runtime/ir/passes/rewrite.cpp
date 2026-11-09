@@ -235,7 +235,8 @@ Error RewriteValues(Context& context) {
         // These records have no rewritable value inputs or fold to do.
         // Effects above still apply; no decoded Operand draft is needed.
         if (op.opcode == OpCode::LoadImm || op.opcode == OpCode::FaultLocation ||
-            op.opcode == OpCode::GuestSafepoint || op.opcode == OpCode::Nop)
+            op.opcode == OpCode::GuestSafepoint || op.opcode == OpCode::GuestDispatchSafepoint ||
+            op.opcode == OpCode::Nop)
             continue;
         const bool has_metadata = meta != OperationMetadata{};
         // Flags metadata consumes the same logical input bits after a

@@ -257,8 +257,12 @@ void FaultScope::Handle(int number, siginfo_t* info, void* raw) noexcept {
             return;
         }
         const auto* native = context->native;
+        const auto phase =
+                native ? native->phase.load(std::memory_order_acquire) : SVM_NATIVE_PHASE_RUNTIME;
+        // A shared root dispatcher can probe L1 before entering its first
+        // unit. The adapter admits Entering only at that exact probe PC.
         if (synchronous && native && native->root_sp &&
-            native->phase.load(std::memory_order_acquire) == SVM_NATIVE_PHASE_GUEST &&
+            (phase == SVM_NATIVE_PHASE_GUEST || phase == SVM_NATIVE_PHASE_ENTERING) &&
             context->recover_native &&
             context->recover_native(*context,
                                     number,

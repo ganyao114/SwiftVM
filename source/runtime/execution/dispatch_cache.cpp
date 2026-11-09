@@ -43,4 +43,21 @@ MappingRelease DispatchCache::Release() noexcept {
     return {};
 }
 
+DispatchInterrupt::~DispatchInterrupt() { (void)Release(); }
+
+void DispatchInterrupt::Ensure() {
+    if (data) return;
+    auto* mapping =
+            mmap(nullptr, DispatchCache::Bytes, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mapping == MAP_FAILED) swift::ThrowSystemError("map interrupt dispatch view", errno);
+    data = static_cast<DispatchEntry*>(mapping);
+}
+
+MappingRelease DispatchInterrupt::Release() noexcept {
+    if (!data) return {};
+    if (munmap(data, DispatchCache::Bytes)) return {1, errno, 0};
+    data = nullptr;
+    return {};
+}
+
 }  // namespace swift::runtime::execution

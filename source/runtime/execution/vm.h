@@ -84,6 +84,7 @@ private:
     CodeHeap heap;
     std::array<CodeCache, 4> caches;
     DispatchCache empty_l1;
+    DispatchInterrupt interrupt_l1;
     CompileService compiler;
     GuestThread thread;
     platform::LoadedImage image;
@@ -127,6 +128,7 @@ private:
     void ObserveCache() noexcept;
     void ObserveFinal() noexcept;
     void EnsureThreadDispatch();
+    void RefreshDispatchView() noexcept;
     void RefreshNative(NativeRunContext&) noexcept;
     void MergeFPStatus() noexcept;
     void UpdateFPEnvironment(bool architectural_write = false);

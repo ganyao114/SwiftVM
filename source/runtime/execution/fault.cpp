@@ -1,6 +1,15 @@
+#include "dispatch.h"
 #include "fault.h"
 
 namespace swift::runtime::execution {
+bool IsDispatchInterrupt(const FaultContext& context, std::uintptr_t address) noexcept {
+    const auto base = context.dispatch_interrupt_base.load(std::memory_order_acquire);
+    // A lookup may have loaded the interrupt view just before a pending event
+    // was cancelled. Its exact registered probe still returns normally to VM.
+    return context.native && base && address >= base &&
+           address - base < context.dispatch_interrupt_bytes;
+}
+
 void RecordMemoryFault(FaultContext& context,
                        std::uint64_t address,
                        GuestExceptionAccess access,

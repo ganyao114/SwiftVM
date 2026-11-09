@@ -102,6 +102,7 @@ GuestSignals::~GuestSignals() {
 
 void GuestSignals::Ready() noexcept {
     vm.thread.native.pending_events.store(pending & (~blocked | waited), std::memory_order_release);
+    vm.RefreshDispatchView();
 }
 
 bool GuestSignals::OwnSignals(u64 signals) {
@@ -353,7 +354,12 @@ bool GuestSignals::TakePending(GuestExceptionInfo& event) noexcept {
     IngressGuard guard{owned, pressure};
     if (!guard.valid) return false;
     const auto ready = pending & ~blocked;
-    if (!ready) return false;
+    if (!ready) {
+        // A cancelled request can leave an in-flight protected lookup. Its
+        // event exit must also restore the view when there is nothing to pop.
+        Ready();
+        return false;
+    }
     int number = 1;
     while (!(ready & Bit(number))) ++number;
     if (number < 32) {

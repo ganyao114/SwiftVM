@@ -221,6 +221,7 @@ void Writer::Emit(const Operation& operation, Effect effects) {
             operation.opcode == OpCode::LoadMemory || operation.opcode == OpCode::LoadMemoryTSO ||
             operation.opcode == OpCode::StoreMemory || operation.opcode == OpCode::StoreMemoryTSO;
     if (operation.opcode != OpCode::GuestSafepoint &&
+        operation.opcode != OpCode::GuestDispatchSafepoint &&
         (reads_flags || legacy_mask ||
          HasAnyEffect(effects, Effect::Unknown | Effect::External | Effect::Control) ||
          (metadata == OperationMetadata{} && HasAnyEffect(effects, Effect::WriteFlags)) ||

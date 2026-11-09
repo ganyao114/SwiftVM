@@ -710,3 +710,13 @@ INST(GuestSafepoint,
      Void,
      (Effect::ReadGuestState | Effect::ReadFlags | Effect::Control),
      Imm)
+
+// The same complete pre-instruction observation for an indirect guest control
+// transfer. A backend may defer delivery until its completed dispatch only if
+// that actual exit passes through its interruptible lookup. Static lowering
+// must retain the ordinary pre-instruction check.
+INST(GuestDispatchSafepoint,
+     Void,
+     Void,
+     (Effect::ReadGuestState | Effect::ReadFlags | Effect::Control),
+     Imm)

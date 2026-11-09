@@ -44,4 +44,21 @@ private:
     DispatchEntry* data{};
 };
 
+// All threads in one VM may select this same protected range independently.
+// It reserves the whole L1 index span and never contains cache entries.
+class DispatchInterrupt {
+public:
+    DispatchInterrupt() = default;
+    ~DispatchInterrupt();
+    DispatchInterrupt(const DispatchInterrupt&) = delete;
+    DispatchInterrupt& operator=(const DispatchInterrupt&) = delete;
+    void Ensure();
+    MappingRelease Release() noexcept;
+
+    DispatchEntry* Data() const noexcept { return data; }
+
+private:
+    DispatchEntry* data{};
+};
+
 }  // namespace swift::runtime::execution

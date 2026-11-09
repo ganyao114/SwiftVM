@@ -97,7 +97,7 @@ addi t4, t4, 1
 sd t4, SVM_RV_CTX_REL(\field)(s1)
 .endm
 
-.macro SVM_RV_DISPATCH counted=0
+.macro SVM_RV_DISPATCH name, counted=0
 .if \counted
 SVM_RV_COUNT SVM_RV_CTX_DISPATCHES
 .endif
@@ -108,6 +108,9 @@ beqz t6, 6f
 slli t2, a0, (64 - SVM_DISPATCH_L1_BITS)
 srli t2, t2, (64 - SVM_DISPATCH_L1_BITS - SVM_DISPATCH_L1_ENTRY_SHIFT)
 add t6, t6, t2
+.global \name\()L1Probe
+.hidden \name\()L1Probe
+\name\()L1Probe:
 ld t5, 0(t6)
 bne t5, a0, 6f
 ld t5, 8(t6)
@@ -204,14 +207,14 @@ SVM_RV_RESOLVE_AND_ENTER
 .global SvmNativeDispatch
 .type SvmNativeDispatch, @function
 SvmNativeDispatch:
-SVM_RV_DISPATCH 0
+SVM_RV_DISPATCH SvmNativeDispatch, 0
 .size SvmNativeDispatch, .-SvmNativeDispatch
 
 .p2align 2
 .global SvmNativeDispatchCounted
 .type SvmNativeDispatchCounted, @function
 SvmNativeDispatchCounted:
-SVM_RV_DISPATCH 1
+SVM_RV_DISPATCH SvmNativeDispatchCounted, 1
 .size SvmNativeDispatchCounted, .-SvmNativeDispatchCounted
 
 .p2align 2
@@ -250,6 +253,15 @@ SVM_RV_CLEAR_ACTIVE
 SVM_RV_CAPTURE_GUEST_FP
 j .Lsvm_restore_host_root
 .size SvmNativeExit, .-SvmNativeExit
+.p2align 2
+.global SvmNativeEventExit
+.type SvmNativeEventExit, @function
+SvmNativeEventExit:
+addi s1, a0, SVM_RV_CTX_STATE
+SVM_RV_PHASE SVM_NATIVE_PHASE_LEAVING
+li a0, SVM_NATIVE_EXIT_GUEST_EVENTS
+j .Lsvm_restore_host_root
+.size SvmNativeEventExit, .-SvmNativeEventExit
 .p2align 2
 .global SvmNativeExceptionExit
 .type SvmNativeExceptionExit, @function

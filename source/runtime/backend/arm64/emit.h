@@ -90,6 +90,7 @@ private:
 #undef A64_EMIT_OP
     void HandleStringFamily(OpContext&);
     void HandleGuestSafepointFamily(OpContext&);
+    void HandleGuestDispatchSafepointFamily(OpContext&);
     void HandleSse42FlagsFamily(OpContext&);
 
     void HandleCryptoFamily(OpContext&);
@@ -791,6 +792,7 @@ private:
                   u64 target_pc = 0,
                   u32 conditional_head = UINT32_MAX);
     void DynamicDispatch();
+    bool InterruptibleDispatch() const;
     void PublishPCAndJump(u64 target_pc);
     void Epilogue();
     unsigned PrepareTerminalCondition(unsigned condition, bool& restore, bool& flip);

@@ -91,6 +91,7 @@ namespace swift::runtime::backend::arm64::detail {
                 options->pc_offset < field.Payload() + bytes)
                 result.publish_entry_pc = true;
         } else if (operation.opcode != OpCode::GuestSafepoint &&
+                   operation.opcode != OpCode::GuestDispatchSafepoint &&
                    HasAnyEffect(effects, Effect::ReadGuestState | Effect::WriteGuestState))
             // A safepoint observes registers and flags, but takes its PC from
             // its immediate on the cold exit. It never reads the state PC.
@@ -320,6 +321,7 @@ bool Allocator::SelectHomes() {
                 case OpCode::LoadImm:
                 case OpCode::FaultLocation:
                 case OpCode::GuestSafepoint:
+                case OpCode::GuestDispatchSafepoint:
                 case OpCode::EntryPoint:
                     break;
                 default:

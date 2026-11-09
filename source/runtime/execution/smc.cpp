@@ -148,7 +148,9 @@ bool Smc::Recover(std::uintptr_t address) noexcept {
     vm.thread.faults.smc_pending = 1;
     __atomic_store_n(&vm.thread.native.mask, u64{0}, __ATOMIC_RELAXED);
     __atomic_store_n(&vm.thread.native.slots, vm.Cache().EmptyData(), __ATOMIC_RELEASE);
-    __atomic_store_n(&vm.thread.native.l1, vm.empty_l1.Data(), __ATOMIC_RELEASE);
+    vm.thread.faults.dispatch_resume_l1.store(reinterpret_cast<std::uintptr_t>(vm.empty_l1.Data()),
+                                              std::memory_order_release);
+    vm.RefreshDispatchView();
     for (auto& cache : vm.caches) cache.ResetLinks();
     return true;
 }

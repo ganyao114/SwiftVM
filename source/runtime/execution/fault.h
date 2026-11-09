@@ -50,6 +50,12 @@ struct FaultContext {
     std::atomic<std::uintptr_t> host_pc{}, address{};
     std::atomic<std::uint64_t> unaligned_recoveries{}, unaligned_patches{};
     std::atomic<std::uint64_t> smc_write_faults{};
+    // A protected dispatch view covers every indexed L1 access. Only this
+    // thread's selected pointer changes; shared executable code stays intact.
+    std::atomic<std::uintptr_t> dispatch_interrupt_base{};
+    std::size_t dispatch_interrupt_bytes{};
+    std::atomic<std::uintptr_t> dispatch_resume_l1{};
+    std::atomic<std::uint64_t> dispatch_interrupts{};
     bool (*patch_ordered)(const NativeCode&,
                           backend::NativeOffset,
                           backend::NativeOffset,
@@ -86,6 +92,8 @@ void RecordMemoryFault(FaultContext&,
                        std::uint64_t address,
                        GuestExceptionAccess,
                        std::size_t bytes = 0) noexcept;
+
+bool IsDispatchInterrupt(const FaultContext&, std::uintptr_t address) noexcept;
 
 // The scope owns execution and the thread activation. Process handlers have
 // their own lifetime and never borrow this stack object.

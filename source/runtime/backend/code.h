@@ -7,8 +7,8 @@
 #include <type_traits>
 #include <vector>
 
-#include "runtime/ir/types.h"
 #include "relocation.h"
+#include "runtime/ir/types.h"
 
 namespace swift::runtime::backend {
 
@@ -24,6 +24,8 @@ enum class CompileError : std::uint8_t {
     CodeTooLarge,
 };
 
+enum class FaultSiteKind : std::uint8_t { GuestMemory, DispatchInterrupt };
+
 // Byte offsets from the owning native unit, independent of its callable entry.
 struct FaultSite {
     NativeOffset first_offset{}, last_offset{};
@@ -31,6 +33,10 @@ struct FaultSite {
     NativeOffset unaligned_offset{NoNativeOffset}, fallback_offset{NoNativeOffset};
     // Backend-owned recovery description. Generic lookup only matches ranges.
     std::array<std::uint8_t, 8> recovery{};
+
+    FaultSiteKind Kind() const noexcept { return static_cast<FaultSiteKind>(recovery[6]); }
+
+    void SetKind(FaultSiteKind kind) noexcept { recovery[6] = static_cast<std::uint8_t>(kind); }
 };
 
 static_assert(sizeof(FaultSite) == 32);

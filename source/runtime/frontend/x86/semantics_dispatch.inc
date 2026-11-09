@@ -18,22 +18,30 @@ template <class Flow>
         using runtime::frontend::CrossesGuestEventWindow;
         using runtime::frontend::GuestEventTransfer;
         bool observe = budget_safepoint || CrossesGuestEventWindow(pc, next_pc);
+        bool dispatch_observe{};
         if (instruction.flow == FlowKind::Return)
-            observe = true;
+            dispatch_observe = true;
         else if (instruction.flow == FlowKind::Jump || instruction.flow == FlowKind::Call ||
-                 instruction.flow == FlowKind::Conditional)
-            observe |=
-                    !Direct(instruction) || GuestEventTransfer(pc, next_pc + instruction.immediate);
+                 instruction.flow == FlowKind::Conditional) {
+            if (Direct(instruction))
+                observe |= GuestEventTransfer(pc, next_pc + instruction.immediate);
+            else
+                dispatch_observe = true;
+        }
         // Each self-dispatch reaches this boundary before the next REP element.
         if (instruction.opcode == Op::MOVS || instruction.opcode == Op::LODS ||
             instruction.opcode == Op::CMPS || instruction.opcode == Op::SCAS ||
             instruction.opcode == Op::STOS)
             observe |= (instruction.flags &
                         (InstructionFlag::Repeat | InstructionFlag::RepeatNotEqual)) != 0;
-        if (observe) {
+        if (observe || dispatch_observe) {
             pending.Flush(builder);
             builder.PublishRegisters();
-            Require(builder.template EmitImm<OpCode::GuestSafepoint>(Type::Void, pc, Type::U64));
+            if (observe)
+                Require(builder.template EmitImm<OpCode::GuestSafepoint>(Type::Void, pc, Type::U64));
+            else
+                Require(builder.template EmitImm<OpCode::GuestDispatchSafepoint>(
+                        Type::Void, pc, Type::U64));
         }
     }
     unsigned consumed = 1;

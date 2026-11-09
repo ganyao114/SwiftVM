@@ -136,16 +136,22 @@ public:
             using runtime::frontend::CrossesGuestEventWindow;
             using runtime::frontend::GuestEventTransfer;
             bool observe = budget_safepoint || CrossesGuestEventWindow(current_pc, NextPC());
+            bool dispatch_observe{};
             const auto flow = instruction.Flow();
             if (flow == FlowKind::Return)
-                observe = true;
+                dispatch_observe = true;
             else if (flow == FlowKind::Jump || flow == FlowKind::Call ||
                      flow == FlowKind::Conditional) {
                 u64 destination{};
-                observe |= !instruction.RelativeTarget(destination) ||
-                           GuestEventTransfer(current_pc, destination);
+                if (instruction.RelativeTarget(destination))
+                    observe |= GuestEventTransfer(current_pc, destination);
+                else
+                    dispatch_observe = true;
             }
-            if (observe) Emit<OpCode::GuestSafepoint>(Imm{current_pc});
+            if (observe)
+                Emit<OpCode::GuestSafepoint>(Imm{current_pc});
+            else if (dispatch_observe)
+                Emit<OpCode::GuestDispatchSafepoint>(Imm{current_pc});
         }
         using Handler = void (Semantics::*)(const vixl::aarch64::Instruction*);
         static constexpr std::array<Handler, static_cast<std::size_t>(Family::Count)> handlers{

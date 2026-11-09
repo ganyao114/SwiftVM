@@ -120,6 +120,9 @@ void Validate(const CodeUnit& unit, bool byte_code) {
     }
     Require(owns_entry, "code unit entry is outside its source dependencies");
     for (const auto& site : code.faults) {
+        Require(site.Kind() == backend::FaultSiteKind::GuestMemory ||
+                        site.Kind() == backend::FaultSiteKind::DispatchInterrupt,
+                "invalid native recovery site kind");
         Require(site.first_offset < site.last_offset && site.last_offset <= size &&
                         !(site.first_offset & instruction_mask) &&
                         !(site.last_offset & instruction_mask),

@@ -18,6 +18,10 @@ void Writer::Handle(Op<OpCode::GuestSafepoint>, OpContext& ctx) {
     as.Bind(&ready);
 }
 
+void Writer::Handle(Op<OpCode::GuestDispatchSafepoint>, OpContext& ctx) {
+    Handle(Op<OpCode::GuestSafepoint>{}, ctx);
+}
+
 void Writer::SelectValue(OpContext& ctx) {
     if (ctx.operation.opcode == OpCode::CondSelect)
         Condition(a0, static_cast<ir::Condition>(ctx.Arg(0).Payload()));

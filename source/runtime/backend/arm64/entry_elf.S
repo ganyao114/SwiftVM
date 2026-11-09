@@ -281,7 +281,7 @@ SVM_PACK_SAVED_NATIVE_NZCV
 SVM_RESOLVE_AND_ENTER
 .endm
 
-.macro SVM_DISPATCH_BODY l2, counted=0
+.macro SVM_DISPATCH_BODY l2, probe, counted=0
 .if \counted
 SVM_COUNT_DISPATCH
 .endif
@@ -289,6 +289,8 @@ ldr x16, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_L1)]
 cbz x16, 7f
 ubfiz x7, x0, #SVM_A64_L1_ENTRY_SHIFT, #SVM_A64_L1_BITS
 add x7, x16, x7
+.global \probe
+\probe:
 ldp x4, x16, [x7]
 sub x4, x4, x0
 cbnz x4, 8f
@@ -367,28 +369,28 @@ SVM_RESOLVE_AND_ENTER
 .global SvmNativeDispatch
 .type SvmNativeDispatch, %function
 SvmNativeDispatch:
-SVM_DISPATCH_BODY SvmNativeL2Dispatch, 0
+SVM_DISPATCH_BODY SvmNativeL2Dispatch, SvmNativeDispatchL1Probe, 0
 .size SvmNativeDispatch, .-SvmNativeDispatch
 
 .p2align 2
 .global SvmNativeDispatchCounted
 .type SvmNativeDispatchCounted, %function
 SvmNativeDispatchCounted:
-SVM_DISPATCH_BODY SvmNativeL2DispatchCounted, 1
+SVM_DISPATCH_BODY SvmNativeL2DispatchCounted, SvmNativeDispatchCountedL1Probe, 1
 .size SvmNativeDispatchCounted, .-SvmNativeDispatchCounted
 
 .p2align 2
 .global SvmNativeDispatchNZCV
 .type SvmNativeDispatchNZCV, %function
 SvmNativeDispatchNZCV:
-SVM_DISPATCH_BODY SvmNativeL2DispatchNZCV, 0
+SVM_DISPATCH_BODY SvmNativeL2DispatchNZCV, SvmNativeDispatchNZCVL1Probe, 0
 .size SvmNativeDispatchNZCV, .-SvmNativeDispatchNZCV
 
 .p2align 2
 .global SvmNativeDispatchNZCVCounted
 .type SvmNativeDispatchNZCVCounted, %function
 SvmNativeDispatchNZCVCounted:
-SVM_DISPATCH_BODY SvmNativeL2DispatchNZCVCounted, 1
+SVM_DISPATCH_BODY SvmNativeL2DispatchNZCVCounted, SvmNativeDispatchNZCVCountedL1Probe, 1
 .size SvmNativeDispatchNZCVCounted, .-SvmNativeDispatchNZCVCounted
 
 .p2align 2
@@ -460,6 +462,16 @@ stlr xzr, [x16]
 SVM_CAPTURE_GUEST_FP
 b .Lsvm_restore_host_root
 .size SvmNativeExit, .-SvmNativeExit
+
+.p2align 2
+.global SvmNativeEventExit
+.type SvmNativeEventExit, %function
+SvmNativeEventExit:
+add x19, x0, #SVM_A64_CTX_STATE
+SVM_PHASE SVM_NATIVE_PHASE_LEAVING
+mov x0, #SVM_NATIVE_EXIT_GUEST_EVENTS
+b .Lsvm_restore_host_root
+.size SvmNativeEventExit, .-SvmNativeEventExit
 
 .p2align 2
 .global SvmNativeExceptionExit

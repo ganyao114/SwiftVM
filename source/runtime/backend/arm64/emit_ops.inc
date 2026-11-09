@@ -1,5 +1,6 @@
 // Private static opcode-to-family mapping. No registry or runtime lookup.
 A64_EMIT_OP(GuestSafepoint, HandleGuestSafepointFamily)
+A64_EMIT_OP(GuestDispatchSafepoint, HandleGuestDispatchSafepointFamily)
 A64_EMIT_OP(Sse42Str, HandleStringFamily)
 A64_EMIT_OP(Sse42StrExplicit, HandleStringFamily)
 A64_EMIT_OP(PublishSse42StrFlags, HandleSse42FlagsFamily)

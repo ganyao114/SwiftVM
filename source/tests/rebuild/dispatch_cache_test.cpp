@@ -1,4 +1,6 @@
+#include "runtime/execution/dispatch.h"
 #include "runtime/execution/dispatch_cache.h"
+#include "runtime/execution/fault.h"
 #include "runtime/execution/vm.h"
 #include "runtime/platform/linux/host_runtime.h"
 #include "tests/support/test_mode.h"
@@ -8,12 +10,38 @@
 #endif
 
 #include <array>
+#include <cerrno>
 #include <cstring>
 #include <span>
 #include <vector>
 #include <catch2/catch_test_macros.hpp>
 #include <elf.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
+#include <unistd.h>
+
+// These resolver ABIs return executable entries. Enter their shared lookup
+// with the real guest target, without a compiler-generated host prologue.
+#if defined(__aarch64__) || defined(__riscv) || defined(__loongarch64)
+extern "C" void SvmTestDispatchInterruptEntry() noexcept;
+asm(".pushsection .text\n"
+    ".p2align 2\n"
+    ".global SvmTestDispatchInterruptEntry\n"
+    ".hidden SvmTestDispatchInterruptEntry\n"
+    "SvmTestDispatchInterruptEntry:\n"
+#if defined(__aarch64__)
+    "ldr x0, [x19, #128]\n"
+    "b SvmNativeDispatch\n"
+#elif defined(__riscv)
+    "ld a0, 128(s1)\n"
+    "tail SvmNativeDispatch\n"
+#else
+    "ld.d $a0, $r22, 128\n"
+    "b SvmNativeDispatch\n"
+#endif
+    ".popsection\n");
+#endif
 
 namespace {
 namespace execution = swift::runtime::execution;
@@ -103,6 +131,114 @@ TEST_CASE("thread dispatch cache owns sentinel and full-PC replacement",
     CHECK(mapping[execution::DispatchCache::Index(UINT64_MAX)].entry == nullptr);
     CHECK(cache.Release().Complete());
     CHECK(cache.Data() == nullptr);
+}
+
+TEST_CASE("shared dispatch interrupt returns to its owner and accepts an in-flight stale view",
+          "[native][dispatch-interrupt]") {
+    REQUIRE(swift::tests::NativeMode());
+    platform::HostRuntime host{false};
+    const auto backend = host.Bind();
+    REQUIRE(backend.recover_native != nullptr);
+    execution::DispatchCache cache;
+    execution::DispatchInterrupt interrupt;
+    cache.Ensure();
+    interrupt.Ensure();
+    REQUIRE(interrupt.Data() != nullptr);
+    const auto base = reinterpret_cast<std::uintptr_t>(interrupt.Data());
+    std::uint8_t byte{};
+    for (const auto offset : {std::size_t{0}, execution::DispatchCache::Bytes - 1}) {
+        iovec local{&byte, 1}, remote{reinterpret_cast<void*>(base + offset), 1};
+        errno = 0;
+        CHECK(syscall(SYS_process_vm_readv, getpid(), &local, 1, &remote, 1, 0) == -1);
+        CHECK(errno == EFAULT);
+    }
+
+    struct Resolver {
+        execution::DispatchEntry* interrupt;
+        unsigned calls{};
+    } resolver{interrupt.Data()};
+
+    execution::FaultContext faults;
+    execution::DispatchSlot slot;
+    execution::NativeRunContext native, other;
+    other.l1.store(cache.Data());
+    native.opaque = &resolver;
+    native.resolve = [](void* raw,
+                        execution::NativeRunContext* context) noexcept -> std::uintptr_t {
+        auto& resolver = *static_cast<Resolver*>(raw);
+        ++resolver.calls;
+#if !defined(__x86_64__)
+        if (context->l1.load() == resolver.interrupt)
+            return reinterpret_cast<std::uintptr_t>(&SvmTestDispatchInterruptEntry);
+#else
+        (void)context;
+#endif
+        return 0;
+    };
+    native.slots = &slot;
+    native.active = &faults.active;
+    native.faults = &faults;
+#if defined(__x86_64__)
+    native.guest_fpcr = 0x1f80;
+#endif
+    faults.native = &native;
+    faults.recover_native = backend.recover_native;
+    faults.dispatch_interrupt_bytes = execution::DispatchCache::Bytes;
+    faults.dispatch_interrupt_base.store(base);
+    {
+        execution::FaultScope scope{faults, native.state};
+        for (const auto pending : {u64{1}, u64{0}}) {
+            const auto target = (u64{0x12345} << SVM_DISPATCH_L1_BITS) |
+                                (pending ? 0 : execution::DispatchCache::Entries - 1);
+            native.state.pc = target;
+            native.pending_events.store(pending);
+            native.l1.store(interrupt.Data());
+            const auto before = faults.dispatch_interrupts.load();
+            REQUIRE(execution::SvmRunNative(&native) ==
+                    swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents));
+            CHECK(native.state.pc == target);
+            CHECK(!faults.exception_pending);
+            CHECK(faults.signal_number == 0);
+            CHECK(faults.dispatch_interrupts.load() == before + 1);
+            CHECK(!faults.active.load());
+            CHECK(native.root_sp == 0);
+            CHECK(native.phase.load() == SVM_NATIVE_PHASE_RUNTIME);
+            CHECK(other.l1.load() == cache.Data());
+        }
+        native.pending_events.store(0);
+        native.l1.store(cache.Data());
+        native.state.pc = entry_pc;
+        const auto resolves = resolver.calls;
+        REQUIRE(execution::SvmRunNative(&native) ==
+                swift::runtime::ExitValue(swift::runtime::NativeExit::ResolveFailure));
+        CHECK(resolver.calls == resolves + 1);
+        CHECK(native.state.pc == entry_pc);
+        CHECK(!faults.exception_pending);
+        CHECK(faults.dispatch_interrupts.load() == 2);
+        CHECK(other.l1.load() == cache.Data());
+    }
+    {
+        execution::RuntimeStats stats;
+        execution::VM vm{{}, stats, backend};
+        // Borrow the real owner through the fixed native ABI, without a test
+        // accessor in the public VM interface. Model cancellation after a
+        // lookup has already selected the protected view.
+        auto& owner = *reinterpret_cast<execution::NativeRunContext*>(
+                reinterpret_cast<std::uint8_t*>(&vm.State()) -
+                offsetof(execution::NativeRunContext, state));
+        owner.faults->dispatch_interrupt_bytes = execution::DispatchCache::Bytes;
+        owner.faults->dispatch_interrupt_base.store(base);
+        owner.faults->dispatch_resume_l1.store(reinterpret_cast<std::uintptr_t>(cache.Data()));
+        owner.l1.store(interrupt.Data());
+        auto& signals = *static_cast<platform::GuestSignals*>(owner.faults->signal_opaque);
+        swift::runtime::GuestExceptionInfo event;
+        REQUIRE(!signals.TakePending(event));
+        CHECK(owner.pending_events.load() == 0);
+        CHECK(owner.l1.load() == cache.Data());
+        CHECK(vm.Close().Complete());
+    }
+    CHECK(interrupt.Release().Complete());
+    CHECK(cache.Release().Complete());
 }
 
 TEST_CASE("thread dispatch follows repeated guest FP-domain changes", "[native][dispatch-cache]") {

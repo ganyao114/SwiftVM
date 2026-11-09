@@ -72,6 +72,34 @@ void Writer::ContextMemory(bool load, unsigned value, int offset) {
         __ stur(X(value), field);
 }
 
+bool Writer::InterruptibleDispatch() const {
+    if (!Linked() || !options.fault_locations || options.dispatch_mode == DispatchMode::Callback)
+        return false;
+    const auto& body = source.Blocks()[block.value];
+    if (body.terminal.kind != TerminalKind::Dispatch || !body.node_count) return false;
+    const NodeId tail{body.first_node + body.node_count - 1};
+    const auto& operation = source.Operations()[tail.value];
+    if (operation.opcode != OpCode::StoreUniform || operation.Metadata() != OperationMetadata{})
+        return false;
+    auto operands = source.Operands(tail).begin();
+    const auto uniform = *operands++, value = *operands;
+    if (uniform.TypeView() != Type::U64 || uniform.Payload() != options.pc_offset ||
+        value.Kind() != OperandKind::Value || Width(View(value)) != 64)
+        return false;
+    u64 ignored;
+    if (ConstantPC(value, ignored)) return false;
+    const auto& producer = source.Operations()[value.Payload()];
+    if (producer.opcode == OpCode::Select && producer.block == block && Bits(producer.type) == 64) {
+        auto choices = source.Operands(NodeId{static_cast<u32>(value.Payload())}).begin();
+        ++choices;
+        const auto yes = *choices++, no = *choices;
+        if (ConstantPC(yes, ignored) && ConstantPC(no, ignored)) return false;
+    }
+    // This final store retires the frame and dispatches x0 through L1. Inspect
+    // only its direct producers, matching ObservePCStore's static-link cases.
+    return true;
+}
+
 void Writer::DynamicDispatch() {
     output.has_indirect_dispatch = true;
     if (options.dispatch_mode == DispatchMode::Callback) {
@@ -90,7 +118,12 @@ void Writer::DynamicDispatch() {
     ContextMemory(true, 16, abi::ContextL1Offset);
     __ ubfiz(v::x7, v::x0, abi::L1EntryShift, abi::L1Bits);
     __ add(v::x7, v::x16, Operand(v::x7));
+    const auto probe = static_cast<u32>(output.words.size()) * 4;
     __ ldp(v::x16, v::x17, MemOperand(v::x7));
+    if (options.fault_locations) {
+        output.faults.push_back({probe, probe + 4});
+        output.faults.back().SetKind(FaultSiteKind::DispatchInterrupt);
+    }
     __ sub(v::x16, v::x16, Operand(v::x0));  // Preserve guest NZCV.
     const auto miss = static_cast<u32>(output.words.size());
     __ cbnz(v::x16, std::int64_t{0});
