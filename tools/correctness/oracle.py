@@ -184,7 +184,18 @@ def observation(outcome: str = "host_failure", error: str = "") -> dict:
             "fault_width": 0, "fault_vector": -1}
 
 
-def _registers(uc, case: dict, load: bool) -> dict:
+def _arm32_tls_rw_supported(uc) -> bool:
+    """Unicorn 2.1.4 maps TPIDRURW to a deprecated no-op register."""
+    from unicorn import arm_const as t
+    probe = 0x5A5A5A5A
+    try:
+        uc.reg_write(t.UC_ARM_REG_C13_C0_2, probe)
+        return uc.reg_read(t.UC_ARM_REG_C13_C0_2) == probe
+    except Exception:
+        return False
+
+
+def _registers(uc, case: dict, load: bool, arm32_tls_rw: bool = True) -> dict:
     from unicorn import x86_const as x, arm64_const as a, arm_const as t
 
     isa, source, result = case["isa"], case["initial"], initial_state()
@@ -242,7 +253,12 @@ def _registers(uc, case: dict, load: bool) -> dict:
                              int.from_bytes(bytes(source["vectors"][i][:16]), "little"))
             result["vectors"][i][:16] = value.to_bytes(16, "little")
         for i, name in enumerate(("C13_C0_2", "C13_C0_3")):
-            result["tls"][i] = register(getattr(t, "UC_ARM_REG_" + name), source["tls"][i])
+            if i == 0 and not arm32_tls_rw:
+                # Preserve the declared input; any instruction that writes this
+                # register will therefore surface as a mismatch, not a pass.
+                result["tls"][i] = source["tls"][i]
+            else:
+                result["tls"][i] = register(getattr(t, "UC_ARM_REG_" + name), source["tls"][i])
     return result
 
 
@@ -265,6 +281,7 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
     uc = u.Uc(arch, mode)
     model = {1: x.UC_CPU_X86_HASWELL, 2: a.UC_CPU_ARM64_MAX, 3: t.UC_CPU_ARM_CORTEX_A15}[isa]
     uc.ctl_set_cpu_model(model)
+    arm32_tls_rw = _arm32_tls_rw_supported(uc) if isa == 3 else True
     if isa == 2:
         uc.reg_write(a.UC_ARM64_REG_CPACR_EL1, 3 << 20)
     elif isa == 3:
@@ -290,7 +307,7 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
         uc.mem_write(start, bytes(region["bytes"]))
         uc.mem_protect(start, region["size"], region["protection"])
         mappings.append((start, end))
-    _registers(uc, case, True)
+    _registers(uc, case, True, arm32_tls_rw)
     result = observation()
     count = 0
     pc_reg = {1: x.UC_X86_REG_RIP, 2: a.UC_ARM64_REG_PC, 3: t.UC_ARM_REG_PC}[isa]
@@ -352,7 +369,7 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
     except u.UcError as error:
         if result["outcome"] == "host_failure":
             result.update(outcome="unavailable", error="oracle_unsupported: " + str(error))
-    result["state"] = _registers(uc, case, False)
+    result["state"] = _registers(uc, case, False, arm32_tls_rw)
     result["memory"] = [{"address": region["address"], "size": region["size"],
                          "protection": region["protection"],
                          "bytes": list(uc.mem_read(region["address"], region["size"]))}
@@ -367,6 +384,8 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
         "adapter_sha256": sha256(Path(__file__)),
         "library_sha256": sha256(library) if library.exists() else "unavailable",
         "hook_count_is_retired_instruction_count": False,
+        "arm32_tls_rw": "verified" if arm32_tls_rw else
+                        "unavailable: Unicorn 2.1.4 TPIDRURW is a no-op; declared input preserved",
         "elapsed_ms": (time.monotonic() - started) * 1000,
     }
     return result
@@ -398,12 +417,18 @@ def self_test() -> dict:
         actual = execute(case)
         if actual["outcome"] != "terminal" or actual["state"]["gpr"][0] != 12 or actual["state"]["pc"] != case["terminal_pc"]:
             raise AssertionError(f"{ISA_NAMES[isa]} terminal/arithmetic self-test: {actual}")
+        tls_limited = isa == 3 and actual["oracle"]["arm32_tls_rw"] != "verified"
         for key in ("vectors", "fp_control", "fp_status", "tls", "x87", "x87_control", "x87_status", "x87_tag"):
+            if key == "tls" and tls_limited:
+                if actual["state"]["tls"][1] != state["tls"][1]:
+                    raise AssertionError(f"{ISA_NAMES[isa]} register projection self-test: tls[1]")
+                continue
             if actual["state"][key] != state[key]:
                 raise AssertionError(f"{ISA_NAMES[isa]} register projection self-test: {key}")
         if isa == 3 and bool(actual["state"]["flags"] & 0x20) != thumb:
             raise AssertionError("Thumb mode was lost at boundary")
-        results.append({"isa": ISA_NAMES[isa], "thumb": thumb, "outcome": "passed"})
+        results.append({"isa": ISA_NAMES[isa], "thumb": thumb, "outcome": "passed",
+                        "arm32_tls_rw": actual["oracle"].get("arm32_tls_rw", "not_applicable")})
     # A faulting load must remain a fault; the adapter must not lazy-map it.
     fault = copy.deepcopy(case)
     fault["code"] = bytes.fromhex("0868")
