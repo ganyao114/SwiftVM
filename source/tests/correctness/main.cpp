@@ -95,18 +95,21 @@ Observation Execute(const Case& c, const RunConfig& config) {
 }
 
 void RunWorker(const std::string& input, const std::string& output, const RunConfig& config) {
-    const auto c = ReadCase(input);
-    std::string reason;
-    if (!ValidateCase(c, &reason))
-        ThrowError(Format("case does not match its contract: {}", reason), ErrorKind::InvalidArgument);
     Observation observation;
+    observation.outcome = Outcome::HostFailure;
+    observation.stage = "worker";
+    observation.backend = Name(config.backend);
     try {
+        const auto c = ReadCase(input);
+        std::string reason;
+        if (!ValidateCase(c, &reason))
+            ThrowError(Format("case does not match its contract: {}", reason),
+                       ErrorKind::InvalidArgument);
         observation = Execute(c, config);
     } catch (const std::exception& error) {
-        observation.outcome = Outcome::HostFailure;
-        observation.stage = "worker";
-        observation.backend = Name(config.backend);
         observation.error = error.what();
+    } catch (...) {
+        observation.error = "unknown worker failure";
     }
     WriteText(output, ToJSON(observation));
 }
