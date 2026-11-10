@@ -276,6 +276,11 @@ terminal 不得覆盖 RAX、R7、flags 等被测输出。UD2/BRK/BKPT 等终止�
 
 已确认的 oracle defect 必须有版本范围、最小复现、issue/依据和替代验证方式；不直接永久跳过整个指令族。只有已知不可靠的比较字段不能满足严格合同，则该 oracle 不具有该用例的确认资格，不能通过屏蔽差异计为 pass。
 
+已记录的实现限制（2026-11-09）：
+
+- Unicorn 2.1.4 不设置 x86 `MXCSR.DE`（denormal input）状态位。oracle 在 Observation 中输出 `fp_control_verified_mask=0xfffffffd`，比较器只在双方掩码内比较；SVM 的 DE 行为由受控 denormal/DAZ/FZ 用例和后续硬件 oracle 单独确认，不能据此宣称 Unicorn 覆盖了 DE。
+- Unicorn 2.1.4 的 ARM32 `TPIDRURW`（C13_C0_2）是 no-op。oracle 保留声明的输入值并输出 `arm32_tls_rw=unavailable`；任何写该寄存器的 form 会因保留输入而暴露为差异，不会静默通过。
+
 红魔首先承担 ARM64 后端真实机器码执行和 A64 硬件 oracle；是否能运行 A32 原生 probe 需检测，不能因 CPU 为 ARM64 就假设支持 32 位 EL0。x86 真机 oracle 按可用硬件接入；没有真机的范围仍可由版本固定的模拟参考验证，但报告显式标记证据等级。
 
 ## 9. 内存、异常与部分提交

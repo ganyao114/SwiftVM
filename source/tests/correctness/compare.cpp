@@ -61,11 +61,14 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                 return Different("vector[" + std::to_string(i) + "][" + std::to_string(j) + "]",
                                  expected.state.vectors[i][j],
                                  actual.state.vectors[i][j]);
-    if ((expected.state.fp_control & contract.fp_control_mask) !=
-        (actual.state.fp_control & contract.fp_control_mask))
+    const auto fp_control_mask =
+            contract.fp_control_mask & expected.fp_control_verified_mask &
+            actual.fp_control_verified_mask;
+    if ((expected.state.fp_control & fp_control_mask) !=
+        (actual.state.fp_control & fp_control_mask))
         return Different("fp_control",
-                         expected.state.fp_control & contract.fp_control_mask,
-                         actual.state.fp_control & contract.fp_control_mask);
+                         expected.state.fp_control & fp_control_mask,
+                         actual.state.fp_control & fp_control_mask);
     if ((expected.state.fp_status & contract.fp_status_mask) !=
         (actual.state.fp_status & contract.fp_status_mask))
         return Different("fp_status",

@@ -80,6 +80,8 @@ struct Observation {
     bool fault_address_valid{}, native_executed{};
     std::uint64_t compile_attempts{}, compiled_units{}, interpreted_steps{}, fallbacks{};
     std::uint32_t actual_ir_blocks{}, actual_source_blocks{}, spill_slots{}, frame_bytes{};
+    // Bits an oracle can independently verify; DUT observations use all bits.
+    std::uint32_t fp_control_verified_mask{0xffffffffu};
     Scope actual_scope{Scope::Block};
 };
 

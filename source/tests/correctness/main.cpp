@@ -223,6 +223,16 @@ int SelfTest() {
             actual.outcome = Outcome::Compiled;
             if (Compare(c, expected, actual).equal)
                 ThrowError("compile-only was counted as execution", ErrorKind::InvalidState);
+            if (c.isa == ISA::X86_64) {
+                actual = expected;
+                actual.state.fp_control ^= 2;
+                if (Compare(c, expected, actual).equal)
+                    ThrowError("comparator lost an MXCSR DE difference", ErrorKind::InvalidState);
+                auto masked = expected;
+                masked.fp_control_verified_mask &= ~std::uint32_t{2};
+                if (!Compare(c, masked, actual).equal)
+                    ThrowError("oracle capability mask was ignored", ErrorKind::InvalidState);
+            }
             ++cases;
         }
     std::cout << Format("{{\"selftest\":\"passed\",\"cases\":{}}}\n", cases);

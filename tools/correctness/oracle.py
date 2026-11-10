@@ -179,6 +179,7 @@ def observation(outcome: str = "host_failure", error: str = "") -> dict:
     return {"protocol_version": 1, "outcome": outcome, "stage": "oracle",
             "error": error, "backend": "unicorn", "state": initial_state(),
             "memory": [], "native_executed": False, "steps": 0,
+            "fp_control_verified_mask": 0xFFFFFFFF,
             "fault_kind": "", "fault_access": "unknown", "fault_pc": 0,
             "fault_address": 0, "fault_address_valid": False,
             "fault_width": 0, "fault_vector": -1}
@@ -378,6 +379,10 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
     library = Path(u.__file__).parent / "lib" / "libunicorn.2.dylib"
     if not library.exists():
         library = Path(u.__file__).parent / "lib" / "libunicorn.so.2"
+    if isa == 1:
+        # Unicorn/QEMU does not set MXCSR.DE for denormal SSE operands. Keep the
+        # bit out of differential comparison and record the capability gap.
+        result["fp_control_verified_mask"] = 0xFFFFFFFD
     result["oracle"] = {
         "family": "qemu-unicorn", "version": u.__version__, "cpu_model": model,
         "isa": ISA_NAMES[isa], "thumb": thumb, "page_size": page,
@@ -386,6 +391,8 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
         "hook_count_is_retired_instruction_count": False,
         "arm32_tls_rw": "verified" if arm32_tls_rw else
                         "unavailable: Unicorn 2.1.4 TPIDRURW is a no-op; declared input preserved",
+        "fp_control_unverified": "DE (MXCSR bit 1): Unicorn 2.1.4 does not set it for "
+                                 "denormal SSE inputs" if isa == 1 else "none",
         "elapsed_ms": (time.monotonic() - started) * 1000,
     }
     return result

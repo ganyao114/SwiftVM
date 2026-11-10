@@ -699,6 +699,7 @@ std::string ToJSON(const Observation& o) {
     Field(out, "actual_source_blocks", o.actual_source_blocks);
     Field(out, "spill_slots", o.spill_slots);
     Field(out, "frame_bytes", o.frame_bytes);
+    Field(out, "fp_control_verified_mask", o.fp_control_verified_mask);
     StringField(out, "actual_scope", o.actual_scope == Scope::Block ? "block" : "function");
     out += '}';
     return out;
@@ -780,6 +781,7 @@ Observation ReadObservation(const std::string& path) {
     Optional(json, "actual_source_blocks", o.actual_source_blocks);
     Optional(json, "spill_slots", o.spill_slots);
     Optional(json, "frame_bytes", o.frame_bytes);
+    Optional(json, "fp_control_verified_mask", o.fp_control_verified_mask);
     if (const auto* scope = json.Find("actual_scope")) o.actual_scope = ReadScope(*scope);
     return o;
 }
