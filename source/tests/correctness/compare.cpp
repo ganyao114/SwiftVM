@@ -43,6 +43,8 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
     bool crossing_write{};
     std::uint64_t partial_begin{}, partial_end{};
     std::string gaps;
+    if (contract.fp_control_mask & ~expected.fp_control_verified_mask)
+        gaps = "fp-control bits are not oracle-verified";
     if (expected.outcome == Outcome::Fault && actual.outcome == Outcome::Fault &&
         actual.fault_access == "write" && actual.fault_address_valid && actual.fault_width > 1) {
         for (const auto& region : actual.memory) {
@@ -52,8 +54,9 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                 partial_begin = actual.fault_address - span;
                 partial_end = actual.fault_address;
                 crossing_write = true;
-                gaps = "cross-boundary write: partial commit and engine fault-address "
-                       "granularity are not oracle-verified";
+                if (!gaps.empty()) gaps += "; ";
+                gaps += "cross-boundary write: partial commit and engine fault-address "
+                        "granularity are not oracle-verified";
                 break;
             }
         }

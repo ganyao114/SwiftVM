@@ -9,7 +9,7 @@
 - `tools/correctness/`：local/ADB/system-QEMU controller 与 Unicorn oracle 入口。
 - runtime 只增加 `SVM_TEST_BOUNDARY` 测试边界，生产默认路径不变。
 
-已验证：`svm_correctness selftest` 560 例通过；RV64 汇编器满缓冲回跳断言已修复，最小 5 字节输入可重放，新增 2 个边界回归；host fuzz 累计约 1.27 亿次执行（decode 约 1.19 亿次，structured/raw pipeline 约 436 万次，`SVM_FUZZ_FORM` 两轮 536 万次）无崩溃。逐 form 验证：35 个 form 各 8 例的 Direct 执行与 4 后端 × Block/Function × Known/EarlyOff/Unknown × opt 共 13,440 次编译全部成功。语义差分：host Direct 与红魔 ARM64 JIT 对结构化 280 例均 280/280 verified；引入能力记账后，从 pinned fuzz 语料抽样的 280 例在 host 和红魔上均为 278 verified + 2 gaps、零失败。2 个 gap 分别是 Unicorn 不建模 x86 SSE sticky exception flags，以及跨边界 store 的 partial commit/fault 粒度口径。独立 oracle 的 C++ 适配、逐 form 覆盖统计、QEMU 后端矩阵尚未完成。
+已验证：`svm_correctness selftest` 560 例通过；RV64 汇编器满缓冲回跳断言已修复，最小 5 字节输入可重放，新增 2 个边界回归；host fuzz 累计约 1.27 亿次执行（decode 约 1.19 亿次，structured/raw pipeline 约 436 万次，`SVM_FUZZ_FORM` 两轮 536 万次）无崩溃。逐 form 验证：35 个 form 各 8 例的 Direct 执行与 4 后端 × Block/Function × Known/EarlyOff/Unknown × opt 共 13,440 次编译全部成功。语义差分：host Direct 对结构化 280 例为 272 verified + 8 gaps（均为 x86 SSE sticky flag 能力缺口）；红魔 ARM64 JIT 在记账前为 280/280 verified。从 pinned fuzz 语料抽样的 280 例在 host 和红魔上均为 278 verified + 2 gaps、零失败；gap 对应跨边界 store 的 partial commit/fault 粒度与 x86 SSE flag 能力缺口。独立 oracle 的 C++ 适配、逐 form 覆盖统计、QEMU 后端矩阵尚未完成。
 
 ## 1. 目标与边界
 
