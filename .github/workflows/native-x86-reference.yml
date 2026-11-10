@@ -1,0 +1,24 @@
+name: native-x86-reference
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run the host-CPU reference
+        run: |
+          python3 tools/correctness/native_probe.py \
+            --case-dir tools/correctness/native-corpus/x86-x87-mmx \
+            --out-dir native-out --timeout 2 \
+            | tee native-result.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-x87-mmx
+          path: |
+            native-out/*.json
+            native-result.json
+          if-no-files-found: error

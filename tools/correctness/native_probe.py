@@ -7,6 +7,7 @@ state, executes exactly one guest instruction, and reports the result in the
 same Observation JSON shape used by svm_correctness compare.
 """
 import argparse
+import glob
 import json
 import os
 import platform
@@ -36,9 +37,14 @@ def build_probe(output):
 
 
 def inspect_case(dut, case):
-    completed = subprocess.run([str(dut), 'inspect', '--case', str(case)],
-                               check=True, capture_output=True, text=True)
-    return json.loads(completed.stdout)
+    if dut:
+        completed = subprocess.run([str(dut), 'inspect', '--case', str(case)],
+                                   check=True, capture_output=True, text=True)
+        return json.loads(completed.stdout)
+    import oracle
+    decoded = oracle.read_case(case)
+    decoded['isa'] = {1: 'x86_64', 2: 'arm64', 3: 'arm32'}[decoded['isa']]
+    return decoded
 
 
 def export_input(case_json, path):
@@ -147,19 +153,21 @@ def load_observation(path, case_json, terminal_pc):
             'address': address,
             'size': size,
             'protection': protection,
-            'bytes': list(data[cursor:cursor + stored]),
+            'bytes': list(data[cursor:cursor + size]),
         })
-        cursor += stored
+        cursor += size
     return observation
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dut', type=Path, required=True,
+    parser.add_argument('--dut', type=Path,
                         help='host svm_correctness used for case decoding')
     parser.add_argument('--case', type=Path, action='append', default=[])
     parser.add_argument('--case-list', type=Path,
                         help='file with one case path per line')
+    parser.add_argument('--case-dir', type=Path,
+                        help='directory of .svmcase files')
     parser.add_argument('--out-dir', type=Path, required=True)
     parser.add_argument('--timeout', type=float, default=10.0)
     parser.add_argument('--sha-names', action='store_true',
@@ -169,6 +177,8 @@ def main():
     if args.case_list:
         cases += [Path(line.strip()) for line in args.case_list.read_text().splitlines()
                   if line.strip()]
+    if args.case_dir:
+        cases += [Path(path) for path in sorted(glob.glob(str(args.case_dir / '*.svmcase')))]
     if not cases:
         parser.error('at least one --case or --case-list is required')
     args.out_dir.mkdir(parents=True, exist_ok=True)

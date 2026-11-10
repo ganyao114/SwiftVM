@@ -1,0 +1,2546 @@
+[
+ {
+  "index": 311,
+  "key": "EMMS",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00311.svmcase"
+ },
+ {
+  "index": 317,
+  "key": "F2XM1",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00317.svmcase"
+ },
+ {
+  "index": 318,
+  "key": "FABS",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00318.svmcase"
+ },
+ {
+  "index": 319,
+  "key": "FADD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00319.svmcase"
+ },
+ {
+  "index": 320,
+  "key": "FADD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00320.svmcase"
+ },
+ {
+  "index": 321,
+  "key": "FADD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00321.svmcase"
+ },
+ {
+  "index": 322,
+  "key": "FADD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00322.svmcase"
+ },
+ {
+  "index": 323,
+  "key": "FADDP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00323.svmcase"
+ },
+ {
+  "index": 324,
+  "key": "FADDP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00324.svmcase"
+ },
+ {
+  "index": 325,
+  "key": "FBLD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00325.svmcase"
+ },
+ {
+  "index": 326,
+  "key": "FBLD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00326.svmcase"
+ },
+ {
+  "index": 327,
+  "key": "FBLD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00327.svmcase"
+ },
+ {
+  "index": 328,
+  "key": "FBLD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00328.svmcase"
+ },
+ {
+  "index": 329,
+  "key": "FBSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00329.svmcase"
+ },
+ {
+  "index": 330,
+  "key": "FBSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00330.svmcase"
+ },
+ {
+  "index": 331,
+  "key": "FBSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00331.svmcase"
+ },
+ {
+  "index": 332,
+  "key": "FBSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00332.svmcase"
+ },
+ {
+  "index": 333,
+  "key": "FCHS",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00333.svmcase"
+ },
+ {
+  "index": 334,
+  "key": "FCMOVB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00334.svmcase"
+ },
+ {
+  "index": 335,
+  "key": "FCMOVB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00335.svmcase"
+ },
+ {
+  "index": 336,
+  "key": "FCMOVB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00336.svmcase"
+ },
+ {
+  "index": 337,
+  "key": "FCMOVBE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00337.svmcase"
+ },
+ {
+  "index": 338,
+  "key": "FCMOVBE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00338.svmcase"
+ },
+ {
+  "index": 339,
+  "key": "FCMOVE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00339.svmcase"
+ },
+ {
+  "index": 340,
+  "key": "FCMOVE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00340.svmcase"
+ },
+ {
+  "index": 341,
+  "key": "FCMOVNB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00341.svmcase"
+ },
+ {
+  "index": 342,
+  "key": "FCMOVNB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00342.svmcase"
+ },
+ {
+  "index": 343,
+  "key": "FCMOVNBE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00343.svmcase"
+ },
+ {
+  "index": 344,
+  "key": "FCMOVNBE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00344.svmcase"
+ },
+ {
+  "index": 345,
+  "key": "FCMOVNE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00345.svmcase"
+ },
+ {
+  "index": 346,
+  "key": "FCMOVNE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00346.svmcase"
+ },
+ {
+  "index": 347,
+  "key": "FCMOVNU",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00347.svmcase"
+ },
+ {
+  "index": 348,
+  "key": "FCMOVNU",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00348.svmcase"
+ },
+ {
+  "index": 349,
+  "key": "FCMOVU",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00349.svmcase"
+ },
+ {
+  "index": 350,
+  "key": "FCMOVU",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00350.svmcase"
+ },
+ {
+  "index": 351,
+  "key": "FCMOVU",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00351.svmcase"
+ },
+ {
+  "index": 352,
+  "key": "FCOM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00352.svmcase"
+ },
+ {
+  "index": 353,
+  "key": "FCOM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00353.svmcase"
+ },
+ {
+  "index": 354,
+  "key": "FCOM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00354.svmcase"
+ },
+ {
+  "index": 355,
+  "key": "FCOM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00355.svmcase"
+ },
+ {
+  "index": 356,
+  "key": "FCOMI",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00356.svmcase"
+ },
+ {
+  "index": 357,
+  "key": "FCOMIP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00357.svmcase"
+ },
+ {
+  "index": 358,
+  "key": "FCOMIP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00358.svmcase"
+ },
+ {
+  "index": 359,
+  "key": "FCOMIP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00359.svmcase"
+ },
+ {
+  "index": 360,
+  "key": "FCOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00360.svmcase"
+ },
+ {
+  "index": 361,
+  "key": "FCOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00361.svmcase"
+ },
+ {
+  "index": 362,
+  "key": "FCOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00362.svmcase"
+ },
+ {
+  "index": 363,
+  "key": "FCOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00363.svmcase"
+ },
+ {
+  "index": 364,
+  "key": "FCOMPP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00364.svmcase"
+ },
+ {
+  "index": 365,
+  "key": "FCOS",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00365.svmcase"
+ },
+ {
+  "index": 366,
+  "key": "FDECSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00366.svmcase"
+ },
+ {
+  "index": 367,
+  "key": "FDIV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00367.svmcase"
+ },
+ {
+  "index": 368,
+  "key": "FDIV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00368.svmcase"
+ },
+ {
+  "index": 369,
+  "key": "FDIV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00369.svmcase"
+ },
+ {
+  "index": 370,
+  "key": "FDIV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00370.svmcase"
+ },
+ {
+  "index": 371,
+  "key": "FDIVP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00371.svmcase"
+ },
+ {
+  "index": 372,
+  "key": "FDIVR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00372.svmcase"
+ },
+ {
+  "index": 373,
+  "key": "FDIVR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00373.svmcase"
+ },
+ {
+  "index": 374,
+  "key": "FDIVR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00374.svmcase"
+ },
+ {
+  "index": 375,
+  "key": "FDIVR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00375.svmcase"
+ },
+ {
+  "index": 376,
+  "key": "FDIVRP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00376.svmcase"
+ },
+ {
+  "index": 377,
+  "key": "FDIVRP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00377.svmcase"
+ },
+ {
+  "index": 378,
+  "key": "FDIVRP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00378.svmcase"
+ },
+ {
+  "index": 379,
+  "key": "FFREE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00379.svmcase"
+ },
+ {
+  "index": 380,
+  "key": "FFREE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00380.svmcase"
+ },
+ {
+  "index": 381,
+  "key": "FFREEP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00381.svmcase"
+ },
+ {
+  "index": 382,
+  "key": "FFREEP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00382.svmcase"
+ },
+ {
+  "index": 383,
+  "key": "FIADD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00383.svmcase"
+ },
+ {
+  "index": 384,
+  "key": "FIADD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00384.svmcase"
+ },
+ {
+  "index": 385,
+  "key": "FIADD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00385.svmcase"
+ },
+ {
+  "index": 386,
+  "key": "FIADD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00386.svmcase"
+ },
+ {
+  "index": 387,
+  "key": "FICOM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00387.svmcase"
+ },
+ {
+  "index": 388,
+  "key": "FICOM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00388.svmcase"
+ },
+ {
+  "index": 389,
+  "key": "FICOM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00389.svmcase"
+ },
+ {
+  "index": 390,
+  "key": "FICOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00390.svmcase"
+ },
+ {
+  "index": 391,
+  "key": "FICOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00391.svmcase"
+ },
+ {
+  "index": 392,
+  "key": "FICOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00392.svmcase"
+ },
+ {
+  "index": 393,
+  "key": "FIDIV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00393.svmcase"
+ },
+ {
+  "index": 394,
+  "key": "FIDIV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00394.svmcase"
+ },
+ {
+  "index": 395,
+  "key": "FIDIV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00395.svmcase"
+ },
+ {
+  "index": 396,
+  "key": "FIDIV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00396.svmcase"
+ },
+ {
+  "index": 397,
+  "key": "FIDIVR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00397.svmcase"
+ },
+ {
+  "index": 398,
+  "key": "FIDIVR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00398.svmcase"
+ },
+ {
+  "index": 399,
+  "key": "FIDIVR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00399.svmcase"
+ },
+ {
+  "index": 400,
+  "key": "FIDIVR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00400.svmcase"
+ },
+ {
+  "index": 401,
+  "key": "FILD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00401.svmcase"
+ },
+ {
+  "index": 402,
+  "key": "FILD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00402.svmcase"
+ },
+ {
+  "index": 403,
+  "key": "FILD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00403.svmcase"
+ },
+ {
+  "index": 404,
+  "key": "FILD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00404.svmcase"
+ },
+ {
+  "index": 405,
+  "key": "FIMUL",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00405.svmcase"
+ },
+ {
+  "index": 406,
+  "key": "FIMUL",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00406.svmcase"
+ },
+ {
+  "index": 407,
+  "key": "FIMUL",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00407.svmcase"
+ },
+ {
+  "index": 408,
+  "key": "FIMUL",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00408.svmcase"
+ },
+ {
+  "index": 409,
+  "key": "FINCSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00409.svmcase"
+ },
+ {
+  "index": 410,
+  "key": "FIST",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00410.svmcase"
+ },
+ {
+  "index": 411,
+  "key": "FIST",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00411.svmcase"
+ },
+ {
+  "index": 412,
+  "key": "FISTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00412.svmcase"
+ },
+ {
+  "index": 413,
+  "key": "FISTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00413.svmcase"
+ },
+ {
+  "index": 414,
+  "key": "FISTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00414.svmcase"
+ },
+ {
+  "index": 415,
+  "key": "FISTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00415.svmcase"
+ },
+ {
+  "index": 416,
+  "key": "FISTTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00416.svmcase"
+ },
+ {
+  "index": 417,
+  "key": "FISTTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00417.svmcase"
+ },
+ {
+  "index": 418,
+  "key": "FISTTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00418.svmcase"
+ },
+ {
+  "index": 419,
+  "key": "FISTTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00419.svmcase"
+ },
+ {
+  "index": 420,
+  "key": "FISUB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00420.svmcase"
+ },
+ {
+  "index": 421,
+  "key": "FISUB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00421.svmcase"
+ },
+ {
+  "index": 422,
+  "key": "FISUB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00422.svmcase"
+ },
+ {
+  "index": 423,
+  "key": "FISUB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00423.svmcase"
+ },
+ {
+  "index": 424,
+  "key": "FISUBR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00424.svmcase"
+ },
+ {
+  "index": 425,
+  "key": "FISUBR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00425.svmcase"
+ },
+ {
+  "index": 426,
+  "key": "FISUBR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00426.svmcase"
+ },
+ {
+  "index": 427,
+  "key": "FISUBR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00427.svmcase"
+ },
+ {
+  "index": 428,
+  "key": "FLD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00428.svmcase"
+ },
+ {
+  "index": 429,
+  "key": "FLD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00429.svmcase"
+ },
+ {
+  "index": 430,
+  "key": "FLD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00430.svmcase"
+ },
+ {
+  "index": 431,
+  "key": "FLD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00431.svmcase"
+ },
+ {
+  "index": 432,
+  "key": "FLD1",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00432.svmcase"
+ },
+ {
+  "index": 433,
+  "key": "FLDCW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00433.svmcase"
+ },
+ {
+  "index": 434,
+  "key": "FLDCW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00434.svmcase"
+ },
+ {
+  "index": 435,
+  "key": "FLDCW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00435.svmcase"
+ },
+ {
+  "index": 436,
+  "key": "FLDCW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00436.svmcase"
+ },
+ {
+  "index": 437,
+  "key": "FLDENV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00437.svmcase"
+ },
+ {
+  "index": 438,
+  "key": "FLDENV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00438.svmcase"
+ },
+ {
+  "index": 439,
+  "key": "FLDENV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00439.svmcase"
+ },
+ {
+  "index": 440,
+  "key": "FLDENV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00440.svmcase"
+ },
+ {
+  "index": 441,
+  "key": "FLDL2E",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00441.svmcase"
+ },
+ {
+  "index": 442,
+  "key": "FLDL2T",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00442.svmcase"
+ },
+ {
+  "index": 443,
+  "key": "FLDLG2",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00443.svmcase"
+ },
+ {
+  "index": 444,
+  "key": "FLDLN2",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00444.svmcase"
+ },
+ {
+  "index": 445,
+  "key": "FLDPI",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00445.svmcase"
+ },
+ {
+  "index": 446,
+  "key": "FLDZ",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00446.svmcase"
+ },
+ {
+  "index": 447,
+  "key": "FMUL",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00447.svmcase"
+ },
+ {
+  "index": 448,
+  "key": "FMUL",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00448.svmcase"
+ },
+ {
+  "index": 449,
+  "key": "FMUL",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00449.svmcase"
+ },
+ {
+  "index": 450,
+  "key": "FMUL",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00450.svmcase"
+ },
+ {
+  "index": 451,
+  "key": "FMULP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00451.svmcase"
+ },
+ {
+  "index": 452,
+  "key": "FNCLEX",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00452.svmcase"
+ },
+ {
+  "index": 453,
+  "key": "FNINIT",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00453.svmcase"
+ },
+ {
+  "index": 454,
+  "key": "FNOP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00454.svmcase"
+ },
+ {
+  "index": 455,
+  "key": "FNOP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00455.svmcase"
+ },
+ {
+  "index": 456,
+  "key": "FNSAVE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00456.svmcase"
+ },
+ {
+  "index": 457,
+  "key": "FNSAVE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00457.svmcase"
+ },
+ {
+  "index": 458,
+  "key": "FNSAVE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00458.svmcase"
+ },
+ {
+  "index": 459,
+  "key": "FNSAVE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00459.svmcase"
+ },
+ {
+  "index": 460,
+  "key": "FNSTCW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00460.svmcase"
+ },
+ {
+  "index": 461,
+  "key": "FNSTCW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00461.svmcase"
+ },
+ {
+  "index": 462,
+  "key": "FNSTCW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00462.svmcase"
+ },
+ {
+  "index": 463,
+  "key": "FNSTCW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00463.svmcase"
+ },
+ {
+  "index": 464,
+  "key": "FNSTENV",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00464.svmcase"
+ },
+ {
+  "index": 465,
+  "key": "FNSTSW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00465.svmcase"
+ },
+ {
+  "index": 466,
+  "key": "FNSTSW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00466.svmcase"
+ },
+ {
+  "index": 467,
+  "key": "FNSTSW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00467.svmcase"
+ },
+ {
+  "index": 468,
+  "key": "FNSTSW",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00468.svmcase"
+ },
+ {
+  "index": 469,
+  "key": "FPATAN",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00469.svmcase"
+ },
+ {
+  "index": 470,
+  "key": "FPATAN",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00470.svmcase"
+ },
+ {
+  "index": 471,
+  "key": "FPREM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00471.svmcase"
+ },
+ {
+  "index": 472,
+  "key": "FPREM1",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00472.svmcase"
+ },
+ {
+  "index": 473,
+  "key": "FPTAN",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00473.svmcase"
+ },
+ {
+  "index": 474,
+  "key": "FRNDINT",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00474.svmcase"
+ },
+ {
+  "index": 475,
+  "key": "FRSTOR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00475.svmcase"
+ },
+ {
+  "index": 476,
+  "key": "FRSTOR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00476.svmcase"
+ },
+ {
+  "index": 477,
+  "key": "FRSTOR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00477.svmcase"
+ },
+ {
+  "index": 478,
+  "key": "FRSTOR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00478.svmcase"
+ },
+ {
+  "index": 479,
+  "key": "FSCALE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00479.svmcase"
+ },
+ {
+  "index": 480,
+  "key": "FSIN",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00480.svmcase"
+ },
+ {
+  "index": 481,
+  "key": "FSINCOS",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00481.svmcase"
+ },
+ {
+  "index": 482,
+  "key": "FSQRT",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00482.svmcase"
+ },
+ {
+  "index": 483,
+  "key": "FST",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00483.svmcase"
+ },
+ {
+  "index": 484,
+  "key": "FST",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00484.svmcase"
+ },
+ {
+  "index": 485,
+  "key": "FST",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00485.svmcase"
+ },
+ {
+  "index": 486,
+  "key": "FST",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00486.svmcase"
+ },
+ {
+  "index": 487,
+  "key": "FSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00487.svmcase"
+ },
+ {
+  "index": 488,
+  "key": "FSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00488.svmcase"
+ },
+ {
+  "index": 489,
+  "key": "FSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00489.svmcase"
+ },
+ {
+  "index": 490,
+  "key": "FSTP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00490.svmcase"
+ },
+ {
+  "index": 491,
+  "key": "FSUB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00491.svmcase"
+ },
+ {
+  "index": 492,
+  "key": "FSUB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00492.svmcase"
+ },
+ {
+  "index": 493,
+  "key": "FSUB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00493.svmcase"
+ },
+ {
+  "index": 494,
+  "key": "FSUB",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00494.svmcase"
+ },
+ {
+  "index": 495,
+  "key": "FSUBP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00495.svmcase"
+ },
+ {
+  "index": 496,
+  "key": "FSUBP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00496.svmcase"
+ },
+ {
+  "index": 497,
+  "key": "FSUBP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00497.svmcase"
+ },
+ {
+  "index": 498,
+  "key": "FSUBR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00498.svmcase"
+ },
+ {
+  "index": 499,
+  "key": "FSUBR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00499.svmcase"
+ },
+ {
+  "index": 500,
+  "key": "FSUBR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00500.svmcase"
+ },
+ {
+  "index": 501,
+  "key": "FSUBR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00501.svmcase"
+ },
+ {
+  "index": 502,
+  "key": "FSUBRP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00502.svmcase"
+ },
+ {
+  "index": 503,
+  "key": "FSUBRP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00503.svmcase"
+ },
+ {
+  "index": 504,
+  "key": "FTST",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00504.svmcase"
+ },
+ {
+  "index": 505,
+  "key": "FUCOM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00505.svmcase"
+ },
+ {
+  "index": 506,
+  "key": "FUCOMI",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00506.svmcase"
+ },
+ {
+  "index": 507,
+  "key": "FUCOMI",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00507.svmcase"
+ },
+ {
+  "index": 508,
+  "key": "FUCOMIP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00508.svmcase"
+ },
+ {
+  "index": 509,
+  "key": "FUCOMIP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00509.svmcase"
+ },
+ {
+  "index": 510,
+  "key": "FUCOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00510.svmcase"
+ },
+ {
+  "index": 511,
+  "key": "FUCOMP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00511.svmcase"
+ },
+ {
+  "index": 512,
+  "key": "FUCOMPP",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00512.svmcase"
+ },
+ {
+  "index": 513,
+  "key": "FXAM",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00513.svmcase"
+ },
+ {
+  "index": 514,
+  "key": "FXCH",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00514.svmcase"
+ },
+ {
+  "index": 515,
+  "key": "FXCH",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00515.svmcase"
+ },
+ {
+  "index": 516,
+  "key": "FXCH",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00516.svmcase"
+ },
+ {
+  "index": 517,
+  "key": "FXCH",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00517.svmcase"
+ },
+ {
+  "index": 518,
+  "key": "FXRSTOR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00518.svmcase"
+ },
+ {
+  "index": 519,
+  "key": "FXRSTOR",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00519.svmcase"
+ },
+ {
+  "index": 520,
+  "key": "FXRSTOR64",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00520.svmcase"
+ },
+ {
+  "index": 521,
+  "key": "FXRSTOR64",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00521.svmcase"
+ },
+ {
+  "index": 522,
+  "key": "FXSAVE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00522.svmcase"
+ },
+ {
+  "index": 523,
+  "key": "FXSAVE",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00523.svmcase"
+ },
+ {
+  "index": 524,
+  "key": "FXSAVE64",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00524.svmcase"
+ },
+ {
+  "index": 525,
+  "key": "FXSAVE64",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00525.svmcase"
+ },
+ {
+  "index": 526,
+  "key": "FXTRACT",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00526.svmcase"
+ },
+ {
+  "index": 527,
+  "key": "FYL2X",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00527.svmcase"
+ },
+ {
+  "index": 528,
+  "key": "FYL2XP1",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00528.svmcase"
+ },
+ {
+  "index": 673,
+  "key": "MASKMOVQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00673.svmcase"
+ },
+ {
+  "index": 674,
+  "key": "MASKMOVQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00674.svmcase"
+ },
+ {
+  "index": 712,
+  "key": "MOVD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00712.svmcase"
+ },
+ {
+  "index": 713,
+  "key": "MOVD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00713.svmcase"
+ },
+ {
+  "index": 714,
+  "key": "MOVD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00714.svmcase"
+ },
+ {
+  "index": 715,
+  "key": "MOVD",
+  "mmx": false,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00715.svmcase"
+ },
+ {
+  "index": 750,
+  "key": "MOVNTQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00750.svmcase"
+ },
+ {
+  "index": 751,
+  "key": "MOVNTQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00751.svmcase"
+ },
+ {
+  "index": 752,
+  "key": "MOVQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00752.svmcase"
+ },
+ {
+  "index": 753,
+  "key": "MOVQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00753.svmcase"
+ },
+ {
+  "index": 754,
+  "key": "MOVQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00754.svmcase"
+ },
+ {
+  "index": 755,
+  "key": "MOVQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00755.svmcase"
+ },
+ {
+  "index": 822,
+  "key": "PABSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00822.svmcase"
+ },
+ {
+  "index": 823,
+  "key": "PABSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00823.svmcase"
+ },
+ {
+  "index": 824,
+  "key": "PABSD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00824.svmcase"
+ },
+ {
+  "index": 825,
+  "key": "PABSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00825.svmcase"
+ },
+ {
+  "index": 826,
+  "key": "PACKSSDW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00826.svmcase"
+ },
+ {
+  "index": 827,
+  "key": "PACKSSDW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00827.svmcase"
+ },
+ {
+  "index": 830,
+  "key": "PACKSSWB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00830.svmcase"
+ },
+ {
+  "index": 831,
+  "key": "PACKSSWB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00831.svmcase"
+ },
+ {
+  "index": 832,
+  "key": "PACKSSWB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00832.svmcase"
+ },
+ {
+  "index": 833,
+  "key": "PACKSSWB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00833.svmcase"
+ },
+ {
+  "index": 835,
+  "key": "PACKUSWB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00835.svmcase"
+ },
+ {
+  "index": 836,
+  "key": "PACKUSWB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00836.svmcase"
+ },
+ {
+  "index": 837,
+  "key": "PADDB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00837.svmcase"
+ },
+ {
+  "index": 838,
+  "key": "PADDB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00838.svmcase"
+ },
+ {
+  "index": 839,
+  "key": "PADDB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00839.svmcase"
+ },
+ {
+  "index": 840,
+  "key": "PADDB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00840.svmcase"
+ },
+ {
+  "index": 841,
+  "key": "PADDD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00841.svmcase"
+ },
+ {
+  "index": 842,
+  "key": "PADDD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00842.svmcase"
+ },
+ {
+  "index": 843,
+  "key": "PADDD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00843.svmcase"
+ },
+ {
+  "index": 844,
+  "key": "PADDD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00844.svmcase"
+ },
+ {
+  "index": 845,
+  "key": "PADDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00845.svmcase"
+ },
+ {
+  "index": 846,
+  "key": "PADDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00846.svmcase"
+ },
+ {
+  "index": 847,
+  "key": "PADDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00847.svmcase"
+ },
+ {
+  "index": 848,
+  "key": "PADDSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00848.svmcase"
+ },
+ {
+  "index": 849,
+  "key": "PADDSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00849.svmcase"
+ },
+ {
+  "index": 851,
+  "key": "PADDSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00851.svmcase"
+ },
+ {
+  "index": 852,
+  "key": "PADDSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00852.svmcase"
+ },
+ {
+  "index": 853,
+  "key": "PADDUSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00853.svmcase"
+ },
+ {
+  "index": 854,
+  "key": "PADDUSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00854.svmcase"
+ },
+ {
+  "index": 857,
+  "key": "PADDUSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00857.svmcase"
+ },
+ {
+  "index": 858,
+  "key": "PADDUSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00858.svmcase"
+ },
+ {
+  "index": 859,
+  "key": "PADDUSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00859.svmcase"
+ },
+ {
+  "index": 860,
+  "key": "PADDW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00860.svmcase"
+ },
+ {
+  "index": 861,
+  "key": "PADDW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00861.svmcase"
+ },
+ {
+  "index": 862,
+  "key": "PADDW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00862.svmcase"
+ },
+ {
+  "index": 863,
+  "key": "PADDW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00863.svmcase"
+ },
+ {
+  "index": 864,
+  "key": "PALIGNR",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00864.svmcase"
+ },
+ {
+  "index": 865,
+  "key": "PALIGNR",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00865.svmcase"
+ },
+ {
+  "index": 866,
+  "key": "PALIGNR",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00866.svmcase"
+ },
+ {
+  "index": 867,
+  "key": "PALIGNR",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00867.svmcase"
+ },
+ {
+  "index": 868,
+  "key": "PAND",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00868.svmcase"
+ },
+ {
+  "index": 869,
+  "key": "PAND",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00869.svmcase"
+ },
+ {
+  "index": 870,
+  "key": "PANDN",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00870.svmcase"
+ },
+ {
+  "index": 871,
+  "key": "PANDN",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00871.svmcase"
+ },
+ {
+  "index": 872,
+  "key": "PANDN",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00872.svmcase"
+ },
+ {
+  "index": 875,
+  "key": "PAVGB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00875.svmcase"
+ },
+ {
+  "index": 876,
+  "key": "PAVGB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00876.svmcase"
+ },
+ {
+  "index": 877,
+  "key": "PAVGB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00877.svmcase"
+ },
+ {
+  "index": 878,
+  "key": "PAVGB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00878.svmcase"
+ },
+ {
+  "index": 879,
+  "key": "PAVGW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00879.svmcase"
+ },
+ {
+  "index": 880,
+  "key": "PAVGW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00880.svmcase"
+ },
+ {
+  "index": 881,
+  "key": "PAVGW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00881.svmcase"
+ },
+ {
+  "index": 886,
+  "key": "PCMPEQB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00886.svmcase"
+ },
+ {
+  "index": 887,
+  "key": "PCMPEQB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00887.svmcase"
+ },
+ {
+  "index": 888,
+  "key": "PCMPEQB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00888.svmcase"
+ },
+ {
+  "index": 889,
+  "key": "PCMPEQD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00889.svmcase"
+ },
+ {
+  "index": 890,
+  "key": "PCMPEQD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00890.svmcase"
+ },
+ {
+  "index": 894,
+  "key": "PCMPEQW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00894.svmcase"
+ },
+ {
+  "index": 904,
+  "key": "PCMPGTB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00904.svmcase"
+ },
+ {
+  "index": 908,
+  "key": "PCMPGTD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00908.svmcase"
+ },
+ {
+  "index": 909,
+  "key": "PCMPGTD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00909.svmcase"
+ },
+ {
+  "index": 910,
+  "key": "PCMPGTD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00910.svmcase"
+ },
+ {
+  "index": 911,
+  "key": "PCMPGTD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00911.svmcase"
+ },
+ {
+  "index": 913,
+  "key": "PCMPGTW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00913.svmcase"
+ },
+ {
+  "index": 914,
+  "key": "PCMPGTW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00914.svmcase"
+ },
+ {
+  "index": 922,
+  "key": "PEXTRW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00922.svmcase"
+ },
+ {
+  "index": 923,
+  "key": "PEXTRW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00923.svmcase"
+ },
+ {
+  "index": 924,
+  "key": "PEXTRW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00924.svmcase"
+ },
+ {
+  "index": 925,
+  "key": "PHADDD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00925.svmcase"
+ },
+ {
+  "index": 926,
+  "key": "PHADDSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00926.svmcase"
+ },
+ {
+  "index": 927,
+  "key": "PHADDW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00927.svmcase"
+ },
+ {
+  "index": 930,
+  "key": "PHSUBD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00930.svmcase"
+ },
+ {
+  "index": 931,
+  "key": "PHSUBSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00931.svmcase"
+ },
+ {
+  "index": 932,
+  "key": "PHSUBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00932.svmcase"
+ },
+ {
+  "index": 936,
+  "key": "PINSRW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00936.svmcase"
+ },
+ {
+  "index": 937,
+  "key": "PINSRW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00937.svmcase"
+ },
+ {
+  "index": 938,
+  "key": "PINSRW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00938.svmcase"
+ },
+ {
+  "index": 939,
+  "key": "PMADDUBSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00939.svmcase"
+ },
+ {
+  "index": 940,
+  "key": "PMADDWD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00940.svmcase"
+ },
+ {
+  "index": 941,
+  "key": "PMADDWD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00941.svmcase"
+ },
+ {
+  "index": 942,
+  "key": "PMADDWD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00942.svmcase"
+ },
+ {
+  "index": 943,
+  "key": "PMADDWD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00943.svmcase"
+ },
+ {
+  "index": 946,
+  "key": "PMAXSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00946.svmcase"
+ },
+ {
+  "index": 947,
+  "key": "PMAXSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00947.svmcase"
+ },
+ {
+  "index": 948,
+  "key": "PMAXSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00948.svmcase"
+ },
+ {
+  "index": 949,
+  "key": "PMAXSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00949.svmcase"
+ },
+ {
+  "index": 950,
+  "key": "PMAXUB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00950.svmcase"
+ },
+ {
+  "index": 951,
+  "key": "PMAXUB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00951.svmcase"
+ },
+ {
+  "index": 952,
+  "key": "PMAXUB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00952.svmcase"
+ },
+ {
+  "index": 953,
+  "key": "PMAXUB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00953.svmcase"
+ },
+ {
+  "index": 959,
+  "key": "PMINSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00959.svmcase"
+ },
+ {
+  "index": 960,
+  "key": "PMINSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00960.svmcase"
+ },
+ {
+  "index": 961,
+  "key": "PMINUB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00961.svmcase"
+ },
+ {
+  "index": 962,
+  "key": "PMINUB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00962.svmcase"
+ },
+ {
+  "index": 963,
+  "key": "PMINUB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00963.svmcase"
+ },
+ {
+  "index": 964,
+  "key": "PMINUB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00964.svmcase"
+ },
+ {
+  "index": 967,
+  "key": "PMOVMSKB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00967.svmcase"
+ },
+ {
+  "index": 968,
+  "key": "PMOVMSKB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00968.svmcase"
+ },
+ {
+  "index": 984,
+  "key": "PMULHRSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00984.svmcase"
+ },
+ {
+  "index": 985,
+  "key": "PMULHUW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00985.svmcase"
+ },
+ {
+  "index": 986,
+  "key": "PMULHUW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00986.svmcase"
+ },
+ {
+  "index": 987,
+  "key": "PMULHW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00987.svmcase"
+ },
+ {
+  "index": 988,
+  "key": "PMULHW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00988.svmcase"
+ },
+ {
+  "index": 989,
+  "key": "PMULHW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00989.svmcase"
+ },
+ {
+  "index": 990,
+  "key": "PMULHW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00990.svmcase"
+ },
+ {
+  "index": 992,
+  "key": "PMULLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00992.svmcase"
+ },
+ {
+  "index": 993,
+  "key": "PMULLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00993.svmcase"
+ },
+ {
+  "index": 995,
+  "key": "PMULUDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00995.svmcase"
+ },
+ {
+  "index": 996,
+  "key": "PMULUDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00996.svmcase"
+ },
+ {
+  "index": 997,
+  "key": "PMULUDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00997.svmcase"
+ },
+ {
+  "index": 998,
+  "key": "PMULUDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/00998.svmcase"
+ },
+ {
+  "index": 1008,
+  "key": "POR",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01008.svmcase"
+ },
+ {
+  "index": 1009,
+  "key": "POR",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01009.svmcase"
+ },
+ {
+  "index": 1020,
+  "key": "PSADBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01020.svmcase"
+ },
+ {
+  "index": 1021,
+  "key": "PSADBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01021.svmcase"
+ },
+ {
+  "index": 1022,
+  "key": "PSADBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01022.svmcase"
+ },
+ {
+  "index": 1023,
+  "key": "PSADBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01023.svmcase"
+ },
+ {
+  "index": 1024,
+  "key": "PSHUFB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01024.svmcase"
+ },
+ {
+  "index": 1025,
+  "key": "PSHUFB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01025.svmcase"
+ },
+ {
+  "index": 1031,
+  "key": "PSHUFW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01031.svmcase"
+ },
+ {
+  "index": 1032,
+  "key": "PSHUFW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01032.svmcase"
+ },
+ {
+  "index": 1033,
+  "key": "PSHUFW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01033.svmcase"
+ },
+ {
+  "index": 1034,
+  "key": "PSHUFW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01034.svmcase"
+ },
+ {
+  "index": 1035,
+  "key": "PSIGNB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01035.svmcase"
+ },
+ {
+  "index": 1036,
+  "key": "PSIGND",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01036.svmcase"
+ },
+ {
+  "index": 1037,
+  "key": "PSIGNW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01037.svmcase"
+ },
+ {
+  "index": 1038,
+  "key": "PSLLD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01038.svmcase"
+ },
+ {
+  "index": 1039,
+  "key": "PSLLD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01039.svmcase"
+ },
+ {
+  "index": 1040,
+  "key": "PSLLD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01040.svmcase"
+ },
+ {
+  "index": 1041,
+  "key": "PSLLD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01041.svmcase"
+ },
+ {
+  "index": 1043,
+  "key": "PSLLQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01043.svmcase"
+ },
+ {
+  "index": 1044,
+  "key": "PSLLQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01044.svmcase"
+ },
+ {
+  "index": 1047,
+  "key": "PSLLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01047.svmcase"
+ },
+ {
+  "index": 1048,
+  "key": "PSLLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01048.svmcase"
+ },
+ {
+  "index": 1049,
+  "key": "PSLLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01049.svmcase"
+ },
+ {
+  "index": 1050,
+  "key": "PSLLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01050.svmcase"
+ },
+ {
+  "index": 1051,
+  "key": "PSRAD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01051.svmcase"
+ },
+ {
+  "index": 1052,
+  "key": "PSRAD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01052.svmcase"
+ },
+ {
+  "index": 1053,
+  "key": "PSRAD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01053.svmcase"
+ },
+ {
+  "index": 1054,
+  "key": "PSRAD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01054.svmcase"
+ },
+ {
+  "index": 1055,
+  "key": "PSRAW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01055.svmcase"
+ },
+ {
+  "index": 1056,
+  "key": "PSRAW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01056.svmcase"
+ },
+ {
+  "index": 1057,
+  "key": "PSRAW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01057.svmcase"
+ },
+ {
+  "index": 1058,
+  "key": "PSRAW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01058.svmcase"
+ },
+ {
+  "index": 1059,
+  "key": "PSRLD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01059.svmcase"
+ },
+ {
+  "index": 1060,
+  "key": "PSRLD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01060.svmcase"
+ },
+ {
+  "index": 1061,
+  "key": "PSRLD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01061.svmcase"
+ },
+ {
+  "index": 1062,
+  "key": "PSRLD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01062.svmcase"
+ },
+ {
+  "index": 1064,
+  "key": "PSRLQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01064.svmcase"
+ },
+ {
+  "index": 1065,
+  "key": "PSRLQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01065.svmcase"
+ },
+ {
+  "index": 1066,
+  "key": "PSRLQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01066.svmcase"
+ },
+ {
+  "index": 1068,
+  "key": "PSRLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01068.svmcase"
+ },
+ {
+  "index": 1069,
+  "key": "PSRLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01069.svmcase"
+ },
+ {
+  "index": 1070,
+  "key": "PSRLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01070.svmcase"
+ },
+ {
+  "index": 1071,
+  "key": "PSRLW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01071.svmcase"
+ },
+ {
+  "index": 1072,
+  "key": "PSUBB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01072.svmcase"
+ },
+ {
+  "index": 1073,
+  "key": "PSUBB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01073.svmcase"
+ },
+ {
+  "index": 1074,
+  "key": "PSUBB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01074.svmcase"
+ },
+ {
+  "index": 1075,
+  "key": "PSUBB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01075.svmcase"
+ },
+ {
+  "index": 1076,
+  "key": "PSUBD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01076.svmcase"
+ },
+ {
+  "index": 1077,
+  "key": "PSUBD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01077.svmcase"
+ },
+ {
+  "index": 1078,
+  "key": "PSUBD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01078.svmcase"
+ },
+ {
+  "index": 1080,
+  "key": "PSUBQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01080.svmcase"
+ },
+ {
+  "index": 1081,
+  "key": "PSUBQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01081.svmcase"
+ },
+ {
+  "index": 1082,
+  "key": "PSUBQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01082.svmcase"
+ },
+ {
+  "index": 1083,
+  "key": "PSUBQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01083.svmcase"
+ },
+ {
+  "index": 1084,
+  "key": "PSUBSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01084.svmcase"
+ },
+ {
+  "index": 1085,
+  "key": "PSUBSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01085.svmcase"
+ },
+ {
+  "index": 1086,
+  "key": "PSUBSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01086.svmcase"
+ },
+ {
+  "index": 1087,
+  "key": "PSUBSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01087.svmcase"
+ },
+ {
+  "index": 1088,
+  "key": "PSUBSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01088.svmcase"
+ },
+ {
+  "index": 1089,
+  "key": "PSUBSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01089.svmcase"
+ },
+ {
+  "index": 1090,
+  "key": "PSUBSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01090.svmcase"
+ },
+ {
+  "index": 1092,
+  "key": "PSUBUSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01092.svmcase"
+ },
+ {
+  "index": 1093,
+  "key": "PSUBUSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01093.svmcase"
+ },
+ {
+  "index": 1094,
+  "key": "PSUBUSB",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01094.svmcase"
+ },
+ {
+  "index": 1095,
+  "key": "PSUBUSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01095.svmcase"
+ },
+ {
+  "index": 1096,
+  "key": "PSUBUSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01096.svmcase"
+ },
+ {
+  "index": 1097,
+  "key": "PSUBUSW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01097.svmcase"
+ },
+ {
+  "index": 1098,
+  "key": "PSUBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01098.svmcase"
+ },
+ {
+  "index": 1099,
+  "key": "PSUBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01099.svmcase"
+ },
+ {
+  "index": 1100,
+  "key": "PSUBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01100.svmcase"
+ },
+ {
+  "index": 1101,
+  "key": "PSUBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01101.svmcase"
+ },
+ {
+  "index": 1103,
+  "key": "PUNPCKHBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01103.svmcase"
+ },
+ {
+  "index": 1104,
+  "key": "PUNPCKHBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01104.svmcase"
+ },
+ {
+  "index": 1105,
+  "key": "PUNPCKHBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01105.svmcase"
+ },
+ {
+  "index": 1107,
+  "key": "PUNPCKHDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01107.svmcase"
+ },
+ {
+  "index": 1108,
+  "key": "PUNPCKHDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01108.svmcase"
+ },
+ {
+  "index": 1111,
+  "key": "PUNPCKHWD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01111.svmcase"
+ },
+ {
+  "index": 1112,
+  "key": "PUNPCKHWD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01112.svmcase"
+ },
+ {
+  "index": 1113,
+  "key": "PUNPCKHWD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01113.svmcase"
+ },
+ {
+  "index": 1115,
+  "key": "PUNPCKLBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01115.svmcase"
+ },
+ {
+  "index": 1116,
+  "key": "PUNPCKLBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01116.svmcase"
+ },
+ {
+  "index": 1117,
+  "key": "PUNPCKLBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01117.svmcase"
+ },
+ {
+  "index": 1118,
+  "key": "PUNPCKLBW",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01118.svmcase"
+ },
+ {
+  "index": 1119,
+  "key": "PUNPCKLDQ",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01119.svmcase"
+ },
+ {
+  "index": 1126,
+  "key": "PUNPCKLWD",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01126.svmcase"
+ },
+ {
+  "index": 1132,
+  "key": "PXOR",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01132.svmcase"
+ },
+ {
+  "index": 1133,
+  "key": "PXOR",
+  "mmx": true,
+  "case": "/Volumes/Data2/swiftvm-correctness-results/x86-x87-mmx-20261110/cases/01133.svmcase"
+ }
+]
