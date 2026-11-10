@@ -315,6 +315,11 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         FormName(c) == "XGETBV")
         return {false, false, "oracle_gp_gap",
                 "invalid XCR index #GP projection is not oracle-verified"};
+    if (inventory && actual.backend == "native-x86_64" && c.isa == ISA::X86_64 &&
+        (expected.state.x87_status & 0x41) == 0x41 &&
+        (actual.state.x87_status & 0x41) == 0x41)
+        return {false, false, "native_x87_fault_gap",
+                "x87 stack-fault register/memory side effects are implementation-defined"};
     if (expected.outcome == Outcome::Budget && actual.outcome != Outcome::Budget)
         return {false, false, "oracle_inconclusive",
                 "oracle instruction budget exhausted before the contract boundary"};
@@ -418,7 +423,20 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
             return Different("x87_control", e.x87_control, a.x87_control);
         if (e.x87_status != a.x87_status)
             return Different("x87_status", e.x87_status, a.x87_status);
-        if (e.x87_tag != a.x87_tag) return Different("x87_tag", e.x87_tag, a.x87_tag);
+        if (e.x87_tag != a.x87_tag) {
+            bool empty_mismatch{};
+            if (actual.backend == "native-x86_64")
+                for (unsigned i = 0; i != 8; ++i) {
+                    const bool expected_empty = ((e.x87_tag >> (2 * i)) & 3) == 3;
+                    const bool actual_empty = ((a.x87_tag >> (2 * i)) & 3) == 3;
+                    empty_mismatch |= expected_empty != actual_empty;
+                }
+            if (actual.backend == "native-x86_64" && !empty_mismatch) {
+                if (!gaps.empty()) gaps += "; ";
+                gaps += "native tag projection only distinguishes empty registers";
+            } else
+                return Different("x87_tag", e.x87_tag, a.x87_tag);
+        }
         if (e.x87_opcode != a.x87_opcode) {
             if (actual.backend == "native-x86_64") {
                 if (!gaps.empty()) gaps += "; ";

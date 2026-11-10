@@ -34,7 +34,7 @@ GAPS = {"control_one_step_gap", "state_service_gap", "oracle_unsupported",
         "oracle_inconclusive", "x87_gap", "nondeterministic_gap", "profile_gap",
         "oracle_cpsr_gap", "oracle_alignment_gap", "oracle_service_gap", "oracle_gp_gap",
         "prefix_policy_gap", "unsupported_guest_feature_gap", "unpredictable_encoding_gap",
-        "native_verified_gap"}
+        "native_verified_gap", "native_x87_fault_gap"}
 
 
 class InfrastructureError(RuntimeError):
