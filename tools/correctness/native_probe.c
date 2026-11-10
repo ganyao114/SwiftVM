@@ -206,7 +206,8 @@ int main(int argc, char** argv) {
     sigaction(SIGBUS, &action, NULL);
 
     const int rosetta = UnderRosetta();
-    if (rosetta) FtwToRosetta(context.fxsave);
+    // FXSAVE stores an eight-bit valid mask, not the architectural tag word.
+    FtwToRosetta(context.fxsave);
     uint32_t status = 0;
     uint64_t fault = 0;
     if (!sigsetjmp(fault_jump, 1)) {
@@ -215,10 +216,8 @@ int main(int argc, char** argv) {
         status = 1;
         fault = fault_address;
     }
-    if (rosetta) {
-        RotateFxsave(context.fxsave);
-        FtwFromRosetta(context.fxsave);
-    }
+    if (rosetta) RotateFxsave(context.fxsave);
+    FtwFromRosetta(context.fxsave);
 
     uint8_t* output = calloc(1, 1200);
     memcpy(output, "SVNOUT01", 8);
@@ -239,7 +238,7 @@ int main(int argc, char** argv) {
     for (uint32_t i = 0; i != region_count; ++i) {
         Region header = regions[i];
         fwrite(&header, sizeof header, 1, out);
-        fwrite((void*)(uintptr_t)header.address, 1, header.reserved, out);
+        fwrite((void*)(uintptr_t)header.address, 1, header.size, out);
     }
     fclose(out);
     return 0;

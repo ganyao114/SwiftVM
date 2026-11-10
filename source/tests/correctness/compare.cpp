@@ -3,6 +3,7 @@
 #include "runtime/frontend/x86/decode.h"
 
 #include <algorithm>
+#include <cstring>
 #include <sstream>
 
 namespace swift::tests::correctness {
@@ -431,8 +432,19 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         if (!gaps.empty()) gaps += "; ";
         gaps += "MMX exponent/tag projection is not provided by the native reference";
     } else if (c.isa == ISA::X86_64 && (!inventory || actual.backend == "native-x86_64")) {
-        if (expected.state.x87 != actual.state.x87)
-            return {true, false, "semantic_mismatch", "x87 80-bit register payload differs"};
+        for (unsigned i = 0; i != 8; ++i) {
+            const bool expected_empty = ((expected.state.x87_tag >> (2 * i)) & 3) == 3;
+            const bool actual_empty = ((actual.state.x87_tag >> (2 * i)) & 3) == 3;
+            // The payload of an empty physical register is not architectural.
+            if (expected_empty && actual_empty) continue;
+            if (expected.state.x87[i] != actual.state.x87[i]) {
+                std::uint64_t expected_payload{}, actual_payload{};
+                std::memcpy(&expected_payload, expected.state.x87[i].data(), 8);
+                std::memcpy(&actual_payload, actual.state.x87[i].data(), 8);
+                return Different("x87[" + std::to_string(i) + "]", expected_payload,
+                                 actual_payload);
+            }
+        }
         const auto& e = expected.state;
         const auto& a = actual.state;
         if (e.x87_control != a.x87_control)
