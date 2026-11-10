@@ -247,7 +247,8 @@ int main(int argc, char** argv) {
         status = 1;
         fault = fault_address;
     }
-    if (rosetta) RotateFxsave(context.fxsave);
+    // FXSAVE stores logical ST0..ST7; the case state uses physical registers.
+    RotateFxsave(context.fxsave);
     FtwFromRosetta(context.fxsave);
 
     uint8_t* output = calloc(1, 1200);

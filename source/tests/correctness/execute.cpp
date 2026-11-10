@@ -52,6 +52,12 @@ struct Arena {
         return {{}, size};
     }
 
+    static bool CodePage(const Case& c, std::uint64_t address) {
+        const auto base = c.code_address & ~std::uint64_t{0xfff};
+        const auto end = (c.code_address + c.code.size() + 0xfff) & ~std::uint64_t{0xfff};
+        return address >= base && address < end;
+    }
+
     static bool ByteReadable(const Case& c,
                              const std::vector<MemoryRegion>& memory,
                              std::uint64_t address) {
@@ -59,7 +65,7 @@ struct Arena {
             if ((region.protection & 1) && address >= region.address &&
                 address - region.address < region.size)
                 return true;
-        return address >= c.code_address && address - c.code_address < c.code.size();
+        return CodePage(c, address);
     }
 
     static bool ByteWritable(const std::vector<MemoryRegion>& memory, std::uint64_t address) {
@@ -107,7 +113,10 @@ struct Arena {
                     found = true;
                     break;
                 }
-            if (!found) out[i] = c.code[byte_address - c.code_address];
+            if (!found) {
+                const auto offset = byte_address - c.code_address;
+                out[i] = offset < c.code.size() ? c.code[offset] : 0;
+            }
         }
         return {};
     }
