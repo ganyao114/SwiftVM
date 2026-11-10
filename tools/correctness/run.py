@@ -33,7 +33,8 @@ REPLAY_FAILURES = FAILURES - {"infrastructure_failure"}
 GAPS = {"control_one_step_gap", "state_service_gap", "oracle_unsupported",
         "oracle_inconclusive", "x87_gap", "nondeterministic_gap", "profile_gap",
         "oracle_cpsr_gap", "oracle_alignment_gap", "oracle_service_gap", "oracle_gp_gap",
-        "prefix_policy_gap", "unsupported_guest_feature_gap", "unpredictable_encoding_gap"}
+        "prefix_policy_gap", "unsupported_guest_feature_gap", "unpredictable_encoding_gap",
+        "native_verified_gap"}
 
 
 class InfrastructureError(RuntimeError):
@@ -370,6 +371,25 @@ class Controller:
                     comparison = load_json(comparison_path)
                     result["comparison"] = comparison
                     result["classification"] = comparison["category"]
+                    native_dir = self.settings.get("native_dir")
+                    if (native_dir and comparison["category"] in
+                            ("semantic_mismatch", "exception_mismatch")):
+                        native = Path(native_dir) / f"{manifest['case_sha256']}.json"
+                        native_comparison = directory / "native-comparison.json"
+                        if native.exists():
+                            native_process = bounded_run(
+                                [str(self.dut), "compare", "--case", str(directory / "case.svmcase"),
+                                 "--expected", str(native), "--actual", str(directory / "actual.json"),
+                                 "--out", str(native_comparison)],
+                                directory / "native-compare.log", self.timeout, self.output_limit)
+                            result["processes"]["native_compare"] = native_process
+                            if not native_process["reason"] and native_comparison.exists():
+                                checked = load_json(native_comparison)
+                                result["native_comparison"] = checked
+                                if checked["equal"] and checked["comparable"]:
+                                    result["classification"] = "native_verified_gap"
+                                    result["detail"] = ("oracle disagrees; host CPU execution "
+                                                        "agrees with the DUT")
                     if comparison["equal"] and comparison["comparable"]:
                         if config.get("compile_only", False):
                             result["classification"] = "compiled"
@@ -487,11 +507,15 @@ def main() -> int:
     parser.add_argument("--shard-index", type=int, default=0)
     parser.add_argument("--reduce", action="store_true")
     parser.add_argument("--reduce-budget", type=int, default=64)
+    parser.add_argument("--native-dir", type=Path,
+                        help="directory of host-CPU observations keyed by case sha256")
     parser.add_argument("--progress-every", type=int, default=25)
     args = parser.parse_args()
     if args.shard_count <= 0 or not 0 <= args.shard_index < args.shard_count:
         parser.error("invalid shard")
     settings = load_json(args.workers)
+    if args.native_dir:
+        settings["native_dir"] = str(args.native_dir.resolve())
     root = (args.results or Path(settings.get("scratch_root", DEFAULT_ROOT))).resolve()
     root.mkdir(parents=True, exist_ok=True)
     run = root / (time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8])

@@ -33,6 +33,7 @@ SYM(svm_native_run):
 
     pushq 128(%rdi)
     popfq
+    fxrstor64 656(%rdi)
     vldmxcsr 136(%rdi)
     vmovdqu 144(%rdi), %ymm0
     vmovdqu 176(%rdi), %ymm1
@@ -94,6 +95,7 @@ SYM(svm_native_resume):
     vmovdqu %ymm14, 592(%r11)
     vmovdqu %ymm15, 624(%r11)
     vstmxcsr 136(%r11)
+    fxsave64 656(%r11)
     movq %rax, 0(%r11)
     movq %rcx, 8(%r11)
     movq %rdx, 16(%r11)

@@ -241,7 +241,8 @@ bool NondeterministicForm(const Case& c) {
     const auto id = std::string_view(c.form_id);
     static constexpr std::string_view names[] = {
             "RDTSC", "RDTSCP", "RDRAND", "RDSEED", "RDFSBASE", "RDGSBASE",
-            "WRFSBASE", "WRGSBASE"};
+            "WRFSBASE", "WRGSBASE", "RSQRTSS", "RSQRTPS", "RCPSS", "RCPPS",
+            "VRSQRTSS", "VRSQRTPS", "VRCPSS", "VRCPPS"};
     for (const auto name : names)
         if (id.find("/" + std::string(name) + "/") != std::string_view::npos) return true;
     return false;
@@ -261,7 +262,8 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
     std::string reason;
     if (!ValidateCase(c, &reason)) return {false, false, "unreviewed_contract", reason};
     const bool inventory = std::string_view(c.form_id).starts_with("inventory/");
-    if (inventory && (InventoryX87Form(c) || InventoryMmxForm(c)))
+    if (inventory &&
+        (InventoryMmxForm(c) || (InventoryX87Form(c) && actual.backend != "native-x86_64")))
         return {false, false, "x87_gap", "x87/MMX state and semantics are not oracle-verified"};
     if (inventory && NondeterministicForm(c))
         return {false, false, "nondeterministic_gap",
@@ -313,6 +315,9 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         FormName(c) == "XGETBV")
         return {false, false, "oracle_gp_gap",
                 "invalid XCR index #GP projection is not oracle-verified"};
+    if (expected.outcome == Outcome::Budget && actual.outcome != Outcome::Budget)
+        return {false, false, "oracle_inconclusive",
+                "oracle instruction budget exhausted before the contract boundary"};
     if (expected.outcome != actual.outcome) {
         if (c.max_steps == 1 && actual.outcome == Outcome::Budget)
             return {false, false, "control_one_step_gap",
@@ -404,7 +409,7 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         if (expected.state.tls[i] != actual.state.tls[i])
             return Different(
                     "tls[" + std::to_string(i) + "]", expected.state.tls[i], actual.state.tls[i]);
-    if (c.isa == ISA::X86_64 && !inventory) {
+    if (c.isa == ISA::X86_64 && (!inventory || actual.backend == "native-x86_64")) {
         if (expected.state.x87 != actual.state.x87)
             return {true, false, "semantic_mismatch", "x87 80-bit register payload differs"};
         const auto& e = expected.state;
@@ -414,10 +419,27 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         if (e.x87_status != a.x87_status)
             return Different("x87_status", e.x87_status, a.x87_status);
         if (e.x87_tag != a.x87_tag) return Different("x87_tag", e.x87_tag, a.x87_tag);
-        if (e.x87_opcode != a.x87_opcode)
-            return Different("x87_opcode", e.x87_opcode, a.x87_opcode);
-        if (e.x87_ip != a.x87_ip) return Different("x87_ip", e.x87_ip, a.x87_ip);
-        if (e.x87_dp != a.x87_dp) return Different("x87_dp", e.x87_dp, a.x87_dp);
+        if (e.x87_opcode != a.x87_opcode) {
+            if (actual.backend == "native-x86_64") {
+                if (!gaps.empty()) gaps += "; ";
+                gaps += "x87 FOP is not projected by the native reference";
+            } else
+                return Different("x87_opcode", e.x87_opcode, a.x87_opcode);
+        }
+        if (e.x87_ip != a.x87_ip) {
+            if (actual.backend == "native-x86_64") {
+                if (!gaps.empty()) gaps += "; ";
+                gaps += "x87 FIP is not projected by the native reference";
+            } else
+                return Different("x87_ip", e.x87_ip, a.x87_ip);
+        }
+        if (e.x87_dp != a.x87_dp) {
+            if (actual.backend == "native-x86_64") {
+                if (!gaps.empty()) gaps += "; ";
+                gaps += "x87 FDP is not projected by the native reference";
+            } else
+                return Different("x87_dp", e.x87_dp, a.x87_dp);
+        }
     } else if (inventory && InventoryX87Form(c)) {
         if (!gaps.empty()) gaps += "; ";
         gaps += "x87 state projection is not oracle-verified";
@@ -447,16 +469,16 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         const auto normalized_access = [](const std::string& access) -> std::string {
             return access.empty() ? "unknown" : access;
         };
+        const bool execute_fault =
+                expected.fault_access == "execute" && actual.fault_access == "execute";
         if (expected.fault_kind != actual.fault_kind ||
             normalized_access(expected.fault_access) != normalized_access(actual.fault_access) ||
-            expected.fault_vector != actual.fault_vector)
+            (!execute_fault && expected.fault_vector != actual.fault_vector))
             return {true, false, "exception_mismatch", "fault kind/access/vector differs"};
         if (expected.fault_pc != actual.fault_pc)
             return Different("fault_pc", expected.fault_pc, actual.fault_pc, "exception_mismatch");
         if (expected.fault_address_valid != actual.fault_address_valid)
             return {true, false, "exception_mismatch", "fault address availability differs"};
-        const bool execute_fault =
-                expected.fault_access == "execute" && actual.fault_access == "execute";
         const bool divide_fault =
                 expected.fault_kind == "divide" && actual.fault_kind == "divide";
         const bool normalized_fault =

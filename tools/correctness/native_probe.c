@@ -5,11 +5,15 @@
 #include <fcntl.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdalign.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#endif
 #include <unistd.h>
 
 extern void svm_native_run(void* context, void* entry);
@@ -20,6 +24,7 @@ typedef struct {
     uint32_t mxcsr;
     uint32_t reserved;
     uint8_t ymm[16][32];
+    alignas(16) uint8_t fxsave[512];
 } Context;
 
 typedef struct {
@@ -29,7 +34,7 @@ typedef struct {
     uint32_t reserved;
 } Region;
 
-enum { kHeaderBytes = 704, kMaxCode = 16 };
+enum { kHeaderBytes = 1216, kMaxCode = 16 };
 
 static sigjmp_buf fault_jump;
 static volatile int fault_signal;
@@ -55,6 +60,55 @@ static uint32_t LoadU32(const uint8_t* p) {
 
 static void StoreU64(uint8_t* p, uint64_t value) { memcpy(p, &value, sizeof value); }
 static void StoreU32(uint8_t* p, uint32_t value) { memcpy(p, &value, sizeof value); }
+
+static int UnderRosetta(void) {
+#if defined(__APPLE__)
+    int translated = 0;
+    size_t size = sizeof translated;
+    if (sysctlbyname("sysctl.proc_translated", &translated, &size, NULL, 0) == 0)
+        return translated;
+#endif
+    return 0;
+}
+
+// Rosetta's FXSAVE tag word is one validity bit per physical register rather
+// than the architectural abridged encoding. Convert in both directions so the
+// probe still consumes and reports the case's x87 tag word.
+static void FtwToRosetta(uint8_t* area) {
+    uint16_t tag;
+    memcpy(&tag, area + 4, 2);
+    uint16_t bits = 0;
+    for (int i = 0; i != 8; ++i)
+        if (((tag >> (2 * i)) & 3) != 3) bits |= (uint16_t)(1u << i);
+    memcpy(area + 4, &bits, 2);
+}
+
+static void RotateFxsave(uint8_t* area) {
+    uint16_t status;
+    memcpy(&status, area + 2, 2);
+    const unsigned top = (status >> 11) & 7;
+    if (!top) return;
+    uint8_t saved[128];
+    memcpy(saved, area + 32, sizeof saved);
+    for (unsigned i = 0; i != 8; ++i)
+        memcpy(area + 32 + 16 * ((top + i) & 7), saved + 16 * i, 16);
+}
+
+static void FtwFromRosetta(uint8_t* area) {
+    uint16_t bits;
+    memcpy(&bits, area + 4, 2);
+    uint16_t tag = 0xffff;
+    for (int i = 0; i != 8; ++i) {
+        if (!(bits & (1u << i))) continue;
+        uint64_t significand;
+        uint16_t exponent;
+        memcpy(&significand, area + 32 + 16 * i, 8);
+        memcpy(&exponent, area + 40 + 16 * i, 2);
+        const uint16_t kind = significand == 0 && exponent == 0 ? 1 : 0;
+        tag = (uint16_t)((tag & ~(3u << (2 * i))) | (kind << (2 * i)));
+    }
+    memcpy(area + 4, &tag, 2);
+}
 
 static void* MapAt(uint64_t address, uint64_t size) {
     const long page = sysconf(_SC_PAGESIZE);
@@ -101,6 +155,7 @@ int main(int argc, char** argv) {
     context.flags = LoadU64(bytes + 176);
     context.mxcsr = LoadU32(bytes + 184);
     memcpy(context.ymm, bytes + 192, sizeof context.ymm);
+    memcpy(context.fxsave, bytes + 704, sizeof context.fxsave);
 
     const uint8_t* cursor = bytes + kHeaderBytes;
     Region* regions = calloc(region_count, sizeof(Region));
@@ -150,6 +205,8 @@ int main(int argc, char** argv) {
     sigaction(SIGSEGV, &action, NULL);
     sigaction(SIGBUS, &action, NULL);
 
+    const int rosetta = UnderRosetta();
+    if (rosetta) FtwToRosetta(context.fxsave);
     uint32_t status = 0;
     uint64_t fault = 0;
     if (!sigsetjmp(fault_jump, 1)) {
@@ -158,8 +215,12 @@ int main(int argc, char** argv) {
         status = 1;
         fault = fault_address;
     }
+    if (rosetta) {
+        RotateFxsave(context.fxsave);
+        FtwFromRosetta(context.fxsave);
+    }
 
-    uint8_t* output = calloc(1, 32 + 128 + 8 + 8 + 512 + 8);
+    uint8_t* output = calloc(1, 1200);
     memcpy(output, "SVNOUT01", 8);
     StoreU32(output + 8, status);
     StoreU64(output + 16, fault);
@@ -168,12 +229,13 @@ int main(int argc, char** argv) {
     StoreU32(output + 160, context.mxcsr);
     memcpy(output + 168, context.ymm, sizeof context.ymm);
     StoreU32(output + 680, region_count);
+    memcpy(output + 688, context.fxsave, sizeof context.fxsave);
     FILE* out = fopen(argv[2], "wb");
     if (!out) {
         perror("output");
         return 2;
     }
-    fwrite(output, 1, 688, out);
+    fwrite(output, 1, 1200, out);
     for (uint32_t i = 0; i != region_count; ++i) {
         Region header = regions[i];
         fwrite(&header, sizeof header, 1, out);
