@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import platform
+import shutil
 import struct
 import subprocess
 import time
@@ -194,7 +195,10 @@ def main():
         export_input(case_json, input_path)
         status = None
         for attempt in range(20):
-            process = subprocess.Popen([str(probe), str(input_path), str(output_path)],
+            prefix = []
+            if sys.platform.startswith('linux') and shutil.which('setarch'):
+                prefix = ['setarch', platform.machine(), '-R']
+            process = subprocess.Popen(prefix + [str(probe), str(input_path), str(output_path)],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             deadline = time.monotonic() + args.timeout
             while process.poll() is None and time.monotonic() < deadline:

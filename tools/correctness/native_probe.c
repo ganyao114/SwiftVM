@@ -160,6 +160,16 @@ int main(int argc, char** argv) {
     const uint8_t* cursor = bytes + kHeaderBytes;
     Region* regions = calloc(region_count, sizeof(Region));
     const uint8_t** contents = calloc(region_count, sizeof(uint8_t*));
+    char stack_marker;
+    for (uint32_t i = 0; i != region_count; ++i) {
+        const uint64_t address = LoadU64(cursor);
+        const uint64_t size = LoadU64(cursor + 8);
+        if ((uintptr_t)&stack_marker >= address &&
+            (uintptr_t)&stack_marker - address < size) {
+            fprintf(stderr, "guest region overlaps the process stack; disable ASLR\n");
+            return 2;
+        }
+    }
     for (uint32_t i = 0; i != region_count; ++i) {
         regions[i].address = LoadU64(cursor);
         regions[i].size = LoadU64(cursor + 8);
@@ -205,6 +215,21 @@ int main(int argc, char** argv) {
     sigaction(SIGSEGV, &action, NULL);
     sigaction(SIGBUS, &action, NULL);
 
+    if (getenv("SVM_PROBE_INFO")) {
+        fprintf(stderr, "ctx=%p stack=%p fxsave=%p\n", (void*)&context,
+                (void*)&stack_marker, (void*)context.fxsave);
+        FILE* maps = fopen("/proc/self/maps", "r");
+        char line[256];
+        while (maps && fgets(line, sizeof line, maps))
+            if (strstr(line, "[stack]")) fputs(line, stderr);
+        if (maps) fclose(maps);
+        for (uint32_t i = 0; i != region_count; ++i)
+            if ((uintptr_t)&stack_marker >= regions[i].address &&
+                (uintptr_t)&stack_marker - regions[i].address < regions[i].size)
+                fprintf(stderr, "OVERLAP region %u at %llx size %llu\n", i,
+                        (unsigned long long)regions[i].address,
+                        (unsigned long long)regions[i].size);
+    }
     const int rosetta = UnderRosetta();
     // FXSAVE stores an eight-bit valid mask, not the architectural tag word.
     FtwToRosetta(context.fxsave);
