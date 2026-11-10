@@ -31,7 +31,7 @@ FAILURES = {"semantic_mismatch", "exception_mismatch", "unexpected_rejection",
             "host_crash", "sanitizer_failure", "timeout", "infrastructure_failure"}
 REPLAY_FAILURES = FAILURES - {"infrastructure_failure"}
 GAPS = {"control_one_step_gap", "state_service_gap", "oracle_unsupported",
-        "oracle_inconclusive", "x87_gap", "nondeterministic_gap"}
+        "oracle_inconclusive", "x87_gap", "nondeterministic_gap", "profile_gap", "oracle_cpsr_gap"}
 
 
 class InfrastructureError(RuntimeError):

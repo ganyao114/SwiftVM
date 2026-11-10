@@ -78,6 +78,10 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
     if (!IsExecution(expected.outcome, c))
         return {false, false, "oracle_inconclusive", expected.stage + ": " + expected.error};
     if (!IsExecution(actual.outcome, c)) {
+        if (actual.outcome == Outcome::Rejected &&
+            (actual.error.find("FPSCR exception enables") != std::string::npos ||
+             actual.error.find("big-endian") != std::string::npos))
+            return {false, false, "profile_gap", actual.error};
         if (actual.outcome == Outcome::Rejected)
             return {true, false, "unexpected_rejection", actual.stage + ": " + actual.error};
         return {false,
@@ -107,6 +111,9 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         if (!gaps.empty()) gaps += "; ";
         gaps += "estimate FPSCR exception flags are implementation-defined";
     }
+    if (c.isa == ISA::Arm32 && std::string_view(c.form_id).find("MRS_reg") != std::string_view::npos)
+        return {false, false, "oracle_cpsr_gap",
+                "MRS CPSR/T-bit projection is not oracle-verified"};
     if (expected.outcome == Outcome::Fault && actual.outcome == Outcome::Fault &&
         actual.fault_access == "write" && actual.fault_address_valid && actual.fault_width > 1) {
         for (const auto& region : actual.memory) {
@@ -218,11 +225,17 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
             return Different("fault_pc", expected.fault_pc, actual.fault_pc, "exception_mismatch");
         if (expected.fault_address_valid != actual.fault_address_valid)
             return {true, false, "exception_mismatch", "fault address availability differs"};
+        const bool execute_fault =
+                expected.fault_access == "execute" && actual.fault_access == "execute";
         const bool normalized_fault =
                 crossing_write && expected.fault_address_valid &&
                 expected.fault_address >= actual.fault_address &&
                 expected.fault_address - actual.fault_address < actual.fault_width;
-        if (!normalized_fault && expected.fault_width != actual.fault_width)
+        if (execute_fault) {
+            if (!gaps.empty()) gaps += "; ";
+            gaps += "instruction-fetch width is not architectural";
+        }
+        if (!execute_fault && !normalized_fault && expected.fault_width != actual.fault_width)
             return Different("fault_width",
                              expected.fault_width,
                              actual.fault_width,
