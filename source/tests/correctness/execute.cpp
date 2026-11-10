@@ -105,6 +105,96 @@ struct Arena {
         return {};
     }
 
+    static AccessResult Atomic(void* raw,
+                               const runtime::AtomicRequest& request,
+                               runtime::AtomicValue& observed) noexcept {
+        auto& arena = *static_cast<Arena*>(raw);
+        const auto bytes = request.bits / 8u;
+        if (!bytes || bytes > 16) return {AccessStatus::UnsupportedBeforeAccess, request.address};
+        for (std::size_t i = 0; i < bytes; ++i) {
+            const auto address = request.address + i;
+            if (!ByteWritable(arena.memory, address) || !ByteReadable(arena.input, arena.memory, address))
+                return {AccessStatus::Fault, address};
+        }
+        std::uint64_t old_low = 0, old_high = 0;
+        for (std::size_t i = 0; i < bytes; ++i) {
+            const auto address = request.address + i;
+            std::uint8_t byte = 0;
+            for (const auto& region : arena.memory)
+                if ((region.protection & 1) && address >= region.address &&
+                    address - region.address < region.size) {
+                    byte = region.bytes[address - region.address];
+                    break;
+                }
+            if (i < 8) old_low |= std::uint64_t(byte) << (i * 8);
+            else old_high |= std::uint64_t(byte) << ((i - 8) * 8);
+        }
+        observed.low = old_low;
+        observed.high = old_high;
+        std::uint64_t desired_low = request.desired.low, desired_high = request.desired.high;
+        switch (request.operation) {
+            case runtime::AtomicOperation::Exchange: break;
+            case runtime::AtomicOperation::StoreExclusive:
+                if (old_low != request.expected.low) return {};
+                break;
+            case runtime::AtomicOperation::CompareExchange:
+                if (old_low != request.expected.low) return {};
+                break;
+            case runtime::AtomicOperation::CompareExchange128:
+                if (old_low != request.expected.low || old_high != request.expected.high) return {};
+                break;
+            case runtime::AtomicOperation::FetchAdd:
+                desired_low = old_low + request.desired.low;
+                break;
+            case runtime::AtomicOperation::Add:
+                desired_low = old_low + request.desired.low + request.carry;
+                break;
+            case runtime::AtomicOperation::Sub:
+                desired_low = old_low - request.desired.low;
+                break;
+            case runtime::AtomicOperation::And: desired_low = old_low & request.desired.low; break;
+            case runtime::AtomicOperation::Or: desired_low = old_low | request.desired.low; break;
+            case runtime::AtomicOperation::Xor: desired_low = old_low ^ request.desired.low; break;
+            case runtime::AtomicOperation::Neg: desired_low = 0 - old_low; break;
+            case runtime::AtomicOperation::AddCarry:
+            case runtime::AtomicOperation::SubBorrow:
+                return {AccessStatus::UnsupportedBeforeAccess, request.address};
+            case runtime::AtomicOperation::SignedMax: {
+                const auto a = static_cast<std::int64_t>(old_low);
+                const auto b = static_cast<std::int64_t>(request.desired.low);
+                desired_low = static_cast<std::uint64_t>(a > b ? a : b);
+                break;
+            }
+            case runtime::AtomicOperation::SignedMin: {
+                const auto a = static_cast<std::int64_t>(old_low);
+                const auto b = static_cast<std::int64_t>(request.desired.low);
+                desired_low = static_cast<std::uint64_t>(a < b ? a : b);
+                break;
+            }
+            case runtime::AtomicOperation::UnsignedMax:
+                desired_low = old_low > request.desired.low ? old_low : request.desired.low;
+                break;
+            case runtime::AtomicOperation::UnsignedMin:
+                desired_low = old_low < request.desired.low ? old_low : request.desired.low;
+                break;
+        }
+        const auto mask = request.bits >= 64 ? UINT64_MAX : (std::uint64_t(1) << request.bits) - 1;
+        desired_low &= mask;
+        if (bytes > 8) desired_high &= mask;
+        for (std::size_t i = 0; i < bytes; ++i) {
+            const auto address = request.address + i;
+            const auto value = i < 8 ? std::uint8_t(desired_low >> (i * 8))
+                                     : std::uint8_t(desired_high >> ((i - 8) * 8));
+            for (auto& region : arena.memory)
+                if ((region.protection & 2) && address >= region.address &&
+                    address - region.address < region.size) {
+                    region.bytes[address - region.address] = value;
+                    break;
+                }
+        }
+        return {};
+    }
+
     static AccessResult Write(void* raw,
                               std::uint64_t address,
                               std::span<const std::uint8_t> in,
@@ -170,6 +260,7 @@ Observation Run(const Case& c, GuestState& state, Services services, Step step_o
     services.fetch = Arena::Fetch;
     services.read = Arena::Read;
     services.write = Arena::Write;
+    services.atomic = Arena::Atomic;
     Observation out;
     out.backend = "direct";
     out.stage = "execute";
