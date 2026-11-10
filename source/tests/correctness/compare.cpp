@@ -263,7 +263,7 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
     if (!ValidateCase(c, &reason)) return {false, false, "unreviewed_contract", reason};
     const bool inventory = std::string_view(c.form_id).starts_with("inventory/");
     if (inventory &&
-        (InventoryMmxForm(c) || (InventoryX87Form(c) && actual.backend != "native-x86_64")))
+        (InventoryX87Form(c) || InventoryMmxForm(c)) && actual.backend != "native-x86_64")
         return {false, false, "x87_gap", "x87/MMX state and semantics are not oracle-verified"};
     if (inventory && NondeterministicForm(c))
         return {false, false, "nondeterministic_gap",
@@ -418,7 +418,19 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         if (expected.state.tls[i] != actual.state.tls[i])
             return Different(
                     "tls[" + std::to_string(i) + "]", expected.state.tls[i], actual.state.tls[i]);
-    if (c.isa == ISA::X86_64 && (!inventory || actual.backend == "native-x86_64")) {
+    if (inventory && actual.backend == "native-x86_64" && InventoryMmxForm(c)) {
+        // Rosetta's FXSAVE does not project MMX tag/exponent state; the
+        // 64-bit payload is the architecturally visible MMX value.
+        for (unsigned i = 0; i != 8; ++i)
+            for (unsigned j = 0; j != 8; ++j)
+                if (expected.state.x87[i][j] != actual.state.x87[i][j])
+                    return Different("x87_mmx[" + std::to_string(i) + "][" + std::to_string(j) +
+                                             "]",
+                                     expected.state.x87[i][j],
+                                     actual.state.x87[i][j]);
+        if (!gaps.empty()) gaps += "; ";
+        gaps += "MMX exponent/tag projection is not provided by the native reference";
+    } else if (c.isa == ISA::X86_64 && (!inventory || actual.backend == "native-x86_64")) {
         if (expected.state.x87 != actual.state.x87)
             return {true, false, "semantic_mismatch", "x87 80-bit register payload differs"};
         const auto& e = expected.state;

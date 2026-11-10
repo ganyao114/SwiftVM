@@ -184,20 +184,24 @@ def main():
         export_input(case_json, input_path)
         status = None
         for attempt in range(20):
-            try:
-                subprocess.run([str(probe), str(input_path), str(output_path)],
-                               check=True, timeout=args.timeout,
-                               capture_output=True, text=True)
-                status = 'ok'
-                break
-            except subprocess.TimeoutExpired:
+            process = subprocess.Popen([str(probe), str(input_path), str(output_path)],
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            deadline = time.monotonic() + args.timeout
+            while process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.02)
+            if process.poll() is None:
+                # Some invalid encodings wedge Rosetta; never block on its exit.
+                process.kill()
                 status = 'timeout'
                 break
-            except subprocess.CalledProcessError as error:
-                # Rosetta reserves low translation-cache space on the first
-                # run of a freshly built probe; retry after it settles.
-                status = f'probe failed: {error.stderr.strip()}'
-                time.sleep(0.2)
+            _, stderr = process.communicate()
+            if process.returncode == 0:
+                status = 'ok'
+                break
+            # Rosetta reserves low translation-cache space on the first run
+            # of a freshly built probe; retry after it settles.
+            status = f'probe failed: {stderr.strip()}'
+            time.sleep(0.2)
         if status != 'ok':
             results[case.name] = status
             continue

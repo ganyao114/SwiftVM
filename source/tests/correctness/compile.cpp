@@ -60,9 +60,14 @@ runtime::frontend::BuildResult Build(const Case& c, const RunConfig& config) {
                                                       c.initial.fp_control)
                                 .SetEFlag(cpsr & 512)
                                 .Key();
+        runtime::arm32::Profile profile;
+        if (c.profile == "armv8-user") profile.version = runtime::arm32::ArchVersion::v8;
         return config.scope == Scope::Function
-                       ? swift::arm32::BuildFunctionIR(windows, pc, {}, limits, target)
-                       : swift::arm32::BuildIR(windows, pc, scope, {}, target);
+                       ? swift::arm32::BuildFunctionIR(windows, pc, {}, limits, target, nullptr,
+                                                      nullptr, nullptr, {}, nullptr, nullptr,
+                                                      profile)
+                       : swift::arm32::BuildIR(windows, pc, scope, {}, target, nullptr, nullptr,
+                                               false, nullptr, nullptr, nullptr, profile);
     }
     using State = runtime::x86::GuestState;
     swift::x86::StateLayout layout;

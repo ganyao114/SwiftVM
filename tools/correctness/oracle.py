@@ -270,7 +270,9 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
     if u.__version__ != UNICORN_VERSION:
         raise OracleUnsupported(f"requires Unicorn {UNICORN_VERSION}; found {u.__version__}")
     expected_profile = {1: "x86_64-user", 2: "a64-user", 3: "armv7-user"}
-    if case["profile"] != expected_profile[case["isa"]]:
+    arm32_profiles = ("armv7-user", "armv8-user")
+    if (case["isa"] == 3 and case["profile"] not in arm32_profiles) or (
+            case["isa"] != 3 and case["profile"] != expected_profile[case["isa"]]):
         raise OracleUnsupported("unknown guest profile: " + case["profile"])
     if case["isa"] == 3 and (case["initial"]["flags"] & 0x21F) != 0x10:
         raise OracleUnsupported("only little-endian ARMv7 user mode is supported")
@@ -280,7 +282,9 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
                   2: (u.UC_ARCH_ARM64, u.UC_MODE_ARM),
                   3: (u.UC_ARCH_ARM, u.UC_MODE_THUMB if thumb else u.UC_MODE_ARM)}[isa]
     uc = u.Uc(arch, mode)
-    model = {1: x.UC_CPU_X86_HASWELL, 2: a.UC_CPU_ARM64_MAX, 3: t.UC_CPU_ARM_CORTEX_A15}[isa]
+    model = {1: x.UC_CPU_X86_HASWELL, 2: a.UC_CPU_ARM64_MAX,
+             3: t.UC_CPU_ARM_MAX if case["profile"] == "armv8-user"
+                else t.UC_CPU_ARM_CORTEX_A15}[isa]
     uc.ctl_set_cpu_model(model)
     arm32_tls_rw = _arm32_tls_rw_supported(uc) if isa == 3 else True
     if isa == 2:

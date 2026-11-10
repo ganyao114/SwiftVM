@@ -293,9 +293,12 @@ bool ValidateCase(const Case& c, std::string* reason) {
     const auto profile = c.isa == ISA::X86_64  ? "x86_64-user"
                          : c.isa == ISA::Arm64 ? "a64-user"
                                                : "armv7-user";
+    const auto profile_supported =
+            c.isa == ISA::Arm32 ? (c.profile == "armv7-user" || c.profile == "armv8-user")
+                                : c.profile == profile;
     const auto inventory = std::string_view(c.form_id).starts_with("inventory/");
     if (inventory) {
-        if (c.profile != profile) return reject("unsupported profile");
+        if (!profile_supported) return reject("unsupported profile");
         if (!c.code.size() || c.code_address > UINT64_MAX - c.code.size() ||
             c.terminal_pc != c.code_address + c.code.size() || c.initial.pc != c.code_address ||
             !c.max_steps)
@@ -310,7 +313,7 @@ bool ValidateCase(const Case& c, std::string* reason) {
     }
     const auto* form = FindForm(c.form_id);
     if (!form || form->isa != c.isa) return reject("unreviewed form or ISA mismatch");
-    if (c.profile != profile) return reject("unsupported profile");
+    if (!profile_supported) return reject("unsupported profile");
     if (c.code.size() != form->length || c.code_address > UINT64_MAX - c.code.size() ||
         c.terminal_pc != c.code_address + c.code.size() || c.initial.pc != c.code_address ||
         !c.max_steps)

@@ -469,9 +469,12 @@ Observation ExecuteDirect(const Case& c) {
         }
         case ISA::Arm32: {
             runtime::arm32::GuestState state;
-            return Run(c, state, swift::arm32::DirectServices{}, [](auto& s, const auto& services) {
-                return swift::arm32::InterpretOne(s, services);
-            });
+            runtime::arm32::Profile profile;
+            if (c.profile == "armv8-user") profile.version = runtime::arm32::ArchVersion::v8;
+            return Run(c, state, swift::arm32::DirectServices{},
+                       [profile](auto& s, const auto& services) {
+                           return swift::arm32::InterpretOne(s, services, nullptr, profile);
+                       });
         }
     }
     return {};
