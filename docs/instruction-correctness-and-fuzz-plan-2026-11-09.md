@@ -563,6 +563,7 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 
 - ARM32：从 `decode/generated_tables.inc` 生成 788 个 pattern（759 个 opcode；Arm 261、Thumb16 79、Thumb32 239、VFP 62、NEON 147）的 synthetic case，4 个后端各 788/788 编译通过。Direct 执行矩阵：362 terminal、244 budget（控制流 one-step）、11 service（exclusive state service）、14 memory fault、90 illegal；illegal 主要是 UDF、非特权 LDRT/LDRBT/LDRHT/LDRSHT、exclusive/acquire/SWP 的 state-service、以及 canonical 操作数不满足 NEON/VFP 约束的形式。613 个可执行 case 与 Unicorn 差分：540 verified + 73 gaps（60 控制流 one-step、5 exclusive/acquire state service、6 oracle unsupported、2 VRECPS/VRSQRTS FPSCR estimate flags），0 个未归因语义失败。报告见 `/Volumes/Data2/swiftvm-correctness-results/arm32-inventory-20261109/coverage-report.json`。
 - ARM64/x86：83 个 VIXL family、544 个 Op；下一步从 decode corpus/family 提取代表编码，跑同样的编译+执行矩阵。
+- ARM32 后端执行（QEMU x64，695 个有效页末 case）：438 agreement + 4 gaps、246 exception（主要是 VFP/NEON `fault_width expected=2 actual=0`）、1 rejection（FPSCR exception enables）、6 inconclusive；`native_ok=448/695`。RV64/LA64 与红魔 sample 仍在运行。
 - Direct 二次筛查：159 个 ARM32 pattern 在 canonical 操作数下 illegal/rejected，其中 82 个通过 16 个 valid variant 恢复（含 SWP/SWPB 的原子交换）；77 个在 16 个 variant 后仍 illegal，主要是 UDF/特权（RFE/SRS/MCR/MRC/CRC32）、exclusive/acquire state service、以及 canonical NEON/VFP 约束形式。Direct 已补上 atomic 服务，SWP/SWPB 和 x86 CMPXCHG 等已可执行。
 
 ### 15.4 ARM64/x86 代表编码 inventory（2026-11-10，进行中）
