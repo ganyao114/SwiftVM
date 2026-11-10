@@ -558,6 +558,11 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 - x64/RV64/LA64：复用已有 Linux system-QEMU 内核和固定构建缓存，实际执行对应后端机器码。TCG 结果属于功能验证，不是对应真机性能或全部硬件行为的证明。
 
 2026-11-09 的跨后端实测：在 OrbStack Ubuntu 中用 `x86_64-linux-gnu-gcc`、`riscv64-linux-gnu-gcc` 和 loongarch64 cross-tools 重建 `submit-{x64,riscv64,loongarch64}/svm_correctness`，再用 QEMU system（真实 Linux kernel、2 vCPU、TCG；x64 q35/max、RV64 virt、LA64 virt+EFI）和自定义 initramfs 执行 pinned fuzz 抽样 280 例。三架构均为 270 agreement + 10 gaps、零失败，`native_executed=280/280`、block scope、`interpreted_steps=0`；证据在 `/Volumes/Data2/swiftvm-correctness-results/qemu-cross-20261109/`。RV64/LA64 的 unaligned byte fallback 曾把 fault width 记为 1，已改为逻辑访问宽度。
+
+### 15.3 前端 pattern inventory（2026-11-09，进行中）
+
+- ARM32：从 `decode/generated_tables.inc` 生成 788 个 pattern（759 个 opcode；Arm 261、Thumb16 79、Thumb32 239、VFP 62、NEON 147）的 synthetic case，4 个后端各 788/788 编译通过。Direct 执行矩阵：362 terminal、244 budget（控制流 one-step）、11 service（exclusive state service）、14 memory fault、90 illegal；illegal 主要是 UDF/特权/非特权传输、exclusive/acquire 的 state-service，以及 canonical 操作数不满足 NEON/VFP 约束的形式，需按合同分类而不是算作已通过。与 Unicorn 的 613 个可执行 case 差分正在运行；前 100+ 例已确认算术/访存类通过，分支/exclusive/hint 需要独立合同。
+- ARM64/x86：83 个 VIXL family、544 个 Op；下一步从 decode corpus/family 提取代表编码，跑同样的编译+执行矩阵。
 - macOS host：portable decode/build/Direct、codec/比较自测和 sanitizer fuzz。当前裸 native support 是 Linux/Android，不将 macOS compile-only 统计成 native 通过。
 - 大 scratch 统一放 Data2，例如 `/Volumes/Data2/swiftvm-correctness-results`；构建复用 `/Volumes/Data2/swiftvm-middle-build-cache` 下独立测试子目录，不再把大结果写系统 `/tmp`。
 - 默认总 scratch 配额可先设 8 GiB、单 worker 临时配额 512 MiB，结合实际剩余空间下调；固定系统镜像/构建缓存独立计量。达到阈值停止 campaign 并报告，不删除未归档失败。
