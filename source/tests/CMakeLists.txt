@@ -74,7 +74,8 @@ svm_test_target(svm_x86_floating_test SOURCES rebuild/x86_floating_test.cpp LIBR
 svm_test(x86_floating_contract svm_x86_floating_test)
 svm_test_target(svm_ir_direct_test SOURCES rebuild/ir_direct_test.cpp LIBRARIES svm_ir_direct)
 svm_test_target(svm_riscv64_compile_test ISA riscv64 SOURCES rebuild/riscv64_compile_test.cpp
-    LIBRARIES svm_riscv64)
+    rebuild/riscv64_assembler_test.cpp
+    LIBRARIES svm_riscv64 svm_biscuit_exact)
 svm_test_target(svm_x86_interpreter_test SOURCES rebuild/x86_interpreter_test.cpp LIBRARIES svm_x86_ir)
 
 foreach(coverage IN ITEMS instruction avx x87)

@@ -1769,9 +1769,10 @@ ptrdiff_t Assembler::LinkAndGetOffset(Label* label) {
     // If we have a bound label, then it's straightforward to calculate
     // the offsets.
     if (label->IsBound()) {
-        const auto cursor_address = m_buffer.GetCursorAddress();
-        const auto label_offset = m_buffer.GetOffsetAddress(*label->GetLocation());
-        return static_cast<ptrdiff_t>(label_offset - cursor_address);
+        // The next instruction may grow the vector-backed buffer. Its cursor
+        // can legally be one past capacity before emission; use offsets rather
+        // than asking for a dereferenceable pointer at that position.
+        return *label->GetLocation() - m_buffer.GetCursorOffset();
     }
 
     // If we don't have a bound location, we return an offset of zero.
