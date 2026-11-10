@@ -2,8 +2,13 @@
 #include "arch/state.h"
 
 #include <algorithm>
+#include <array>
 #include <cstring>
+#include <type_traits>
 #include "base/format.h"
+#include "runtime/arch/arm32/location.h"
+#include "runtime/arch/arm32/numeric.h"
+#include "runtime/arch/arm32/service.h"
 #include "runtime/exit.h"
 #include "runtime/frontend/arm32/interpreter.h"
 #include "runtime/frontend/arm64/interpreter.h"
@@ -20,6 +25,7 @@ struct Arena {
     std::vector<MemoryRegion> memory;
     std::string_view access;
     std::uint32_t width{};
+    std::uint64_t reservation_address{}, reservation_bytes{};
 
     explicit Arena(const Case& input) : input(input), memory(input.memory) {
         for (auto& region : memory) region.bytes.resize(region.size);
@@ -103,6 +109,112 @@ struct Arena {
             if (!found) out[i] = c.code[byte_address - c.code_address];
         }
         return {};
+    }
+
+    static int StateService(const Case& c,
+                            runtime::arm32::GuestState& state,
+                            Arena& arena,
+                            Observation& out) {
+        using Kind = runtime::arm32::StateServiceKind;
+        const auto request = runtime::arm32::DecodeStateService(state.service_word);
+        const auto complete = [&] {
+            state.pc = runtime::arm32::Location{state.service_pc}
+                               .Advance(request.instruction_bytes)
+                               .AdvanceIT()
+                               .Key();
+            return 0;
+        };
+        const auto fault = [&](std::uint64_t address, unsigned bytes, bool alignment) {
+            out.outcome = Outcome::Fault;
+            out.fault_kind = alignment ? "alignment" : "memory";
+            out.fault_access = request.kind == Kind::StoreExclusive ? "write" : "read";
+            out.fault_pc = static_cast<std::uint32_t>(state.pc);
+            out.fault_address = address;
+            out.fault_width = bytes;
+            out.fault_vector = -1;
+            out.fault_address_valid = true;
+            return 1;
+        };
+        if (request.kind == Kind::LoadExclusive || request.kind == Kind::StoreExclusive) {
+            const auto bytes = 1u << request.size_log2;
+            const auto address = std::uint64_t(std::uint32_t(
+                    state.r[request.address_register] + 4u * request.offset_words));
+            const bool matching = state.reservation_valid && arena.reservation_address == address &&
+                                  arena.reservation_bytes == bytes;
+            state.reservation_valid = 0;
+            if (request.kind == Kind::StoreExclusive && !matching) {
+                state.r[request.status_register] = 1;
+                return complete();
+            }
+            if (address & (bytes - 1)) return fault(address, bytes, true);
+            if (request.kind == Kind::LoadExclusive) {
+                std::array<std::uint8_t, 8> bytes_buffer{};
+                const auto result = Read(&arena, address, {bytes_buffer.data(), bytes}, false);
+                if (result.status != AccessStatus::Completed) return fault(address, bytes, false);
+                std::uint64_t value = 0;
+                for (unsigned i = 0; i < bytes; ++i)
+                    value |= std::uint64_t(bytes_buffer[i]) << (8 * i);
+                state.r[request.first_register] = std::uint32_t(value);
+                if (bytes == 8) state.r[request.second_register] = std::uint32_t(value >> 32);
+                arena.reservation_address = address;
+                arena.reservation_bytes = bytes;
+                state.reservation_valid = 1;
+                return complete();
+            }
+            std::uint64_t desired = std::uint32_t(state.r[request.first_register]);
+            if (bytes == 8)
+                desired |= std::uint64_t(std::uint32_t(state.r[request.second_register])) << 32;
+            if (bytes < 8) desired &= (std::uint64_t{1} << (bytes * 8)) - 1;
+            std::array<std::uint8_t, 8> bytes_buffer{};
+            for (unsigned i = 0; i < bytes; ++i)
+                bytes_buffer[i] = std::uint8_t(desired >> (8 * i));
+            const auto result = Write(&arena, address, {bytes_buffer.data(), bytes}, false);
+            if (result.status != AccessStatus::Completed) return fault(address, bytes, false);
+            state.r[request.status_register] = 0;
+            return complete();
+        }
+        if (request.kind == Kind::ClearExclusive) {
+            state.reservation_valid = 0;
+            return complete();
+        }
+        if (request.kind == Kind::ReadTLS) {
+            state.r[request.first_register] = request.offset_words ? state.tpidruro : state.tpidrurw;
+            return complete();
+        }
+        if (request.kind == Kind::WriteTLS) {
+            state.tpidrurw = std::uint32_t(state.r[request.first_register]);
+            return complete();
+        }
+        if (request.kind == Kind::WriteCPSR) {
+            const auto fields = request.offset_words;
+            const std::uint32_t mask = ((fields & 8) ? 0xf8000000u : 0u) |
+                                       ((fields & 4) ? 0x000f0000u : 0u) |
+                                       ((fields & 2) ? 0x00000200u : 0u);
+            const auto cpsr = (state.Cpsr() & ~mask) |
+                              (std::uint32_t(state.r[request.first_register]) & mask);
+            if (cpsr & 512u) {
+                out.outcome = Outcome::Rejected;
+                out.error = "ARM32 big-endian execution is unsupported";
+                return 2;
+            }
+            state.SetCpsr(cpsr);
+            return complete();
+        }
+        if (request.kind == Kind::WriteFPSCR) {
+            const auto value = std::uint32_t(state.r[request.first_register]);
+            if (!runtime::arm32::IsSupportedFPSCR(value)) {
+                out.outcome = Outcome::Rejected;
+                out.error = "ARM32 FPSCR exception enables are unsupported";
+                return 2;
+            }
+            state.fpscr = value;
+            state.RekeyFPSCR();
+            return complete();
+        }
+        if (request.kind == Kind::CacheFlush) return complete();
+        out.outcome = Outcome::Rejected;
+        out.error = "unknown ARM32 state service";
+        return 2;
     }
 
     static AccessResult Atomic(void* raw,
@@ -282,6 +394,13 @@ Observation Run(const Case& c, GuestState& state, Services services, Step step_o
         }
         if (step.kind == front::StepKind::Service) {
             const auto reason = static_cast<runtime::NativeExit>(step.service & 255);
+            if constexpr (std::is_same_v<GuestState, runtime::arm32::GuestState>) {
+                if (reason == runtime::NativeExit::StateService) {
+                    const auto service = Arena::StateService(c, state, arena, out);
+                    if (service != 0) break;
+                    continue;
+                }
+            }
             if (reason == runtime::NativeExit::FPEnvironment) continue;
             if (reason == runtime::NativeExit::SemanticException) {
                 out.outcome = Outcome::Fault;

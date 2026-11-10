@@ -371,7 +371,9 @@ class Controller:
                     if comparison["equal"] and comparison["comparable"]:
                         if config.get("compile_only", False):
                             result["classification"] = "compiled"
-                        elif config["backend"] != "direct" and not actual.get("native_executed", False):
+                        elif (config["backend"] != "direct" and
+                              actual.get("outcome") in ("terminal", "budget", "service") and
+                              not actual.get("native_executed", False)):
                             result["classification"] = "policy_fallback"
                         elif config["backend"] != "direct" and actual.get("actual_scope") != config["scope"]:
                             result["classification"] = "policy_fallback"
