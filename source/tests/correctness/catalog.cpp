@@ -361,7 +361,8 @@ ComparisonContract Contract(const Case& c) {
     const auto& form = *FindForm(c.form_id);
     if (c.isa == ISA::Arm64) return {0xf0000000u, 0x07c00000u, 0x0800009fu};
     if (c.isa == ISA::Arm32) return {0xff0fffffu, 0xfff79f9fu, 0};
-    ComparisonContract contract{0xed7, 0xffff, 0};
+    const bool floating = form.category == "fp";
+    ComparisonContract contract{0xed7, floating ? 0xffffu : 0u, 0};
     if (form.bits == 0x31 && form.encoding == Encoding::X86Register)
         contract.flags_mask &= ~UINT64_C(0x10);  // XOR leaves AF undefined.
     if (form.encoding == Encoding::X86ShiftCL) {

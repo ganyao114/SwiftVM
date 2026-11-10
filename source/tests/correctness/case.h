@@ -87,7 +87,7 @@ struct Observation {
 
 struct Comparison {
     bool comparable{}, equal{};
-    std::string category, detail;
+    std::string category, detail, gaps;
 };
 
 std::string_view Name(ISA);

@@ -380,9 +380,9 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
     if not library.exists():
         library = Path(u.__file__).parent / "lib" / "libunicorn.so.2"
     if isa == 1:
-        # Unicorn/QEMU does not set MXCSR.DE for denormal SSE operands. Keep the
-        # bit out of differential comparison and record the capability gap.
-        result["fp_control_verified_mask"] = 0xFFFFFFFD
+        # Unicorn/QEMU 2.1.4 does not model the six SSE sticky exception flags.
+        # Keep them out of differential comparison and record the capability gap.
+        result["fp_control_verified_mask"] = 0xFFFFFFC0
     result["oracle"] = {
         "family": "qemu-unicorn", "version": u.__version__, "cpu_model": model,
         "isa": ISA_NAMES[isa], "thumb": thumb, "page_size": page,
@@ -391,8 +391,9 @@ def execute(case: dict, timeout_ms: int = 2000) -> dict:
         "hook_count_is_retired_instruction_count": False,
         "arm32_tls_rw": "verified" if arm32_tls_rw else
                         "unavailable: Unicorn 2.1.4 TPIDRURW is a no-op; declared input preserved",
-        "fp_control_unverified": "DE (MXCSR bit 1): Unicorn 2.1.4 does not set it for "
-                                 "denormal SSE inputs" if isa == 1 else "none",
+        "fp_control_unverified": "IE/DE/ZE/OE/UE/PE (MXCSR bits 0-5): Unicorn 2.1.4 "
+                                 "does not model SSE sticky exceptions; control, RC, FZ "
+                                 "and DAZ remain verified" if isa == 1 else "none",
         "elapsed_ms": (time.monotonic() - started) * 1000,
     }
     return result

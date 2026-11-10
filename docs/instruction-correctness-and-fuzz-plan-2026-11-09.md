@@ -9,7 +9,7 @@
 - `tools/correctness/`：local/ADB/system-QEMU controller 与 Unicorn oracle 入口。
 - runtime 只增加 `SVM_TEST_BOUNDARY` 测试边界，生产默认路径不变。
 
-已验证：`svm_correctness selftest` 560 例通过；RV64 汇编器满缓冲回跳断言已修复，最小 5 字节输入可重放，新增 2 个边界回归；host fuzz 累计约 1.2 亿次执行（decode 三目标约 1.19 亿次，structured pipeline 117 万次，raw pipeline 196 万次）无新崩溃。逐 form 验证：35 个 form 各 8 例的 Direct 执行与 4 后端 × Block/Function × Known/EarlyOff/Unknown × opt 共 13,440 次编译全部成功；`SVM_FUZZ_FORM` 固定模式下的逐 form campaign 共 162.6 万次执行，零崩溃、零拒绝。独立 oracle 的 C++ 适配、逐 form 覆盖统计、红魔与 QEMU 的完整矩阵尚未完成。
+已验证：`svm_correctness selftest` 560 例通过；RV64 汇编器满缓冲回跳断言已修复，最小 5 字节输入可重放，新增 2 个边界回归；host fuzz 累计约 1.27 亿次执行（decode 约 1.19 亿次，structured/raw pipeline 约 436 万次，`SVM_FUZZ_FORM` 两轮 536 万次）无崩溃。逐 form 验证：35 个 form 各 8 例的 Direct 执行与 4 后端 × Block/Function × Known/EarlyOff/Unknown × opt 共 13,440 次编译全部成功。语义差分：host Direct 与红魔 ARM64 JIT 对结构化 280 例均 280/280 verified；引入能力记账后，从 pinned fuzz 语料抽样的 280 例在 host 和红魔上均为 278 verified + 2 gaps、零失败。2 个 gap 分别是 Unicorn 不建模 x86 SSE sticky exception flags，以及跨边界 store 的 partial commit/fault 粒度口径。独立 oracle 的 C++ 适配、逐 form 覆盖统计、QEMU 后端矩阵尚未完成。
 
 ## 1. 目标与边界
 
@@ -278,7 +278,7 @@ terminal 不得覆盖 RAX、R7、flags 等被测输出。UD2/BRK/BKPT 等终止�
 
 已记录的实现限制（2026-11-09）：
 
-- Unicorn 2.1.4 不设置 x86 `MXCSR.DE`（denormal input）状态位。oracle 在 Observation 中输出 `fp_control_verified_mask=0xfffffffd`，比较器只在双方掩码内比较；SVM 的 DE 行为由受控 denormal/DAZ/FZ 用例和后续硬件 oracle 单独确认，不能据此宣称 Unicorn 覆盖了 DE。
+- Unicorn 2.1.4 不建模 x86 SSE 的 MXCSR sticky exception flags（IE/DE/ZE/OE/UE/PE，bits 0-5）。oracle 在 Observation 中输出 `fp_control_verified_mask=0xffffffc0`，比较器只在双方掩码内比较；控制位/RC/FZ/DAZ 仍验证，异常标志由 `x86_floating_test` 的规范定值覆盖，后续硬件 oracle 复核。
 - Unicorn 2.1.4 的 ARM32 `TPIDRURW`（C13_C0_2）是 no-op。oracle 保留声明的输入值并输出 `arm32_tls_rw=unavailable`；任何写该寄存器的 form 会因保留输入而暴露为差异，不会静默通过。
 
 红魔首先承担 ARM64 后端真实机器码执行和 A64 硬件 oracle；是否能运行 A32 原生 probe 需检测，不能因 CPU 为 ARM64 就假设支持 32 位 EL0。x86 真机 oracle 按可用硬件接入；没有真机的范围仍可由版本固定的模拟参考验证，但报告显式标记证据等级。
@@ -302,6 +302,8 @@ terminal 不得覆盖 RAX、R7、flags 等被测输出。UD2/BRK/BKPT 等终止�
 fault address 的“访问首地址/真正故障字节”等口径按 ISA 与故障合同规定；参考不能提供时显示能力缺口，不能使用一个全局模糊地址 mask。
 
 首批故障输入包括：未映射、只读、不可执行、页末取指、跨页 load/store、架构对齐约束、x86 非规范地址、除零/商溢出、非法编码，以及当前支持的状态写入拒绝。REP、LDM/STM、双字、NEON 结构访存单列 partial commit/restart，明确 fault 前哪些寄存器/内存允许或必须已改变。
+
+跨区域/跨页的单个 store 先按以下合同处理：Direct 与 JIT 统一报告首个不可访问字节作为 fault address，并保持全有或全无提交；Unicorn 可能已提交映射前缀，并报告不同的 fault byte/width。比较器只对跨边界写屏蔽映射前缀的 partial commit 差异，并把 fault address/width 记为 gap；其他字节、异常 kind/vector 与寄存器仍严格比较。REP/LDM/STM/NEON 结构访存不使用该宽松规则。
 
 最终内存相同不足以证明访问顺序。Direct/Unicorn access trace 可用于失败诊断；native 顺序由别名、保护页、故障、原子和 litmus 场景约束，不能为了日志在主 fuzz 中替换真实 load/store。[QEMU TCG plugin 文档](https://www.qemu.org/docs/master/devel/tcg-plugins.html)也明确：翻译回调不等于实际执行，memory callback 发生于成功访问之后，faulting access 不由该回调报告。
 

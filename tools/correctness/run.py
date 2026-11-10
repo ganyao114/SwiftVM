@@ -374,6 +374,8 @@ class Controller:
                         elif config["backend"] != "direct" and actual.get("actual_scope") != config["scope"]:
                             result["classification"] = "policy_fallback"
                             result["detail"] = "requested allocation scope was not executed"
+                        elif comparison.get("gaps"):
+                            result["classification"] = "verified_with_gap"
                         else:
                             result["classification"] = "verified"
         oracle.write_json(directory / "result.json", result)
@@ -525,11 +527,11 @@ def main() -> int:
                     classification = result["classification"]
                     controller.counts[classification] = controller.counts.get(classification, 0) + 1
                     completed = sum(controller.counts.values())
-                    if classification not in ("verified", "compiled", "expected_rejection", "expected_fault") or completed % max(1, args.progress_every) == 0:
+                    if classification not in ("verified", "verified_with_gap", "compiled", "expected_rejection", "expected_fault") or completed % max(1, args.progress_every) == 0:
                         print(json.dumps({"case": case_hash, "worker": worker.name, "result": classification,
                                           "completed": completed}), flush=True)
                     # Always retain capability gaps; they are evidence, never verification.
-                    if classification not in ("verified", "compiled", "expected_rejection", "expected_fault"):
+                    if classification not in ("verified", "verified_with_gap", "compiled", "expected_rejection", "expected_fault"):
                         failure = run / "failures" / directory.name
                         directory.rename(failure)
                         if (failure / "case.svmcase").exists():

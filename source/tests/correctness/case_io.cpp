@@ -725,6 +725,7 @@ std::string ToJSON(const Comparison& c) {
     out += c.equal ? ",\"equal\":true" : ",\"equal\":false";
     StringField(out, "category", c.category);
     StringField(out, "detail", c.detail);
+    StringField(out, "gaps", c.gaps);
     out += '}';
     return out;
 }

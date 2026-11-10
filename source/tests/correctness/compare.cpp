@@ -40,6 +40,24 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                          unsigned(actual.outcome),
                          "exception_mismatch");
     const auto contract = Contract(c);
+    bool crossing_write{};
+    std::uint64_t partial_begin{}, partial_end{};
+    std::string gaps;
+    if (expected.outcome == Outcome::Fault && actual.outcome == Outcome::Fault &&
+        actual.fault_access == "write" && actual.fault_address_valid && actual.fault_width > 1) {
+        for (const auto& region : actual.memory) {
+            if (region.size && region.address + region.size == actual.fault_address) {
+                const auto span =
+                        std::min<std::uint64_t>(actual.fault_width - 1, region.size);
+                partial_begin = actual.fault_address - span;
+                partial_end = actual.fault_address;
+                crossing_write = true;
+                gaps = "cross-boundary write: partial commit and engine fault-address "
+                       "granularity are not oracle-verified";
+                break;
+            }
+        }
+    }
     if (expected.state.pc != actual.state.pc)
         return Different("pc", expected.state.pc, actual.state.pc);
     const auto flags_expected = expected.state.flags & contract.flags_mask;
@@ -106,9 +124,11 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         if (e.size != a->size || e.protection != a->protection)
             return {true, false, "semantic_mismatch", "memory region metadata differs"};
         for (std::size_t i = 0; i < e.size; ++i) {
+            const auto address = e.address + i;
+            if (crossing_write && address >= partial_begin && address < partial_end) continue;
             const auto eb = i < e.bytes.size() ? e.bytes[i] : 0;
             const auto ab = i < a->bytes.size() ? a->bytes[i] : 0;
-            if (eb != ab) return Different("memory@" + std::to_string(e.address + i), eb, ab);
+            if (eb != ab) return Different("memory@" + std::to_string(address), eb, ab);
         }
     }
     if (expected.outcome == Outcome::Service && expected.service != actual.service)
@@ -116,20 +136,28 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
     if (expected.outcome == Outcome::Fault) {
         if (expected.fault_kind != actual.fault_kind ||
             expected.fault_access != actual.fault_access ||
-            expected.fault_width != actual.fault_width ||
             expected.fault_vector != actual.fault_vector)
-            return {true, false, "exception_mismatch", "fault kind/access/width/vector differs"};
+            return {true, false, "exception_mismatch", "fault kind/access/vector differs"};
         if (expected.fault_pc != actual.fault_pc)
             return Different("fault_pc", expected.fault_pc, actual.fault_pc, "exception_mismatch");
         if (expected.fault_address_valid != actual.fault_address_valid)
             return {true, false, "exception_mismatch", "fault address availability differs"};
-        if (expected.fault_address_valid && expected.fault_address != actual.fault_address)
+        const bool normalized_fault =
+                crossing_write && expected.fault_address_valid &&
+                expected.fault_address >= actual.fault_address &&
+                expected.fault_address - actual.fault_address < actual.fault_width;
+        if (!normalized_fault && expected.fault_width != actual.fault_width)
+            return Different("fault_width",
+                             expected.fault_width,
+                             actual.fault_width,
+                             "exception_mismatch");
+        if (!normalized_fault && expected.fault_address != actual.fault_address)
             return Different("fault_address",
                              expected.fault_address,
                              actual.fault_address,
                              "exception_mismatch");
     }
-    return {true, true, "agreement", {}};
+    return {true, true, "agreement", {}, gaps};
 }
 
 }  // namespace swift::tests::correctness

@@ -223,7 +223,7 @@ int SelfTest() {
             actual.outcome = Outcome::Compiled;
             if (Compare(c, expected, actual).equal)
                 ThrowError("compile-only was counted as execution", ErrorKind::InvalidState);
-            if (c.isa == ISA::X86_64) {
+            if (c.isa == ISA::X86_64 && (Contract(c).fp_control_mask & 2)) {
                 actual = expected;
                 actual.state.fp_control ^= 2;
                 if (Compare(c, expected, actual).equal)
