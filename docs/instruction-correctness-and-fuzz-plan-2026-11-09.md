@@ -5,11 +5,11 @@
 ### 已落地范围（2026-11-09）
 
 - `source/tests/correctness/`：Case/Observation codec、catalog、generate、compare、reduce、portable Direct 与 compile-only 执行、worker CLI。
-- `source/tests/fuzz/`：x86/ARM64/ARM32 decode、structured pipeline、raw byte pipeline 五个 libFuzzer 目标。
+- `source/tests/fuzz/`：x86/ARM64/ARM32 decode、structured pipeline、raw byte pipeline 五个 libFuzzer 目标；pipeline 支持 `SVM_FUZZ_FORM` 固定单个 catalog form，并在固定模式下把任何 Direct/后端拒绝视为失败。
 - `tools/correctness/`：local/ADB/system-QEMU controller 与 Unicorn oracle 入口。
 - runtime 只增加 `SVM_TEST_BOUNDARY` 测试边界，生产默认路径不变。
 
-已验证：`svm_correctness selftest` 560 例通过；RV64 汇编器满缓冲回跳断言已修复，最小 5 字节输入可重放，新增 2 个边界回归；host fuzz 累计约 1.2 亿次执行（decode 三目标约 1.19 亿次，structured pipeline 117 万次，raw pipeline 196 万次）无新崩溃。独立 oracle 的 C++ 适配、逐 form 覆盖统计、红魔与 QEMU 的完整矩阵尚未完成。
+已验证：`svm_correctness selftest` 560 例通过；RV64 汇编器满缓冲回跳断言已修复，最小 5 字节输入可重放，新增 2 个边界回归；host fuzz 累计约 1.2 亿次执行（decode 三目标约 1.19 亿次，structured pipeline 117 万次，raw pipeline 196 万次）无新崩溃。逐 form 验证：35 个 form 各 8 例的 Direct 执行与 4 后端 × Block/Function × Known/EarlyOff/Unknown × opt 共 13,440 次编译全部成功；`SVM_FUZZ_FORM` 固定模式下的逐 form campaign 共 162.6 万次执行，零崩溃、零拒绝。独立 oracle 的 C++ 适配、逐 form 覆盖统计、红魔与 QEMU 的完整矩阵尚未完成。
 
 ## 1. 目标与边界
 
