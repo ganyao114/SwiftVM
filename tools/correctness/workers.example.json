@@ -1,0 +1,63 @@
+{
+  "protocol_version": 1,
+  "scratch_root": "/Volumes/Data2/swiftvm-correctness-results",
+  "quota_bytes": 8589934592,
+  "worker_quota_bytes": 536870912,
+  "min_free_bytes": 4294967296,
+  "timeout_seconds": 10,
+  "output_limit_bytes": 262144,
+  "oracle": {
+    "timeout_seconds": 5
+  },
+  "workers": [
+    {
+      "name": "host-direct",
+      "transport": "local",
+      "backend": "direct",
+      "enabled": true
+    },
+    {
+      "name": "host-compile",
+      "transport": "local",
+      "backend": "arm64",
+      "config": {"compile_only": true},
+      "enabled": false
+    },
+    {
+      "name": "redmagic-arm64",
+      "transport": "adb",
+      "serial": "bf1359ff",
+      "backend": "arm64",
+      "remote_root": "/data/local/tmp/swiftvm-correctness",
+      "binary": "/data/local/tmp/swiftvm-correctness/svm_correctness",
+      "enabled": false
+    },
+    {
+      "name": "qemu-x64",
+      "transport": "system-qemu",
+      "backend": "x64",
+      "remote_root": "/tmp/swiftvm-correctness",
+      "binary": "/opt/swiftvm/svm_correctness",
+      "ssh": {"host": "127.0.0.1", "port": 10022, "user": "root"},
+      "enabled": false
+    },
+    {
+      "name": "qemu-rv64",
+      "transport": "system-qemu",
+      "backend": "riscv64",
+      "remote_root": "/tmp/swiftvm-correctness",
+      "binary": "/opt/swiftvm/svm_correctness",
+      "ssh": {"host": "127.0.0.1", "port": 10023, "user": "root"},
+      "enabled": false
+    },
+    {
+      "name": "qemu-la64",
+      "transport": "system-qemu",
+      "backend": "loongarch64",
+      "remote_root": "/tmp/swiftvm-correctness",
+      "binary": "/opt/swiftvm/svm_correctness",
+      "ssh": {"host": "127.0.0.1", "port": 10024, "user": "root"},
+      "enabled": false
+    }
+  ]
+}

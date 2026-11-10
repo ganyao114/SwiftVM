@@ -2,6 +2,19 @@ cmake_minimum_required(VERSION 3.22)
 project(SwiftVMRebuild LANGUAGES C CXX ASM)
 
 include(CTest)
+option(SVM_BUILD_CORRECTNESS "Build instruction differential testing tools" ${BUILD_TESTING})
+option(SVM_BUILD_FUZZERS "Build instrumented instruction fuzz targets (separate build)" OFF)
+if(SVM_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "SVM_BUILD_FUZZERS requires a Clang libFuzzer toolchain")
+    endif()
+    set(SVM_BUILD_CORRECTNESS ON)
+    # Instrument the code under test, not only LLVMFuzzerTestOneInput. Use a
+    # separate build directory; production numerical ABI exclusions stay in force.
+    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-fsanitize=fuzzer-no-link,address,undefined>
+        $<$<COMPILE_LANGUAGE:C,CXX>:-fno-omit-frame-pointer>)
+    add_link_options(-fsanitize=address,undefined)
+endif()
 set(FMT_DOC OFF CACHE BOOL "" FORCE)
 set(FMT_TEST OFF CACHE BOOL "" FORCE)
 set(FMT_INSTALL OFF CACHE BOOL "" FORCE)
@@ -399,6 +412,12 @@ endif()
 
 if(BUILD_TESTING)
     add_subdirectory(source/tests)
+endif()
+if(SVM_BUILD_CORRECTNESS)
+    add_subdirectory(source/tests/correctness)
+endif()
+if(SVM_BUILD_FUZZERS)
+    add_subdirectory(source/tests/fuzz)
 endif()
 
 # Keep source ownership boundaries without imposing them on the JIT's host
