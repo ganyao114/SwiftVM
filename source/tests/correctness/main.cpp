@@ -282,7 +282,7 @@ int DecodeCommand(const Arguments& args) {
             std::cout << "{\"ok\":false}\n";
             return 1;
         }
-        std::cout << Format("{{\"ok\":true,\"isa\":\"arm64\",\"family\":{},\"word\":{:#x}}}\n",
+        std::cout << Format("{{\"ok\":true,\"isa\":\"arm64\",\"family\":{},\"word\":{}}}\n",
                             decoded.instruction.FamilyCode(),
                             decoded.instruction.Word());
         return 0;
@@ -296,7 +296,7 @@ int DecodeCommand(const Arguments& args) {
     }
     std::cout << Format(
             "{{\"ok\":true,\"isa\":\"arm32\",\"length\":{},\"opcode\":{},\"name\":\"{}\","
-            "\"word\":{:#x}}}\n",
+            "\"word\":{}}}\n",
             decoded.instruction.Length(),
             decoded.instruction.OpcodeCode(),
             decoded.instruction.Name(),

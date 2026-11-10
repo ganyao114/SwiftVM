@@ -1,5 +1,7 @@
 #include "catalog.h"
 
+#include "runtime/frontend/x86/decode.h"
+
 #include <algorithm>
 #include <sstream>
 
@@ -23,11 +25,56 @@ bool IsExecution(Outcome outcome, const Case& c) {
            (outcome == Outcome::Budget && c.max_steps == 1);
 }
 
+bool ExclusiveForm(const Case& c) {
+    const auto id = std::string_view(c.form_id);
+    return id.find("LDREX") != std::string_view::npos ||
+           id.find("LDAEX") != std::string_view::npos ||
+           id.find("STREX") != std::string_view::npos ||
+           id.find("STLEX") != std::string_view::npos ||
+           id.find("_SWP") != std::string_view::npos ||
+           id.find("_LDA/") != std::string_view::npos ||
+           id.find("_STL/") != std::string_view::npos;
+}
+
+bool InventoryX87Form(const Case& c) {
+    if (c.isa != ISA::X86_64) return false;
+    const auto id = std::string_view(c.form_id);
+    if (!id.starts_with("inventory/")) return false;
+    const auto guest = id.find("/x86_64/");
+    return guest != std::string_view::npos && guest + 8 < id.size() &&
+           id[guest + 8] == 'F';
+}
+
+bool NondeterministicForm(const Case& c) {
+    if (c.isa != ISA::X86_64) return false;
+    const auto id = std::string_view(c.form_id);
+    static constexpr std::string_view names[] = {
+            "RDTSC", "RDTSCP", "RDRAND", "RDSEED", "RDFSBASE", "RDGSBASE",
+            "WRFSBASE", "WRGSBASE"};
+    for (const auto name : names)
+        if (id.find("/" + std::string(name) + "/") != std::string_view::npos) return true;
+    return false;
+}
+
+bool EstimateForm(const Case& c) {
+    const auto id = std::string_view(c.form_id);
+    return id.find("VRECPS") != std::string_view::npos ||
+           id.find("VRSQRTS") != std::string_view::npos ||
+           id.find("VRECPE") != std::string_view::npos ||
+           id.find("VRSQRTE") != std::string_view::npos;
+}
+
 }  // namespace
 
 Comparison Compare(const Case& c, const Observation& expected, const Observation& actual) {
     std::string reason;
     if (!ValidateCase(c, &reason)) return {false, false, "unreviewed_contract", reason};
+    const bool inventory = std::string_view(c.form_id).starts_with("inventory/");
+    if (inventory && InventoryX87Form(c))
+        return {false, false, "x87_gap", "x87 state and semantics are not oracle-verified"};
+    if (inventory && NondeterministicForm(c))
+        return {false, false, "nondeterministic_gap",
+                "time/random/base instruction has no deterministic oracle"};
     if (!IsExecution(expected.outcome, c))
         return {false, false, "oracle_inconclusive", expected.stage + ": " + expected.error};
     if (!IsExecution(actual.outcome, c)) {
@@ -38,17 +85,28 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                 std::string(Name(actual.outcome)),
                 actual.stage + ": " + actual.error};
     }
-    if (expected.outcome != actual.outcome)
+    if (expected.outcome != actual.outcome) {
+        if (c.max_steps == 1 && actual.outcome == Outcome::Budget)
+            return {false, false, "control_one_step_gap",
+                    "one-step budget is not comparable to the reference boundary"};
+        if (ExclusiveForm(c) && actual.outcome == Outcome::Service)
+            return {false, false, "state_service_gap",
+                    "exclusive state service has no oracle equivalent"};
         return Different("outcome",
                          unsigned(expected.outcome),
                          unsigned(actual.outcome),
                          "exception_mismatch");
+    }
     const auto contract = Contract(c);
     bool crossing_write{};
     std::uint64_t partial_begin{}, partial_end{};
     std::string gaps;
     if (contract.fp_control_mask & ~expected.fp_control_verified_mask)
         gaps = "fp-control bits are not oracle-verified";
+    if (EstimateForm(c)) {
+        if (!gaps.empty()) gaps += "; ";
+        gaps += "estimate FPSCR exception flags are implementation-defined";
+    }
     if (expected.outcome == Outcome::Fault && actual.outcome == Outcome::Fault &&
         actual.fault_access == "write" && actual.fault_address_valid && actual.fault_width > 1) {
         for (const auto& region : actual.memory) {
@@ -79,7 +137,15 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                              actual.state.gpr[i] & mask);
     }
     const unsigned vectors = c.isa == ISA::Arm64 ? 32 : 16;
-    const unsigned vector_bytes = c.isa == ISA::X86_64 ? 32 : 16;
+    unsigned vector_bytes = c.isa == ISA::X86_64 ? 32 : 16;
+    if (inventory && c.isa == ISA::X86_64) {
+        const auto decoded = swift::x86::DecodeOne(
+                std::span<const std::uint8_t>(c.code.data(), c.code.size()), c.code_address);
+        if (decoded) {
+            const auto effective = decoded.instruction.View().Record().vector_bytes;
+            vector_bytes = effective ? effective : 16;
+        }
+    }
     for (unsigned i = 0; i < vectors; ++i)
         for (unsigned j = 0; j < vector_bytes; ++j)
             if (expected.state.vectors[i][j] != actual.state.vectors[i][j])
@@ -104,7 +170,7 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         if (expected.state.tls[i] != actual.state.tls[i])
             return Different(
                     "tls[" + std::to_string(i) + "]", expected.state.tls[i], actual.state.tls[i]);
-    if (c.isa == ISA::X86_64) {
+    if (c.isa == ISA::X86_64 && !inventory) {
         if (expected.state.x87 != actual.state.x87)
             return {true, false, "semantic_mismatch", "x87 80-bit register payload differs"};
         const auto& e = expected.state;
@@ -118,6 +184,9 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
             return Different("x87_opcode", e.x87_opcode, a.x87_opcode);
         if (e.x87_ip != a.x87_ip) return Different("x87_ip", e.x87_ip, a.x87_ip);
         if (e.x87_dp != a.x87_dp) return Different("x87_dp", e.x87_dp, a.x87_dp);
+    } else if (inventory && InventoryX87Form(c)) {
+        if (!gaps.empty()) gaps += "; ";
+        gaps += "x87 state projection is not oracle-verified";
     }
     if (expected.memory.size() != actual.memory.size())
         return Different("memory region count", expected.memory.size(), actual.memory.size());

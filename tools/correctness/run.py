@@ -30,6 +30,8 @@ DEFAULT_ROOT = Path("/Volumes/Data2/swiftvm-correctness-results")
 FAILURES = {"semantic_mismatch", "exception_mismatch", "unexpected_rejection",
             "host_crash", "sanitizer_failure", "timeout", "infrastructure_failure"}
 REPLAY_FAILURES = FAILURES - {"infrastructure_failure"}
+GAPS = {"control_one_step_gap", "state_service_gap", "oracle_unsupported",
+        "oracle_inconclusive", "x87_gap", "nondeterministic_gap"}
 
 
 class InfrastructureError(RuntimeError):
@@ -294,7 +296,7 @@ class Controller:
         self.oracle_python = oracle_python or settings.get("oracle", {}).get("python", sys.executable)
         self.workers = [Worker(value, run, self.timeout, self.output_limit)
                         for value in settings["workers"] if value.get("enabled", True)]
-        self.counts, self.failures, self.infrastructure_streaks = {}, [], {}
+        self.counts, self.failures, self.gaps, self.infrastructure_streaks = {}, [], [], {}
 
     def check_quota(self, directory: Path | None = None):
         if shutil.disk_usage(self.root).free < self.min_free:
@@ -491,6 +493,7 @@ def main() -> int:
     run = root / (time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8])
     (run / "jobs").mkdir(parents=True)
     (run / "failures").mkdir()
+    (run / "gaps").mkdir()
     oracle.write_json(run / "workers.json", settings)
     oracle.write_json(run / "owner.json", {"pid": os.getpid(), "run_id": run.name, "created_unix": time.time()})
     base = load_json(args.config) if args.config else {}
@@ -531,7 +534,15 @@ def main() -> int:
                         print(json.dumps({"case": case_hash, "worker": worker.name, "result": classification,
                                           "completed": completed}), flush=True)
                     # Always retain capability gaps; they are evidence, never verification.
-                    if classification not in ("verified", "verified_with_gap", "compiled", "expected_rejection", "expected_fault"):
+                    if classification in GAPS:
+                        gap = run / "gaps" / directory.name
+                        directory.rename(gap)
+                        if (gap / "case.svmcase").exists():
+                            (gap / "case.svmcase").rename(gap / "original.svmcase")
+                        else:
+                            shutil.copyfile(case_path, gap / "original.svmcase")
+                        controller.gaps.append(str(gap))
+                    elif classification not in ("verified", "verified_with_gap", "compiled", "expected_rejection", "expected_fault"):
                         failure = run / "failures" / directory.name
                         directory.rename(failure)
                         if (failure / "case.svmcase").exists():
@@ -556,7 +567,7 @@ def main() -> int:
                         shutil.rmtree(directory)
                     oracle.write_json(run / "summary.json", {"counts": controller.counts,
                                       "cases_supplied": len(cases), "shard_index": args.shard_index,
-                                      "shard_count": args.shard_count, "failures": controller.failures})
+                                      "shard_count": args.shard_count, "failures": controller.failures, "gaps": controller.gaps})
                     controller.record_infrastructure(worker, result)
     except QuotaExceeded as error:
         oracle.write_json(run / "quota-stop.json", {"error": str(error)})

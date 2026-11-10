@@ -1,5 +1,7 @@
 #include "catalog.h"
 
+#include "runtime/frontend/x86/decode.h"
+
 #include "base/error.h"
 
 #include <algorithm>
@@ -375,10 +377,23 @@ ComparisonContract Contract(const Case& c) {
     if (!ValidateCase(c, &reason)) swift::ThrowError(reason, swift::ErrorKind::InvalidArgument);
     if (std::string_view(c.form_id).starts_with("inventory/")) {
         if (c.isa == ISA::Arm64) return {0xf0000000u, 0x07c00000u, 0x0800009fu};
-        if (c.isa == ISA::Arm32) return {0xff0fffffu, 0xfff79f9fu, 0};
-        // Inventory forms span integer and FP instructions; compare the
-        // architectural integer flags and leave MXCSR to the FP-specific forms.
-        return {0xed7, 0, 0};
+        if (c.isa == ISA::Arm32) {
+            auto fp_control_mask = 0xfff79f9fu;
+            const auto id = std::string_view(c.form_id);
+            if (id.find("VRECPS") != std::string_view::npos ||
+                id.find("VRSQRTS") != std::string_view::npos ||
+                id.find("VRECPE") != std::string_view::npos ||
+                id.find("VRSQRTE") != std::string_view::npos)
+                fp_control_mask &= ~0x9fu;  // estimate exception flags are implementation-defined
+            return {0xff0fffffu, fp_control_mask, 0};
+        }
+        // Inventory forms use the decoder's own written/undefined flag
+        // metadata; MXCSR stays with the reviewed FP forms.
+        const auto decoded = swift::x86::DecodeOne(
+                std::span<const std::uint8_t>(c.code.data(), c.code.size()), c.code_address);
+        if (!decoded) return {0, 0, 0};
+        const auto& record = decoded.instruction.View().Record();
+        return {std::uint64_t(record.flags_written & ~record.flags_undefined), 0, 0};
     }
     const auto& form = *FindForm(c.form_id);
     if (c.isa == ISA::Arm64) return {0xf0000000u, 0x07c00000u, 0x0800009fu};
