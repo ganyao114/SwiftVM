@@ -74,7 +74,7 @@ std::uintptr_t VM::Resolve(NativeRunContext& context) {
     // All native/fault readers have left. SMC retained old ranges and links
     // until this exact point; no allocation is reclaimed in the handler.
     if (thread.faults.smc_pending) Invalidate();
-    if (host_call_active && PC() == host_return_pc) {
+    if (IsHostReturn(PC())) {
         host_returned = true;
         RefreshNative(context);
         return 0;

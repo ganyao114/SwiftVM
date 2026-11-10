@@ -330,7 +330,7 @@ void VM::Execute() {
             while (!thread.exited && !host_returned) {
                 DeliverPending();
                 if (thread.exited) break;
-                if (host_call_active && PC() == host_return_pc) {
+                if (IsHostReturn(PC())) {
                     host_returned = true;
                     break;
                 }
@@ -351,6 +351,14 @@ void VM::Execute() {
             while (!thread.exited && !host_returned) {
                 DeliverPending();
                 if (thread.exited) break;
+#if defined(SVM_TEST_BOUNDARY)
+                // The direct numerical policy can return without entering the
+                // resolver. Stop there before it fetches the test guard page.
+                if (test_boundary_active && IsHostReturn(PC())) {
+                    host_returned = true;
+                    break;
+                }
+#endif
                 // Unmasked SSE exceptions use the common direct numerical consumer.
                 // Its instruction boundary aggregates every lane before committing.
                 if (ISA() == GuestISA::X86_64 && (NumericControl() & 0x1f80) != 0x1f80) {
@@ -359,13 +367,23 @@ void VM::Execute() {
                 }
                 const auto status = SvmRunNative(&thread.native);
                 const auto reason = static_cast<NativeExit>(status & 255);
+#if defined(SVM_TEST_BOUNDARY)
+                if (test_boundary_active) test_boundary_native_status = status;
+#endif
                 thread.native.phase.store(SVM_NATIVE_PHASE_RUNTIME, std::memory_order_release);
                 if (reason != NativeExit::FPEnvironment) MergeFPStatus();
                 thread.faults.active.store(nullptr);
                 if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
-                if (reason == NativeExit::Syscall)
+                if (reason == NativeExit::Syscall) {
+#if defined(SVM_TEST_BOUNDARY)
+                    if (test_boundary_active) {
+                        test_boundary_service = status;
+                        host_returned = true;
+                        break;
+                    }
+#endif
                     syscalls.Service();
-                else if (reason == NativeExit::GuestException)
+                } else if (reason == NativeExit::GuestException)
                     DeliverException(thread.faults.exception);
                 else if (reason == NativeExit::GuestEvents)
                     DeliverPending();
@@ -634,7 +652,7 @@ void VM::Interpret(bool block) {
     const front::ReadyEntryLookup ready{
             this, [](void* raw, std::uint64_t pc) noexcept {
                 const auto& owner = *static_cast<VM*>(raw);
-                return (owner.host_call_active && pc == owner.host_return_pc) ||
+                return owner.IsHostReturn(pc) ||
                        bool(static_cast<VM*>(raw)->Cache().Find(pc));
             }};
     frontend::StepResult step;
@@ -674,9 +692,16 @@ void VM::Interpret(bool block) {
         case front::StepKind::Service:
             if ((step.service & 255) == ExitValue(NativeExit::SemanticException))
                 RaiseEncodedException(step.service);
-            else if (step.service == ExitValue(NativeExit::Syscall))
+            else if (step.service == ExitValue(NativeExit::Syscall)) {
+#if defined(SVM_TEST_BOUNDARY)
+                if (test_boundary_active) {
+                    test_boundary_service = step.service;
+                    host_returned = true;
+                    return;
+                }
+#endif
                 syscalls.Service();
-            else if (step.service == ExitValue(NativeExit::FPEnvironment))
+            } else if (step.service == ExitValue(NativeExit::FPEnvironment))
                 UpdateFPEnvironment(true);
             else if (step.service == ExitValue(NativeExit::StateService) &&
                      (ISA() == GuestISA::Arm64 || ISA() == GuestISA::Arm32)) {

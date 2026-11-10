@@ -22,6 +22,12 @@
 #include "runtime/platform/linux/syscalls.h"
 #include "smc.h"
 
+#if defined(SVM_TEST_BOUNDARY)
+namespace swift::tests::correctness {
+struct VMAccess;
+}
+#endif
+
 namespace swift::runtime::execution {
 class DiskCache;
 
@@ -80,6 +86,9 @@ private:
     friend class Smc;
     friend class platform::LinuxSyscalls;
     friend class platform::GuestSignals;
+#if defined(SVM_TEST_BOUNDARY)
+    friend struct ::swift::tests::correctness::VMAccess;
+#endif
     RuntimeOptions options;
     RuntimeStats& stats;
     HostBackendOps backend;
@@ -101,6 +110,10 @@ private:
     CodeImage* offline_output{};
     bool prepared{}, persistence_disabled{}, host_call_active{}, host_returned{};
     std::uint64_t host_return_pc{};
+#if defined(SVM_TEST_BOUNDARY)
+    bool test_boundary_active{};
+    std::uint64_t test_boundary_service{}, test_boundary_native_status{};
+#endif
     bool final_observed{}, closing{}, closed{};
     MappingRelease close_result;
 
@@ -148,6 +161,15 @@ private:
                        const CodeImage*);
     void Execute();
     void ExecuteHostCall(std::uint64_t stop_pc);
+
+    bool IsHostReturn(std::uint64_t pc) const noexcept {
+        if (!host_call_active) return false;
+#if defined(SVM_TEST_BOUNDARY)
+        if (test_boundary_active) return CodeAddress(ISA(), pc) == host_return_pc;
+#endif
+        return pc == host_return_pc;
+    }
+
     void InstallImage(const CodeImage&);
     bool HashSource(SourceSpan, Digest&, std::uint8_t& mode) const;
     bool SourcesMatch(std::span<const SourceRecord>) const;
