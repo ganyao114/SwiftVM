@@ -168,6 +168,22 @@ inline void CorrectWidths(InstructionData& out, std::span<const std::uint8_t> by
                 }
             }
             break;
+        case Op::CVTPD2PI:
+        case Op::CVTTPD2PI:
+            // The parser reports the XMM destination of the 66 0F 2D/2C
+            // forms; the architectural destination is an MMX register.
+            xmm_to_mmx(out.ops[0]);
+            break;
+        case Op::LDDQU:
+        case Op::MOVSLDUP:
+        case Op::MOVSHDUP:
+        case Op::MOVNTDQA:
+            // The parser omits or narrows the 128-bit memory source for
+            // these legacy moves. MOVDDUP is excluded: its memory source is
+            // architecturally 64-bit.
+            if (out.ops[1].type != GuestOperandKind::None && out.ops[1].size != 128)
+                resize(out.ops[1], 128);
+            break;
         case Op::FXCH:
             // The parser omits the implicit ST1 on D9 C9. Publish an explicit
             // guest operand, so no consumer needs that vendor convention.

@@ -48,6 +48,7 @@ StepResult InterpretDecoded(const Instruction& instruction,
     const auto pc = state.pc;
     StepResult out;
     out.pc = out.next_pc = pc;
+    runtime::ir::direct::ResetUnsupportedOperation();
     if (instruction.PC() != pc || (pc & 3) || bytes.size() < 4) {
         out.kind = bytes.size() < 4 ? StepKind::Truncated : StepKind::InvalidEncoding;
         return out;

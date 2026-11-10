@@ -451,9 +451,16 @@ static bool SseExtended(Emitter& builder,
     const auto destination = instruction.ops[0], source = instruction.ops[1];
     const bool control = group == 10 || group == 11 || group == 12 || group == 14 || group == 21 ||
                          group == 23 || group == 26;
-    if (control ? instruction.ops[2].type != GuestOperandKind::Immediate ||
-                          instruction.ops[2].size != 8
-                : instruction.ops[2].type != GuestOperandKind::None)
+    const bool implicit_mask = instruction.opcode == Op::PBLENDVB ||
+                               instruction.opcode == Op::BLENDVPS ||
+                               instruction.opcode == Op::BLENDVPD;
+    if (implicit_mask) {
+        if (instruction.ops[2].type != GuestOperandKind::Register ||
+            instruction.ops[2].index != Register::XMM0 || instruction.ops[2].size != 128)
+            Unsupported();
+    } else if (control ? instruction.ops[2].type != GuestOperandKind::Immediate ||
+                                 instruction.ops[2].size != 8
+                       : instruction.ops[2].type != GuestOperandKind::None)
         Unsupported();
     const auto immediate = static_cast<unsigned>(static_cast<std::uint8_t>(instruction.immediate));
     if (group == 11) {

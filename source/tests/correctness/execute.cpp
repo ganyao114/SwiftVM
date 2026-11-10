@@ -13,6 +13,7 @@
 #include "runtime/frontend/arm32/interpreter.h"
 #include "runtime/frontend/arm64/interpreter.h"
 #include "runtime/frontend/x86/interpreter.h"
+#include "runtime/ir/direct/interpreter.h"
 
 namespace swift::tests::correctness {
 namespace {
@@ -223,6 +224,10 @@ struct Arena {
         auto& arena = *static_cast<Arena*>(raw);
         const auto bytes = request.bits / 8u;
         if (!bytes || bytes > 16) return {AccessStatus::UnsupportedBeforeAccess, request.address};
+        // A faulting read-modify-write reports the read side; the oracle does
+        // not project a distinct atomic access kind.
+        arena.access = "read";
+        arena.width = static_cast<std::uint32_t>(bytes);
         for (std::size_t i = 0; i < bytes; ++i) {
             const auto address = request.address + i;
             if (!ByteWritable(arena.memory, address) || !ByteReadable(arena.input, arena.memory, address))
@@ -431,7 +436,11 @@ Observation Run(const Case& c, GuestState& state, Services services, Step step_o
             break;
         }
         out.outcome = Outcome::Rejected;
-        out.error = Format("direct step kind {} at {:#x}", unsigned(step.kind), step.pc);
+        const auto operation = runtime::ir::direct::LastUnsupportedOperation();
+        out.error = Format("direct step kind {} at {:#x}{}",
+                           unsigned(step.kind),
+                           step.pc,
+                           operation ? std::string(" opcode=") + operation : std::string{});
         break;
     }
     if (out.outcome == Outcome::Budget && Physical(c.isa, state.pc) == c.terminal_pc)

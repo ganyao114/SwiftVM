@@ -164,6 +164,7 @@ StepResult InterpretDecoded(const Instruction& decoded,
                             const DirectServices& services) {
     StepResult result;
     result.pc = result.next_pc = state.pc;
+    direct::ResetUnsupportedOperation();
     const auto& instruction = decoded.View().Record();
     if (instruction.addr != state.pc || !instruction.size || instruction.size > 15 ||
         instruction.flags == InstructionFlag::Invalid) {

@@ -9,6 +9,11 @@
 
 namespace swift::runtime::ir::direct {
 
+// Diagnostic: the last operation whose shape the direct interpreter could
+// not execute. Null when execution stopped outside an operation body.
+const char* LastUnsupportedOperation() noexcept;
+void ResetUnsupportedOperation() noexcept;
+
 struct Environment {
     std::span<std::uint8_t> uniforms;
     std::uint64_t& packed_flags;

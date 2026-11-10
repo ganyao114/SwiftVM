@@ -203,12 +203,25 @@ Interpreter::Value Interpreter::Arithmetic(
     return out;
 }
 
+namespace {
+thread_local const char* unsupported_operation;
+}  // namespace
+
+const char* LastUnsupportedOperation() noexcept { return unsupported_operation; }
+
+void ResetUnsupportedOperation() noexcept { unsupported_operation = nullptr; }
+
 template <OpCode op> Interpreter::Result Interpreter::Emit(Type type,
                                                            std::span<const Operand> operands,
                                                            OperationMetadata metadata) {
-    auto value = Handle<op>(type, operands);
-    if (metadata.flag_outputs) SetMetadata(value.number, metadata);
-    return {Error::None, value};
+    try {
+        auto value = Handle<op>(type, operands);
+        if (metadata.flag_outputs) SetMetadata(value.number, metadata);
+        return {Error::None, value};
+    } catch (const Exit& failure) {
+        if (failure.kind == ExitKind::Unsupported) unsupported_operation = Name(op);
+        throw;
+    }
 }
 
 #include "crypto.inc"

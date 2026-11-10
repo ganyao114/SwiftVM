@@ -320,6 +320,7 @@ static unsigned MandatoryRepeatPrefixes(Op opcode) {
         case Op::MULSD:
         case Op::DIVSD:
         case Op::CVTTSD2SI:
+        case Op::CVTPD2DQ:
         case Op::CVTSD2SS:
         case Op::CVTSD2SI:
         case Op::MOVDDUP:
