@@ -1,5 +1,6 @@
 #include "execute.h"
 
+#include <type_traits>
 #include "base/format.h"
 #include "runtime/arch/arm32/state.h"
 #include "runtime/arch/arm64/state.h"
@@ -90,6 +91,10 @@ template <class Options> Options OptionsFor(ISA isa) {
         options.pc_offset = offsetof(runtime::x86::GuestState, pc);
         options.flags_offset = offsetof(runtime::x86::GuestState, packed_flags);
     }
+    // The compile-only matrix covers the full backend surface; VM execution
+    // still gates optional instructions on the probed host capabilities.
+    if constexpr (std::is_same_v<Options, backend::arm64::CompileOptions>)
+        options.crc32c = true;
     return options;
 }
 
@@ -145,10 +150,15 @@ Observation ExecuteCompile(const Case& c, const RunConfig& config) {
     }
     out.compile_attempts = 1;
     if (!code) {
-        out.error = Format("backend={} node={} block={}",
+        const auto operations = built.program.Operations();
+        const auto opcode = code.node.value < operations.size()
+                                    ? ir::Name(operations[code.node.value].opcode)
+                                    : "?";
+        out.error = Format("backend={} node={} block={} opcode={}",
                            unsigned(code.error),
                            code.node.value,
-                           code.block.value);
+                           code.block.value,
+                           opcode);
         return out;
     }
     out.spill_slots = code.spill_slots;

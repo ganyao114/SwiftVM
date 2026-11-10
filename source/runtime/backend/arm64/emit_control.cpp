@@ -397,6 +397,18 @@ void Writer::HandleSelectFamily(OpContext& ctx) {
     const auto width = ctx.width;
     SnapshotCompareNZCV();
     const auto check = Read(cursor.Take(), 0);
+    if (ctx.vector) {
+        const auto yes = VectorValue(cursor.Take(), 0), no = VectorValue(cursor.Take(), 1);
+        const auto mask = VectorTemporary();
+        __ cmp(X(check), Operand(0));
+        __ cset(v::w16, v::ne);
+        __ neg(v::x16, Operand(v::x16));
+        __ dup(Lanes(mask, 8), v::x16);
+        __ bsl(Lanes(mask, 8), Lanes(yes, 8), Lanes(no, 8));
+        VectorMove(destination, mask);
+        RestoreCompareNZCV();
+        return;
+    }
     const auto native_width = width == 32 ? 32u : 64u;
     const auto yes = Read(cursor.Take(), 16, 64, false, native_width),
                no = Read(cursor.Take(), 17, 64, false, native_width);

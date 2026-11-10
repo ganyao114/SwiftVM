@@ -308,6 +308,9 @@ static unsigned X87(Emitter& builder,
         call(X87Command::Wait);
     const auto memory_address = [&] {
         if (!address) address = Address(builder, layout, instruction, first, next_pc, target);
+        if (address && builder.NaturalType(address) != Type::U64)
+            address = Require(
+                    builder.ZeroExtend64(Type::U64, {Operand::ValueOf(address, Type::U32)}));
         return address;
     };
     const auto metadata = [&] {
