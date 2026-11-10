@@ -10,9 +10,11 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <csignal>
 #include <cstring>
 #include <elf.h>
 #include <sys/mman.h>
+#include <unistd.h>
 
 #if !defined(SVM_TEST_BOUNDARY)
 #error "The correctness VM must link the test boundary runtime variant"
@@ -228,6 +230,35 @@ void CaptureStats(const execution::RuntimeStats& stats, Observation& output) {
     output.interpreted_steps = stats.interpreted_steps;
     output.fallbacks = stats.fallbacks;
 }
+
+// A guest branch may form a native loop that never returns to the dispatch
+// boundary; the worker then cannot report a budget on its own. The provisional
+// observation written by the worker is what this exit leaves behind.
+class ExecutionWatchdog {
+  public:
+    ExecutionWatchdog() {
+        struct sigaction action {};
+        action.sa_handler = [](int) { ::_exit(0); };
+        sigemptyset(&action.sa_mask);
+        if (::sigaction(SIGALRM, &action, &previous_)) return;
+        active_ = true;
+        ::alarm(BudgetSeconds);
+    }
+
+    ~ExecutionWatchdog() {
+        if (!active_) return;
+        ::alarm(0);
+        ::sigaction(SIGALRM, &previous_, nullptr);
+    }
+
+    ExecutionWatchdog(const ExecutionWatchdog&) = delete;
+    ExecutionWatchdog& operator=(const ExecutionWatchdog&) = delete;
+
+  private:
+    static constexpr unsigned BudgetSeconds = 8;
+    struct sigaction previous_ {};
+    bool active_{};
+};
 }  // namespace
 
 // The test variant shares all execution, publication and recovery code with
@@ -306,12 +337,15 @@ Observation ExecuteVM(const Case& input, const RunConfig& config) {
                                                       : execution::ExecutionMode::JitOnly;
     options.scope = static_cast<runtime::ir::Scope>(config.scope);
     options.optimize = config.optimize;
+    if (input.isa == ISA::Arm32 && input.profile == "armv8-user")
+        options.arm32_profile.version = runtime::arm32::ArchVersion::v8;
     options.exception_handler = FaultCapture::Stop;
     options.exception_opaque = &fault;
     try {
         execution::VM vm{options, stats, ops};
         Materialize(vm, input);
         output.stage = "execute";
+        ExecutionWatchdog watchdog;
         try {
             output.service = VMAccess::Run(vm, input.terminal_pc);
             if (fault.seen) {

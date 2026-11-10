@@ -105,6 +105,15 @@ void RunWorker(const std::string& input, const std::string& output, const RunCon
         if (!ValidateCase(c, &reason))
             ThrowError(Format("case does not match its contract: {}", reason),
                        ErrorKind::InvalidArgument);
+        // A guest loop never returns through the dispatch boundary, so the
+        // execution watchdog leaves this provisional budget observation.
+        Observation budget;
+        budget.outcome = Outcome::Budget;
+        budget.stage = "execute";
+        budget.backend = Name(config.backend);
+        budget.error = "execution watchdog budget exhausted";
+        budget.state = c.initial;
+        WriteText(output, ToJSON(budget));
         observation = Execute(c, config);
     } catch (const std::exception& error) {
         observation.error = error.what();

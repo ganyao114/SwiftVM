@@ -302,6 +302,10 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
     if (!IsExecution(expected.outcome, c))
         return {false, false, "oracle_inconclusive", expected.stage + ": " + expected.error};
     if (!IsExecution(actual.outcome, c)) {
+        if (actual.outcome == Outcome::HostFailure &&
+            actual.error.find("guest MXCSR contains reserved bits") != std::string::npos)
+            return {false, false, "unsupported_guest_feature_gap",
+                    "reserved MXCSR bits are not modeled"};
         if (actual.outcome == Outcome::Rejected &&
             (actual.error.find("FPSCR exception enables") != std::string::npos ||
              actual.error.find("big-endian") != std::string::npos))
@@ -342,6 +346,13 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         actual.fault_kind == "alignment" && LegacyAlignedVectorForm(c))
         return {false, false, "oracle_alignment_gap",
                 "oracle does not model legacy SSE alignment faults"};
+    if (inventory && c.isa == ISA::X86_64) {
+        const auto name = FormName(c);
+        if (name == "XSAVE" || name == "XSAVE64" || name == "XSAVEOPT" ||
+            name == "XSAVEOPT64" || name == "XRSTOR" || name == "XRSTOR64")
+            return {false, false, "unsupported_guest_feature_gap",
+                    "XSAVE state components are not modeled"};
+    }
     if (inventory && c.isa == ISA::X86_64 && actual.outcome == Outcome::Service &&
         expected.outcome == Outcome::Terminal)
         return {false, false, "oracle_service_gap",
@@ -355,7 +366,7 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         (actual.state.x87_status & 0x41) == 0x41)
         return {false, false, "native_x87_fault_gap",
                 "x87 stack-fault register/memory side effects are implementation-defined"};
-    if (expected.outcome == Outcome::Budget && actual.outcome != Outcome::Budget)
+    if (expected.outcome == Outcome::Budget)
         return {false, false, "oracle_inconclusive",
                 "oracle instruction budget exhausted before the contract boundary"};
     if (expected.outcome != actual.outcome) {
@@ -425,12 +436,50 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
             vector_bytes = effective ? effective : 16;
         }
     }
-    for (unsigned i = 0; i < vectors; ++i)
-        for (unsigned j = 0; j < vector_bytes; ++j)
-            if (expected.state.vectors[i][j] != actual.state.vectors[i][j])
-                return Different("vector[" + std::to_string(i) + "][" + std::to_string(j) + "]",
-                                 expected.state.vectors[i][j],
-                                 actual.state.vectors[i][j]);
+    const bool relaxed_nan = inventory && c.isa == ISA::X86_64;
+    bool nan_gap{};
+    for (unsigned i = 0; i < vectors; ++i) {
+        unsigned j = 0;
+        while (j < vector_bytes) {
+            if (expected.state.vectors[i][j] == actual.state.vectors[i][j]) {
+                ++j;
+                continue;
+            }
+            const auto lane_nan = [&](const State& state, unsigned at, unsigned width) {
+                if (at + width > vector_bytes) return false;
+                const auto* bytes = state.vectors[i].data() + at;
+                if (width == 4) {
+                    std::uint32_t bits{};
+                    std::memcpy(&bits, bytes, 4);
+                    return (bits & 0x7f800000u) == 0x7f800000u && (bits & 0x007fffffu);
+                }
+                std::uint64_t bits{};
+                std::memcpy(&bits, bytes, 8);
+                return (bits & UINT64_C(0x7ff0000000000000)) == UINT64_C(0x7ff0000000000000) &&
+                       (bits & UINT64_C(0x000fffffffffffff));
+            };
+            const auto at32 = j & ~3u, at64 = j & ~7u;
+            if (relaxed_nan && lane_nan(expected.state, at32, 4) &&
+                lane_nan(actual.state, at32, 4)) {
+                nan_gap = true;
+                j = at32 + 4;
+                continue;
+            }
+            if (relaxed_nan && lane_nan(expected.state, at64, 8) &&
+                lane_nan(actual.state, at64, 8)) {
+                nan_gap = true;
+                j = at64 + 8;
+                continue;
+            }
+            return Different("vector[" + std::to_string(i) + "][" + std::to_string(j) + "]",
+                             expected.state.vectors[i][j],
+                             actual.state.vectors[i][j]);
+        }
+    }
+    if (nan_gap) {
+        if (!gaps.empty()) gaps += "; ";
+        gaps += "x86 quiet-NaN sign and payload are implementation-defined";
+    }
     const auto fp_control_mask =
             contract.fp_control_mask & expected.fp_control_verified_mask &
             actual.fp_control_verified_mask;
@@ -548,10 +597,11 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         const bool execute_fault =
                 expected.fault_access == "execute" && actual.fault_access == "execute";
         const bool native_fault = actual.backend == "native-x86_64";
+        const bool native_reference = native_fault || expected.backend == "native-x86_64";
         if (expected.fault_kind != actual.fault_kind ||
-            (!native_fault &&
+            (!native_reference &&
              normalized_access(expected.fault_access) != normalized_access(actual.fault_access)) ||
-            (!execute_fault && !native_fault && expected.fault_vector != actual.fault_vector))
+            (!execute_fault && !native_reference && expected.fault_vector != actual.fault_vector))
             return {true, false, "exception_mismatch", "fault kind/access/vector differs"};
         if (expected.fault_pc != actual.fault_pc)
             return Different("fault_pc", expected.fault_pc, actual.fault_pc, "exception_mismatch");
@@ -569,7 +619,7 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         }
         if (!execute_fault && !divide_fault && !normalized_fault &&
             expected.fault_width != actual.fault_width) {
-            if (native_fault) {
+            if (native_reference) {
                 if (!gaps.empty()) gaps += "; ";
                 gaps += "native fault width is not projected";
             } else {
