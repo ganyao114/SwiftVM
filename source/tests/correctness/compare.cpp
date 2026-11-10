@@ -292,7 +292,11 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                 if (A64UnpredictableForm(c))
                     return {false, false, "unpredictable_encoding_gap",
                             "reserved/unpredictable encoding is rejected by the frontend"};
-                if (FormName(c).starts_with("LoadStorePAC"))
+                const auto name = FormName(c);
+                if (name == "NEONScalar2RegMiscFP16" || name == "NEON2RegMiscFP16")
+                    return {false, false, "unpredictable_encoding_gap",
+                            "encoding is not in the allocated scalar FP16 miscellaneous table"};
+                if (name.starts_with("LoadStorePAC"))
                     return {false, false, "unsupported_guest_feature_gap",
                             "PAC keys are not modeled"};
             }
