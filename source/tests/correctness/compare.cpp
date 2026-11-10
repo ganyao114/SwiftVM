@@ -45,6 +45,86 @@ bool InventoryX87Form(const Case& c) {
            id[guest + 8] == 'F';
 }
 
+bool InventoryMmxForm(const Case& c) {
+    if (c.isa != ISA::X86_64) return false;
+    const auto id = std::string_view(c.form_id);
+    if (!id.starts_with("inventory/")) return false;
+    const auto decoded = swift::x86::DecodeOne(std::span<const std::uint8_t>(c.code),
+                                               c.code_address);
+    if (!decoded) return false;
+    for (const auto& operand : decoded.instruction.View().Record().ops)
+        if (operand.type == swift::x86::GuestOperandKind::Register &&
+            operand.index >= swift::x86::Register::MM0 &&
+            operand.index <= swift::x86::Register::MM7)
+            return true;
+    return false;
+}
+
+std::uint64_t RegisterValue(const Case& c, std::uint8_t index, unsigned bits) {
+    using namespace swift::x86;
+    const auto slot = [&](Register base) -> std::uint64_t {
+        return index >= base && index - base < 16 ? c.initial.gpr[index - base] : 0;
+    };
+    const auto value = bits == 64   ? slot(Register::RAX)
+                       : bits == 32 ? slot(Register::EAX)
+                       : bits == 16 ? slot(Register::AX)
+                                    : slot(Register::AL);
+    return bits >= 64 ? value : value & ((std::uint64_t{1} << bits) - 1);
+}
+
+bool GuestByte(const Case& c, std::uint64_t address, std::uint8_t& out) {
+    for (const auto& region : c.memory)
+        if (address >= region.address && address - region.address < region.size) {
+            const auto offset = address - region.address;
+            out = offset < region.bytes.size() ? region.bytes[offset] : 0;
+            return true;
+        }
+    return false;
+}
+
+// BSF/BSR leave the destination undefined when the source is zero; real CPUs
+// keep the old destination while emulators may write any value.
+bool UndefinedBitScan(const Case& c) {
+    if (c.isa != ISA::X86_64) return false;
+    const auto id = std::string_view(c.form_id);
+    if (!id.starts_with("inventory/") || (id.find("/BSF/") == std::string_view::npos &&
+                                          id.find("/BSR/") == std::string_view::npos))
+        return false;
+    const auto decoded = swift::x86::DecodeOne(std::span<const std::uint8_t>(c.code),
+                                               c.code_address);
+    if (!decoded) return false;
+    const auto& record = decoded.instruction.View().Record();
+    const auto& source = record.ops[1];
+    if (source.type == swift::x86::GuestOperandKind::Register)
+        return RegisterValue(c, source.index, source.size) == 0;
+    if (source.type != swift::x86::GuestOperandKind::Memory &&
+        source.type != swift::x86::GuestOperandKind::IndexedMemory &&
+        source.type != swift::x86::GuestOperandKind::Displacement)
+        return false;
+    const unsigned address_bits = record.address_bits == 32 ? 32 : 64;
+    std::uint64_t address = record.disp;
+    if (source.type == swift::x86::GuestOperandKind::Displacement) {
+        // Only the displacement contributes.
+    } else if (source.index == swift::x86::Register::RIP) {
+        address += c.terminal_pc;
+    } else if (source.index != swift::x86::Register::None) {
+        address += RegisterValue(c, source.index, address_bits);
+    }
+    if (record.base != swift::x86::Register::None)
+        address += RegisterValue(c, record.base, address_bits) * record.scale;
+    if (address_bits == 32) address &= 0xffffffffu;
+    if (record.segment == swift::x86::Register::FS || record.segment == swift::x86::Register::GS)
+        address += c.initial.tls[record.segment == swift::x86::Register::FS ? 0 : 1];
+    std::uint64_t value = 0;
+    for (unsigned i = 0; i != source.size / 8; ++i) {
+        std::uint8_t byte{};
+        // Memory beyond the stored case prefix is zero-filled by the arena.
+        (void)GuestByte(c, address + i, byte);
+        value |= std::uint64_t(byte) << (8 * i);
+    }
+    return value == 0;
+}
+
 bool NondeterministicForm(const Case& c) {
     if (c.isa != ISA::X86_64) return false;
     const auto id = std::string_view(c.form_id);
@@ -70,8 +150,8 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
     std::string reason;
     if (!ValidateCase(c, &reason)) return {false, false, "unreviewed_contract", reason};
     const bool inventory = std::string_view(c.form_id).starts_with("inventory/");
-    if (inventory && InventoryX87Form(c))
-        return {false, false, "x87_gap", "x87 state and semantics are not oracle-verified"};
+    if (inventory && (InventoryX87Form(c) || InventoryMmxForm(c)))
+        return {false, false, "x87_gap", "x87/MMX state and semantics are not oracle-verified"};
     if (inventory && NondeterministicForm(c))
         return {false, false, "nondeterministic_gap",
                 "time/random/base instruction has no deterministic oracle"};
@@ -101,6 +181,9 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                          unsigned(actual.outcome),
                          "exception_mismatch");
     }
+    if (inventory && UndefinedBitScan(c))
+        return {false, false, "nondeterministic_gap",
+                "BSF/BSR source is zero; destination is architecturally undefined"};
     const auto contract = Contract(c);
     bool crossing_write{};
     std::uint64_t partial_begin{}, partial_end{};

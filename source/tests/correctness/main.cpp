@@ -274,9 +274,18 @@ int DecodeCommand(const Arguments& args) {
             std::cout << "{\"ok\":false}\n";
             return 1;
         }
-        std::cout << Format("{{\"ok\":true,\"isa\":\"x86_64\",\"size\":{},\"op\":{}}}\n",
+        std::cout << Format("{{\"ok\":true,\"isa\":\"x86_64\",\"size\":{},\"op\":{},\"operands\":[",
                             decoded.instruction.View().Size(),
                             unsigned(decoded.instruction.View().Opcode()));
+        const auto& record = decoded.instruction.View().Record();
+        for (unsigned i = 0; i != record.ops.size(); ++i) {
+            if (i) std::cout << ',';
+            std::cout << Format("{{\"kind\":{},\"index\":{},\"size\":{}}}",
+                                unsigned(record.ops[i].type),
+                                unsigned(record.ops[i].index),
+                                unsigned(record.ops[i].size));
+        }
+        std::cout << "]}\n";
         return 0;
     }
     if (isa == ISA::Arm64) {

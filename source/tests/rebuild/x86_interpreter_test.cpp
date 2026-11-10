@@ -370,6 +370,29 @@ void Floating() {
           "caller default-NaN control cannot change guest arithmetic or leak across a step");
 #endif
 }
+void Mmx() {
+    Machine mmx{0x0f, 0xd4, 0xd4};
+    const std::uint64_t left = UINT64_C(0x0ea106eb729576a5);
+    const std::uint64_t right = UINT64_C(0xb2a4eb28bfb08eaa);
+    mmx.state.x87.registers[2].significand = left;
+    mmx.state.x87.registers[4].significand = right;
+    std::uint8_t original[16];
+    std::memcpy(original, mmx.state.xmm[2], sizeof original);
+    Check(mmx.Step().kind == front::StepKind::Completed, "MMX PADDQ executes");
+    Check(mmx.state.x87.registers[2].significand == left + right,
+          "MMX PADDQ commits to the x87 alias of MM2");
+    Check(mmx.state.x87.registers[2].sign_exp == 0xffff, "MMX PADDQ marks the x87 slot");
+    Check(std::memcmp(original, mmx.state.xmm[2], sizeof original) == 0,
+          "MMX PADDQ leaves the same-numbered XMM register unchanged");
+    Machine sse{0x66, 0x0f, 0xd4, 0xd4};
+    const std::uint64_t first[2]{1, 2}, second[2]{3, 4};
+    std::memcpy(sse.state.xmm[2], first, sizeof first);
+    std::memcpy(sse.state.xmm[4], second, sizeof second);
+    Check(sse.Step().kind == front::StepKind::Completed, "SSE2 PADDQ executes");
+    std::uint64_t result[2];
+    std::memcpy(result, sse.state.xmm[2], sizeof result);
+    Check(result[0] == 4 && result[1] == 6, "SSE2 PADDQ keeps 128-bit XMM lanes");
+}
 }  // namespace
 
 TEST_CASE("Model", "[compile][x86-interpreter]") { CHECK_NOTHROW(Model()); }
@@ -397,3 +420,5 @@ TEST_CASE("UnsupportedAndService", "[compile][x86-interpreter]") {
 }
 
 TEST_CASE("Floating", "[compile][x86-interpreter]") { CHECK_NOTHROW(Floating()); }
+
+TEST_CASE("Mmx", "[compile][x86-interpreter]") { CHECK_NOTHROW(Mmx()); }

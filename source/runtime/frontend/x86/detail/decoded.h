@@ -144,7 +144,30 @@ inline void CorrectWidths(InstructionData& out, std::span<const std::uint8_t> by
         }
         operand.size = static_cast<std::uint16_t>(bits);
     };
+    const auto xmm_to_mmx = [](DecodedOperand& operand) {
+        if (operand.type == GuestOperandKind::Register &&
+            operand.index >= Register::XMM0 && operand.index <= Register::XMM15) {
+            operand.index =
+                    static_cast<std::uint8_t>(Register::MM0 + operand.index - Register::XMM0);
+            operand.size = 64;
+        } else if (operand.type == GuestOperandKind::Memory ||
+                   operand.type == GuestOperandKind::IndexedMemory) {
+            operand.size = 64;
+        }
+    };
     switch (out.opcode) {
+        case Op::PADDQ:
+            // The parser reports the SSE2 form even without the mandatory 66
+            // prefix, so the 0F D4 MMX encoding would otherwise reach the
+            // vector path with XMM operands.
+            if (out.ops[0].size == 128) {
+                prefixes();
+                if (!word) {
+                    xmm_to_mmx(out.ops[0]);
+                    xmm_to_mmx(out.ops[1]);
+                }
+            }
+            break;
         case Op::FXCH:
             // The parser omits the implicit ST1 on D9 C9. Publish an explicit
             // guest operand, so no consumer needs that vendor convention.
