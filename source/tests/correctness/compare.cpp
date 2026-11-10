@@ -15,8 +15,12 @@ Comparison Different(std::string field,
     return {true, false, std::move(category), detail.str()};
 }
 
-bool IsExecution(Outcome outcome) {
-    return outcome == Outcome::Terminal || outcome == Outcome::Fault || outcome == Outcome::Service;
+bool IsExecution(Outcome outcome, const Case& c) {
+    return outcome == Outcome::Terminal || outcome == Outcome::Fault ||
+           outcome == Outcome::Service ||
+           // A one-step inventory case deliberately stops after its single
+           // instruction even when a control transfer leaves the linear window.
+           (outcome == Outcome::Budget && c.max_steps == 1);
 }
 
 }  // namespace
@@ -24,9 +28,9 @@ bool IsExecution(Outcome outcome) {
 Comparison Compare(const Case& c, const Observation& expected, const Observation& actual) {
     std::string reason;
     if (!ValidateCase(c, &reason)) return {false, false, "unreviewed_contract", reason};
-    if (!IsExecution(expected.outcome))
+    if (!IsExecution(expected.outcome, c))
         return {false, false, "oracle_inconclusive", expected.stage + ": " + expected.error};
-    if (!IsExecution(actual.outcome)) {
+    if (!IsExecution(actual.outcome, c)) {
         if (actual.outcome == Outcome::Rejected)
             return {true, false, "unexpected_rejection", actual.stage + ": " + actual.error};
         return {false,

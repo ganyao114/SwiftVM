@@ -3,6 +3,7 @@
 #include "execute.h"
 
 #include <algorithm>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -11,6 +12,10 @@
 #include <unistd.h>
 #include "base/error.h"
 #include "base/format.h"
+#include "runtime/arch/arm32/location.h"
+#include "runtime/frontend/arm32/decode.h"
+#include "runtime/frontend/arm64/decode.h"
+#include "runtime/frontend/x86/decode.h"
 
 extern char** environ;
 
@@ -23,7 +28,6 @@ public:
     Arguments(int argc, char** argv) {
         for (int i = 2; i < argc; ++i) values.emplace_back(argv[i]);
     }
-
     bool Has(std::string_view key) const {
         return std::find(values.begin(), values.end(), key) != values.end();
     }
@@ -241,9 +245,69 @@ int SelfTest() {
 
 }  // namespace
 
+std::vector<std::uint8_t> ParseHex(std::string_view text) {
+    if (text.empty() || text.size() % 2)
+        ThrowError("--code must be an even-length hex string", ErrorKind::InvalidArgument);
+    std::vector<std::uint8_t> bytes;
+    bytes.reserve(text.size() / 2);
+    for (std::size_t i = 0; i < text.size(); i += 2) {
+        unsigned value{};
+        const auto parsed = std::from_chars(text.data() + i, text.data() + i + 2, value, 16);
+        if (parsed.ec != std::errc{} || parsed.ptr != text.data() + i + 2)
+            ThrowError("invalid hex byte", ErrorKind::InvalidArgument);
+        bytes.push_back(static_cast<std::uint8_t>(value));
+    }
+    return bytes;
+}
+
+int DecodeCommand(const Arguments& args) {
+    const auto isa = ParseISA(args.Get("--isa"));
+    const auto code = ParseHex(args.Get("--code"));
+    const auto pc = args.Number("--pc", 0x04000000);
+    const std::span<const std::uint8_t> bytes{code};
+    if (isa == ISA::X86_64) {
+        const auto decoded = swift::x86::DecodeOne(bytes, pc);
+        if (!decoded) {
+            std::cout << "{\"ok\":false}\n";
+            return 1;
+        }
+        std::cout << Format("{{\"ok\":true,\"isa\":\"x86_64\",\"size\":{},\"op\":{}}}\n",
+                            decoded.instruction.View().Size(),
+                            unsigned(decoded.instruction.View().Opcode()));
+        return 0;
+    }
+    if (isa == ISA::Arm64) {
+        const auto decoded = swift::arm64::DecodeOne(bytes, pc);
+        if (!decoded) {
+            std::cout << "{\"ok\":false}\n";
+            return 1;
+        }
+        std::cout << Format("{{\"ok\":true,\"isa\":\"arm64\",\"family\":{},\"word\":{:#x}}}\n",
+                            decoded.instruction.FamilyCode(),
+                            decoded.instruction.Word());
+        return 0;
+    }
+    const auto location = swift::runtime::arm32::Location::Make(
+            static_cast<std::uint32_t>(pc), args.Has("--thumb"), 0, 0);
+    const auto decoded = swift::arm32::DecodeOne(bytes, location.Key());
+    if (!decoded) {
+        std::cout << "{\"ok\":false}\n";
+        return 1;
+    }
+    std::cout << Format(
+            "{{\"ok\":true,\"isa\":\"arm32\",\"length\":{},\"opcode\":{},\"name\":\"{}\","
+            "\"word\":{:#x}}}\n",
+            decoded.instruction.Length(),
+            decoded.instruction.OpcodeCode(),
+            decoded.instruction.Name(),
+            decoded.instruction.Word());
+    return 0;
+}
+
 int Main(int argc, char** argv) {
     if (argc < 2) {
-        std::cerr << "usage: svm_correctness {catalog|generate|worker|replay|compare|reduce|inspect|selftest}\n";
+        std::cerr << "usage: svm_correctness "
+                 "{catalog|generate|worker|replay|compare|reduce|inspect|decode|selftest}\n";
         return 2;
     }
     const std::string_view command = argv[1];
@@ -253,6 +317,7 @@ int Main(int argc, char** argv) {
     if (command == "compare") return CompareFiles(args);
     if (command == "reduce") return ReduceFile(args);
     if (command == "selftest") return SelfTest();
+    if (command == "decode") return DecodeCommand(args);
     if (command == "inspect") {
         WriteText(args.Get("--out"), ToJSON(ReadCase(args.Get("--case"))));
         return 0;

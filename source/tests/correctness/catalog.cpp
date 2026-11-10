@@ -288,11 +288,26 @@ bool ValidateCase(const Case& c, std::string* reason) {
         if (reason) *reason = message;
         return false;
     };
-    const auto* form = FindForm(c.form_id);
-    if (!form || form->isa != c.isa) return reject("unreviewed form or ISA mismatch");
     const auto profile = c.isa == ISA::X86_64  ? "x86_64-user"
                          : c.isa == ISA::Arm64 ? "a64-user"
                                                : "armv7-user";
+    const auto inventory = std::string_view(c.form_id).starts_with("inventory/");
+    if (inventory) {
+        if (c.profile != profile) return reject("unsupported profile");
+        if (!c.code.size() || c.code_address > UINT64_MAX - c.code.size() ||
+            c.terminal_pc != c.code_address + c.code.size() || c.initial.pc != c.code_address ||
+            !c.max_steps)
+            return reject("inventory boundary mismatch");
+        if (c.isa == ISA::X86_64 && c.code.size() > 15)
+            return reject("x86 inventory encoding size");
+        if (c.isa == ISA::Arm64 && (c.code.size() != 4 || (c.code_address & 3)))
+            return reject("A64 inventory encoding size/alignment");
+        if (c.isa == ISA::Arm32 && (c.code.size() != 2 && c.code.size() != 4))
+            return reject("A32 inventory encoding size");
+        return true;
+    }
+    const auto* form = FindForm(c.form_id);
+    if (!form || form->isa != c.isa) return reject("unreviewed form or ISA mismatch");
     if (c.profile != profile) return reject("unsupported profile");
     if (c.code.size() != form->length || c.code_address > UINT64_MAX - c.code.size() ||
         c.terminal_pc != c.code_address + c.code.size() || c.initial.pc != c.code_address ||
@@ -358,6 +373,13 @@ bool ValidateCase(const Case& c, std::string* reason) {
 ComparisonContract Contract(const Case& c) {
     std::string reason;
     if (!ValidateCase(c, &reason)) swift::ThrowError(reason, swift::ErrorKind::InvalidArgument);
+    if (std::string_view(c.form_id).starts_with("inventory/")) {
+        if (c.isa == ISA::Arm64) return {0xf0000000u, 0x07c00000u, 0x0800009fu};
+        if (c.isa == ISA::Arm32) return {0xff0fffffu, 0xfff79f9fu, 0};
+        // Inventory forms span integer and FP instructions; compare the
+        // architectural integer flags and leave MXCSR to the FP-specific forms.
+        return {0xed7, 0, 0};
+    }
     const auto& form = *FindForm(c.form_id);
     if (c.isa == ISA::Arm64) return {0xf0000000u, 0x07c00000u, 0x0800009fu};
     if (c.isa == ISA::Arm32) return {0xff0fffffu, 0xfff79f9fu, 0};
