@@ -55,6 +55,11 @@ public:
     int Protect(std::uint64_t address, std::size_t length, int protection);
     std::uint64_t Brk(std::uint64_t requested);
     bool Contains(std::uint64_t address, std::size_t length, int protection) const noexcept;
+    // First byte in the range that is not covered by a region with the requested
+    // protection; returns address + length when the whole range is covered.
+    std::uint64_t FirstInaccessible(std::uint64_t address,
+                                    std::size_t length,
+                                    int protection) const noexcept;
     bool Accessible(std::uint64_t address, std::size_t length, int protection) const noexcept;
     bool PrivateAnonymous(std::uint64_t address, std::size_t length) const noexcept;
     bool CopyIn(void*, std::uint64_t address, std::size_t) const noexcept;

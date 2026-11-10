@@ -588,8 +588,11 @@ front::AccessResult VM::Read(void* opaque,
     if (!vm.memory.CopyIn(bytes.data(), address, bytes.size())) {
         if (errno && errno != EFAULT)
             vm.thread.bridge_failure.Set(ErrorKind::System, "read guest bytes", errno);
-        RecordMemoryFault(vm.thread.faults, address, GuestExceptionAccess::Read, bytes.size());
-        return {front::AccessStatus::Fault, address};
+        const auto fault_address = vm.memory.Contains(address, bytes.size(), PROT_READ)
+                                           ? address
+                                           : vm.memory.FirstInaccessible(address, bytes.size(), PROT_READ);
+        RecordMemoryFault(vm.thread.faults, fault_address, GuestExceptionAccess::Read, bytes.size());
+        return {front::AccessStatus::Fault, fault_address};
     }
     if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
     return {};
@@ -607,8 +610,11 @@ front::AccessResult VM::Write(void* opaque,
         if (!vm.GuestWrite(address, bytes.data(), bytes.size())) {
             if (errno && errno != EFAULT)
                 vm.thread.bridge_failure.Set(ErrorKind::System, "write guest bytes", errno);
-            RecordMemoryFault(vm.thread.faults, address, GuestExceptionAccess::Write, bytes.size());
-            return {front::AccessStatus::Fault, address};
+            const auto fault_address = vm.memory.Contains(address, bytes.size(), PROT_WRITE)
+                                               ? address
+                                               : vm.memory.FirstInaccessible(address, bytes.size(), PROT_WRITE);
+            RecordMemoryFault(vm.thread.faults, fault_address, GuestExceptionAccess::Write, bytes.size());
+            return {front::AccessStatus::Fault, fault_address};
         }
         if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
         return {front::AccessStatus::Completed, 0, changed};

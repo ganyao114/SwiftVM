@@ -127,6 +127,21 @@ bool GuestMemory::Contains(u64 address, std::size_t size, int protection) const 
     return size == 0;
 }
 
+std::uint64_t GuestMemory::FirstInaccessible(u64 address,
+                                             std::size_t size,
+                                             int protection) const noexcept {
+    if (!size || size > UINT64_MAX - address) return address;
+    const auto end = address + size;
+    for (const auto& region : regions) {
+        if (address >= end) break;
+        if (region.address + region.size <= address) continue;
+        if (region.address > address || (region.protection & protection) != protection)
+            return address;
+        address = std::min(end, region.address + region.size);
+    }
+    return address;
+}
+
 bool GuestMemory::Accessible(u64 address, std::size_t size, int protection) const noexcept {
     if (!Contains(address, size, protection)) return false;
     if (!size) return true;

@@ -45,6 +45,41 @@ struct Arena {
         return {{}, size};
     }
 
+    static bool ByteReadable(const Case& c,
+                             const std::vector<MemoryRegion>& memory,
+                             std::uint64_t address) {
+        for (const auto& region : memory)
+            if ((region.protection & 1) && address >= region.address &&
+                address - region.address < region.size)
+                return true;
+        return address >= c.code_address && address - c.code_address < c.code.size();
+    }
+
+    static bool ByteWritable(const std::vector<MemoryRegion>& memory, std::uint64_t address) {
+        for (const auto& region : memory)
+            if ((region.protection & 2) && address >= region.address &&
+                address - region.address < region.size)
+                return true;
+        return false;
+    }
+
+    static std::uint64_t FirstUnreadable(const Case& c,
+                                         const std::vector<MemoryRegion>& memory,
+                                         std::uint64_t address,
+                                         std::size_t size) {
+        for (std::size_t i = 0; i < size; ++i)
+            if (!ByteReadable(c, memory, address + i)) return address + i;
+        return address + size;
+    }
+
+    static std::uint64_t FirstUnwritable(const std::vector<MemoryRegion>& memory,
+                                         std::uint64_t address,
+                                         std::size_t size) {
+        for (std::size_t i = 0; i < size; ++i)
+            if (!ByteWritable(memory, address + i)) return address + i;
+        return address + size;
+    }
+
     static AccessResult Read(void* raw,
                              std::uint64_t address,
                              std::span<std::uint8_t> out,
@@ -52,19 +87,22 @@ struct Arena {
         auto& arena = *static_cast<Arena*>(raw);
         arena.access = "read";
         arena.width = out.size();
-        for (const auto& region : arena.memory)
-            if ((region.protection & 1) &&
-                Contains(region.address, region.size, address, out.size())) {
-                std::memcpy(out.data(), region.bytes.data() + (address - region.address), out.size());
-                return {};
-            }
-        if (Contains(arena.input.code_address, arena.input.code.size(), address, out.size())) {
-            std::memcpy(out.data(),
-                        arena.input.code.data() + (address - arena.input.code_address),
-                        out.size());
-            return {};
+        const auto& c = arena.input;
+        const auto missing = FirstUnreadable(c, arena.memory, address, out.size());
+        if (missing != address + out.size()) return {AccessStatus::Fault, missing};
+        for (std::size_t i = 0; i < out.size(); ++i) {
+            const auto byte_address = address + i;
+            bool found{};
+            for (const auto& region : arena.memory)
+                if ((region.protection & 1) && byte_address >= region.address &&
+                    byte_address - region.address < region.size) {
+                    out[i] = region.bytes[byte_address - region.address];
+                    found = true;
+                    break;
+                }
+            if (!found) out[i] = c.code[byte_address - c.code_address];
         }
-        return {AccessStatus::Fault, address};
+        return {};
     }
 
     static AccessResult Write(void* raw,
@@ -74,13 +112,18 @@ struct Arena {
         auto& arena = *static_cast<Arena*>(raw);
         arena.access = "write";
         arena.width = in.size();
-        for (auto& region : arena.memory)
-            if ((region.protection & 2) &&
-                Contains(region.address, region.size, address, in.size())) {
-                std::memcpy(region.bytes.data() + (address - region.address), in.data(), in.size());
-                return {};
-            }
-        return {AccessStatus::Fault, address};
+        const auto missing = FirstUnwritable(arena.memory, address, in.size());
+        if (missing != address + in.size()) return {AccessStatus::Fault, missing};
+        for (std::size_t i = 0; i < in.size(); ++i) {
+            const auto byte_address = address + i;
+            for (auto& region : arena.memory)
+                if ((region.protection & 2) && byte_address >= region.address &&
+                    byte_address - region.address < region.size) {
+                    region.bytes[byte_address - region.address] = in[i];
+                    break;
+                }
+        }
+        return {};
     }
 };
 
