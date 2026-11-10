@@ -9,7 +9,7 @@
 - `tools/correctness/`：local/ADB/system-QEMU controller 与 Unicorn oracle 入口。
 - runtime 只增加 `SVM_TEST_BOUNDARY` 测试边界，生产默认路径不变。
 
-已验证：`svm_correctness selftest` 560 例通过；RV64 汇编器满缓冲回跳断言已修复，最小 5 字节输入可重放，新增 2 个边界回归；host fuzz 累计约 1.27 亿次执行（decode 约 1.19 亿次，structured/raw pipeline 约 436 万次，`SVM_FUZZ_FORM` 两轮 536 万次）无崩溃。逐 form 验证：35 个 form 各 8 例的 Direct 执行与 4 后端 × Block/Function × Known/EarlyOff/Unknown × opt 共 13,440 次编译全部成功。语义差分：host Direct 对结构化 280 例为 272 verified + 8 gaps（均为 x86 SSE sticky flag 能力缺口）；红魔 ARM64 JIT 在记账前为 280/280 verified。从 pinned fuzz 语料抽样的 280 例在 host 和红魔上均为 278 verified + 2 gaps、零失败；gap 对应跨边界 store 的 partial commit/fault 粒度与 x86 SSE flag 能力缺口。独立 oracle 的 C++ 适配、逐 form 覆盖统计、QEMU 后端矩阵尚未完成。
+已验证：`svm_correctness selftest` 560 例通过；RV64 汇编器满缓冲回跳断言已修复，最小 5 字节输入可重放，新增 2 个边界回归；host fuzz 累计约 1.27 亿次执行（decode 约 1.19 亿次，structured/raw pipeline 约 436 万次，`SVM_FUZZ_FORM` 两轮 536 万次）无崩溃。逐 form 验证：35 个 form 各 8 例的 Direct 执行与 4 后端 × Block/Function × Known/EarlyOff/Unknown × opt 共 13,440 次编译全部成功。语义差分：host Direct 对结构化 280 例为 272 verified + 8 gaps（均为 x86 SSE sticky flag 能力缺口）；红魔 ARM64 JIT 在记账前为 280/280 verified。从 pinned fuzz 语料抽样的 280 例，在 host Direct、红魔 ARM64 JIT、QEMU system x64/RV64/LA64 六条执行路径上均为 270 verified + 10 gaps、零失败；QEMU 三架构 `native_executed=280/280`、block scope、`interpreted_steps=0`。10 个 gap = 8 个 x86 SSE sticky flag 用例 + 2 个跨边界 store（partial commit/fault 粒度）。独立 oracle 的 C++ 适配、逐 form 覆盖统计、真实 x86 FP flag 复核尚未完成。
 
 ## 1. 目标与边界
 
@@ -556,6 +556,8 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 
 - ARM64 native：用户连接的红魔 `bf1359ff`，通过 ADB 运行批次。正确性测试不需要 PMU，不改频率或系统调度；只在自有任务目录部署/回收。
 - x64/RV64/LA64：复用已有 Linux system-QEMU 内核和固定构建缓存，实际执行对应后端机器码。TCG 结果属于功能验证，不是对应真机性能或全部硬件行为的证明。
+
+2026-11-09 的跨后端实测：在 OrbStack Ubuntu 中用 `x86_64-linux-gnu-gcc`、`riscv64-linux-gnu-gcc` 和 loongarch64 cross-tools 重建 `submit-{x64,riscv64,loongarch64}/svm_correctness`，再用 QEMU system（真实 Linux kernel、2 vCPU、TCG；x64 q35/max、RV64 virt、LA64 virt+EFI）和自定义 initramfs 执行 pinned fuzz 抽样 280 例。三架构均为 270 agreement + 10 gaps、零失败，`native_executed=280/280`、block scope、`interpreted_steps=0`；证据在 `/Volumes/Data2/swiftvm-correctness-results/qemu-cross-20261109/`。RV64/LA64 的 unaligned byte fallback 曾把 fault width 记为 1，已改为逻辑访问宽度。
 - macOS host：portable decode/build/Direct、codec/比较自测和 sanitizer fuzz。当前裸 native support 是 Linux/Android，不将 macOS compile-only 统计成 native 通过。
 - 大 scratch 统一放 Data2，例如 `/Volumes/Data2/swiftvm-correctness-results`；构建复用 `/Volumes/Data2/swiftvm-middle-build-cache` 下独立测试子目录，不再把大结果写系统 `/tmp`。
 - 默认总 scratch 配额可先设 8 GiB、单 worker 临时配额 512 MiB，结合实际剩余空间下调；固定系统镜像/构建缓存独立计量。达到阈值停止 campaign 并报告，不删除未归档失败。
