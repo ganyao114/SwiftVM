@@ -561,7 +561,7 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 
 ### 15.3 前端 pattern inventory（2026-11-09，进行中）
 
-- ARM32：从 `decode/generated_tables.inc` 生成 788 个 pattern（759 个 opcode；Arm 261、Thumb16 79、Thumb32 239、VFP 62、NEON 147）的 synthetic case，4 个后端各 788/788 编译通过。Direct 执行矩阵：362 terminal、244 budget（控制流 one-step）、11 service（exclusive state service）、14 memory fault、90 illegal；illegal 主要是 UDF/特权/非特权传输、exclusive/acquire 的 state-service，以及 canonical 操作数不满足 NEON/VFP 约束的形式，需按合同分类而不是算作已通过。与 Unicorn 的 613 个可执行 case 差分正在运行；前 100+ 例已确认算术/访存类通过，分支/exclusive/hint 需要独立合同。
+- ARM32：从 `decode/generated_tables.inc` 生成 788 个 pattern（759 个 opcode；Arm 261、Thumb16 79、Thumb32 239、VFP 62、NEON 147）的 synthetic case，4 个后端各 788/788 编译通过。Direct 执行矩阵：362 terminal、244 budget（控制流 one-step）、11 service（exclusive state service）、14 memory fault、90 illegal；illegal 主要是 UDF、非特权 LDRT/LDRBT/LDRHT/LDRSHT、exclusive/acquire/SWP 的 state-service、以及 canonical 操作数不满足 NEON/VFP 约束的形式。613 个可执行 case 与 Unicorn 差分：540 verified + 73 gaps（60 控制流 one-step、5 exclusive/acquire state service、6 oracle unsupported、2 VRECPS/VRSQRTS FPSCR estimate flags），0 个未归因语义失败。报告见 `/Volumes/Data2/swiftvm-correctness-results/arm32-inventory-20261109/coverage-report.json`。
 - ARM64/x86：83 个 VIXL family、544 个 Op；下一步从 decode corpus/family 提取代表编码，跑同样的编译+执行矩阵。
 - macOS host：portable decode/build/Direct、codec/比较自测和 sanitizer fuzz。当前裸 native support 是 Linux/Android，不将 macOS compile-only 统计成 native 通过。
 - 大 scratch 统一放 Data2，例如 `/Volumes/Data2/swiftvm-correctness-results`；构建复用 `/Volumes/Data2/swiftvm-middle-build-cache` 下独立测试子目录，不再把大结果写系统 `/tmp`。
