@@ -208,10 +208,16 @@ int main(int argc, char** argv) {
     memcpy(trampoline + 6, &resume, 8);
     memcpy((void*)(uintptr_t)terminal_pc, trampoline, sizeof trampoline);
 
+    static char alternate_stack[64 * 1024];
+    stack_t altstack;
+    memset(&altstack, 0, sizeof altstack);
+    altstack.ss_sp = alternate_stack;
+    altstack.ss_size = sizeof alternate_stack;
+    sigaltstack(&altstack, NULL);
     struct sigaction action;
     memset(&action, 0, sizeof action);
     action.sa_sigaction = OnFault;
-    action.sa_flags = SA_SIGINFO;
+    action.sa_flags = SA_SIGINFO | SA_ONSTACK;
     sigaction(SIGSEGV, &action, NULL);
     sigaction(SIGBUS, &action, NULL);
 

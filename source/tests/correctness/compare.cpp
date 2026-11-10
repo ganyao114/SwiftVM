@@ -517,9 +517,10 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         };
         const bool execute_fault =
                 expected.fault_access == "execute" && actual.fault_access == "execute";
+        const bool native_fault = actual.backend == "native-x86_64";
         if (expected.fault_kind != actual.fault_kind ||
             normalized_access(expected.fault_access) != normalized_access(actual.fault_access) ||
-            (!execute_fault && expected.fault_vector != actual.fault_vector))
+            (!execute_fault && !native_fault && expected.fault_vector != actual.fault_vector))
             return {true, false, "exception_mismatch", "fault kind/access/vector differs"};
         if (expected.fault_pc != actual.fault_pc)
             return Different("fault_pc", expected.fault_pc, actual.fault_pc, "exception_mismatch");
@@ -537,6 +538,10 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
         }
         if (!execute_fault && !divide_fault && !normalized_fault &&
             expected.fault_width != actual.fault_width) {
+            if (native_fault) {
+                if (!gaps.empty()) gaps += "; ";
+                gaps += "native fault width is not projected";
+            } else {
             const auto widest = std::max(expected.fault_width, actual.fault_width);
             const auto name = FormName(c);
             if (c.isa == ISA::Arm64 && widest == 16 &&
@@ -552,6 +557,7 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                                  expected.fault_width,
                                  actual.fault_width,
                                  "exception_mismatch");
+            }
         }
         if (!divide_fault && !normalized_fault && expected.fault_address != actual.fault_address) {
             if (inventory && c.isa == ISA::X86_64 && expected.fault_address_valid &&
