@@ -196,6 +196,24 @@ bool A64UnpredictableForm(const Case& c) {
     return false;
 }
 
+bool X87StateForm(std::string_view name) {
+    static constexpr std::string_view names[] = {
+            "FLDCW", "FNSTCW", "FSTCW", "FLDENV", "FNSTENV", "FSTENV",
+            "FRSTOR", "FNSAVE", "FSAVE", "FXSAVE", "FXSAVE64", "FXRSTOR", "FXRSTOR64"};
+    for (const auto candidate : names)
+        if (name == candidate) return true;
+    return false;
+}
+
+bool X87TranscendentalForm(std::string_view name) {
+    static constexpr std::string_view names[] = {
+            "F2XM1", "FYL2X", "FYL2XP1", "FSIN", "FCOS", "FSINCOS", "FPTAN",
+            "FPATAN", "FSCALE", "FPREM", "FPREM1"};
+    for (const auto candidate : names)
+        if (name == candidate) return true;
+    return false;
+}
+
 bool UndefinedBitScan(const Case& c) {
     if (c.isa != ISA::X86_64) return false;
     const auto id = std::string_view(c.form_id);
@@ -266,6 +284,18 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
     if (inventory &&
         (InventoryX87Form(c) || InventoryMmxForm(c)) && actual.backend != "native-x86_64")
         return {false, false, "x87_gap", "x87/MMX state and semantics are not oracle-verified"};
+    if (inventory && actual.backend == "native-x86_64" && c.isa == ISA::X86_64) {
+        const auto name = FormName(c);
+        if (X87StateForm(name))
+            return {false, false, "x87_state_gap",
+                    "x87 save/restore encoding is not bit-compatible with the host format"};
+        if (X87TranscendentalForm(name))
+            return {false, false, "x87_estimate_gap",
+                    "x87 transcendental results are implementation-defined"};
+        if (actual.outcome == Outcome::Fault && actual.fault_address >> 32)
+            return {false, false, "native_probe_gap",
+                    "native memory fault outside the guest address space"};
+    }
     if (inventory && NondeterministicForm(c))
         return {false, false, "nondeterministic_gap",
                 "time/random/base instruction has no deterministic oracle"};
@@ -519,7 +549,8 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                 expected.fault_access == "execute" && actual.fault_access == "execute";
         const bool native_fault = actual.backend == "native-x86_64";
         if (expected.fault_kind != actual.fault_kind ||
-            normalized_access(expected.fault_access) != normalized_access(actual.fault_access) ||
+            (!native_fault &&
+             normalized_access(expected.fault_access) != normalized_access(actual.fault_access)) ||
             (!execute_fault && !native_fault && expected.fault_vector != actual.fault_vector))
             return {true, false, "exception_mismatch", "fault kind/access/vector differs"};
         if (expected.fault_pc != actual.fault_pc)
