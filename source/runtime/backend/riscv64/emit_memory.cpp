@@ -54,6 +54,9 @@ void Writer::Memory(OpContext& ctx) {
     const auto value = store ? *at : CellView{};
     const unsigned bits = std::max(8u, store ? TypeBits(View(value)) : ctx.width);
     if (bits > 128) Reject(CompileError::UnsupportedType);
+    // The unaligned byte fallback still reports the logical access width so
+    // the fault contract matches the aligned path and the other backends.
+    const unsigned access_bytes = std::min(bits, 64u) / 8;
     if (store) {
         ReadPair(value, a1, a2);
         Mask(a1, std::min(bits, 64u));
@@ -96,11 +99,11 @@ void Writer::Memory(OpContext& ctx) {
                 if (byte % 8) as.SRLI(source, source, 8);
                 const auto first = static_cast<u32>(output.words.size() * 4);
                 as.SB(source, byte, a0);
-                RecordGuestAccess(first, store ? 2 : 1, 1);
+                RecordGuestAccess(first, store ? 2 : 1, access_bytes);
             } else {
                 const auto first = static_cast<u32>(output.words.size() * 4);
                 as.LBU(t0, byte, a0);
-                RecordGuestAccess(first, store ? 2 : 1, 1);
+                RecordGuestAccess(first, store ? 2 : 1, access_bytes);
                 if (byte % 8) as.SLLI(t0, t0, (byte % 8) * 8);
                 const auto destination = byte < 8 ? ctx.destination : ctx.high;
                 as.OR(destination, destination, t0);
