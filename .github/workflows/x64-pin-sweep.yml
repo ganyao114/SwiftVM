@@ -38,6 +38,7 @@ jobs:
           cc -static -no-pie -O2 tools/programs/src/bench_fp.c -o guests/x86/bench_fp
       - name: Sweep pinned guest registers
         run: |
+          set +e
           set -u
           for guest in a64 x86; do
             for program in hello syscalls compute fp tiny bench_int bench_fp; do
