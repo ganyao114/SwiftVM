@@ -603,6 +603,14 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 - 全量 2033 复跑（修复前）除 8 个 FP 家族高半部用例外与 15.4 的分类计数一致；修复后这 8 例定向重跑 **8/8 verified**，另 160 例定向 FP corpus **160/160 verified**。
 - 真机程序 CI：新增 `.github/workflows/program-suite.yml`，在 `ubuntu-latest` 上构建 runner/AOT 工具与静态 guest 程序，执行 native vs JIT vs 有界 AOT 对比（`pipefail` 传播失败）并上传 `summary.json`。证据：`/Volumes/Data2/swiftvm-program-tests-20261111/`、`/Volumes/Data2/swiftvm-correctness-results/a64-fp-passthrough-20261111/`。
 
+### 15.6 x64 寄存器 pin 与真实程序稳定性（2026-11-11）
+
+- x64 后端新增**可选的 linked guest-register pin**：unit 可把 guest 前两个 GPR slot 固定在 r13/r14；入口 stub 装载、unit→unit 派发保持寄存器、冷解析路径与 helper 调用前发布/后重载、退出与故障恢复经 ucontext 回写；allocator 预留这两个宿主寄存器。CLI `--pin-slots 0|2`（默认 0），有效 pin 数进入 code image key，缓存/AOT 不兼容时自动失配。
+- ARM64→x64 路径的 pin A/B（OrbStack x86_64，A64 guest）：整数循环 1.635s → 1.493s（**-9%**）、FP 循环 15.98s → 18.73s（**+17%**），原因是 FP helper 调用每次都要发布/重载 pin；4-slot 版本在 A64 高寄存器压力程序（compute 的 SHA）上出现错误且更慢，已限制为 0/2。结论：**2 pin 是当前甜点，但只对整数型负载有益；FP 型负载需要按需发布（仅 pin 被写过时）后再评估**。真机 x86 CI sweep（`x64-pin-sweep.yml`）用于复核该结论。
+- 真实程序稳定性（x86-64 guest → ARM64 JIT，红魔）：静态 busybox v1.36.1 的 16 个命令用例（sha256sum/md5sum/wc/sort/uniq/base64/tar/gzip/awk/seq/expr/cmp/cksum/grep/错误路径/空返回）+ 9 个文件系统用例（cp/cmp/find/ln/readlink/stat/rm/缺失文件），**3 轮重复全部与原生一致**；另有 hello/syscalls/compute/fp/tiny/bench_int/bench_fp 程序套件 native/JIT/AOT 7/7 PASS。
+- 该过程中发现并修复真实 syscall 缺口：`fcntl` 仅放行 F_GETFD..F_SETFL（gzip 的 F_DUPFD_CLOEXEC 返回 ENOSYS）、缺少 `dup/dup2/dup3`、`unlink/unlinkat`、`symlink/symlinkat`、`getdents64`（find 无输出），并补充 AArch64 guest 号映射；修复后 busybox 套件从 15/16 与 4/9 提升到全部通过。
+- 遗留：静态 glibc 的 `hello-arm32` 在 ARM64 路径上 guest SIGSEGV（pc=0x1a3dc），freestanding ARM32 程序正常——ARM32 真实程序路径仍有缺陷，单指令矩阵未覆盖到该场景，列为下一项。
+
 ## 16. 实施顺序与阶段验收
 
 不先铺满所有 oracle 和 runtime 场景；先证明一个完整输入确实能在独立参考与四后端之间正确重放。复现与缩减从第一阶段就存在。
