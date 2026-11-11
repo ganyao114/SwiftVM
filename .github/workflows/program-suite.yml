@@ -1,0 +1,43 @@
+name: program-suite
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'source/**'
+      - 'tools/programs/**'
+      - 'CMakeLists.txt'
+      - '.github/workflows/program-suite.yml'
+
+jobs:
+  programs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure the rebuilt runtime
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSVM_BUILD_CORRECTNESS=OFF \
+            -DSVM_BUILD_FUZZERS=OFF \
+            -DSVM_BUILD_IR_BENCHMARK=OFF \
+            -DSVM_BUILD_IR_FORMAT=OFF
+      - name: Build the runner and the AOT tool
+        run: ninja -C build svm_rebuild_linux svm_aot
+      - name: Build the static guest programs
+        run: ./tools/programs/build.sh tools/programs/bin
+      - name: Compare native, JIT and bounded-AOT execution
+        run: |
+          python3 tools/programs/run_programs.py \
+            --runner build/svm_rebuild_linux \
+            --aot build/svm_aot \
+            --out program-out \
+            | tee program-summary.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: program-suite
+          path: |
+            program-out/summary.json
+            program-summary.txt
+          if-no-files-found: error
