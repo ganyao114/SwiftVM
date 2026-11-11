@@ -611,8 +611,16 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
             return {true, false, "exception_mismatch", "fault kind/access/vector differs"};
         if (expected.fault_pc != actual.fault_pc)
             return Different("fault_pc", expected.fault_pc, actual.fault_pc, "exception_mismatch");
-        if (expected.fault_address_valid != actual.fault_address_valid)
-            return {true, false, "exception_mismatch", "fault address availability differs"};
+        // #GP(0) has no architectural fault address; host signal probes may
+        // still report the operand address for an alignment fault.
+        const bool alignment_gp = native_reference &&
+                (expected.fault_kind == "alignment" || actual.fault_kind == "alignment");
+        if (expected.fault_address_valid != actual.fault_address_valid) {
+            if (!alignment_gp)
+                return {true, false, "exception_mismatch", "fault address availability differs"};
+            if (!gaps.empty()) gaps += "; ";
+            gaps += "#GP has no architectural fault address";
+        }
         const bool divide_fault =
                 expected.fault_kind == "divide" && actual.fault_kind == "divide";
         const bool normalized_fault =
@@ -646,7 +654,9 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                                  "exception_mismatch");
             }
         }
-        if (!divide_fault && !normalized_fault && expected.fault_address != actual.fault_address) {
+        if (!divide_fault && !normalized_fault &&
+            !(alignment_gp && (!expected.fault_address_valid || !actual.fault_address_valid)) &&
+            expected.fault_address != actual.fault_address) {
             if (inventory && c.isa == ISA::X86_64 && expected.fault_address_valid &&
                 actual.fault_address_valid &&
                 (expected.fault_address & 0xffffffffu) ==

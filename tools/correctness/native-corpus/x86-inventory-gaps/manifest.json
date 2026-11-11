@@ -1,0 +1,1722 @@
+[
+ {
+  "case": "00010.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDPD/10",
+  "sha256": "b8900d910206b4bc89061472ef3f59e05c83974c3a1fa02f608248ae1a11610d",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00011.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDPD/11",
+  "sha256": "7cdf55804ab7c89cfb11d75cc44eb9e1fab5febb8d53ae971809d87db0f1e03b",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00012.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDPS/12",
+  "sha256": "b3df4cf3d7da2de242d3a9dc97bc596ec5cfc4e4a0f2f2a71a6a32930b5fbf0d",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00013.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDPS/13",
+  "sha256": "df79cf47dfb8ed9c700202e1d2d0274e658d489e637fdbcda6b014be327e25ee",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00015.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDPS/15",
+  "sha256": "2a1d6f2a1a9ffc6332d6bb05bfa405eccddf48b8f88b1e42f09220271364072c",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00021.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDSUBPD/21",
+  "sha256": "e950d52debd7e92bde2e27ad8dee19c169f01eb58bd7a38c84b7b17b75124d49",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00022.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDSUBPD/22",
+  "sha256": "0b6f61d166baeaa49aaf248a6670246da9307eca7ba047bb32af57f61c1bea5f",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00023.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDSUBPD/23",
+  "sha256": "351844ba1d33cfd52437505aeeec1ea12b9a2d020358a4c3c576940773872311",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00024.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ADDSUBPD/24",
+  "sha256": "1a0862262239856f9ea43b2fcb37431ec499447f71527b5f8d584b1912550f84",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00030.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/AESDEC/30",
+  "sha256": "c7b3dd0c05951740450e8b8d7b5bc9ad7ec4b5bf6955f09dfe3dc84a2d160912",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00040.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ANDNPD/40",
+  "sha256": "89f45718dda42eb5369f3fcd6e866cf0fcb4a61551af7eb09508a5cb17f78ddd",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00042.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ANDNPD/42",
+  "sha256": "37053a03595690a30e5a92d93cd94dd33cba79d836ddac472f3cb6c449ea967b",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00043.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ANDNPD/43",
+  "sha256": "aad1c7c244a1d7cf16b5a1db070aa88ee1cc7f03477567e3e28c0f385e508f2b",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00044.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ANDNPS/44",
+  "sha256": "fafc42a56b61908ac98cd88ba5d0ad0a7ca446b2c71ff6ac4d68e79e9fb5e948",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00048.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ANDPS/48",
+  "sha256": "cc00f241b3ff360366f0eceadf48628b56047793a7820283ffb002f722ee4a7f",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00049.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ANDPS/49",
+  "sha256": "b4ebe786463ba6007f277f6cff2287bb830ac4e3bffe5caa85ea23c85a51b52d",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00056.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/BLSI/56",
+  "sha256": "c54f30e1d81de910ea4e4bcbcde37f311226bdc56135658c1a7a6fbe1be5eaf3",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "00076.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/BTC/76",
+  "sha256": "e3ec3d1e02750d2a6dcf08ecb983f52aac80b82e83e8eba6dfa000cb881bc037",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "00161.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CMPEQPD/161",
+  "sha256": "d54a0f4a1744e955917e4a5169045fc2629b575113a6a299f92fc8510abd1570",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00163.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CMPEQPS/163",
+  "sha256": "00844b7dbdd7374fee92d6ebaebd01b9bf17c169256198f63f330ee7ae794fd5",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00166.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CMPLEPD/166",
+  "sha256": "3cb056fe115b0f1717c72169202a802090d22528db9b855c5cb51ede0e16e556",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00172.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CMPLTPS/172",
+  "sha256": "8e07d032c52adc8b15d2b474fd26dc6c759f9f892d3fd825a1a1c3ea15288c73",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00185.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CMPNLTPD/185",
+  "sha256": "1e35d6f35e1baeb021305121bb10877902d3c874b5237be5e878b187f85fdc79",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00197.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CMPUNORDPD/197",
+  "sha256": "39e9b6f95caf488ce4e6cdb731cb76eee51fb49735df4f4ddc0ff61c7e77e2ce",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00198.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CMPUNORDPS/198",
+  "sha256": "6b695d9fb1b69051cdaace1fce5c70391aa7a6067563dbe0a72db77f1dba24a4",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00222.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CVTDQ2PS/222",
+  "sha256": "b11807d14e79c005da2e09336737aa671109fd98caeb8b4b30a8bed7ce1f1d76",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00226.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CVTPD2DQ/226",
+  "sha256": "2994fcd44a69840700bbfe1b9f4b81155046ca497cd3b77b7d8b2f29b0871762",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00229.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CVTPD2PS/229",
+  "sha256": "e9761d2c20e86430dc45e9e906319a5a16fe6e195b7cbf5c54984cc433121a98",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00231.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CVTPD2PS/231",
+  "sha256": "87f0a6e7287ac0778c729e74b564845146b918c1bd66c9c9abd39b9bd5b0c88a",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00240.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CVTPS2DQ/240",
+  "sha256": "6c25fe4bc512d70c5ffabc0d6118292022a01c8cd71e032b4c9cf6806e8ca86c",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00241.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CVTPS2DQ/241",
+  "sha256": "f842643f8a32ef21b054d7abd733a384d902e3c43d6018f9df7f49e619bb4f3a",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00243.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CVTPS2DQ/243",
+  "sha256": "ee08ab50488149333d3352a9a9e1f0bf6b978e3f4def2dcd14cac74c8eb86389",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00269.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/CVTTPD2DQ/269",
+  "sha256": "036e930e57e8948754e7cd4ca79a21f13cf84dc95d09ce863689ae3aef399ec3",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00303.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/DIVPS/303",
+  "sha256": "68b1671e9a6f99ecefad0db4914e9a028ed34d2da4fe35fa4c80342991b26005",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00530.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/HADDPD/530",
+  "sha256": "69890f44cd0e28d1fc5ff1ebd88eac2fcc44ad831e0132b59ff2e1699a1aa9bb",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00531.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/HADDPD/531",
+  "sha256": "66e7426e3b401a086c4280f22aa2305ce6f963ff33931e6baa355185cfabaf9f",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00532.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/HADDPD/532",
+  "sha256": "8a22bb1bb6d77ddbb2642f3112fad1f5c294934ebab4b7d7c9025a0713ba17dc",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00535.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/HSUBPD/535",
+  "sha256": "edd6ed5f5615c8e18143f29cdfed73e6a3bc0c980328636c2fe19d2a6bedac1a",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00536.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/HSUBPS/536",
+  "sha256": "f8a6c9190430dd45079d7bc67b8561b1ed367228443a3ec197d8665ce0b664ac",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00537.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/HSUBPS/537",
+  "sha256": "ad8f0428672be438689eca6d5a6fa9bb8fdacbef42a6b08b44897049c2027e84",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00628.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/LAHF/628",
+  "sha256": "4e1ddc32e65dfbdc042cd7afd7cab931dc799697eff34d887b8485ab9acc7a4a",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "00629.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/LAHF/629",
+  "sha256": "a4a3400b02eb0eab3bfa9b7cfde9cb316097bba6d23135a653500f3f0a3315c3",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "00630.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/LAHF/630",
+  "sha256": "5be3b5bbd0491267b25c134d89dbcaac384158443a7037c5633308721a5c95f6",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "00660.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/LOOPNZ/660",
+  "sha256": "1fcae61525b84eed940d4027e6c66ee90ca837e84cd0bde21ad1305bf2ff4600",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "00677.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MAXPS/677",
+  "sha256": "6ff385cf03628693fb843be7df8c6e0146c15ddcad08dfe16671b800c9287e6d",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00678.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MAXPS/678",
+  "sha256": "47988a3dde0ae951f1a1bd6de874fba89a7ea9e77bf980f0b5f33563fb6b472f",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00679.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MAXPS/679",
+  "sha256": "b357f3a5280c6b3c2747b42bec840023ba333bae410b9d7513b1745a91c5b21c",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00680.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MAXPS/680",
+  "sha256": "2177cee2b00fa89f725680f99cc934531ebed4c227519ab0b88e1c634ea9034d",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00687.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MINPD/687",
+  "sha256": "030a10aef6e115b5645a10af0683a4016d3fd85c46c18ba311ddbae7cb57d817",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00705.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVAPS/705",
+  "sha256": "53aa9db78c5e557ac9cf705813a378a1da86dc4c70606d137766545648f0cd26",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00706.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVAPS/706",
+  "sha256": "7f2c2c6a46e1a50d4a345a8e1a9e765a636a9e63a4e3e4060fa86296e2fad2e8",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00707.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVAPS/707",
+  "sha256": "717e20df0fd5a85656b437b9ee0f3568e5956f33246f92dc85eb73b360aa2456",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00708.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVAPS/708",
+  "sha256": "73c69d4f1f6db9684a4ed042225019b69df2e33fa2d955fbe5fc0095f067a0bc",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00740.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVNTDQ/740",
+  "sha256": "6f2c6ed3f3b8c48622c261d582314eea8cc771c6b1c9865811a92e86d30e5eca",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00745.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVNTPD/745",
+  "sha256": "743c277a2d528c32d62ea0cdd4362d44e78fa8e64419333f405f7578a235bd13",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00746.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVNTPD/746",
+  "sha256": "6278bd3ffb16bad3d0abd55b87df33474e4f5e5993e5d6a92bc754052690374f",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00748.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVNTPS/748",
+  "sha256": "3d3ee13c1307ef348c780d1bf1cece96fc7a6b7f924fba607b2ab89bf6503251",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00749.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVNTPS/749",
+  "sha256": "2a7e4b0b7755348b916c717d1a7e59395f3dc632d2a23a43d681f11bb24acd76",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00764.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVSLDUP/764",
+  "sha256": "c7f618e018a144214a7f46d021b6931a7d97e2039fbf4422e593881c4c8f8c1e",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00765.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MOVSLDUP/765",
+  "sha256": "90223f08a8c1ea913a6c082dcba578f217b35a22370694545a8bab517f9b5c92",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00793.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MULPD/793",
+  "sha256": "62c1690c986ded0fdb5b541198c38083300b3552770f49fc23b00a0ec3dc7710",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00798.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MULPS/798",
+  "sha256": "ba7d6da5316d669b7ffa1521cf1f069fb5cbe5fa2eb6cec320c2e6c786b05c64",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00799.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/MULPS/799",
+  "sha256": "c5f7eda3916a350e956b434d949084ba79e5c9698d24670a8adc3f0505c17840",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00807.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/NEG/807",
+  "sha256": "bfba9a5674f31a245fcd182f464d950917a3051b2ad6eec13485a074d590a4b3",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "00820.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ORPD/820",
+  "sha256": "83fe20d2c990039d141a26d1642260692cbcfc32d62b338a7a2c2f1b78d96cf3",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00821.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/ORPS/821",
+  "sha256": "83c7abea20d153fe7cba9ef8a6edb8c19c345dae23a12228e7a64388bc7a2c49",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00828.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PACKSSDW/828",
+  "sha256": "dde8498d87d4740ba6d800c51ef857547410e98ea81d10eebc9f9de9530fc970",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00829.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PACKSSDW/829",
+  "sha256": "2dea3a948f49f51bfda7eaff9a50564493cb749c63b6a37cf235312d21c4e390",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00856.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PADDUSB/856",
+  "sha256": "f5113e4aec5610313ffb7ec5813cfa5b4de85a7aef5404d2823e5adf1976d327",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00873.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PANDN/873",
+  "sha256": "d2e2e807f81384812bfa79e463ddb2effa8368956a0bb5d1ee9ed80894c7072c",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00882.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PAVGW/882",
+  "sha256": "d1e11b20f71b289019ab8e224fa4fa7b03c46da427f6fbfee585b82fc2b7412e",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00895.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PCMPEQW/895",
+  "sha256": "b0053e850be570dbe7b13a0e08edaa73a70b9abce7969fd3844b0f07451e29b5",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00906.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PCMPGTB/906",
+  "sha256": "0709324f106bde0446ee04022f59ad41ce7f6b81324197ef4384788638d88807",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00907.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PCMPGTB/907",
+  "sha256": "4235063b3f18b0e18fc516790ccef58e0ac4d229c4d8954946fa6fc36db4759b",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00912.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PCMPGTQ/912",
+  "sha256": "165fda998ef10a7d9218bf796cfcc076882b9c7833aa07337cba3d89af8d973b",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00915.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PCMPGTW/915",
+  "sha256": "66f724772460ff3370c84e1b4155028a2dddbb475cc3a7fe101decdc65746f7d",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00954.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PMAXUD/954",
+  "sha256": "d8ef42e5946bf1e29f5ee47463f54fa9da7f2af0d6ef4d2b2908c62080ead8e9",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00955.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PMAXUW/955",
+  "sha256": "af9b7735499a984228dec8fa57bacb1feb8737b0982b6fa2e02d3b68e435f31a",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "00994.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PMULLW/994",
+  "sha256": "2a33d225adcc346d1ca23d3f990fd92f22fe89d808afcd588dfb9622a8b414df",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01005.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/POPF/1005",
+  "sha256": "e1d1ea8010425107d0881b700c1a5275545618d7b0b492bcff0db5f2fcf2156a",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01006.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/POPF/1006",
+  "sha256": "c4ffa5f37b7113de56287259327ea5f30965ccfc830f3814912a22b7b611d268",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01007.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/POPF/1007",
+  "sha256": "7ca9f511d58af2e10b36c0dcdfcc25be4c2f025ec7f93637c6e69eca3eeffa05",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01010.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/POR/1010",
+  "sha256": "b280c60511f5fdd7bdb9b5a447ca11b76e91d163de9fb07bcedc97ecee6c51bf",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01028.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PSHUFHW/1028",
+  "sha256": "f7beebe54d6a57518f600f74a082cd236fe4b63a0ca6a21612228f6cd70bb8bb",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01046.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PSLLQ/1046",
+  "sha256": "c9a4167e3fd64aba63958b9d6e60f4cea3e432ca705506b752b183f4569395b3",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01067.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PSRLQ/1067",
+  "sha256": "4c6637fbef1435c36eb43309f070107293a023d82669fd4491cf2cf59c10d796",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01079.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PSUBD/1079",
+  "sha256": "0c9e030b1f7a13e80f74a7e13444b5687d69ccd409a0f1c9ee6cd0990798d51b",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01091.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PSUBSW/1091",
+  "sha256": "603eb4f4f8b70ff47b0074527d1e73c9f11abb51c0d3ff23c27d596fdaaec2d8",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01102.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PTEST/1102",
+  "sha256": "80f58fbda22728944c91e94b36da1db22a7209245fca7546272bb680ea149465",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01114.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PUNPCKHWD/1114",
+  "sha256": "7bede3049d74fc8d8542c6631a67af7ba376f11c80020d6b41bf6c88fb3cc473",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01123.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PUNPCKLQDQ/1123",
+  "sha256": "41c7c1c88e72a5c6472373b99fdfea4ed0e426102eff6b7cfc898b9ac67f0475",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01124.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PUNPCKLQDQ/1124",
+  "sha256": "a5a8efbbfd866ceb993b2676617e675b44c61724317ce4649afd08e3b978e337",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01125.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PUNPCKLQDQ/1125",
+  "sha256": "14561cd67bad552f285089334b42e1065b2faf2b7d5b40e80a702edf80ecd703",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01134.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PXOR/1134",
+  "sha256": "25b68f960aa4d0ed70b89744589d3bde689c93bd9e1f9f9b1be88038b512e033",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01135.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/PXOR/1135",
+  "sha256": "df7991d57fa76869fae97ea7ae5ed93e61baf2461c33515532e6c731690f5e07",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01177.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SAHF/1177",
+  "sha256": "4ac49d44775edd161bf5ffa9696dec1f5b098c8c52c0c20d7c16f1954647ff70",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01178.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SAHF/1178",
+  "sha256": "244c538900d66f4bdafd6b234302729bf81d2eac3621178ae3926d1c85817e91",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01262.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SHUFPD/1262",
+  "sha256": "ff48c3bdaad120314126ddf1179519189ab1c7366b5e8c22dcf0c8f74dce633a",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01263.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SHUFPD/1263",
+  "sha256": "89669adc4de8dedf17cc3f2d4bddd076d7def80744b91297326bd99236e3c997",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01264.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SHUFPD/1264",
+  "sha256": "f3e373d91fdd7624cf6792b105969343d202c22b051fb47755cc82ed8836af93",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01265.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SHUFPD/1265",
+  "sha256": "7c8a962e67b9ae98c550af146a78abf0969877f3e3b23bff91c18268ddde7296",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01267.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SHUFPS/1267",
+  "sha256": "ffc41a2fb11464c9c817c6cd7f072a6d40ee69928cda0dd648b9fda823913296",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01274.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SQRTSS/1274",
+  "sha256": "b1a8710e8e91e2bfe971c66814990804a806db87e9946021c224f86b3e81c7a5",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01295.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SUBPS/1295",
+  "sha256": "eed4ec8407063e1706487aeec1ea28ccf6b3dc3176bbf5d57155d69cd8527ada",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01297.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/SUBPS/1297",
+  "sha256": "3beb1aef5a5dfea6e3b8bf9948780ba59a40e4151a737e6d8e2ce8be7b70c038",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01320.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/UNPCKHPD/1320",
+  "sha256": "199edaa239bd90ae3355ec379aabe48ac498fc851d1ec225572e82dff9444225",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01327.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/UNPCKLPD/1327",
+  "sha256": "349da2aee01421b6a9eca24dd4e53ad0e39522d94baf007c1c97999ca0f12cc4",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01328.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/UNPCKLPD/1328",
+  "sha256": "cd3516ff7d2e56477e6d34c1679c0031a67e7218b16f6981151bbddae0599d42",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01329.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/UNPCKLPS/1329",
+  "sha256": "57270858ec4c08dc52625a1f178b8dd9ab89e688aa425453d3756f810f1e1c50",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01330.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/UNPCKLPS/1330",
+  "sha256": "2ce7c3e62deafc93ee83deb4363568bbb542a214fc33902479a7dacb8cf8c9cc",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01338.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VADDPS/1338",
+  "sha256": "f63da7e79b9edbb13d092fe247921064ce14431182ea18db30a219f0805f2f3f",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01339.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VADDPS/1339",
+  "sha256": "7d719149304031b7fb8ae56d3c0f3d85b151b35e6eb58bfcd922dd8cd01360d5",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01340.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VADDPS/1340",
+  "sha256": "d564786701a33555edae3addf4dfd1e28632f5b2bc0e43d0fe44ecc00af9802e",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01341.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VADDPS/1341",
+  "sha256": "afc0113965aac56e21c27d1a5ce672f1aa8a3eb3a28d9ac853d24e3e7402f339",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01345.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VADDSUBPD/1345",
+  "sha256": "65d7c940a2b8cb132985a23f80f6c29892b9a1bfc32487dd62bd94803d2397b3",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01347.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VADDSUBPS/1347",
+  "sha256": "fa286453a4db1f7de05d4f608bd755e5ef127728351074e59dd4c5aec31be697",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01373.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VCVTSI2SD/1373",
+  "sha256": "7f7f7a0d93c937f53421789d4cde3c635df6919edcee94208c882e9413ee628d",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01374.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VCVTSI2SS/1374",
+  "sha256": "77d6e851f390a118ebabe4ed8ed1cb7306df449ec358532ba52cb012ad9d288e",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01375.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VCVTSI2SS/1375",
+  "sha256": "03ebe117acd7934532c70a3f6754eb791575a863db4a0a77839bc7d1cb6a1411",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01376.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VCVTSI2SS/1376",
+  "sha256": "bc0582c85eeed87f82ff4cf2f19ea45c04bc5264bb5ed0620896b0658d7e1bd1",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01377.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VCVTSS2SD/1377",
+  "sha256": "567374b1d81fca4f5b9154915c56465a22e955a413c888d0e95dc65c69e4e691",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01383.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VDIVPD/1383",
+  "sha256": "be6af9e6f3111aa7edea3a600ad1d9300cf781e9da38ca401cb4aabbcfe16805",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01385.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VDIVSD/1385",
+  "sha256": "925921bbdff9e56f0d0b8b9361cd00b34042f74f121b924302b1f4342634b5ed",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01386.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VDIVSS/1386",
+  "sha256": "89d2f7beebea8416bf6d7d138c381bf149e2f527cf409ffa3ad29d137f2c9aa8",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01409.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VHADDPD/1409",
+  "sha256": "450b47268c069ec0732ee2ecee5bbbd05be87a5a6a293a67b98c763a45e6b54c",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01415.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VHSUBPD/1415",
+  "sha256": "b1b5454b8791bcd82f78eba5dc196c3ce5cfeb5a9dd7c8b09dd2346166b0eb7c",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01424.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMAXPD/1424",
+  "sha256": "d2ca87a9f24058c3ed36ca874a9d279029b51aa96939eb8630b463f7c5f70ee5",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01428.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMINPD/1428",
+  "sha256": "1d7090789a4c4b6ecdadb4aa0f068c9b14f0cacfa01e540eff64042aa1576e0b",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01432.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMINSS/1432",
+  "sha256": "d73dd23d9bd4de5f3c77e19ff7b87256ab22e9cf7df51ec0c194e72a6c4503de",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01444.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVHLPS/1444",
+  "sha256": "983ec806af89c5a77bbc56fdd032ebdb6209f3a9aec9148b637b2b27da79f460",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01445.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVHLPS/1445",
+  "sha256": "547d398f2790a702f1a0cd45d8eb90c6554c748742fdcd8c63e8539e6432c684",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01446.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVHPD/1446",
+  "sha256": "3ebfd64fd030ca59a78239ee213541bf419548a821312b6fd5a4ace4da7d345e",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01447.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVHPD/1447",
+  "sha256": "29785cdb5fc90cca47f4be3c97d54feb229ac727ab847823860b80c2ce841dd0",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01449.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVHPS/1449",
+  "sha256": "295e41b6eb515f28821e54a2e4d4794b72af5204e09e15f113596d338de2aa88",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01450.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVLPD/1450",
+  "sha256": "7d69069069daaa69587f28a4fd6c6d960796ef8d3e02775ea5d584b7222f7722",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01451.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVLPD/1451",
+  "sha256": "23e6d1e1f32b18a7cb71f44932180139df226f0681e1fb1426d884db054289dd",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01454.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVLPS/1454",
+  "sha256": "ef3ed4cb1add471a6e5b6f57352cdeee0e5c8664f972a0f8fd210159f1cec526",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01455.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVLPS/1455",
+  "sha256": "16a28589eda9b56b96c1bd84703c501d1f591df127283a8c76435ad4a39f3eb9",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01458.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVNTPD/1458",
+  "sha256": "e39c3c8a6e61baaadbc3d1ae7d84a1ed028158e4156b7de066309d4e94b15c18",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01463.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVSD/1463",
+  "sha256": "288266812e5c35563754d367701d85c7b3adaaa5f841df04cbfee361673657ef",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01464.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVSD/1464",
+  "sha256": "d3e63c7b8b04ff913dc96de9ebd6bb8696a6f558f5caf4df87c63064e863f93b",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01469.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMOVSS/1469",
+  "sha256": "0fccf575f96f2680d9c58c8de044041b2d5e43596d3b26b428b0a08454cd7c99",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01474.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMULPD/1474",
+  "sha256": "ed8622f6662911a023ee6dc43bf4e8d7b62c914cc8ca5f3a63e207d2d553afa2",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01476.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMULPD/1476",
+  "sha256": "4dc834243d9b11c4521ae750836b055910b1c761629701b1c2a03b1db472f06f",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01477.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMULPS/1477",
+  "sha256": "29b04f79171d78fb3a4d0e7f1444e63b8503d66ad1eebf2713e0f7f0847d183a",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01478.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMULPS/1478",
+  "sha256": "727e55170c1785bbb8caa532232df176af13e2762b7660974d3e0af7f25d2aca",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01480.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMULSD/1480",
+  "sha256": "68de18c6b535ed56f904d15e84f08701f958e8e515d555dcc31391f6a3bea152",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01481.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VMULSS/1481",
+  "sha256": "9a2c3b6947f2be1fe33c2f478c66d8d4d3b178e17215ee94a9c040ea12f64038",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01482.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VORPD/1482",
+  "sha256": "82b2c6f57ca00c3fa7620e666a40693ea2bd248bbf0f206bfcdd421cdb37a75d",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01483.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VORPD/1483",
+  "sha256": "2c4b5fb1b2612177ec473d1d79a1c6e5725bc5b16f08f34abffa1a8289472d93",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01484.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VORPD/1484",
+  "sha256": "8419095b786e01127716b2d70a7a02168159e89a95607f539fc025c9437dc5d7",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01491.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPACKUSDW/1491",
+  "sha256": "23d74dff2ff6e5b80f440b7b1beb55743307a5b68ed59442f079e12f6ae30003",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01492.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPACKUSDW/1492",
+  "sha256": "df078e7b017810f5bb280ecdb92a4f927914c486e3dc958ae6518fd2e46c8dc1",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01493.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPACKUSWB/1493",
+  "sha256": "5cf7e014db7ff279a17d7f47150a4345734cf7f34994786d797db92c651b4955",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01497.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPADDD/1497",
+  "sha256": "ead2bb6eea1e319c802b98b418033f950dcbcc001dadcbd9dca249e2d802d495",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01498.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPADDD/1498",
+  "sha256": "45a6b53555143ee21be1294d23839410c774a14576ea33ccd79fd48169d36db0",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01500.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPADDQ/1500",
+  "sha256": "a187ccdf2f3c8d9c66920c687309be84a9485db82b2f25b0956b1485dee3151a",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01501.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPADDQ/1501",
+  "sha256": "97b7cc508a0101f723600b577c5ae118e7f8868b99166e0876ab66a030f3458c",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01506.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPADDUSW/1506",
+  "sha256": "7f1bea8cd479044f34c8bf1831c8f8c56d1ef5247cf5e812358ba6472e7c5a67",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01516.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPAVGB/1516",
+  "sha256": "178c605c427714d31e092e36fe461c7c3e2817ea5a7da174187e994dfb334be9",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01526.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPCMPGTB/1526",
+  "sha256": "e4199b56ec29d78cf5d52757198d72ced2f53a14429aa44856198b34d1e85665",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01527.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPCMPGTD/1527",
+  "sha256": "23dfa0b07485cabbf6ed9741d05d749d28856405ed0d4c199bd0ddf7ba93751b",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01532.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPCMPGTW/1532",
+  "sha256": "4f261084031856b1d630a1736828819efbba5e2dfc726ea4e1fc818c9bb13fc7",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01543.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPHADDD/1543",
+  "sha256": "82d795e9caa65eea709f70c4435bc527b6a1d4e23b4478f32d609d02a911399c",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01544.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPHADDD/1544",
+  "sha256": "51508628bd88b6bbc480f5e5bfe59df986ce0a8be57c68167905bf0697b69ea1",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01545.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPHADDSW/1545",
+  "sha256": "1ddd7b2a37acce101a62635247291ed6d327eb173356797d96097eaa0b49b980",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01546.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPHADDSW/1546",
+  "sha256": "992163d947f8e0288a00d16be3f90171ce2ba6df6014f07cfa0afad7c355ea98",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01548.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPHADDW/1548",
+  "sha256": "5f000be4a415d0a2a730b6ccfa3ce7948bda74e1c7ad06a06715e4399a095978",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01549.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPHADDW/1549",
+  "sha256": "8ab12bfb710218e1c0670380b0f158e11483eeb268dd72c74eda7525c9918613",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01551.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPHSUBD/1551",
+  "sha256": "16bca2c5c538c6b93dad7970dcd189a131006abf0775bf0ee774347b5b83bf39",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01553.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPHSUBW/1553",
+  "sha256": "a257464f97189bab1ae2cff222a8393b5727a62e8fe894e0a69033d163cdb7e1",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01557.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPINSRW/1557",
+  "sha256": "cb56a0890be63f171bf77f9055d5cb598ccda6a8f8fdb545d50ff303282b5958",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01565.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMAXSD/1565",
+  "sha256": "9cb4ee56df4a4a81764aea2e63cc0b9ed7220cf250f80064b1f940c9abcb1193",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01566.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMAXSW/1566",
+  "sha256": "e4bf54f2600501f6b980785f65c02aa7eda86ce0220a5a87129088d787107e69",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01569.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMINSW/1569",
+  "sha256": "c1c3f076b9a9f21f9a3e378fe54063e75e2d05b957f0ca8f8f38eb989add2101",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01585.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMULHUW/1585",
+  "sha256": "cd5b8ea1fb4399253a386b325fc5b827d3ac88cb9381daa5770f6d0f21f42879",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01588.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMULHUW/1588",
+  "sha256": "d509bc47198c82120e4e30d5b20e068e9bd7399fb5474dffee0e51cf4985a511",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01589.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMULHW/1589",
+  "sha256": "9df91825b77892d3b1d77b480868c10230e6b9bdf5320c1c82bda7a08eb7cb47",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01593.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMULLW/1593",
+  "sha256": "fc18a6c7ae99cc81fd48ca4242244f73f30134428b69b2a6d740f183ac00b793",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01596.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMULUDQ/1596",
+  "sha256": "5cbe3201a832857ad5a312408d3a122aa48a2a197e5db63ac8f4c30b6d37aba9",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01597.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPMULUDQ/1597",
+  "sha256": "0e0733378b0faaad55a5b0f464a5b017579b083e0f5a0564068f87c72d8cdb6e",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01599.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSADBW/1599",
+  "sha256": "ba79cdcd42b96e5b6c7ad2c8084c3851a0a150e54d5200a62eda96c2a369566b",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01600.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSHUFB/1600",
+  "sha256": "2f8ad8c3efb9ebd478a3e32ace1475849fc2e562787cca65ee7e8e2996718e60",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01613.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSLLQ/1613",
+  "sha256": "8eb393be7486fb9927141a2448164ff1c2bcf64385f9cfdd82168de2a6c6d475",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01620.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSRAD/1620",
+  "sha256": "33e61049465741352a966b38f178a5f94a7b8423b4918597282b5f37a4c66953",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01626.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSRAW/1626",
+  "sha256": "4e387ffd7aec5393f58f73fe8b290c313a86de265673445459fac08a6247713c",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01638.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSRLW/1638",
+  "sha256": "416dffac04dd65ce3176c668f4011bd331f7108b1ca3eac9983dc7bd55603e18",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01639.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSUBB/1639",
+  "sha256": "f36680f1a964a5b6f4e1d115c1e9494c40827f95f6eb92fb05043d9ce5e1e73c",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01644.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSUBSB/1644",
+  "sha256": "6a330af7eca325e4929331f2ea79c61b1eedf7d03f7a937a47fb6a970e47aca9",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01645.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSUBSB/1645",
+  "sha256": "956b0849a30c3ebec8570d76ac8443abbc2e025b161d3284f0b1a80052bbe700",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01646.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSUBSB/1646",
+  "sha256": "939a7e135ec71228ee915638dce05a7c552b3cd7621b38ad896b2683c1a4f544",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01647.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSUBSW/1647",
+  "sha256": "bc943c7b53c2d45843026bfbf85b6e3640aa39e8c0b0a321975e7e3a70084e01",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01648.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSUBUSB/1648",
+  "sha256": "529c2b8575a639785ee0c3bf570e288ab3819a2044370996cd8b34ed2a565567",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01650.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPSUBW/1650",
+  "sha256": "892bb91f97ca9d23b1944fd888860ed211014a4fab9ca07a140bc3258e330e42",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01655.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPUNPCKHDQ/1655",
+  "sha256": "19b64acea7361dc9d7b195bc229fbadae42f7a71723438ae93b5e18f2f70d752",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01658.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPUNPCKHQDQ/1658",
+  "sha256": "c05f0fa44a210a2ff4026292c4c8e76aa2a91e714c1f679620af3fd67344e507",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01659.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPUNPCKHWD/1659",
+  "sha256": "ef3ae258720b083d6a34fa720de2df8adaf9e3b84a9d0d69986784a5c563af3b",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01661.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPUNPCKLBW/1661",
+  "sha256": "488b87a81af20214c6166c158e797115dd9ed423fb334d816a976fe113395d01",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01662.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VPUNPCKLBW/1662",
+  "sha256": "fa5e62b591aa79d31407625c6ab07b5c56df57ee9458238ea9ef6a5bc7342d90",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01676.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VSHUFPD/1676",
+  "sha256": "2e2a8bfd409454591d3ca445ba51ce8db0c087e2e0a0a50b8d44fc7b4243fcba",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01677.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VSHUFPD/1677",
+  "sha256": "39f04faad4dade2d777ea1c2c4f02a12a2095c4e650954e9d245beb1c00975ae",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01678.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VSHUFPD/1678",
+  "sha256": "576294ccbf1aaa09057ab7fa749e5b0a00c7d7ae0592e44a4732d67552ba311a",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01679.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VSHUFPD/1679",
+  "sha256": "c07d9a1c29ec4d8ea5c7348b64619a54064f5a25b5a3cafc4924a7a0caadacb4",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01684.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VSQRTSS/1684",
+  "sha256": "3a536f7daf769d0d4acdf0df05a2f33ddea106597eb96d03f1fcd01e5a48a5c4",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01685.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VSUBPD/1685",
+  "sha256": "28766519e0549354995ed6ebf6c466177caf7d855eb57a5cd77f991088ed9eb5",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01689.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VSUBPS/1689",
+  "sha256": "16d3f7418135dcd1703094d7a3dc550a8a2593fc1fa5e3fefdf8afe2469744d1",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01690.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VSUBPS/1690",
+  "sha256": "50af0239b66a8498544b048ae8a112cd9a24d5934007decc694138fea3666785",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01695.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VUNPCKHPD/1695",
+  "sha256": "4506925728ff314a0f28a70be585dc2b16a509f0ec3373125011d90f7c721b93",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01696.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VUNPCKHPD/1696",
+  "sha256": "1e96a51082720329d50e17444d6df0d02d7209869404787c447e50809b7119f4",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01697.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VUNPCKHPS/1697",
+  "sha256": "a71e7ce8ad3e3d5f86025dc6428cba9a12f451d61997695a7c142db6ebc948c7",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01698.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VUNPCKHPS/1698",
+  "sha256": "5fdd2a6e255b061990bf4e15f83beaa120837d39720a81c75eb496ba213a987b",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01699.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/VUNPCKHPS/1699",
+  "sha256": "36c74d33ce2a5547f7e954c132a05fd436b7ed00d040fe12d9fda93560402ac1",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01715.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/XCHG/1715",
+  "sha256": "e9bc211af819f9b5084aaa9d9c31f3438260e0c857a8bcf9d3a8c1dc56086da0",
+  "class": "semantic_reference"
+ },
+ {
+  "case": "01726.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/XORPS/1726",
+  "sha256": "f3ea8cd1098fffa8ffc7db332deb3242fc7a7ccc261756540c7728ff0fa2906d",
+  "class": "alignment_gp"
+ },
+ {
+  "case": "01727.svmcase",
+  "isa": "x86_64",
+  "profile": "x86_64-user",
+  "form": "inventory/x86_64/XORPS/1727",
+  "sha256": "e0eabb8b8c54de116744e592f6fddd9d6382b6080af10c335a6b7e710fb92601",
+  "class": "alignment_gp"
+ }
+]

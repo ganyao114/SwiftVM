@@ -15,10 +15,23 @@ jobs:
             --case-dir tools/correctness/native-corpus/x86-x87-mmx \
             --out-dir native-out --timeout 2 \
             | tee native-result.json
+      - name: Build and run the host-CPU reference for inventory gaps
+        run: |
+          python3 tools/correctness/native_probe.py \
+            --case-dir tools/correctness/native-corpus/x86-inventory-gaps \
+            --out-dir native-gaps --timeout 2 \
+            | tee native-gaps-result.json
       - uses: actions/upload-artifact@v4
         with:
           name: native-x87-mmx
           path: |
             native-out/*.json
             native-result.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-inventory-gaps
+          path: |
+            native-gaps/*.json
+            native-gaps-result.json
           if-no-files-found: error
