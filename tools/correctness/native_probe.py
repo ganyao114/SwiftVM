@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import platform
+import shlex
 import shutil
 import struct
 import subprocess
@@ -171,6 +172,9 @@ def main():
                         help='directory of .svmcase files')
     parser.add_argument('--out-dir', type=Path, required=True)
     parser.add_argument('--timeout', type=float, default=10.0)
+    parser.add_argument('--exec-prefix', default='',
+                        help='command prefix that launches the probe, for example '
+                             '"orb -m ubuntu FEXInterpreter"')
     parser.add_argument('--sha-names', action='store_true',
                         help='also write <sha256>.json for the run controller')
     args = parser.parse_args()
@@ -194,9 +198,10 @@ def main():
         output_path = args.out_dir / (case.stem + '.probe-out')
         export_input(case_json, input_path)
         status = None
+        launch = shlex.split(args.exec_prefix)
         for attempt in range(20):
-            prefix = []
-            if sys.platform.startswith('linux') and shutil.which('setarch'):
+            prefix = list(launch)
+            if not prefix and sys.platform.startswith('linux') and shutil.which('setarch'):
                 prefix = ['setarch', platform.machine(), '-R']
             process = subprocess.Popen(prefix + [str(probe), str(input_path), str(output_path)],
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

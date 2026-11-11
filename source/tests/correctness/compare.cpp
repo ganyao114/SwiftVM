@@ -598,8 +598,14 @@ Comparison Compare(const Case& c, const Observation& expected, const Observation
                 expected.fault_access == "execute" && actual.fault_access == "execute";
         const bool native_fault = actual.backend == "native-x86_64";
         const bool native_reference = native_fault || expected.backend == "native-x86_64";
-        if (expected.fault_kind != actual.fault_kind ||
-            (!native_reference &&
+        if (!native_reference && expected.fault_kind != actual.fault_kind)
+            return {true, false, "exception_mismatch", "fault kind/access/vector differs"};
+        if (native_reference && expected.fault_kind != actual.fault_kind) {
+            // Host signal probes cannot split #PF/#GP/#MF classification.
+            if (!gaps.empty()) gaps += "; ";
+            gaps += "native reference does not classify the fault";
+        }
+        if ((!native_reference &&
              normalized_access(expected.fault_access) != normalized_access(actual.fault_access)) ||
             (!execute_fault && !native_reference && expected.fault_vector != actual.fault_vector))
             return {true, false, "exception_mismatch", "fault kind/access/vector differs"};
