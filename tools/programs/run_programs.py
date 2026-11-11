@@ -103,6 +103,7 @@ def main():
     args = parser.parse_args()
 
     args.bin_dir = args.bin_dir.resolve()
+    args.out = args.out.resolve()
     args.runner = args.runner.resolve()
     if args.aot:
         args.aot = args.aot.resolve()
