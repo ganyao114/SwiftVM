@@ -119,6 +119,22 @@ public:
 
     void SRAI(GPR rd, GPR src, unsigned bits) { srai_d(rd, src, bits); }
 
+    void BSTRPICK_D(GPR rd, GPR src, unsigned msb, unsigned lsb) { bstrpick_d(rd, src, msb, lsb); }
+
+    void BSTRPICK_W(GPR rd, GPR src, unsigned msb, unsigned lsb) { bstrpick_w(rd, src, msb, lsb); }
+
+    void BSTRINS_D(GPR rd, GPR src, unsigned msb, unsigned lsb) { bstrins_d(rd, src, msb, lsb); }
+
+    void BSTRINS_W(GPR rd, GPR src, unsigned msb, unsigned lsb) { bstrins_w(rd, src, msb, lsb); }
+
+    void MASKEQZ(GPR rd, GPR src, GPR mask) { maskeqz(rd, src, mask); }
+
+    void MASKNEZ(GPR rd, GPR src, GPR mask) { masknez(rd, src, mask); }
+
+    void ROTRI_D(GPR rd, GPR src, unsigned bits) { rotri_d(rd, src, bits); }
+
+    void ROTRI_W(GPR rd, GPR src, unsigned bits) { rotri_w(rd, src, bits); }
+
     void SEQZ(GPR rd, GPR src) { sltui(rd, src, 1); }
 
     void SNEZ(GPR rd, GPR src) { sltu(rd, zero, src); }

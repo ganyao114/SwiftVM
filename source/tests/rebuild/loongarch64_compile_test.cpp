@@ -846,6 +846,152 @@ void PersistentHelpers() {
     State state;
     Run(code, state, swift::runtime::x86::QueryGuestCpu(0, 0).lower + 6);
 }
+
+void BitFieldsAndSelect() {
+    current_case = "bitfield, bit test, rotate and branchless select";
+    Builder builder{Scope::Block};
+    Begin(builder);
+    const auto x = Literal(builder, 0x0123456789ABCDEFULL);
+    const auto y = Literal(builder, 0xAB);
+    const auto x32 = Literal(builder, 0x89ABCDEFULL, Type::U32);
+    const auto y32 = Literal(builder, 0x5A, Type::U32);
+    Store(builder,
+          0,
+          Emit(builder, OpCode::BitExtract, Type::U64, {Operand::ValueOf(x), Imm(3), Imm(5)}));
+    Store(builder,
+          1,
+          Emit(builder,
+               OpCode::BitInsert,
+               Type::U64,
+               {Operand::ValueOf(x), Operand::ValueOf(y), Imm(8), Imm(8)}));
+    Store(builder,
+          2,
+          Emit(builder, OpCode::BitClear, Type::U64, {Operand::ValueOf(x), Imm(8), Imm(8)}));
+    Store(builder,
+          3,
+          Emit(builder, OpCode::BitExtract, Type::U32, {Operand::ValueOf(x32), Imm(3), Imm(5)}));
+    Store(builder,
+          4,
+          Emit(builder,
+               OpCode::BitInsert,
+               Type::U32,
+               {Operand::ValueOf(x32), Operand::ValueOf(y32), Imm(8), Imm(8)}));
+    Store(builder,
+          5,
+          Emit(builder, OpCode::BitClear, Type::U32, {Operand::ValueOf(x32), Imm(8), Imm(8)}));
+    Store(builder, 6, Emit(builder, OpCode::TestBit, Type::Bool, {Operand::ValueOf(x), Imm(63)}));
+    Store(builder, 7, Emit(builder, OpCode::TestBit, Type::Bool, {Operand::ValueOf(x), Imm(0)}));
+    Store(builder, 8, Emit(builder, OpCode::TestBit, Type::Bool, {Operand::ValueOf(x32), Imm(31)}));
+    Store(builder, 9, Emit(builder, OpCode::RorImm, Type::U64, {Operand::ValueOf(x), Imm(13)}));
+    Store(builder, 10, Emit(builder, OpCode::RorImm, Type::U32, {Operand::ValueOf(x32), Imm(5)}));
+    const auto yes = Load(builder, 22), no = Load(builder, 23);
+    const auto one = Load(builder, 20), zero = Load(builder, 21), high = Load(builder, 24);
+    Store(builder,
+          11,
+          Emit(builder,
+               OpCode::Select,
+               Type::U64,
+               {Operand::ValueOf(one), Operand::ValueOf(yes), Operand::ValueOf(no)}));
+    Store(builder,
+          12,
+          Emit(builder,
+               OpCode::Select,
+               Type::U64,
+               {Operand::ValueOf(zero), Operand::ValueOf(yes), Operand::ValueOf(no)}));
+    Store(builder,
+          13,
+          Emit(builder,
+               OpCode::SelectZero,
+               Type::U64,
+               {Operand::ValueOf(zero), Operand::ValueOf(yes), Operand::ValueOf(no)}));
+    Store(builder,
+          14,
+          Emit(builder,
+               OpCode::SelectZero,
+               Type::U64,
+               {Operand::ValueOf(one), Operand::ValueOf(yes), Operand::ValueOf(no)}));
+    Store(builder,
+          15,
+          Emit(builder,
+               OpCode::Select,
+               Type::U64,
+               {Operand::ValueOf(high), Operand::ValueOf(yes), Operand::ValueOf(no)}));
+    const auto x16 = Literal(builder, 0xABCD, Type::U16);
+    const auto y16 = Literal(builder, 0x5A, Type::U16);
+    const auto x8 = Literal(builder, 0xCD, Type::U8);
+    const auto y8 = Literal(builder, 0x3, Type::U8);
+    Store(builder,
+          16,
+          Emit(builder, OpCode::BitExtract, Type::U16, {Operand::ValueOf(x16), Imm(3), Imm(5)}));
+    Store(builder,
+          17,
+          Emit(builder,
+               OpCode::BitInsert,
+               Type::U16,
+               {Operand::ValueOf(x16), Operand::ValueOf(y16), Imm(8), Imm(8)}));
+    Store(builder,
+          18,
+          Emit(builder, OpCode::BitClear, Type::U16, {Operand::ValueOf(x16), Imm(8), Imm(8)}));
+    Store(builder,
+          19,
+          Emit(builder, OpCode::BitExtract, Type::U8, {Operand::ValueOf(x8), Imm(4), Imm(4)}));
+    Store(builder,
+          25,
+          Emit(builder,
+               OpCode::BitInsert,
+               Type::U8,
+               {Operand::ValueOf(x8), Operand::ValueOf(y8), Imm(0), Imm(4)}));
+    Store(builder,
+          26,
+          Emit(builder, OpCode::BitClear, Type::U8, {Operand::ValueOf(x8), Imm(4), Imm(4)}));
+    Store(builder,
+          27,
+          Emit(builder, OpCode::BitExtract, Type::U64, {Operand::ValueOf(x), Imm(8), Imm(0)}));
+    Store(builder,
+          28,
+          Emit(builder,
+               OpCode::BitInsert,
+               Type::U16,
+               {Operand::ValueOf(x16), Operand::ValueOf(y16), Imm(4), Imm(0)}));
+    Store(builder,
+          29,
+          Emit(builder, OpCode::BitClear, Type::U16, {Operand::ValueOf(x16), Imm(4), Imm(0)}));
+    auto program = Return(builder);
+    auto code = Compile(program);
+    State state;
+    state.scalars[20] = 1;
+    state.scalars[21] = 0;
+    state.scalars[22] = 0x1111111111111111ULL;
+    state.scalars[23] = 0x2222222222222222ULL;
+    state.scalars[24] = 0x100000000ULL;
+    if (Run(code, state)) {
+        Check(state.scalars[0] == 0x1D, "64-bit bitfield extract");
+        Check(state.scalars[1] == 0x0123456789ABABEFULL, "64-bit bitfield insert");
+        Check(state.scalars[2] == 0x0123456789AB00EFULL, "64-bit bitfield clear");
+        Check(state.scalars[3] == 0x1D, "32-bit bitfield extract");
+        Check(state.scalars[4] == 0x89AB5AEFULL, "32-bit bitfield insert zero-extends");
+        Check(state.scalars[5] == 0x89AB00EFULL, "32-bit bitfield clear zero-extends");
+        Check(state.scalars[6] == 0 && state.scalars[7] == 1, "bit test reads the selected lane");
+        Check(state.scalars[8] == 1, "32-bit bit test reads bit 31");
+        Check(state.scalars[9] == 0x6F78091A2B3C4D5EULL, "64-bit immediate rotate");
+        Check(state.scalars[10] == 0x7C4D5E6FULL, "32-bit immediate rotate zero-extends");
+        Check(state.scalars[11] == 0x1111111111111111ULL, "select takes the nonzero arm");
+        Check(state.scalars[12] == 0x2222222222222222ULL, "select takes the zero arm");
+        Check(state.scalars[13] == 0x1111111111111111ULL, "select-zero takes the zero arm");
+        Check(state.scalars[14] == 0x2222222222222222ULL, "select-zero takes the nonzero arm");
+        Check(state.scalars[15] == 0x1111111111111111ULL,
+              "select treats a high-bit condition as true");
+        Check(state.scalars[16] == 0x19, "16-bit bitfield extract");
+        Check(state.scalars[17] == 0x5ACD, "16-bit bitfield insert");
+        Check(state.scalars[18] == 0x00CD, "16-bit bitfield clear");
+        Check(state.scalars[19] == 0x0C, "8-bit bitfield extract");
+        Check(state.scalars[25] == 0xC3, "8-bit bitfield insert");
+        Check(state.scalars[26] == 0x0D, "8-bit bitfield clear");
+        Check(state.scalars[27] == 0, "zero-width extract");
+        Check(state.scalars[28] == 0xABCD && state.scalars[29] == 0xABCD,
+              "zero-width insert and clear preserve the masked parent");
+    }
+}
 }  // namespace
 
 TEST_CASE("ArithmeticFlags", "[compile][loongarch64-compile][native]") {
@@ -896,6 +1042,10 @@ TEST_CASE("AtomicMinMax", "[compile][loongarch64-compile][native]") {
 
 TEST_CASE("PersistentHelpers", "[compile][loongarch64-compile][native]") {
     CHECK_NOTHROW(PersistentHelpers());
+}
+
+TEST_CASE("BitFieldsAndSelect", "[compile][loongarch64-compile][native]") {
+    CHECK_NOTHROW(BitFieldsAndSelect());
 }
 
 TEST_CASE("Guest safepoint requires a linked execution context", "[compile][loongarch64-compile]") {

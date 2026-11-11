@@ -23,12 +23,26 @@ void Writer::Handle(Op<OpCode::GuestDispatchSafepoint>, OpContext& ctx) {
 }
 
 void Writer::SelectValue(OpContext& ctx) {
-    if (ctx.operation.opcode == OpCode::CondSelect)
+    const auto op = ctx.operation.opcode;
+    if (op != OpCode::CondSelect && ctx.operation.type != Type::V128) {
+        Read(ctx.Arg(0), a0, true);
+        Read(ctx.Arg(1), a1, true);
+        Read(ctx.Arg(2), a2, true);
+        if (op == OpCode::SelectZero)
+            as.SEQZ(t0, a0);
+        else
+            as.SNEZ(t0, a0);
+        as.MASKEQZ(a1, a1, t0);
+        as.MASKNEZ(a2, a2, t0);
+        as.OR(ctx.destination, a1, a2);
+        return;
+    }
+    if (op == OpCode::CondSelect)
         Condition(a0, static_cast<ir::Condition>(ctx.Arg(0).Payload()));
     else
         Read(ctx.Arg(0), a0);
     Label other, done;
-    if (ctx.operation.opcode == OpCode::SelectZero)
+    if (op == OpCode::SelectZero)
         as.BNE(a0, x0, &other);
     else
         as.BEQ(a0, x0, &other);

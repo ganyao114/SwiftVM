@@ -199,8 +199,17 @@ void Writer::Handle(Op<OpCode::SignedDiv64>, OpContext& ctx) {
 }
 
 void Writer::Shift(OpContext& ctx) {
-    Read(ctx.Arg(0), a0);
     const auto op = ctx.operation.opcode;
+    if (op == OpCode::RorImm && (ctx.width == 32 || ctx.width == 64)) {
+        Read(ctx.Arg(0), a0, true);
+        const auto count = static_cast<unsigned>(ctx.Arg(1).Payload()) & (ctx.width - 1);
+        if (ctx.width == 32)
+            as.ROTRI_W(ctx.destination, a0, count);
+        else
+            as.ROTRI_D(ctx.destination, a0, count);
+        return;
+    }
+    Read(ctx.Arg(0), a0);
     const bool left = op == OpCode::LslImm || op == OpCode::LslValue;
     const bool right = op == OpCode::LsrImm || op == OpCode::LsrValue;
     const bool arithmetic = op == OpCode::AsrImm || op == OpCode::AsrValue;
@@ -239,16 +248,23 @@ LA_SHIFT(RorValue)
 #undef LA_SHIFT
 
 void Writer::Predicate(OpContext& ctx) {
-    Read(ctx.Arg(0), ctx.destination);
-    if (ctx.operation.opcode == OpCode::TestBit) {
+    const auto op = ctx.operation.opcode;
+    if (op == OpCode::TestBit) {
         const auto bit = ctx.Arg(1).Payload();
-        if (bit >= TypeBits(View(ctx.Arg(0))))
+        const auto bits = TypeBits(View(ctx.Arg(0)));
+        if (bit >= bits) {
             as.MV(ctx.destination, x0);
-        else {
-            as.SRLI(ctx.destination, ctx.destination, bit);
-            as.ANDI(ctx.destination, ctx.destination, 1);
+            return;
         }
-    } else if (ctx.operation.opcode == OpCode::TestZero)
+        Read(ctx.Arg(0), ctx.destination, true);
+        if (bits <= 32)
+            as.BSTRPICK_W(ctx.destination, ctx.destination, bit, bit);
+        else
+            as.BSTRPICK_D(ctx.destination, ctx.destination, bit, bit);
+        return;
+    }
+    Read(ctx.Arg(0), ctx.destination);
+    if (op == OpCode::TestZero)
         as.SEQZ(ctx.destination, ctx.destination);
     else
         as.SNEZ(ctx.destination, ctx.destination);
@@ -262,29 +278,63 @@ LA_PRED(TestNotZero)
 #undef LA_PRED
 
 void Writer::BitField(OpContext& ctx) {
-    Read(ctx.Arg(0), a0, true);
-    const bool insert = ctx.operation.opcode == OpCode::BitInsert;
+    const auto op = ctx.operation.opcode;
+    const bool insert = op == OpCode::BitInsert;
+    const bool extract = op == OpCode::BitExtract;
     const auto lsb = ctx.Arg(insert ? 2 : 1).Payload();
     const auto length = ctx.Arg(insert ? 3 : 2).Payload();
     if (lsb >= 64 || length > 64 - lsb) Reject(CompileError::UnsupportedOperand);
-    const u64 field = !length ? 0 : length == 64 ? UINT64_MAX : ((u64{1} << length) - 1) << lsb;
-    if (ctx.operation.opcode == OpCode::BitExtract) {
-        if (!length)
+    if (!length) {
+        if (extract)
             as.MV(ctx.destination, x0);
         else {
+            Read(ctx.Arg(0), ctx.destination, true);
+            Mask(ctx.destination, ctx.width);
+        }
+        return;
+    }
+    const auto msb = lsb + length - 1;
+    if (extract) {
+        if (ctx.width && ctx.width <= 32 && msb < ctx.width) {
+            Read(ctx.Arg(0), ctx.destination, true);
+            as.BSTRPICK_W(ctx.destination, ctx.destination, msb, lsb);
+        } else if (ctx.width == 64) {
+            Read(ctx.Arg(0), ctx.destination, true);
+            as.BSTRPICK_D(ctx.destination, ctx.destination, msb, lsb);
+        } else {
+            Read(ctx.Arg(0), a0, true);
             as.SRLI(ctx.destination, a0, lsb);
             Mask(ctx.destination, length);
+            Mask(ctx.destination, ctx.width);
         }
-    } else {
-        as.LI(t0, ~field);
-        as.AND(ctx.destination, a0, t0);
-        if (insert && length) {
-            Read(ctx.Arg(1), a1, true);
-            as.SLLI(a1, a1, lsb);
-            as.LI(t0, field);
-            as.AND(a1, a1, t0);
-            as.OR(ctx.destination, ctx.destination, a1);
-        }
+        return;
+    }
+    if (ctx.width == 64 || (ctx.width == 32 && msb < 32)) {
+        // Read the inserted value before writing the destination: allocation may
+        // reuse an input home that dies at this operation.
+        if (insert) Read(ctx.Arg(1), a1, true);
+        Read(ctx.Arg(0), ctx.destination, true);
+        if (insert) {
+            if (ctx.width == 32)
+                as.BSTRINS_W(ctx.destination, a1, msb, lsb);
+            else
+                as.BSTRINS_D(ctx.destination, a1, msb, lsb);
+        } else if (ctx.width == 32)
+            as.BSTRINS_W(ctx.destination, x0, msb, lsb);
+        else
+            as.BSTRINS_D(ctx.destination, x0, msb, lsb);
+        return;
+    }
+    const u64 field = length == 64 ? UINT64_MAX : ((u64{1} << length) - 1) << lsb;
+    Read(ctx.Arg(0), a0, true);
+    as.LI(t0, ~field);
+    as.AND(ctx.destination, a0, t0);
+    if (insert) {
+        Read(ctx.Arg(1), a1, true);
+        as.SLLI(a1, a1, lsb);
+        as.LI(t0, field);
+        as.AND(a1, a1, t0);
+        as.OR(ctx.destination, ctx.destination, a1);
     }
     Mask(ctx.destination, ctx.width);
 }

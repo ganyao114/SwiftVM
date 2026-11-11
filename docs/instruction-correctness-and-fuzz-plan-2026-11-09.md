@@ -628,6 +628,21 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 - 788 个基座 case 与旧 corpus 逐字节一致，新增 36 例。验证：host Direct + host x64 JIT + host ARM64 JIT **108/108 verified**（run `20261111-084418-aeaa46be`）；红魔 ARM64 JIT **36/36 verified**（run `20261111-084611-3af06699`）；无 failure/gap。证据：`/Volumes/Data2/swiftvm-correctness-results/arm32-inventory-20261111/`（`manifest.json` 含 directed 的 `note` 与 `vm_case`）、`.../runs/`。
 - 生成命令：`python3 tools/correctness/generate_arm32_inventory.py --root <dir> --vm`。
 
+### 15.9 LoongArch64 标量 ISA 优化（2026-11-11）
+
+- 前提澄清：LoongArch64 **没有标量 PCNT**（GNU as 与 LLVM 21 都拒绝 `pcnt.d/w`，只有 LSX/LASX 的 `vpcnt/xvpcnt`），因此 POPCNT/parity 仍保留 SWAR 序列；本轮只落地确实存在且有收益的指令。
+- assembler 暴露并对照 GNU as 验证编码：`BSTRPICK.D/W`、`BSTRINS.D/W`、`MASKEQZ/MASKNEZ`、`ROTRI.D/W`（例如 `bstrpick.d $t0,$t1,7,3` = `0x00c70dac`）。xbyak 已有编码，改动集中在 `Assembler` 包装。
+- lowering 替换：
+  - `BitExtract` → `BSTRPICK.D/W`（1 条；8/16/32 位字段用 W，字段越界时回退 shift/mask）。
+  - `BitInsert`/`BitClear` → `BSTRINS.D/W`（1 条，clear 用 `$r0`）；先读插入源再写目的 home，避免分配器复用死亡输入寄存器造成的覆盖。
+  - `TestBit` → `BSTRPICK` 取单 bit（1 条，0/1 结果）。
+  - `RorImm` → `ROTRI.D/W`（W 零扩展高 32 位）。
+  - 非 V128 的 `Select`/`SelectZero` → `SEQZ/SNEZ + MASKEQZ + MASKNEZ + OR` 无分支序列；`CondSelect`/V128 保留原分支路径。
+- 中间回归与修正：首版把 `BitExtract` 的 8/16 位路径误并入 insert/clear 回退，`hello-x64` 在 LA64 JIT 下启动即 SIGSEGV；补回 extract 回退并新增 8/16/32/64 位、零宽、插入/清零的定向用例后恢复。
+- 验证：LA64 `svm_loongarch64_compile_test` native **15 cases / 15 assertions**、compile **16/17** 全过；x86 程序 hello/compute/fp/tiny 在 qemu-user 下 native 与 LA64 JIT 的 stdout/exit 完全一致；BT/BTS/BTR/BTC、LAHF/SAHF、BEXTR、ROR/ROL、CMOV、SETcc 的定向 probe 也一致。A64/ARM32 guest 在 qemu-user 下仍被 `process_vm_readv`（ARM exclusive/kuser）挡住，baseline 同样失败，前端语义继续由 IR 级 compile test 覆盖。
+- 性能（qemu-user TCG，基线 vs 优化，6 次中位数；x86 guest）：16× 展开 BEXTR **586.7ms → 336.8ms（-42.6%）**，native code **6228 → 5588 bytes**；16× 展开 ROR imm **170.2ms → 159.2ms（-6.5%）**，code **2796 → 2284 bytes（-18.3%）**；非展开循环中 BEXTR -7.3%、ROR -2.0%。CMOV 在 TCG 下与分支版持平（code 同为 2420 bytes），保留无分支实现以消除真机 misprediction，真机收益需 RedMagic/LA64 硬件复测。
+- 证据：`/Volumes/Data2/swiftvm-correctness-results/la64-isa-opt-20261111/`（`baseline/svm_rebuild_linux`、`la64-native.log`、`la64-compile.log`、`x86-native.txt`、`x86-la64.txt`、`bench-ops.jsonl`、`bench-op16.jsonl`、`summary.json`）；bench 源在 `/Volumes/Data2/swiftvm-program-tests-20261111/src/`。qemu-user TCG 只用于方向性 A/B，不作为真机性能结论。
+
 ## 16. 实施顺序与阶段验收
 
 不先铺满所有 oracle 和 runtime 场景；先证明一个完整输入确实能在独立参考与四后端之间正确重放。复现与缩减从第一阶段就存在。
