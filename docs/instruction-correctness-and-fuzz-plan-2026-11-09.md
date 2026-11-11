@@ -518,6 +518,7 @@ tools/correctness/
 | `fuzz/pipeline.cpp` | 复用 Case codec/mutator 和现有 pipeline/Direct 的薄入口 |
 | `run.py` | 分片、worker 批次、ADB/system-QEMU 传输、watchdog、证据/配额与清理；不包含指令 expected |
 | `workers.example.json` | worker 能力、命令、地址/页粒度、scratch/cache 根配置示例，不提交本机隐私凭据 |
+| `generate_arm32_inventory.py` | 从 ARM32 decode table 生成 form inventory，并追加 SEL/UADD8/USAD8/USADA8 的 GE/数据定向 case；`--vm` 同时输出 64 KiB 源边界布局 |
 
 对外初始只需两个普通测试 executable：`svm_correctness`（含 worker 子命令）和独立 oracle probe；进程隔离靠启动子进程，不为每种 ISA/backend/config 再写一套 CLI。内部 `svm_correctness_core` 提供共用逻辑，测试 worker 只链接对应 host backend 的真实运行入口。
 
@@ -618,7 +619,14 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 - 修复：`source/runtime/frontend/arm32/semantics_integer.inc` 的 A32/T32 SEL 改为 `PackedSelect(GE, n, m)`。
 - 回归：`source/tests/rebuild/arm32_semantics_test.cpp` 新增 A32/T32 两例——显式 GE 位型（`0b1010`）与真实 `UADD8`+`SEL` 链。`svm_arm32_frontend_test` 默认 `[compile]` 集 **267 assertions / 19 cases** 全过，`--native "[native]"` **55 assertions / 2 cases** 全过。
 - 程序级验证：`hello-arm32`（无参/带参）在 x64 JIT、x64 Direct、ARM64 JIT、ARM64 Direct 均输出 `hello argc=… argv1=…`、stderr 正常、exit 7；`printf` 的 plain/`.1s`/`%s` 路径、`bench_int-arm32` 校验和、`tiny-arm32`（exit 42）均通过；macOS host 编译通过。证据：`/Volumes/Data2/swiftvm-program-tests-20261111/`（`debug/arm32state`、`bin/hello-arm32`、`bin/p-arm32`）。
-- 覆盖缺口：既有 ARM32 669 例 inventory 未包含带 GE 数据的 SEL，因此单指令矩阵没有暴露该反转；后续 inventory 应补 SEL/USAD8 等依赖 GE 的形式，并把“GE=1 选 Rn”的语义作为固定边界。
+- 覆盖缺口：既有 ARM32 669 例 inventory 未包含带 GE 数据的 SEL，因此单指令矩阵没有暴露该反转；现已由 15.8 的 directed inventory 覆盖，并把“GE=1 选 Rn”的语义作为固定边界。
+
+### 15.8 ARM32 GE 数据 inventory 扩展（2026-11-11）
+
+- 新增 `tools/correctness/generate_arm32_inventory.py`：从 decode table 生成 788 个 form case，再追加 36 个 directed case——SEL 的六种显式 GE 位型（0x0/0x3/0x5/0xa/0xc/0xf）、不同 Rn/Rm 与逐字节操作数；UADD8 的零/全一/strlen 混合/半进位数；USAD8/USADA8 的字节差、累加与回绕数据（初始 GE 非零，验证其不被改写）。directed case 的 `form_id` 仍在 `inventory/` 命名空间，ARM32 flags 比较掩码包含 GE。
+- VM 后端要求 terminal PC 位于可执行源之外；`--vm` 额外输出 `vm-cases`，把单指令放在 64 KiB granule 末尾（4 字节 case 位于 `0x0400fffc`，terminal `0x04010000`），raw `cases` 供 Direct 使用。
+- 788 个基座 case 与旧 corpus 逐字节一致，新增 36 例。验证：host Direct + host x64 JIT + host ARM64 JIT **108/108 verified**（run `20261111-084418-aeaa46be`）；红魔 ARM64 JIT **36/36 verified**（run `20261111-084611-3af06699`）；无 failure/gap。证据：`/Volumes/Data2/swiftvm-correctness-results/arm32-inventory-20261111/`（`manifest.json` 含 directed 的 `note` 与 `vm_case`）、`.../runs/`。
+- 生成命令：`python3 tools/correctness/generate_arm32_inventory.py --root <dir> --vm`。
 
 ## 16. 实施顺序与阶段验收
 
