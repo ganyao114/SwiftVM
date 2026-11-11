@@ -1564,7 +1564,7 @@ bool arm_SEL(Cond cond, Reg n, Reg d, Reg m) {
 
     const auto to = ir.GetRegister(m);
     const auto from = ir.GetRegister(n);
-    const auto result = ir.PackedSelect(ir.GetGEFlags(), to, from);
+    const auto result = ir.PackedSelect(ir.GetGEFlags(), from, to);
 
     ir.SetRegister(d, result);
     return true;
@@ -2892,7 +2892,7 @@ bool thumb32_SEL(Reg n, Reg d, Reg m) {
 
     const auto reg_m = ir.GetRegister(m);
     const auto reg_n = ir.GetRegister(n);
-    const auto result = ir.PackedSelect(ir.GetGEFlags(), reg_m, reg_n);
+    const auto result = ir.PackedSelect(ir.GetGEFlags(), reg_n, reg_m);
 
     ir.SetRegister(d, result);
     return true;

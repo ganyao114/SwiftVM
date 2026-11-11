@@ -609,7 +609,16 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 - pin A/B：本地 OrbStack x86_64 上 A64 guest 的整数循环 1.635s → 1.493s（-9%）、FP 循环 15.98s → 18.73s（+17%，FP helper 每调用一次都要发布/重载）；真机 x86 CI sweep（`x64-pin-sweep.yml`，run 43047550090）中 x86 guest 的 2-pin 相对 0-pin：bench_int 939.6ms → 949.6ms（**+1.1%**）、bench_fp 6634ms → 6720ms（+1.3%），其余程序 ≈ 持平，所有 digest 一致。综合结论：**x64 后端 2-pin 没有正收益，默认保持 0**；功能保留为可实验开关。4-slot 版本在 A64 高寄存器压力程序（compute 的 SHA）上出错且更慢，已限制为 0/2。
 - 真实程序稳定性（x86-64 guest → ARM64 JIT，红魔）：静态 busybox v1.36.1 的 16 个命令用例（sha256sum/md5sum/wc/sort/uniq/base64/tar/gzip/awk/seq/expr/cmp/cksum/grep/错误路径/空返回）+ 9 个文件系统用例（cp/cmp/find/ln/readlink/stat/rm/缺失文件），**3 轮重复全部与原生一致**；另有 hello/syscalls/compute/fp/tiny/bench_int/bench_fp 程序套件 native/JIT/AOT 7/7 PASS。
 - 该过程中发现并修复真实 syscall 缺口：`fcntl` 仅放行 F_GETFD..F_SETFL（gzip 的 F_DUPFD_CLOEXEC 返回 ENOSYS）、缺少 `dup/dup2/dup3`、`unlink/unlinkat`、`symlink/symlinkat`、`getdents64`（find 无输出），并补充 AArch64 guest 号映射；修复后 busybox 套件从 15/16 与 4/9 提升到全部通过。
-- 遗留：静态 glibc 的 `hello-arm32` 在 ARM64 路径上 guest SIGSEGV（pc=0x1a3dc），freestanding ARM32 程序正常——ARM32 真实程序路径仍有缺陷，单指令矩阵未覆盖到该场景，列为下一项。
+- 遗留：静态 glibc 的 `hello-arm32` 在 ARM64 路径上 guest SIGSEGV（pc=0x1a3dc），freestanding ARM32 程序正常——ARM32 真实程序路径仍有缺陷，单指令矩阵未覆盖到该场景。该问题已定位并修复，见 15.7。
+
+### 15.7 ARM32 静态 glibc 的 SEL 语义修复（2026-11-11）
+
+- 现象：`hello-arm32`（静态 glibc）在 ARM64/x64 JIT 与 Direct 解释器上都 SIGSEGV，故障 pc 位于 `__memcpy_neon`，读源在栈顶/`.rodata` 附近；syscall 跟踪显示 glibc 对 `write(1, 0x7eb38, 4096)` 反复提交同一缓冲区，随后 `__printf_buffer_write` 把数百 KB 的 `.rodata` 拷入 stdio 缓冲并在越过映射边界时 fault。
+- 根因：`__printf_buffer` 的 `%s` 路径调用 `strlen`；glibc ARM32 `strlen` 用 `UADD8` + `SEL` 做逐字节零检测。前端 `arm_SEL`/`thumb32_SEL` 把 `PackedSelect(GE, m, n)` 传反了：ARM 规定 GE=1 选 **Rn**，实现却选 Rm。未对齐字符串路径（`strlen+0xae`）因此返回 `-4`/负长度，`%s` 长度变成巨大无符号数，触发无限 4 KiB 刷写与越界读。
+- 修复：`source/runtime/frontend/arm32/semantics_integer.inc` 的 A32/T32 SEL 改为 `PackedSelect(GE, n, m)`。
+- 回归：`source/tests/rebuild/arm32_semantics_test.cpp` 新增 A32/T32 两例——显式 GE 位型（`0b1010`）与真实 `UADD8`+`SEL` 链。`svm_arm32_frontend_test` 默认 `[compile]` 集 **267 assertions / 19 cases** 全过，`--native "[native]"` **55 assertions / 2 cases** 全过。
+- 程序级验证：`hello-arm32`（无参/带参）在 x64 JIT、x64 Direct、ARM64 JIT、ARM64 Direct 均输出 `hello argc=… argv1=…`、stderr 正常、exit 7；`printf` 的 plain/`.1s`/`%s` 路径、`bench_int-arm32` 校验和、`tiny-arm32`（exit 42）均通过；macOS host 编译通过。证据：`/Volumes/Data2/swiftvm-program-tests-20261111/`（`debug/arm32state`、`bin/hello-arm32`、`bin/p-arm32`）。
+- 覆盖缺口：既有 ARM32 669 例 inventory 未包含带 GE 数据的 SEL，因此单指令矩阵没有暴露该反转；后续 inventory 应补 SEL/USAD8 等依赖 GE 的形式，并把“GE=1 选 Rn”的语义作为固定边界。
 
 ## 16. 实施顺序与阶段验收
 

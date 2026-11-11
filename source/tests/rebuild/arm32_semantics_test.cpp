@@ -154,6 +154,39 @@ TEST_CASE("ARM32 register shifts and RRX preserve the architectural zero and ove
     }
 }
 
+TEST_CASE("ARM32 SEL selects Rn for set GE lanes", "[compile][arm32-semantics]") {
+    for (bool thumb : {false, true}) {
+        const auto entry = arch::Location::Make(Base, thumb).Key();
+        {
+            arch::GuestState state{};
+            state.pc = entry;
+            state.r[1] = 0x11111111;
+            state.r[2] = 0x22222222;
+            state.psr_aux = 0x10 | (U64{0b1010} << 16);
+            const auto code = thumb ? THUMB({0xfaa1, 0xf082}) : ARM({0xe6810fb2});
+            INFO(thumb);
+            REQUIRE(Step(code, state).kind == front::StepKind::Completed);
+            CHECK(state.r[0] == 0x11221122u);
+        }
+        {
+            // UADD8 with all-ones sets GE for each nonzero byte; SEL must then
+            // pick 0 from Rn for those lanes and all-ones from Rm for the zero lane.
+            arch::GuestState state{};
+            state.pc = entry;
+            state.r[1] = 0x11220033;
+            state.r[2] = 0xffffffff;
+            state.r[4] = 0;
+            const auto code = thumb ? THUMB({0xfa81, 0xf342, 0xfaa4, 0xf083})
+                                    : ARM({0xe6513f92, 0xe6840fb3});
+            INFO(thumb);
+            REQUIRE(Step(code, state).kind == front::StepKind::Completed);
+            REQUIRE(Step(std::span<const U8>(code).subspan(4), state).kind ==
+                    front::StepKind::Completed);
+            CHECK(state.r[0] == 0x0000ff00u);
+        }
+    }
+}
+
 TEST_CASE("ARM32 VFP and NEON share the S D and Q register bank", "[compile][arm32-semantics]") {
     arch::GuestState state;
     state.pc = Base;
