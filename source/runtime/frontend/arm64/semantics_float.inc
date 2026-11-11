@@ -1,4 +1,68 @@
 
+// On an AArch64 host the guest FPCR/FPSR are installed for the whole native
+// unit, so scalar arithmetic is exactly the host instruction. Other hosts keep
+// the portable numeric helper path.
+bool TryNativeScalarFP(const vixl::aarch64::Instruction* instr) {
+    if (target.mode != TargetMode::Known || target.target != 0xa64) return false;
+    const u32 word = instr->GetInstructionBits();
+    const u32 operation = word & FPDataProcessing2SourceMask;
+    u32 kind;
+    if (operation == FADD || operation == FADD_d)
+        kind = 0;
+    else if (operation == FSUB || operation == FSUB_d)
+        kind = 1;
+    else if (operation == FMUL || operation == FMUL_d)
+        kind = 2;
+    else if (operation == FDIV || operation == FDIV_d)
+        kind = 3;
+    else
+        return false;
+    const u32 bits = (operation == FADD_d || operation == FSUB_d || operation == FMUL_d ||
+                      operation == FDIV_d)
+                             ? 64
+                             : 32;
+    auto merged = ReadVRegister(instr->GetRd(), Type::V128);
+    auto lhs = ReadVRegister(instr->GetRn(), Type::V128);
+    auto rhs = ReadVRegister(instr->GetRm(), Type::V128);
+    auto result = Emit<OpCode::ArmScalarFP, Type::V128>(
+            merged, lhs, rhs, Imm{u8(kind)}, Imm{u8(bits)});
+    WriteVRegister(instr->GetRd(), result);
+    return true;
+}
+
+bool TryNativeScalarFMA(const vixl::aarch64::Instruction* instr) {
+    if (target.mode != TargetMode::Known || target.target != 0xa64) return false;
+    const u32 word = instr->GetInstructionBits();
+    const u32 operation = word & FPDataProcessing3SourceMask;
+    u32 kind, bits;
+    if (operation == FMADD_s)
+        kind = 0, bits = 32;
+    else if (operation == FMADD_d)
+        kind = 0, bits = 64;
+    else if (operation == FMSUB_s)
+        kind = 1, bits = 32;
+    else if (operation == FMSUB_d)
+        kind = 1, bits = 64;
+    else if (operation == FNMADD_s)
+        kind = 2, bits = 32;
+    else if (operation == FNMADD_d)
+        kind = 2, bits = 64;
+    else if (operation == FNMSUB_s)
+        kind = 3, bits = 32;
+    else if (operation == FNMSUB_d)
+        kind = 3, bits = 64;
+    else
+        return false;
+    auto merged = ReadVRegister(instr->GetRd(), Type::V128);
+    auto n = ReadVRegister(instr->GetRn(), Type::V128);
+    auto m = ReadVRegister(instr->GetRm(), Type::V128);
+    auto a = ReadVRegister(instr->GetRa(), Type::V128);
+    auto result = Emit<OpCode::ArmScalarFMA, Type::V128>(
+            merged, n, m, a, Imm{u8(kind | (bits == 64 ? 4u : 0u))});
+    WriteVRegister(instr->GetRd(), result);
+    return true;
+}
+
 void ScalarFPHelper(const vixl::aarch64::Instruction* instr, bool comparison = false) {
     if (!runtime::arm64::IsSupportedScalarFP(instr->GetInstructionBits()))
         throw Rejected{BuildError::Unsupported};
@@ -238,6 +302,7 @@ void WriteNZCV(Value source) {
 }
 
 void VisitFPDataProcessing2Source(const vixl::aarch64::Instruction* instr) override {
+    if (TryNativeScalarFP(instr)) return;
     ScalarFPHelper(instr);
 }
 
@@ -246,6 +311,7 @@ void VisitFPFixedPointConvert(const vixl::aarch64::Instruction* instr) override 
 }
 
 void VisitFPDataProcessing3Source(const vixl::aarch64::Instruction* instr) override {
+    if (TryNativeScalarFMA(instr)) return;
     ScalarFPHelper(instr);
 }
 

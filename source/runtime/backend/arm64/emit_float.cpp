@@ -244,6 +244,65 @@ void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
     __ ins(Lanes(ctx.destination, bits), 0, Lanes(first, bits), 0);
 }
 
+void Writer::HandleArmScalarFPFamily(OpContext& ctx) {
+    if (!ctx.vector) Reject(CompileError::UnsupportedType);
+    auto& cursor = ctx.cursor;
+    const auto merged = VectorValue(cursor.Take(), 0), left = VectorValue(cursor.Take(), 1),
+               right = VectorValue(cursor.Take(), 2);
+    const auto kind = IntegerImmediate(cursor.Take()), bits = IntegerImmediate(cursor.Take());
+    if ((bits != 32 && bits != 64) || kind > 3 || options.fpsr_offset == UINT32_MAX)
+        Reject(CompileError::UnsupportedOperand);
+    const auto result = VectorTemporary();
+    const auto out = bits == 32 ? S(result) : D(result);
+    const auto lhs = bits == 32 ? S(left) : D(left), rhs = bits == 32 ? S(right) : D(right);
+    if (kind == 0)
+        __ fadd(out, lhs, rhs);
+    else if (kind == 1)
+        __ fsub(out, lhs, rhs);
+    else if (kind == 2)
+        __ fmul(out, lhs, rhs);
+    else
+        __ fdiv(out, lhs, rhs);
+    VectorMove(ctx.destination, merged);
+    __ ins(Lanes(ctx.destination, bits), 0, Lanes(result, bits), 0);
+}
+
+void Writer::HandleArmScalarFMAFamily(OpContext& ctx) {
+    if (!ctx.vector) Reject(CompileError::UnsupportedType);
+    auto& cursor = ctx.cursor;
+    const auto merged = VectorValue(cursor.Take(), 0), left = VectorValue(cursor.Take(), 1),
+               right = VectorValue(cursor.Take(), 2), addend = VectorValue(cursor.Take(), 3);
+    const auto mode = IntegerImmediate(cursor.Take());
+    if (mode > 7 || options.fpsr_offset == UINT32_MAX) Reject(CompileError::UnsupportedOperand);
+    const auto kind = static_cast<unsigned>(mode & 3u);
+    const unsigned bits = (mode & 4u) ? 64u : 32u;
+    const auto result = VectorTemporary();
+    const auto out = bits == 32 ? S(result) : D(result);
+    const auto lhs = bits == 32 ? S(left) : D(left), rhs = bits == 32 ? S(right) : D(right),
+               acc = bits == 32 ? S(addend) : D(addend);
+    if (kind == 0)
+        __ fmadd(out, lhs, rhs, acc);
+    else if (kind == 1)
+        __ fmsub(out, lhs, rhs, acc);
+    else if (kind == 2)
+        __ fnmadd(out, lhs, rhs, acc);
+    else
+        __ fnmsub(out, lhs, rhs, acc);
+    VectorMove(ctx.destination, merged);
+    __ ins(Lanes(ctx.destination, bits), 0, Lanes(result, bits), 0);
+}
+
+void Writer::PublishGuestFPSR() {
+    // The guest FPCR/FPSR are installed for the whole native unit, so the
+    // hardware flags are architectural. Publish the cumulative exception
+    // bits after every operation; helpers and MRS read the uniform copy.
+    Memory(true, 32, 16, 19, options.fpsr_offset / 4);
+    __ mrs(v::x17, v::FPSR);
+    __ ubfx(v::w17, v::x17, 0, 8);
+    __ orr(v::w17, v::w17, Operand(v::w16));
+    Memory(false, 32, 17, 19, options.fpsr_offset / 4);
+}
+
 void Writer::HandleVecFCmpFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto destination = ctx.destination;

@@ -59,6 +59,9 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         self.options.pc_offset = layout.pc_offset;
         self.options.pinned_uniform_offset = layout.gprs_offset;
         self.vector_offset = layout.vectors_offset;
+        if (layout.isa == GuestISA::Arm64)
+            self.options.fpsr_offset =
+                    offsetof(::swift::runtime::arm64::GuestState, fpsr);
         if (!self.capabilities.afp) self.options.mxcsr_flush_offset = layout.numeric_control_offset;
     };
     ops.compile = [](void* raw,

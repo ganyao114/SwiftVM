@@ -98,8 +98,10 @@ template <class Options> Options OptionsFor(ISA isa) {
     }
     // The compile-only matrix covers the full backend surface; VM execution
     // still gates optional instructions on the probed host capabilities.
-    if constexpr (std::is_same_v<Options, backend::arm64::CompileOptions>)
+    if constexpr (std::is_same_v<Options, backend::arm64::CompileOptions>) {
         options.crc32c = true;
+        if (isa == ISA::Arm64) options.fpsr_offset = offsetof(runtime::arm64::GuestState, fpsr);
+    }
     return options;
 }
 

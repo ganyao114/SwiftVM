@@ -372,6 +372,13 @@ void VM::Execute() {
 #endif
                 thread.native.phase.store(SVM_NATIVE_PHASE_RUNTIME, std::memory_order_release);
                 if (reason != NativeExit::FPEnvironment) MergeFPStatus();
+                // AArch64 native FP leaves accumulate exception flags in the
+                // installed hardware FPSR; publish them into the uniform state.
+                // MSR FPSR/FPCR exits own the architectural write instead.
+                if (ISA() == GuestISA::Arm64 && backend.target.target == 0xa64 &&
+                    reason != NativeExit::FPEnvironment)
+                    thread.native.arm_state.fpsr |=
+                            static_cast<std::uint32_t>(thread.native.guest_fpsr);
                 thread.faults.active.store(nullptr);
                 if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
                 if (reason == NativeExit::Syscall) {
@@ -503,6 +510,9 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
         thread.fp_mode = mode;
     }
     if (backend.update_fp) backend.update_fp(backend.context, thread.native, mxcsr);
+    // Native AArch64 guest FP executes under the architectural FPCR, not the
+    // x86-style numeric-control mapping used for x86 guests.
+    if (ISA() == GuestISA::Arm64) thread.native.guest_fpcr = thread.native.arm_state.fpcr;
     RefreshNative(thread.native);
 }
 

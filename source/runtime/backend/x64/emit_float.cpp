@@ -391,6 +391,14 @@ FP(VecFRoundInt)
 // clang-format on
 #undef FP
 
+void Writer::Handle(Op<O::ArmScalarFP>, OpContext&) {
+    Reject(CompileError::UnsupportedOpcode);
+}
+
+void Writer::Handle(Op<O::ArmScalarFMA>, OpContext&) {
+    Reject(CompileError::UnsupportedOpcode);
+}
+
 void Writer::Handle(Op<O::VecFCmp>, OpContext& c) {
     ReadVector(c.Arg(0), xmm0);
     ReadVector(c.Arg(1), xmm1);

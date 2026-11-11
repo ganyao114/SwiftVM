@@ -228,6 +228,8 @@ void Writer::HandleLoadUniformFamily(OpContext& ctx) {
         return;
     }
     const auto uniform = cursor.Take();
+    if (options.fpsr_offset != UINT32_MAX && uniform.Payload() == options.fpsr_offset)
+        PublishGuestFPSR();
     if (test_prefix) {
         deferred_test.active = (operation.type == Type::U32 || operation.type == Type::U64) &&
                                uniform.TypeView() == operation.type && TestField(uniform);
@@ -249,6 +251,8 @@ void Writer::HandleStoreUniformFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto test_prefix = ctx.test_prefix;
     const auto uniform = cursor.Take();
+    if (options.fpsr_offset != UINT32_MAX && uniform.Payload() == options.fpsr_offset)
+        PublishGuestFPSR();
     const bool overlap = OverlapsShadow(uniform);
     if (overlap) Shadow(false);  // Before materializing a possibly spilled store input.
     const auto input = cursor.Take();

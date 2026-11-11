@@ -449,6 +449,14 @@ LA_FLOAT(VecFMulAdd)
 LA_FLOAT(VecFRoundInt)
 #undef LA_FLOAT
 
+void Writer::Handle(Op<O::ArmScalarFP>, OpContext&) {
+    Reject(CompileError::UnsupportedOpcode);
+}
+
+void Writer::Handle(Op<O::ArmScalarFMA>, OpContext&) {
+    Reject(CompileError::UnsupportedOpcode);
+}
+
 void Writer::Handle(Op<O::VecFCmp>, OpContext& ctx) {
     const unsigned descriptor = Immediate(ctx, 2), bits = descriptor & 127;
     CheckFloatWidth(*this, bits);

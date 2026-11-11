@@ -20,6 +20,9 @@ using x86::X87Result;
 using x86::X87State;
 
 void Writer::HandleCallLambdaFamily(OpContext& ctx) {
+    // Helpers read the uniform FPSR; publish flags accumulated by native guest
+    // FP operations before the call switches to the host FP environment.
+    if (options.fpsr_offset != UINT32_MAX) PublishGuestFPSR();
     auto& cursor = ctx.cursor;
     const auto header = cursor.Take();
     if (header.Kind() != OperandKind::Lambda) Reject(CompileError::UnsupportedOperand);

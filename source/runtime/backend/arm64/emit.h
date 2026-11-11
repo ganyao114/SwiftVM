@@ -212,6 +212,9 @@ private:
     void HandleVecFCvtFloatToIntFamily(OpContext&);
     void HandleVecFAddFamily(OpContext&);
     void HandleVecFAddScalar64Family(OpContext&);
+    void HandleArmScalarFPFamily(OpContext&);
+    void HandleArmScalarFMAFamily(OpContext&);
+    void PublishGuestFPSR();
     void HandleVecFCmpFamily(OpContext&);
     void HandleReadFPStatusFamily(OpContext&);
     void HandleVecFCvtPackedFamily(OpContext&);

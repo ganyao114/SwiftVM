@@ -405,6 +405,33 @@ INST(VecFSubScalar64, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostSta
 INST(VecFMulScalar64, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
 INST(VecFDivScalar64, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value)
 
+// AArch64 guest scalar FP arithmetic executes natively on an AArch64 host:
+// the whole unit runs with the guest FPCR/FPSR installed, so the instruction
+// is exact. Operands are (current destination, lhs, rhs, kind, lane_bits);
+// kind: 0=add, 1=sub, 2=mul, 3=div. Upper destination lanes are preserved.
+INST(ArmScalarFP,
+     Value,
+     Arg0,
+     (Effect::ReadHostState | Effect::WriteHostState),
+     Value,
+     Value,
+     Value,
+     Imm,
+     Imm)
+
+// Fused AArch64 scalar arithmetic: Vd[0] = f(Va, Vn, Vm), upper lanes kept.
+// Operands are (current destination, n, m, a, mode); mode low two bits are
+// 0=fmadd, 1=fmsub, 2=fnmadd, 3=fnmsub and bit2 selects 64-bit lanes.
+INST(ArmScalarFMA,
+     Value,
+     Arg0,
+     (Effect::ReadHostState | Effect::WriteHostState),
+     Value,
+     Value,
+     Value,
+     Value,
+     Imm)
+
 // Packed IEEE floating-point operations. Imm is the lane width (32 or 64).
 INST(VecFAdd, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value, Imm)
 INST(VecFSub, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostState), Value, Value, Imm)

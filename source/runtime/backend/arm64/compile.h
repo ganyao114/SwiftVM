@@ -51,6 +51,9 @@ struct CompileOptions {
     // The shared L2 entry probes once without recounting the transfer.
     std::uintptr_t l2_dispatcher{};
     std::uint32_t pc_offset{UINT32_MAX}, pinned_uniform_offset{UINT32_MAX};
+    // AArch64 guest FPSR in the current uniform state; ArmScalarFP publishes
+    // its cumulative exception bits here after every native operation.
+    std::uint32_t fpsr_offset{UINT32_MAX};
     // Runtime enforces guest memory/private state disjointness and publishes
     // x1 at cold resolution or fatal faults. Requires the linked pinned ABI.
     bool private_uniforms{};
