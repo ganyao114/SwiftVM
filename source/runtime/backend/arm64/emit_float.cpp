@@ -247,8 +247,7 @@ void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
 void Writer::HandleArmScalarFPFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& cursor = ctx.cursor;
-    const auto merged = VectorValue(cursor.Take(), 0), left = VectorValue(cursor.Take(), 1),
-               right = VectorValue(cursor.Take(), 2);
+    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
     const auto kind = IntegerImmediate(cursor.Take()), bits = IntegerImmediate(cursor.Take());
     if ((bits != 32 && bits != 64) || kind > 3 || options.fpsr_offset == UINT32_MAX)
         Reject(CompileError::UnsupportedOperand);
@@ -263,15 +262,14 @@ void Writer::HandleArmScalarFPFamily(OpContext& ctx) {
         __ fmul(out, lhs, rhs);
     else
         __ fdiv(out, lhs, rhs);
-    VectorMove(ctx.destination, merged);
-    __ ins(Lanes(ctx.destination, bits), 0, Lanes(result, bits), 0);
+    VectorMove(ctx.destination, result);
 }
 
 void Writer::HandleArmScalarFMAFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& cursor = ctx.cursor;
-    const auto merged = VectorValue(cursor.Take(), 0), left = VectorValue(cursor.Take(), 1),
-               right = VectorValue(cursor.Take(), 2), addend = VectorValue(cursor.Take(), 3);
+    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1),
+               addend = VectorValue(cursor.Take(), 2);
     const auto mode = IntegerImmediate(cursor.Take());
     if (mode > 7 || options.fpsr_offset == UINT32_MAX) Reject(CompileError::UnsupportedOperand);
     const auto kind = static_cast<unsigned>(mode & 3u);
@@ -288,8 +286,7 @@ void Writer::HandleArmScalarFMAFamily(OpContext& ctx) {
         __ fnmadd(out, lhs, rhs, acc);
     else
         __ fnmsub(out, lhs, rhs, acc);
-    VectorMove(ctx.destination, merged);
-    __ ins(Lanes(ctx.destination, bits), 0, Lanes(result, bits), 0);
+    VectorMove(ctx.destination, result);
 }
 
 void Writer::PublishGuestFPSR() {

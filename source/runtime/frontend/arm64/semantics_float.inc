@@ -21,11 +21,10 @@ bool TryNativeScalarFP(const vixl::aarch64::Instruction* instr) {
                       operation == FDIV_d)
                              ? 64
                              : 32;
-    auto merged = ReadVRegister(instr->GetRd(), Type::V128);
     auto lhs = ReadVRegister(instr->GetRn(), Type::V128);
     auto rhs = ReadVRegister(instr->GetRm(), Type::V128);
     auto result = Emit<OpCode::ArmScalarFP, Type::V128>(
-            merged, lhs, rhs, Imm{u8(kind)}, Imm{u8(bits)});
+            lhs, rhs, Imm{u8(kind)}, Imm{u8(bits)});
     WriteVRegister(instr->GetRd(), result);
     return true;
 }
@@ -53,12 +52,11 @@ bool TryNativeScalarFMA(const vixl::aarch64::Instruction* instr) {
         kind = 3, bits = 64;
     else
         return false;
-    auto merged = ReadVRegister(instr->GetRd(), Type::V128);
     auto n = ReadVRegister(instr->GetRn(), Type::V128);
     auto m = ReadVRegister(instr->GetRm(), Type::V128);
     auto a = ReadVRegister(instr->GetRa(), Type::V128);
     auto result = Emit<OpCode::ArmScalarFMA, Type::V128>(
-            merged, n, m, a, Imm{u8(kind | (bits == 64 ? 4u : 0u))});
+            n, m, a, Imm{u8(kind | (bits == 64 ? 4u : 0u))});
     WriteVRegister(instr->GetRd(), result);
     return true;
 }

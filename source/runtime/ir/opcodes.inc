@@ -407,26 +407,24 @@ INST(VecFDivScalar64, Value, Arg0, (Effect::ReadHostState | Effect::WriteHostSta
 
 // AArch64 guest scalar FP arithmetic executes natively on an AArch64 host:
 // the whole unit runs with the guest FPCR/FPSR installed, so the instruction
-// is exact. Operands are (current destination, lhs, rhs, kind, lane_bits);
-// kind: 0=add, 1=sub, 2=mul, 3=div. Upper destination lanes are preserved.
+// is exact. Operands are (lhs, rhs, kind, lane_bits); kind: 0=add, 1=sub,
+// 2=mul, 3=div. A scalar destination write zeros the upper vector lanes.
 INST(ArmScalarFP,
      Value,
      Arg0,
      (Effect::ReadHostState | Effect::WriteHostState),
      Value,
      Value,
-     Value,
      Imm,
      Imm)
 
-// Fused AArch64 scalar arithmetic: Vd[0] = f(Va, Vn, Vm), upper lanes kept.
-// Operands are (current destination, n, m, a, mode); mode low two bits are
-// 0=fmadd, 1=fmsub, 2=fnmadd, 3=fnmsub and bit2 selects 64-bit lanes.
+// Fused AArch64 scalar arithmetic: Vd[0] = f(Va, Vn, Vm); upper lanes zero.
+// Operands are (n, m, a, mode); mode low two bits are 0=fmadd, 1=fmsub,
+// 2=fnmadd, 3=fnmsub and bit2 selects 64-bit lanes.
 INST(ArmScalarFMA,
      Value,
      Arg0,
      (Effect::ReadHostState | Effect::WriteHostState),
-     Value,
      Value,
      Value,
      Value,
