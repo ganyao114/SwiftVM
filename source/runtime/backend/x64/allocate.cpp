@@ -11,7 +11,7 @@ namespace {
 using namespace ir;
 using u32 = std::uint32_t;
 
-constexpr std::array<unsigned, 6> scalar_registers{13, 14, 15, 5, 8, 9};
+constexpr std::array<unsigned, 6> pin_registers{13, 14, 15, 5};
 constexpr unsigned register_count = 12;
 
 bool SupportedType(Type type) {
@@ -28,12 +28,13 @@ bool UnsupportedStorage(OpCode opcode) {
 // Control flow is shared; register and auxiliary-slot policy stays here.
 class Allocator {
 public:
-    Allocator(const Program& program, Scope scope, Allocation& result)
+    Allocator(const Program& program, Scope scope, Allocation& result, unsigned pinned_slots)
             : program(program)
             , scope(scope)
             , result(result)
             , operations(program.Operations())
-            , blocks(program.Blocks()) {}
+            , blocks(program.Blocks())
+            , pinned_slots(pinned_slots) {}
 
     void Run() {
         ResetResult(CompileError::None);
@@ -43,6 +44,17 @@ public:
             (scope == Scope::Block && (blocks.size() != 1 || entry.value != 0))) {
             ResetResult(CompileError::InvalidProgram);
             return;
+        }
+
+        if (pinned_slots && pinned_slots != 2) {
+            ResetResult(CompileError::UnsupportedOperand);
+            return;
+        }
+        scalar_register_count = 0;
+        for (unsigned reg : {13u, 14u, 15u, 5u, 8u, 9u}) {
+            bool reserved = false;
+            for (unsigned i = 0; i < pinned_slots; ++i) reserved |= pin_registers[i] == reg;
+            if (!reserved) scalar_registers[scalar_register_count++] = reg;
         }
 
         graph = scope == Scope::Function &&
@@ -66,6 +78,9 @@ private:
     std::span<const Operation> operations;
     std::span<const BlockRecord> blocks;
     backend::detail::AllocationCFG cfg;
+    std::array<unsigned, 6> scalar_registers{};
+    unsigned scalar_register_count{};
+    unsigned pinned_slots{};
     bool graph{};
 
     void ResetResult(CompileError error, NodeId node = {}, BlockId block = {}) {
@@ -220,7 +235,7 @@ private:
                 if (operations[i].type == ir::Type::Void) continue;
                 const bool vector = operations[i].type == ir::Type::V128;
                 auto& bank = banks[vector];
-                const unsigned count = vector ? 12 : scalar_registers.size();
+                const unsigned count = vector ? 12 : scalar_register_count;
                 auto& h = result.homes[i];
                 unsigned chosen = count;
                 u32 far = h.last_use;
@@ -253,23 +268,23 @@ private:
 };
 }  // namespace
 
-void AllocateBlock(const ir::Program& program, Allocation& allocation) {
-    Allocator(program, ir::Scope::Block, allocation).Run();
+void AllocateBlock(const ir::Program& program, Allocation& allocation, unsigned pinned_slots) {
+    Allocator(program, ir::Scope::Block, allocation, pinned_slots).Run();
 }
 
-void AllocateFunction(const ir::Program& program, Allocation& allocation) {
-    Allocator(program, ir::Scope::Function, allocation).Run();
+void AllocateFunction(const ir::Program& program, Allocation& allocation, unsigned pinned_slots) {
+    Allocator(program, ir::Scope::Function, allocation, pinned_slots).Run();
 }
 
-Allocation AllocateBlock(const ir::Program& program) {
+Allocation AllocateBlock(const ir::Program& program, unsigned pinned_slots) {
     Allocation result;
-    AllocateBlock(program, result);
+    AllocateBlock(program, result, pinned_slots);
     return result;
 }
 
-Allocation AllocateFunction(const ir::Program& program) {
+Allocation AllocateFunction(const ir::Program& program, unsigned pinned_slots) {
     Allocation result;
-    AllocateFunction(program, result);
+    AllocateFunction(program, result, pinned_slots);
     return result;
 }
 

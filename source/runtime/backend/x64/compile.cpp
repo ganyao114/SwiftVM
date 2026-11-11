@@ -26,9 +26,9 @@ void Compile(const ir::Program& program,
     ClearCode(result);
     result.relocatable = options.relocatable;
     if (program.ScopeKind() == ir::Scope::Block)
-        AllocateBlock(program, allocation);
+        AllocateBlock(program, allocation, options.pinned_uniform_slots);
     else
-        AllocateFunction(program, allocation);
+        AllocateFunction(program, allocation, options.pinned_uniform_slots);
     if (!allocation) {
         result.relocatable = false;
         result.error = allocation.error;

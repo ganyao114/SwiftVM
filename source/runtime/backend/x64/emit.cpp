@@ -26,6 +26,29 @@ void Writer::PublishFlags() {
     if (options.flags_offset != UINT32_MAX) mov(qword[r12 + options.flags_offset], rbx);
 }
 
+int Writer::PinnedSlot(std::uint64_t offset, unsigned bytes) const {
+    if (!Pinned() || options.pinned_uniform_offset == UINT32_MAX || !bytes) return -1;
+    const auto begin = options.pinned_uniform_offset;
+    if (offset < begin) return -1;
+    const auto relative = offset - begin;
+    if (relative >= std::uint64_t{options.pinned_uniform_slots} * 8 ||
+        relative + bytes > std::uint64_t{options.pinned_uniform_slots} * 8)
+        return -1;
+    return static_cast<int>(relative / 8);
+}
+
+void Writer::PublishPinned() {
+    if (!Pinned()) return;
+    for (unsigned i = 0; i < options.pinned_uniform_slots; ++i)
+        mov(qword[r12 + options.pinned_uniform_offset + i * 8], Reg64(PinnedRegister(i)));
+}
+
+void Writer::ReloadPinned() {
+    if (!Pinned()) return;
+    for (unsigned i = 0; i < options.pinned_uniform_slots; ++i)
+        mov(Reg64(PinnedRegister(i)), qword[r12 + options.pinned_uniform_offset + i * 8]);
+}
+
 void Writer::Prologue() {
     if (!Linked()) {
         push(rbx);
@@ -217,6 +240,22 @@ void Writer::Dispatch(OpContext& c) {
 }
 
 void Writer::Run() {
+    if (Pinned()) {
+        if (!Linked() || options.pinned_uniform_slots != 2 ||
+            options.pinned_uniform_offset == UINT32_MAX ||
+            options.pinned_uniform_offset >
+                    UINT32_MAX - (options.pinned_uniform_slots * 8u - 1))
+            Reject(CompileError::UnsupportedOperand);
+        const auto bytes = options.pinned_uniform_slots * 8u;
+        const auto overlaps = [&](std::uint32_t field) {
+            return field != UINT32_MAX &&
+                   std::uint64_t{field} < std::uint64_t{options.pinned_uniform_offset} + bytes &&
+                   options.pinned_uniform_offset < std::uint64_t{field} + 8;
+        };
+        if (overlaps(options.pc_offset) || overlaps(options.flags_offset) ||
+            overlaps(options.mxcsr_offset))
+            Reject(CompileError::UnsupportedOperand);
+    }
     Prologue();
     std::vector<std::pair<unsigned, unsigned>> extra;
     for (auto b : allocation.block_order) {

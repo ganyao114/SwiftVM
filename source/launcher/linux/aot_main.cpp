@@ -80,7 +80,15 @@ int Compile(int argc, char** argv) {
             options.sweep = true;
         else if (option == "--no-opt")
             options.runtime.optimize = false;
-        else if (option == "--decode-timing")
+        else if (option == "--pin-slots") {
+            const auto text = value();
+            unsigned number{};
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+                number > 16)
+                ThrowError("--pin-slots requires 0..16", ErrorKind::InvalidArgument);
+            options.runtime.pinned_slots = static_cast<std::uint8_t>(number);
+        } else if (option == "--decode-timing")
             options.runtime.decode_timing = true;
         else
             ThrowError("unknown AOT compile option", ErrorKind::InvalidArgument);

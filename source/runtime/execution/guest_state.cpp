@@ -1,5 +1,7 @@
 #include "vm.h"
 
+#include <algorithm>
+
 #include <memory>
 
 namespace swift::runtime::execution {
@@ -48,15 +50,22 @@ void VM::ConfigureGuest(GuestISA isa) {
                   16};
         uniform_data = &thread.native.state;
     }
+    const auto pinned_slots =
+            options.pinned_slots == UINT8_MAX
+                    ? backend.pinned_uniform_default
+                    : std::min<std::uint8_t>(options.pinned_slots, backend.pinned_uniform_slots);
+    layout.pinned_uniform_slots = pinned_slots;
     if (backend.configure) backend.configure(backend.context, layout);
     auto& native = thread.native;
-    native.pinned_uniform_offset = backend.pinned_uniform_slots ? layout.gprs_offset : UINT32_MAX;
+    native.pinned_uniform_offset = pinned_slots ? layout.gprs_offset : UINT32_MAX;
+    native.pinned_uniform_slots = pinned_slots;
     native.pinned_vector_offset = backend.pinned_vectors ? layout.vectors_offset : UINT32_MAX;
     native.flags_offset = layout.flags_offset;
     native.pc_offset = layout.pc_offset;
     auto& fault = thread.faults;
     fault.guest_isa = isa;
     fault.pinned_uniform_offset = static_cast<std::uint32_t>(native.pinned_uniform_offset);
+    fault.pinned_uniform_slots = pinned_slots;
     fault.pinned_vector_offset = static_cast<std::uint32_t>(native.pinned_vector_offset);
     fault.flags_offset = layout.flags_offset;
 }

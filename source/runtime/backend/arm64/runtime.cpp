@@ -50,6 +50,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     ops.target = backend::arm64::KnownTargetInfo();
     ops.capabilities = capabilities;
     ops.pinned_uniform_slots = 16;
+    ops.pinned_uniform_default = 16;
     ops.pinned_vectors = true;
     ops.specializes_fp_flush = !capabilities.afp;
     ops.thread_dispatch_cache = true;
@@ -57,7 +58,9 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         auto& self = *static_cast<Runtime*>(raw);
         self.options.flags_offset = layout.flags_offset;
         self.options.pc_offset = layout.pc_offset;
-        self.options.pinned_uniform_offset = layout.gprs_offset;
+        self.options.pinned_uniform_offset =
+                layout.pinned_uniform_slots ? layout.gprs_offset : UINT32_MAX;
+        self.options.pinned_uniform_slots = layout.pinned_uniform_slots;
         self.vector_offset = layout.vectors_offset;
         if (layout.isa == GuestISA::Arm64)
             self.options.fpsr_offset =

@@ -26,6 +26,9 @@ struct RuntimeOptions {
     std::uint16_t hot_threshold{8};
     frontend::DecodeLimits function_limits{};
     arm32::Profile arm32_profile{};
+    // UINT8_MAX keeps the backend default; otherwise the effective count is
+    // clamped to the backend capability.
+    std::uint8_t pinned_slots{UINT8_MAX};
     bool decode_timing{};
     // Additional request-level clocks when decode_timing is enabled.
     bool compile_details{};

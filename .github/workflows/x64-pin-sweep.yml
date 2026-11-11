@@ -1,0 +1,61 @@
+name: x64-pin-sweep
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the AArch64 cross compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Configure and build the runner
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSVM_BUILD_CORRECTNESS=OFF \
+            -DSVM_BUILD_FUZZERS=OFF \
+            -DSVM_BUILD_IR_BENCHMARK=OFF \
+            -DSVM_BUILD_IR_FORMAT=OFF
+          ninja -C build svm_rebuild_linux
+      - name: Build guest programs
+        run: |
+          mkdir -p guests/a64 guests/x86
+          for program in hello syscalls compute; do
+            aarch64-linux-gnu-gcc -static -no-pie -O2 tools/programs/src/$program.c -o guests/a64/$program
+            cc -static -no-pie -O2 tools/programs/src/$program.c -o guests/x86/$program
+          done
+          aarch64-linux-gnu-gcc -static -no-pie -O2 tools/programs/src/fp.c -o guests/a64/fp -lm
+          cc -static -no-pie -O2 tools/programs/src/fp.c -o guests/x86/fp -lm
+          aarch64-linux-gnu-gcc -static -no-pie -O2 tools/programs/src/bench_int.c -o guests/a64/bench_int
+          aarch64-linux-gnu-gcc -static -no-pie -O2 tools/programs/src/bench_fp.c -o guests/a64/bench_fp
+          aarch64-linux-gnu-gcc -nostdlib -static -no-pie tools/programs/src/tiny_arm64.S -o guests/a64/tiny
+          cc -static -no-pie -O2 tools/programs/src/bench_int.c -o guests/x86/bench_int
+          cc -static -no-pie -O2 tools/programs/src/bench_fp.c -o guests/x86/bench_fp
+      - name: Sweep pinned guest registers
+        run: |
+          set -u
+          for guest in a64 x86; do
+            for program in hello syscalls compute fp tiny bench_int bench_fp; do
+              for pins in 0 2; do
+                start=$(date +%s%N)
+                timeout 120 ./build/svm_rebuild_linux --pin-slots "$pins" \
+                  "guests/$guest/$program" > "out.$guest.$program.$pins" 2> "err.$guest.$program.$pins"
+                rc=$?
+                end=$(date +%s%N)
+                wall=$(( (end - start) / 1000000 ))
+                normalized=$(sed -E 's/elapsed_ns=[0-9]+/elapsed_ns=<measured>/' "out.$guest.$program.$pins")
+                digest=$(printf '%s' "$normalized" | sha256sum | cut -d' ' -f1)
+                elapsed=$(grep -o 'elapsed_ns=[0-9]*' "out.$guest.$program.$pins" | head -1 || true)
+                echo "RESULT guest=$guest program=$program pins=$pins rc=$rc wall_ms=$wall digest=$digest $elapsed"
+              done
+              if ! diff -q <(sed -E 's/elapsed_ns=[0-9]+/elapsed_ns=X/' "out.$guest.$program.0") \
+                           <(sed -E 's/elapsed_ns=[0-9]+/elapsed_ns=X/' "out.$guest.$program.2") > /dev/null; then
+                echo "MISMATCH guest=$guest program=$program pins=0-vs-2"
+              fi
+            done
+          done

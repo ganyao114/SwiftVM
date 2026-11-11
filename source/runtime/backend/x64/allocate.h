@@ -21,8 +21,8 @@ struct Allocation {
     explicit operator bool() const noexcept { return error == backend::CompileError::None; }
 };
 
-Allocation AllocateBlock(const ir::Program&);
-Allocation AllocateFunction(const ir::Program&);
-void AllocateBlock(const ir::Program&, Allocation&);
-void AllocateFunction(const ir::Program&, Allocation&);
+Allocation AllocateBlock(const ir::Program&, unsigned pinned_slots = 0);
+Allocation AllocateFunction(const ir::Program&, unsigned pinned_slots = 0);
+void AllocateBlock(const ir::Program&, Allocation&, unsigned pinned_slots = 0);
+void AllocateFunction(const ir::Program&, Allocation&, unsigned pinned_slots = 0);
 }  // namespace swift::runtime::backend::x64

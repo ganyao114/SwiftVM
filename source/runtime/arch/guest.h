@@ -20,6 +20,8 @@ struct GuestLayout {
     std::uint32_t state_bytes{}, gprs_offset{}, pc_offset{}, flags_offset{}, stack_offset{};
     std::uint32_t vectors_offset{UINT32_MAX}, numeric_control_offset{UINT32_MAX};
     std::uint8_t gpr_count{}, vector_count{};
+    // Effective guest-register pins requested for this guest.
+    std::uint8_t pinned_uniform_slots{};
 };
 
 }  // namespace swift::runtime

@@ -8,6 +8,9 @@
 
 namespace swift::runtime::backend::x64::detail {
 void Writer::PrepareCall() {
+    // Helpers read and may rewrite the uniform guest state; the pinned
+    // registers are the authoritative copies while guest code runs.
+    PublishPinned();
     if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_HELPER);
     saved_scalar.clear();
     saved_vectors.clear();
@@ -50,6 +53,7 @@ void Writer::FinishCall() {
     for (auto reg : saved_scalar)
         mov(Reg64(reg), qword[rsp + allocation.call_offset + 192 + (reg - 8) * 8]);
     if (options.flags_offset != UINT32_MAX) mov(rbx, qword[r12 + options.flags_offset]);
+    ReloadPinned();
     if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_GUEST);
     in_call = false;
 }

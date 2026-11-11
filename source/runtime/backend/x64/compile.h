@@ -17,6 +17,9 @@ constexpr ir::TargetInfo KnownTargetInfo() noexcept {
 
 struct CompileOptions {
     std::uint32_t flags_offset{UINT32_MAX}, pc_offset{UINT32_MAX}, mxcsr_offset{UINT32_MAX};
+    // Linked guest-register pins: slots 0..1 live in r13 and r14.
+    std::uint32_t pinned_uniform_offset{UINT32_MAX};
+    std::uint8_t pinned_uniform_slots{};
     std::uintptr_t dispatcher{}, exit_handler{};
     std::uint64_t entry_pc{};
     bool native_fp_environment{}, fault_locations{}, relocatable{};

@@ -1,17 +1,55 @@
 #include "emit.h"
 
 namespace swift::runtime::backend::x64::detail {
+namespace {
+void PinLoad(Xbyak::CodeGenerator& gen, const Xbyak::Reg64& target, unsigned reg, unsigned bits) {
+    switch (bits) {
+        case 64: gen.mov(target, Xbyak::Reg64(reg)); break;
+        case 32: gen.mov(Xbyak::Reg32(target.getIdx()), Xbyak::Reg32(reg)); break;
+        case 16: gen.movzx(Xbyak::Reg32(target.getIdx()), Xbyak::Reg16(reg)); break;
+        case 8: gen.movzx(Xbyak::Reg32(target.getIdx()), Xbyak::Reg8(reg)); break;
+        default: break;
+    }
+}
+void PinStore(Xbyak::CodeGenerator& gen, unsigned reg, const Xbyak::Reg64& source, unsigned bits) {
+    switch (bits) {
+        case 64: gen.mov(Xbyak::Reg64(reg), source); break;
+        case 32: gen.mov(Xbyak::Reg32(reg), Xbyak::Reg32(source.getIdx())); break;
+        case 16: gen.mov(Xbyak::Reg16(reg), Xbyak::Reg16(source.getIdx())); break;
+        case 8: gen.mov(Xbyak::Reg8(reg), Xbyak::Reg8(source.getIdx())); break;
+        default: break;
+    }
+}
+}  // namespace
+
 void Writer::Uniform(OpContext& c) {
     auto at = c.operands.begin();
     const auto u = *at++;
     const auto off = u.Payload();
     if (off > INT32_MAX) Reject(CompileError::UnsupportedOperand);
+    const auto width = c.operation.opcode == OpCode::LoadUniform ? c.width
+                                                                : TypeBits(u.TypeView());
+    const auto pinned = PinnedSlot(off, width / 8);
+    const auto relative = pinned >= 0
+                                  ? off - options.pinned_uniform_offset - pinned * 8
+                                  : -1;
     if (c.operation.opcode == OpCode::LoadUniform) {
         if (c.vector_result)
             movdqu(xmm0, ptr[r12 + off]);
         else if (off == options.flags_offset)
             mov(rax, rbx);
-        else
+        else if (pinned >= 0 && relative == 0 && (width == 64 || width == 32 || width == 16 ||
+                                                   width == 8))
+            PinLoad(*this, rax, PinnedRegister(static_cast<unsigned>(pinned)), width);
+        else if (pinned >= 0) {
+            // Rare in-slot access (for example AH): publish this slot, read
+            // memory, then reload the register copy.
+            mov(qword[r12 + options.pinned_uniform_offset + pinned * 8],
+                Reg64(PinnedRegister(static_cast<unsigned>(pinned))));
+            Load(rax, r12, off, c.width);
+            mov(Reg64(PinnedRegister(static_cast<unsigned>(pinned))),
+                qword[r12 + options.pinned_uniform_offset + pinned * 8]);
+        } else
             Load(rax, r12, off, c.width);
         return;
     }
@@ -21,7 +59,17 @@ void Writer::Uniform(OpContext& c) {
         movdqu(ptr[r12 + off], xmm0);
     } else {
         Read(value, rax);
-        Store(rax, r12, off, TypeBits(u.TypeView()));
+        if (pinned >= 0 && relative == 0 &&
+            (width == 64 || width == 32 || width == 16 || width == 8))
+            PinStore(*this, PinnedRegister(static_cast<unsigned>(pinned)), rax, width);
+        else if (pinned >= 0) {
+            mov(qword[r12 + options.pinned_uniform_offset + pinned * 8],
+                Reg64(PinnedRegister(static_cast<unsigned>(pinned))));
+            Store(rax, r12, off, TypeBits(u.TypeView()));
+            mov(Reg64(PinnedRegister(static_cast<unsigned>(pinned))),
+                qword[r12 + options.pinned_uniform_offset + pinned * 8]);
+        } else
+            Store(rax, r12, off, TypeBits(u.TypeView()));
         if (off == options.flags_offset) mov(rbx, rax);
     }
     if (off == options.pc_offset) {
@@ -120,7 +168,15 @@ void Writer::Handle(Op<OpCode::StoreUniformSelectImm>, OpContext& c) {
     mov(rax, c.Arg(3).Payload());
     mov(rdx, c.Arg(2).Payload());
     cmovnz(rax, rdx);
-    Store(rax, r12, c.Arg(0).Payload(), 64);
+    const auto select_off = c.Arg(0).Payload();
+    const auto select_pin = PinnedSlot(select_off, 8);
+    if (select_pin >= 0)
+        mov(qword[r12 + options.pinned_uniform_offset + select_pin * 8],
+            Reg64(PinnedRegister(static_cast<unsigned>(select_pin))));
+    Store(rax, r12, select_off, 64);
+    if (select_pin >= 0)
+        mov(Reg64(PinnedRegister(static_cast<unsigned>(select_pin))),
+            qword[r12 + options.pinned_uniform_offset + select_pin * 8]);
     if (c.Arg(0).Payload() == options.pc_offset) static_pc_known = false;
 }
 }  // namespace swift::runtime::backend::x64::detail

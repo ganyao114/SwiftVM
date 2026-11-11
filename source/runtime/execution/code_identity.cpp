@@ -5,6 +5,7 @@
 #include "runtime/arch/x86/cpu.h"
 #include "svm/code_build_id.h"
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 
@@ -62,6 +63,10 @@ CodeImageKey MakeCodeImageKey(const Digest& guest,
                              c.sha256})
         Number(config, value);
     Number(config, backend.pinned_uniform_slots);
+    Number(config, options.pinned_slots == UINT8_MAX
+                            ? backend.pinned_uniform_default
+                            : std::min<std::uint32_t>(options.pinned_slots,
+                                                      backend.pinned_uniform_slots));
     Number(config, backend.pinned_vectors);
     Number(config, backend.specializes_fp_flush);
     Number(config, options.optimize);

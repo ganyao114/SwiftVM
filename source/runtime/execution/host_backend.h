@@ -33,6 +33,8 @@ struct HostBackendOps {
     std::uint64_t isa_features{};
     // Physical private-state banks belong to the selected native ABI.
     std::uint8_t pinned_uniform_slots{};
+    // Effective slot count when the caller does not request an override.
+    std::uint8_t pinned_uniform_default{};
     bool pinned_vectors{};
     // Only backends that bake software DAZ/FTZ into code need separate domains.
     bool specializes_fp_flush{};

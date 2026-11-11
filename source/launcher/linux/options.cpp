@@ -56,6 +56,15 @@ Options ParseOptions(int argc, char* const* argv) {
                 Invalid("--hot-threshold requires an integer in 0..65535");
         } else if (option == "--no-opt")
             options.optimize = false;
+        else if (option == "--pin-slots") {
+            const auto text = value(option);
+            unsigned number{};
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), number);
+            if (parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size() ||
+                number > 16)
+                Invalid("--pin-slots requires 0..16");
+            options.pinned_slots = static_cast<std::uint8_t>(number);
+        }
         else if (option == "--cache-dir")
             options.cache_directory = value(option);
         else if (option == "--aot")
@@ -78,7 +87,8 @@ Options ParseOptions(int argc, char* const* argv) {
 void PrintUsage() {
     std::puts(
             "svm_rebuild_linux [--scope block|function] [--engine jit|interpreter|mixed] "
-            "[--hot-threshold N] [--no-opt] [--decode-timing] [--compile-details] [--] guest "
+            "[--hot-threshold N] [--no-opt] [--pin-slots N] [--decode-timing] "
+            "[--compile-details] [--] guest "
             "[args...]\n"
             "  [--cache-dir DIR] persists native code across processes (off by default).\n"
             "  [--aot ARTIFACT] loads embedded guest/code; the guest path is optional.\n"

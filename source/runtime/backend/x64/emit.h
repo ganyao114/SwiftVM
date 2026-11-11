@@ -58,6 +58,14 @@ public:
     void StaticExit(u64);
     void Restore();
     void PublishFlags();
+    bool Pinned() const { return options.pinned_uniform_slots != 0; }
+    static unsigned PinnedRegister(unsigned slot) {
+        constexpr unsigned registers[]{13, 14, 15, 5};
+        return registers[slot];
+    }
+    int PinnedSlot(std::uint64_t offset, unsigned bytes) const;
+    void PublishPinned();
+    void ReloadPinned();
     void Condition(const Reg64&, ir::Condition);
     void MergeFlags(const Reg64&, u64);
     void CaptureFlags(OpContext&);

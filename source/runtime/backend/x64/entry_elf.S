@@ -21,6 +21,32 @@
  mov qword ptr [r12+rcx],rbx
 1:
 .endm
+.macro PUBLISH_PINNED
+ mov r10d,dword ptr [r12+SVM_X64_CTX_PIN_OFFSET-SVM_X64_CTX_STATE]
+ cmp r10d,-1
+ je 7f
+ mov qword ptr [r12+r10],r13
+ mov qword ptr [r12+r10+8],r14
+ mov ecx,dword ptr [r12+SVM_X64_CTX_PIN_SLOTS-SVM_X64_CTX_STATE]
+ cmp ecx,2
+ je 7f
+ mov qword ptr [r12+r10+16],r15
+ mov qword ptr [r12+r10+24],rbp
+7:
+.endm
+.macro RELOAD_PINNED
+ mov r10d,dword ptr [r12+SVM_X64_CTX_PIN_OFFSET-SVM_X64_CTX_STATE]
+ cmp r10d,-1
+ je 9f
+ mov r13,qword ptr [r12+r10]
+ mov r14,qword ptr [r12+r10+8]
+ mov ecx,dword ptr [r12+SVM_X64_CTX_PIN_SLOTS-SVM_X64_CTX_STATE]
+ cmp ecx,2
+ je 9f
+ mov r15,qword ptr [r12+r10+16]
+ mov rbp,qword ptr [r12+r10+24]
+9:
+.endm
 SVM_FUNCTION SvmRunNative
  mov qword ptr [rdi+SVM_X64_CTX_PHASE],SVM_NATIVE_PHASE_ENTERING
  push rbx
@@ -42,6 +68,7 @@ SVM_FUNCTION SvmRunNative
  mov rbx,qword ptr [r12+rax]
 1:
  ldmxcsr dword ptr [rdi+SVM_X64_CTX_GUEST_MXCSR]
+ RELOAD_PINNED
  mov eax,dword ptr [rdi+SVM_X64_CTX_PC]
  mov rdi,qword ptr [r12+rax]
  jmp SvmNativeDispatch
@@ -136,6 +163,7 @@ SVM_FUNCTION SvmNativePending
  jmp .Lcold
 SVM_END SvmNativePending
 .Lcold:
+ PUBLISH_PINNED
  PUBLISH_FLAGS
  mov rax,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
  mov qword ptr [rax],0
@@ -152,6 +180,7 @@ SVM_END SvmNativePending
  je 1f
  mov rbx,qword ptr [r12+rax]
 1:
+ RELOAD_PINNED
  test r11,r11
  jz .Lfailed
  mov rax,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
@@ -164,6 +193,7 @@ SVM_END SvmNativePending
  jmp SvmNativeExit
 SVM_FUNCTION SvmNativeExit
  mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_LEAVING
+ PUBLISH_PINNED
  PUBLISH_FLAGS
  stmxcsr dword ptr [r12+SVM_X64_CTX_GUEST_MXCSR-SVM_X64_CTX_STATE]
  jmp .Lrestore_host_root
@@ -171,6 +201,7 @@ SVM_END SvmNativeExit
 SVM_FUNCTION SvmNativeEventExit
  lea r12,[rdi+SVM_X64_CTX_STATE]
  mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_LEAVING
+ PUBLISH_PINNED
  mov eax,SVM_NATIVE_EXIT_GUEST_EVENTS
  jmp .Lrestore_host_root
 SVM_END SvmNativeEventExit
