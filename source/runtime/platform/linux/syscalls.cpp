@@ -230,6 +230,41 @@ s64 LinuxSyscalls::InvokeOperation(u64 number, const u64* args) {
         }
         case 3:
             return Result(close(static_cast<int>(args[0])));
+        case 87: {
+            std::string path;
+            if (!ReadString(args[0], path)) return -EFAULT;
+            return Result(unlink(path.c_str()));
+        }
+        case 88: {
+            std::string target, link;
+            if (!ReadString(args[0], target) || !ReadString(args[1], link)) return -EFAULT;
+            return Result(symlink(target.c_str(), link.c_str()));
+        }
+        case 217:
+            if (!vm.PrepareGuestWrite(args[1], args[2])) return -EFAULT;
+            return Result(syscall(SYS_getdents64,
+                                  static_cast<int>(args[0]),
+                                  reinterpret_cast<void*>(args[1]),
+                                  static_cast<std::size_t>(args[2])));
+        case 263: {
+            std::string path;
+            if (!ReadString(args[1], path)) return -EFAULT;
+            return Result(unlinkat(static_cast<int>(args[0]), path.c_str(), static_cast<int>(args[2])));
+        }
+        case 266: {
+            std::string target, link;
+            if (!ReadString(args[0], target) || !ReadString(args[2], link)) return -EFAULT;
+            return Result(symlinkat(target.c_str(), static_cast<int>(args[1]), link.c_str()));
+        }
+        case 32:
+            return Result(dup(static_cast<int>(args[0])));
+        case 33:
+            return Result(dup2(static_cast<int>(args[0]), static_cast<int>(args[1])));
+        case 292:
+            return Result(syscall(SYS_dup3,
+                                  static_cast<int>(args[0]),
+                                  static_cast<int>(args[1]),
+                                  static_cast<int>(args[2])));
         case 5:
             return Stat(static_cast<int>(args[0]), args[1]);
         case 8:
@@ -384,10 +419,15 @@ s64 LinuxSyscalls::InvokeOperation(u64 number, const u64* args) {
                                                       : "x86_64");
             return vm.GuestWrite(args[0], &name, sizeof(name)) ? 0 : -EFAULT;
         }
-        case 72:
-            if (args[1] >= F_GETFD && args[1] <= F_SETFL)
-                return Result(fcntl(static_cast<int>(args[0]), static_cast<int>(args[1]), args[2]));
+        case 72: {
+            // Commands with scalar arguments forward directly; pointer-argument
+            // commands stay outside the modelled set.
+            const auto command = static_cast<int>(args[1]);
+            if ((command >= F_GETFD && command <= F_SETFL) || command == F_DUPFD ||
+                command == F_DUPFD_CLOEXEC || command == F_SETOWN || command == F_GETOWN)
+                return Result(fcntl(static_cast<int>(args[0]), command, args[2]));
             break;
+        }
         case 77: {
             if (args[1] > static_cast<u64>(std::numeric_limits<off_t>::max())) return -EINVAL;
             const auto result = ftruncate(static_cast<int>(args[0]), static_cast<off_t>(args[1]));

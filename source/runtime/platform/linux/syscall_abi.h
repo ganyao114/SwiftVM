@@ -8,6 +8,16 @@ namespace swift::runtime::platform {
 // Guest register/number decoding stays at the architectural ABI boundary.
 constexpr std::uint64_t Arm64SyscallOperation(std::uint64_t number) noexcept {
     switch (number) {
+        case 23:
+            return 32;  // dup
+        case 35:
+            return 263;  // unlinkat
+        case 36:
+            return 266;  // symlinkat
+        case 61:
+            return 217;  // getdents64
+        case 24:
+            return 292;  // dup3
         case 25:
             return 72;  // fcntl
         case 29:
