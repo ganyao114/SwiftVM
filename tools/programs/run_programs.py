@@ -102,6 +102,10 @@ def main():
     parser.add_argument('--timeout', type=float, default=120)
     args = parser.parse_args()
 
+    args.bin_dir = args.bin_dir.resolve()
+    args.runner = args.runner.resolve()
+    if args.aot:
+        args.aot = args.aot.resolve()
     programs = [name for name in PROGRAMS if (args.bin_dir / name).exists()]
     if not programs:
         parser.error(f'no programs in {args.bin_dir}; run build.sh first')
