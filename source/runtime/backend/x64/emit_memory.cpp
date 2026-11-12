@@ -81,6 +81,13 @@ void Writer::Uniform(OpContext& c) {
                 static_pc_known = true;
             }
         }
+        // Unknown/EarlyOff frontends publish PC explicitly instead of
+        // emitting FaultLocation. Those stores still identify the memory
+        // accesses whose native faults the execution owner must recover.
+        if (static_pc_known) {
+            guest_pc = static_pc;
+            has_fault_location = true;
+        }
     }
 }
 

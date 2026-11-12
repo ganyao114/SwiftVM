@@ -391,6 +391,52 @@ void ArmGuestFaultState() {
     }
 }
 
+#if defined(__x86_64__)
+void X64ExplicitPCFaults() {
+    constexpr std::uint8_t x86_load[]{0x48, 0x8b, 0x00};  // MOV RAX,[RAX].
+    constexpr std::uint32_t arm_load = 0xf9400001;        // LDR X1,[X0].
+    for (const bool arm : {false, true}) {
+        const std::span<const std::uint8_t> bytes =
+                arm ? std::span{reinterpret_cast<const std::uint8_t*>(&arm_load), sizeof(arm_load)}
+                    : std::span<const std::uint8_t>{x86_load};
+        GuestFile guest{bytes, PF_R | PF_X, arm ? EM_AARCH64 : EM_X86_64};
+        for (const auto target : {swift::runtime::ir::TargetMode::Known,
+                                  swift::runtime::ir::TargetMode::Unknown,
+                                  swift::runtime::ir::TargetMode::EarlyOff})
+            for (const auto scope :
+                 {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function})
+                for (const auto pins : {0u, 2u}) {
+                    swift::runtime::platform::HostRuntime host{false};
+                    auto backend = host.Bind();
+                    backend.target.mode = target;
+                    execution::RuntimeOptions options;
+                    options.scope = scope;
+                    options.pinned_slots = pins;
+                    execution::RuntimeStats stats;
+                    execution::VM vm{options, stats, backend};
+                    vm.PrepareGuest(guest.Path());
+                    const auto pc = arm ? vm.ArmState().pc : vm.State().pc;
+                    if (arm)
+                        vm.ArmState().gprs[0] = 0;
+                    else
+                        vm.State().gprs[x86::RAX] = 0;
+                    (void)vm.RunPrepared();
+                    const auto fault = vm.CaptureException();
+                    Check(vm.StopReason() ==
+                                          swift::runtime::GuestStopReason::GuestSignalTermination &&
+                                  vm.TerminationSignal() == SIGSEGV && fault &&
+                                  fault->info.instruction_pc == pc && fault->info.address_valid &&
+                                  fault->info.address == 0 && fault->info.access_bytes == 8 &&
+                                  fault->info.access ==
+                                          swift::runtime::GuestExceptionAccess::Read &&
+                                  stats.native_bytes && !stats.interpreted_steps,
+                          "x64 recovers explicit-PC guest memory faults for every target policy");
+                    Check(vm.Close().Complete(), "explicit-PC fault fixture releases mappings");
+                }
+    }
+}
+#endif
+
 void EmbeddedExceptionContext() {
     constexpr std::uint8_t load[]{0x4c, 0x8b, 0x20};  // MOV R12,[RAX].
     std::vector<std::uint8_t> code(std::begin(load), std::end(load));
@@ -1009,6 +1055,56 @@ void Atomic128RejectBeforeCommit() {
     }
 }
 
+void ArmSupportedFPControl(unsigned pinned_slots) {
+    // FADD D0,D1,D2; MOV X0,42; MOV X8,93; SVC 0.
+    constexpr std::array<std::uint32_t, 4> instructions{
+            0x1e622820, 0xd2800540, 0xd2800ba8, 0xd4000001};
+    const std::span<const std::uint8_t> bytes{
+            reinterpret_cast<const std::uint8_t*>(instructions.data()), sizeof(instructions)};
+    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+    for (const auto scope :
+         {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function}) {
+        for (const auto mode : {execution::ExecutionMode::JitOnly,
+                                execution::ExecutionMode::InterpretOnly,
+                                execution::ExecutionMode::Mixed}) {
+            for (unsigned control = 0; control < 16; ++control) {
+                execution::RuntimeOptions options;
+                options.scope = scope;
+                options.mode = mode;
+                options.hot_threshold = 0;
+                options.pinned_slots = pinned_slots;
+                execution::RuntimeStats stats;
+                swift::runtime::platform::HostRuntime host{false};
+                execution::VM vm{options, stats, host.Bind()};
+                vm.PrepareGuest(guest.Path());
+                auto& state = vm.ArmState();
+                const auto fpcr = ((control & 3) << 22) | ((control & 4) ? 1u << 24 : 0) |
+                                  ((control & 8) ? 1u << 25 : 0);
+                state.fpcr = fpcr;
+                // 1 + 2^-53 is halfway between adjacent doubles: only +infinity
+                // rounds upward. Upper destination bits must become zero.
+                constexpr std::uint64_t lhs = 0x3ff0000000000000, rhs = 0x3ca0000000000000;
+                std::memset(state.q[0], 0xff, sizeof(state.q[0]));
+                std::memcpy(state.q[1], &lhs, sizeof(lhs));
+                std::memcpy(state.q[2], &rhs, sizeof(rhs));
+                REQUIRE(vm.RunPrepared() == 42);
+                std::array<std::uint64_t, 2> result;
+                std::memcpy(result.data(), state.q[0], sizeof(result));
+                CHECK(result[0] == lhs + ((control & 3) == 1));
+                CHECK(result[1] == 0);
+                CHECK(state.fpcr == fpcr);
+                CHECK(state.fpsr == (1u << 4));
+                if (mode != execution::ExecutionMode::InterpretOnly) {
+                    CHECK(stats.native_bytes > 0);
+                    CHECK(stats.interpreted_steps == 0);
+                    CHECK(stats.pinned_uniform_slots == pinned_slots);
+                }
+                CHECK(vm.Close().Complete());
+            }
+        }
+    }
+}
+
 void ArmUnsupportedFPControl() {
     // MOV X0,1<<26; MSR FPCR,X0 (AHP); MOV X8,93; SVC 0.
     constexpr std::array<std::uint32_t, 4> instructions{
@@ -1067,6 +1163,18 @@ TEST_CASE("Mixed rejects invalid producer", "[native][execution]") {
 
 TEST_CASE("ARM guest exact fault state", "[native][execution][arm64-guest]") {
     CHECK_NOTHROW(ArmGuestFaultState());
+}
+
+#if defined(__x86_64__)
+TEST_CASE("X64 recovers guest memory faults with explicit PC stores", "[native][execution][x64]") {
+    CHECK_NOTHROW(X64ExplicitPCFaults());
+}
+#endif
+
+TEST_CASE("ARM FP controls retain the selected host environment",
+          "[native][execution][floating][arm64-guest]") {
+    ArmSupportedFPControl(0);
+    ArmSupportedFPControl(2);
 }
 
 TEST_CASE("SSE exception state", "[native][execution][floating]") {

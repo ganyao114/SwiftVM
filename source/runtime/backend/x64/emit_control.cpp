@@ -92,6 +92,8 @@ void Writer::Handle(Op<OpCode::SetLocation>, OpContext& c) {
     mov(qword[r12 + options.pc_offset], rax);
     static_pc = c.Arg(0).Payload();
     static_pc_known = true;
+    guest_pc = static_pc;
+    has_fault_location = true;
 }
 
 #define EMPTY(name)                                                                                \

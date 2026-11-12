@@ -5,6 +5,7 @@
 #include "tests/support/check.h"
 #include "tests/support/test_mode.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <csignal>
@@ -56,8 +57,74 @@ std::vector<std::uint8_t> Interworking() {
     return Image(code);
 }
 
+struct DualForm {
+    std::uint32_t load, store;
+    bool thumb{}, writeback{}, pre{};
+};
+
+// LLVM-assembled LDRD/STRD r4,r5: register offset, immediate, post-index
+// and pre-index. Thumb words below retain their little-endian byte order.
+constexpr DualForm dual_forms[]{
+        {0xe18140d2, 0xe18140f2},
+        {0xe1c140d0, 0xe1c140f0},
+        {0xe0c140d8, 0xe0c140f8, false, true},
+        {0xe1e140d8, 0xe1e140f8, false, true, true},
+        {0x4500e9d1, 0x4500e9c1, true},
+        {0x4502e8f1, 0x4502e8e1, true, true},
+        {0x4502e9f1, 0x4502e9e1, true, true, true},
+};
+
+std::vector<std::uint8_t> DualWord(DualForm form, bool store) {
+    std::vector<std::uint8_t> code(4);
+    const auto instruction = store ? form.store : form.load;
+    std::memcpy(code.data(), &instruction, sizeof(instruction));
+    constexpr std::uint32_t arm_exit[]{0xe3a0002a, 0xe3a07001, 0xef000000};
+    constexpr std::uint16_t thumb_exit[]{0x202a, 0x2701, 0xdf00};
+    const auto append = [&]<class T>(const T& exit) {
+        const auto* bytes = reinterpret_cast<const std::uint8_t*>(&exit);
+        code.insert(code.end(), bytes, bytes + sizeof(exit));
+    };
+    if (form.thumb)
+        append(thumb_exit);
+    else
+        append(arm_exit);
+    return Image(code, form.thumb);
+}
+
+std::uint64_t DualData(exe::VM& vm, bool second_page = true) {
+    const auto page = vm.Memory().PageSize();
+    const auto mapping =
+            vm.Memory().Map(0, page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+    if (mapping == UINT64_MAX || mapping >= (UINT64_C(1) << 32)) return UINT64_MAX;
+    if (!second_page && vm.Memory().Protect(mapping + page, page, PROT_NONE)) return UINT64_MAX;
+    return mapping;
+}
+
 std::uint64_t StackPointer(exe::VM& vm) { return vm.Arm32State().r[13]; }
 }  // namespace
+
+#if defined(__linux__) && defined(__x86_64__)
+TEST_CASE("ARM32 x64 pins use the supported bank and report the effective slots",
+          "[native][arm32][x64]") {
+    for (unsigned requested : {0u, 2u, 4u}) {
+        for (auto scope : {ir::Scope::Block, ir::Scope::Function}) {
+            platform::HostRuntime host{false};
+            auto backend = host.Bind();
+            REQUIRE(backend.pinned_uniform_slots == 2);
+            exe::RuntimeOptions options;
+            options.scope = scope;
+            options.pinned_slots = requested;
+            exe::RuntimeStats stats;
+            exe::VM vm{options, stats, backend};
+            vm.PrepareGuest(Interworking(), "arm32-pins");
+            REQUIRE(vm.RunPrepared() == 42);
+            CHECK(stats.pinned_uniform_slots == std::min(requested, 2u));
+            CHECK(stats.native_bytes > 0 && stats.interpreted_steps == 0);
+            CHECK(vm.Close().Complete());
+        }
+    }
+}
+#endif
 
 TEST_CASE("ARM32 ELF32 stack, interworking and mixed promotion share one frontend",
           "[native][arm32]") {
@@ -91,6 +158,142 @@ TEST_CASE("ARM32 ELF32 stack, interworking and mixed promotion share one fronten
         }
     }
 }
+
+#if defined(__linux__) && defined(__x86_64__)
+TEST_CASE("ARM and Thumb dual-word transfers preserve alignment paths and writeback",
+          "[native][arm32][memory][x64]") {
+    using Mode = exe::ExecutionMode;
+    for (const auto form : dual_forms)
+        for (const bool store : {false, true})
+            for (const unsigned offset : {0u, 4u})
+                for (const auto mode : {Mode::InterpretOnly, Mode::JitOnly})
+                    for (const auto scope : {ir::Scope::Block, ir::Scope::Function})
+                        for (const auto target : {ir::TargetMode::Known,
+                                                  ir::TargetMode::Unknown,
+                                                  ir::TargetMode::EarlyOff}) {
+                            INFO(form.thumb << ' ' << store << ' ' << offset << ' '
+                                            << unsigned(mode) << ' ' << unsigned(scope) << ' '
+                                            << unsigned(target));
+                            platform::HostRuntime host{false};
+                            auto backend = host.Bind();
+                            backend.target.mode = target;
+                            exe::RuntimeOptions options;
+                            options.mode = mode;
+                            options.scope = scope;
+                            exe::RuntimeStats stats;
+                            exe::VM vm{options, stats, backend};
+                            vm.PrepareGuest(DualWord(form, store), "arm32-dual-word");
+                            const auto data = DualData(vm);
+                            REQUIRE(data != UINT64_MAX);
+                            const auto address = data + offset;
+                            const std::uint32_t words[]{0xcafebabe, 0x89abcdef};
+                            REQUIRE(vm.Memory().CopyOut(address, words, sizeof(words)));
+                            auto& state = vm.Arm32State();
+                            state.r[1] = address - (form.pre ? 8 : 0);
+                            state.r[2] = 0;
+                            state.r[4] = 0x11223344;
+                            state.r[5] = 0x55667788;
+                            REQUIRE(vm.RunPrepared() == 42);
+                            CHECK(state.r[1] == address + (form.writeback && !form.pre ? 8 : 0));
+                            if (store) {
+                                std::uint32_t observed[2]{};
+                                REQUIRE(vm.Memory().CopyIn(observed, address, sizeof(observed)));
+                                CHECK(observed[0] == 0x11223344 && observed[1] == 0x55667788);
+                            } else
+                                CHECK(state.r[4] == words[0] && state.r[5] == words[1]);
+                            CHECK(mode == Mode::InterpretOnly
+                                          ? stats.native_bytes == 0
+                                          : stats.native_bytes > 0 && stats.interpreted_steps == 0);
+                            CHECK(vm.Close().Complete());
+                        }
+}
+
+TEST_CASE("ARM32 dual-word faults retain each access boundary and deferred writeback",
+          "[native][arm32][memory][x64]") {
+    using Mode = exe::ExecutionMode;
+    for (const auto form : dual_forms)
+        for (const bool store : {false, true})
+            // offset -4 faults on the second word; 0/4 fault on the first
+            // aligned doubleword/word, respectively.
+            for (const int offset : {-4, 0, 4})
+                for (const auto mode : {Mode::InterpretOnly, Mode::JitOnly})
+                    for (const auto scope : {ir::Scope::Block, ir::Scope::Function})
+                        for (const auto target : {ir::TargetMode::Known,
+                                                  ir::TargetMode::Unknown,
+                                                  ir::TargetMode::EarlyOff}) {
+                            INFO(form.thumb << ' ' << store << ' ' << offset << ' '
+                                            << unsigned(mode) << ' ' << unsigned(scope) << ' '
+                                            << unsigned(target));
+                            platform::HostRuntime host{false};
+                            auto backend = host.Bind();
+                            backend.target.mode = target;
+                            exe::RuntimeOptions options;
+                            options.mode = mode;
+                            options.scope = scope;
+                            exe::RuntimeStats stats;
+                            exe::VM vm{options, stats, backend};
+                            vm.PrepareGuest(DualWord(form, store), "arm32-dual-fault");
+                            const auto data = DualData(vm, false);
+                            REQUIRE(data != UINT64_MAX);
+                            const auto boundary = data + vm.Memory().PageSize();
+                            const auto address = boundary + offset;
+                            const std::uint32_t first = 0xcafebabe;
+                            REQUIRE(vm.Memory().CopyOut(boundary - 4, &first, sizeof(first)));
+                            auto& state = vm.Arm32State();
+                            const auto original_base = address - (form.pre ? 8 : 0);
+                            state.r[1] = original_base;
+                            state.r[2] = 0;
+                            state.r[4] = 0x11223344;
+                            state.r[5] = 0x55667788;
+                            (void)vm.RunPrepared();
+                            REQUIRE((vm.StopReason() == GuestStopReason::GuestSignalTermination &&
+                                     vm.TerminationSignal() == SIGSEGV));
+                            CHECK(state.r[1] == original_base);
+                            CHECK(state.r[4] == (!store && offset < 0 ? first : 0x11223344) &&
+                                  state.r[5] == 0x55667788);
+                            std::uint32_t observed{};
+                            REQUIRE(vm.Memory().CopyIn(&observed, boundary - 4, sizeof(observed)));
+                            CHECK(observed == (store && offset < 0 ? 0x11223344 : first));
+                            const auto snapshot = vm.CaptureException();
+                            REQUIRE(snapshot);
+                            CHECK(snapshot->info.instruction_pc == Entry &&
+                                  snapshot->info.access == (store ? GuestExceptionAccess::Write
+                                                                  : GuestExceptionAccess::Read) &&
+                                  snapshot->info.access_bytes == (offset == 0 ? 8 : 4) &&
+                                  snapshot->info.address_valid &&
+                                  snapshot->info.address == boundary + (offset > 0 ? offset : 0));
+                            CHECK(vm.Close().Complete());
+                        }
+}
+
+TEST_CASE("ARM32 overlapping NEON permutations remain executable on x64", "[native][arm32][x64]") {
+    // VTRN.8 D0,D0; VUZP.8 D0,D0; VZIP.8 D0,D0; exit(42).
+    constexpr std::uint32_t arm[]{
+            0xf3b20080, 0xf3b20100, 0xf3b20180, 0xe3a0002a, 0xe3a07001, 0xef000000};
+    constexpr std::uint16_t thumb[]{
+            0xffb2, 0x0080, 0xffb2, 0x0100, 0xffb2, 0x0180, 0x202a, 0x2701, 0xdf00};
+    for (const bool is_thumb : {false, true})
+        for (const auto scope : {ir::Scope::Block, ir::Scope::Function}) {
+            const std::span<const std::uint8_t> code =
+                    is_thumb
+                            ? std::span{reinterpret_cast<const std::uint8_t*>(thumb), sizeof(thumb)}
+                            : std::span{reinterpret_cast<const std::uint8_t*>(arm), sizeof(arm)};
+            platform::HostRuntime host{false};
+            exe::RuntimeOptions options;
+            options.scope = scope;
+            exe::RuntimeStats stats;
+            exe::VM vm{options, stats, host.Bind()};
+            vm.PrepareGuest(Image(code, is_thumb), "arm32-neon-overlap");
+            for (unsigned vector = 0; vector < 16; ++vector)
+                std::memset(vm.Arm32State().q[vector], vector + 1, 16);
+            const auto before = vm.Arm32State();
+            REQUIRE(vm.RunPrepared() == 42);
+            CHECK(std::memcmp(vm.Arm32State().q, before.q, sizeof(before.q)) == 0);
+            CHECK(stats.native_bytes && !stats.interpreted_steps);
+            CHECK(vm.Close().Complete());
+        }
+}
+#endif
 
 TEST_CASE("ARM32 signal frame restores edited integer, VFP and full Thumb IT location",
           "[compile][arm32][signals]") {

@@ -34,20 +34,23 @@ void Writer::MergeFlags(const Reg64& r, u64 selected) {
 }
 
 void Writer::PackFlags(const Reg64& native, const Reg64& result) {
-    mov(r10, result);
-    and_(r10d, 255);
-    const auto put = [&](unsigned src, unsigned dst) {
-        mov(r11, native);
-        shr(r11, src);
-        and_(r11d, 1);
-        shl(r11, dst);
-        or_(r10, r11);
+    // ZF/SF remain adjacent in the portable snapshot. Move them together;
+    // every packed arithmetic bit fits in 32 bits, including the parity byte.
+    mov(r10d, native.cvt32());
+    and_(r10d, 0xc0);
+    shl(r10d, 24);
+    mov(r11d, result.cvt32());
+    and_(r11d, 255);
+    or_(r10d, r11d);
+    const auto put = [&](unsigned src, unsigned shift) {
+        mov(r11d, native.cvt32());
+        and_(r11d, 1u << src);
+        shl(r11d, shift);
+        or_(r10d, r11d);
     };
     put(0, 29);
-    put(6, 30);
-    put(7, 31);
-    put(11, 28);
-    put(4, 26);
+    put(11, 17);
+    put(4, 22);
 }
 
 void Writer::CaptureFlags(OpContext& c) {

@@ -2215,7 +2215,9 @@ bool asimd_VTRN(bool D, size_t sz, size_t Vd, bool Q, bool M, size_t Vm) {
     const auto m = ToVector(Q, Vm, M);
 
     if (d == m) {
-        return UnpredictableInstruction();
+        // The destination data is architecturally UNKNOWN, not an illegal
+        // instruction. Retain its original bits as a deterministic choice.
+        return true;
     }
 
     const auto reg_d = ir.GetVector(d);
@@ -2242,7 +2244,7 @@ bool asimd_VUZP(bool D, size_t sz, size_t Vd, bool Q, bool M, size_t Vm) {
     const auto m = ToVector(Q, Vm, M);
 
     if (d == m) {
-        return UnpredictableInstruction();
+        return true;  // Architecturally UNKNOWN destination data.
     }
 
     const auto reg_d = ir.GetVector(d);
@@ -2271,7 +2273,7 @@ bool asimd_VZIP(bool D, size_t sz, size_t Vd, bool Q, bool M, size_t Vm) {
     const auto m = ToVector(Q, Vm, M);
 
     if (d == m) {
-        return UnpredictableInstruction();
+        return true;  // Architecturally UNKNOWN destination data.
     }
 
     const auto reg_d = ir.GetVector(d);

@@ -28,6 +28,7 @@ public:
     Arguments(int argc, char** argv) {
         for (int i = 2; i < argc; ++i) values.emplace_back(argv[i]);
     }
+
     bool Has(std::string_view key) const {
         return std::find(values.begin(), values.end(), key) != values.end();
     }
@@ -81,7 +82,7 @@ RunConfig Config(const Arguments& args) {
             ThrowError("target must be known, early-off or unknown", ErrorKind::InvalidArgument);
         config.target = target == "known"       ? TargetMode::Known
                         : target == "early-off" ? TargetMode::EarlyOff
-                                                  : TargetMode::Unknown;
+                                                : TargetMode::Unknown;
     }
     if (args.Has("--no-opt")) config.optimize = false;
     if (args.Has("--no-pin")) config.pin = false;
@@ -216,6 +217,51 @@ int ReduceFile(const Arguments& args) {
     return 0;
 }
 
+void InstructionFaultSelfTest() {
+    struct Example {
+        ISA isa;
+        bool thumb, breakpoint;
+        std::vector<std::uint8_t> code;
+    };
+
+    const Example examples[]{
+            {ISA::X86_64, false, false, {0x0f, 0x0b}},
+            {ISA::X86_64, false, true, {0xcc}},
+            {ISA::Arm64, false, false, {0, 0, 0, 0}},
+            {ISA::Arm64, false, true, {0, 0, 0x20, 0xd4}},
+            {ISA::Arm32, false, false, {0xf0, 0, 0xf0, 0xe7}},
+            {ISA::Arm32, true, false, {0, 0xde}},
+            {ISA::Arm32, true, true, {0, 0xbe}},
+    };
+    for (const auto& example : examples) {
+        Case c;
+        c.isa = example.isa;
+        c.form_id = "inventory/fault-contract";
+        c.profile = c.isa == ISA::X86_64  ? "x86_64-user"
+                    : c.isa == ISA::Arm64 ? "a64-user"
+                                          : "armv7-user";
+        c.code = example.code;
+        c.terminal_pc = 0x04010000;
+        c.code_address = c.terminal_pc - c.code.size();
+        c.initial.pc = c.code_address;
+        c.initial.flags = c.isa == ISA::Arm32 ? 0x10 | (example.thumb ? 32 : 0) : 0;
+        c.initial.fp_control = c.isa == ISA::X86_64 ? 0x1f80 : 0;
+        c.max_steps = 1;
+        const auto direct = ExecuteDirect(c);
+        const bool address = !example.breakpoint || c.isa != ISA::X86_64;
+        if (direct.outcome != Outcome::Fault || direct.fault_pc != c.code_address ||
+            direct.fault_access != "unknown" || direct.fault_address_valid != address ||
+            (address && direct.fault_address != c.code_address) ||
+            direct.fault_kind != (example.breakpoint ? "breakpoint" : "illegal_instruction"))
+            ThrowError("Direct instruction fault lost exception metadata", ErrorKind::InvalidState);
+        RunConfig config;
+        config.backend = NativeBackend();
+        const auto native = ExecuteVM(c, config);
+        if (native.outcome != Outcome::Unavailable && !Compare(c, direct, native).equal)
+            ThrowError("Direct and VM instruction fault metadata differ", ErrorKind::InvalidState);
+    }
+}
+
 int SelfTest() {
     std::size_t cases{};
     for (const auto& form : Catalog())
@@ -251,7 +297,9 @@ int SelfTest() {
             }
             ++cases;
         }
-    std::cout << Format("{{\"selftest\":\"passed\",\"cases\":{}}}\n", cases);
+    InstructionFaultSelfTest();
+    std::cout << Format("{{\"selftest\":\"passed\",\"cases\":{},\"instruction_faults\":7}}\n",
+                        cases);
     return 0;
 }
 
@@ -328,7 +376,7 @@ int DecodeCommand(const Arguments& args) {
 int Main(int argc, char** argv) {
     if (argc < 2) {
         std::cerr << "usage: svm_correctness "
-                 "{catalog|generate|worker|replay|compare|reduce|inspect|decode|selftest}\n";
+                     "{catalog|generate|worker|replay|compare|reduce|inspect|decode|selftest}\n";
         return 2;
     }
     const std::string_view command = argv[1];

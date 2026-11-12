@@ -7,6 +7,7 @@ namespace arch = swift::runtime::arm32;
 using arch::Numeric;
 using arch::NumericConvert;
 using arch::RoundingMode;
+using U32 = std::uint32_t;
 using U64 = std::uint64_t;
 
 U64 Evaluate(arch::GuestState& state,
@@ -78,6 +79,78 @@ TEST_CASE("ARM32 half conversion distinguishes alternative half exponent 31",
                    0x48000000,
                    NumericConvert(16, RoundingMode::ToNearest_TieEven)) == 0x7fff);
     CHECK(state.fpscr == ((1u << 26) | 1));
+}
+
+TEST_CASE("ARM binary arithmetic keeps tininess before rounding and exact FZ exceptions",
+          "[compile][arm32-numeric]") {
+    for (unsigned bits : {32u, 64u}) {
+        const U64 one = bits == 32 ? 0x3f800000 : UINT64_C(0x3ff0000000000000);
+        const U64 half = bits == 32 ? 0x3f000000 : UINT64_C(0x3fe0000000000000);
+        const U64 minimum = bits == 32 ? 0x00800000 : UINT64_C(0x0010000000000000);
+        const U64 infinity = bits == 32 ? 0x7f800000 : UINT64_C(0x7ff0000000000000);
+        const U64 quiet = bits == 32 ? 0x00400000 : UINT64_C(0x0008000000000000);
+        const U64 sign = U64{1} << (bits - 1);
+        for (unsigned rounding = 0; rounding < 4; ++rounding) {
+            for (bool flush : {false, true}) {
+                for (bool default_nan : {false, true}) {
+                    const U32 control = (rounding << 22) | (flush ? 1u << 24 : 0) |
+                                        (default_nan ? 1u << 25 : 0);
+                    const auto check = [&](Numeric operation, U64 a, U64 b, U64 value, U32 flags) {
+                        arch::GuestState state;
+                        state.fpscr = control | (1u << 27);  // QC survives scalar arithmetic.
+                        CHECK(Evaluate(state, operation, bits, a, b) == value);
+                        CHECK(state.fpscr == (control | (1u << 27) | flags));
+                    };
+                    check(Numeric::Add, sign, 0, rounding == 2 ? sign : 0, 0);
+                    check(Numeric::Sub, one, one, rounding == 2 ? sign : 0, 0);
+                    check(Numeric::Mul, minimum, half, flush ? 0 : minimum / 2, flush ? 8 : 0);
+                    // Exact product lies halfway below MinNorm. FZ must flush
+                    // even when the selected rounding would produce MinNorm.
+                    const U64 rounded = rounding < 2 ? minimum : minimum - 1;
+                    check(Numeric::Mul, minimum, one - 1, flush ? 0 : rounded, flush ? 8 : 24);
+                    check(Numeric::Mul,
+                          infinity - 1,
+                          one + (one - half),
+                          rounding < 2 ? infinity : infinity - 1,
+                          20);
+                    check(Numeric::Mul, infinity, 0, infinity | quiet, 1);
+                    // Tiny finite corrections must survive until directed
+                    // rounding, even with an exponent gap beyond binary128.
+                    check(Numeric::Add, one, 1, one + (!flush && rounding == 1), flush ? 128 : 16);
+                    check(Numeric::Sub,
+                          one | sign,
+                          1,
+                          sign | (one + (!flush && rounding == 2)),
+                          flush ? 128 : 16);
+                    check(Numeric::Add,
+                          infinity | 0x42,
+                          1,
+                          infinity | quiet | (default_nan ? 0 : 0x42),
+                          flush ? 129 : 1);
+                }
+            }
+        }
+    }
+}
+
+TEST_CASE("ARM fused arithmetic retains tiny addends during directed rounding",
+          "[compile][arm32-numeric]") {
+    for (unsigned bits : {32u, 64u}) {
+        const U64 one = bits == 32 ? 0x3f800000 : UINT64_C(0x3ff0000000000000);
+        const U64 sign = U64{1} << (bits - 1);
+        for (unsigned rounding = 0; rounding < 4; ++rounding) {
+            arch::GuestState state;
+            state.fpscr = rounding << 22;
+            state.numeric_addend = 1;
+            CHECK(Evaluate(state, Numeric::Fused, bits, one, one) == one + (rounding == 1));
+            CHECK(state.fpscr == ((rounding << 22) | 16));
+            state.fpscr = rounding << 22;
+            state.numeric_addend = sign | 1;
+            CHECK(Evaluate(state, Numeric::Fused, bits, sign | one, one) ==
+                  (sign | (one + (rounding == 2))));
+            CHECK(state.fpscr == ((rounding << 22) | 16));
+        }
+    }
 }
 
 TEST_CASE("ARM32 VMLA and VFMA retain their distinct rounding", "[compile][arm32-numeric]") {

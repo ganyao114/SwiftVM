@@ -147,8 +147,8 @@ struct Arena {
         };
         if (request.kind == Kind::LoadExclusive || request.kind == Kind::StoreExclusive) {
             const auto bytes = 1u << request.size_log2;
-            const auto address = std::uint64_t(std::uint32_t(
-                    state.r[request.address_register] + 4u * request.offset_words));
+            const auto address = std::uint64_t(
+                    std::uint32_t(state.r[request.address_register] + 4u * request.offset_words));
             const bool matching = state.reservation_valid && arena.reservation_address == address &&
                                   arena.reservation_bytes == bytes;
             state.reservation_valid = 0;
@@ -176,8 +176,7 @@ struct Arena {
                 desired |= std::uint64_t(std::uint32_t(state.r[request.second_register])) << 32;
             if (bytes < 8) desired &= (std::uint64_t{1} << (bytes * 8)) - 1;
             std::array<std::uint8_t, 8> bytes_buffer{};
-            for (unsigned i = 0; i < bytes; ++i)
-                bytes_buffer[i] = std::uint8_t(desired >> (8 * i));
+            for (unsigned i = 0; i < bytes; ++i) bytes_buffer[i] = std::uint8_t(desired >> (8 * i));
             const auto result = Write(&arena, address, {bytes_buffer.data(), bytes}, false);
             if (result.status != AccessStatus::Completed) return fault(address, bytes, false);
             state.r[request.status_register] = 0;
@@ -188,7 +187,8 @@ struct Arena {
             return complete();
         }
         if (request.kind == Kind::ReadTLS) {
-            state.r[request.first_register] = request.offset_words ? state.tpidruro : state.tpidrurw;
+            state.r[request.first_register] =
+                    request.offset_words ? state.tpidruro : state.tpidrurw;
             return complete();
         }
         if (request.kind == Kind::WriteTLS) {
@@ -239,7 +239,8 @@ struct Arena {
         arena.width = static_cast<std::uint32_t>(bytes);
         for (std::size_t i = 0; i < bytes; ++i) {
             const auto address = request.address + i;
-            if (!ByteWritable(arena.memory, address) || !ByteReadable(arena.input, arena.memory, address))
+            if (!ByteWritable(arena.memory, address) ||
+                !ByteReadable(arena.input, arena.memory, address))
                 return {AccessStatus::Fault, address};
         }
         std::uint64_t old_low = 0, old_high = 0;
@@ -252,14 +253,17 @@ struct Arena {
                     byte = region.bytes[address - region.address];
                     break;
                 }
-            if (i < 8) old_low |= std::uint64_t(byte) << (i * 8);
-            else old_high |= std::uint64_t(byte) << ((i - 8) * 8);
+            if (i < 8)
+                old_low |= std::uint64_t(byte) << (i * 8);
+            else
+                old_high |= std::uint64_t(byte) << ((i - 8) * 8);
         }
         observed.low = old_low;
         observed.high = old_high;
         std::uint64_t desired_low = request.desired.low, desired_high = request.desired.high;
         switch (request.operation) {
-            case runtime::AtomicOperation::Exchange: break;
+            case runtime::AtomicOperation::Exchange:
+                break;
             case runtime::AtomicOperation::StoreExclusive:
                 if (old_low != request.expected.low) return {};
                 break;
@@ -278,10 +282,18 @@ struct Arena {
             case runtime::AtomicOperation::Sub:
                 desired_low = old_low - request.desired.low;
                 break;
-            case runtime::AtomicOperation::And: desired_low = old_low & request.desired.low; break;
-            case runtime::AtomicOperation::Or: desired_low = old_low | request.desired.low; break;
-            case runtime::AtomicOperation::Xor: desired_low = old_low ^ request.desired.low; break;
-            case runtime::AtomicOperation::Neg: desired_low = 0 - old_low; break;
+            case runtime::AtomicOperation::And:
+                desired_low = old_low & request.desired.low;
+                break;
+            case runtime::AtomicOperation::Or:
+                desired_low = old_low | request.desired.low;
+                break;
+            case runtime::AtomicOperation::Xor:
+                desired_low = old_low ^ request.desired.low;
+                break;
+            case runtime::AtomicOperation::Neg:
+                desired_low = 0 - old_low;
+                break;
             case runtime::AtomicOperation::AddCarry:
             case runtime::AtomicOperation::SubBorrow:
                 return {AccessStatus::UnsupportedBeforeAccess, request.address};
@@ -347,10 +359,17 @@ std::uint64_t Physical(ISA isa, std::uint64_t pc) {
     return isa == ISA::Arm32 ? std::uint32_t(pc) : pc;
 }
 
-void Fault(Observation& out,
-           const Case& c,
-           const front::StepResult& step,
-           const Arena& arena) {
+void InstructionFault(Observation& out, const Case& c, std::uint64_t pc, bool breakpoint) {
+    out.outcome = Outcome::Fault;
+    out.fault_kind = breakpoint ? "breakpoint" : "illegal_instruction";
+    out.fault_access = "unknown";
+    out.fault_pc = Physical(c.isa, pc);
+    out.fault_vector = c.isa == ISA::X86_64 ? (breakpoint ? 3 : 6) : -1;
+    out.fault_address_valid = !breakpoint || c.isa != ISA::X86_64;
+    if (out.fault_address_valid) out.fault_address = out.fault_pc;
+}
+
+void Fault(Observation& out, const Case& c, const front::StepResult& step, const Arena& arena) {
     out.outcome = Outcome::Fault;
     out.fault_pc = Physical(c.isa, step.pc);
     out.fault_address = step.fault_address;
@@ -364,18 +383,17 @@ void Fault(Observation& out,
         out.fault_kind = "divide";
         out.fault_vector = c.isa == ISA::X86_64 ? 0 : -1;
         out.fault_address_valid = false;
-        out.fault_access.clear();
+        out.fault_access = "unknown";
     } else if (reason == runtime::NativeExit::AlignmentFault) {
         out.fault_kind = "alignment";
         out.fault_vector = c.isa == ISA::X86_64 ? 13 : -1;
     } else if (reason == runtime::NativeExit::FloatingFault ||
                reason == runtime::NativeExit::X87Fault) {
         out.fault_kind = "floating_point";
-        out.fault_vector = c.isa == ISA::X86_64
-                                   ? (reason == runtime::NativeExit::X87Fault ? 16 : 19)
-                                   : -1;
+        out.fault_vector =
+                c.isa == ISA::X86_64 ? (reason == runtime::NativeExit::X87Fault ? 16 : 19) : -1;
         out.fault_address_valid = false;
-        out.fault_access.clear();
+        out.fault_access = "unknown";
     }
 }
 
@@ -417,15 +435,11 @@ Observation Run(const Case& c, GuestState& state, Services services, Step step_o
             }
             if (reason == runtime::NativeExit::FPEnvironment) continue;
             if (reason == runtime::NativeExit::SemanticException) {
-                out.outcome = Outcome::Fault;
-                out.fault_kind = ((step.service >> 8) & 255) ==
-                                                 unsigned(runtime::GuestExceptionKind::Breakpoint)
-                                         ? "breakpoint"
-                                         : "illegal_instruction";
-                out.fault_pc = Physical(c.isa, step.pc);
-                out.fault_vector = c.isa == ISA::X86_64
-                                           ? (out.fault_kind == "breakpoint" ? 3 : 6)
-                                           : -1;
+                InstructionFault(out,
+                                 c,
+                                 step.pc,
+                                 ((step.service >> 8) & 255) ==
+                                         unsigned(runtime::GuestExceptionKind::Breakpoint));
             } else if (reason == runtime::NativeExit::DivideFault ||
                        reason == runtime::NativeExit::AlignmentFault ||
                        reason == runtime::NativeExit::FloatingFault ||
@@ -438,10 +452,7 @@ Observation Run(const Case& c, GuestState& state, Services services, Step step_o
             break;
         }
         if (step.kind == front::StepKind::InvalidEncoding) {
-            out.outcome = Outcome::Fault;
-            out.fault_kind = "illegal_instruction";
-            out.fault_pc = Physical(c.isa, step.pc);
-            out.fault_vector = c.isa == ISA::X86_64 ? 6 : -1;
+            InstructionFault(out, c, step.pc, false);
             break;
         }
         out.outcome = Outcome::Rejected;
@@ -480,7 +491,9 @@ Observation ExecuteDirect(const Case& c) {
             runtime::arm32::GuestState state;
             runtime::arm32::Profile profile;
             if (c.profile == "armv8-user") profile.version = runtime::arm32::ArchVersion::v8;
-            return Run(c, state, swift::arm32::DirectServices{},
+            return Run(c,
+                       state,
+                       swift::arm32::DirectServices{},
                        [profile](auto& s, const auto& services) {
                            return swift::arm32::InterpretOne(s, services, nullptr, profile);
                        });

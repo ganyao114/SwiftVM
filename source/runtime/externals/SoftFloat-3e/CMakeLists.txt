@@ -135,7 +135,7 @@ add_library(svm_softfloat_ext80 STATIC
 target_include_directories(svm_softfloat_ext80 PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/include/SoftFloat-3e)
-target_compile_definitions(svm_softfloat_ext80 PRIVATE
+target_compile_definitions(svm_softfloat_ext80 PRIVATE SOFTFLOAT_ROUND_ODD=1
     LITTLEENDIAN=1 SOFTFLOAT_FAST_INT64=1 SOFTFLOAT_BUILTIN_CLZ=1
     FEXCORE_PRESERVE_ALL_ATTR= FEXCORE_HAS_PRESERVE_ALL_ATTR=0)
 target_compile_definitions(svm_softfloat_ext80 PRIVATE

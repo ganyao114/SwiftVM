@@ -460,6 +460,27 @@ TEST_CASE("ARM FP helper uses ARM controls NaN payload and independent flags",
     CHECK(nan.fpsr & 1);
 }
 
+TEST_CASE("ARM FCVTXN jams inexact low bits independently of FPCR rounding",
+          "[compile][arm-frontend]") {
+    const Code code{[](auto& a) { a.fcvtxn(v0.V2S(), v1.V2D()); }};
+    Build(code);
+    for (unsigned rounding = 0; rounding < 4; ++rounding) {
+        State state;
+        state.pc = CodeBase;
+        state.fpcr = rounding << 22;
+        state.fpsr = 1u << 27;
+        std::memset(state.q[0], 0xff, sizeof(state.q[0]));
+        Set(state, 1, UINT64_C(0x3ff0000000000001));
+        Set(state, 1, UINT64_C(0xbff0000000000001), 1);
+        Memory memory{code};
+        REQUIRE(front::InterpretOne(state, memory.Services()).kind == front::StepKind::Completed);
+        CHECK(Lane<std::uint32_t>(state, 0) == 0x3f800001);
+        CHECK(Lane<std::uint32_t>(state, 0, 1) == 0xbf800001);
+        CHECK(Lane<U64>(state, 0, 1) == 0);
+        CHECK(state.fpsr == ((1u << 27) | 16));
+    }
+}
+
 TEST_CASE("ARM system writes stop at FP rebinding and invalid stops do not execute",
           "[compile][arm-frontend]") {
     const Code code{[](auto& a) {

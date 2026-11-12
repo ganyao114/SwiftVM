@@ -46,7 +46,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     o.context = this;
     o.target = KnownTargetInfo();
     o.isa_features = features;
-    o.pinned_uniform_slots = 4;
+    o.pinned_uniform_slots = 2;
     o.pinned_uniform_default = 0;
     o.thread_dispatch_cache = true;
     o.configure = [](void* p, const GuestLayout& l) noexcept {
@@ -54,8 +54,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         v.options.flags_offset = l.flags_offset;
         v.options.pc_offset = l.pc_offset;
         v.options.mxcsr_offset = l.numeric_control_offset;
-        v.options.pinned_uniform_offset =
-                l.pinned_uniform_slots ? l.gprs_offset : UINT32_MAX;
+        v.options.pinned_uniform_offset = l.pinned_uniform_slots ? l.gprs_offset : UINT32_MAX;
         v.options.pinned_uniform_slots = l.pinned_uniform_slots;
     };
     o.compile =

@@ -26,3 +26,9 @@ upstream file hashes are recorded in `FMA_UPSTREAM.json` at the same pinned
 revision. Binary128 is used only on unmasked range-exception boundaries to
 separate destination-precision rounding from exponent bounding; ordinary FMA
 continues to round once directly in F32/F64.
+
+ARM numerical helpers also require SOFTFLOAT_ROUND_ODD for binary128
+intermediates and FCVTXN. The target enables that upstream option and restores
+the upstream packReturn label in s_roundPackToF128.c, which the frozen subset
+had omitted while compiling that option out. Stateful ABI and rounding modes
+remain unchanged.

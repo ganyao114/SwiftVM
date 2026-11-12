@@ -176,8 +176,8 @@ TEST_CASE("ARM32 SEL selects Rn for set GE lanes", "[compile][arm32-semantics]")
             state.r[1] = 0x11220033;
             state.r[2] = 0xffffffff;
             state.r[4] = 0;
-            const auto code = thumb ? THUMB({0xfa81, 0xf342, 0xfaa4, 0xf083})
-                                    : ARM({0xe6513f92, 0xe6840fb3});
+            const auto code =
+                    thumb ? THUMB({0xfa81, 0xf342, 0xfaa4, 0xf083}) : ARM({0xe6513f92, 0xe6840fb3});
             INFO(thumb);
             REQUIRE(Step(code, state).kind == front::StepKind::Completed);
             REQUIRE(Step(std::span<const U8>(code).subspan(4), state).kind ==
@@ -185,6 +185,66 @@ TEST_CASE("ARM32 SEL selects Rn for set GE lanes", "[compile][arm32-semantics]")
             CHECK(state.r[0] == 0x0000ff00u);
         }
     }
+}
+
+TEST_CASE("ARM32 SEVL encodings retain their pre-v8 NOP hint behavior",
+          "[compile][arm32-semantics]") {
+    const std::array codes{ARM({0xe320f005}), THUMB({0xbf50}), THUMB({0xf3af, 0x8005})};
+    for (unsigned encoding = 0; encoding < codes.size(); ++encoding) {
+        for (const auto version : {arch::ArchVersion::v7, arch::ArchVersion::v8}) {
+            arch::GuestState state;
+            state.pc = arch::Location::Make(Base, encoding != 0).Key();
+            state.SetCpsr(0xa80a0010u | (encoding ? 32u : 0u));
+            state.r[0] = 0x12345678;
+            const auto before = state;
+            arch::Profile profile;
+            profile.version = version;
+            const auto decoded = front::DecodeOne(codes[encoding], state.pc);
+            REQUIRE(bool(decoded));
+            const auto step = front::InterpretDecoded(
+                    decoded.instruction, codes[encoding], state, {}, profile);
+            REQUIRE(step.kind == front::StepKind::Completed);
+            CHECK(state.r[0] == before.r[0]);
+            CHECK(state.Cpsr() == before.Cpsr());
+            CHECK(std::uint32_t(state.pc) == Base + codes[encoding].size());
+        }
+    }
+}
+
+TEST_CASE("ARM32 NEON overlapping permutations choose data without raising an exception",
+          "[compile][arm32-semantics]") {
+    const std::array arm_codes{
+            ARM({0xf3b20080}),
+            ARM({0xf3b660c6}),
+            ARM({0xf3b20100}),
+            ARM({0xf3b66146}),
+            ARM({0xf3b20180}),
+            ARM({0xf3b661c6}),
+    };
+    const std::array thumb_codes{
+            THUMB({0xffb2, 0x0080}),
+            THUMB({0xffb6, 0x60c6}),
+            THUMB({0xffb2, 0x0100}),
+            THUMB({0xffb6, 0x6146}),
+            THUMB({0xffb2, 0x0180}),
+            THUMB({0xffb6, 0x61c6}),
+    };
+    for (const bool thumb : {false, true})
+        for (const auto& code : thumb ? thumb_codes : arm_codes) {
+            arch::GuestState state{};
+            state.pc = arch::Location::Make(Base, thumb).Key();
+            state.SetCpsr(0xa80a0010u | (thumb ? 32u : 0u));
+            for (unsigned reg = 0; reg < 16; ++reg) {
+                state.r[reg] = 0x12345600 + reg;
+                for (unsigned lane = 0; lane < 16; ++lane) state.q[reg][lane] = reg * 16 + lane;
+            }
+            const auto before = state;
+            REQUIRE(Step(code, state).kind == front::StepKind::Completed);
+            CHECK(std::memcmp(state.q, before.q, sizeof(state.q)) == 0);
+            CHECK(std::memcmp(state.r, before.r, sizeof(state.r)) == 0);
+            CHECK(state.Cpsr() == before.Cpsr() && state.fpscr == before.fpscr);
+            CHECK(std::uint32_t(state.pc) == Base + 4);
+        }
 }
 
 TEST_CASE("ARM32 VFP and NEON share the S D and Q register bank", "[compile][arm32-semantics]") {

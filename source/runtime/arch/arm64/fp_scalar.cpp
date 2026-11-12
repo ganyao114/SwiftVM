@@ -249,6 +249,60 @@ FPBinaryResult EvaluateBinaryFP(u64 lhs, u64 rhs, u32 bits, u32 op, u32 fpcr) {
         if (op == 8) result ^= f.sign;
         return {result, env.fpsr};
     }
+    if (bits == 32 || bits == 64) {
+        // Basic arithmetic can round directly to its architectural precision.
+        // Keep ARM input/NaN handling above and tininess-before-rounding below;
+        // neither instruction helpers nor JIT consumers need another path.
+        s.roundingMode = Rounding(fpcr);
+        u64 value;
+        if (bits == 32) {
+            const float32_t x{u32(a)}, y{u32(b)};
+            switch (op) {
+                case 0:
+                case 8:
+                    value = f32_mul(&s, x, y).v;
+                    break;
+                case 1:
+                    value = f32_div(&s, x, y).v;
+                    break;
+                case 2:
+                    value = f32_add(&s, x, y).v;
+                    break;
+                default:
+                    value = f32_sub(&s, x, y).v;
+                    break;
+            }
+        } else {
+            const float64_t x{a}, y{b};
+            switch (op) {
+                case 0:
+                case 8:
+                    value = f64_mul(&s, x, y).v;
+                    break;
+                case 1:
+                    value = f64_div(&s, x, y).v;
+                    break;
+                case 2:
+                    value = f64_add(&s, x, y).v;
+                    break;
+                default:
+                    value = f64_sub(&s, x, y).v;
+                    break;
+            }
+        }
+        // FZ observes the unrounded result, including one that rounds up to
+        // MinNorm. Exact subnormals also flush and raise UFC, without IXC.
+        if ((fpcr & (1u << 24)) &&
+            (f.Subnormal(value) || (s.exceptionFlags & softfloat_flag_underflow))) {
+            value &= f.sign;
+            s.exceptionFlags =
+                    (s.exceptionFlags & ~softfloat_flag_inexact) | softfloat_flag_underflow;
+        }
+        if (f.NaN(value)) value = f.DefaultNaN();
+        Exceptions(env, s.exceptionFlags);
+        if (op == 8) value ^= f.sign;
+        return {value, env.fpsr};
+    }
     const auto x = Widen(s, f, a), y = Widen(s, f, b);
     float128_t result;
     switch (op) {

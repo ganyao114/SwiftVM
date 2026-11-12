@@ -45,10 +45,13 @@ bool InstructionEnabled(const Instruction& instruction) const {
         case Opcode::arm_STLEXD:
         case Opcode::thumb32_LDA:
         case Opcode::thumb32_STL:
+            return profile.Version() >= 8;
+        // In v7 these are unallocated hints with NOP behavior; in v8 they
+        // acquire SEVL semantics. The user-mode hint sink needs no event state.
         case Opcode::arm_SEVL:
         case Opcode::thumb16_SEVL:
         case Opcode::thumb32_SEVL:
-            return profile.Version() >= 8;
+            return profile.Version() >= 7;
         case Opcode::v8_AESE:
         case Opcode::v8_AESD:
         case Opcode::v8_AESMC:

@@ -345,7 +345,7 @@ void VM::Execute() {
             stats.fault_locations = true;
             stats.recover_unaligned = backend.patch_fault != nullptr;
             stats.private_uniforms = true;
-            stats.pinned_uniform_slots = backend.pinned_uniform_slots;
+            stats.pinned_uniform_slots = layout.pinned_uniform_slots;
             stats.native_nzcv = backend.capabilities.native_nzcv;
             stats.thread_dispatch_cache = backend.thread_dispatch_cache;
             while (!thread.exited && !host_returned) {
@@ -512,7 +512,8 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
     if (backend.update_fp) backend.update_fp(backend.context, thread.native, mxcsr);
     // Native AArch64 guest FP executes under the architectural FPCR, not the
     // x86-style numeric-control mapping used for x86 guests.
-    if (ISA() == GuestISA::Arm64) thread.native.guest_fpcr = thread.native.arm_state.fpcr;
+    if (ISA() == GuestISA::Arm64 && backend.target.target == 0xa64)
+        thread.native.guest_fpcr = thread.native.arm_state.fpcr;
     RefreshNative(thread.native);
 }
 
@@ -598,10 +599,12 @@ front::AccessResult VM::Read(void* opaque,
     if (!vm.memory.CopyIn(bytes.data(), address, bytes.size())) {
         if (errno && errno != EFAULT)
             vm.thread.bridge_failure.Set(ErrorKind::System, "read guest bytes", errno);
-        const auto fault_address = vm.memory.Contains(address, bytes.size(), PROT_READ)
-                                           ? address
-                                           : vm.memory.FirstInaccessible(address, bytes.size(), PROT_READ);
-        RecordMemoryFault(vm.thread.faults, fault_address, GuestExceptionAccess::Read, bytes.size());
+        const auto fault_address =
+                vm.memory.Contains(address, bytes.size(), PROT_READ)
+                        ? address
+                        : vm.memory.FirstInaccessible(address, bytes.size(), PROT_READ);
+        RecordMemoryFault(
+                vm.thread.faults, fault_address, GuestExceptionAccess::Read, bytes.size());
         return {front::AccessStatus::Fault, fault_address};
     }
     if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -620,10 +623,12 @@ front::AccessResult VM::Write(void* opaque,
         if (!vm.GuestWrite(address, bytes.data(), bytes.size())) {
             if (errno && errno != EFAULT)
                 vm.thread.bridge_failure.Set(ErrorKind::System, "write guest bytes", errno);
-            const auto fault_address = vm.memory.Contains(address, bytes.size(), PROT_WRITE)
-                                               ? address
-                                               : vm.memory.FirstInaccessible(address, bytes.size(), PROT_WRITE);
-            RecordMemoryFault(vm.thread.faults, fault_address, GuestExceptionAccess::Write, bytes.size());
+            const auto fault_address =
+                    vm.memory.Contains(address, bytes.size(), PROT_WRITE)
+                            ? address
+                            : vm.memory.FirstInaccessible(address, bytes.size(), PROT_WRITE);
+            RecordMemoryFault(
+                    vm.thread.faults, fault_address, GuestExceptionAccess::Write, bytes.size());
             return {front::AccessStatus::Fault, fault_address};
         }
         if (ordered) std::atomic_thread_fence(std::memory_order_seq_cst);
@@ -665,12 +670,11 @@ front::CpuResult VM::Cpu(void*, std::uint32_t leaf, std::uint32_t subleaf) noexc
 
 void VM::Interpret(bool block) {
     thread.bridge_failure.Clear();
-    const front::ReadyEntryLookup ready{
-            this, [](void* raw, std::uint64_t pc) noexcept {
-                const auto& owner = *static_cast<VM*>(raw);
-                return owner.IsHostReturn(pc) ||
-                       bool(static_cast<VM*>(raw)->Cache().Find(pc));
-            }};
+    const front::ReadyEntryLookup ready{this, [](void* raw, std::uint64_t pc) noexcept {
+                                            const auto& owner = *static_cast<VM*>(raw);
+                                            return owner.IsHostReturn(pc) ||
+                                                   bool(static_cast<VM*>(raw)->Cache().Find(pc));
+                                        }};
     frontend::StepResult step;
     if (ISA() == GuestISA::Arm64) {
         ::swift::arm64::DirectServices services{this, Fetch, Read, Write, Atomic};

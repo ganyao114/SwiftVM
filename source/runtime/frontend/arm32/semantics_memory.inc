@@ -63,6 +63,42 @@ Value ReadMemory64(Value address, AccType access = AccType::NORMAL) {
     return ReadMemory(64, address, access);
 }
 
+// Preserve the aligned doubleword transfer. At a word-aligned address with
+// bit 2 set, LDRD/STRD instead perform two ordered word accesses (DDI0406C.d,
+// A8.8.73 and A8.8.211). Each word owns its faults and successful commits.
+void LoadDual(Value address, Reg t, Reg t2) {
+    Emit<OpCode::CheckMemoryAlignment>(address, Literal{u32{3}});
+    const auto split = Goto(TestBit(address, Literal{2u}));
+    const auto data = ReadMemory64(address);
+    SetRegister(t,
+                current_location.EFlag() ? MostSignificantWord(data).result
+                                         : LeastSignificantWord(data));
+    SetRegister(t2,
+                current_location.EFlag() ? LeastSignificantWord(data)
+                                         : MostSignificantWord(data).result);
+    const auto done = Goto(Imm1(true));
+    BindLabel(split);
+    const auto second_address = Add(address, Imm32(4));
+    SetRegister(t, ReadMemory32(address));
+    SetRegister(t2, ReadMemory32(second_address));
+    BindLabel(done);
+}
+
+void StoreDual(Value address, Reg t, Reg t2) {
+    Emit<OpCode::CheckMemoryAlignment>(address, Literal{u32{3}});
+    const auto first = GetRegister(t), second = GetRegister(t2);
+    const auto split = Goto(TestBit(address, Literal{2u}));
+    WriteMemory64(address,
+                  current_location.EFlag() ? Pack2x32To1x64(second, first)
+                                           : Pack2x32To1x64(first, second));
+    const auto done = Goto(Imm1(true));
+    BindLabel(split);
+    const auto second_address = Add(address, Imm32(4));
+    WriteMemory32(address, first);
+    WriteMemory32(second_address, second);
+    BindLabel(done);
+}
+
 void ClearReservation() {
     StoreUniform(Uniform{layout.reservation_valid_offset, Type::U32}, Imm32(0));
 }
@@ -392,16 +428,7 @@ bool arm_LDRD_lit(Cond cond, bool U, Reg t, Imm<4> imm8a, Imm<4> imm8b) {
     const u32 base = ir.AlignPC(4);
     const u32 address = add ? (base + imm32) : (base - imm32);
 
-    // NOTE: If alignment is exactly off by 4, each word is an atomic access.
-    const Value data = ir.ReadMemory64(ir.Imm32(address), AccType::ATOMIC);
-
-    if (ir.current_location.EFlag()) {
-        ir.SetRegister(t, ir.MostSignificantWord(data).result);
-        ir.SetRegister(t2, ir.LeastSignificantWord(data));
-    } else {
-        ir.SetRegister(t, ir.LeastSignificantWord(data));
-        ir.SetRegister(t2, ir.MostSignificantWord(data).result);
-    }
+    ir.LoadDual(ir.Imm32(address), t, t2);
     return true;
 }
 
@@ -438,16 +465,7 @@ bool arm_LDRD_imm(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Imm<4> imm8a,
     const auto offset = ir.Imm32(imm32);
     const auto address = load_store_GetAddress(ir, P, U, W, n, offset);
 
-    // NOTE: If alignment is exactly off by 4, each word is an atomic access.
-    const Value data = ir.ReadMemory64(address, AccType::ATOMIC);
-
-    if (ir.current_location.EFlag()) {
-        ir.SetRegister(t, ir.MostSignificantWord(data).result);
-        ir.SetRegister(t2, ir.LeastSignificantWord(data));
-    } else {
-        ir.SetRegister(t, ir.LeastSignificantWord(data));
-        ir.SetRegister(t2, ir.MostSignificantWord(data).result);
-    }
+    ir.LoadDual(address, t, t2);
     return true;
 }
 
@@ -478,16 +496,7 @@ bool arm_LDRD_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Reg m) {
     const auto offset = ir.GetRegister(m);
     const auto address = load_store_GetAddress(ir, P, U, W, n, offset);
 
-    // NOTE: If alignment is exactly off by 4, each word is an atomic access.
-    const Value data = ir.ReadMemory64(address, AccType::ATOMIC);
-
-    if (ir.current_location.EFlag()) {
-        ir.SetRegister(t, ir.MostSignificantWord(data).result);
-        ir.SetRegister(t2, ir.LeastSignificantWord(data));
-    } else {
-        ir.SetRegister(t, ir.LeastSignificantWord(data));
-        ir.SetRegister(t2, ir.MostSignificantWord(data).result);
-    }
+    ir.LoadDual(address, t, t2);
     return true;
 }
 
@@ -825,14 +834,7 @@ bool arm_STRD_imm(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Imm<4> imm8a,
     const u32 imm32 = concatenate(imm8a, imm8b).ZeroExtend();
     const auto offset = ir.Imm32(imm32);
     const auto address = load_store_GetAddress(ir, P, U, W, n, offset);
-    const auto value_a = ir.GetRegister(t);
-    const auto value_b = ir.GetRegister(t2);
-
-    const Value data = ir.current_location.EFlag() ? ir.Pack2x32To1x64(value_b, value_a)
-                                                   : ir.Pack2x32To1x64(value_a, value_b);
-
-    // NOTE: If alignment is exactly off by 4, each word is an atomic access.
-    ir.WriteMemory64(address, data, AccType::ATOMIC);
+    ir.StoreDual(address, t, t2);
     return true;
 }
 
@@ -862,14 +864,7 @@ bool arm_STRD_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Reg m) {
 
     const auto offset = ir.GetRegister(m);
     const auto address = load_store_GetAddress(ir, P, U, W, n, offset);
-    const auto value_a = ir.GetRegister(t);
-    const auto value_b = ir.GetRegister(t2);
-
-    const Value data = ir.current_location.EFlag() ? ir.Pack2x32To1x64(value_b, value_a)
-                                                   : ir.Pack2x32To1x64(value_a, value_b);
-
-    // NOTE: If alignment is exactly off by 4, each word is an atomic access.
-    ir.WriteMemory64(address, data, AccType::ATOMIC);
+    ir.StoreDual(address, t, t2);
     return true;
 }
 
@@ -2142,16 +2137,7 @@ static bool thumb32_load_store_dual_LoadDualImmediate(
             U ? v.ir.Add(reg_n, v.ir.Imm32(imm)) : v.ir.Sub(reg_n, v.ir.Imm32(imm));
     const Value address = P ? offset_address : reg_n;
 
-    // NOTE: If alignment is exactly off by 4, each word is an atomic access.
-    const Value data = v.ir.ReadMemory64(address, AccType::ATOMIC);
-
-    if (v.ir.current_location.EFlag()) {
-        v.ir.SetRegister(t, v.ir.MostSignificantWord(data).result);
-        v.ir.SetRegister(t2, v.ir.LeastSignificantWord(data));
-    } else {
-        v.ir.SetRegister(t, v.ir.LeastSignificantWord(data));
-        v.ir.SetRegister(t2, v.ir.MostSignificantWord(data).result);
-    }
+    v.ir.LoadDual(address, t, t2);
 
     if (W) {
         v.ir.SetRegister(n, offset_address);
@@ -2172,16 +2158,7 @@ static bool thumb32_load_store_dual_LoadDualLiteral(
     const auto address = U ? v.ir.Add(v.ir.Imm32(v.ir.AlignPC(4)), v.ir.Imm32(imm))
                            : v.ir.Sub(v.ir.Imm32(v.ir.AlignPC(4)), v.ir.Imm32(imm));
 
-    // NOTE: If alignment is exactly off by 4, each word is an atomic access.
-    const Value data = v.ir.ReadMemory64(address, AccType::ATOMIC);
-
-    if (v.ir.current_location.EFlag()) {
-        v.ir.SetRegister(t, v.ir.MostSignificantWord(data).result);
-        v.ir.SetRegister(t2, v.ir.LeastSignificantWord(data));
-    } else {
-        v.ir.SetRegister(t, v.ir.LeastSignificantWord(data));
-        v.ir.SetRegister(t2, v.ir.MostSignificantWord(data).result);
-    }
+    v.ir.LoadDual(address, t, t2);
 
     return true;
 }
@@ -2197,18 +2174,10 @@ static bool thumb32_load_store_dual_StoreDual(
 
     const u32 imm = imm8.ZeroExtend() << 2;
     const Value reg_n = v.ir.GetRegister(n);
-    const Value reg_t = v.ir.GetRegister(t);
-    const Value reg_t2 = v.ir.GetRegister(t2);
-
     const Value offset_address =
             U ? v.ir.Add(reg_n, v.ir.Imm32(imm)) : v.ir.Sub(reg_n, v.ir.Imm32(imm));
     const Value address = P ? offset_address : reg_n;
-
-    const Value data = v.ir.current_location.EFlag() ? v.ir.Pack2x32To1x64(reg_t2, reg_t)
-                                                     : v.ir.Pack2x32To1x64(reg_t, reg_t2);
-
-    // NOTE: If alignment is exactly off by 4, each word is an atomic access.
-    v.ir.WriteMemory64(address, data, AccType::ATOMIC);
+    v.ir.StoreDual(address, t, t2);
 
     if (W) {
         v.ir.SetRegister(n, offset_address);
