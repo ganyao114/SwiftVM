@@ -10,6 +10,7 @@
 #include <cstring>
 #include <limits>
 
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/bit_operations.h"
 #include "runtime/arch/x86/cpu.h"
 #include "runtime/arch/x86/flags.h"

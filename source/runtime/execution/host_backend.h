@@ -23,7 +23,7 @@ struct HostCompileRequest {
 
 struct HostCapabilities {
     bool rcpc_loads{}, rcpc_imm9{}, native_nzcv{}, lse_atomics{}, crc32c{}, afp{}, aes{}, pmull{},
-            sha256{};
+            sha256{}, native_eflags{};
 };
 
 struct HostBackendOps {
@@ -38,6 +38,7 @@ struct HostBackendOps {
     bool pinned_vectors{};
     // Only backends that bake software DAZ/FTZ into code need separate domains.
     bool specializes_fp_flush{};
+    bool specializes_arm_fpcr{};
     bool thread_dispatch_cache{};
     void (*configure)(void*, const GuestLayout&) noexcept {};
     backend::CompileResult& (*compile)(void*, const ir::Program&, HostCompileRequest){};

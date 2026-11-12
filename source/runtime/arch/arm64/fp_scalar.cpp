@@ -693,4 +693,28 @@ u64 ExecuteScalarFP(u64 context_address, u64 instruction, u64 guest_pc) {
     return 0;
 }
 
+void EvaluateVectorBinaryFP(
+        void* output, const void* lhs, const void* rhs, u32 mode, u32 fpcr, void* fpsr) noexcept {
+    u8 left[16], right[16], result[16]{};
+    std::memcpy(left, lhs, 16);
+    std::memcpy(right, rhs, 16);
+    const auto bytes = mode & 4 ? 8u : 4u, lanes = (mode >> 3) & 7;
+    constexpr u32 operations[]{2, 3, 0};
+    u32 exceptions{};
+    for (u32 lane = 0; lane < lanes; ++lane) {
+        u64 a{}, b{};
+        const auto rhs_lane = mode & 64 ? mode >> 7 : lane;
+        std::memcpy(&a, left + lane * bytes, bytes);
+        std::memcpy(&b, right + rhs_lane * bytes, bytes);
+        const auto value = EvaluateBinaryFP(a, b, bytes * 8, operations[mode & 3], fpcr);
+        std::memcpy(result + lane * bytes, &value.value, bytes);
+        exceptions |= value.exceptions;
+    }
+    std::memcpy(output, result, 16);
+    u32 previous;
+    std::memcpy(&previous, fpsr, sizeof(previous));
+    previous |= exceptions;
+    std::memcpy(fpsr, &previous, sizeof(previous));
+}
+
 }  // namespace swift::runtime::arm64

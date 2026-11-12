@@ -22,10 +22,12 @@ struct UniformPolicy {
     bool guest_memory_disjoint{};
     // Implicit numerical status writes affect this control/status field only.
     std::optional<UniformRange> numeric_control;
+    std::optional<UniformRange> pc;
 };
 
 struct OptimizeStats {
     std::size_t nodes{}, value_uses{}, folded{}, copy_forwarded{}, uniform_forwarded{}, erased{};
+    std::size_t uniform_stores_erased{};
     std::size_t dense_bytes{}, words_before{}, words_after{};
     // Selected Function CFG buffer capacities, including full local arrays
     // for small graphs; zero when no flag graph is needed. Not heap bytes.

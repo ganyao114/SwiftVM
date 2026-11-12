@@ -104,7 +104,8 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                 ir::UniformPolicy{
                         .flags = ir::UniformRange{vm.layout.flags_offset, sizeof(std::uint64_t)},
                         .guest_memory_disjoint = private_guest_state,
-                        .numeric_control = ir::UniformRange{vm.layout.numeric_control_offset, 4}});
+                        .numeric_control = ir::UniformRange{vm.layout.numeric_control_offset, 4},
+                        .pc = ir::UniformRange{vm.layout.pc_offset, 8}});
         if (options.decode_timing) {
             stats.optimized_erased += optimized.stats.erased;
             stats.optimized_uniform_forwarded += optimized.stats.uniform_forwarded;

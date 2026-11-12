@@ -7,51 +7,61 @@
 #include "runtime/exit.h"
 
 namespace swift::runtime::backend::x64::detail {
-void Writer::PrepareCall() {
-    // Helpers read and may rewrite the uniform guest state; the pinned
-    // registers are the authoritative copies while guest code runs.
-    PublishPinned();
-    if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_HELPER);
-    saved_scalar.clear();
-    saved_vectors.clear();
-    const auto pos = allocation.homes[current.value].definition_position;
+Writer::CallMasks Writer::LiveCallMasks() const {
+    CallMasks masks;
+    const auto position = allocation.homes[current.value].definition_position;
     for (unsigned reg : {8u, 9u}) {
-        auto id = scalar_residents[reg];
-        if (id != NodeId::invalid && allocation.homes[id].last_use >= pos) {
-            mov(qword[rsp + allocation.call_offset + 192 + (reg - 8) * 8], Reg64(reg));
-            saved_scalar.push_back(reg);
-        }
+        const auto id = scalar_residents[reg];
+        if (id != NodeId::invalid && allocation.homes[id].last_use >= position)
+            masks.scalars |= 1u << reg;
     }
     for (unsigned reg = 2; reg < 14; ++reg) {
-        auto id = vector_residents[reg];
-        if (id != NodeId::invalid && allocation.homes[id].last_use >= pos) {
-            movdqu(ptr[rsp + allocation.call_offset + (reg - 2) * 16], Xmm(reg));
-            saved_vectors.push_back(reg);
-        }
+        const auto id = vector_residents[reg];
+        if (id != NodeId::invalid && allocation.homes[id].last_use >= position)
+            masks.vectors |= 1u << reg;
     }
+    return masks;
+}
+
+void Writer::PrepareCall() { PrepareCall(LiveCallMasks()); }
+
+void Writer::PrepareCall(CallMasks masks) {
+    EndArmFPRegion();
+    PublishPinned();
+    if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_HELPER);
+    saved_calls = masks;
+    for (unsigned reg : {8u, 9u})
+        if (masks.scalars & (1u << reg))
+            mov(qword[rsp + stack_bias + allocation.call_offset + 192 + (reg - 8) * 8], Reg64(reg));
+    for (unsigned reg = 2; reg < 14; ++reg)
+        if (masks.vectors & (1u << reg))
+            movdqu(ptr[rsp + stack_bias + allocation.call_offset + (reg - 2) * 16], Xmm(reg));
     PublishFlags();
     if (options.native_fp_environment && Linked()) {
         stmxcsr(dword[r12 - 40]);
         ldmxcsr(dword[r12 - 56]);
     } else if (!Linked()) {
         if (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX)
-            stmxcsr(dword[rsp + mxcsr_slot + 4]);
-        ldmxcsr(dword[rsp + mxcsr_slot]);
+            stmxcsr(dword[rsp + stack_bias + mxcsr_slot + 4]);
+        ldmxcsr(dword[rsp + stack_bias + mxcsr_slot]);
     }
     in_call = true;
 }
 
 void Writer::FinishCall() {
+    flags = {};
     if (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX) {
         if (Linked())
             ldmxcsr(dword[r12 - 40]);
         else
-            ldmxcsr(dword[rsp + mxcsr_slot + 4]);
+            ldmxcsr(dword[rsp + stack_bias + mxcsr_slot + 4]);
     }
-    for (auto reg : saved_vectors)
-        movdqu(Xmm(reg), ptr[rsp + allocation.call_offset + (reg - 2) * 16]);
-    for (auto reg : saved_scalar)
-        mov(Reg64(reg), qword[rsp + allocation.call_offset + 192 + (reg - 8) * 8]);
+    for (unsigned reg = 2; reg < 14; ++reg)
+        if (saved_calls.vectors & (1u << reg))
+            movdqu(Xmm(reg), ptr[rsp + stack_bias + allocation.call_offset + (reg - 2) * 16]);
+    for (unsigned reg : {8u, 9u})
+        if (saved_calls.scalars & (1u << reg))
+            mov(Reg64(reg), qword[rsp + stack_bias + allocation.call_offset + 192 + (reg - 8) * 8]);
     if (options.flags_offset != UINT32_MAX) mov(rbx, qword[r12 + options.flags_offset]);
     ReloadPinned();
     if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_GUEST);

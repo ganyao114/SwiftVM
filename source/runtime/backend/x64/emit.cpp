@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstring>
 #include "emit.h"
+#include "runtime/arch/arm64/numeric.h"
 
 namespace swift::runtime::backend::x64::detail {
 Writer::Writer(const Program& s, const Allocation& a, CompileResult& o, CompileOptions c)
@@ -14,6 +15,10 @@ Writer::Writer(const Program& s, const Allocation& a, CompileResult& o, CompileO
         , locals(s.Operations().size()) {
     scalar_residents.fill(NodeId::invalid);
     vector_residents.fill(NodeId::invalid);
+    cold_fp.reserve(a.cold_fp_count);
+    fp_stubs.reserve(a.cold_fp_count);
+    if (a.cold_fp_count) fp_stub_index.reserve(a.cold_fp_count);
+    cold_events.reserve(a.cold_event_count);
     frame_bytes = a.spill_bytes + (Linked() ? 0 : 24);
     mxcsr_slot = a.spill_bytes;
     output.frame_bytes = frame_bytes + (Linked() ? 0 : 48);
@@ -23,6 +28,19 @@ Writer::Writer(const Program& s, const Allocation& a, CompileResult& o, CompileO
 void Writer::Reject(CompileError e) { throw Rejected{e, current, block}; }
 
 void Writer::PublishFlags() {
+    if (options.local_flags && flags.dirty) {
+        push(rdx);
+        push(rsi);
+        push(r10);
+        push(r11);
+        flags_stack_bias = 32;
+        MaterializeFlags();
+        flags_stack_bias = 0;
+        pop(r11);
+        pop(r10);
+        pop(rsi);
+        pop(rdx);
+    }
     if (options.flags_offset != UINT32_MAX) mov(qword[r12 + options.flags_offset], rbx);
 }
 
@@ -98,6 +116,7 @@ void Writer::Restore() {
 }
 
 void Writer::Exit(u64 reason) {
+    const auto previous_flags = flags;
     PublishFlags();
     const auto kind = static_cast<NativeExit>(reason & 0xff);
     if (reason && kind != NativeExit::GuestException && kind != NativeExit::GuestEvents &&
@@ -112,16 +131,19 @@ void Writer::Exit(u64 reason) {
         jmp(r11);
     } else
         ret();
+    flags = previous_flags;
 }
 
 void Writer::StaticExit(u64 pc) {
-    PublishFlags();
+    const auto previous_flags = flags;
+    ExportLinkedFlags();
     mov(rdi, pc);
     if (options.pc_offset != UINT32_MAX) mov(qword[r12 + options.pc_offset], rdi);
     Restore();
     if (!Linked()) {
         xor_(eax, eax);
         ret();
+        flags = previous_flags;
         return;
     }
     align(8);
@@ -139,15 +161,84 @@ void Writer::StaticExit(u64 pc) {
     HostAddress(r11, options.dispatcher, HostSymbol::Dispatcher);
     jmp(r11);
     output.links.push_back(site);
+    flags = previous_flags;
 }
 
 void Writer::Terminal(const StoredTerminal& t) {
+    EndArmFPRegion();
     if (t.kind == TerminalKind::Jump) {
-        jmp(blocks[t.first.value], T_NEAR);
+        BranchTo(t.first);
         return;
     }
     if (t.kind == TerminalKind::Branch) {
         const auto& h = allocation.homes[t.value.value];
+        if (h.terminal_only) {
+            const auto& operation = source.Operations()[t.value.value];
+            if (options.local_flags) {
+                const auto mask = source.Operands(t.value).front().Payload();
+                ir::Condition condition{};
+                bool direct = true;
+                if (operation.opcode == OpCode::CondSet || operation.opcode == OpCode::LocalCondSet)
+                    condition = static_cast<ir::Condition>(mask);
+                else {
+                    switch (mask) {
+                        case 1:
+                            condition = ir::Condition::CS;
+                            break;
+                        case 2:
+                            condition = ir::Condition::VS;
+                            break;
+                        case 4:
+                            condition = ir::Condition::EQ;
+                            break;
+                        case 8:
+                            condition = ir::Condition::MI;
+                            break;
+                        default:
+                            direct = false;
+                            break;
+                    }
+                }
+                if (direct) {
+                    const bool yes_needs = allocation.flags_input[t.first.value] != 0;
+                    const bool no_needs = allocation.flags_input[t.second.value] != 0;
+                    if (yes_needs && no_needs) SaveNativeFlags(true);
+                    auto cc = NativeCondition(condition);
+                    if (operation.opcode == OpCode::TestNotFlags) cc ^= 1;
+                    if (cc == 16) {
+                        BranchTo(t.first);
+                        return;
+                    }
+                    if (!yes_needs || no_needs) {
+                        NativeJump(cc, blocks[t.first.value]);
+                        BranchTo(t.second);
+                    } else {
+                        NativeJump(cc ^ 1, blocks[t.second.value]);
+                        BranchTo(t.first);
+                    }
+                    return;
+                }
+                MaterializeFlags();
+                SaveNativeFlags(true);
+            }
+            const auto mask = PackedFlagMask(source.Operands(t.value).front().Payload());
+            if (mask <= UINT32_MAX)
+                test(ebx, static_cast<u32>(mask));
+            else {
+                mov(rax, mask);
+                test(rbx, rax);
+            }
+            if (operation.opcode == OpCode::TestNotFlags)
+                jz(blocks[t.first.value], T_NEAR);
+            else
+                jnz(blocks[t.first.value], T_NEAR);
+            jmp(blocks[t.second.value], T_NEAR);
+            return;
+        }
+        if (options.local_flags) {
+            SaveNativeFlags(true);
+            flags.native = false;
+        }
         if (h.spilled)
             mov(rax, qword[rsp + h.stack_offset]);
         else
@@ -161,6 +252,7 @@ void Writer::Terminal(const StoredTerminal& t) {
         return;
     }
     if (t.kind == TerminalKind::Return) {
+        MaterializeFlags();
         if (t.HasValue()) {
             if (source.Operations()[t.value.value].type == ir::Type::V128)
                 Reject(CompileError::UnsupportedType);
@@ -191,7 +283,7 @@ void Writer::Terminal(const StoredTerminal& t) {
         StaticExit(static_pc);
         return;
     }
-    PublishFlags();
+    ExportLinkedFlags();
     if (options.pc_offset != UINT32_MAX)
         mov(rdi, qword[r12 + options.pc_offset]);
     else
@@ -210,6 +302,7 @@ void Writer::Terminal(const StoredTerminal& t) {
 void Writer::WriteResult(OpContext& c) {
     if (c.saved || c.operation.type == ir::Type::Void) return;
     const auto& h = allocation.homes[c.node.value];
+    if (h.terminal_only) return;
     if (c.vector_result) {
         if (h.spilled)
             movdqu(ptr[rsp + h.stack_offset], c.vector);
@@ -244,6 +337,8 @@ void Writer::Dispatch(OpContext& c) {
 }
 
 void Writer::Run() {
+    if (options.arm_fpcr != UINT32_MAX && !runtime::arm64::IsSupportedFPCR(options.arm_fpcr))
+        Reject(CompileError::UnsupportedOperand);
     if (Pinned()) {
         if (!Linked() || options.pinned_uniform_slots != 2 ||
             options.pinned_uniform_offset == UINT32_MAX ||
@@ -259,7 +354,22 @@ void Writer::Run() {
             overlaps(options.mxcsr_offset))
             Reject(CompileError::UnsupportedOperand);
     }
-    Prologue();
+    const bool fp_guard = allocation.cold_fp_count && options.arm_fpcr != UINT32_MAX &&
+                          options.arm_fpcr_offset != UINT32_MAX;
+    const auto enter = [&](u32 b, u64 pc) {
+        flags = {};
+        Prologue();
+        if (options.local_flags && (allocation.flags_input[b] || fp_guard)) ImportLinkedFlags();
+        if (fp_guard) {
+            Label ready;
+            cmp(dword[r12 + options.arm_fpcr_offset], options.arm_fpcr);
+            je(ready, T_NEAR);
+            guest_pc = pc;
+            Exit(runtime::ExitValue(runtime::NativeExit::FPEnvironment));
+            L(ready);
+        }
+    };
+    enter(source.EntryBlock().value, options.entry_pc);
     std::vector<std::pair<unsigned, unsigned>> extra;
     for (auto b : allocation.block_order) {
         block = BlockId{b};
@@ -268,6 +378,11 @@ void Writer::Run() {
         has_fault_location = false;
         terminated = false;
         const auto& body = source.Blocks()[b];
+        flags = {options.local_flags && allocation.flags_input[b] != 0,
+                 false,
+                 options.local_flags && allocation.flags_input[b] != 0,
+                 false,
+                 true};
         for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
             current = NodeId{i};
             const auto& op = source.Operations()[i];
@@ -294,6 +409,9 @@ void Writer::Run() {
             c.destination = rax;
             c.vector = xmm0;
             fault_committed_flags = false;
+            if (allocation.homes[i].terminal_only) continue;
+            PrepareArmFPRegion(c);
+            PrepareFlags(c);
             Dispatch(c);
             WriteResult(c);
             if (op.flag_outputs && op.opcode != OpCode::Add && op.opcode != OpCode::Sub &&
@@ -304,10 +422,11 @@ void Writer::Run() {
         }
         if (!terminated) Terminal(body.terminal);
     }
+    EmitColdPaths();
     for (auto [index, b] : extra) {
         align(16);
         output.entries[index].offset = getSize();
-        Prologue();
+        enter(b, output.entries[index].pc);
         jmp(blocks[b], T_NEAR);
     }
     while (getSize() & 3) db(0x90);

@@ -22,7 +22,9 @@ struct CompileOptions {
     std::uint8_t pinned_uniform_slots{};
     std::uintptr_t dispatcher{}, exit_handler{};
     std::uint64_t entry_pc{};
-    bool native_fp_environment{}, fault_locations{}, relocatable{};
+    std::uint32_t arm_fpcr{UINT32_MAX};
+    std::uint32_t arm_fpcr_offset{UINT32_MAX};
+    bool native_fp_environment{}, fault_locations{}, relocatable{}, local_flags{}, linked_flags{};
     bool cx16{true}, ssse3{}, sse41{}, sse42{}, fma{}, aes{}, pclmul{}, sha{};
 };
 

@@ -280,7 +280,7 @@ endif()
 # Numerical IR execution is an independent consumer, without a decoder,
 # Program construction or x86 register-layout dependency.
 add_library(svm_ir_direct STATIC source/runtime/ir/direct/interpreter.cpp)
-target_link_libraries(svm_ir_direct PUBLIC svm_ir PRIVATE svm_x87)
+target_link_libraries(svm_ir_direct PUBLIC svm_ir PRIVATE svm_x87 svm_arm64_numeric)
 
 # Reuse only the byte decoder. No legacy frontend or middle-pipeline target.
 add_subdirectory(source/runtime/externals/distorm)

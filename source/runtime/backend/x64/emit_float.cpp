@@ -1,9 +1,69 @@
 #include "emit.h"
 #include "helpers.h"
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/floating.h"
 
 namespace swift::runtime::backend::x64::detail {
 using O = OpCode;
+
+void Writer::BeginArmFPRegion(u32 control, u32 status) {
+    if (arm_fp_region) return;
+    // Exact numerical leaves preserve FPCR. A shared stub reuses the
+    // control condition already checked at its original guest call site.
+    if (allocation.fpcr_may_change && !stack_bias) {
+        SaveNativeFlags();
+        flags.native = false;
+        Label valid;
+        cmp(dword[r12 + control], options.arm_fpcr);
+        je(valid, T_NEAR);
+        Exit(runtime::ExitValue(runtime::NativeExit::FPEnvironment));
+        L(valid);
+    }
+    const auto tmp = allocation.call_offset + 208 + stack_bias;
+    constexpr unsigned rounding[]{0, 2, 1, 3};
+    stmxcsr(dword[rsp + tmp + 48]);
+    mov(dword[rsp + tmp + 52], 0x1f80 | (rounding[(options.arm_fpcr >> 22) & 3] << 13));
+    ldmxcsr(dword[rsp + tmp + 52]);
+    arm_fp_region = true;
+    arm_fp_control = control;
+    arm_fp_status = status;
+}
+
+void Writer::EndArmFPRegion() {
+    if (!arm_fp_region) return;
+    SaveNativeFlags();
+    flags.native = false;
+    const auto tmp = allocation.call_offset + 208 + stack_bias;
+    stmxcsr(dword[rsp + tmp + 52]);
+    ldmxcsr(dword[rsp + tmp + 48]);
+    mov(r11d, dword[rsp + tmp + 52]);
+    shr(r11d, 1);
+    and_(r11d, 16);
+    or_(dword[r12 + arm_fp_status], r11d);
+    arm_fp_region = false;
+}
+
+void Writer::PrepareArmFPRegion(OpContext& c) {
+    if (!arm_fp_region) return;
+    if (c.operation.opcode == O::ArmFPBinary) {
+        if (c.Arg(2).Payload() != arm_fp_control || c.Arg(3).Payload() != arm_fp_status)
+            EndArmFPRegion();
+        return;
+    }
+    const auto effects = EffectsFor(c.operation.opcode, c.operation.Metadata());
+    bool boundary = HasAnyEffect(effects,
+                                 Effect::MayFault | Effect::Unknown | Effect::External |
+                                         Effect::Control | Effect::ReadHostState |
+                                         Effect::WriteHostState | Effect::WriteFlags);
+    if (c.operation.opcode == O::LoadUniform || c.operation.opcode == O::StoreUniform) {
+        const auto field = c.Arg(0);
+        const auto bytes = TypeBits(field.TypeView()) / 8;
+        for (auto offset : {arm_fp_control, arm_fp_status})
+            boundary |= field.Payload() < u64{offset} + 4 && offset < field.Payload() + bytes;
+    } else if (HasAnyEffect(effects, Effect::ReadGuestState | Effect::WriteGuestState))
+        boundary = true;
+    if (boundary) EndArmFPRegion();
+}
 
 void Writer::AccumulateFloating(const Reg32& raised) {
     if (options.mxcsr_offset != UINT32_MAX) or_(dword[r12 + options.mxcsr_offset], raised);
@@ -391,12 +451,197 @@ FP(VecFRoundInt)
 // clang-format on
 #undef FP
 
-void Writer::Handle(Op<O::ArmScalarFP>, OpContext&) {
-    Reject(CompileError::UnsupportedOpcode);
+void Writer::Handle(Op<O::ArmScalarFP>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+
+void Writer::Handle(Op<O::ArmScalarFMA>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+
+void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
+    if (options.local_flags && flags.dirty) {
+        SaveNativeFlags(true);
+        flags.native = false;
+    }
+    const auto preserved_flags = flags;
+    const auto control = c.Arg(2).Payload(), status = c.Arg(3).Payload(),
+               format = c.Arg(4).Payload();
+    if (!c.vector_result || View(c.Arg(0)) != ir::Type::V128 || View(c.Arg(1)) != ir::Type::V128 ||
+        control > INT32_MAX - 4 || status > INT32_MAX - 4 || format > UINT32_MAX ||
+        !runtime::arm64::ValidArmFPBinaryMode(format))
+        Reject(CompileError::UnsupportedOperand);
+    const unsigned bits = format & 4 ? 64 : 32, lanes = (format >> 3) & 7, kind = format & 3;
+    const unsigned tmp = allocation.call_offset + 208;
+    const bool regional = options.arm_fpcr != UINT32_MAX;
+    if (regional) BeginArmFPRegion(control, status);
+    const auto masks = LiveCallMasks();
+    const FPCallKey key{u32(control),
+                        u32(status),
+                        u32(format),
+                        masks.scalars,
+                        masks.vectors,
+                        regional,
+                        flags.dirty};
+    auto [stub, inserted] = fp_stub_index.try_emplace(key, fp_stubs.size());
+    if (inserted) fp_stubs.push_back({key, {}});
+    cold_fp.push_back({c.node, {}, {}, stub->second});
+    auto& path = cold_fp.back();
+    auto& slow = path.entry;
+    if (!regional) {
+        cmp(dword[r12 + control], 0);
+        jne(slow, T_NEAR);
+    }
+    ReadVector(c.Arg(0), xmm0);
+    ReadVector(c.Arg(1), xmm1);
+    if (format & 64) {
+        const unsigned index = format >> 7;
+        if (bits == 32)
+            pshufd(xmm1, xmm1, index * 0x55);
+        else
+            pshufd(xmm1, xmm1, index ? 0xee : 0x44);
+    }
+    // Zero or central finite exponents only. For F32 e in [65,189],
+    // F64 e in [513,1533]: even a product remains normal, and the smallest
+    // nonzero sum/difference is normal. Only IXC can arise; cancellation and
+    // signed zeros have identical round-to-nearest semantics. No speculative
+    // result or exception needs rollback, including the MinNorm boundary.
+    for (const auto input : {xmm0, xmm1}) {
+        for (unsigned lane = 0; lane < lanes; ++lane) {
+            Label zero;
+            if (lane) {
+                movdqa(xmm14, input);
+                psrldq(xmm14, lane * bits / 8);
+                movq(rax, xmm14);
+            } else
+                movq(rax, input);
+            if (bits == 32) {
+                add(eax, eax);
+                jz(zero, T_SHORT);
+                shr(eax, 24);
+                sub(eax, 65);
+                cmp(eax, 124);
+            } else {
+                add(rax, rax);
+                jz(zero, T_SHORT);
+                shr(rax, 53);
+                sub(eax, 513);
+                cmp(eax, 1020);
+            }
+            ja(slow, T_NEAR);
+            L(zero);
+        }
+    }
+    // Clear inactive inputs before packed execution: they must not create
+    // exceptions. Scalar instructions also explicitly zero their upper result.
+    if (lanes * bits <= 64) {
+        movq(xmm0, xmm0);
+        movq(xmm1, xmm1);
+    }
+    if (!regional) {
+        stmxcsr(dword[rsp + tmp + 48]);
+        mov(dword[rsp + tmp + 52], 0x1f80);
+        ldmxcsr(dword[rsp + tmp + 52]);
+    }
+    const bool scalar = lanes == 1;
+    if (bits == 32) {
+        if (kind == 0) {
+            if (scalar)
+                addss(xmm0, xmm1);
+            else
+                addps(xmm0, xmm1);
+        } else if (kind == 1) {
+            if (scalar)
+                subss(xmm0, xmm1);
+            else
+                subps(xmm0, xmm1);
+        } else {
+            if (scalar)
+                mulss(xmm0, xmm1);
+            else
+                mulps(xmm0, xmm1);
+        }
+    } else {
+        if (kind == 0) {
+            if (scalar)
+                addsd(xmm0, xmm1);
+            else
+                addpd(xmm0, xmm1);
+        } else if (kind == 1) {
+            if (scalar)
+                subsd(xmm0, xmm1);
+            else
+                subpd(xmm0, xmm1);
+        } else {
+            if (scalar)
+                mulsd(xmm0, xmm1);
+            else
+                mulpd(xmm0, xmm1);
+        }
+    }
+    if (!regional) {
+        stmxcsr(dword[rsp + tmp + 52]);
+        ldmxcsr(dword[rsp + tmp + 48]);
+        mov(eax, dword[rsp + tmp + 52]);
+        shr(eax, 1);
+        and_(eax, 16);
+        or_(dword[r12 + status], eax);
+    }
+    if (lanes * bits == 32) {
+        movd(eax, xmm0);
+        movd(xmm0, eax);
+    } else if (!scalar && lanes * bits == 64)
+        movq(xmm0, xmm0);
+    L(path.resume);
+    flags = preserved_flags;
 }
 
-void Writer::Handle(Op<O::ArmScalarFMA>, OpContext&) {
-    Reject(CompileError::UnsupportedOpcode);
+void Writer::EmitColdPaths() {
+    const auto tmp = allocation.call_offset + 208;
+    for (auto& path : cold_fp) {
+        current = path.node;
+        L(path.entry);
+        auto input = source.Operands(path.node).begin();
+        ReadVector(*input++, xmm0);
+        ReadVector(*input, xmm1);
+        movdqu(ptr[rsp + tmp], xmm0);
+        movdqu(ptr[rsp + tmp + 16], xmm1);
+        call(fp_stubs[path.stub].entry);
+        jmp(path.resume, T_NEAR);
+    }
+    for (auto& stub : fp_stubs) {
+        align(16);
+        L(stub.entry);
+        sub(rsp, 8);
+        stack_bias = 16;
+        flags = {stub.key.flags_saved, false, stub.key.flags_saved, false, true};
+        arm_fp_region = stub.key.region;
+        arm_fp_control = stub.key.control;
+        arm_fp_status = stub.key.status;
+        PrepareCall({stub.key.scalars, stub.key.vectors});
+        lea(rdi, ptr[rsp + tmp + stack_bias + 32]);
+        lea(rsi, ptr[rsp + tmp + stack_bias]);
+        lea(rdx, ptr[rsp + tmp + stack_bias + 16]);
+        mov(ecx, stub.key.format);
+        if (options.arm_fpcr == UINT32_MAX)
+            mov(r8d, dword[r12 + stub.key.control]);
+        else
+            mov(r8d, options.arm_fpcr);
+        lea(r9, ptr[r12 + stub.key.status]);
+        Call(reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateVectorBinaryFP),
+             HostSymbol::ArmFPBinary);
+        movdqu(xmm0, ptr[rsp + tmp + stack_bias + 32]);
+        if (stub.key.flags_saved) ImportPackedFlags();
+        if (stub.key.region) BeginArmFPRegion(stub.key.control, stub.key.status);
+        add(rsp, 8);
+        ret();
+        stack_bias = 0;
+    }
+    arm_fp_region = false;
+    for (auto& path : cold_events) {
+        L(path.entry);
+        flags = path.flags;
+        guest_pc = path.pc;
+        mov(rax, path.pc);
+        mov(qword[r12 + options.pc_offset], rax);
+        Exit(runtime::ExitValue(runtime::NativeExit::GuestEvents));
+    }
 }
 
 void Writer::Handle(Op<O::VecFCmp>, OpContext& c) {

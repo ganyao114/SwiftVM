@@ -24,17 +24,35 @@ void Compile(const ir::Program& program,
     result.block = {};
     result.frame_bytes = result.spill_slots = 0;
     ClearCode(result);
+    options.linked_flags &= options.local_flags && options.dispatcher && options.exit_handler;
+    options.local_flags &= options.flags_offset <= INT32_MAX - 8;
+    options.linked_flags &= options.local_flags;
     result.relocatable = options.relocatable;
     if (program.ScopeKind() == ir::Scope::Block)
-        AllocateBlock(program, allocation, options.pinned_uniform_slots);
+        AllocateBlock(program, allocation, options.pinned_uniform_slots, &options);
     else
-        AllocateFunction(program, allocation, options.pinned_uniform_slots);
+        AllocateFunction(program, allocation, options.pinned_uniform_slots, &options);
     if (!allocation) {
         result.relocatable = false;
         result.error = allocation.error;
         result.node = allocation.node;
         result.block = allocation.block;
         return;
+    }
+    if (options.local_flags && allocation.flags_slot > 0xffffff) {
+        if (options.linked_flags) {
+            result.error = CompileError::FrameTooLarge;
+            return;
+        }
+        options.local_flags = options.linked_flags = false;
+        if (program.ScopeKind() == ir::Scope::Block)
+            AllocateBlock(program, allocation, options.pinned_uniform_slots, &options);
+        else
+            AllocateFunction(program, allocation, options.pinned_uniform_slots, &options);
+        if (!allocation) {
+            result.error = allocation.error;
+            return;
+        }
     }
     result.spill_slots = allocation.spill_bytes / 8;
     result.words.reserve(std::max<std::size_t>(256, program.Operations().size() * 4 + 32));

@@ -151,7 +151,8 @@ bool Smc::Recover(std::uintptr_t address) noexcept {
     vm.thread.faults.dispatch_resume_l1.store(reinterpret_cast<std::uintptr_t>(vm.empty_l1.Data()),
                                               std::memory_order_release);
     vm.RefreshDispatchView();
-    for (auto& cache : vm.caches) cache.ResetLinks();
+    for (auto& cache : vm.caches)
+        if (cache) cache->ResetLinks();
     return true;
 }
 
@@ -193,7 +194,8 @@ void Smc::Invalidate() {
     // The signal path already restored links while old native code could run.
     // A service-triggered invalidation is itself cold, so removing all domains
     // also makes every old range unreachable without rewriting it a second time.
-    for (auto& cache : vm.caches) cache.Clear();
+    for (auto& cache : vm.caches)
+        if (cache) cache->Clear();
     vm.thread.anchor = {};
     vm.RefreshNative(vm.thread.native);
     const auto released = vm.heap.Release();

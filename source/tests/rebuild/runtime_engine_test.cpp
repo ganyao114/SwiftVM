@@ -1,3 +1,4 @@
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/flags.h"
 #include "runtime/execution/runtime.h"
 #include "runtime/execution/vm.h"
@@ -1105,6 +1106,105 @@ void ArmSupportedFPControl(unsigned pinned_slots) {
     }
 }
 
+void ArmFPBinaryBoundaryState() {
+    // Fast scalar; FPSR observation; exact FDIV helper; mixed-lane vector;
+    // indexed multiply ignoring an sNaN in the unselected lane; FPSR reset;
+    // subnormal slow path; actual cross-page vector load fault.
+    constexpr std::array<std::uint32_t, 13> instructions{0x1e622820,
+                                                         0xd53b4423,
+                                                         0x1e651883,
+                                                         0x4e68d4e6,
+                                                         0x4fcb9949,
+                                                         0xd53b4424,
+                                                         0xd51b442c,
+                                                         0x1e2e29ac,
+                                                         0xd53b4425,
+                                                         0x3dc0002f,
+                                                         0xd2800540,
+                                                         0xd2800ba8,
+                                                         0xd4000001};
+    const std::span<const std::uint8_t> bytes{
+            reinterpret_cast<const std::uint8_t*>(instructions.data()), sizeof(instructions)};
+    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+    for (const auto scope : {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function})
+        for (const auto pins : {0u, 2u})
+            for (const auto mode :
+                 {execution::ExecutionMode::JitOnly, execution::ExecutionMode::InterpretOnly}) {
+                execution::RuntimeOptions options;
+                options.scope = scope;
+                options.mode = mode;
+                options.pinned_slots = pins;
+                execution::RuntimeStats stats;
+                swift::runtime::platform::HostRuntime host{false};
+                execution::VM vm{options, stats, host.Bind()};
+                vm.PrepareGuest(guest.Path());
+                auto& state = vm.ArmState();
+                const auto fault_pc = state.pc + 9 * 4;
+                const auto page = vm.Memory().PageSize();
+                const auto memory = vm.Memory().Map(
+                        0, page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+                REQUIRE(memory != UINT64_MAX);
+                REQUIRE(vm.Memory().Protect(memory + page, page, PROT_NONE) == 0);
+                state.gprs[1] = memory + page - 8;
+                state.gprs[12] = 0x08000004;
+                state.fpsr = 0x08000008;
+                const auto vector = [&](unsigned reg, std::uint64_t low, std::uint64_t high = 0) {
+                    const std::array value{low, high};
+                    std::memcpy(state.q[reg], value.data(), sizeof(value));
+                };
+                vector(0, ~0ull, ~0ull);
+                vector(1, 0x3ff0000000000000);
+                vector(2, 0x3ca0000000000000);
+                vector(4, 0x3ff0000000000000);
+                vector(5, 0);
+                vector(7, 0x3ff0000000000000, 0x7ff0000000000042);
+                vector(8, 0x4000000000000000, 0x3ff0000000000000);
+                vector(10, 0x3ff8000000000000, 0x8000000000000000);
+                vector(11, 0x7ff0000000000042, 0x4000000000000000);
+                vector(13, 0x3f800000);
+                vector(14, 1);
+                vector(15, 0x1122334455667788, 0x8877665544332211);
+                unsigned previous{}, after{};
+#if defined(__x86_64__)
+                asm volatile("stmxcsr %0" : "=m"(previous));
+                const unsigned host_control = 0x7fa1;
+                asm volatile("ldmxcsr %0" ::"m"(host_control));
+#endif
+                (void)vm.RunPrepared();
+#if defined(__x86_64__)
+                asm volatile("stmxcsr %0" : "=m"(after));
+                asm volatile("ldmxcsr %0" ::"m"(previous));
+                CHECK(after == host_control);
+#endif
+                const auto fault = vm.CaptureException();
+                REQUIRE(fault);
+                CHECK(fault->info.instruction_pc == fault_pc);
+                CHECK(fault->info.access_bytes == 16);
+                CHECK(fault->info.access == swift::runtime::GuestExceptionAccess::Read);
+                CHECK(state.gprs[3] == 0x08000018);
+                CHECK(state.gprs[4] == 0x0800001b);
+                CHECK(state.gprs[5] == 0x08000014);
+                CHECK(state.fpsr == 0x08000014);
+                const auto expect = [&](unsigned reg, std::uint64_t low, std::uint64_t high) {
+                    std::array<std::uint64_t, 2> actual;
+                    std::memcpy(actual.data(), state.q[reg], sizeof(actual));
+                    CHECK(actual == (std::array{low, high}));
+                };
+                expect(0, 0x3ff0000000000000, 0);
+                expect(3, 0x7ff0000000000000, 0);
+                expect(6, 0x4008000000000000, 0x7ff8000000000042);
+                expect(9, 0x4008000000000000, 0x8000000000000000);
+                expect(12, 0x3f800000, 0);
+                expect(15, 0x1122334455667788, 0x8877665544332211);
+                if (mode == execution::ExecutionMode::JitOnly) {
+                    CHECK(stats.native_bytes > 0);
+                    CHECK(stats.interpreted_steps == 0);
+                    CHECK(stats.fallbacks == 0);
+                }
+                CHECK(vm.Close().Complete());
+            }
+}
+
 void ArmUnsupportedFPControl() {
     // MOV X0,1<<26; MSR FPCR,X0 (AHP); MOV X8,93; SVC 0.
     constexpr std::array<std::uint32_t, 4> instructions{
@@ -1177,6 +1277,11 @@ TEST_CASE("ARM FP controls retain the selected host environment",
     ArmSupportedFPControl(2);
 }
 
+TEST_CASE("ARM FP status survives helpers, state services and a vector memory fault",
+          "[native][execution][floating][arm64-guest]") {
+    ArmFPBinaryBoundaryState();
+}
+
 TEST_CASE("SSE exception state", "[native][execution][floating]") {
     CHECK_NOTHROW(SSEExceptionState());
 }
@@ -1218,5 +1323,60 @@ TEST_CASE("CMPXCHG16B rejects before commit", "[native][execution][atomic][atomi
 
 TEST_CASE("ARM guest unsupported FP controls", "[native][execution][arm64-guest]") {
     CHECK_NOTHROW(ArmUnsupportedFPControl());
+}
+
+TEST_CASE("ARM FPCR domains compile on demand and reuse every supported profile",
+          "[native][execution][floating][arm64-guest]") {
+    namespace arm = swift::runtime::arm64;
+    constexpr std::array<std::uint32_t, 5> instructions{
+            0xb100053f, 0x1e622820, 0x1e622803, 0x1e620824, 0xd65f03c0};
+    const std::span<const std::uint8_t> bytes{
+            reinterpret_cast<const std::uint8_t*>(instructions.data()), sizeof(instructions)};
+    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+    for (auto scope : {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function}) {
+        execution::RuntimeOptions options;
+        options.scope = scope;
+        execution::RuntimeStats stats;
+        swift::runtime::platform::HostRuntime host{false};
+        const auto backend = host.Bind();
+        execution::VM vm{options, stats, backend};
+        vm.PrepareGuest(guest.Path());
+        const auto entry = vm.ArmState().pc, stack = vm.ArmState().gprs[31];
+        for (unsigned round = 0; round < 2; ++round) {
+            for (unsigned profile = 0; profile < 32; ++profile) {
+                const auto domain = round ? 31 - profile : profile;
+                auto& state = vm.ArmState();
+                state.fpcr = arm::FPCRForDomain(domain);
+                state.fpsr = 0x08000000;
+                state.gprs[9] = UINT64_MAX;
+                state.gprs[30] = 0;
+                state.packed_flags = (std::uint64_t{1} << 55) | 0x25;
+                const std::uint64_t left = round ? 0x7ff0000000000042 : 0x3ff0000000000000;
+                const std::uint64_t right = domain & 1 ? 1 : 0x3ca0000000000000;
+                std::memcpy(state.q[1], &left, 8);
+                std::memcpy(state.q[2], &right, 8);
+                const auto first = arm::EvaluateBinaryFP(left, right, 64, 2, state.fpcr);
+                const auto second = arm::EvaluateBinaryFP(first.value, right, 64, 2, state.fpcr);
+                const auto third = arm::EvaluateBinaryFP(left, right, 64, 0, state.fpcr);
+                vm.CallGuest(entry, stack, 0);
+                const auto result = [&](unsigned reg, std::uint64_t expected) {
+                    std::array<std::uint64_t, 2> value;
+                    std::memcpy(value.data(), state.q[reg], sizeof(value));
+                    CHECK(value == (std::array{expected, std::uint64_t{0}}));
+                };
+                result(0, first.value);
+                result(3, second.value);
+                result(4, third.value);
+                CHECK(state.fpsr ==
+                      (0x08000000 | first.exceptions | second.exceptions | third.exceptions));
+                CHECK(state.packed_flags == ((std::uint64_t{1} << 55) | 0x60000025));
+                if (backend.specializes_arm_fpcr)
+                    CHECK(stats.compile_attempts == (round ? 32 : profile + 1));
+            }
+        }
+        CHECK(stats.interpreted_steps == 0);
+        CHECK(stats.fallbacks == 0);
+        CHECK(vm.Close().Complete());
+    }
 }
 #endif

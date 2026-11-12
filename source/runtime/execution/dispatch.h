@@ -97,9 +97,12 @@ struct NativeRunContext {
     std::atomic<std::uint64_t> phase{SVM_NATIVE_PHASE_RUNTIME};
     std::atomic<std::uint64_t> pending_events{};
     FaultContext* faults{};
+    // x64 ARM64 units exchange a canonical raw RFLAGS snapshot. Physical CF
+    // is the inverse of architectural C. Other portable flags remain in RBX.
+    std::uint64_t native_eflags{}, eflags{};
 };
 
-static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1072);
+static_assert(std::is_standard_layout_v<NativeRunContext> && sizeof(NativeRunContext) == 1088);
 static_assert(sizeof(std::atomic<const NativeCode*>) == 8 &&
               std::atomic<const NativeCode*>::is_always_lock_free);
 static_assert(offsetof(NativeRunContext, opaque) == 0 && offsetof(NativeRunContext, resolve) == 8);

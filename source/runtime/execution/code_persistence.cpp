@@ -117,25 +117,25 @@ void VM::InstallImage(const CodeImage& native) {
         swift::ThrowError("AOT build, guest image or native configuration mismatch",
                           ErrorKind::InvalidArgument);
     for (const auto& unit : native.units) {
-        if ((!backend.specializes_fp_flush && unit.fp_mode) || unit.fp_mode > 3 ||
-            !SourcesMatch(unit.sources))
+        const unsigned modes =
+                (backend.specializes_fp_flush ? 3u : 0u) |
+                (ISA() == GuestISA::Arm64 && backend.specializes_arm_fpcr ? 124u : 0u);
+        if ((unit.fp_mode & ~modes) || !SourcesMatch(unit.sources))
             swift::ThrowError("AOT source bytes or source policy mismatch",
                               ErrorKind::InvalidArgument);
     }
     const auto initial_pc = PC();
-    const auto initial_mxcsr = NumericControl();
+    const auto initial_mode = thread.fp_mode;
     for (const auto& unit : native.units) {
         PC() = unit.pc;
-        NumericControl() = (initial_mxcsr & ~UINT32_C(0x8040)) | ((unit.fp_mode & 1u) << 6) |
-                           ((unit.fp_mode >> 1) << 15);
-        UpdateFPEnvironment();
+        SelectFPMode(unit.fp_mode);
         auto code = compiler.Restore(unit, true);
         Cache().InsertReady(unit.pc, code, unit.code.entries);
         ++stats.aot_units_loaded;
     }
     PC() = initial_pc;
-    NumericControl() = initial_mxcsr;
-    UpdateFPEnvironment();
+    SelectFPMode(initial_mode);
+    RefreshNative(thread.native);
     ObserveCache();
 }
 

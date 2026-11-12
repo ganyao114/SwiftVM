@@ -35,11 +35,19 @@ void Writer::Arithmetic(OpContext& c) {
             sub(a, b);
             break;
         case OpCode::Adc:
-            bt(rbx, 29);
+            if (options.local_flags && (defer_flags || merge_native_flags)) {
+                bt(qword[rsp + allocation.flags_slot], 0);
+                if (flags.saved_carry) cmc();
+            } else
+                bt(rbx, 29);
             adc(a, b);
             break;
         case OpCode::Sbb:
-            bt(rbx, 29);
+            if (options.local_flags && (defer_flags || merge_native_flags)) {
+                bt(qword[rsp + allocation.flags_slot], 0);
+                if (flags.saved_carry) cmc();
+            } else
+                bt(rbx, 29);
             sbb(a, b);
             break;
         case OpCode::Neg:
@@ -222,6 +230,7 @@ void Writer::Shift(OpContext& c) {
         if (amount) shift(static_cast<int>(amount));
     } else
         shift(cl);
+    c.scalar_normalized = c.width >= 32;
 }
 
 #define SH(name)                                                                                   \

@@ -11,6 +11,8 @@ namespace {
 #if defined(__x86_64__)
 extern "C" void SvmNativeDispatchL1Probe() noexcept;
 extern "C" void SvmNativeDispatchCountedL1Probe() noexcept;
+extern "C" void SvmNativeDispatchNZCVL1Probe() noexcept;
+extern "C" void SvmNativeDispatchNZCVCountedL1Probe() noexcept;
 
 bool RestoreSignalState(execution::FaultContext& context,
                         const backend::FaultSite& site,
@@ -36,7 +38,10 @@ bool RestoreSignalState(execution::FaultContext& context,
     std::array<std::uint64_t, 16> registers;
     for (unsigned i = 0; i < registers.size(); ++i)
         registers[i] = static_cast<std::uint64_t>(machine.uc_mcontext.gregs[indices[i]]);
-    if (!backend::x64::RestoreGuestState(context, site, std::as_bytes(std::span{registers})))
+    if (!backend::x64::RestoreGuestState(context,
+                                         site,
+                                         std::as_bytes(std::span{registers}),
+                                         machine.uc_mcontext.gregs[REG_EFL]))
         return false;
     if (native->fp_environment) native->guest_fpcr = machine.uc_mcontext.fpregs->mxcsr;
     return true;
@@ -66,12 +71,21 @@ bool RecoverNative(execution::FaultContext& context,
     const auto pc = static_cast<std::uintptr_t>(machine.uc_mcontext.gregs[REG_RIP]);
     const bool dispatch_probe =
             pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchL1Probe) ||
-            pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchCountedL1Probe);
+            pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchCountedL1Probe) ||
+            pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchNZCVL1Probe) ||
+            pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchNZCVCountedL1Probe);
     if (dispatch_probe && signal == SIGSEGV && signal_code == SEGV_ACCERR &&
         execution::IsDispatchInterrupt(context, address)) {
         // The dispatcher has committed the previous unit. RDI is its next
         // guest target, including the root probe before active becomes non-null.
-        if (!RestoreSignalState(context, {}, machine)) return false;
+        backend::FaultSite dispatch_state{};
+        if (native->native_eflags) {
+            dispatch_state.recovery[0] = 2 | 4;
+            dispatch_state.recovery[1] = 15;
+        }
+        auto dispatch_machine = machine;
+        if (native->native_eflags) dispatch_machine.uc_mcontext.gregs[REG_EFL] = native->eflags;
+        if (!RestoreSignalState(context, dispatch_state, dispatch_machine)) return false;
         *context.guest_pc = static_cast<std::uint64_t>(machine.uc_mcontext.gregs[REG_RDI]);
         context.dispatch_interrupts.fetch_add(1, std::memory_order_relaxed);
         ReturnToHost(

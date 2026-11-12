@@ -15,6 +15,16 @@ namespace swift::runtime::arm64 {
 bool IsSupportedScalarFP(u32 instruction);
 bool IsSupportedFPCR(u32 fpcr);
 
+// Dense identity for every supported FZ16, RMode, FZ and DN combination.
+constexpr u8 FPCRDomain(u32 fpcr) {
+    return ((fpcr >> 19) & 1) | (((fpcr >> 22) & 3) << 1) | (((fpcr >> 24) & 3) << 3);
+}
+
+constexpr u32 FPCRForDomain(u8 domain) {
+    return (u32{domain & 1u} << 19) | (u32{(domain >> 1) & 3u} << 22) |
+           (u32{(domain >> 3) & 3u} << 24);
+}
+
 // Operations use the A64 scalar two-source encoding: mul/div/add/sub,
 // max/min/maxNum/minNum/negated mul. Inputs and output are raw H/S/D bits.
 struct FPBinaryResult {
@@ -35,6 +45,23 @@ FPBinaryResult EvaluateIntegerFP(
 FPBinaryResult EvaluatePrecisionFP(
         u64 value, u32 source_bits, u32 destination_bits, bool odd, u32 fpcr);
 FPBinaryResult EvaluateBinaryFP(u64 lhs, u64 rhs, u32 bits, u32 operation, u32 fpcr);
+
+// kind: 0=add, 1=sub, 2=mul; bits: 32/64; lanes: 1/2/4.
+// An indexed RHS broadcasts one of its original 128-bit input's lanes.
+constexpr u32 ArmFPBinaryMode(u32 kind, u32 bits, u32 lanes, bool indexed = false, u32 index = 0) {
+    return kind | (bits == 64 ? 4u : 0u) | (lanes << 3) | (indexed ? 64u : 0u) | (index << 7);
+}
+
+constexpr bool ValidArmFPBinaryMode(u32 mode) {
+    const auto bits = mode & 4 ? 64u : 32u, lanes = (mode >> 3) & 7;
+    return !(mode & ~511u) && (mode & 3) < 3 && (lanes == 1 || lanes == 2 || lanes == 4) &&
+           lanes * bits <= 128 && ((mode & 64) ? (mode >> 7) < 128 / bits : !(mode >> 7));
+}
+
+// Inputs are snapshotted before any output; inactive destination lanes are
+// zero. The caller validates the mode and supported FPCR at its normal boundary.
+void EvaluateVectorBinaryFP(
+        void* output, const void* lhs, const void* rhs, u32 mode, u32 fpcr, void* fpsr) noexcept;
 // Operation is an A64 scalar one-source opcode with precision bits cleared.
 // A nonzero integer_bits implements FPRoundIntN's signed range and indefinite
 // result contract. Both Z/X report inexact, unless this lane is invalid.

@@ -81,9 +81,12 @@ void Writer::Read(CellView c, const Reg64& r, bool raw) {
                     mov(r.cvt32(), dword[rsp + offset]);
                 else
                     mov(r, qword[rsp + offset]);
-            } else if (narrow)
-                mov(r.cvt32(), Reg32(h.reg));
-            else if (r.getIdx() != h.reg)
+            } else if (narrow) {
+                // U32 homes are normalized when their result is written.
+                // A reused home already has the required upper zero bits.
+                if (r.getIdx() != h.reg || source.Operations()[c.Payload()].type != ir::Type::U32)
+                    mov(r.cvt32(), Reg32(h.reg));
+            } else if (r.getIdx() != h.reg)
                 mov(r, Reg64(h.reg));
         }
     } else if (c.Kind() == OperandKind::Immediate || c.Kind() == OperandKind::Condition ||

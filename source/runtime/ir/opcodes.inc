@@ -745,3 +745,17 @@ INST(GuestDispatchSafepoint,
      Void,
      (Effect::ReadGuestState | Effect::ReadFlags | Effect::Control),
      Imm)
+
+// Exact ARM FP binary operation, including FPSR accumulation. The immediates
+// name FPCR/FPSR uniform offsets and the format from ArmFPBinaryMode. Unlike
+// VecF*, this owns ARM NaN, flush, tininess and destination-lane semantics.
+INST(ArmFPBinary,
+     Value,
+     Arg0,
+     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
+      Effect::WriteHostState),
+     Value,
+     Value,
+     Imm,
+     Imm,
+     Imm)

@@ -94,7 +94,7 @@ private:
     HostBackendOps backend;
     GuestMemory memory;
     CodeHeap heap;
-    std::array<CodeCache, 4> caches;
+    std::array<std::unique_ptr<CodeCache>, 128> caches;
     DispatchCache empty_l1;
     DispatchInterrupt interrupt_l1;
     CompileService compiler;
@@ -117,7 +117,9 @@ private:
     bool final_observed{}, closing{}, closed{};
     MappingRelease close_result;
 
-    CodeCache& Cache() noexcept { return caches[thread.fp_mode]; }
+    CodeCache& Cache() noexcept { return *caches[thread.fp_mode]; }
+
+    void SelectFPMode(std::uint8_t);
 
     std::uint64_t& PC() noexcept {
         return *reinterpret_cast<std::uint64_t*>(static_cast<std::uint8_t*>(uniform_data) +

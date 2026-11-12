@@ -13,6 +13,26 @@ using namespace swift::tests::arm_guest;
 using namespace vixl::aarch64;
 using U64 = std::uint64_t;
 
+TEST_CASE("ARM FP binary semantics select x64 without changing other targets",
+          "[compile][arm64-frontend]") {
+    // Compiler-verified FADD D0,D1,D2; FADD V6.2D,V7.2D,V8.2D;
+    // FMUL V9.2D,V10.2D,V11.D[1].
+    constexpr std::array<std::uint32_t, 3> words{0x1e622820, 0x4e68d4e6, 0x4fcb9949};
+    const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(words.data()),
+                                              sizeof(words)};
+    const std::array<front::BlockWindow, 1> windows{{{CodeBase, bytes}}};
+    for (const auto target : {0x8664u, 0xa64u, 0x5064u})
+        for (const auto mode :
+             {ir::TargetMode::Known, ir::TargetMode::Unknown, ir::TargetMode::EarlyOff}) {
+            const auto built = front::BuildIR(windows, ir::Scope::Block, {}, {mode, target, 0});
+            REQUIRE(built);
+            unsigned arm_binary{};
+            for (const auto& op : built.program.Operations())
+                arm_binary += op.opcode == ir::OpCode::ArmFPBinary;
+            CHECK(arm_binary == (target == 0x8664 && mode == ir::TargetMode::Known ? 3u : 0u));
+        }
+}
+
 void Build(const Code& code, ir::Scope scope = ir::Scope::Block) {
     const std::array<front::BlockWindow, 1> windows{{{CodeBase, code.View()}}};
     for (const auto mode : {ir::TargetMode::Known, ir::TargetMode::Unknown}) {

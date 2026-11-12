@@ -14,6 +14,48 @@
 .macro SVM_END name
 .size \name,.-\name
 .endm
+.macro IMPORT_EFLAGS
+ cmp qword ptr [r12+SVM_X64_CTX_NATIVE_EFLAGS-SVM_X64_CTX_STATE],0
+ je 8f
+ pushfq
+ pop rdx
+ and rdx,-2242
+ mov rax,rbx
+ shr rax,24
+ and eax,0xc0
+ or rdx,rax
+ mov rax,rbx
+ shr rax,29
+ and eax,1
+ xor eax,1
+ or rdx,rax
+ mov rax,rbx
+ shr rax,17
+ and eax,0x800
+ or rdx,rax
+ mov qword ptr [r12+SVM_X64_CTX_EFLAGS-SVM_X64_CTX_STATE],rdx
+8:
+.endm
+.macro PACK_EFLAGS
+ cmp qword ptr [r12+SVM_X64_CTX_NATIVE_EFLAGS-SVM_X64_CTX_STATE],0
+ je 8f
+ mov rdx,qword ptr [r12+SVM_X64_CTX_EFLAGS-SVM_X64_CTX_STATE]
+ mov eax,edx
+ and eax,0xc0
+ shl eax,24
+ mov ecx,edx
+ and ecx,0x800
+ shl ecx,17
+ or eax,ecx
+ and edx,1
+ shl edx,29
+ xor edx,0x20000000
+ or eax,edx
+ movabs rcx,0xffffffff0fffffff
+ and rbx,rcx
+ or rbx,rax
+8:
+.endm
 .macro PUBLISH_FLAGS
  mov ecx,dword ptr [r12+SVM_X64_CTX_FLAGS-SVM_X64_CTX_STATE]
  cmp ecx,-1
@@ -67,20 +109,25 @@ SVM_FUNCTION SvmRunNative
  je 1f
  mov rbx,qword ptr [r12+rax]
 1:
+ IMPORT_EFLAGS
  ldmxcsr dword ptr [rdi+SVM_X64_CTX_GUEST_MXCSR]
  RELOAD_PINNED
  mov eax,dword ptr [rdi+SVM_X64_CTX_PC]
  mov rdi,qword ptr [r12+rax]
+ cmp qword ptr [r12+SVM_X64_CTX_NATIVE_EFLAGS-SVM_X64_CTX_STATE],0
+ jne SvmNativeDispatchNZCV
  jmp SvmNativeDispatch
 SVM_END SvmRunNative
-.macro DISPATCH name,counted
+.macro DISPATCH name,counted,native
 SVM_FUNCTION \name
 .if \counted
  add qword ptr [r12+SVM_X64_CTX_DISPATCHES-SVM_X64_CTX_STATE],1
 .endif
  mov eax,dword ptr [r12+SVM_X64_CTX_PC-SVM_X64_CTX_STATE]
  mov qword ptr [r12+rax],rdi
+.if !\native
  PUBLISH_FLAGS
+.endif
  // R8 is only a scratch borrow of this thread's selected L1 slot. A null
  // base retains the bare NativeRunContext callback ABI; VM entries have L1.
  mov r8,qword ptr [r12+SVM_X64_CTX_L1-SVM_X64_CTX_STATE]
@@ -149,12 +196,10 @@ SVM_FUNCTION \name
  jmp r11
 SVM_END \name
 .endm
-DISPATCH SvmNativeDispatch,0
-DISPATCH SvmNativeDispatchCounted,1
-.globl SvmNativeDispatchNZCV
-.set SvmNativeDispatchNZCV,SvmNativeDispatch
-.globl SvmNativeDispatchNZCVCounted
-.set SvmNativeDispatchNZCVCounted,SvmNativeDispatchCounted
+DISPATCH SvmNativeDispatch,0,0
+DISPATCH SvmNativeDispatchCounted,1,0
+DISPATCH SvmNativeDispatchNZCV,0,1
+DISPATCH SvmNativeDispatchNZCVCounted,1,1
 SVM_FUNCTION SvmNativePendingCounted
  sub qword ptr [r12+SVM_X64_CTX_HITS-SVM_X64_CTX_STATE],1
  jmp .Lcold
@@ -163,6 +208,7 @@ SVM_FUNCTION SvmNativePending
  jmp .Lcold
 SVM_END SvmNativePending
 .Lcold:
+ PACK_EFLAGS
  PUBLISH_PINNED
  PUBLISH_FLAGS
  mov rax,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
@@ -180,6 +226,7 @@ SVM_END SvmNativePending
  je 1f
  mov rbx,qword ptr [r12+rax]
 1:
+ IMPORT_EFLAGS
  RELOAD_PINNED
  test r11,r11
  jz .Lfailed

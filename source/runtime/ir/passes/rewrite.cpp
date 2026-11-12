@@ -1,4 +1,5 @@
 #include "detail.h"
+#include "runtime/ir/uniform_effects.h"
 
 #include <algorithm>
 
@@ -116,12 +117,13 @@ struct UniformEntry {
     std::uint32_t offset{}, bytes{};
     Type type{Type::Void};
     Operand value;
+    NodeId store;
 };
 
 class UniformCache {
 public:
     void Clear() {
-        valid = 0;
+        valid = pending = 0;
         next = 0;
     }
 
@@ -142,36 +144,71 @@ public:
     void Invalidate(std::uint32_t offset, std::uint32_t bytes) {
         for (std::size_t i = 0; i < entries.size(); ++i) {
             const auto& entry = entries[i];
-            if ((valid & (1u << i)) && u64{entry.offset} < u64{offset} + bytes &&
-                u64{offset} < u64{entry.offset} + entry.bytes)
+            if (((valid | pending) & (1u << i)) && u64{entry.offset} < u64{offset} + bytes &&
+                u64{offset} < u64{entry.offset} + entry.bytes) {
                 valid &= ~(1u << i);
+                pending &= ~(1u << i);
+            }
         }
     }
 
-    void Add(std::uint32_t offset, std::uint32_t bytes, Type type, Operand value) {
+    void ClearPending() { pending = 0; }
+
+    void Observe(UniformRange range) {
+        for (std::size_t i = 0; i < entries.size(); ++i)
+            if ((pending & (1u << i)) && Overlaps(range, {entries[i].offset, entries[i].bytes}))
+                pending &= ~(1u << i);
+    }
+
+    unsigned Cover(UniformRange range, std::array<NodeId, 8>& stores) {
+        unsigned count{};
+        for (std::size_t i = 0; i < entries.size(); ++i) {
+            const auto& entry = entries[i];
+            if (!(pending & (1u << i)) || !Overlaps(range, {entry.offset, entry.bytes})) continue;
+            if (range.offset <= entry.offset &&
+                u64{range.offset} + range.bytes >= u64{entry.offset} + entry.bytes)
+                stores[count++] = entry.store;
+            pending &= ~(1u << i);
+        }
+        return count;
+    }
+
+    void Add(std::uint32_t offset,
+             std::uint32_t bytes,
+             Type type,
+             Operand value,
+             NodeId store = {},
+             bool cacheable = true) {
         auto slot = entries.size();
         for (std::size_t i = 0; i < entries.size(); ++i) {
             const auto& entry = entries[i];
-            if (!(valid & (1u << i)) || u64{entry.offset} >= u64{offset} + bytes ||
+            if (!((valid | pending) & (1u << i)) || u64{entry.offset} >= u64{offset} + bytes ||
                 u64{offset} >= u64{entry.offset} + entry.bytes)
                 continue;
             if (entry.offset == offset && entry.bytes == bytes && entry.type == type) slot = i;
             valid &= ~(1u << i);
+            if (slot != i) pending &= ~(1u << i);
         }
         // Updating PC or the same GPR occupies its existing slot. Repeated
         // writes must not rotate through the table and evict unrelated values.
         if (slot == entries.size()) {
             slot = next;
             next = (next + 1) % entries.size();
+            pending &= ~(1u << slot);
         }
-        entries[slot] = {offset, bytes, type, value};
-        valid |= 1u << slot;
+        const auto previous_store = entries[slot].store;
+        entries[slot] = {offset, bytes, type, value, store ? store : previous_store};
+        if (cacheable)
+            valid |= 1u << slot;
+        else
+            valid &= ~(1u << slot);
+        if (store) pending |= 1u << slot;
     }
 
 private:
     std::array<UniformEntry, 8> entries{};
     std::size_t next{};
-    unsigned valid{};
+    unsigned valid{}, pending{};
 };
 
 std::uint32_t CachedBytes(Type type) {
@@ -207,9 +244,8 @@ Error RewriteValues(Context& context) {
         }
         const auto meta = op.Metadata();
         const auto effects = EffectsFor(op.opcode, meta);
-        // A read, even one that may fault or has acquire ordering, does
-        // not mutate cached Uniform values. Stores remain in place and
-        // observable; this forwards reads only on the successful path.
+        // Value forwarding can survive a disjoint faulting read. A pending
+        // store must be committed at every possible architectural observer.
         const bool independent_memory =
                 HasAnyEffect(effects, Effect::ReadMemory | Effect::WriteMemory) &&
                 (policy.guest_memory_disjoint || !HasAnyEffect(effects, Effect::WriteMemory)) &&
@@ -217,20 +253,25 @@ Error RewriteValues(Context& context) {
         if (HasAnyEffect(effects, Effect::Unknown | Effect::External | Effect::Control) ||
             (!policy.guest_memory_disjoint && HasAnyEffect(effects, Effect::WriteMemory)) ||
             (!independent_memory && HasAnyEffect(effects, Effect::MayFault | Effect::Ordered)) ||
-            (HasAnyEffect(effects, Effect::WriteGuestState) && op.opcode != OpCode::StoreUniform))
+            (op.opcode == OpCode::StoreUniform && meta != OperationMetadata{}))
             uniforms.Clear();
-        else if (HasAnyEffect(effects, Effect::WriteFlags)) {
-            if (policy.flags)
-                uniforms.Invalidate(policy.flags->offset, policy.flags->bytes);
-            else
+        else if (op.opcode != OpCode::StoreUniform) {
+            const auto accesses = UniformEffectsFor(op, editor.Operands(id), policy);
+            if (accesses.all_write)
                 uniforms.Clear();
+            else if (accesses.all_read)
+                uniforms.ClearPending();
+            for (unsigned i = 0; i < accesses.count; ++i) {
+                const auto& field = accesses.fields[i];
+                if (field.write)
+                    uniforms.Invalidate(field.range.offset, field.range.bytes);
+                else if (field.read && op.opcode != OpCode::LoadUniform)
+                    uniforms.Observe(field.range);
+            }
         }
-        if (HasAnyEffect(effects, Effect::WriteHostState)) {
-            if (policy.numeric_control)
-                uniforms.Invalidate(policy.numeric_control->offset, policy.numeric_control->bytes);
-            else
-                uniforms.Clear();
-        }
+        if (HasAnyEffect(effects, Effect::MayFault | Effect::Ordered) ||
+            (!policy.guest_memory_disjoint && HasAnyEffect(effects, Effect::ReadMemory)))
+            uniforms.ClearPending();
         if (!(rows[at] & live_bit)) continue;
         // These records have no rewritable value inputs or fold to do.
         // Effects above still apply; no decoded Operand draft is needed.
@@ -366,27 +407,55 @@ Error RewriteValues(Context& context) {
                 uniforms.Clear();
                 continue;
             }
+            std::array<NodeId, 8> stores;
+            const auto covered =
+                    uniforms.Cover({static_cast<std::uint32_t>(uniform.payload), bytes}, stores);
+            for (unsigned i = 0; i < covered; ++i) {
+                const auto previous = stores[i];
+                if ((rows[previous.value] & pin_bit) || Metadata(operations[previous.value]))
+                    continue;
+                for (const auto input : editor.Operands(previous))
+                    if (input.Kind() == OperandKind::Value &&
+                        !DropUse(rows, static_cast<std::uint32_t>(input.Payload())))
+                        return Error::InvalidValue;
+                if (const auto error = editor.Rewrite(previous, OpCode::Nop, Type::Void, {});
+                    error != Error::None)
+                    return error;
+                rows[previous.value] = 0;
+                ++stats.erased;
+                ++stats.uniform_stores_erased;
+                needs_final_cleanup = true;
+            }
             const auto view = ReadType(cells[1], operations);
-            if (cells[1].kind == OperandKind::Value && CachedBytes(uniform.type) &&
-                ((Scalar(uniform.type) && Scalar(view) &&
-                  TypeBits(view) <= TypeBits(uniform.type)) ||
-                 (uniform.type == Type::V128 && view == Type::V128)))
-                uniforms.Add(
-                        static_cast<std::uint32_t>(uniform.payload), bytes, uniform.type, cells[1]);
-            else
-                uniforms.Invalidate(static_cast<std::uint32_t>(uniform.payload), bytes);
+            const bool cacheable = cells[1].kind == OperandKind::Value &&
+                                   CachedBytes(uniform.type) &&
+                                   ((Scalar(uniform.type) && Scalar(view) &&
+                                     TypeBits(view) <= TypeBits(uniform.type)) ||
+                                    (uniform.type == Type::V128 && view == Type::V128));
+            uniforms.Add(static_cast<std::uint32_t>(uniform.payload),
+                         bytes,
+                         uniform.type,
+                         cells[1],
+                         id,
+                         cacheable);
         } else if (op.opcode == OpCode::LoadUniform && count == 1 &&
                    uniform.kind == OperandKind::Uniform && uniform.type == op.type &&
                    CachedBytes(op.type)) {
             // A forwarded read still denotes the cached logical value.
             // Keep its actual source/view, rather than build a chain of
             // normalization wrappers for successive reads of one slot.
+            if (!uniform_forward)
+                uniforms.Observe(
+                        {static_cast<std::uint32_t>(uniform.payload), CachedBytes(op.type)});
             uniforms.Add(static_cast<std::uint32_t>(uniform.payload),
                          CachedBytes(op.type),
                          op.type,
                          uniform_forward && opcode != OpCode::LoadImm
                                  ? cells[0]
                                  : Operand::ValueOf({unit, id}, op.type));
+        } else if (op.opcode == OpCode::LoadUniform && uniform.kind == OperandKind::Uniform) {
+            uniforms.Observe(
+                    {static_cast<std::uint32_t>(uniform.payload), TypeBits(uniform.type) / 8});
         }
     }
     return Error::None;

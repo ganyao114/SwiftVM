@@ -7,7 +7,7 @@
 namespace swift::runtime::execution {
 
 std::size_t DiskCache::Hash::operator()(Key key) const noexcept {
-    auto value = key.pc ^ (std::uint64_t{key.fp_mode} << 61);
+    auto value = key.pc ^ (std::uint64_t{key.fp_mode} * UINT64_C(0x9e3779b97f4a7c15));
     value ^= value >> 33;
     value *= UINT64_C(0xff51afd7ed558ccd);
     value ^= value >> 33;

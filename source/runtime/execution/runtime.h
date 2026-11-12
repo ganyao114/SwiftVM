@@ -58,6 +58,7 @@ struct RuntimeStats {
             publication_ns{};
     std::uint64_t code_release_ns{}, fault_service_ns{};
     std::uint64_t cache_load_ns{}, cache_write_ns{};
+    std::uint64_t fp_domains_created{}, fp_domain_switches{}, fp_domain_switch_ns{};
     std::uint64_t disk_cache_hits{}, disk_cache_misses{}, disk_cache_rejects{}, disk_cache_writes{},
             aot_units_loaded{};
     frontend::DecodeTiming
@@ -85,7 +86,7 @@ struct RuntimeStats {
     std::uint32_t pinned_uniform_slots{};
     bool thread_dispatch_cache{};
     bool code_wx_fallback{}, rcpc_loads{}, rcpc_imm9{}, fault_locations{}, recover_unaligned{},
-            private_uniforms{}, native_nzcv{};
+            private_uniforms{}, native_nzcv{}, native_eflags{};
     // frontend_ns includes formation, actual byte decoding, buffer management
     // and IR construction. Only decode_timing runs expose a perturbed
     // compile_without_byte_decode_ns; formation/buffer work stays charged.

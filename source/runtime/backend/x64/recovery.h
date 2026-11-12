@@ -12,5 +12,6 @@ struct FaultContext;
 namespace swift::runtime::backend::x64 {
 bool RestoreGuestState(execution::FaultContext&,
                        const FaultSite&,
-                       std::span<const std::byte> gprs) noexcept;
+                       std::span<const std::byte> gprs,
+                       std::uint64_t native_flags = 0) noexcept;
 }  // namespace swift::runtime::backend::x64

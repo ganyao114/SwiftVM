@@ -7,7 +7,8 @@
 namespace swift::runtime::execution {
 const NativeCode* VM::LookupNative(void* opaque, std::uintptr_t host_pc) noexcept {
     for (const auto& cache : static_cast<VM*>(opaque)->caches)
-        if (const auto* code = cache.FindHost(host_pc)) return code;
+        if (cache)
+            if (const auto* code = cache->FindHost(host_pc)) return code;
     return nullptr;
 }
 
@@ -42,10 +43,11 @@ void VM::RefreshDispatchView() noexcept {
 void VM::ObserveCache() noexcept {
     std::uint64_t entries{}, occupied{}, slots{}, allocations{};
     for (const auto& cache : caches) {
-        entries += cache.Entries();
-        occupied += cache.Occupied();
-        slots += cache.Slots();
-        allocations += cache.Allocations();
+        if (!cache) continue;
+        entries += cache->Entries();
+        occupied += cache->Occupied();
+        slots += cache->Slots();
+        allocations += cache->Allocations();
     }
     stats.peak_cache_entries = std::max(stats.peak_cache_entries, entries);
     stats.peak_cache_occupied = std::max(stats.peak_cache_occupied, occupied);

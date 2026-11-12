@@ -1,4 +1,5 @@
 #include "detail.h"
+#include "runtime/ir/uniform_effects.h"
 
 namespace swift::runtime::ir::passes {
 namespace {
@@ -70,15 +71,14 @@ bool Observable(Effect effects, FlagWrite write) {
 }
 
 bool FlagsUniform(OpCode opcode, CellRange inputs, const UniformPolicy& policy) {
-    if (opcode != OpCode::LoadUniform && opcode != OpCode::StoreUniform &&
-        opcode != OpCode::StoreUniformSelectImm)
-        return true;
     if (!policy.flags) return true;
-    if (inputs.empty() || inputs.front().Kind() != OperandKind::Uniform) return true;
-    const auto field = inputs.front();
-    const auto bytes = TypeBits(field.TypeView()) / 8;
-    return !bytes || (field.Payload() < u64{policy.flags->offset} + policy.flags->bytes &&
-                      u64{policy.flags->offset} < field.Payload() + bytes);
+    Operation op{};
+    op.opcode = opcode;
+    const auto accesses = UniformEffectsFor(op, inputs, policy);
+    if (accesses.all_read || accesses.all_write) return true;
+    for (unsigned i = 0; i < accesses.count; ++i)
+        if (Overlaps(accesses.fields[i].range, *policy.flags)) return true;
+    return false;
 }
 
 u64 FlagReads(OpCode opcode, Effect effects, CellRange inputs, const UniformPolicy& policy) {

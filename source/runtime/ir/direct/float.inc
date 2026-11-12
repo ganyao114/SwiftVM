@@ -2,6 +2,23 @@
 // and exception flags share one leaf with the checked architectural consumer.
 template <OpCode op>
 Interpreter::Value Interpreter::HandleFloating(Type type, std::span<const Operand> a) {
+    if constexpr (op == OpCode::ArmFPBinary) {
+        const auto mode = a[4].payload, control = a[2].payload, status = a[3].payload;
+        if (type != Type::V128 || mode > UINT32_MAX || !arm64::ValidArmFPBinaryMode(mode) ||
+            control > environment.uniforms.size() || environment.uniforms.size() - control < 4 ||
+            status > environment.uniforms.size() || environment.uniforms.size() - status < 4)
+            throw Exit{ExitKind::Unsupported};
+        u32 fpcr, fpsr;
+        std::memcpy(&fpcr, environment.uniforms.data() + control, 4);
+        std::memcpy(&fpsr, environment.uniforms.data() + status, 4);
+        if (!arm64::IsSupportedFPCR(fpcr)) throw Exit{ExitKind::Unsupported};
+        const auto lhs = Raw(a[0]), rhs = Raw(a[1]);
+        u128 result{};
+        arm64::EvaluateVectorBinaryFP(&result, &lhs, &rhs, mode, fpcr, &fpsr);
+        std::memcpy(environment.uniforms.data() + status, &fpsr, 4);
+        observed_effects = true;
+        return Number(result, type);
+    }
     constexpr bool floating = (op >= OpCode::VecFAddScalar32 && op <= OpCode::VecFCvtPacked) ||
                               op == OpCode::VecFMulAdd || op == OpCode::VecFRoundInt;
     if constexpr (!floating) {

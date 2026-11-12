@@ -4,20 +4,39 @@ namespace swift::runtime::backend::x64::detail {
 namespace {
 void PinLoad(Xbyak::CodeGenerator& gen, const Xbyak::Reg64& target, unsigned reg, unsigned bits) {
     switch (bits) {
-        case 64: gen.mov(target, Xbyak::Reg64(reg)); break;
-        case 32: gen.mov(Xbyak::Reg32(target.getIdx()), Xbyak::Reg32(reg)); break;
-        case 16: gen.movzx(Xbyak::Reg32(target.getIdx()), Xbyak::Reg16(reg)); break;
-        case 8: gen.movzx(Xbyak::Reg32(target.getIdx()), Xbyak::Reg8(reg)); break;
-        default: break;
+        case 64:
+            gen.mov(target, Xbyak::Reg64(reg));
+            break;
+        case 32:
+            gen.mov(Xbyak::Reg32(target.getIdx()), Xbyak::Reg32(reg));
+            break;
+        case 16:
+            gen.movzx(Xbyak::Reg32(target.getIdx()), Xbyak::Reg16(reg));
+            break;
+        case 8:
+            gen.movzx(Xbyak::Reg32(target.getIdx()), Xbyak::Reg8(reg));
+            break;
+        default:
+            break;
     }
 }
+
 void PinStore(Xbyak::CodeGenerator& gen, unsigned reg, const Xbyak::Reg64& source, unsigned bits) {
     switch (bits) {
-        case 64: gen.mov(Xbyak::Reg64(reg), source); break;
-        case 32: gen.mov(Xbyak::Reg32(reg), Xbyak::Reg32(source.getIdx())); break;
-        case 16: gen.mov(Xbyak::Reg16(reg), Xbyak::Reg16(source.getIdx())); break;
-        case 8: gen.mov(Xbyak::Reg8(reg), Xbyak::Reg8(source.getIdx())); break;
-        default: break;
+        case 64:
+            gen.mov(Xbyak::Reg64(reg), source);
+            break;
+        case 32:
+            gen.mov(Xbyak::Reg32(reg), Xbyak::Reg32(source.getIdx()));
+            break;
+        case 16:
+            gen.mov(Xbyak::Reg16(reg), Xbyak::Reg16(source.getIdx()));
+            break;
+        case 8:
+            gen.mov(Xbyak::Reg8(reg), Xbyak::Reg8(source.getIdx()));
+            break;
+        default:
+            break;
     }
 }
 }  // namespace
@@ -27,12 +46,13 @@ void Writer::Uniform(OpContext& c) {
     const auto u = *at++;
     const auto off = u.Payload();
     if (off > INT32_MAX) Reject(CompileError::UnsupportedOperand);
-    const auto width = c.operation.opcode == OpCode::LoadUniform ? c.width
-                                                                : TypeBits(u.TypeView());
+    const auto width = c.operation.opcode == OpCode::LoadUniform ? c.width : TypeBits(u.TypeView());
+    const bool flags_access = options.flags_offset != UINT32_MAX &&
+                              off < u64(options.flags_offset) + 8 &&
+                              u64(options.flags_offset) < off + width / 8;
+    if (flags_access) PublishFlags();
     const auto pinned = PinnedSlot(off, width / 8);
-    const auto relative = pinned >= 0
-                                  ? off - options.pinned_uniform_offset - pinned * 8
-                                  : -1;
+    const auto relative = pinned >= 0 ? off - options.pinned_uniform_offset - pinned * 8 : -1;
     if (c.operation.opcode == OpCode::LoadUniform) {
         const auto destination = ScalarDestination(c);
         if (c.vector_result)
@@ -81,7 +101,7 @@ void Writer::Uniform(OpContext& c) {
                 qword[r12 + options.pinned_uniform_offset + pinned * 8]);
         } else
             Store(input, r12, off, TypeBits(u.TypeView()));
-        if (off == options.flags_offset) mov(rbx, input);
+        if (off == options.flags_offset && width == 64) mov(rbx, input);
     }
     if (off == options.pc_offset) {
         static_pc_known = false;
@@ -100,6 +120,8 @@ void Writer::Uniform(OpContext& c) {
             has_fault_location = true;
         }
     }
+    if (flags_access && (off != options.flags_offset || width != 64))
+        mov(rbx, qword[r12 + options.flags_offset]);
 }
 
 void Writer::Handle(Op<OpCode::LoadUniform>, OpContext& c) { Uniform(c); }
@@ -114,25 +136,50 @@ void Writer::Memory(OpContext& c) {
     const bool load =
             c.operation.opcode == OpCode::LoadMemory || c.operation.opcode == OpCode::LoadMemoryTSO;
     auto at = c.operands.begin();
-    Expression(at, c.operands.end(), rdi);
+    Reg64 address = rdi;
+    const auto first_operand = *at;
+    if (first_operand.Kind() == OperandKind::Value && TypeBits(View(first_operand)) == 64 &&
+        source.Operations()[first_operand.Payload()].type != ir::Type::V128 &&
+        !allocation.homes[first_operand.Payload()].spilled) {
+        address = Reg64(allocation.homes[first_operand.Payload()].reg);
+        ++at;
+    } else
+        Expression(at, c.operands.end(), address);
     if (load) {
         const auto first = static_cast<u32>(getSize());
-        if (c.vector_result)
-            movdqu(xmm0, ptr[rdi]);
-        else
-            Load(rax, rdi, 0, c.width);
+        if (c.vector_result) {
+            const auto& home = allocation.homes[c.node.value];
+            if (!home.spilled) c.vector = Xmm(home.reg);
+            movdqu(c.vector, ptr[address]);
+        } else {
+            Load(ScalarDestination(c), address, 0, c.width);
+            c.scalar_normalized = c.width >= 8;
+        }
         RecordGuestAccess(first, 1, c.vector_result ? 16 : c.width / 8);
     } else {
         const auto v = *at;
         if (View(v) == ir::Type::V128) {
-            ReadVector(v, xmm0);
+            Xmm input = xmm0;
+            if (v.Kind() == OperandKind::Value &&
+                source.Operations()[v.Payload()].type == ir::Type::V128 &&
+                !allocation.homes[v.Payload()].spilled)
+                input = Xmm(allocation.homes[v.Payload()].reg);
+            else
+                ReadVector(v, input);
             const auto first = static_cast<u32>(getSize());
-            movdqu(ptr[rdi], xmm0);
+            movdqu(ptr[address], input);
             RecordGuestAccess(first, 2, 16);
         } else {
-            Read(v, rax);
+            Reg64 input = rax;
+            const auto bits = TypeBits(View(v));
+            if (v.Kind() == OperandKind::Value && bits >= 8 &&
+                source.Operations()[v.Payload()].type != ir::Type::V128 &&
+                !allocation.homes[v.Payload()].spilled)
+                input = Reg64(allocation.homes[v.Payload()].reg);
+            else
+                Read(v, input);
             const auto first = static_cast<u32>(getSize());
-            Store(rax, rdi, 0, TypeBits(View(v)));
+            Store(input, address, 0, bits);
             RecordGuestAccess(first, 2, TypeBits(View(v)) / 8);
         }
     }

@@ -108,7 +108,7 @@ void Validate(const CodeUnit& unit, bool byte_code, GuestISA isa) {
     const auto instruction_mask = byte_code ? 0u : 3u;
     const auto& code = unit.code;
     const auto size = code.words.size() * sizeof(std::uint32_t);
-    Require(ScopeValid(unit.scope) && unit.fp_mode < 4, "invalid code unit scope or FP domain");
+    Require(ScopeValid(unit.scope) && unit.fp_mode < 128, "invalid code unit scope or FP domain");
     Require(bool(code) && code.relocatable && size && size <= maximum_bytes,
             "code unit has no relocatable native code");
     Require(!unit.sources.empty(), "code unit has no source dependencies");
@@ -122,6 +122,20 @@ void Validate(const CodeUnit& unit, bool byte_code, GuestISA isa) {
     }
     Require(owns_entry, "code unit entry is outside its source dependencies");
     for (const auto& site : code.faults) {
+        if (byte_code) {
+            const auto mode = site.recovery[0] & 3;
+            const auto native = site.recovery[1] & 15, saved = site.recovery[1] >> 4;
+            const auto offset = site.recovery[2] | (std::uint32_t{site.recovery[3]} << 8) |
+                                (std::uint32_t{site.recovery[7]} << 16);
+            Require(mode <= 2 && !(site.recovery[0] & ~15u) &&
+                            (mode == 2 || site.recovery[0] == mode),
+                    "invalid x64 flags recovery mode");
+            if (mode == 2)
+                Require(!(native & saved) && (native | saved) &&
+                                (!saved || (!(offset & 7) && code.frame_bytes >= 8 &&
+                                            offset <= code.frame_bytes - 8)),
+                        "invalid x64 flags recovery source");
+        }
         Require(site.Kind() == backend::FaultSiteKind::GuestMemory ||
                         site.Kind() == backend::FaultSiteKind::DispatchInterrupt,
                 "invalid native recovery site kind");

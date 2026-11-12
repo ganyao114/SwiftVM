@@ -1,3 +1,4 @@
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/ir/builder.h"
 #include "runtime/ir/optimize.h"
 #include "tests/support/check.h"
@@ -5,6 +6,7 @@
 #include "tests/support/native_code.h"
 #include "tests/support/test_mode.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <iterator>
@@ -53,6 +55,41 @@ std::uint64_t Immediate(const Program& program, Value value, Type type) {
     const auto cell = *at++;
     CHECK(at == range.end() && cell.Kind() == OperandKind::Immediate && cell.TypeView() == type);
     return cell.Payload();
+}
+
+void ArmFPStatusEffects() {
+    Builder builder{Scope::Block};
+    const auto block = builder.CreateBlock();
+    REQUIRE(block);
+    REQUIRE(builder.BeginBlock(block.block) == Error::None);
+    const auto input =
+            Emit(builder,
+                 OpCode::VecLoadConst,
+                 Type::V128,
+                 {Operand::Immediate(0x3f800000, Type::U64), Operand::Immediate(0, Type::U64)});
+    const auto before = Literal(builder, 0x08000000, Type::U32);
+    Store(builder, 32, before, Type::U32);
+    Emit(builder,
+         OpCode::ArmFPBinary,
+         Type::V128,
+         {Operand::ValueOf(input),
+          Operand::ValueOf(input),
+          Operand::Immediate(28, Type::U32),
+          Operand::Immediate(32, Type::U32),
+          Operand::Immediate(swift::runtime::arm64::ArmFPBinaryMode(0, 32, 1), Type::U32)});
+    const auto status =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(32, Type::U32)});
+    Store(builder, 40, status, Type::U32);
+    REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+    auto optimized = Optimize(Submit(builder));
+    REQUIRE(optimized);
+    CHECK(std::count_if(optimized.program.Operations().begin(),
+                        optimized.program.Operations().end(),
+                        [](const auto& op) { return op.opcode == OpCode::ArmFPBinary; }) == 1);
+    CHECK(optimized.program.Operations()[status.node.value].opcode == OpCode::LoadUniform);
+    CHECK(std::count_if(optimized.program.Operations().begin(),
+                        optimized.program.Operations().end(),
+                        [](const auto& op) { return op.opcode == OpCode::StoreUniform; }) == 2);
 }
 
 void LowByteMaskWriteback() {
@@ -1297,6 +1334,10 @@ void ReusedRowsKeepOnlyCurrentRequest() {
 }
 }  // namespace
 
+TEST_CASE("Unused ARM FP results retain FPSR effects", "[compile][ir-optimize]") {
+    ArmFPStatusEffects();
+}
+
 TEST_CASE("ReusedRowsKeepOnlyCurrentRequest", "[compile][ir-optimize]") {
     CHECK_NOTHROW(ReusedRowsKeepOnlyCurrentRequest());
 }
@@ -1424,4 +1465,35 @@ TEST_CASE("Guest safepoint retains predecessor flags", "[compile][ir-optimize]")
     CHECK(retained.flag_outputs == FlagBits(Flag::All));
     const auto& observation = result.program.Operations()[result.program.Blocks()[1].first_node];
     CHECK(observation.opcode == OpCode::GuestSafepoint);
+}
+
+TEST_CASE("Uniform overwritten stores honor observations and partial ranges",
+          "[compile][ir-optimize]") {
+    for (unsigned observer = 0; observer < 6; ++observer) {
+        Builder builder{Scope::Block};
+        const auto block = builder.CreateBlock();
+        REQUIRE((block && builder.BeginBlock(block.block) == Error::None));
+        const auto first = Literal(builder, 7), second = Literal(builder, 11);
+        const auto old = NodeId{static_cast<std::uint32_t>(builder.Operations().size())};
+        Store(builder, 8, first);
+        if (observer == 1) {
+            const auto read =
+                    Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
+            Store(builder, 32, read);
+        } else if (observer == 2) {
+            Emit(builder, OpCode::LoadMemory, Type::U64, {Operand::ValueOf(first)});
+        } else if (observer == 3) {
+            Emit(builder, OpCode::UniformBarrier, Type::Void, {});
+        } else if (observer == 4) {
+            const auto read =
+                    Emit(builder, OpCode::LoadUniform, Type::U16, {Operand::Uniform(8, Type::U16)});
+            Store(builder, 32, read, Type::U16);
+        }
+        Store(builder, observer == 5 ? 12 : 8, second, observer == 5 ? Type::U32 : Type::U64);
+        REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+        const auto result = Optimize(Submit(builder), SIZE_MAX, {.guest_memory_disjoint = true});
+        REQUIRE(bool(result));
+        CHECK((result.program.Operations()[old.value].opcode == OpCode::Nop) == (observer < 2));
+        CHECK(result.stats.uniform_stores_erased == (observer < 2 ? 1 : 0));
+    }
 }

@@ -1,3 +1,4 @@
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/cpu.h"
 #include "runtime/arch/x86/flags.h"
 #include "runtime/arch/x86/vector_crypto.h"
@@ -5,7 +6,10 @@
 #include "runtime/backend/x64/compile.h"
 #include "runtime/backend/x64/helpers.h"
 #include "runtime/backend/x64/patch.h"
+#include "runtime/backend/x64/recovery.h"
 #include "runtime/backend/x64/relocate.h"
+#include "runtime/execution/fault.h"
+#include "runtime/exit.h"
 #include "runtime/ir/builder.h"
 #include "tests/support/check.h"
 #include "tests/support/guest_memory.h"
@@ -54,6 +58,7 @@ struct alignas(16) State {
     std::array<Pair, 16> vectors{};
     u64 flags{}, pc{};
     u32 mxcsr{0x1f80};
+    u32 fpcr{}, fpsr{};
 };
 
 const char* current_case = "setup";
@@ -117,6 +122,8 @@ Pair Lanes32(u32 a, u32 b, u32 c, u32 d) {
     return {u64{a} | (u64{b} << 32), u64{c} | (u64{d} << 32)};
 }
 
+thread_local bool test_local_flags{};
+
 x64::CompileOptions Options() {
     x64::CompileOptions options;
     options.flags_offset = offsetof(State, flags);
@@ -124,6 +131,7 @@ x64::CompileOptions Options() {
     options.mxcsr_offset = offsetof(State, mxcsr);
     options.fault_locations = true;
     options.native_fp_environment = true;
+    options.local_flags = test_local_flags;
     return options;
 }
 
@@ -587,6 +595,277 @@ void ImmediateShiftBoundaries() {
                         }
                     }
         }
+}
+
+void ArmFPBinaryBoundaries() {
+    namespace arm = swift::runtime::arm64;
+    current_case = "exact ARM binary FP fast and slow paths";
+    for (auto scope : {Scope::Block, Scope::Function}) {
+        for (unsigned bits : {32u, 64u}) {
+            const unsigned bytes = bits / 8;
+            const u64 sign = u64{1} << (bits - 1);
+            const u64 one = bits == 32 ? 0x3f800000ULL : 0x3ff0000000000000ULL;
+            const u64 minimum = bits == 32 ? 0x00800000ULL : 0x0010000000000000ULL;
+            const u64 infinity = bits == 32 ? 0x7f800000ULL : 0x7ff0000000000000ULL;
+            const u64 quiet = bits == 32 ? 0x00400000ULL : 0x0008000000000000ULL;
+            const u64 low = u64{bits == 32 ? 65u : 513u} << (bits == 32 ? 23 : 52);
+            const u64 high = u64{bits == 32 ? 190u : 1534u} << (bits == 32 ? 23 : 52);
+            const std::array<std::array<u64, 2>, 18> inputs{
+                    {{one, one},
+                     {one + 1, one + 1},
+                     {one, sign | one},
+                     {sign, 0},
+                     {sign, sign},
+                     {one, 1},
+                     {minimum, one - 1},
+                     {minimum, one / 2},
+                     {infinity - 1, one + 1},
+                     {infinity, 0},
+                     {infinity | 0x42, one},
+                     {infinity | quiet | 0x42, infinity | 1},
+                     {low, low},
+                     {low - 1, low},
+                     {high - 1, high - 1},
+                     {high, one},
+                     {minimum - 1, sign | minimum},
+                     {0, 1}}};
+            for (unsigned kind = 0; kind < 3; ++kind) {
+                for (unsigned lanes : {1u, 2u, 4u}) {
+                    if (lanes * bits > 128) continue;
+                    for (unsigned indexed = 0; indexed < 2; ++indexed) {
+                        const unsigned index = indexed ? 128 / bits - 1 : 0;
+                        const auto mode = arm::ArmFPBinaryMode(kind, bits, lanes, indexed, index);
+                        Builder builder{scope};
+                        Begin(builder);
+                        const auto left = LoadVector(builder, 0), right = LoadVector(builder, 1);
+                        // Keep caller-saved scalar and all vector homes live over a slow call.
+                        std::array<Value, 14> live;
+                        for (unsigned i = 0; i < live.size(); ++i) live[i] = LoadVector(builder, i);
+                        const auto result = Emit(builder,
+                                                 OpCode::ArmFPBinary,
+                                                 Type::V128,
+                                                 {Operand::ValueOf(left),
+                                                  Operand::ValueOf(right),
+                                                  Imm(offsetof(State, fpcr)),
+                                                  Imm(offsetof(State, fpsr)),
+                                                  Imm(mode)});
+                        StoreVector(builder, 15, result);
+                        auto checksum = live[0];
+                        for (unsigned i = 1; i < live.size(); ++i)
+                            checksum =
+                                    Emit(builder,
+                                         OpCode::VecXor,
+                                         Type::V128,
+                                         {Operand::ValueOf(checksum), Operand::ValueOf(live[i])});
+                        StoreVector(builder, 14, checksum);
+                        auto program = Return(builder);
+                        auto options = Options();
+                        options.relocatable = true;
+                        auto code = x64::Compile(program, options);
+                        Check(bool(code) && code.relocatable,
+                              "ARM FP units retain a relocation contract");
+                        Check(x64::Relocate({reinterpret_cast<std::uint8_t*>(code.words.data()),
+                                             code.words.size() * 4},
+                                            code.relocations,
+                                            options),
+                              "ARM numerical slow path rebinds by stable helper symbol");
+#if defined(__x86_64__) && defined(__linux__)
+                        if (!NativeMode()) continue;
+                        NativeBlock native{code};
+                        for (unsigned control = 0; control < 16; ++control) {
+                            for (unsigned sample = 0; sample < inputs.size(); ++sample) {
+                                State state;
+                                state.fpcr = ((control & 3) << 22) |
+                                             ((control & 4) ? 1u << 24 : 0) |
+                                             ((control & 8) ? 1u << 25 : 0);
+                                state.fpsr = 0x08000000 | (sample & 1 ? 0x9f : 0);
+                                state.mxcsr = 0x1f80 | (sample & 1 ? 0x3f : 0);
+                                for (unsigned i = 0; i < 14; ++i)
+                                    state.vectors[i] = {u64{i + 1} * 0x123456789abcdefULL,
+                                                        ~u64{i * 17}};
+                                auto* lhs = reinterpret_cast<std::uint8_t*>(&state.vectors[0]);
+                                auto* rhs = reinterpret_cast<std::uint8_t*>(&state.vectors[1]);
+                                for (unsigned lane = 0; lane < 128 / bits; ++lane) {
+                                    const auto& pair = inputs[(sample + lane) % inputs.size()];
+                                    std::memcpy(lhs + lane * bytes, &pair[0], bytes);
+                                    std::memcpy(rhs + lane * bytes, &pair[1], bytes);
+                                }
+                                Pair expected{}, checksum{};
+                                auto exceptions = state.fpsr;
+                                constexpr unsigned operations[]{2, 3, 0};
+                                for (unsigned lane = 0; lane < lanes; ++lane) {
+                                    u64 a{}, b{};
+                                    std::memcpy(&a, lhs + lane * bytes, bytes);
+                                    std::memcpy(&b, rhs + (indexed ? index : lane) * bytes, bytes);
+                                    const auto result = arm::EvaluateBinaryFP(
+                                            a, b, bits, operations[kind], state.fpcr);
+                                    std::memcpy(reinterpret_cast<std::uint8_t*>(&expected) +
+                                                        lane * bytes,
+                                                &result.value,
+                                                bytes);
+                                    exceptions |= result.exceptions;
+                                }
+                                for (unsigned i = 0; i < 14; ++i) {
+                                    checksum.low ^= state.vectors[i].low;
+                                    checksum.high ^= state.vectors[i].high;
+                                }
+                                Check(native.Run(state) == 0, "ARM FP test returns normally");
+                                Check(state.vectors[15] == expected && state.fpsr == exceptions,
+                                      "ARM FP results, inactive lanes and complete sticky status "
+                                      "are exact");
+                                Check(state.vectors[14] == checksum,
+                                      "slow calls preserve live XMM and spilled inputs");
+                            }
+                        }
+#endif
+                    }
+                }
+            }
+        }
+    }
+}
+
+void ArmFPUnalignedState() {
+    current_case = "unaligned explicit ARM FP control and status fields";
+    constexpr auto control = offsetof(State, scalars) + 209, status = control + 4;
+    Builder builder{Scope::Block};
+    Begin(builder);
+    const auto left = Vector(builder, {0x3f800000, UINT64_MAX});
+    const auto right = Vector(builder, {0x33800000, UINT64_MAX});
+    const auto result = Emit(builder,
+                             OpCode::ArmFPBinary,
+                             Type::V128,
+                             {Operand::ValueOf(left),
+                              Operand::ValueOf(right),
+                              Imm(control),
+                              Imm(status),
+                              Imm(swift::runtime::arm64::ArmFPBinaryMode(0, 32, 1))});
+    StoreVector(builder, 0, result);
+    const auto code = Compile(Return(builder));
+    for (unsigned upward : {0u, 1u}) {
+        State state;
+        const u32 fpcr = upward << 22, fpsr = 0x08000004;
+        std::memcpy(reinterpret_cast<std::uint8_t*>(&state) + control, &fpcr, 4);
+        std::memcpy(reinterpret_cast<std::uint8_t*>(&state) + status, &fpsr, 4);
+        if (Run(code, state)) {
+            u32 actual;
+            std::memcpy(&actual, reinterpret_cast<std::uint8_t*>(&state) + status, 4);
+            Check(actual == 0x08000014 && state.vectors[0] == Pair{0x3f800000 + upward, 0},
+                  "both native and exact paths support unaligned architectural uniform fields");
+        }
+    }
+}
+
+void MemoryHomeOperands() {
+    current_case = "resident and spilled guest memory operands";
+    for (bool pressure : {false, true}) {
+        Builder builder{Scope::Block};
+        Begin(builder);
+        const auto address = Load(builder, 0);
+        std::array<Value, 14> live;
+        for (unsigned i = 0; i < (pressure ? live.size() : 2); ++i) live[i] = Load(builder, i + 1);
+        const auto value = pressure ? live.back() : live[1];
+        unsigned slot = 16;
+        for (auto type : {Type::U8, Type::U16, Type::U32, Type::U64}) {
+            Emit(builder,
+                 OpCode::StoreMemory,
+                 Type::Void,
+                 {Operand::ValueOf(address), Operand::ValueOf(value, type)});
+            const auto read = Emit(builder, OpCode::LoadMemory, type, {Operand::ValueOf(address)});
+            Store(builder, slot++, read);
+        }
+        const auto vector = LoadVector(builder, 0);
+        Emit(builder,
+             OpCode::StoreMemory,
+             Type::Void,
+             {Operand::ValueOf(address), Operand::ValueOf(vector)});
+        const auto read =
+                Emit(builder, OpCode::LoadMemory, Type::V128, {Operand::ValueOf(address)});
+        StoreVector(builder, 1, read);
+        auto checksum = live[0];
+        for (unsigned i = 1; i < (pressure ? live.size() : 2); ++i)
+            checksum = Emit(builder,
+                            OpCode::Xor,
+                            Type::U64,
+                            {Operand::ValueOf(checksum), Operand::ValueOf(live[i])});
+        Store(builder, 20, checksum);
+        const auto code = Compile(Return(builder));
+        std::array<std::uint8_t, 32> memory{};
+        State state;
+        state.scalars[0] = reinterpret_cast<std::uintptr_t>(memory.data() + 1);
+        u64 expected{};
+        for (unsigned i = 1; i <= (pressure ? live.size() : 2); ++i) {
+            state.scalars[i] = u64{i} * 0x123456789abcdef;
+            expected ^= state.scalars[i];
+        }
+        state.vectors[0] = {0x1122334455667788, 0x99aabbccddeeff00};
+        const auto original = state.scalars[pressure ? 14 : 2];
+        if (Run(code, state)) {
+            for (unsigned i = 0; i < 4; ++i) {
+                const auto bits = 8u << i;
+                Check(state.scalars[16 + i] ==
+                              (original & (bits == 64 ? UINT64_MAX : (u64{1} << bits) - 1)),
+                      "narrow memory reads normalize the complete destination and stores use the "
+                      "view");
+            }
+            Check(state.vectors[1] == state.vectors[0] && state.scalars[20] == expected,
+                  "unaligned vector memory and live scalar homes survive direct or spilled "
+                  "operands");
+        }
+    }
+}
+
+void TerminalFlagConditions() {
+    current_case = "terminal packed-flag tests";
+    for (unsigned mask : {0u, 1u, 2u, 4u, 8u, 5u, 15u, 16u, 64u, 128u}) {
+        for (bool inverse : {false, true}) {
+            for (bool numeric_user : {false, true}) {
+                Builder builder{Scope::Function};
+                const auto entry = Block(builder), yes = Block(builder), no = Block(builder);
+                Need(builder.SetEntry(entry));
+                Need(builder.BeginBlock(entry));
+                const auto condition = Emit(builder,
+                                            inverse ? OpCode::TestNotFlags : OpCode::TestFlags,
+                                            Type::Bool,
+                                            {Operand::Flags(mask)});
+                if (numeric_user) Store(builder, 0, condition);
+                Need(builder.EndBlock(Terminal::Branch(condition, yes, no)));
+                Need(builder.BeginBlock(yes));
+                Need(builder.EndBlock(Terminal::Return(Literal(builder, 1))));
+                Need(builder.BeginBlock(no));
+                auto program = Return(builder, Literal(builder, 0));
+                const auto allocation = x64::AllocateFunction(program);
+                Check(bool(allocation) && allocation.homes[condition.node.value].terminal_only ==
+                                                  (!numeric_user && !(mask & 16)),
+                      "only a final condition without numerical users can skip its Bool home");
+                const auto code = Compile(program);
+#if defined(__x86_64__) && defined(__linux__)
+                if (!NativeMode()) continue;
+                NativeBlock native{code};
+                for (unsigned pattern = 0; pattern < 256; ++pattern) {
+                    State state;
+                    state.flags = (u64{1} << 55) | ((u64{pattern & 15}) << 28) |
+                                  ((pattern & 16) ? flags::Auxiliary : 0) |
+                                  ((pattern & 32) ? flags::Direction : 0) | (pattern >> 6);
+                    bool match = (mask & 1 && flags::GetCF(state.flags)) ||
+                                 (mask & 2 && flags::GetOF(state.flags)) ||
+                                 (mask & 4 && flags::GetZF(state.flags)) ||
+                                 (mask & 8 && flags::GetSF(state.flags)) ||
+                                 (mask & 16 && flags::GetPF(state.flags)) ||
+                                 (mask & 64 && (state.flags & flags::Auxiliary)) ||
+                                 (mask & 128 && (state.flags & flags::Direction));
+                    const auto before = state.flags;
+                    const bool expected = match != inverse;
+                    Check(native.Run(state) == expected && state.flags == before,
+                          "fused terminal preserves packed flags and both branch outcomes");
+                    if (numeric_user)
+                        Check(state.scalars[0] == expected,
+                              "numerical Bool users retain materialization");
+                }
+#endif
+            }
+        }
+    }
 }
 
 void FunctionLoop() {
@@ -1780,6 +2059,19 @@ TEST_CASE("UniformStoreViews", "[compile][x64-compile][native]") { UniformStoreV
 
 TEST_CASE("FunctionLoop", "[compile][x64-compile][native]") { CHECK_NOTHROW(FunctionLoop()); }
 
+TEST_CASE("ARM binary FP exact fast and slow paths", "[compile][x64-compile][native]") {
+    ArmFPBinaryBoundaries();
+    ArmFPUnalignedState();
+}
+
+TEST_CASE("Guest memory consumes actual allocation homes", "[compile][x64-compile][native]") {
+    MemoryHomeOperands();
+}
+
+TEST_CASE("Packed flags feed terminal branches directly", "[compile][x64-compile][native]") {
+    TerminalFlagConditions();
+}
+
 TEST_CASE("PairSpills", "[compile][x64-compile][native]") { CHECK_NOTHROW(PairSpills()); }
 
 TEST_CASE("ShuffleBoundaries", "[compile][x64-compile][native]") {
@@ -1859,5 +2151,341 @@ TEST_CASE("Guest safepoint requires a linked execution context", "[compile][x64-
         const auto code = x64::Compile(program, options);
         REQUIRE(bool(code));
         CHECK(!code.words.empty() && code.faults.empty() && code.links.empty());
+    }
+}
+
+TEST_CASE("Native flags survive arithmetic, control, helpers and memory",
+          "[compile][x64-compile][native]") {
+    struct Mode {
+        Mode() { test_local_flags = true; }
+
+        ~Mode() { test_local_flags = false; }
+    } mode;
+
+    for (auto scope : {Scope::Block, Scope::Function}) {
+        for (unsigned invert = 0; invert < 2; ++invert) {
+            for (unsigned condition = 0; condition < 16; ++condition) {
+                Builder builder{scope};
+                Begin(builder);
+                if (invert) Emit(builder, OpCode::InvertCarry, Type::Void, {});
+                const auto predicate =
+                        Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(condition)});
+                if (scope == Scope::Function) {
+                    const auto yes = Block(builder), no = Block(builder);
+                    Need(builder.EndBlock(Terminal::Branch(predicate, yes, no)));
+                    Need(builder.BeginBlock(yes));
+                    Need(builder.EndBlock(Terminal::Return(Literal(builder, 1))));
+                    Need(builder.BeginBlock(no));
+                }
+                const auto code = Compile(
+                        Return(builder, scope == Scope::Block ? predicate : Literal(builder, 0)));
+                for (unsigned pattern = 0; pattern < 16; ++pattern) {
+                    State state;
+                    state.flags = (u64{1} << 55) | flags::Direction | flags::Auxiliary | 0xa5 |
+                                  (u64{pattern} << 28);
+                    const auto final_flags = state.flags ^ (invert ? flags::Carry : 0);
+                    const bool n = flags::GetSF(final_flags), z = flags::GetZF(final_flags),
+                               c = flags::GetCF(final_flags), v = flags::GetOF(final_flags);
+                    const bool expected[]{z,
+                                          !z,
+                                          c,
+                                          !c,
+                                          n,
+                                          !n,
+                                          v,
+                                          !v,
+                                          c && !z,
+                                          !c || z,
+                                          n == v,
+                                          n != v,
+                                          !z && n == v,
+                                          z || n != v,
+                                          true,
+                                          true};
+                    if (Run(code, state, expected[condition]))
+                        Check(state.flags == final_flags,
+                              "native conditions preserve all portable flags");
+                }
+            }
+        }
+    }
+    ArithmeticFlags();
+    ArithmeticFlagBoundaries();
+    ImmediateOperandBoundaries();
+    NarrowReadsAndHelperABI();
+    UniformStoreViews();
+    ImmediateShiftBoundaries();
+    ArmFPBinaryBoundaries();
+    ArmFPUnalignedState();
+    MemoryHomeOperands();
+    TerminalFlagConditions();
+    FunctionLoop();
+    LocalControlResults();
+    HelperABI();
+    AtomicOperations();
+    FlatExpressionShifts();
+}
+
+TEST_CASE("X64 fault recipes merge native and saved NZCV", "[compile][x64-compile]") {
+    constexpr unsigned source_bits[]{0, 11, 6, 7}, destination_bits[]{29, 28, 30, 31};
+    for (unsigned mask = 0; mask < 16; ++mask)
+        for (unsigned pattern = 0; pattern < 16; ++pattern)
+            for (unsigned polarity = 0; polarity < 4; ++polarity) {
+                State state;
+                swift::runtime::execution::FaultContext context;
+                context.state = &state;
+                context.flags_offset = offsetof(State, flags);
+                context.pinned_uniform_offset = UINT32_MAX;
+                std::uint64_t saved = 0x202, native = 0x202;
+                for (unsigned bit = 0; bit < 4; ++bit) {
+                    native |= std::uint64_t{(pattern >> bit) & 1} << source_bits[bit];
+                    saved |= std::uint64_t{((pattern ^ 9) >> bit) & 1} << source_bits[bit];
+                }
+                std::array<std::uint64_t, 16> registers{};
+                registers[3] =
+                        (std::uint64_t{1} << 55) | flags::Direction | flags::Auxiliary | 0x25;
+                registers[4] = reinterpret_cast<std::uintptr_t>(&saved);
+                swift::runtime::backend::FaultSite site{};
+                site.recovery[0] = 2 | (polarity << 2);
+                site.recovery[1] = mask | ((15 ^ mask) << 4);
+                auto expected = registers[3];
+                for (unsigned bit = 0; bit < 4; ++bit) {
+                    const bool use_native = mask & (1u << bit);
+                    auto value = ((use_native ? native : saved) >> source_bits[bit]) & 1;
+                    if (!bit) value ^= (polarity >> (use_native ? 0 : 1)) & 1;
+                    expected |= value << destination_bits[bit];
+                }
+                CHECK(x64::RestoreGuestState(
+                        context, site, std::as_bytes(std::span{registers}), native));
+                CHECK(state.flags == expected);
+                site.recovery[1] = 0x11;
+                CHECK_FALSE(x64::RestoreGuestState(
+                        context, site, std::as_bytes(std::span{registers}), native));
+            }
+}
+
+TEST_CASE("Regional FP slow calls preserve a loop with dead incoming flags",
+          "[compile][x64-compile][native]") {
+    Builder builder{Scope::Function};
+    const auto loop = Block(builder), exit = Block(builder);
+    Need(builder.BeginBlock(loop));
+    const auto left = LoadVector(builder, 0), right = LoadVector(builder, 1);
+    const auto sum = Emit(builder,
+                          OpCode::ArmFPBinary,
+                          Type::V128,
+                          {Operand::ValueOf(left),
+                           Operand::ValueOf(right),
+                           Imm(offsetof(State, fpcr)),
+                           Imm(offsetof(State, fpsr)),
+                           Imm(swift::runtime::arm64::ArmFPBinaryMode(0, 64, 1))});
+    StoreVector(builder, 0, sum);
+    const auto count = Load(builder, 0);
+    const auto next = Emit(builder,
+                           OpCode::Sub,
+                           Type::U64,
+                           {Operand::ValueOf(count), Imm(1)},
+                           {15, FlagProfile::ArithmeticCanonicalCarry, false});
+    Store(builder, 0, next);
+    const auto again =
+            Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(Condition::NE)});
+    Need(builder.EndBlock(Terminal::Branch(again, loop, exit)));
+    Need(builder.BeginBlock(exit));
+    const auto program = Return(builder, Literal(builder, 0));
+    auto options = Options();
+    options.local_flags = true;
+    options.arm_fpcr = 0;
+    options.arm_fpcr_offset = offsetof(State, fpcr);
+    x64::Allocation allocation;
+    swift::runtime::backend::CompileResult code;
+    x64::Compile(program, options, code, allocation);
+    REQUIRE(bool(code));
+    CHECK(allocation.flags_input[loop.id.value] == 0);
+    for (auto input : {0x3ff0000000000000ULL, 0x7ff0000000000042ULL}) {
+        State state;
+        state.flags = (u64{1} << 55) | flags::Direction | flags::Auxiliary | 0xa5;
+        const auto base = state.flags;
+        state.scalars[0] = 3;
+        state.vectors[0] = {input, UINT64_MAX};
+        state.vectors[1] = {0x3ff8000000000000, UINT64_MAX};
+        u64 expected = input;
+        unsigned raised{};
+        for (unsigned i = 0; i < 3; ++i) {
+            const auto result = swift::runtime::arm64::EvaluateBinaryFP(
+                    expected, state.vectors[1].low, 64, 2, 0);
+            expected = result.value;
+            raised |= result.exceptions;
+        }
+        if (Run(code, state, 0)) {
+            CHECK(state.vectors[0] == (Pair{expected, 0}));
+            CHECK(state.fpsr == raised);
+            CHECK(state.flags == (base | flags::Zero));
+            CHECK(state.scalars[0] == 0);
+        }
+    }
+}
+
+TEST_CASE("Specialized FP rounding clears inactive packed subtraction lanes",
+          "[compile][x64-compile][native]") {
+    namespace arm = swift::runtime::arm64;
+    for (unsigned profile = 0; profile < 32; ++profile) {
+        Builder builder{Scope::Block};
+        Begin(builder);
+        const auto left = LoadVector(builder, 0), right = LoadVector(builder, 1);
+        const auto result = Emit(builder,
+                                 OpCode::ArmFPBinary,
+                                 Type::V128,
+                                 {Operand::ValueOf(left),
+                                  Operand::ValueOf(right),
+                                  Imm(offsetof(State, fpcr)),
+                                  Imm(offsetof(State, fpsr)),
+                                  Imm(arm::ArmFPBinaryMode(1, 32, 2))});
+        StoreVector(builder, 0, result);
+        auto options = Options();
+        options.local_flags = true;
+        options.arm_fpcr = arm::FPCRForDomain(profile);
+        options.arm_fpcr_offset = offsetof(State, fpcr);
+        const auto code = x64::Compile(Return(builder), options);
+        REQUIRE(bool(code));
+        State state;
+        state.fpcr = options.arm_fpcr;
+        state.vectors[0] = Lanes32(0x3f800000, 0x40000000, 0x7f800001, 0x7fc00042);
+        state.vectors[1] = state.vectors[0];
+        const auto expected = (state.fpcr & (3u << 22)) == (2u << 22)
+                                      ? Lanes32(0x80000000, 0x80000000, 0, 0)
+                                      : Pair{};
+        if (Run(code, state)) {
+            CHECK(state.vectors[0] == expected);
+            CHECK(state.fpsr == 0);
+        }
+    }
+}
+
+namespace {
+u64 ChangeFPCR(u64 address) {
+    reinterpret_cast<State*>(address)->fpcr = 1u << 22;
+    return 0;
+}
+}  // namespace
+
+TEST_CASE("Specialized FP revalidates explicit and opaque control writes",
+          "[compile][x64-compile][native]") {
+    for (bool helper : {false, true}) {
+        Builder builder{Scope::Block};
+        Begin(builder);
+        if (helper) {
+            const auto address = Emit(builder, OpCode::GetUniformAddress, Type::U64, {Imm(0)});
+            Emit(builder,
+                 OpCode::CallLambda,
+                 Type::U64,
+                 {Operand::Lambda(),
+                  Imm(reinterpret_cast<std::uintptr_t>(&ChangeFPCR)),
+                  Operand::ValueOf(address)});
+        } else {
+            const auto control = Literal(builder, 1u << 22, Type::U32);
+            Emit(builder,
+                 OpCode::StoreUniform,
+                 Type::Void,
+                 {Operand::Uniform(offsetof(State, fpcr), Type::U32), Operand::ValueOf(control)});
+        }
+        Emit(builder, OpCode::FaultLocation, Type::Void, {Imm(0x1234)});
+        const auto left = LoadVector(builder, 0), right = LoadVector(builder, 1);
+        const auto result = Emit(builder,
+                                 OpCode::ArmFPBinary,
+                                 Type::V128,
+                                 {Operand::ValueOf(left),
+                                  Operand::ValueOf(right),
+                                  Imm(offsetof(State, fpcr)),
+                                  Imm(offsetof(State, fpsr)),
+                                  Imm(swift::runtime::arm64::ArmFPBinaryMode(0, 64, 1))});
+        StoreVector(builder, 2, result);
+        auto options = Options();
+        options.local_flags = true;
+        options.arm_fpcr = 0;
+        options.arm_fpcr_offset = offsetof(State, fpcr);
+        const auto code = x64::Compile(Return(builder), options);
+        REQUIRE(bool(code));
+        State state;
+        state.vectors[0] = {0x3ff0000000000000, 0};
+        state.vectors[1] = {0x3ca0000000000000, 0};
+        state.vectors[2] = {0x12345678, 0x87654321};
+        const auto before = state.vectors[2];
+        if (Run(code,
+                state,
+                swift::runtime::ExitValue(swift::runtime::NativeExit::FPEnvironment))) {
+            CHECK(state.fpcr == (1u << 22));
+            CHECK(state.pc == 0x1234);
+            CHECK(state.vectors[2] == before);
+            CHECK(state.fpsr == 0);
+        }
+    }
+}
+
+TEST_CASE("Empty IR markers preserve the native condition carrier", "[compile][x64-compile][native]") {
+    std::vector<std::uint32_t> reference;
+    for (auto marker : {OpCode::Count, OpCode::Nop, OpCode::UniformBarrier,
+                        OpCode::XchgBarrier, OpCode::BranchOnlyEdges}) {
+        Builder builder{Scope::Block};
+        Begin(builder);
+        const auto left = Load(builder, 0), right = Load(builder, 1);
+        Emit(builder, OpCode::Add, Type::U64,
+                {Operand::ValueOf(left), Operand::ValueOf(right)},
+                {15, FlagProfile::ArithmeticCanonicalCarry, false});
+        if (marker == OpCode::XchgBarrier) {
+            Emit(builder, marker, Type::Void, {Imm(0)});
+        } else if (marker != OpCode::Count) {
+            Emit(builder, marker, Type::Void, {});
+        }
+        const auto condition = Emit(builder, OpCode::CondSet, Type::Bool,
+                                    {Operand::Condition(Condition::EQ)});
+        auto options = Options();
+        options.local_flags = true;
+        const auto code = x64::Compile(Return(builder, condition), options);
+        REQUIRE(bool(code));
+        if (reference.empty()) reference = code.words;
+        CHECK(code.words == reference);
+        State state;
+        state.scalars[0] = 7;
+        state.scalars[1] = 9;
+        state.flags = (u64{1} << 55) | 0x25;
+        if (Run(code, state, 0)) CHECK(state.flags == ((u64{1} << 55) | 0x25));
+    }
+}
+
+TEST_CASE("Uniform flags writes preserve every untouched byte", "[compile][x64-compile][native]") {
+    for (bool local : {false, true}) {
+        for (const auto [offset, type] :
+             {std::pair{0u, Type::U8}, std::pair{1u, Type::U16}, std::pair{3u, Type::U8},
+              std::pair{3u, Type::U32}, std::pair{4u, Type::U32}, std::pair{0u, Type::U64}}) {
+            Builder builder{Scope::Block};
+            Begin(builder);
+            const auto left = Load(builder, 0), right = Load(builder, 1);
+            Emit(builder,
+                 OpCode::Add,
+                 Type::U64,
+                 {Operand::ValueOf(left), Operand::ValueOf(right)},
+                 {15, FlagProfile::ArithmeticCanonicalCarry, false});
+            constexpr u64 replacement = 0x81234567feed23a1;
+            const auto value = Literal(builder, replacement);
+            Emit(builder,
+                 OpCode::StoreUniform,
+                 Type::Void,
+                 {Operand::Uniform(offsetof(State, flags) + offset, type), Operand::ValueOf(value)});
+            const auto result = Emit(builder,
+                                     OpCode::LoadUniform,
+                                     Type::U64,
+                                     {Operand::Uniform(offsetof(State, flags), Type::U64)});
+            auto options = Options();
+            options.local_flags = local;
+            const auto code = x64::Compile(Return(builder, result), options);
+            REQUIRE(bool(code));
+            State state;
+            state.scalars[0] = 7;
+            state.scalars[1] = 9;
+            state.flags = (u64{1} << 55) | 0xf0000025;
+            const auto mask = (UINT64_MAX >> (64 - TypeBits(type))) << (offset * 8);
+            const auto expected = (((u64{1} << 55) | 0x25) & ~mask) |
+                                  ((replacement << (offset * 8)) & mask);
+            if (Run(code, state, expected)) CHECK(state.flags == expected);
+        }
     }
 }

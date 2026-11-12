@@ -40,22 +40,6 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
         , stats(stats)
         , backend(host)
         , heap(backend, memory.PageSize())
-        , caches{CodeCache{reinterpret_cast<NativeCode::Function>(options.decode_timing
-                                                                          ? &SvmNativePendingCounted
-                                                                          : &SvmNativePending),
-                           backend},
-                 CodeCache{reinterpret_cast<NativeCode::Function>(options.decode_timing
-                                                                          ? &SvmNativePendingCounted
-                                                                          : &SvmNativePending),
-                           backend},
-                 CodeCache{reinterpret_cast<NativeCode::Function>(options.decode_timing
-                                                                          ? &SvmNativePendingCounted
-                                                                          : &SvmNativePending),
-                           backend},
-                 CodeCache{reinterpret_cast<NativeCode::Function>(options.decode_timing
-                                                                          ? &SvmNativePendingCounted
-                                                                          : &SvmNativePending),
-                           backend}}
         , compiler(*this)
         , syscalls(*this)
         , signals(*this)
@@ -84,6 +68,7 @@ VM::VM(RuntimeOptions options, RuntimeStats& stats, const HostBackendOps& host)
     faults.guest_fp_status = backend.floating_status ? &native.guest_fpsr : nullptr;
     faults.pinned_uniform_slots = backend.pinned_uniform_slots;
     faults.native_nzcv = backend.capabilities.native_nzcv;
+    SelectFPMode(0);
     ConfigureGuest(GuestISA::X86_64);
     RefreshNative(native);
 }
@@ -106,11 +91,12 @@ void VM::ObserveFinal() noexcept {
     stats.thread_l1_bytes = thread.l1.Data() ? DispatchCache::Bytes : 0;
     stats.dispatch_interrupt_bytes = interrupt_l1.Data() ? DispatchCache::Bytes : 0;
     for (const auto& cache : caches) {
-        stats.patched_links += cache.Patched();
-        stats.pending_links += cache.Pending();
-        stats.pending_targets += cache.PendingTargets();
-        stats.link_relocation_rows += cache.LinkRows();
-        stats.link_relocation_capacity += cache.LinkCapacity();
+        if (!cache) continue;
+        stats.patched_links += cache->Patched();
+        stats.pending_links += cache->Pending();
+        stats.pending_targets += cache->PendingTargets();
+        stats.link_relocation_rows += cache->LinkRows();
+        stats.link_relocation_capacity += cache->LinkCapacity();
     }
 }
 
@@ -137,7 +123,8 @@ MappingRelease VM::Close() noexcept {
         // No executor or signal reader remains, including after partial entry
         // registration. All directory routes go away before any unit is freed.
         // Rewriting links in ranges retired together would add a useless L scan.
-        for (auto& cache : caches) cache.Release();
+        for (auto& cache : caches)
+            if (cache) cache->Release();
         thread.anchor = {};
         RefreshNative(thread.native);
         thread.native.l1.store(nullptr, std::memory_order_relaxed);
@@ -296,8 +283,8 @@ void VM::RunUntilGuestStop(std::uint64_t stop_pc) {
         swift::ThrowError("guest is not available for startup", ErrorKind::InvalidState);
     const auto source = memory.CodeAt(stop_pc);
     if (source.empty() || source.front() != 0xf4 ||
-        std::any_of(caches.begin(), caches.end(), [stop_pc](const CodeCache& cache) {
-            return bool(cache.Find(stop_pc));
+        std::any_of(caches.begin(), caches.end(), [stop_pc](const auto& cache) {
+            return cache && bool(cache->Find(stop_pc));
         }))
         swift::ThrowError("guest startup requires an uncached explicit HLT stop",
                           ErrorKind::InvalidArgument);
@@ -347,6 +334,7 @@ void VM::Execute() {
             stats.private_uniforms = true;
             stats.pinned_uniform_slots = layout.pinned_uniform_slots;
             stats.native_nzcv = backend.capabilities.native_nzcv;
+            stats.native_eflags = backend.capabilities.native_eflags;
             stats.thread_dispatch_cache = backend.thread_dispatch_cache;
             while (!thread.exited && !host_returned) {
                 DeliverPending();
@@ -474,6 +462,24 @@ void VM::MergeFPStatus() noexcept {
         NumericControl() |= backend.floating_status(thread.native);
 }
 
+void VM::SelectFPMode(std::uint8_t mode) {
+    if (caches[mode] && mode == thread.fp_mode) return;
+    RuntimeTimer total{stats.compile_request_ns};
+    if (!caches[mode]) {
+        caches[mode] = std::make_unique<CodeCache>(
+                reinterpret_cast<NativeCode::Function>(
+                        options.decode_timing ? &SvmNativePendingCounted : &SvmNativePending),
+                backend);
+        ++stats.fp_domains_created;
+    }
+    if (mode != thread.fp_mode) {
+        RuntimeTimer reset{stats.fp_domain_switch_ns};
+        thread.l1.Reset();
+        thread.fp_mode = mode;
+        ++stats.fp_domain_switches;
+    }
+}
+
 void VM::UpdateFPEnvironment(bool architectural_write) {
     if (architectural_write) thread.native.guest_fpsr = 0;
     if (ISA() == GuestISA::Arm64) {
@@ -482,7 +488,7 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
         // Check at the existing FPCR service boundary, not at every FP operation.
         if (!arm64::IsSupportedFPCR(fpcr))
             swift::ThrowError("guest FPCR contains unsupported controls", ErrorKind::Unsupported);
-        if (architectural_write) {
+        {
             constexpr unsigned rounding[]{0, 2, 1, 3};
             NumericControl() = 0x1f80u | (rounding[(fpcr >> 22) & 3] << 13) |
                                ((fpcr & (1u << 24)) ? 0x8040u : 0u);
@@ -502,13 +508,10 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
     if (mxcsr & ~u64{0xffff})
         swift::ThrowError("guest MXCSR contains reserved bits", ErrorKind::GuestFault);
     const auto daz = (mxcsr >> 6) & 1, ftz = (mxcsr >> 15) & 1;
-    const auto mode =
-            backend.specializes_fp_flush ? static_cast<std::uint8_t>(daz | (ftz << 1)) : 0;
-    if (mode != thread.fp_mode) {
-        RuntimeTimer total{stats.compile_request_ns};
-        thread.l1.Reset();
-        thread.fp_mode = mode;
-    }
+    auto mode = backend.specializes_fp_flush ? static_cast<std::uint8_t>(daz | (ftz << 1)) : 0;
+    if (ISA() == GuestISA::Arm64 && backend.specializes_arm_fpcr)
+        mode |= arm64::FPCRDomain(ArmState().fpcr) << 2;
+    SelectFPMode(static_cast<std::uint8_t>(mode));
     if (backend.update_fp) backend.update_fp(backend.context, thread.native, mxcsr);
     // Native AArch64 guest FP executes under the architectural FPCR, not the
     // x86-style numeric-control mapping used for x86 guests.

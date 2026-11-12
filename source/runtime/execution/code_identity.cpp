@@ -60,15 +60,17 @@ CodeImageKey MakeCodeImageKey(const Digest& guest,
                              c.afp,
                              c.aes,
                              c.pmull,
-                             c.sha256})
+                             c.sha256,
+                             c.native_eflags})
         Number(config, value);
     Number(config, backend.pinned_uniform_slots);
-    Number(config, options.pinned_slots == UINT8_MAX
-                            ? backend.pinned_uniform_default
-                            : std::min<std::uint32_t>(options.pinned_slots,
-                                                      backend.pinned_uniform_slots));
+    Number(config,
+           options.pinned_slots == UINT8_MAX
+                   ? backend.pinned_uniform_default
+                   : std::min<std::uint32_t>(options.pinned_slots, backend.pinned_uniform_slots));
     Number(config, backend.pinned_vectors);
     Number(config, backend.specializes_fp_flush);
+    Number(config, backend.specializes_arm_fpcr);
     Number(config, options.optimize);
     // Counted dispatch changes emitted code, unlike logger/argv/environment.
     Number(config, options.decode_timing);

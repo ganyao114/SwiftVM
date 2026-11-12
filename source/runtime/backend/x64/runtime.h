@@ -16,6 +16,7 @@ private:
     CompileResult output;
     Allocation allocation;
     std::uint64_t features{};
+    bool diagnostic{};
 };
 
 }  // namespace swift::runtime::backend::x64

@@ -1,5 +1,5 @@
-#include "emit.h"
 #include <algorithm>
+#include "emit.h"
 
 namespace swift::runtime::backend::x64::detail {
 using O = OpCode;
@@ -136,63 +136,67 @@ void Writer::VectorLanes(OpContext& c) {
 
 void Writer::Vector(OpContext& c) {
     auto op = c.operation.opcode;
-    ReadVector(c.Arg(0), xmm0);
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+    c.vector = dst;
+    ReadVector(c.Arg(0), dst);
     ReadVector(c.Arg(1), xmm1);
     const unsigned n =
             (op == O::Vec4Add || op == O::Vec4Sub || op == O::Vec4Mul) ? 32 : c.Arg(2).Payload();
     if (op == O::VecAnd || op == O::Vec4And) {
-        pand(xmm0, xmm1);
+        pand(dst, xmm1);
         return;
     }
     if (op == O::VecOr || op == O::Vec4Or) {
-        por(xmm0, xmm1);
+        por(dst, xmm1);
         return;
     }
     if (op == O::VecXor) {
-        pxor(xmm0, xmm1);
+        pxor(dst, xmm1);
         return;
     }
     if (op == O::VecAndNot) {
-        pandn(xmm1, xmm0);
-        movdqa(xmm0, xmm1);
+        pandn(xmm1, dst);
+        movdqa(dst, xmm1);
         return;
     }
     if (op == O::VecAdd || op == O::Vec4Add) {
         if (n == 8)
-            paddb(xmm0, xmm1);
+            paddb(dst, xmm1);
         else if (n == 16)
-            paddw(xmm0, xmm1);
+            paddw(dst, xmm1);
         else if (n == 32)
-            paddd(xmm0, xmm1);
+            paddd(dst, xmm1);
         else if (n == 64)
-            paddq(xmm0, xmm1);
+            paddq(dst, xmm1);
         else
             Reject(CompileError::UnsupportedOperand);
         return;
     }
     if (op == O::VecSub || op == O::Vec4Sub) {
         if (n == 8)
-            psubb(xmm0, xmm1);
+            psubb(dst, xmm1);
         else if (n == 16)
-            psubw(xmm0, xmm1);
+            psubw(dst, xmm1);
         else if (n == 32)
-            psubd(xmm0, xmm1);
+            psubd(dst, xmm1);
         else if (n == 64)
-            psubq(xmm0, xmm1);
+            psubq(dst, xmm1);
         else
             Reject(CompileError::UnsupportedOperand);
         return;
     }
     if (op == O::VecCmpEq) {
         if (n == 8)
-            pcmpeqb(xmm0, xmm1);
+            pcmpeqb(dst, xmm1);
         else if (n == 16)
-            pcmpeqw(xmm0, xmm1);
+            pcmpeqw(dst, xmm1);
         else if (n == 32)
-            pcmpeqd(xmm0, xmm1);
+            pcmpeqd(dst, xmm1);
         else if (n == 64 && options.sse41)
-            pcmpeqq(xmm0, xmm1);
+            pcmpeqq(dst, xmm1);
         else {
+            c.vector = xmm0;
             VectorLanes(c);
             return;
         }
@@ -200,14 +204,15 @@ void Writer::Vector(OpContext& c) {
     }
     if (op == O::VecCmpGt) {
         if (n == 8)
-            pcmpgtb(xmm0, xmm1);
+            pcmpgtb(dst, xmm1);
         else if (n == 16)
-            pcmpgtw(xmm0, xmm1);
+            pcmpgtw(dst, xmm1);
         else if (n == 32)
-            pcmpgtd(xmm0, xmm1);
+            pcmpgtd(dst, xmm1);
         else if (n == 64 && options.sse42)
-            pcmpgtq(xmm0, xmm1);
+            pcmpgtq(dst, xmm1);
         else {
+            c.vector = xmm0;
             VectorLanes(c);
             return;
         }
@@ -215,61 +220,61 @@ void Writer::Vector(OpContext& c) {
     }
     if (op == O::VecAvg && (n == 8 || n == 16)) {
         if (n == 8)
-            pavgb(xmm0, xmm1);
+            pavgb(dst, xmm1);
         else
-            pavgw(xmm0, xmm1);
+            pavgw(dst, xmm1);
         return;
     }
     if ((op == O::VecMul || op == O::Vec4Mul) && n == 16) {
-        pmullw(xmm0, xmm1);
+        pmullw(dst, xmm1);
         return;
     }
     if ((op == O::VecMul || op == O::Vec4Mul) && n == 32 && options.sse41) {
-        pmulld(xmm0, xmm1);
+        pmulld(dst, xmm1);
         return;
     }
     if (op == O::VecMin || op == O::VecMax) {
         const bool sign = c.Arg(3).Payload(), maximum = op == O::VecMax;
         if (n == 8 && !sign) {
             if (maximum)
-                pmaxub(xmm0, xmm1);
+                pmaxub(dst, xmm1);
             else
-                pminub(xmm0, xmm1);
+                pminub(dst, xmm1);
             return;
         }
         if (n == 16 && sign) {
             if (maximum)
-                pmaxsw(xmm0, xmm1);
+                pmaxsw(dst, xmm1);
             else
-                pminsw(xmm0, xmm1);
+                pminsw(dst, xmm1);
             return;
         }
         if (options.sse41) {
             if (n == 8 && sign) {
                 if (maximum)
-                    pmaxsb(xmm0, xmm1);
+                    pmaxsb(dst, xmm1);
                 else
-                    pminsb(xmm0, xmm1);
+                    pminsb(dst, xmm1);
                 return;
             }
             if (n == 16 && !sign) {
                 if (maximum)
-                    pmaxuw(xmm0, xmm1);
+                    pmaxuw(dst, xmm1);
                 else
-                    pminuw(xmm0, xmm1);
+                    pminuw(dst, xmm1);
                 return;
             }
             if (n == 32) {
                 if (sign) {
                     if (maximum)
-                        pmaxsd(xmm0, xmm1);
+                        pmaxsd(dst, xmm1);
                     else
-                        pminsd(xmm0, xmm1);
+                        pminsd(dst, xmm1);
                 } else {
                     if (maximum)
-                        pmaxud(xmm0, xmm1);
+                        pmaxud(dst, xmm1);
                     else
-                        pminud(xmm0, xmm1);
+                        pminud(dst, xmm1);
                 }
                 return;
             }
@@ -280,30 +285,31 @@ void Writer::Vector(OpContext& c) {
         if (op == O::VecSatAdd) {
             if (n == 8) {
                 if (u)
-                    paddusb(xmm0, xmm1);
+                    paddusb(dst, xmm1);
                 else
-                    paddsb(xmm0, xmm1);
+                    paddsb(dst, xmm1);
             } else {
                 if (u)
-                    paddusw(xmm0, xmm1);
+                    paddusw(dst, xmm1);
                 else
-                    paddsw(xmm0, xmm1);
+                    paddsw(dst, xmm1);
             }
         } else {
             if (n == 8) {
                 if (u)
-                    psubusb(xmm0, xmm1);
+                    psubusb(dst, xmm1);
                 else
-                    psubsb(xmm0, xmm1);
+                    psubsb(dst, xmm1);
             } else {
                 if (u)
-                    psubusw(xmm0, xmm1);
+                    psubusw(dst, xmm1);
                 else
-                    psubsw(xmm0, xmm1);
+                    psubsw(dst, xmm1);
             }
         }
         return;
     }
+    c.vector = xmm0;
     VectorLanes(c);
 }
 

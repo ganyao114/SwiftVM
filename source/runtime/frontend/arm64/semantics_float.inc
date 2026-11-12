@@ -1,9 +1,17 @@
 
-// On an AArch64 host the guest FPCR/FPSR are installed for the whole native
-// unit, so scalar arithmetic is exactly the host instruction. Other hosts keep
-// the portable numeric helper path.
+// AArch64 executes with the architectural environment. x64 uses an exact ARM
+// semantic operation with a guarded fast path and the same mathematical leaves.
+bool X64FP() const { return target.mode == TargetMode::Known && target.target == 0x8664; }
+
+void EmitX64FP(u32 rd, u32 rn, u32 rm, u32 mode) {
+    auto lhs = ReadVRegister(rn, Type::V128), rhs = ReadVRegister(rm, Type::V128);
+    auto result = Emit<OpCode::ArmFPBinary, Type::V128>(
+            lhs, rhs, Imm{layout.fpcr_offset}, Imm{layout.fpsr_offset}, Imm{mode});
+    WriteVRegister(rd, result);
+}
+
 bool TryNativeScalarFP(const vixl::aarch64::Instruction* instr) {
-    if (target.mode != TargetMode::Known || target.target != 0xa64) return false;
+    if (target.mode != TargetMode::Known || (target.target != 0xa64 && !X64FP())) return false;
     const u32 word = instr->GetInstructionBits();
     const u32 operation = word & FPDataProcessing2SourceMask;
     u32 kind;
@@ -21,10 +29,17 @@ bool TryNativeScalarFP(const vixl::aarch64::Instruction* instr) {
                       operation == FDIV_d)
                              ? 64
                              : 32;
+    if (X64FP()) {
+        if (kind == 3) return false;
+        EmitX64FP(instr->GetRd(),
+                  instr->GetRn(),
+                  instr->GetRm(),
+                  runtime::arm64::ArmFPBinaryMode(kind, bits, 1));
+        return true;
+    }
     auto lhs = ReadVRegister(instr->GetRn(), Type::V128);
     auto rhs = ReadVRegister(instr->GetRm(), Type::V128);
-    auto result = Emit<OpCode::ArmScalarFP, Type::V128>(
-            lhs, rhs, Imm{u8(kind)}, Imm{u8(bits)});
+    auto result = Emit<OpCode::ArmScalarFP, Type::V128>(lhs, rhs, Imm{u8(kind)}, Imm{u8(bits)});
     WriteVRegister(instr->GetRd(), result);
     return true;
 }
@@ -55,8 +70,8 @@ bool TryNativeScalarFMA(const vixl::aarch64::Instruction* instr) {
     auto n = ReadVRegister(instr->GetRn(), Type::V128);
     auto m = ReadVRegister(instr->GetRm(), Type::V128);
     auto a = ReadVRegister(instr->GetRa(), Type::V128);
-    auto result = Emit<OpCode::ArmScalarFMA, Type::V128>(
-            n, m, a, Imm{u8(kind | (bits == 64 ? 4u : 0u))});
+    auto result =
+            Emit<OpCode::ArmScalarFMA, Type::V128>(n, m, a, Imm{u8(kind | (bits == 64 ? 4u : 0u))});
     WriteVRegister(instr->GetRd(), result);
     return true;
 }
@@ -77,6 +92,20 @@ bool TryNEONFP16Unary(const vixl::aarch64::Instruction* instr) {
 }
 
 bool TryNEONVectorFPBinary(const vixl::aarch64::Instruction* instr) {
+    if (X64FP()) {
+        const u32 word = instr->GetInstructionBits(), op = word & NEON3SameFPMask;
+        const u32 kind = op == NEON_FADD ? 0 : op == NEON_FSUB ? 1 : 2;
+        if ((op == NEON_FADD || op == NEON_FSUB || op == NEON_FMUL) &&
+            runtime::arm64::SupportsNumeric(Numeric::VectorBinary, word)) {
+            const u32 bits = word & (1u << 22) ? 64 : 32;
+            EmitX64FP(
+                    instr->GetRd(),
+                    instr->GetRn(),
+                    instr->GetRm(),
+                    runtime::arm64::ArmFPBinaryMode(kind, bits, (word & NEON_Q ? 128 : 64) / bits));
+            return true;
+        }
+    }
     return TryNumeric(instr, Numeric::VectorBinary);
 }
 
@@ -97,6 +126,26 @@ bool TryNEONFPPrecision(const vixl::aarch64::Instruction* instr) {
 }
 
 bool TryNEONIndexedFP(const vixl::aarch64::Instruction* instr) {
+    if (X64FP()) {
+        const u32 word = instr->GetInstructionBits();
+        const bool scalar = word & NEONScalar;
+        const u32 mask =
+                scalar ? u32(NEONScalarByIndexedElementMask) : u32(NEONByIndexedElementMask);
+        const u32 flags = scalar ? u32(NEON_Q | NEONScalar) : 0;
+        const u32 size = (word >> 22) & 3;
+        if ((word & mask) == (u32(NEON_FMUL_H_byelement) | flags) && size >= 2 &&
+            runtime::arm64::SupportsNumeric(Numeric::Indexed, word)) {
+            const u32 bits = size == 2 ? 32 : 64;
+            const u32 index =
+                    bits == 32 ? (((word >> 11) & 1) << 1) | ((word >> 21) & 1) : (word >> 11) & 1;
+            const u32 lanes = scalar ? 1 : (word & NEON_Q ? 128 : 64) / bits;
+            EmitX64FP(instr->GetRd(),
+                      instr->GetRn(),
+                      (word >> 16) & 31,
+                      runtime::arm64::ArmFPBinaryMode(2, bits, lanes, true, index));
+            return true;
+        }
+    }
     return TryNumeric(instr, Numeric::Indexed);
 }
 

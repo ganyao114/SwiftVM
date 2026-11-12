@@ -5,6 +5,7 @@
 #include "runtime/platform/linux/host_runtime.h"
 #include "tests/support/test_mode.h"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <cstdlib>
@@ -219,6 +220,55 @@ TEST_CASE("AOT publication retains the actual native guest fault contract",
     CHECK(stats.compile_attempts == 0);
     CHECK(stats.aot_units_loaded == image.units.size());
     CHECK(stats.native_bytes > 0);
+    CHECK(stats.interpreted_steps == 0);
+    CHECK(vm.Close().Complete());
+}
+
+TEST_CASE("ARM64 FPCR semantic domains survive disk and AOT restoration", "[native][persistence]") {
+    RequireNative();
+    constexpr std::array<std::uint32_t, 8> instructions{
+            0xd2a00800, 0xd51b4400, 0x1e622820, 0xd51b441f,
+            0x1e622820, 0xd2800540, 0xd2800ba8, 0xd4000001};
+    auto bytes = Guest({reinterpret_cast<const std::uint8_t*>(instructions.data()), sizeof(instructions)});
+    Elf64_Ehdr header;
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    header.e_machine = EM_AARCH64;
+    std::memcpy(bytes.data(), &header, sizeof(header));
+    Directory directory;
+    platform::WriteArtifactFile(directory.GuestPath(), bytes);
+    execution::RuntimeOptions options;
+    options.scope = ir::Scope::Function;
+    options.cache_directory = directory.Path();
+    const std::array arguments{directory.GuestPath()};
+    const auto cold = execution::RunGuest(directory.GuestPath(), arguments, {}, options);
+    INFO(cold.error);
+    REQUIRE(cold);
+    REQUIRE(cold.exit_code == 42);
+    REQUIRE(cold.stats.compile_attempts > 0);
+    const auto warm = execution::RunGuest(directory.GuestPath(), arguments, {}, options);
+    INFO(warm.error);
+    REQUIRE(warm);
+    CHECK(warm.exit_code == 42);
+    CHECK(warm.stats.compile_attempts == 0);
+    CHECK(warm.stats.disk_cache_hits > 0);
+    CHECK(warm.stats.interpreted_steps == 0);
+    execution::CodeImage image;
+    std::string error;
+    REQUIRE(execution::DecodeCodeImage(platform::ReadArtifactFile(CacheFile(directory).string()), image, error));
+    platform::HostRuntime host{false};
+    const auto backend = host.Bind();
+    if (backend.specializes_arm_fpcr) {
+        CHECK(cold.stats.fp_domains_created == 2);
+        CHECK(cold.stats.fp_domain_switches == 2);
+        CHECK(std::any_of(image.units.begin(), image.units.end(), [](const auto& unit) { return unit.fp_mode == 8; }));
+    }
+    options.cache_directory.clear();
+    execution::RuntimeStats stats;
+    execution::VM vm{options, stats, backend};
+    vm.PrepareGuest(bytes, directory.GuestPath(), {}, {}, &image);
+    CHECK(vm.RunPrepared() == 42);
+    CHECK(stats.compile_attempts == 0);
+    CHECK(stats.aot_units_loaded == image.units.size());
     CHECK(stats.interpreted_steps == 0);
     CHECK(vm.Close().Complete());
 }

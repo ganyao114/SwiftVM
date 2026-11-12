@@ -49,6 +49,7 @@ enum class HostSymbol : std::uint16_t {
     X64RoundIntegral = 67,
     X64FusedMultiplyAdd = 68,
     X64FloatingCompare = 69,
+    ArmFPBinary = 70,
     LoongWideDivide = 80,
     LoongCheckedX87 = 81,
     LoongCompareExchange128 = 82,

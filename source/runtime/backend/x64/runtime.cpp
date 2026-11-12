@@ -4,13 +4,14 @@
 #include "patch.h"
 #include "relocate.h"
 #include "runtime.h"
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
 #if defined(__x86_64__)
 #include <cpuid.h>
 #endif
 namespace swift::runtime::backend::x64 {
-Runtime::Runtime(bool diagnostic) noexcept {
+Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
     options.dispatcher = reinterpret_cast<std::uintptr_t>(
             diagnostic ? &execution::SvmNativeDispatchCounted : &execution::SvmNativeDispatch);
     options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
@@ -49,6 +50,8 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     o.pinned_uniform_slots = 2;
     o.pinned_uniform_default = 0;
     o.thread_dispatch_cache = true;
+    o.capabilities.native_eflags = true;
+    o.specializes_arm_fpcr = true;
     o.configure = [](void* p, const GuestLayout& l) noexcept {
         auto& v = *static_cast<Runtime*>(p);
         v.options.flags_offset = l.flags_offset;
@@ -56,6 +59,15 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         v.options.mxcsr_offset = l.numeric_control_offset;
         v.options.pinned_uniform_offset = l.pinned_uniform_slots ? l.gprs_offset : UINT32_MAX;
         v.options.pinned_uniform_slots = l.pinned_uniform_slots;
+        v.options.local_flags = true;
+        v.options.linked_flags = v.options.local_flags;
+        v.options.arm_fpcr_offset =
+                l.isa == GuestISA::Arm64 ? offsetof(runtime::arm64::GuestState, fpcr) : UINT32_MAX;
+        v.options.dispatcher = reinterpret_cast<std::uintptr_t>(
+                v.options.local_flags ? (v.diagnostic ? &execution::SvmNativeDispatchNZCVCounted
+                                                      : &execution::SvmNativeDispatchNZCV)
+                                      : (v.diagnostic ? &execution::SvmNativeDispatchCounted
+                                                      : &execution::SvmNativeDispatch));
     };
     o.compile =
             [](void* p, const ir::Program& s, execution::HostCompileRequest r) -> CompileResult& {
@@ -64,6 +76,10 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         c.entry_pc = r.entry_pc;
         c.fault_locations = r.fault_locations;
         c.relocatable = r.relocatable;
+        c.local_flags &= r.private_state && r.fault_locations;
+        c.linked_flags &= c.local_flags;
+        if (v.options.arm_fpcr_offset != UINT32_MAX)
+            c.arm_fpcr = runtime::arm64::FPCRForDomain(r.fp_mode >> 2);
         Compile(s, c, v.output, v.allocation);
         return v.output;
     };
@@ -96,8 +112,9 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         SynchronizeCode(w, e, n);
         return 0;
     };
-    o.update_fp = [](void*, execution::NativeRunContext& n, std::uint32_t control) noexcept {
+    o.update_fp = [](void* p, execution::NativeRunContext& n, std::uint32_t control) noexcept {
         n.guest_fpcr = (control & 0xe040) | 0x1f80;
+        n.native_eflags = static_cast<Runtime*>(p)->options.linked_flags;
     };
     o.floating_status = [](const execution::NativeRunContext& n) noexcept -> std::uint32_t {
         return n.guest_fpcr & 63;
@@ -124,4 +141,6 @@ static_assert(offsetof(execution::NativeRunContext, faults) == SVM_X64_CTX_FAULT
 static_assert(offsetof(execution::NativeRunContext, state) == SVM_X64_CTX_STATE);
 static_assert(offsetof(execution::NativeRunContext, guest_fpsr) == SVM_X64_CTX_GUEST_FPSR);
 static_assert(offsetof(execution::NativeRunContext, l1) == SVM_X64_CTX_L1);
+static_assert(offsetof(execution::NativeRunContext, native_eflags) == SVM_X64_CTX_NATIVE_EFLAGS);
+static_assert(offsetof(execution::NativeRunContext, eflags) == SVM_X64_CTX_EFLAGS);
 }  // namespace swift::runtime::backend::x64

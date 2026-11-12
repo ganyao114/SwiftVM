@@ -126,6 +126,9 @@ void WriteReport(std::FILE* stream,
     r.Number("peak_dual_slabs", s.peak_dual_slabs);
     r.Number("wx_fallback_used", s.code_wx_fallback);
     r.Number("cache_invalidations", s.cache_invalidations);
+    r.Number("fp_domains_created", s.fp_domains_created);
+    r.Number("fp_domain_switches", s.fp_domain_switches);
+    r.Number("fp_domain_switch_ns", s.fp_domain_switch_ns);
     r.Text("dispatch_cache",
            s.thread_dispatch_cache ? "thread_l1_shared_directory" : "native_directory");
     r.Number("thread_l1_entries", s.thread_l1_bytes / sizeof(DispatchEntry));
@@ -151,6 +154,7 @@ void WriteReport(std::FILE* stream,
     r.Number("link_relocation_capacity", s.link_relocation_capacity);
     r.Number("private_uniforms", s.private_uniforms);
     r.Number("native_nzcv", s.native_nzcv);
+    r.Number("native_eflags", s.native_eflags);
     r.Number("pinned_uniform_slots", s.pinned_uniform_slots);
     r.Number("smc_write_faults", s.smc_write_faults);
     r.Number("dispatch_interrupts", s.dispatch_interrupts);
@@ -175,7 +179,8 @@ void WriteReport(std::FILE* stream,
         r.Number("max_frame_bytes", s.max_frame_bytes);
         r.Text("guest_pc_policy", s.fault_locations ? "native_fault_sites" : "explicit_guest_pc");
         r.Text("packed_flags_policy",
-               s.native_nzcv        ? "native_pstate_nzcv_inverted_c"
+               s.native_eflags      ? "native_eflags_snapshot_inverted_c"
+               : s.native_nzcv      ? "native_pstate_nzcv_inverted_c"
                : s.private_uniforms ? "native_live_shadow"
                                     : "fault_boundary_shadow");
         r.Number("rcpc_loads", s.rcpc_loads);
