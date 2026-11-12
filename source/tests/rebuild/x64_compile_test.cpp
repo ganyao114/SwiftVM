@@ -220,8 +220,13 @@ void ArithmeticFlags() {
     Begin(builder);
     const auto ff = Literal(builder, 255, Type::U8), one = Literal(builder, 1, Type::U8);
     const OperationMetadata full{FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry};
-    const auto sum = Emit(
-            builder, OpCode::Add, Type::U8, {Operand::ValueOf(ff), Operand::ValueOf(one)}, full);
+    // A later named snapshot needs all producer flags even when its immediate
+    // architectural write selected only ZF.
+    const auto sum = Emit(builder,
+                          OpCode::Add,
+                          Type::U8,
+                          {Operand::ValueOf(ff), Operand::ValueOf(one)},
+                          {FlagBits(Flag::Zero), FlagProfile::ArithmeticCanonicalCarry});
     const auto zero = Literal(builder, 0, Type::U8);
     Emit(builder, OpCode::Sub, Type::U8, {Operand::ValueOf(zero), Operand::ValueOf(one)}, full);
     Emit(builder,
@@ -247,6 +252,19 @@ void ArithmeticFlags() {
 
 void ArithmeticFlagBoundaries() {
     constexpr u64 reserved = (u64{1} << 55) | flags::Direction;
+    constexpr std::pair<u64, u64> selections[]{
+            {FlagBits(Flag::All),
+             flags::Carry | flags::Overflow | flags::Zero | flags::Sign | flags::Auxiliary | 255},
+            {FlagBits(Flag::NZCV), flags::Carry | flags::Overflow | flags::Zero | flags::Sign},
+            {FlagBits(Flag::Carry), flags::Carry},
+            {FlagBits(Flag::Overflow), flags::Overflow},
+            {FlagBits(Flag::Zero), flags::Zero},
+            {FlagBits(Flag::Negate), flags::Sign},
+            {FlagBits(Flag::Parity), 255},
+            {FlagBits(Flag::AuxiliaryCarry), flags::Auxiliary},
+            {FlagBits(Flag::Carry | Flag::Zero), flags::Carry | flags::Zero},
+            {0, 0},
+    };
     for (const auto type : {Type::U8, Type::U16, Type::U32, Type::U64}) {
         const unsigned bits = TypeBits(type);
         const u64 mask = UINT64_MAX >> (64 - bits), sign = u64{1} << (bits - 1);
@@ -256,44 +274,104 @@ void ArithmeticFlagBoundaries() {
             const bool with_carry = opcode == OpCode::Adc || opcode == OpCode::Sbb;
             for (const auto profile :
                  {FlagProfile::ArithmeticRaw, FlagProfile::ArithmeticCanonicalCarry}) {
-                Builder builder{Scope::Block};
-                Begin(builder);
-                const auto lhs = Load(builder, 0), rhs = Load(builder, 1);
-                const auto result = Emit(builder,
-                                         opcode,
-                                         type,
-                                         {Operand::ValueOf(lhs, type), Operand::ValueOf(rhs, type)},
-                                         {FlagBits(Flag::All), profile});
-                auto program = Return(builder, result);
-                const auto code = Compile(program);
-                for (const auto a : values) {
-                    for (const auto b : values) {
-                        for (unsigned carry = 0; carry < 2; ++carry) {
-                            const u64 incoming = with_carry ? carry : 0;
-                            const u64 answer =
-                                    (subtract ? a - b - incoming : a + b + incoming) & mask;
-                            const bool cf = subtract ? a < b || (incoming && a == b)
-                                                     : answer < a || (incoming && answer == a);
-                            const bool of =
-                                    ((subtract ? a ^ b : ~(a ^ b)) & (a ^ answer) & sign) != 0;
-                            const bool packed_carry =
-                                    cf ^ (subtract && profile == FlagProfile::ArithmeticRaw);
-                            const u64 expected =
-                                    reserved | (answer & 255) | (packed_carry ? flags::Carry : 0) |
-                                    (of ? flags::Overflow : 0) | (!answer ? flags::Zero : 0) |
-                                    ((answer & sign) ? flags::Sign : 0) |
-                                    (((a ^ b ^ answer) & 16) ? flags::Auxiliary : 0);
-                            State state;
-                            state.scalars[0] = a;
-                            state.scalars[1] = b;
-                            state.flags = reserved | (carry ? flags::Carry : 0);
-                            if (Run(code, state, answer)) CHECK(state.flags == expected);
+                for (const auto [selected, packed_mask] : selections) {
+                    Builder builder{Scope::Block};
+                    Begin(builder);
+                    const auto lhs = Load(builder, 0), rhs = Load(builder, 1);
+                    const auto result =
+                            Emit(builder,
+                                 opcode,
+                                 type,
+                                 {Operand::ValueOf(lhs, type), Operand::ValueOf(rhs, type)},
+                                 {selected, profile});
+                    auto program = Return(builder, result);
+                    const auto code = Compile(program);
+                    for (const auto a : values) {
+                        for (const auto b : values) {
+                            for (unsigned carry = 0; carry < 2; ++carry) {
+                                const u64 incoming = with_carry ? carry : 0;
+                                const u64 answer =
+                                        (subtract ? a - b - incoming : a + b + incoming) & mask;
+                                const bool cf = subtract ? a < b || (incoming && a == b)
+                                                         : answer < a || (incoming && answer == a);
+                                const bool of =
+                                        ((subtract ? a ^ b : ~(a ^ b)) & (a ^ answer) & sign) != 0;
+                                const bool packed_carry =
+                                        cf ^ (subtract && profile == FlagProfile::ArithmeticRaw);
+                                const u64 expected =
+                                        reserved | (answer & 255) |
+                                        (packed_carry ? flags::Carry : 0) |
+                                        (of ? flags::Overflow : 0) | (!answer ? flags::Zero : 0) |
+                                        ((answer & sign) ? flags::Sign : 0) |
+                                        (((a ^ b ^ answer) & 16) ? flags::Auxiliary : 0);
+                                State state;
+                                state.scalars[0] = a;
+                                state.scalars[1] = b;
+                                const u64 initial = reserved | flags::Overflow | flags::Zero |
+                                                    flags::Sign | flags::Auxiliary | 0xa5 |
+                                                    (carry ? flags::Carry : 0);
+                                state.flags = initial;
+                                if (Run(code, state, answer))
+                                    CHECK(state.flags ==
+                                          ((initial & ~packed_mask) | (expected & packed_mask)));
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+void ImmediateShiftBoundaries() {
+    constexpr std::pair<OpCode, OpCode> shifts[]{
+            {OpCode::LslImm, OpCode::LslValue},
+            {OpCode::LsrImm, OpCode::LsrValue},
+            {OpCode::AsrImm, OpCode::AsrValue},
+            {OpCode::RorImm, OpCode::RorValue},
+    };
+    for (const auto scope : {Scope::Block, Scope::Function})
+        for (const auto type : {Type::U8, Type::U16, Type::U32, Type::U64}) {
+            const unsigned bits = TypeBits(type);
+            const u64 mask = UINT64_MAX >> (64 - bits), sign = u64{1} << (bits - 1);
+            for (const auto [immediate, variable] : shifts)
+                for (const u64 count : {0u, 1u, 7u, 8u, 15u, 16u, 31u, 32u, 63u, 64u, 65u, 255u})
+                    for (const bool literal : {false, true}) {
+                        Builder builder{scope};
+                        Begin(builder);
+                        const auto value = Load(builder, 0), amount = Load(builder, 1);
+                        const auto result = Emit(builder,
+                                                 literal ? immediate : variable,
+                                                 type,
+                                                 {Operand::ValueOf(value, type),
+                                                  literal ? Operand::Immediate(count, Type::U64)
+                                                          : Operand::ValueOf(amount)});
+                        const auto program = Return(builder, result);
+                        const auto code = Compile(program);
+                        for (const u64 input :
+                             {u64{0}, u64{1}, mask, sign, sign - 1, mask / 3, mask / 3 * 2}) {
+                            const unsigned n = count & (bits - 1);
+                            u64 expected = input;
+                            if (n) {
+                                if (immediate == OpCode::LslImm)
+                                    expected = (input << n) & mask;
+                                else if (immediate == OpCode::RorImm)
+                                    expected = ((input >> n) | (input << (bits - n))) & mask;
+                                else {
+                                    expected = input >> n;
+                                    if (immediate == OpCode::AsrImm && (input & sign))
+                                        expected |= mask ^ (mask >> n);
+                                }
+                            }
+                            State state;
+                            state.scalars[0] = input | (~mask & UINT64_C(0x95f0abcdef012345));
+                            state.scalars[1] = count;
+                            state.flags = (u64{1} << 55) | flags::Direction | flags::Carry | 0xa5;
+                            const auto before = state.flags;
+                            if (Run(code, state, expected)) CHECK(state.flags == before);
+                        }
+                    }
+        }
 }
 
 void FunctionLoop() {
@@ -1469,6 +1547,10 @@ TEST_CASE("ArithmeticFlags", "[compile][x64-compile][native]") { CHECK_NOTHROW(A
 
 TEST_CASE("ArithmeticFlagBoundaries", "[compile][x64-compile][native]") {
     ArithmeticFlagBoundaries();
+}
+
+TEST_CASE("ImmediateShiftBoundaries", "[compile][x64-compile][native]") {
+    ImmediateShiftBoundaries();
 }
 
 TEST_CASE("FunctionLoop", "[compile][x64-compile][native]") { CHECK_NOTHROW(FunctionLoop()); }

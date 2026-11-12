@@ -33,39 +33,46 @@ void Writer::MergeFlags(const Reg64& r, u64 selected) {
     or_(rbx, r11);
 }
 
-void Writer::PackFlags(const Reg64& native, const Reg64& result) {
-    // ZF/SF remain adjacent in the portable snapshot. Move them together;
-    // every packed arithmetic bit fits in 32 bits, including the parity byte.
-    mov(r10d, native.cvt32());
-    and_(r10d, 0xc0);
-    shl(r10d, 24);
-    mov(r11d, result.cvt32());
-    and_(r11d, 255);
-    or_(r10d, r11d);
-    const auto put = [&](unsigned src, unsigned shift) {
+void Writer::PackFlags(const Reg64& native, const Reg64& result, u64 selected) {
+    // Liveness already names the required flags. A named snapshot still asks
+    // for all flags below, but ordinary ARM NZCV writes need no parity or AF.
+    const auto zs = ((selected & 4) ? 0x40 : 0) | ((selected & 8) ? 0x80 : 0);
+    if (zs) {
+        mov(r10d, native.cvt32());
+        and_(r10d, zs);
+        shl(r10d, 24);
+    } else
+        xor_(r10d, r10d);
+    if (selected & 16) {
+        mov(r11d, result.cvt32());
+        and_(r11d, 255);
+        or_(r10d, r11d);
+    }
+    const auto put = [&](u64 flag, unsigned src, unsigned shift) {
+        if (!(selected & flag)) return;
         mov(r11d, native.cvt32());
         and_(r11d, 1u << src);
         shl(r11d, shift);
         or_(r10d, r11d);
     };
-    put(0, 29);
-    put(11, 17);
-    put(4, 22);
+    put(1, 0, 29);
+    put(2, 11, 17);
+    put(64, 4, 22);
 }
 
 void Writer::CaptureFlags(OpContext& c) {
-    if (!c.operation.flag_outputs && allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX)
-        return;
+    const auto off = allocation.homes[c.node.value].auxiliary_offset;
+    if (!c.operation.flag_outputs && off == UINT32_MAX) return;
     pushfq();
     pop(rdx);
-    PackFlags(rdx, c.destination);
+    PackFlags(
+            rdx, c.destination, off == UINT32_MAX ? c.operation.flag_outputs : FlagBits(Flag::All));
     if (c.operation.opcode == OpCode::And || c.operation.opcode == OpCode::Or ||
         c.operation.opcode == OpCode::Xor || c.operation.opcode == OpCode::Not ||
         c.operation.opcode == OpCode::AndNot) {
         mov(r11, ~f::Auxiliary);
         and_(r10, r11);
     }
-    const auto off = allocation.homes[c.node.value].auxiliary_offset;
     if (off != UINT32_MAX) mov(qword[rsp + off], r10);
     if (c.operation.Metadata().profile == FlagProfile::ArithmeticRaw &&
         (c.operation.opcode == OpCode::Sub || c.operation.opcode == OpCode::Sbb ||

@@ -159,21 +159,31 @@ void Writer::Handle(Op<OpCode::SignedDiv64>, OpContext& c) {
 
 void Writer::Shift(OpContext& c) {
     Read(c.Arg(0), rax);
-    Read(c.Arg(1), rcx);
-    and_(ecx, c.width - 1);
     const auto op = c.operation.opcode;
+    const bool immediate = c.Arg(1).Kind() == OperandKind::Immediate;
+    if (!immediate) {
+        Read(c.Arg(1), rcx);
+        and_(ecx, c.width - 1);
+    }
     if (op == OpCode::AsrImm || op == OpCode::AsrValue)
         Sign(rax, std::min(c.width, TypeBits(View(c.Arg(0)))));
     else
         Mask(rax, c.width);
-    if (op == OpCode::LslImm || op == OpCode::LslValue)
-        shl(R(rax, c.width), cl);
-    else if (op == OpCode::LsrImm || op == OpCode::LsrValue)
-        shr(R(rax, c.width), cl);
-    else if (op == OpCode::AsrImm || op == OpCode::AsrValue)
-        sar(R(rax, c.width), cl);
-    else
-        ror(R(rax, c.width), cl);
+    const auto shift = [&](auto amount) {
+        if (op == OpCode::LslImm || op == OpCode::LslValue)
+            shl(R(rax, c.width), amount);
+        else if (op == OpCode::LsrImm || op == OpCode::LsrValue)
+            shr(R(rax, c.width), amount);
+        else if (op == OpCode::AsrImm || op == OpCode::AsrValue)
+            sar(R(rax, c.width), amount);
+        else
+            ror(R(rax, c.width), amount);
+    };
+    if (immediate) {
+        const auto amount = c.Arg(1).Payload() & (c.width - 1);
+        if (amount) shift(static_cast<int>(amount));
+    } else
+        shift(cl);
 }
 
 #define SH(name)                                                                                   \
