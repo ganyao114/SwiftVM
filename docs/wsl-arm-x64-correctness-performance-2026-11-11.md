@@ -228,3 +228,54 @@ LDRD/STRD 专门循环每次读两 word、修改数据、再写两 word，重复
 整理提交时，远端 `dev` 已新增 `71a9b2c0`（LoongArch64 bitfield、mask-select 和 rotate 优化）。该提交与本系列没有文件重叠，已先快进合入，再在 WSL 完成构建与完整 CTest：**38 total / 31 passed / 7 skipped / 0 failed**。上述证据记录的 19 个源码哈希与合入后的文件全部一致。
 
 集成构建的二进制哈希和测试结果另存于 `verification-summary.json` 的 `integration_check`，本机日志为 `push-integration-build.log`、`push-integration-ctest.xml` 和 `push-integration-summary.json`。前文差分矩阵和性能测量仍绑定原二进制哈希；此次集成检查没有重新运行这些矩阵或性能采样。
+
+## 后续：ARM64 → x64 按需标志位与常量移位优化
+
+本轮单独以已提交的 `67768e23` 为基线，在 WSL 的 AMD Ryzen 9 7950X3D 上测量。基线与候选 runner 均复制到同一 Linux 文件系统，使用相同 guest ELF、CPU2、pin=0、Release/IPO 配置。每组先预热，再交错运行 31 对新进程，普通 wall time 与 `--decode-timing` 分开采样。整数、访存与新增移位循环各 12,000,000 次；FP 循环仍为 100,000 次。所有结果均检查完整输出、无 fallback 和无解释步数。
+
+### 实现与正确性
+
+- `PackFlags` 直接使用已有 `flag_outputs`，只打包需要的标志位。ARM 的 NZCV 更新不再生成 PF 源字节和 AF；只要求 ZF 时也不计算 CF、OF、SF。存在命名 snapshot 的 producer 仍保存全部算术标志，后续 `SaveFlags` 不受影响；未选中的标志和保留位继续由原来的合并路径保留。
+- `Shift` 对立即数计数直接发射 x64 immediate shift/rotate；计数按原位宽截断，零计数不发射移位。寄存器计数仍使用原来的 CL 路径；输入截断、符号扩展和结果截断保持原合同。
+- 两处均为现有 x64 emitter 内的局部选择，没有新增 IR pass、分析表、宿主特性要求或 guest 浮点语义。
+
+永久回归覆盖 51,840 组算术结果和选定标志位检查，以及 5,376 组 immediate/variable shift、四种位宽、两种 scope、边界计数和 guest flags 保留检查。另专门验证 producer 当时只写 ZF、后续仍可恢复完整命名 snapshot。WSL 完整构建与 CTest 为 **38 total / 31 passed / 7 skipped / 0 failed**。
+
+严格差分使用相同输入的既有独立 Unicorn 参考观察，重新运行 A64/A32 × Block/Function × Known/Unknown/EarlyOff × opt on/off：**4,224/4,224 agreement**，且每次均实际原生执行。未改比较器、掩码或 oracle 分类。四个正式 ARM64 微基准的完整输出另与 QEMU 一致；新增 shift workload 的 A64/A32 短输入也分别通过 QEMU 与两种 scope。上述为有限覆盖，不代表整个 ISA 的证明。
+
+### 最终性能
+
+表中的比例为候选中位数／基线中位数；小于 1 表示耗时下降。
+
+| 工作负载 | Scope | wall time 比例 | compile_ns 比例 | native bytes 前→后 |
+| --- | --- | ---: | ---: | ---: |
+| A64 integer | Block | 0.892 | 0.923 | 1224→1144 |
+| A64 integer | Function | 0.867 | 0.916 | 716→668 |
+| A64 memory | Block | 0.901 | 0.936 | 1264→1208 |
+| A64 memory | Function | 0.888 | 0.916 | 732→700 |
+| A64 shift | Block | 0.867 | 0.935 | 1272→1184 |
+| A64 shift | Function | 0.848 | 0.920 | 732→684 |
+| A64 FP | Block | 0.989 | 0.953 | 1452→1404 |
+| A64 FP | Function | 0.989 | 0.946 | 864→832 |
+| A64 综合编译程序 | Block | 0.943 | 0.947 | 72664→66636 |
+| A64 综合编译程序 | Function | 0.939 | 0.960 | 49332→43872 |
+
+综合程序沿用前文的 freestanding C：SHA256、排序、整数混合和 FP 矩阵，由 Clang/LLD 编译成完整静态 ELF。基线与候选每次输出的全部 56 字节均与 QEMU 一致，SHA256 字段还与 Python 独立计算一致。Block wall time 为 32.334→30.502 ms，Function 为 32.219→30.259 ms；31 对样本中分别有 29 对和 27 对候选更快。所有 workload 的 spill slots 未增加，综合程序生成代码减少约 8.3%／11.1%。
+
+为辨别改动贡献，先单独测量 flags 优化：3,000,000 次循环、11 对样本中，整数／访存 wall time 比例为 0.906–0.923。随后在 flags 候选上单独加入 immediate shift，shift 循环的额外比例为 0.966–0.968。它们绑定各自输入和构建，不与最终比例相加。FP helper 没有修改，约 1% 的 wall time 差异不作为 FP 算术加速结论。compile 中位数均未退化，但不把编译计时差异全部归因于 emitter；没有使用 PMU，也不将这些 WSL 结果外推为一般应用吞吐。
+
+### 复现与证据
+
+基准工具新增 `--isa arm64|arm32|both` 和可重复的 `--workload`；默认仍运行原有两种 guest 的 integer/memory/FP 三项。新增 shift 预期由 Python 的定宽整数运算独立计算。
+
+```sh
+WORK="$HOME/.cache/SwiftVM/arm64-x64-perf-20261111"
+python3 tools/bench_arm_x64.py \
+  --baseline "$WORK/baseline/svm_rebuild_linux" \
+  --candidate "$WORK/candidate/svm_rebuild_linux" \
+  --out build/arm64-x64-perf/reproduce --isa arm64 --cpu 2 \
+  --samples 31 --iterations 12000000 \
+  --workload integer --workload memory --workload fp --workload shift
+```
+
+可审阅的精简证据为 `docs/evidence/arm64-x64-perf-20261111/summary.json`，包含基线／候选哈希、源码哈希、各组中位数、配对样本分布、代码体积、差分配置和限制。全部逐样本记录在上述 Linux cache 的 `final-benchmark/summary.json`、`flags-screen/summary.json`、`shift-screen/summary.json`、`compiled-program/summary.json`；完整 case observations 位于 `correctness/`。综合程序源码与 ELF 保留在 `compiled-program/`；其构建和测量脚本为本机 `build/arm64-x64-perf/bench_programs.py`。CTest 日志与 JUnit 位于 `build/arm64-x64-perf/final-ctest.log` 和 `final-ctest.xml`。

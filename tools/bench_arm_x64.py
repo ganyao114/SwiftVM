@@ -23,12 +23,14 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def build_programs(out: Path, clang: str, iterations: int) -> dict:
+def build_programs(out: Path, clang: str, iterations: int,
+                   isas: tuple[str, ...] = ("arm64", "arm32"),
+                   workloads: tuple[str, ...] = ("integer", "memory", "fp")) -> dict:
     programs = {}
-    for isa in ("arm64", "arm32"):
+    for isa in isas:
         bits = 64 if isa == "arm64" else 32
         mask = (1 << bits) - 1
-        for workload in ("integer", "memory", "fp"):
+        for workload in workloads:
             count = min(iterations, 100_000) if workload == "fp" else iterations
             if isa == "arm64":
                 header = f""".text
@@ -43,6 +45,7 @@ _start:
                     "integer": "1: adds x0,x0,#3\n eor x0,x0,x0,lsr #7\n",
                     "memory": "1: str x0,[x4]\n ldr x3,[x4]\n add x0,x3,#3\n",
                     "fp": " fmov d0,#1.0\n fmov d1,#1.5\n1: fadd d0,d0,d1\n",
+                    "shift": "1: ror x0,x0,#13\n eor x0,x0,x0,lsr #7\n add x0,x0,#3\n",
                 }[workload]
                 tail = " subs x1,x1,#1\n b.ne 1b\n"
                 tail += " str d0,[x4]\n" if workload == "fp" else " str x0,[x4]\n"
@@ -74,6 +77,7 @@ _start:
                     "integer": "1: adds r0,r0,#3\n eor r0,r0,r0,lsr #7\n",
                     "memory": "1: str r0,[r4]\n ldr r3,[r4]\n add r0,r3,#3\n",
                     "fp": " vmov.f64 d0,#1.0\n vmov.f64 d1,#1.5\n1: vadd.f64 d0,d0,d1\n",
+                    "shift": "1: ror r0,r0,#13\n eor r0,r0,r0,lsr #7\n add r0,r0,#3\n",
                 }[workload]
                 tail = " subs r1,r1,#1\n bne 1b\n"
                 tail += " vstr d0,[r4]\n" if workload == "fp" else " str r0,[r4]\n"
@@ -105,6 +109,11 @@ result: .quad 0
                     for _ in range(count):
                         value = (value + 3) & mask
                         value ^= value >> 7
+                elif workload == "shift":
+                    for _ in range(count):
+                        value = ((value >> 13) | (value << (bits - 13))) & mask
+                        value ^= value >> 7
+                        value = (value + 3) & mask
                 else:
                     value = (count * 3) & mask
                 expected = value.to_bytes(bits // 8, "little")
@@ -143,6 +152,9 @@ def main() -> int:
     parser.add_argument("--iterations", type=int, default=3_000_000)
     parser.add_argument("--samples", type=int, default=9)
     parser.add_argument("--cpu", type=int)
+    parser.add_argument("--isa", choices=("arm64", "arm32", "both"), default="both")
+    parser.add_argument("--workload", action="append",
+                        choices=("integer", "memory", "fp", "shift"))
     args = parser.parse_args()
     if not 0 < args.iterations < 2**32 or args.samples < 3:
         parser.error("iterations must be in 1..2^32-1 and samples must be at least 3")
@@ -151,7 +163,9 @@ def main() -> int:
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
     runners = {"baseline": args.baseline.resolve(), "candidate": args.candidate.resolve()}
-    programs = build_programs(args.out, args.clang, args.iterations)
+    isas = ("arm64", "arm32") if args.isa == "both" else (args.isa,)
+    workloads = tuple(args.workload) if args.workload else ("integer", "memory", "fp")
+    programs = build_programs(args.out, args.clang, args.iterations, isas, workloads)
     result = {"schema_version": 1, "runners": {key: {"path": str(path), "sha256": digest(path)}
               for key, path in runners.items()}, "affinity": sorted(os.sched_getaffinity(0)),
               "samples": args.samples, "workloads": {}}
