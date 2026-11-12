@@ -1,0 +1,2779 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-11",
+  "environment": {
+    "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "host_compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "guest_compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+    "build": "Release with IPO for both runners and JIT libraries",
+    "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor",
+    "affinity": [
+      2
+    ]
+  },
+  "swiftvm_commit": "da0a692074dc00b56355bf160287b76f2fa5379c",
+  "dynarmic_commit": "9d4582339990d4eae53f1dc7160686920fc2075c",
+  "production_runtime_modified": false,
+  "original_runners": {
+    "swiftvm": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/runners/svm_arm64_compare_bench",
+      "sha256": "a4eebafc5d907728fab5733b0b51878b98a2189b1f85e837ecb03fea68f14dd2"
+    },
+    "dynarmic": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/runners/dynarmic_arm64_compare_bench",
+      "sha256": "a9808d5b0a8c3daa96330e4cc4a7480fbe226ba0bf7097f8584731db2a66b383"
+    }
+  },
+  "diagnostic_build": {
+    "source_sha256": {
+      "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compare.cpp": "f2d24f7fb56fa4a5dbbbf802b60dc2d573e75fd860aec84237f55a7932464cb6",
+      "/mnt/d/Dev/SwiftVM/benchmarks/arm64_gap_metrics.h": "b9256e5eef9d6065d1a10b6b8a26a8daa3b6cdfea2bd0d1d565e5f458f5030d5",
+      "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/diagnostic_runner.cpp": "d03ddaec059569b9a4771ad657868f961ec5e65aade49be26ea31dfd552cd0c4"
+    },
+    "runners": {
+      "swiftvm": {
+        "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/swiftvm_gap_probe",
+        "sha256": "37edc7168f2b0b37d575858ccf3baa65b49f6fd0882f98cf8077bb6ba2bea365"
+      },
+      "dynarmic": {
+        "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/dynarmic_gap_probe",
+        "sha256": "e985cb0000332cf4d7d6e7d3505b060bc1178b1ec7614247722ea7d72401b390"
+      }
+    },
+    "commands": {
+      "swiftvm": {
+        "cwd": "/mnt/d/Dev/SwiftVM/build/host",
+        "argv": [
+          "/usr/bin/c++",
+          "-I/mnt/d/Dev/SwiftVM/source",
+          "-isystem",
+          "/mnt/d/Dev/SwiftVM/source/runtime/externals/fmt/include",
+          "-DNDEBUG",
+          "-std=gnu++20",
+          "-O3",
+          "-DNDEBUG",
+          "-flto=auto",
+          "-fno-fat-lto-objects",
+          "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/diagnostic_runner.cpp",
+          "-o",
+          "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/swiftvm_gap_probe",
+          "/mnt/d/Dev/SwiftVM/build/host/libsvm_ir_format.a",
+          "libsvm_execution.a",
+          "libsvm_base.a",
+          "libsvm_x86_ir.a",
+          "source/runtime/externals/distorm/libdistorm.a",
+          "libsvm_arm64_ir.a",
+          "libsvm_aarch64_decode.a",
+          "libsvm_arm32_ir.a",
+          "libsvm_ir_direct.a",
+          "libsvm_ir_optimize.a",
+          "libsvm_disk_cache.a",
+          "libsvm_aot_artifact.a",
+          "libsvm_code_image.a",
+          "libsvm_artifact_file.a",
+          "libsvm_base.a",
+          "source/runtime/externals/fmt/libfmt.a",
+          "libsvm_x64.a",
+          "libsvm_x87.a",
+          "libsvm_cephes.a",
+          "libsvm_system_query.a",
+          "libsvm_arm32_numeric.a",
+          "libsvm_arm64_numeric.a",
+          "libsvm_vixl_exact.a",
+          "libsvm_allocation.a",
+          "libsvm_ir.a",
+          "source/runtime/externals/SoftFloat-3e/libsvm_softfloat_ext80.a",
+          "-latomic",
+          "-latomic"
+        ]
+      },
+      "dynarmic": {
+        "cwd": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/runner-build",
+        "argv": [
+          "/usr/bin/c++",
+          "-DSVM_BENCH_DYNARMIC=1",
+          "-I/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/dynarmic/src/dynarmic/..",
+          "-DNDEBUG",
+          "-std=gnu++20",
+          "-O3",
+          "-DNDEBUG",
+          "-flto=auto",
+          "-fno-fat-lto-objects",
+          "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/diagnostic_runner.cpp",
+          "-o",
+          "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/dynarmic_gap_probe",
+          "dynarmic/src/dynarmic/libdynarmic.a",
+          "dynarmic/externals/zydis/libZydis.a",
+          "dynarmic/externals/zydis/zycore/libZycore.a",
+          "-lrt",
+          "dynarmic/externals/mcl/src/libmcl.a",
+          "dynarmic/externals/fmt/libfmt.a"
+        ]
+      }
+    }
+  },
+  "source_sha256": {
+    "benchmarks/arm64_gap_metrics.h": "b9256e5eef9d6065d1a10b6b8a26a8daa3b6cdfea2bd0d1d565e5f458f5030d5",
+    "tools/analyze_dynarmic_gap.py": "0cd32fdf40fabc766c6cf4f8416cf5fa8412273f9d98d19749101ce162c560d9",
+    "tools/summarize_dynarmic_gap.py": "40afee4e17df61beb6178e346ca59308f39232d35efc83b0963f66db162957e1",
+    "source/runtime/backend/x64/emit_flags.cpp": "cb6b593262360fd81ca30903525f54514e1541f2bc651f80a6e2612d5fd195fc",
+    "source/runtime/backend/x64/emit_control.cpp": "7f43bc5bd795e79f77f501d0f1de5fa047f2ddd84a386591af7ae2d036a7688e",
+    "source/runtime/backend/x64/emit.cpp": "1a948dd929a9e9a83f47646fe488db6b404266b5d71043cf16b9515e6c82324b",
+    "source/runtime/backend/x64/emit_calls.cpp": "a55f20ae9aa510536070b769fd34e2fd9d61f6a2736661c55f6770192a623bd5",
+    "source/runtime/backend/x64/emit_memory.cpp": "1ba51bd4b631e6d5bf5a3e00f2be30cdffde122be34eb75340936754501a083b",
+    "source/runtime/backend/x64/emit_float.cpp": "1295aef1f2d9ac3ca6a78e58296720ac198089967bc594c53cf82c507bb2136b",
+    "source/runtime/frontend/arm64/semantics_float.inc": "98e0f2577e4bab756cc927246f1f76d82ad28f05b3b834b862b5758a5d8e094d",
+    "source/runtime/frontend/arm64/sink.h": "69f07d2f4f9da03924713eb43d453c386d3aa46b26df43073e5986aa937992b0",
+    "source/runtime/arch/arm64/fp_scalar.cpp": "8e36ef123fe9468f880ddb065412eb0c7975963bdc715536e26dbcddde16141c",
+    "source/runtime/arch/arm64/fp_vector.cpp": "bbc85b775683703f1c1deac07bce1eeee2000f278c788e1d172d4c844cac3811"
+  },
+  "protocol": {
+    "pmu": "Pinned current-thread group: userspace retired instructions, cycles, branches, branch misses; all enabled/running times equal; no multiplex scaling",
+    "timing": "Same callable kernels and full output validation as comparison; 21 fresh process pairs, three warm invocations per process",
+    "sampling": "Separate diagnostic runs, 3 fresh processes per engine/kernel, 60 warm invocations each; PERF_COUNT_SW_CPU_CLOCK 250 us IP sampling",
+    "sample_timing_not_headline": true,
+    "variants": "Alternate guest kernels identify sensitivities; output contract is checked, final NZCV is not part of that contract",
+    "isolated_phases": "Compute phases separately recompiled; their timings and differences are not an exact additive partition of the original workload",
+    "scalar_controls": "Disabling vectorizers occurs after -O2; both code generation and full output are checked",
+    "code_dumps": "SwiftVM compile/publication callbacks observe IR and actual published bytes without changing IR; Dynarmic public disassembly API; diagnostic hooks run outside warm timers"
+  },
+  "validation": {
+    "ordinary_processes": 966,
+    "sampling_processes": 30,
+    "verified_kernel_executions": 5694,
+    "pmu_records": 5694,
+    "all_pmu_records_unmultiplexed": true,
+    "ip_samples": 174700,
+    "lost_ip_samples": 0,
+    "warm_additional_compiles": 0,
+    "fallbacks": 0,
+    "interpreted_steps": 0,
+    "controlled_guest_programs_qemu_verified": 18
+  },
+  "measurements": {
+    "baseline": {
+      "samples": 21,
+      "workloads": {
+        "integer": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer",
+            "sha256": "e02088f59fdd5827a327a473263a4d1375cef1dcbb1b58e76c649193d3cf73f9",
+            "iterations": 12000000,
+            "expected_hex": "45eb750400000000",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer.S": "30523a7323af85e4627f785ac3a13c366f65e429ef4b2fca9a6857707484af44"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 182176661,
+              "instructions": 564005518,
+              "branches": 24001496,
+              "branch_misses": 296,
+              "warm_ns": 39625669,
+              "instructions_per_cycle": 3.0959263107802815,
+              "branch_miss_fraction": 1.2332564603473051e-05
+            },
+            "dynarmic": {
+              "cycles": 60020855,
+              "instructions": 276000582,
+              "branches": 24000131,
+              "branch_misses": 120,
+              "warm_ns": 13056622,
+              "instructions_per_cycle": 4.598411368848378,
+              "branch_miss_fraction": 4.9999727084823e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 3.0349097186086875,
+            "instruction_ratio": 2.0434939445163924,
+            "cycles_ratio": 3.0352226905131556,
+            "dynarmic_IPC_over_swiftvm_IPC": 1.485310342444623,
+            "paired_wall_ratio": {
+              "median": 3.0355285302619324,
+              "q1": 3.015856076458352,
+              "q3": 3.046602436988386,
+              "min": 2.9874321972321263,
+              "max": 3.145320589046692
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "memory": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory",
+            "sha256": "03248da6504bd9988633a6c3d620f12356f56876af9a7b660597f05f53852b38",
+            "iterations": 12000000,
+            "expected_hex": "0051250200000000",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory.S": "c88a96a4fff4c116aa9a20eb0f701f7f69467c62e004b175184d01cda4ec9ebf"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 183508860,
+              "instructions": 612005518,
+              "branches": 24001495,
+              "branch_misses": 285,
+              "warm_ns": 39536913,
+              "instructions_per_cycle": 3.3350189086238125,
+              "branch_miss_fraction": 1.1874260332533453e-05
+            },
+            "dynarmic": {
+              "cycles": 72486105,
+              "instructions": 276000591,
+              "branches": 24000133,
+              "branch_misses": 235,
+              "warm_ns": 15509526,
+              "instructions_per_cycle": 3.8076344562864843,
+              "branch_miss_fraction": 9.79161240481459e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.54920189050265,
+            "instruction_ratio": 2.2174065489591652,
+            "cycles_ratio": 2.5316418919184582,
+            "dynarmic_IPC_over_swiftvm_IPC": 1.1417130039174788,
+            "paired_wall_ratio": {
+              "median": 2.5492784962670667,
+              "q1": 2.531140503647437,
+              "q3": 2.566319193792908,
+              "min": 2.4838803841560155,
+              "max": 2.646359310471849
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "shift": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift",
+            "sha256": "e5d2a2bffc3f67cb2ed10518804e4dc8127c01b1a6ab007e9dd6ff6cbf6c9797",
+            "iterations": 12000000,
+            "expected_hex": "ea944fb23999ab2a",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift.S": "6a5f5fd2a562950affdc654c74b1a5d021f532904b71112e5763d8f2d5da4df7"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 189932600,
+              "instructions": 600005518,
+              "branches": 24001496,
+              "branch_misses": 369,
+              "warm_ns": 39991527,
+              "instructions_per_cycle": 3.159044408384869,
+              "branch_miss_fraction": 1.5374041684734985e-05
+            },
+            "dynarmic": {
+              "cycles": 72087139,
+              "instructions": 312000589,
+              "branches": 24000133,
+              "branch_misses": 136,
+              "warm_ns": 15270110,
+              "instructions_per_cycle": 4.328103366676822,
+              "branch_miss_fraction": 5.666635264062912e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.6189416448211573,
+            "instruction_ratio": 1.9230909785237618,
+            "cycles_ratio": 2.634764018031011,
+            "dynarmic_IPC_over_swiftvm_IPC": 1.3700672757840906,
+            "paired_wall_ratio": {
+              "median": 2.626934536023949,
+              "q1": 2.5932718009346254,
+              "q3": 2.637605312034151,
+              "min": 2.527972488439529,
+              "max": 2.6848262371387395
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "fp": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp",
+            "sha256": "920a46ba03cfd07aac6cb0f23c22e52c00d968fbdf04ef26ec42f5eead7325bd",
+            "iterations": 1000000,
+            "expected_hex": "0000000061e33641",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp.S": "499b7ea686c0cfbc5b9ceaa5a0cbeded51200d74f97ff9070031c7489c5b725b"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 87681823,
+              "instructions": 446005404,
+              "branches": 56001452,
+              "branch_misses": 542,
+              "warm_ns": 19212386,
+              "instructions_per_cycle": 5.086634706488709,
+              "branch_miss_fraction": 9.678320483547462e-06
+            },
+            "dynarmic": {
+              "cycles": 20006477,
+              "instructions": 28000584,
+              "branches": 3000122,
+              "branch_misses": 56,
+              "warm_ns": 4370125,
+              "instructions_per_cycle": 1.3995759473294573,
+              "branch_miss_fraction": 1.866590758642482e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 4.396301249964246,
+            "instruction_ratio": 15.928432206985397,
+            "cycles_ratio": 4.382671821730533,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.27514772105496466,
+            "paired_wall_ratio": {
+              "median": 4.382271015076439,
+              "q1": 4.34441106831434,
+              "q3": 4.428719647934373,
+              "min": 4.237634618108887,
+              "max": 5.026721668374993
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "compute": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute",
+            "sha256": "379a2978279e16c6805cc30dd97776ac9c16334d3db2003ce1c6204797fcba96",
+            "iterations": null,
+            "expected_hex": "16c4eb36ad9a07bfd37dcfef3020390484f680dd6136627bead3f21f59f53cceeb8f34033c3d050029532df90000000000000000005ba040",
+            "symbols": {
+              "bench_entry": 4260200,
+              "benchmark_output": 4394128
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compute.c",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute"
+            ],
+            "sources": {
+              "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compute.c": "8034c10da3f75f06b1ab4b780807613ce4f4502f79f87b1f017f327f78aac4aa",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 82743682,
+              "instructions": 414238399,
+              "branches": 35701715,
+              "branch_misses": 64354,
+              "warm_ns": 18134022,
+              "instructions_per_cycle": 5.006284334796704,
+              "branch_miss_fraction": 0.0018025464603030974
+            },
+            "dynarmic": {
+              "cycles": 18283933,
+              "instructions": 81727830,
+              "branches": 3982442,
+              "branch_misses": 3080,
+              "warm_ns": 4001360,
+              "instructions_per_cycle": 4.469926136789059,
+              "branch_miss_fraction": 0.0007733948165472341
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 4.531964632025112,
+            "instruction_ratio": 5.0685109221669045,
+            "cycles_ratio": 4.525485955346697,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.8928630173321098,
+            "paired_wall_ratio": {
+              "median": 4.517999878112306,
+              "q1": 4.459466409963191,
+              "q3": 4.574286643959111,
+              "min": 4.428089752553491,
+              "max": 4.7105152598139615
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        }
+      }
+    },
+    "controlled_variants": {
+      "samples": 21,
+      "workloads": {
+        "empty-subs": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/empty-subs",
+            "sha256": "73559086f816f934c6b086a32176842d5b46f983b5f08035e0b30f5cf9378f0f",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325456
+            },
+            "iterations": 12000000,
+            "expected_hex": "0000000000000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/empty-subs.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/empty-subs"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/empty-subs.S": "0ee4509dd1f2c1ef9d61e55a75e1ab590b077abab197e22d27ea7b080945030b"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "empty",
+              "unroll": 1,
+              "add_without_flags": false,
+              "counter_uses_cbnz": false
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 175681025,
+              "instructions": 444005517,
+              "branches": 24001495,
+              "branch_misses": 313,
+              "warm_ns": 39052175,
+              "instructions_per_cycle": 2.5273390623717047,
+              "branch_miss_fraction": 1.3040854330115687e-05
+            },
+            "dynarmic": {
+              "cycles": 36362942,
+              "instructions": 192000584,
+              "branches": 24000126,
+              "branch_misses": 164,
+              "warm_ns": 8064851,
+              "instructions_per_cycle": 5.280116883831897,
+              "branch_miss_fraction": 6.833297458521676e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 4.842268629637423,
+            "instruction_ratio": 2.3125217004548277,
+            "cycles_ratio": 4.831320441563832,
+            "dynarmic_IPC_over_swiftvm_IPC": 2.0892000453935657,
+            "paired_wall_ratio": {
+              "median": 4.841290188263986,
+              "q1": 4.825613532013988,
+              "q3": 4.858196154735537,
+              "min": 4.685836001344271,
+              "max": 4.927768953367702
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "empty-cbnz": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/empty-cbnz",
+            "sha256": "8a0b21513c84f8559fa0ca8bbb6e5dac0b1749805914936d8c245309faeb9b5b",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325456
+            },
+            "iterations": 12000000,
+            "expected_hex": "0000000000000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/empty-cbnz.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/empty-cbnz"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/empty-cbnz.S": "a80af0da7150a0b4cb7b15c5ec10c8b7d0c47c88e74317a69c2a473df279d4c6"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "empty",
+              "unroll": 1,
+              "add_without_flags": false,
+              "counter_uses_cbnz": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 48189617,
+              "instructions": 204005490,
+              "branches": 24001467,
+              "branch_misses": 201,
+              "warm_ns": 10766140,
+              "instructions_per_cycle": 4.233390981297901,
+              "branch_miss_fraction": 8.374488109414312e-06
+            },
+            "dynarmic": {
+              "cycles": 36070754,
+              "instructions": 132000582,
+              "branches": 24000126,
+              "branch_misses": 90,
+              "warm_ns": 8013218,
+              "instructions_per_cycle": 3.659490511343345,
+              "branch_miss_fraction": 3.7499803126033588e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 1.3435476234391726,
+            "instruction_ratio": 1.545489322160716,
+            "cycles_ratio": 1.3359747622686236,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.8644348059298304,
+            "paired_wall_ratio": {
+              "median": 1.3434295966444396,
+              "q1": 1.335588254300677,
+              "q3": 1.359183481125684,
+              "min": 1.291193728018045,
+              "max": 1.3732434817027455
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "integer-add": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-add",
+            "sha256": "e0660e5d0ba4d3d9663c3ea893539e30e0c203e9e588bd050d9d4f62dfd885dc",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "iterations": 12000000,
+            "expected_hex": "45eb750400000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-add.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-add"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-add.S": "e44b98ce530936a3261121515d051a7121dfa47c1dd88c384a8b06743b439757"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "integer",
+              "unroll": 1,
+              "add_without_flags": true,
+              "counter_uses_cbnz": false
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 182753280,
+              "instructions": 564005518,
+              "branches": 24001496,
+              "branch_misses": 324,
+              "warm_ns": 40527706,
+              "instructions_per_cycle": 3.086158114371463,
+              "branch_miss_fraction": 1.3499158552450231e-05
+            },
+            "dynarmic": {
+              "cycles": 60182824,
+              "instructions": 276000582,
+              "branches": 24000131,
+              "branch_misses": 125,
+              "warm_ns": 13371234,
+              "instructions_per_cycle": 4.586035743354283,
+              "branch_miss_fraction": 5.208304904669062e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 3.0309622881478253,
+            "instruction_ratio": 2.0434939445163924,
+            "cycles_ratio": 3.036635170194074,
+            "dynarmic_IPC_over_swiftvm_IPC": 1.4860015506004913,
+            "paired_wall_ratio": {
+              "median": 3.0354533862426836,
+              "q1": 2.999856443528855,
+              "q3": 3.059268151315319,
+              "min": 2.939797353993254,
+              "max": 3.089759214519174
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "integer-cbnz": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-cbnz",
+            "sha256": "2850c8b571767837f09c60bdc34cea26230fac7b11f6cc9484d2fdef20ae9a47",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "iterations": 12000000,
+            "expected_hex": "45eb750400000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-cbnz.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-cbnz"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-cbnz.S": "8b833debf2cfdaec71767fdfd4b9a20f5737360da5c44011c257d6898020211b"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "integer",
+              "unroll": 1,
+              "add_without_flags": true,
+              "counter_uses_cbnz": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 52063106,
+              "instructions": 324005490,
+              "branches": 24001468,
+              "branch_misses": 218,
+              "warm_ns": 11698387,
+              "instructions_per_cycle": 6.2233223273309894,
+              "branch_miss_fraction": 9.082777770093063e-06
+            },
+            "dynarmic": {
+              "cycles": 48035487,
+              "instructions": 216000577,
+              "branches": 24000128,
+              "branch_misses": 108,
+              "warm_ns": 10709022,
+              "instructions_per_cycle": 4.496687563509036,
+              "branch_miss_fraction": 4.499976000128e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 1.0923861207867533,
+            "instruction_ratio": 1.5000214096650306,
+            "cycles_ratio": 1.0838467402235352,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.7225541803870443,
+            "paired_wall_ratio": {
+              "median": 1.0927029257891052,
+              "q1": 1.0799817105857672,
+              "q3": 1.103966460429057,
+              "min": 1.0693836580334908,
+              "max": 1.1188164918918369
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "integer-u8": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-u8",
+            "sha256": "ac5fd2f6a7a1d33b4eec040d64c8ac4ce108f5dd7b0b31b414422307c6780731",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325520
+            },
+            "iterations": 12000000,
+            "expected_hex": "45eb750400000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-u8.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-u8"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-u8.S": "e22f36cb8750e1385247fe35df9f73045bda964ff506d99c453a8d3a5f29d11f"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "integer",
+              "unroll": 8,
+              "add_without_flags": false,
+              "counter_uses_cbnz": false
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 42957781,
+              "instructions": 165005488,
+              "branches": 3001466,
+              "branch_misses": 180,
+              "warm_ns": 9605751,
+              "instructions_per_cycle": 3.841108273260204,
+              "branch_miss_fraction": 5.997069432070861e-05
+            },
+            "dynarmic": {
+              "cycles": 36076959,
+              "instructions": 87000542,
+              "branches": 3000126,
+              "branch_misses": 94,
+              "warm_ns": 8063549,
+              "instructions_per_cycle": 2.411526481486425,
+              "branch_miss_fraction": 3.133201738860301e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 1.191255984182647,
+            "instruction_ratio": 1.89660298897908,
+            "cycles_ratio": 1.190726219468775,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.6278204908396404,
+            "paired_wall_ratio": {
+              "median": 1.1945881413183812,
+              "q1": 1.1832590905145217,
+              "q3": 1.2031896411841618,
+              "min": 1.176682768498893,
+              "max": 1.2131621725627573
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "integer-cbnz-u8": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-cbnz-u8",
+            "sha256": "a6feffa3e5ae0d2e17080985bb7019a719ff3680a314f70a259d2ef63c30ce24",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325520
+            },
+            "iterations": 12000000,
+            "expected_hex": "45eb750400000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-cbnz-u8.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-cbnz-u8"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/integer-cbnz-u8.S": "599dd35326eaad482827cb8739df7cd02911152d017e9ed94bb692c8b9ac99ed"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "integer",
+              "unroll": 8,
+              "add_without_flags": true,
+              "counter_uses_cbnz": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 36154851,
+              "instructions": 135005501,
+              "branches": 3001476,
+              "branch_misses": 219,
+              "warm_ns": 8153630,
+              "instructions_per_cycle": 3.734090924617557,
+              "branch_miss_fraction": 7.29641016619823e-05
+            },
+            "dynarmic": {
+              "cycles": 36083469,
+              "instructions": 79500552,
+              "branches": 3000137,
+              "branch_misses": 96,
+              "warm_ns": 8128442,
+              "instructions_per_cycle": 2.2032402704961656,
+              "branch_miss_fraction": 3.199853873339784e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 1.0030987488131182,
+            "instruction_ratio": 1.698170611444308,
+            "cycles_ratio": 1.0019782466037288,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.590033910521828,
+            "paired_wall_ratio": {
+              "median": 1.009804171123453,
+              "q1": 1.0032930800827118,
+              "q3": 1.0135092309202673,
+              "min": 0.9844473586846022,
+              "max": 1.093604582607875
+            },
+            "swiftvm_faster_pairs": 4
+          }
+        },
+        "memory-cbnz": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/memory-cbnz",
+            "sha256": "0987ced13bd906d3eacd228ae2dc3e2e74ed501f5f6dd4367f05dc07376f6155",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "iterations": 12000000,
+            "expected_hex": "0051250200000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/memory-cbnz.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/memory-cbnz"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/memory-cbnz.S": "b98b5b56f6dbc4cc67099b010fd0375894b12908177f4a0ef0061ccfa53559f0"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "memory",
+              "unroll": 1,
+              "add_without_flags": false,
+              "counter_uses_cbnz": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 60484263,
+              "instructions": 372005494,
+              "branches": 24001471,
+              "branch_misses": 264,
+              "warm_ns": 13714678,
+              "instructions_per_cycle": 6.15045096937033,
+              "branch_miss_fraction": 1.0999325832987486e-05
+            },
+            "dynarmic": {
+              "cycles": 60356447,
+              "instructions": 216000589,
+              "branches": 24000133,
+              "branch_misses": 180,
+              "warm_ns": 13645234,
+              "instructions_per_cycle": 3.578749242810797,
+              "branch_miss_fraction": 7.499958437730325e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 1.0050892494771435,
+            "instruction_ratio": 1.7222429611059995,
+            "cycles_ratio": 1.0021176859532503,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.5818677785796871,
+            "paired_wall_ratio": {
+              "median": 1.0050082172348045,
+              "q1": 0.9985534658573407,
+              "q3": 1.0092574447605662,
+              "min": 0.9827686978286657,
+              "max": 1.0303356279256162
+            },
+            "swiftvm_faster_pairs": 6
+          }
+        },
+        "memory-u8": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/memory-u8",
+            "sha256": "07c357f66784157318267ffa4c72dd53701d2a6124a57c2b88496942d17f0ab3",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325552
+            },
+            "iterations": 12000000,
+            "expected_hex": "0051250200000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/memory-u8.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/memory-u8"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/memory-u8.S": "0dc03c62c1b9c89bfb7a08bd96e1c525899be668a1c9819fc9aef6cd32952b5c"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "memory",
+              "unroll": 8,
+              "add_without_flags": false,
+              "counter_uses_cbnz": false
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 51561995,
+              "instructions": 202505490,
+              "branches": 3001468,
+              "branch_misses": 202,
+              "warm_ns": 11574971,
+              "instructions_per_cycle": 3.9274176648905845,
+              "branch_miss_fraction": 6.730040100377548e-05
+            },
+            "dynarmic": {
+              "cycles": 19689795,
+              "instructions": 66000594,
+              "branches": 3000122,
+              "branch_misses": 72,
+              "warm_ns": 4401194,
+              "instructions_per_cycle": 3.3520203740059253,
+              "branch_miss_fraction": 2.3999024039689054e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.6299615513426584,
+            "instruction_ratio": 3.0682373858635272,
+            "cycles_ratio": 2.618716700707143,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.8534922078625703,
+            "paired_wall_ratio": {
+              "median": 2.62115493133506,
+              "q1": 2.600345142873352,
+              "q3": 2.646979606265343,
+              "min": 2.3538359251477354,
+              "max": 2.8382242957921817
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "shift-cbnz": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/shift-cbnz",
+            "sha256": "bdb5832d693c8218cb792a0f469f88db15312e96d85e44ff81fb5082d3bf2ef6",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "iterations": 12000000,
+            "expected_hex": "ea944fb23999ab2a",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/shift-cbnz.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/shift-cbnz"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/shift-cbnz.S": "242a51abb8267fd11f4a84ef5954de44efb75f13f229e99ae7f04af85fb0de70"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "shift",
+              "unroll": 1,
+              "add_without_flags": false,
+              "counter_uses_cbnz": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 60447259,
+              "instructions": 360005494,
+              "branches": 24001471,
+              "branch_misses": 321,
+              "warm_ns": 13727180,
+              "instructions_per_cycle": 5.955695923284131,
+              "branch_miss_fraction": 1.3374180274200694e-05
+            },
+            "dynarmic": {
+              "cycles": 62345801,
+              "instructions": 252000588,
+              "branches": 24000134,
+              "branch_misses": 185,
+              "warm_ns": 14083085,
+              "instructions_per_cycle": 4.04198172062943,
+              "branch_miss_fraction": 7.708290295379184e-06
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 0.9747281934320499,
+            "instruction_ratio": 1.4285898967823043,
+            "cycles_ratio": 0.9695481978008431,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.678674964721935,
+            "paired_wall_ratio": {
+              "median": 0.9708306495937433,
+              "q1": 0.9657111027104051,
+              "q3": 0.9854099379146756,
+              "min": 0.8392822741768106,
+              "max": 1.0651957309723854
+            },
+            "swiftvm_faster_pairs": 19
+          }
+        },
+        "shift-u8": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/shift-u8",
+            "sha256": "9a49f253333efc6557a14ecb01b3d88e335230c8d5e8356b2a2346975367b251",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325552
+            },
+            "iterations": 12000000,
+            "expected_hex": "ea944fb23999ab2a",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/shift-u8.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/shift-u8"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/shift-u8.S": "91bf91fc7aa182478506f149d72556acc111a5595d813affb20df1632fc6f9e8"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "shift",
+              "unroll": 8,
+              "add_without_flags": false,
+              "counter_uses_cbnz": false
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 52153785,
+              "instructions": 201005493,
+              "branches": 3001470,
+              "branch_misses": 204,
+              "warm_ns": 11552631,
+              "instructions_per_cycle": 3.854092143072646,
+              "branch_miss_fraction": 6.796669631880378e-05
+            },
+            "dynarmic": {
+              "cycles": 60270292,
+              "instructions": 123000588,
+              "branches": 3000132,
+              "branch_misses": 113,
+              "warm_ns": 13146993,
+              "instructions_per_cycle": 2.040816195149677,
+              "branch_miss_fraction": 3.7665009406252794e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 0.8787280102758098,
+            "instruction_ratio": 1.6341831878071997,
+            "cycles_ratio": 0.8653315467593885,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.529519305556263,
+            "paired_wall_ratio": {
+              "median": 0.866651180235663,
+              "q1": 0.8623975180543159,
+              "q3": 0.8800407935687277,
+              "min": 0.8341956157178295,
+              "max": 0.9355128447473061
+            },
+            "swiftvm_faster_pairs": 21
+          }
+        },
+        "fp-cbnz": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/fp-cbnz",
+            "sha256": "131e73468cf4b63272d9065012004cac84cb6f6472ca418b59105d4b624f12ca",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "iterations": 1000000,
+            "expected_hex": "0000000061e33641",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/fp-cbnz.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/fp-cbnz"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/fp-cbnz.S": "2cc9732c64218e9ee65a20b77bf8136cffb2dd006a126a91c883def3fb870fb6"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "fp",
+              "unroll": 1,
+              "add_without_flags": false,
+              "counter_uses_cbnz": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 76561288,
+              "instructions": 426005403,
+              "branches": 56001450,
+              "branch_misses": 599,
+              "warm_ns": 17242871,
+              "instructions_per_cycle": 5.564240285508259,
+              "branch_miss_fraction": 1.0696151617502762e-05
+            },
+            "dynarmic": {
+              "cycles": 19963780,
+              "instructions": 23000582,
+              "branches": 3000122,
+              "branch_misses": 96,
+              "warm_ns": 4443310,
+              "instructions_per_cycle": 1.1521155813177664,
+              "branch_miss_fraction": 3.1998698719585406e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 3.880636507468531,
+            "instruction_ratio": 18.521505368864144,
+            "cycles_ratio": 3.835009602389928,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.20705712230264114,
+            "paired_wall_ratio": {
+              "median": 3.843810851924185,
+              "q1": 3.794449408211446,
+              "q3": 3.9007615102684055,
+              "min": 3.738776773470628,
+              "max": 3.9967039401758484
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "fp-u8": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/fp-u8",
+            "sha256": "92eae0f5c2f7b08ce960d283a35f328c5251bed0b642b494dbec38847a6a1c75",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325504
+            },
+            "iterations": 1000000,
+            "expected_hex": "0000000061e33641",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/fp-u8.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/fp-u8"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/fp-u8.S": "0364aa07b18b409a2aa661e9d9d1dd06ec38a02e3ed271c0b8d3912a136fce99"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "family": "fp",
+              "unroll": 8,
+              "add_without_flags": false,
+              "counter_uses_cbnz": false
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 76794141,
+              "instructions": 413630472,
+              "branches": 54251520,
+              "branch_misses": 985,
+              "warm_ns": 17365674,
+              "instructions_per_cycle": 5.386224347505886,
+              "branch_miss_fraction": 1.8156173320120802e-05
+            },
+            "dynarmic": {
+              "cycles": 11694134,
+              "instructions": 11375590,
+              "branches": 1250128,
+              "branch_misses": 59,
+              "warm_ns": 2640765,
+              "instructions_per_cycle": 0.972760360023239,
+              "branch_miss_fraction": 4.7195167214877197e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 6.576001272358578,
+            "instruction_ratio": 36.361232428383936,
+            "cycles_ratio": 6.566894222351138,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.18060153036025686,
+            "paired_wall_ratio": {
+              "median": 6.599080735762925,
+              "q1": 6.5393824865035795,
+              "q3": 6.7171041786862276,
+              "min": 6.313925579481996,
+              "max": 8.382346460697516
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "compute-sha": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sha",
+            "sha256": "5f9b6b1417baf255442b4e1fd2eff1d0a4614430ba244651fa5cad60dab81d42",
+            "symbols": {
+              "bench_entry": 4260200,
+              "benchmark_output": 4393056
+            },
+            "iterations": null,
+            "expected_hex": "16c4eb36ad9a07bfd37dcfef3020390484f680dd6136627bead3f21f59f53cce000000000000000000000000000000000000000000000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sha.c",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sha.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sha"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sha.c": "5fbc19c62d2487d86ffc5a8817c1a01596c615745fa74c29589a7c829006e5ef",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sha.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "phase": "sha",
+              "separately_compiled": true,
+              "timings_are_not_additive": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 31646594,
+              "instructions": 162184107,
+              "branches": 2297886,
+              "branch_misses": 2357,
+              "warm_ns": 6629387,
+              "instructions_per_cycle": 5.124851887694454,
+              "branch_miss_fraction": 0.0010257253841139203
+            },
+            "dynarmic": {
+              "cycles": 13920394,
+              "instructions": 61231003,
+              "branches": 2264272,
+              "branch_misses": 1815,
+              "warm_ns": 2959106,
+              "instructions_per_cycle": 4.39865444900482,
+              "branch_miss_fraction": 0.0008015821420748038
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.240334411812216,
+            "instruction_ratio": 2.648725303421863,
+            "cycles_ratio": 2.273397865031694,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.8582988436342239,
+            "paired_wall_ratio": {
+              "median": 2.28098289481114,
+              "q1": 2.2455198242074688,
+              "q3": 2.3079869442074905,
+              "min": 2.0458590448349274,
+              "max": 2.4537848764496224
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "compute-sort": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sort",
+            "sha256": "48e27e9a1e075b1183c0530a893bd034ff1fd3ff8b7f17087a2886be53de8768",
+            "symbols": {
+              "bench_entry": 4260200,
+              "benchmark_output": 4325992
+            },
+            "iterations": null,
+            "expected_hex": "0000000000000000000000000000000000000000000000000000000000000000eb8f34033c3d050000000000000000000000000000000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sort.c",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sort.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sort"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sort.c": "fc1d45227184fa963cb2acac2a59acaf6726a5273fd850c295c27d41aabfceaa",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-sort.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "phase": "sort",
+              "separately_compiled": true,
+              "timings_are_not_additive": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 6879407,
+              "instructions": 25774925,
+              "branches": 1328399,
+              "branch_misses": 1222,
+              "warm_ns": 1546407,
+              "instructions_per_cycle": 3.746678311081173,
+              "branch_miss_fraction": 0.0009199043359713459
+            },
+            "dynarmic": {
+              "cycles": 2695638,
+              "instructions": 13004055,
+              "branches": 1059815,
+              "branch_misses": 1123,
+              "warm_ns": 596248,
+              "instructions_per_cycle": 4.824110284837949,
+              "branch_miss_fraction": 0.0010596188957506735
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.5935634165649195,
+            "instruction_ratio": 1.9820682856232152,
+            "cycles_ratio": 2.552051499496594,
+            "dynarmic_IPC_over_swiftvm_IPC": 1.2875699177509219,
+            "paired_wall_ratio": {
+              "median": 2.592150419799993,
+              "q1": 2.5447198194872893,
+              "q3": 2.6472259203866018,
+              "min": 2.4766647374682487,
+              "max": 2.7538353100015884
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "compute-mix": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-mix",
+            "sha256": "51684fe5658288cb54e04f13239ef018419fe7478bf57dff18312362599e4dec",
+            "symbols": {
+              "bench_entry": 4260200,
+              "benchmark_output": 4325864
+            },
+            "iterations": null,
+            "expected_hex": "0000000000000000000000000000000000000000000000000000000000000000000000000000000029532df9000000000000000000000000",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-mix.c",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-mix.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-mix"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-mix.c": "bc56ac30e9b962014fc1bb266576d4e1da62ba100b0101b796878f9e646eb913",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-mix.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "phase": "mix",
+              "separately_compiled": true,
+              "timings_are_not_additive": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 2083864,
+              "instructions": 10491263,
+              "branches": 656819,
+              "branch_misses": 107,
+              "warm_ns": 466071,
+              "instructions_per_cycle": 5.034523846085925,
+              "branch_miss_fraction": 0.00016290637146611166
+            },
+            "dynarmic": {
+              "cycles": 1051536,
+              "instructions": 4850253,
+              "branches": 393334,
+              "branch_misses": 22,
+              "warm_ns": 231113,
+              "instructions_per_cycle": 4.612541082758936,
+              "branch_miss_fraction": 5.5932108589646456e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.0166368832562425,
+            "instruction_ratio": 2.163034175742997,
+            "cycles_ratio": 1.9817333881103452,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.916182189969155,
+            "paired_wall_ratio": {
+              "median": 1.9999085564990202,
+              "q1": 1.9789853434710856,
+              "q3": 2.0502775534053996,
+              "min": 1.928262081559109,
+              "max": 2.1254694367635265
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "compute-matrix": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix",
+            "sha256": "d72de20dbe4da6b74378e8716da450054055a8ece68310d2cba08e4905f29508",
+            "symbols": {
+              "bench_entry": 4260200,
+              "benchmark_output": 4392160
+            },
+            "iterations": null,
+            "expected_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005ba040",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix.c",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix.c": "e964f88e512f073a61d76102a73453ea92ef21b7ad90a21cf05562b8ae6744d3",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "phase": "matrix",
+              "separately_compiled": true,
+              "timings_are_not_additive": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 42591708,
+              "instructions": 215663244,
+              "branches": 31422977,
+              "branch_misses": 66103,
+              "warm_ns": 9607314,
+              "instructions_per_cycle": 5.063503064962786,
+              "branch_miss_fraction": 0.002103651732297675
+            },
+            "dynarmic": {
+              "cycles": 555774,
+              "instructions": 2639152,
+              "branches": 265374,
+              "branch_misses": 18,
+              "warm_ns": 121423,
+              "instructions_per_cycle": 4.748606447944669,
+              "branch_miss_fraction": 6.782880010852608e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 79.12268680562991,
+            "instruction_ratio": 81.71687117680224,
+            "cycles_ratio": 76.63494154098609,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.937810521100093,
+            "paired_wall_ratio": {
+              "median": 78.77557224012492,
+              "q1": 77.66202507614464,
+              "q3": 79.79984923665702,
+              "min": 71.17209435794803,
+              "max": 82.11449665110615
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        }
+      }
+    },
+    "scalar_controls": {
+      "samples": 21,
+      "workloads": {
+        "compute-matrix-scalar": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix-scalar",
+            "sha256": "ace7c79a1c2feb242b2943ae1c2c18ca4a48191c3b5b12dc45abd00317755f82",
+            "symbols": {
+              "bench_entry": 4259892,
+              "benchmark_output": 4325768
+            },
+            "iterations": null,
+            "expected_hex": "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000005ba040",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix.c",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix-scalar.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix-scalar",
+              "-fno-vectorize",
+              "-fno-slp-vectorize"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix.c": "e964f88e512f073a61d76102a73453ea92ef21b7ad90a21cf05562b8ae6744d3",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-matrix-scalar.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "phase": "matrix",
+              "vectorization_disabled_after_O2": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 39583794,
+              "instructions": 209888915,
+              "branches": 27200577,
+              "branch_misses": 6510,
+              "warm_ns": 8557623,
+              "instructions_per_cycle": 5.302395091284074,
+              "branch_miss_fraction": 0.0002393331582635177
+            },
+            "dynarmic": {
+              "cycles": 1941100,
+              "instructions": 6765378,
+              "branches": 585439,
+              "branch_misses": 57,
+              "warm_ns": 419516,
+              "instructions_per_cycle": 3.485332028231415,
+              "branch_miss_fraction": 9.736283370257191e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 20.398800045767025,
+            "instruction_ratio": 31.023974565796617,
+            "cycles_ratio": 20.39245479367369,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.6573127743650231,
+            "paired_wall_ratio": {
+              "median": 20.454570707316837,
+              "q1": 20.149397143122293,
+              "q3": 20.733216941863446,
+              "min": 19.815968042026924,
+              "max": 20.95850322112153
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "compute-full-scalar": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-full-scalar",
+            "sha256": "dd824d2ac55a2b949595eba547885aa940f66b0a08d4b90ab06f6c64af36f5e3",
+            "symbols": {
+              "bench_entry": 4259892,
+              "benchmark_output": 4392688
+            },
+            "iterations": null,
+            "expected_hex": "16c4eb36ad9a07bfd37dcfef3020390484f680dd6136627bead3f21f59f53cceeb8f34033c3d050029532df90000000000000000005ba040",
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compute.c",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-full-scalar.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-full-scalar",
+              "-fno-vectorize",
+              "-fno-slp-vectorize"
+            ],
+            "sources": {
+              "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compute.c": "8034c10da3f75f06b1ab4b780807613ce4f4502f79f87b1f017f327f78aac4aa",
+              "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests/compute-full-scalar.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+            },
+            "qemu_verified": true,
+            "experiment": {
+              "phase": "full",
+              "vectorization_disabled_after_O2": true
+            }
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 80121132,
+              "instructions": 404292028,
+              "branches": 31640335,
+              "branch_misses": 11893,
+              "warm_ns": 17411803,
+              "instructions_per_cycle": 5.046009934058346,
+              "branch_miss_fraction": 0.00037588097597576005
+            },
+            "dynarmic": {
+              "cycles": 19704701,
+              "instructions": 86431746,
+              "branches": 4454146,
+              "branch_misses": 3189,
+              "warm_ns": 4279631,
+              "instructions_per_cycle": 4.386351561487789,
+              "branch_miss_fraction": 0.0007159621619946899
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 4.0685290390690225,
+            "instruction_ratio": 4.6775871911693185,
+            "cycles_ratio": 4.066092248748154,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.8692712893571308,
+            "paired_wall_ratio": {
+              "median": 4.072569423892323,
+              "q1": 4.014763898559012,
+              "q3": 4.144898567145285,
+              "min": 3.8354109294315273,
+              "max": 4.418392305431094
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        }
+      }
+    },
+    "sampled": {
+      "samples": 3,
+      "workloads": {
+        "integer": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer",
+            "sha256": "e02088f59fdd5827a327a473263a4d1375cef1dcbb1b58e76c649193d3cf73f9",
+            "iterations": 12000000,
+            "expected_hex": "45eb750400000000",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer.S": "30523a7323af85e4627f785ac3a13c366f65e429ef4b2fca9a6857707484af44"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 184830801.0,
+              "instructions": 564005492.0,
+              "branches": 24001637.0,
+              "branch_misses": 664.0,
+              "warm_ns": 42605193.5,
+              "instructions_per_cycle": 3.051469175854516,
+              "branch_miss_fraction": 2.7664779698151422e-05
+            },
+            "dynarmic": {
+              "cycles": 61226270.0,
+              "instructions": 276000430.0,
+              "branches": 24000145.5,
+              "branch_misses": 269.0,
+              "warm_ns": 14270075.0,
+              "instructions_per_cycle": 4.50787594932698,
+              "branch_miss_fraction": 1.1208265383224448e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.9856320657039292,
+            "instruction_ratio": 2.0434949757143492,
+            "cycles_ratio": 3.0188153059136216,
+            "dynarmic_IPC_over_swiftvm_IPC": 1.477280512940007,
+            "paired_wall_ratio": {
+              "median": 2.982905359592269,
+              "q1": 2.701239186901483,
+              "q3": 2.984268712648099,
+              "min": 2.419573014210697,
+              "max": 2.9856320657039292
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "memory": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory",
+            "sha256": "03248da6504bd9988633a6c3d620f12356f56876af9a7b660597f05f53852b38",
+            "iterations": 12000000,
+            "expected_hex": "0051250200000000",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory.S": "c88a96a4fff4c116aa9a20eb0f701f7f69467c62e004b175184d01cda4ec9ebf"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 184978054.0,
+              "instructions": 612005490.0,
+              "branches": 24001635.0,
+              "branch_misses": 605.5,
+              "warm_ns": 43017980.0,
+              "instructions_per_cycle": 3.308530264892937,
+              "branch_miss_fraction": 2.522744804676848e-05
+            },
+            "dynarmic": {
+              "cycles": 72767311.0,
+              "instructions": 276000450.0,
+              "branches": 24000158.0,
+              "branch_misses": 390.5,
+              "warm_ns": 16972434.5,
+              "instructions_per_cycle": 3.7929180865292658,
+              "branch_miss_fraction": 1.6270726217719066e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.5345792319893765,
+            "instruction_ratio": 2.217407580313728,
+            "cycles_ratio": 2.5420487779189753,
+            "dynarmic_IPC_over_swiftvm_IPC": 1.1464057399674423,
+            "paired_wall_ratio": {
+              "median": 2.6286806943944225,
+              "q1": 2.5816299631918995,
+              "q3": 2.6319837204193233,
+              "min": 2.5345792319893765,
+              "max": 2.635286746444224
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "shift": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift",
+            "sha256": "e5d2a2bffc3f67cb2ed10518804e4dc8127c01b1a6ab007e9dd6ff6cbf6c9797",
+            "iterations": 12000000,
+            "expected_hex": "ea944fb23999ab2a",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift.S": "6a5f5fd2a562950affdc654c74b1a5d021f532904b71112e5763d8f2d5da4df7"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 188989725.5,
+              "instructions": 600005487.5,
+              "branches": 24001632.5,
+              "branch_misses": 707.5,
+              "warm_ns": 43458557.5,
+              "instructions_per_cycle": 3.174804799110627,
+              "branch_miss_fraction": 2.9477161605569956e-05
+            },
+            "dynarmic": {
+              "cycles": 72635331.5,
+              "instructions": 312000445.0,
+              "branches": 24000156.0,
+              "branch_misses": 313.0,
+              "warm_ns": 16824778.5,
+              "instructions_per_cycle": 4.2954363745142405,
+              "branch_miss_fraction": 1.304158189638434e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 2.583009190878798,
+            "instruction_ratio": 1.9230917683466766,
+            "cycles_ratio": 2.601898023966477,
+            "dynarmic_IPC_over_swiftvm_IPC": 1.3529765281057724,
+            "paired_wall_ratio": {
+              "median": 2.580101334742393,
+              "q1": 2.5748609696286673,
+              "q3": 2.687059955669705,
+              "min": 2.569620604514942,
+              "max": 2.7940185765970162
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "fp": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp",
+            "sha256": "920a46ba03cfd07aac6cb0f23c22e52c00d968fbdf04ef26ec42f5eead7325bd",
+            "iterations": 1000000,
+            "expected_hex": "0000000061e33641",
+            "symbols": {
+              "bench_entry": 4259880,
+              "benchmark_output": 4325472
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp"
+            ],
+            "sources": {
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp.S": "499b7ea686c0cfbc5b9ceaa5a0cbeded51200d74f97ff9070031c7489c5b725b"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 88072292.0,
+              "instructions": 446005283.5,
+              "branches": 56001496.5,
+              "branch_misses": 1037.0,
+              "warm_ns": 20505801.0,
+              "instructions_per_cycle": 5.064081714825816,
+              "branch_miss_fraction": 1.851736229941641e-05
+            },
+            "dynarmic": {
+              "cycles": 20043052.0,
+              "instructions": 28000390.0,
+              "branches": 3000095.0,
+              "branch_misses": 97.0,
+              "warm_ns": 4689985.0,
+              "instructions_per_cycle": 1.397012291341658,
+              "branch_miss_fraction": 3.2332309476866566e-05
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 4.372253002941374,
+            "instruction_ratio": 15.928538263217048,
+            "cycles_ratio": 4.394155740353315,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.2758668540540542,
+            "paired_wall_ratio": {
+              "median": 4.406775697865353,
+              "q1": 4.380602596631958,
+              "q3": 4.4601961329677,
+              "min": 4.354429495398564,
+              "max": 4.513616568070047
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        },
+        "compute": {
+          "guest": {
+            "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute",
+            "sha256": "379a2978279e16c6805cc30dd97776ac9c16334d3db2003ce1c6204797fcba96",
+            "iterations": null,
+            "expected_hex": "16c4eb36ad9a07bfd37dcfef3020390484f680dd6136627bead3f21f59f53cceeb8f34033c3d050029532df90000000000000000005ba040",
+            "symbols": {
+              "bench_entry": 4260200,
+              "benchmark_output": 4394128
+            },
+            "build_command": [
+              "clang-18",
+              "--target=aarch64-linux-gnu",
+              "-ffreestanding",
+              "-fno-builtin",
+              "-fomit-frame-pointer",
+              "-fno-vectorize",
+              "-fno-slp-vectorize",
+              "-ffp-contract=off",
+              "-O2",
+              "-nostdlib",
+              "-static",
+              "-fuse-ld=lld",
+              "-Wl,-e,_start",
+              "-Wl,--build-id=none",
+              "-Wl,-Ttext=0x410000",
+              "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compute.c",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute.S",
+              "-o",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute"
+            ],
+            "sources": {
+              "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compute.c": "8034c10da3f75f06b1ab4b780807613ce4f4502f79f87b1f017f327f78aac4aa",
+              "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+            },
+            "qemu_verified": true
+          },
+          "medians": {
+            "swiftvm-function-pin0": {
+              "cycles": 116256112.5,
+              "instructions": 414238336.5,
+              "branches": 35701819.5,
+              "branch_misses": 96213.5,
+              "warm_ns": 28597765.0,
+              "instructions_per_cycle": 3.563153176139448,
+              "branch_miss_fraction": 0.002694918672142186
+            },
+            "dynarmic": {
+              "cycles": 28680398.5,
+              "instructions": 81727652.0,
+              "branches": 3982431.0,
+              "branch_misses": 4356.0,
+              "warm_ns": 7862483.5,
+              "instructions_per_cycle": 2.8495995967420047,
+              "branch_miss_fraction": 0.001093804261768754
+            }
+          },
+          "swiftvm_over_dynarmic": {
+            "wall_ratio": 3.637243245089163,
+            "instruction_ratio": 5.068521196473379,
+            "cycles_ratio": 4.053504085726005,
+            "dynarmic_IPC_over_swiftvm_IPC": 0.7997409754439595,
+            "paired_wall_ratio": {
+              "median": 4.803685619283261,
+              "q1": 4.220464432186212,
+              "q3": 4.841900406531268,
+              "min": 3.637243245089163,
+              "max": 4.880115193779276
+            },
+            "swiftvm_faster_pairs": 0
+          }
+        }
+      }
+    }
+  },
+  "profile": {
+    "integer": {
+      "swiftvm-function-pin0": {
+        "samples": 31293,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 31278,
+          "shared_library_or_kernel_helper": 9,
+          "other_executable_code": 4,
+          "native_dispatch_and_entry": 2
+        },
+        "category_percent": {
+          "generated_guest_code": 99.95206595724284,
+          "shared_library_or_kernel_helper": 0.028760425654299683,
+          "other_executable_code": 0.01278241140191097,
+          "native_dispatch_and_entry": 0.006391205700955485
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.95206595724284
+        },
+        "top_functions": [
+          {
+            "symbol": "main",
+            "samples": 3,
+            "percent": 0.009586808551433228
+          },
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 2,
+            "percent": 0.006391205700955485
+          },
+          {
+            "symbol": "swift::runtime::execution::GuestMemory::CodeAt(unsigned long) const",
+            "samples": 1,
+            "percent": 0.0031956028504777426
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 11300,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 11295,
+          "other_executable_code": 1,
+          "jit_prelude_or_trampoline": 1,
+          "shared_library_or_kernel_helper": 3
+        },
+        "category_percent": {
+          "generated_guest_code": 99.95575221238938,
+          "other_executable_code": 0.008849557522123894,
+          "jit_prelude_or_trampoline": 0.008849557522123894,
+          "shared_library_or_kernel_helper": 0.02654867256637168
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": [
+          {
+            "symbol": "main",
+            "samples": 1,
+            "percent": 0.008849557522123894
+          }
+        ]
+      }
+    },
+    "memory": {
+      "swiftvm-function-pin0": {
+        "samples": 31983,
+        "lost": 0,
+        "category_counts": {
+          "other_executable_code": 4,
+          "native_dispatch_and_entry": 1,
+          "generated_guest_code": 31973,
+          "shared_library_or_kernel_helper": 5
+        },
+        "category_percent": {
+          "other_executable_code": 0.012506644154707189,
+          "native_dispatch_and_entry": 0.003126661038676797,
+          "generated_guest_code": 99.96873338961323,
+          "shared_library_or_kernel_helper": 0.015633305193383986
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.96873338961323
+        },
+        "top_functions": [
+          {
+            "symbol": "main",
+            "samples": 2,
+            "percent": 0.006253322077353594
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::UpdateFPEnvironment(bool)",
+            "samples": 1,
+            "percent": 0.003126661038676797
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::DeliverPending()",
+            "samples": 1,
+            "percent": 0.003126661038676797
+          },
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 1,
+            "percent": 0.003126661038676797
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 12519,
+        "lost": 0,
+        "category_counts": {
+          "other_executable_code": 1,
+          "generated_guest_code": 12514,
+          "shared_library_or_kernel_helper": 4
+        },
+        "category_percent": {
+          "other_executable_code": 0.007987858455148175,
+          "generated_guest_code": 99.96006070772425,
+          "shared_library_or_kernel_helper": 0.0319514338205927
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": [
+          {
+            "symbol": "(anonymous namespace)::Engine::ExceptionRaised(unsigned long, Dynarmic::A64::Exception)",
+            "samples": 1,
+            "percent": 0.007987858455148175
+          }
+        ]
+      }
+    },
+    "shift": {
+      "swiftvm-function-pin0": {
+        "samples": 30900,
+        "lost": 0,
+        "category_counts": {
+          "native_dispatch_and_entry": 2,
+          "generated_guest_code": 30885,
+          "shared_library_or_kernel_helper": 11,
+          "other_executable_code": 2
+        },
+        "category_percent": {
+          "native_dispatch_and_entry": 0.006472491909385114,
+          "generated_guest_code": 99.95145631067962,
+          "shared_library_or_kernel_helper": 0.03559870550161812,
+          "other_executable_code": 0.006472491909385114
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.95145631067962
+        },
+        "top_functions": [
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 2,
+            "percent": 0.006472491909385114
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::ResolveBridge(void*, swift::runtime::execution::NativeRunContext*)",
+            "samples": 1,
+            "percent": 0.003236245954692557
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::UpdateFPEnvironment(bool)",
+            "samples": 1,
+            "percent": 0.003236245954692557
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 11875,
+        "lost": 0,
+        "category_counts": {
+          "other_executable_code": 4,
+          "generated_guest_code": 11868,
+          "shared_library_or_kernel_helper": 3
+        },
+        "category_percent": {
+          "other_executable_code": 0.03368421052631579,
+          "generated_guest_code": 99.94105263157894,
+          "shared_library_or_kernel_helper": 0.02526315789473684
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": [
+          {
+            "symbol": "(anonymous namespace)::Engine::ExceptionRaised(unsigned long, Dynarmic::A64::Exception)",
+            "samples": 3,
+            "percent": 0.02526315789473684
+          },
+          {
+            "symbol": "main",
+            "samples": 1,
+            "percent": 0.008421052631578947
+          }
+        ]
+      }
+    },
+    "fp": {
+      "swiftvm-function-pin0": {
+        "samples": 14990,
+        "lost": 0,
+        "category_counts": {
+          "other_executable_code": 7,
+          "numeric_helper_and_softfloat": 7780,
+          "generated_guest_code": 7196,
+          "shared_library_or_kernel_helper": 6,
+          "native_dispatch_and_entry": 1
+        },
+        "category_percent": {
+          "other_executable_code": 0.0466977985323549,
+          "numeric_helper_and_softfloat": 51.90126751167445,
+          "generated_guest_code": 48.00533689126084,
+          "shared_library_or_kernel_helper": 0.0400266844563042,
+          "native_dispatch_and_entry": 0.0066711140760507
+        },
+        "generated_detail_percent_of_all_samples": {
+          "helper_call_boundary": 23.555703802535024,
+          "other_generated_code": 24.449633088725818
+        },
+        "top_functions": [
+          {
+            "symbol": "swift::runtime::arm64::ExecuteScalarFP(unsigned long, unsigned long, unsigned long)",
+            "samples": 2418,
+            "percent": 16.130753835890594
+          },
+          {
+            "symbol": "swift::runtime::arm64::EvaluateBinaryFP(unsigned long, unsigned long, unsigned int, unsigned int, unsigned int)",
+            "samples": 2333,
+            "percent": 15.563709139426285
+          },
+          {
+            "symbol": "softfloat_addMagsF64",
+            "samples": 1445,
+            "percent": 9.639759839893262
+          },
+          {
+            "symbol": "softfloat_roundPackToF64",
+            "samples": 918,
+            "percent": 6.124082721814543
+          },
+          {
+            "symbol": "swift::runtime::arm64::IsSupportedScalarFP(unsigned int)",
+            "samples": 350,
+            "percent": 2.334889926617745
+          },
+          {
+            "symbol": "f64_add",
+            "samples": 164,
+            "percent": 1.094062708472315
+          },
+          {
+            "symbol": "swift::runtime::arm64::ExecuteNumeric(unsigned long, unsigned long, unsigned long)",
+            "samples": 152,
+            "percent": 1.0140093395597065
+          },
+          {
+            "symbol": "swift::runtime::execution::GuestMemory::CodeAt(unsigned long) const",
+            "samples": 2,
+            "percent": 0.0133422281521014
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::RefreshDispatchView()",
+            "samples": 2,
+            "percent": 0.0133422281521014
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::ResolveBridge(void*, swift::runtime::execution::NativeRunContext*)",
+            "samples": 2,
+            "percent": 0.0133422281521014
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::DeliverPending()",
+            "samples": 1,
+            "percent": 0.0066711140760507
+          },
+          {
+            "symbol": "SvmRunNative",
+            "samples": 1,
+            "percent": 0.0066711140760507
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 3357,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 3354,
+          "other_executable_code": 1,
+          "shared_library_or_kernel_helper": 2
+        },
+        "category_percent": {
+          "generated_guest_code": 99.91063449508489,
+          "other_executable_code": 0.02978850163836759,
+          "shared_library_or_kernel_helper": 0.05957700327673518
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": [
+          {
+            "symbol": "(anonymous namespace)::Engine::ExceptionRaised(unsigned long, Dynarmic::A64::Exception)",
+            "samples": 1,
+            "percent": 0.02978850163836759
+          }
+        ]
+      }
+    },
+    "compute": {
+      "swiftvm-function-pin0": {
+        "samples": 21441,
+        "lost": 0,
+        "category_counts": {
+          "shared_library_or_kernel_helper": 1292,
+          "other_executable_code": 5,
+          "numeric_helper_and_softfloat": 9110,
+          "native_dispatch_and_entry": 46,
+          "generated_guest_code": 10988
+        },
+        "category_percent": {
+          "shared_library_or_kernel_helper": 6.02583834709202,
+          "other_executable_code": 0.02331980784478336,
+          "numeric_helper_and_softfloat": 42.48868989319528,
+          "native_dispatch_and_entry": 0.2145422321720069,
+          "generated_guest_code": 51.24760971969591
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 46.60230399701506,
+          "helper_call_boundary": 4.645305722680845
+        },
+        "top_functions": [
+          {
+            "symbol": "swift::runtime::arm64::EvaluateBinaryFP(unsigned long, unsigned long, unsigned int, unsigned int, unsigned int)",
+            "samples": 2637,
+            "percent": 12.298866657338744
+          },
+          {
+            "symbol": "swift::runtime::arm64::family_vector_fp_binary::(anonymous namespace)::ExecuteVectorFPBinary(unsigned long, unsigned long, unsigned long) [clone .lto_priv.0]",
+            "samples": 2132,
+            "percent": 9.943566065015624
+          },
+          {
+            "symbol": "swift::runtime::arm64::NumericIndexed(unsigned long, unsigned long, unsigned long)",
+            "samples": 1221,
+            "percent": 5.694697075696096
+          },
+          {
+            "symbol": "softfloat_roundPackToF64",
+            "samples": 1005,
+            "percent": 4.687281376801455
+          },
+          {
+            "symbol": "f64_mul",
+            "samples": 919,
+            "percent": 4.286180681871182
+          },
+          {
+            "symbol": "softfloat_addMagsF64",
+            "samples": 707,
+            "percent": 3.297420829252367
+          },
+          {
+            "symbol": "swift::runtime::arm64::family_indexed_fp::(anonymous namespace)::DecodeIndexedFP(unsigned int, swift::runtime::arm64::family_indexed_fp::(anonymous namespace)::IndexedFP&) [clone .lto_priv.0]",
+            "samples": 310,
+            "percent": 1.4458280863765682
+          },
+          {
+            "symbol": "f64_add",
+            "samples": 70,
+            "percent": 0.32647730982696704
+          },
+          {
+            "symbol": "swift::runtime::arm64::ExecuteNumeric(unsigned long, unsigned long, unsigned long)",
+            "samples": 66,
+            "percent": 0.3078214635511403
+          },
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 46,
+            "percent": 0.2145422321720069
+          },
+          {
+            "symbol": "swift::runtime::arm64::NumericVectorBinary(unsigned long, unsigned long, unsigned long)",
+            "samples": 34,
+            "percent": 0.15857469334452684
+          },
+          {
+            "symbol": "unsigned long swift::runtime::arm64::family_fp_integer::(anonymous namespace)::ExecuteFPInteger<false>(unsigned long, unsigned long, unsigned long) [clone .lto_priv.0]",
+            "samples": 4,
+            "percent": 0.018655846275826688
+          },
+          {
+            "symbol": "main",
+            "samples": 2,
+            "percent": 0.009327923137913344
+          },
+          {
+            "symbol": "swift::runtime::arm64::NumericInteger(unsigned long, unsigned long, unsigned long)",
+            "samples": 2,
+            "percent": 0.009327923137913344
+          },
+          {
+            "symbol": "swift::runtime::execution::GuestMemory::CodeAt(unsigned long) const",
+            "samples": 2,
+            "percent": 0.009327923137913344
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 5042,
+        "lost": 0,
+        "category_counts": {
+          "other_executable_code": 2,
+          "jit_prelude_or_trampoline": 51,
+          "generated_guest_code": 4986,
+          "shared_library_or_kernel_helper": 3
+        },
+        "category_percent": {
+          "other_executable_code": 0.039666798889329634,
+          "jit_prelude_or_trampoline": 1.0115033716779056,
+          "generated_guest_code": 98.88932963109878,
+          "shared_library_or_kernel_helper": 0.05950019833399445
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": [
+          {
+            "symbol": "(anonymous namespace)::Engine::ExceptionRaised(unsigned long, Dynarmic::A64::Exception)",
+            "samples": 1,
+            "percent": 0.019833399444664817
+          },
+          {
+            "symbol": "main",
+            "samples": 1,
+            "percent": 0.019833399444664817
+          }
+        ]
+      }
+    }
+  },
+  "integer_hot_loop": {
+    "path": "docs/evidence/dynarmic-gap-20261111/integer-hot-loops.txt",
+    "sha256": "bcc95a91081562349ab3f5a0f96d7fee9d2488477171d1678dcc8fc184ae304f",
+    "instructions_per_iteration": {
+      "swiftvm": 47,
+      "dynarmic": 23
+    },
+    "instruction_categories": {
+      "swiftvm": {
+        "arithmetic_payload_and_state_moves": 10,
+        "counter_update_and_state": 4,
+        "capture_pack_merge_and_invert_NZCV": 19,
+        "event_check": 2,
+        "condition_boolean_and_branch": 12
+      },
+      "dynarmic": {
+        "arithmetic_payload_and_state_moves": 7,
+        "counter_update_and_state": 6,
+        "native_flag_save_restore_and_branch": 8,
+        "event_check": 2
+      }
+    },
+    "note": "Static taken-path categories cross-checked against retired PMU instruction counts; not time percentages."
+  },
+  "vectorization_correction": {
+    "original_driver_flags": [
+      "-vectorize-loops",
+      "-vectorize-slp"
+    ],
+    "original_compute_IR_vector_FP_operations": 66,
+    "flags_after_O2_IR_vector_FP_operations": 0,
+    "original_compute_A64_contains": [
+      "fadd v?.2d",
+      "fmul v?.2d",
+      "fmul v?.2d, v?.2d, v?.d[0]"
+    ],
+    "scalar_controls_A64_vector_FP_operations": 0
+  },
+  "raw_evidence": {
+    "baseline-summary.json": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/baseline-summary.json",
+      "sha256": "5d9d78dca869c4b0a6e6bc5fc107f5f63f337908223eef11c14877e3c3758c1d"
+    },
+    "ablations-summary.json": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/ablations-summary.json",
+      "sha256": "0c5a355ae47e14617ceea3d8175f3737a664d5c2d0bd5657c3dccaaa8514e830"
+    },
+    "scalar-summary.json": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/scalar-summary.json",
+      "sha256": "5c8200b690d8b4a1a8bbaff4e1d87a64f284ac09e1af3c27c68f2e20de41b9ff"
+    },
+    "profile-summary.json": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/profile-summary.json",
+      "sha256": "6e5239ec385a33b3173f9bed2ab7fbd802eb938081db4c499715980573e886fb"
+    },
+    "build.json": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/build.json",
+      "sha256": "b4aa05032232404bffd7099613aa94a06b80d941743ec07839889e6ed8945407"
+    },
+    "guests.json": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/guests.json",
+      "sha256": "b30ceca633b2cb3213d9c93b9361626ff45f3b76e1ea0f5620d9deedfa3b7361"
+    },
+    "symbolized-profile.json": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/symbolized-profile.json",
+      "sha256": "eeef88e334ba04cd73a76ebd7e96b99153cdb8e04365f698a03272ac2578522f"
+    },
+    "clang-driver.txt": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/clang-driver.txt",
+      "sha256": "59132e26847d3fb87a6e90c0601eacdbacac606ab56f51ec487a54c4aa54e0c7"
+    },
+    "original_order.ll": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/original_order.ll",
+      "sha256": "731ffd78fd262aa077f7d8bcc063e0f8d48c96316077d56282aaf5b0104922ba"
+    },
+    "no_vector_last.ll": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/no_vector_last.ll",
+      "sha256": "e431bcf5d3c395203e66720a87115627436c8904d00b6bd13fc4ea9aafbb69f8"
+    },
+    "artifact-manifest.json": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-gap-20261111/artifact-manifest.json",
+      "sha256": "edb7c1d5bf5a595bae62eb6dfeb778f1b31a044300c376310dc522ee33ce0474"
+    }
+  },
+  "limitations": [
+    "WSL finite workloads, CPU frequency not locked; ratios do not prove full application performance.",
+    "Retired instructions are dynamic PMU values; instructions-per-cycle explains throughput, not per-mechanism time percentages.",
+    "Alternate guest loops and separate phase compilation preserve output only; effects must not be added as independently removable costs.",
+    "CPU-clock sampling is intrusive and may attribute stall time to the following instruction; sampled timings are excluded from headline measurements.",
+    "Symbol-based numeric classification includes the numeric helper closure; shared-library samples remain separate when exact symbols are unavailable.",
+    "A native x64 FP path must preserve ARM FPCR/FPSR and boundary behavior; replacing the helper wholesale is not established as correct by these measurements."
+  ]
+}

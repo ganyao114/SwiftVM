@@ -1,0 +1,77 @@
+Ordinary taken integer loop; cold event/exit paths excluded.
+Offsets relative to the hot loop entry, not static instruction counts of the entire code cache.
+
+swiftvm: 47 instructions per taken iteration
+  +0000  mov    r13,QWORD PTR [r12]
+  +0004  mov    r14,r13
+  +0007  add    r14,0x3
+  +000b  mov    QWORD PTR [r12],r14
+  +000f  mov    r13,r14
+  +0012  shr    r13,0x7
+  +0016  mov    rcx,r13
+  +0019  mov    r15,r14
+  +001c  xor    r15,rcx
+  +001f  mov    QWORD PTR [r12],r15
+  +0023  mov    r13,QWORD PTR [r12+0x8]
+  +0028  mov    r14,r13
+  +002b  sub    r14,0x1
+  +002f  pushf
+  +0030  pop    rdx
+  +0031  mov    r10d,edx
+  +0034  and    r10d,0xc0
+  +003b  shl    r10d,0x18
+  +003f  mov    r11d,edx
+  +0042  and    r11d,0x1
+  +0046  shl    r11d,0x1d
+  +004a  or     r10d,r11d
+  +004d  mov    r11d,edx
+  +0050  and    r11d,0x800
+  +0057  shl    r11d,0x11
+  +005b  or     r10d,r11d
+  +005e  mov    r11d,0xf0000000
+  +0064  and    r11,r10
+  +0067  movabs rsi,0xffffffff0fffffff
+  +0071  and    rbx,rsi
+  +0074  or     rbx,r11
+  +0077  btc    rbx,0x1d
+  +007c  mov    QWORD PTR [r12+0x8],r14
+  +0081  cmp    QWORD PTR [r12+0x380],0x0
+  +008a  je loop+0xb7
+  +00b7  mov    eax,0x40000000
+  +00bc  and    rax,rbx
+  +00bf  test   rax,rax
+  +00c2  setne  al
+  +00c5  movzx  eax,al
+  +00c8  xor    eax,0x1
+  +00cb  and    eax,0x1
+  +00ce  mov    r13,rax
+  +00d1  mov    rax,r13
+  +00d4  and    eax,0x1
+  +00d7  test   rax,rax
+  +00da  jne loop+0x0
+
+dynarmic: 23 instructions per taken iteration
+  +0000  mov rax, [r15]
+  +0003  lea r14, [rax+0x03]
+  +0007  mov [rsp+0x10], r14
+  +000c  shr r14, 0x07
+  +0010  mov rax, [rsp+0x10]
+  +0015  xor rax, r14
+  +0018  mov [r15], rax
+  +001b  mov rax, [r15+0x08]
+  +001f  mov [rsp+0x10], rax
+  +0024  xor eax, eax
+  +0026  mov r14, [rsp+0x10]
+  +002b  mov r12d, 0x01
+  +0031  sub r14, r12
+  +0034  cmc
+  +0035  lahf
+  +0036  seto al
+  +0039  mov [r15+0x108], eax
+  +0040  mov [r15+0x08], r14
+  +0044  mov eax, [r15+0x108]
+  +004b  sahf
+  +004c  jnz loop+0x7e
+  +007e  cmp dword ptr [r15+0x318], 0x00
+  +0086  jz loop+0x0
+

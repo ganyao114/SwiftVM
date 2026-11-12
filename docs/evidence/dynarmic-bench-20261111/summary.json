@@ -1,0 +1,719 @@
+{
+  "schema_version": 1,
+  "source_sha256": {
+    "CMakeLists.txt": "b8b6126403d430769ce053b543b490fdf64983273dc91d8cde558037573ba6f7",
+    "benchmarks/arm64_compare.cpp": "f2d24f7fb56fa4a5dbbbf802b60dc2d573e75fd860aec84237f55a7932464cb6",
+    "benchmarks/arm64_compute.c": "8034c10da3f75f06b1ab4b780807613ce4f4502f79f87b1f017f327f78aac4aa",
+    "benchmarks/dynarmic/CMakeLists.txt": "438908445036142c7bff22b36d934a86848f75dff6c1b6440e354f9d0cb61110",
+    "tools/bench_dynarmic.py": "626816759186746eb82f047ed6d4f4bf84dd8d86890043176dcd36e7367393cb",
+    "source/runtime/backend/x64/emit.cpp": "1a948dd929a9e9a83f47646fe488db6b404266b5d71043cf16b9515e6c82324b",
+    "source/runtime/backend/x64/emit.h": "23b999fc1a2f35e6864304c7b420f428d5944a43220b9bdc2fc371f287eac097",
+    "source/runtime/backend/x64/emit_memory.cpp": "1ba51bd4b631e6d5bf5a3e00f2be30cdffde122be34eb75340936754501a083b",
+    "source/runtime/backend/x64/emit_operand.cpp": "3cb7ee62815f7770f8cfcfb083cac54029d87b2f49f5dcd91ad87383686c128a",
+    "source/runtime/backend/x64/emit_scalar.cpp": "1865d2a82d7cb9f99fd199e1b60612b90e00d5b9a0ece906e058f6902d63aa81"
+  },
+  "environment": {
+    "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "host_compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+    "guest_compiler": "Ubuntu clang version 18.1.3 (1ubuntu1)",
+    "build": "Release with IPO for both runners and JIT libraries",
+    "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor",
+    "affinity": [
+      2
+    ]
+  },
+  "swiftvm_commit": "da0a692074dc00b56355bf160287b76f2fa5379c",
+  "dynarmic_commit": "9d4582339990d4eae53f1dc7160686920fc2075c",
+  "dynarmic_source_status": "",
+  "runners": {
+    "swiftvm": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/runners/svm_arm64_compare_bench",
+      "sha256": "a4eebafc5d907728fab5733b0b51878b98a2189b1f85e837ecb03fea68f14dd2"
+    },
+    "dynarmic": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/runners/dynarmic_arm64_compare_bench",
+      "sha256": "a9808d5b0a8c3daa96330e4cc4a7480fbe226ba0bf7097f8584731db2a66b383"
+    }
+  },
+  "qemu": {
+    "path": "/home/proton/.cache/SwiftVM/wsl-arm-x64-20261111/qemu-packages/root/usr/bin/qemu-aarch64",
+    "sha256": "0338d0ed6013abe5e0f41c5a22976ac6fe2f1b5869edf05d4a9098c121248f02"
+  },
+  "samples": 31,
+  "warm_repeats_per_process": 3,
+  "configs": {
+    "swiftvm-block-pin0": {
+      "engine": "swiftvm",
+      "scope": "block",
+      "pins": 0
+    },
+    "swiftvm-block-pin2": {
+      "engine": "swiftvm",
+      "scope": "block",
+      "pins": 2
+    },
+    "swiftvm-function-pin0": {
+      "engine": "swiftvm",
+      "scope": "function",
+      "pins": 0
+    },
+    "swiftvm-function-pin2": {
+      "engine": "swiftvm",
+      "scope": "function",
+      "pins": 2
+    },
+    "dynarmic": {
+      "engine": "dynarmic",
+      "scope": "block",
+      "pins": 0
+    }
+  },
+  "protocol": {
+    "timed_region": "CallGuest or Jit::Run only; initialization, reset and full output checks excluded",
+    "cold": "first invocation, includes lazy compilation and kernel execution",
+    "warm": "median of repeated invocations per fresh process; no new compilation permitted",
+    "cold_extra": "cold minus warm estimate; not a standalone Dynarmic compiler clock",
+    "order": "rotated and reversed across fresh processes; all children inherit CPU affinity",
+    "memory": "guest==host direct access; every writable segment and stack restored outside timing",
+    "dynarmic": "all safe optimizations; unsafe off; fastmem base 0, 64 bits; cycle counting off; host feature detection on",
+    "scope": "Dynarmic block JIT with its normal linking; SwiftVM Block/Function with pin 0/2",
+    "compile_observations": "SwiftVM compile attempts; Dynarmic source-code fetches; counters only verify warm cache reuse"
+  },
+  "date": "2026-11-11",
+  "validation": {
+    "qemu_and_independent_reference_workloads": 5,
+    "measured_processes": 775,
+    "measured_kernel_executions": 3100,
+    "warmup_processes": 25,
+    "warmup_kernel_executions": 100,
+    "warm_additional_compilations": 0,
+    "fallbacks": 0,
+    "interpreted_steps": 0,
+    "dynarmic_data_callbacks": 0,
+    "cold_probe_processes": 21,
+    "cold_probe_verified_executions": 126
+  },
+  "workloads": {
+    "integer": {
+      "guest": {
+        "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer",
+        "sha256": "e02088f59fdd5827a327a473263a4d1375cef1dcbb1b58e76c649193d3cf73f9",
+        "iterations": 12000000,
+        "expected_hex": "45eb750400000000",
+        "symbols": {
+          "bench_entry": 4259880,
+          "benchmark_output": 4325472
+        },
+        "build_command": [
+          "clang-18",
+          "--target=aarch64-linux-gnu",
+          "-ffreestanding",
+          "-fno-builtin",
+          "-fomit-frame-pointer",
+          "-fno-vectorize",
+          "-fno-slp-vectorize",
+          "-ffp-contract=off",
+          "-O2",
+          "-nostdlib",
+          "-static",
+          "-fuse-ld=lld",
+          "-Wl,-e,_start",
+          "-Wl,--build-id=none",
+          "-Wl,-Ttext=0x410000",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer.S",
+          "-o",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer"
+        ],
+        "sources": {
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/integer.S": "30523a7323af85e4627f785ac3a13c366f65e429ef4b2fca9a6857707484af44"
+        },
+        "qemu_verified": true
+      },
+      "medians": {
+        "swiftvm-block-pin0": {
+          "warm_median_ns": 40445432,
+          "cold_run_ns": 41490664,
+          "initialization_ns": 684985,
+          "cold_extra_estimate_ns": 1013313
+        },
+        "swiftvm-block-pin2": {
+          "warm_median_ns": 40219092,
+          "cold_run_ns": 41198091,
+          "initialization_ns": 679334,
+          "cold_extra_estimate_ns": 1032282
+        },
+        "swiftvm-function-pin0": {
+          "warm_median_ns": 39381266,
+          "cold_run_ns": 40101640,
+          "initialization_ns": 669825,
+          "cold_extra_estimate_ns": 934771
+        },
+        "swiftvm-function-pin2": {
+          "warm_median_ns": 39748862,
+          "cold_run_ns": 40340711,
+          "initialization_ns": 666298,
+          "cold_extra_estimate_ns": 867499
+        },
+        "dynarmic": {
+          "warm_median_ns": 13065121,
+          "cold_run_ns": 58381022,
+          "initialization_ns": 22019614,
+          "cold_extra_estimate_ns": 45276023
+        }
+      },
+      "swiftvm_over_dynarmic": {
+        "swiftvm-block-pin0": {
+          "warm_ratio_of_medians": 3.095679863967582,
+          "paired_warm_ratio": {
+            "median": 3.1201601135963766,
+            "q1": 3.0887187303453,
+            "q3": 3.1436382888068506,
+            "min": 2.8837221170665193,
+            "max": 3.20933846153123
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-block-pin2": {
+          "warm_ratio_of_medians": 3.078355875923384,
+          "paired_warm_ratio": {
+            "median": 3.0747777109673637,
+            "q1": 3.0310598483066222,
+            "q3": 3.1023243463029377,
+            "min": 2.834341738653099,
+            "max": 3.1465077897097165
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin0": {
+          "warm_ratio_of_medians": 3.0142289535626956,
+          "paired_warm_ratio": {
+            "median": 3.0342998304241107,
+            "q1": 3.004288998950493,
+            "q3": 3.057840798062391,
+            "min": 2.8030549490597902,
+            "max": 3.1060298854503054
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin2": {
+          "warm_ratio_of_medians": 3.0423646286934503,
+          "paired_warm_ratio": {
+            "median": 3.078336496020786,
+            "q1": 3.0338749483741827,
+            "q3": 3.090845376296455,
+            "min": 2.836843210834217,
+            "max": 3.269542091788245
+          },
+          "swiftvm_faster_pairs": 0
+        }
+      }
+    },
+    "memory": {
+      "guest": {
+        "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory",
+        "sha256": "03248da6504bd9988633a6c3d620f12356f56876af9a7b660597f05f53852b38",
+        "iterations": 12000000,
+        "expected_hex": "0051250200000000",
+        "symbols": {
+          "bench_entry": 4259880,
+          "benchmark_output": 4325472
+        },
+        "build_command": [
+          "clang-18",
+          "--target=aarch64-linux-gnu",
+          "-ffreestanding",
+          "-fno-builtin",
+          "-fomit-frame-pointer",
+          "-fno-vectorize",
+          "-fno-slp-vectorize",
+          "-ffp-contract=off",
+          "-O2",
+          "-nostdlib",
+          "-static",
+          "-fuse-ld=lld",
+          "-Wl,-e,_start",
+          "-Wl,--build-id=none",
+          "-Wl,-Ttext=0x410000",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory.S",
+          "-o",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory"
+        ],
+        "sources": {
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/memory.S": "c88a96a4fff4c116aa9a20eb0f701f7f69467c62e004b175184d01cda4ec9ebf"
+        },
+        "qemu_verified": true
+      },
+      "medians": {
+        "swiftvm-block-pin0": {
+          "warm_median_ns": 40832228,
+          "cold_run_ns": 41707582,
+          "initialization_ns": 676135,
+          "cold_extra_estimate_ns": 993981
+        },
+        "swiftvm-block-pin2": {
+          "warm_median_ns": 40398668,
+          "cold_run_ns": 41214820,
+          "initialization_ns": 691545,
+          "cold_extra_estimate_ns": 887595
+        },
+        "swiftvm-function-pin0": {
+          "warm_median_ns": 40182118,
+          "cold_run_ns": 41043181,
+          "initialization_ns": 709416,
+          "cold_extra_estimate_ns": 994745
+        },
+        "swiftvm-function-pin2": {
+          "warm_median_ns": 40049739,
+          "cold_run_ns": 40976637,
+          "initialization_ns": 680848,
+          "cold_extra_estimate_ns": 958394
+        },
+        "dynarmic": {
+          "warm_median_ns": 15767587,
+          "cold_run_ns": 61051481,
+          "initialization_ns": 22316684,
+          "cold_extra_estimate_ns": 45283894
+        }
+      },
+      "swiftvm_over_dynarmic": {
+        "swiftvm-block-pin0": {
+          "warm_ratio_of_medians": 2.589630740581929,
+          "paired_warm_ratio": {
+            "median": 2.6029830944760404,
+            "q1": 2.584933667291879,
+            "q3": 2.6161329235258517,
+            "min": 2.4322252764223014,
+            "max": 2.6973964283878886
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-block-pin2": {
+          "warm_ratio_of_medians": 2.5621338255498447,
+          "paired_warm_ratio": {
+            "median": 2.58386452056462,
+            "q1": 2.5566897885562283,
+            "q3": 2.604325712623571,
+            "min": 2.472597690395607,
+            "max": 3.273165018006928
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin0": {
+          "warm_ratio_of_medians": 2.548399954920179,
+          "paired_warm_ratio": {
+            "median": 2.5507888086405126,
+            "q1": 2.540273348872706,
+            "q3": 2.572875421135272,
+            "min": 2.354273117939407,
+            "max": 2.704277847962517
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin2": {
+          "warm_ratio_of_medians": 2.5400043139130926,
+          "paired_warm_ratio": {
+            "median": 2.5474790709307857,
+            "q1": 2.5283860046082696,
+            "q3": 2.5668751071445026,
+            "min": 2.444289855960353,
+            "max": 2.776852594587368
+          },
+          "swiftvm_faster_pairs": 0
+        }
+      }
+    },
+    "shift": {
+      "guest": {
+        "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift",
+        "sha256": "e5d2a2bffc3f67cb2ed10518804e4dc8127c01b1a6ab007e9dd6ff6cbf6c9797",
+        "iterations": 12000000,
+        "expected_hex": "ea944fb23999ab2a",
+        "symbols": {
+          "bench_entry": 4259880,
+          "benchmark_output": 4325472
+        },
+        "build_command": [
+          "clang-18",
+          "--target=aarch64-linux-gnu",
+          "-ffreestanding",
+          "-fno-builtin",
+          "-fomit-frame-pointer",
+          "-fno-vectorize",
+          "-fno-slp-vectorize",
+          "-ffp-contract=off",
+          "-O2",
+          "-nostdlib",
+          "-static",
+          "-fuse-ld=lld",
+          "-Wl,-e,_start",
+          "-Wl,--build-id=none",
+          "-Wl,-Ttext=0x410000",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift.S",
+          "-o",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift"
+        ],
+        "sources": {
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/shift.S": "6a5f5fd2a562950affdc654c74b1a5d021f532904b71112e5763d8f2d5da4df7"
+        },
+        "qemu_verified": true
+      },
+      "medians": {
+        "swiftvm-block-pin0": {
+          "warm_median_ns": 41527214,
+          "cold_run_ns": 42440528,
+          "initialization_ns": 691193,
+          "cold_extra_estimate_ns": 915760
+        },
+        "swiftvm-block-pin2": {
+          "warm_median_ns": 40993856,
+          "cold_run_ns": 42281105,
+          "initialization_ns": 688063,
+          "cold_extra_estimate_ns": 931531
+        },
+        "swiftvm-function-pin0": {
+          "warm_median_ns": 41668680,
+          "cold_run_ns": 42450495,
+          "initialization_ns": 705976,
+          "cold_extra_estimate_ns": 869050
+        },
+        "swiftvm-function-pin2": {
+          "warm_median_ns": 40829348,
+          "cold_run_ns": 41866620,
+          "initialization_ns": 683575,
+          "cold_extra_estimate_ns": 967817
+        },
+        "dynarmic": {
+          "warm_median_ns": 15936550,
+          "cold_run_ns": 61624938,
+          "initialization_ns": 22578617,
+          "cold_extra_estimate_ns": 45709416
+        }
+      },
+      "swiftvm_over_dynarmic": {
+        "swiftvm-block-pin0": {
+          "warm_ratio_of_medians": 2.6057844389155744,
+          "paired_warm_ratio": {
+            "median": 2.6115110336107388,
+            "q1": 2.593953270016039,
+            "q3": 2.6336069897600094,
+            "min": 2.439456912926901,
+            "max": 2.693143046104253
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-block-pin2": {
+          "warm_ratio_of_medians": 2.5723168439844257,
+          "paired_warm_ratio": {
+            "median": 2.5859346328205826,
+            "q1": 2.5759920929871676,
+            "q3": 2.6089589685733863,
+            "min": 2.4542074719183185,
+            "max": 2.782480335113977
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin0": {
+          "warm_ratio_of_medians": 2.6146612660833117,
+          "paired_warm_ratio": {
+            "median": 2.620618948501521,
+            "q1": 2.599599826757661,
+            "q3": 2.637744026782957,
+            "min": 2.3941156874126275,
+            "max": 2.8690764878694286
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin2": {
+          "warm_ratio_of_medians": 2.5619941580831487,
+          "paired_warm_ratio": {
+            "median": 2.5610036561335927,
+            "q1": 2.553990011217161,
+            "q3": 2.5819844622349786,
+            "min": 2.3385632643521843,
+            "max": 2.6352029037931053
+          },
+          "swiftvm_faster_pairs": 0
+        }
+      }
+    },
+    "fp": {
+      "guest": {
+        "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp",
+        "sha256": "920a46ba03cfd07aac6cb0f23c22e52c00d968fbdf04ef26ec42f5eead7325bd",
+        "iterations": 1000000,
+        "expected_hex": "0000000061e33641",
+        "symbols": {
+          "bench_entry": 4259880,
+          "benchmark_output": 4325472
+        },
+        "build_command": [
+          "clang-18",
+          "--target=aarch64-linux-gnu",
+          "-ffreestanding",
+          "-fno-builtin",
+          "-fomit-frame-pointer",
+          "-fno-vectorize",
+          "-fno-slp-vectorize",
+          "-ffp-contract=off",
+          "-O2",
+          "-nostdlib",
+          "-static",
+          "-fuse-ld=lld",
+          "-Wl,-e,_start",
+          "-Wl,--build-id=none",
+          "-Wl,-Ttext=0x410000",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp.S",
+          "-o",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp"
+        ],
+        "sources": {
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/fp.S": "499b7ea686c0cfbc5b9ceaa5a0cbeded51200d74f97ff9070031c7489c5b725b"
+        },
+        "qemu_verified": true
+      },
+      "medians": {
+        "swiftvm-block-pin0": {
+          "warm_median_ns": 19869279,
+          "cold_run_ns": 20969885,
+          "initialization_ns": 676255,
+          "cold_extra_estimate_ns": 985502
+        },
+        "swiftvm-block-pin2": {
+          "warm_median_ns": 19764768,
+          "cold_run_ns": 20712045,
+          "initialization_ns": 695429,
+          "cold_extra_estimate_ns": 921385
+        },
+        "swiftvm-function-pin0": {
+          "warm_median_ns": 19568962,
+          "cold_run_ns": 20513488,
+          "initialization_ns": 681811,
+          "cold_extra_estimate_ns": 992002
+        },
+        "swiftvm-function-pin2": {
+          "warm_median_ns": 19513472,
+          "cold_run_ns": 20461551,
+          "initialization_ns": 725113,
+          "cold_extra_estimate_ns": 921782
+        },
+        "dynarmic": {
+          "warm_median_ns": 4489889,
+          "cold_run_ns": 51266363,
+          "initialization_ns": 22923968,
+          "cold_extra_estimate_ns": 46796548
+        }
+      },
+      "swiftvm_over_dynarmic": {
+        "swiftvm-block-pin0": {
+          "warm_ratio_of_medians": 4.425338577412493,
+          "paired_warm_ratio": {
+            "median": 4.4458182050122454,
+            "q1": 4.398969162660105,
+            "q3": 4.493261810034443,
+            "min": 4.255059695556652,
+            "max": 4.999112812103388
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-block-pin2": {
+          "warm_ratio_of_medians": 4.402061609986349,
+          "paired_warm_ratio": {
+            "median": 4.457584832731146,
+            "q1": 4.393581624236446,
+            "q3": 4.519434564058292,
+            "min": 4.244532270159077,
+            "max": 5.184967621875438
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin0": {
+          "warm_ratio_of_medians": 4.358451177746265,
+          "paired_warm_ratio": {
+            "median": 4.397069281668211,
+            "q1": 4.332444999548116,
+            "q3": 4.441296045628434,
+            "min": 4.267669260350422,
+            "max": 4.913774183610123
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin2": {
+          "warm_ratio_of_medians": 4.3460922976046845,
+          "paired_warm_ratio": {
+            "median": 4.372705820835299,
+            "q1": 4.336934398666266,
+            "q3": 4.410243132117973,
+            "min": 4.191305864659395,
+            "max": 6.0788818704141185
+          },
+          "swiftvm_faster_pairs": 0
+        }
+      }
+    },
+    "compute": {
+      "guest": {
+        "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute",
+        "sha256": "379a2978279e16c6805cc30dd97776ac9c16334d3db2003ce1c6204797fcba96",
+        "iterations": null,
+        "expected_hex": "16c4eb36ad9a07bfd37dcfef3020390484f680dd6136627bead3f21f59f53cceeb8f34033c3d050029532df90000000000000000005ba040",
+        "symbols": {
+          "bench_entry": 4260200,
+          "benchmark_output": 4394128
+        },
+        "build_command": [
+          "clang-18",
+          "--target=aarch64-linux-gnu",
+          "-ffreestanding",
+          "-fno-builtin",
+          "-fomit-frame-pointer",
+          "-fno-vectorize",
+          "-fno-slp-vectorize",
+          "-ffp-contract=off",
+          "-O2",
+          "-nostdlib",
+          "-static",
+          "-fuse-ld=lld",
+          "-Wl,-e,_start",
+          "-Wl,--build-id=none",
+          "-Wl,-Ttext=0x410000",
+          "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compute.c",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute.S",
+          "-o",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute"
+        ],
+        "sources": {
+          "/mnt/d/Dev/SwiftVM/benchmarks/arm64_compute.c": "8034c10da3f75f06b1ab4b780807613ce4f4502f79f87b1f017f327f78aac4aa",
+          "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/compute.S": "774248ccafaa0ec315a895b9661a30d98fa56caf7d5b5d4eff890b4f012332ef"
+        },
+        "qemu_verified": true
+      },
+      "medians": {
+        "swiftvm-block-pin0": {
+          "warm_median_ns": 19150892,
+          "cold_run_ns": 21438709,
+          "initialization_ns": 682894,
+          "cold_extra_estimate_ns": 2327592
+        },
+        "swiftvm-block-pin2": {
+          "warm_median_ns": 19656132,
+          "cold_run_ns": 21934029,
+          "initialization_ns": 687136,
+          "cold_extra_estimate_ns": 2420705
+        },
+        "swiftvm-function-pin0": {
+          "warm_median_ns": 18689731,
+          "cold_run_ns": 20744011,
+          "initialization_ns": 690795,
+          "cold_extra_estimate_ns": 1890229
+        },
+        "swiftvm-function-pin2": {
+          "warm_median_ns": 19086746,
+          "cold_run_ns": 21135071,
+          "initialization_ns": 683885,
+          "cold_extra_estimate_ns": 2023269
+        },
+        "dynarmic": {
+          "warm_median_ns": 4050869,
+          "cold_run_ns": 53340046,
+          "initialization_ns": 22676455,
+          "cold_extra_estimate_ns": 49412583
+        }
+      },
+      "swiftvm_over_dynarmic": {
+        "swiftvm-block-pin0": {
+          "warm_ratio_of_medians": 4.727600917235289,
+          "paired_warm_ratio": {
+            "median": 4.725955821297805,
+            "q1": 4.668154848415175,
+            "q3": 4.781273103108192,
+            "min": 3.7015554975057645,
+            "max": 5.987577808680516
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-block-pin2": {
+          "warm_ratio_of_medians": 4.852324772783321,
+          "paired_warm_ratio": {
+            "median": 4.808358360847104,
+            "q1": 4.771735791823258,
+            "q3": 4.881133618980403,
+            "min": 3.693478316085562,
+            "max": 5.22640781714346
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin0": {
+          "warm_ratio_of_medians": 4.613758430598471,
+          "paired_warm_ratio": {
+            "median": 4.634045843045084,
+            "q1": 4.550420053134477,
+            "q3": 4.696214710838839,
+            "min": 3.509659635617465,
+            "max": 4.840887031089767
+          },
+          "swiftvm_faster_pairs": 0
+        },
+        "swiftvm-function-pin2": {
+          "warm_ratio_of_medians": 4.711765796425409,
+          "paired_warm_ratio": {
+            "median": 4.681851115320646,
+            "q1": 4.615948137414383,
+            "q3": 4.7395611477112265,
+            "min": 3.6070715522178367,
+            "max": 5.189232286603552
+          },
+          "swiftvm_faster_pairs": 0
+        }
+      }
+    }
+  },
+  "cold_instances_diagnostic": {
+    "samples": 21,
+    "description": "Three fresh JIT instances sequentially in each process, 1000-iteration integer kernel; each instance compiles independently and executes twice with full output checks",
+    "source": "/mnt/d/Dev/SwiftVM/build/dynarmic-bench/cold_probe.cpp",
+    "source_sha256": "bded8898250265ffbd87046c89323822ad023f5cfe17c28f9758f39d706544a3",
+    "binary_sha256": "89d1b533c6375f2d4428a1531ff44110ec1375de769a7f8cafbe26e7889b1f47",
+    "medians": {
+      "0": {
+        "initialization_ns": 20395663,
+        "first_run_ns": 43553988,
+        "warm_run_ns": 1270,
+        "code_reads": 16
+      },
+      "1": {
+        "initialization_ns": 20459385,
+        "first_run_ns": 82202,
+        "warm_run_ns": 1220,
+        "code_reads": 16
+      },
+      "2": {
+        "initialization_ns": 14563553,
+        "first_run_ns": 72901,
+        "warm_run_ns": 1230,
+        "code_reads": 16
+      }
+    }
+  },
+  "raw_evidence": {
+    "comparison": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/final/summary.json",
+      "sha256": "9c1e2775faa73e2e5426558216dbbd95bfea79823dc9409d88924d71ca74d364"
+    },
+    "cold_instances": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/cold-instances-summary.json",
+      "sha256": "3bdf12ef831ca830ee65a48a5b0954a39f5cc69e0c3189629cc2e7ab2210210b"
+    }
+  },
+  "limitations": [
+    "Four scalar ARM64 microkernels and one composite containing compiler-generated NEON under WSL; no frequency locking or PMU data in this initial comparison.",
+    "Follow-up disassembly found Clang 18 re-enabled vectorization because -O2 followed the disabling flags; see the gap analysis for true-scalar controls and supplemental PMU observations.",
+    "Warm timing is callable kernel execution, not full Linux process or syscall performance.",
+    "Each process contributes the median of three warm invocations; those invocations are not independent samples.",
+    "First invocation includes process-level initialization and execution; cold-minus-warm is not a compiler clock.",
+    "Supplemental fresh JIT instances retain process-global data but do not share compiled guest code.",
+    "Safe/default Dynarmic policies with direct fastmem and cycle counting off; read-only callback remains conservative.",
+    "Default Dynarmic code cache is 128 MiB; initialization costs depend on cache and embedding policy.",
+    "SwiftVM compile_request_ns has no equivalent unmodified Dynarmic public counter in this experiment.",
+    "No general application or complete ISA correctness conclusion follows from these kernels."
+  ]
+}

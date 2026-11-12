@@ -1,0 +1,14 @@
+{
+  "archive": "raw-evidence.tar.gz",
+  "sha256": "c024587edee3a32f5ca00ae45754797eee30dad883f9cb60a6156c5af96e93f5",
+  "archive_bytes": 9142257,
+  "member_count": 38599,
+  "uncompressed_evidence_bytes": 179542302,
+  "manifest": "manifest.json",
+  "verification_date_local": "2026-11-12",
+  "integrity_check": {
+    "archive_sha256": "passed",
+    "member_sha256": "all_passed",
+    "verified_evidence_files": 38598
+  }
+}

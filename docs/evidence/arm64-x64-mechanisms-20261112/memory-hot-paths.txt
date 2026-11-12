@@ -1,0 +1,59 @@
+baseline, 37 instructions per taken iteration
++0000  mov    r13,QWORD PTR [r12+0x20]
++0005  mov    r14,QWORD PTR [r12]
++0009  mov    QWORD PTR [r13+0x0],r14
++000d  mov    r14d,0x0
++0013  mov    DWORD PTR [r12+0x32c],r14d
++001b  mov    r14,QWORD PTR [r13+0x0]
++001f  mov    QWORD PTR [r12+0x18],r14
++0024  mov    r13,r14
++0027  add    r13,0x3
++002b  mov    QWORD PTR [r12],r13
++002f  mov    r13,QWORD PTR [r12+0x8]
++0034  mov    r14,r13
++0037  sub    r14,0x1
++003b  pushf
++003c  pop    rdx
++003d  mov    r10d,edx
++0040  and    r10d,0xc0
++0047  shl    r10d,0x18
++004b  mov    r11d,edx
++004e  and    r11d,0x1
++0052  shl    r11d,0x1d
++0056  or     r10d,r11d
++0059  mov    r11d,edx
++005c  and    r11d,0x800
++0063  shl    r11d,0x11
++0067  or     r10d,r11d
++006a  mov    r11d,0xf0000000
++0070  and    r11,r10
++0073  movabs rsi,0xffffffff0fffffff
++007d  and    rbx,rsi
++0080  or     rbx,r11
++0083  btc    rbx,0x1d
++0088  mov    QWORD PTR [r12+0x8],r14
++008d  cmp    QWORD PTR [r12+0x380],0x0
++0096  je     0x125
++00c3  test   ebx,0x40000000
++00c9  je     0x62
+
+candidate, 18 instructions per taken iteration
++0000  mov    r13,QWORD PTR [r12+0x20]
++0005  mov    r14,QWORD PTR [r12]
++0009  mov    QWORD PTR [r13+0x0],r14
++000d  mov    r14d,0x0
++0013  mov    DWORD PTR [r12+0x32c],r14d
++001b  mov    r14,QWORD PTR [r13+0x0]
++001f  mov    QWORD PTR [r12+0x18],r14
++0024  add    r14,0x3
++0028  mov    QWORD PTR [r12],r14
++002c  mov    r13,QWORD PTR [r12+0x8]
++0031  sub    r13,0x1
++0035  mov    QWORD PTR [r12+0x8],r13
++003a  mov    rcx,QWORD PTR [r12+0x380]
++0042  jrcxz  0xb0
++0049  pushf
++004a  pop    r11
++004c  mov    QWORD PTR [rsp],r11
++0050  jne    0x67
+

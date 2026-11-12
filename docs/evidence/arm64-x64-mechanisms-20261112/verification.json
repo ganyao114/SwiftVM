@@ -1,0 +1,10 @@
+{
+  "archive_sha256": "passed",
+  "gzip_crc": "passed",
+  "archive_members": 99631,
+  "runners_verified": 14,
+  "new_source_files_verified": 9,
+  "document_links": "passed",
+  "current_source_sha256": "passed",
+  "source_files_checked": 2029
+}

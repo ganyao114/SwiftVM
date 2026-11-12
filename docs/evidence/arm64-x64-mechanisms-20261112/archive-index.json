@@ -1,0 +1,892 @@
+[
+  {
+    "name": "provenance.json",
+    "files": 1,
+    "uncompressed_bytes": 5596
+  },
+  {
+    "name": "results/summary.json",
+    "files": 1,
+    "uncompressed_bytes": 225134
+  },
+  {
+    "name": "results/integer-hot-paths.txt",
+    "files": 1,
+    "uncompressed_bytes": 1381
+  },
+  {
+    "name": "results/memory-hot-paths.txt",
+    "files": 1,
+    "uncompressed_bytes": 1650
+  },
+  {
+    "name": "results/shift-hot-paths.txt",
+    "files": 1,
+    "uncompressed_bytes": 1481
+  },
+  {
+    "name": "source/source.patch",
+    "files": 1,
+    "uncompressed_bytes": 208131
+  },
+  {
+    "name": "source/source-sha256.json",
+    "files": 1,
+    "uncompressed_bytes": 262898
+  },
+  {
+    "name": "source/CMakeCache.txt",
+    "files": 1,
+    "uncompressed_bytes": 27761
+  },
+  {
+    "name": "source/build-commands.json",
+    "files": 1,
+    "uncompressed_bytes": 3691
+  },
+  {
+    "name": "source/code_build_id.h",
+    "files": 1,
+    "uncompressed_bytes": 106
+  },
+  {
+    "name": "source/new-files/benchmarks/arm64_compare.cpp",
+    "files": 1,
+    "uncompressed_bytes": 18269
+  },
+  {
+    "name": "source/new-files/benchmarks/arm64_compute.c",
+    "files": 1,
+    "uncompressed_bytes": 5304
+  },
+  {
+    "name": "source/new-files/benchmarks/arm64_gap_metrics.h",
+    "files": 1,
+    "uncompressed_bytes": 9768
+  },
+  {
+    "name": "source/new-files/benchmarks/dynarmic/CMakeLists.txt",
+    "files": 1,
+    "uncompressed_bytes": 871
+  },
+  {
+    "name": "source/new-files/source/runtime/ir/uniform_effects.h",
+    "files": 1,
+    "uncompressed_bytes": 3474
+  },
+  {
+    "name": "source/new-files/tools/analyze_dynarmic_gap.py",
+    "files": 1,
+    "uncompressed_bytes": 15971
+  },
+  {
+    "name": "source/new-files/tools/bench_dynarmic.py",
+    "files": 1,
+    "uncompressed_bytes": 15758
+  },
+  {
+    "name": "source/new-files/tools/correctness/generate_arm64_fp_binary.py",
+    "files": 1,
+    "uncompressed_bytes": 6016
+  },
+  {
+    "name": "source/new-files/tools/summarize_dynarmic_gap.py",
+    "files": 1,
+    "uncompressed_bytes": 19425
+  },
+  {
+    "name": "scripts/finalize-results.py",
+    "files": 1,
+    "uncompressed_bytes": 14093
+  },
+  {
+    "name": "scripts/measure-compile.py",
+    "files": 1,
+    "uncompressed_bytes": 1417
+  },
+  {
+    "name": "scripts/measure-confirmation.py",
+    "files": 1,
+    "uncompressed_bytes": 1566
+  },
+  {
+    "name": "scripts/measure-final.py",
+    "files": 1,
+    "uncompressed_bytes": 2112
+  },
+  {
+    "name": "scripts/measure-pmu.py",
+    "files": 1,
+    "uncompressed_bytes": 1905
+  },
+  {
+    "name": "scripts/measure-samples.py",
+    "files": 1,
+    "uncompressed_bytes": 936
+  },
+  {
+    "name": "scripts/measure-supplementary.py",
+    "files": 1,
+    "uncompressed_bytes": 1350
+  },
+  {
+    "name": "scripts/package-evidence.py",
+    "files": 1,
+    "uncompressed_bytes": 10907
+  },
+  {
+    "name": "scripts/run-final-measurements.py",
+    "files": 1,
+    "uncompressed_bytes": 1279
+  },
+  {
+    "name": "scripts/validate-final.py",
+    "files": 1,
+    "uncompressed_bytes": 2711
+  },
+  {
+    "name": "scripts/validate-x86-baseline.py",
+    "files": 1,
+    "uncompressed_bytes": 962
+  },
+  {
+    "name": "scripts/validate-x86-final.py",
+    "files": 1,
+    "uncompressed_bytes": 2587
+  },
+  {
+    "name": "scripts/verify-final.py",
+    "files": 1,
+    "uncompressed_bytes": 6394
+  },
+  {
+    "name": "scripts/scaling.cpp",
+    "files": 1,
+    "uncompressed_bytes": 7797
+  },
+  {
+    "name": "scripts/domain-probe.cpp",
+    "files": 1,
+    "uncompressed_bytes": 5689
+  },
+  {
+    "name": "scripts/scaling-build.json",
+    "files": 1,
+    "uncompressed_bytes": 1132
+  },
+  {
+    "name": "scripts/domain-probe-build.json",
+    "files": 1,
+    "uncompressed_bytes": 1143
+  },
+  {
+    "name": "scripts/final-binaries.json",
+    "files": 1,
+    "uncompressed_bytes": 816
+  },
+  {
+    "name": "scripts/ctest-command.json",
+    "files": 1,
+    "uncompressed_bytes": 399
+  },
+  {
+    "name": "scripts/measurement-commands.json",
+    "files": 1,
+    "uncompressed_bytes": 1365
+  },
+  {
+    "name": "runners/baseline_compare",
+    "files": 1,
+    "uncompressed_bytes": 7320472
+  },
+  {
+    "name": "runners/baseline_correctness",
+    "files": 1,
+    "uncompressed_bytes": 8970224
+  },
+  {
+    "name": "runners/baseline_linux",
+    "files": 1,
+    "uncompressed_bytes": 7352384
+  },
+  {
+    "name": "runners/baseline_aot",
+    "files": 1,
+    "uncompressed_bytes": 7432576
+  },
+  {
+    "name": "runners/final_compare",
+    "files": 1,
+    "uncompressed_bytes": 7369208
+  },
+  {
+    "name": "runners/final_correctness",
+    "files": 1,
+    "uncompressed_bytes": 9026640
+  },
+  {
+    "name": "runners/final_linux",
+    "files": 1,
+    "uncompressed_bytes": 7405072
+  },
+  {
+    "name": "runners/final_aot",
+    "files": 1,
+    "uncompressed_bytes": 7493552
+  },
+  {
+    "name": "runners/scaling",
+    "files": 1,
+    "uncompressed_bytes": 650752
+  },
+  {
+    "name": "runners/domain-probe",
+    "files": 1,
+    "uncompressed_bytes": 7338328
+  },
+  {
+    "name": "runners/baseline_probe",
+    "files": 1,
+    "uncompressed_bytes": 7350720
+  },
+  {
+    "name": "runners/candidate_probe",
+    "files": 1,
+    "uncompressed_bytes": 7411480
+  },
+  {
+    "name": "runners/dynarmic_probe",
+    "files": 1,
+    "uncompressed_bytes": 6354536
+  },
+  {
+    "name": "runners/dynarmic_compare",
+    "files": 1,
+    "uncompressed_bytes": 6334112
+  },
+  {
+    "name": "runners/qemu-aarch64",
+    "files": 1,
+    "uncompressed_bytes": 4211464
+  },
+  {
+    "name": "runners/qemu-arm",
+    "files": 1,
+    "uncompressed_bytes": 2212008
+  },
+  {
+    "name": "results/final-bench-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 771018
+  },
+  {
+    "name": "results/final-pmu-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 448972
+  },
+  {
+    "name": "results/sample-runs.json",
+    "files": 1,
+    "uncompressed_bytes": 93654
+  },
+  {
+    "name": "results/compile-program-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 208244
+  },
+  {
+    "name": "results/final-programs-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 120455
+  },
+  {
+    "name": "results/final-correctness-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 4029
+  },
+  {
+    "name": "results/x86-regression-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 5854
+  },
+  {
+    "name": "results/x86-block-raw-diff.json",
+    "files": 1,
+    "uncompressed_bytes": 234
+  },
+  {
+    "name": "results/x86-function-raw-diff.json",
+    "files": 1,
+    "uncompressed_bytes": 234
+  },
+  {
+    "name": "results/supplementary-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 258041
+  },
+  {
+    "name": "results/confirmation-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 262863
+  },
+  {
+    "name": "results/scaling-final-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 37773
+  },
+  {
+    "name": "results/fp-domains-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 1074744
+  },
+  {
+    "name": "results/static-instructions.json",
+    "files": 1,
+    "uncompressed_bytes": 11429
+  },
+  {
+    "name": "results/hot-paths.json",
+    "files": 1,
+    "uncompressed_bytes": 11355
+  },
+  {
+    "name": "results/validated-ctest.xml",
+    "files": 1,
+    "uncompressed_bytes": 15666
+  },
+  {
+    "name": "results/validated-ctest.log",
+    "files": 1,
+    "uncompressed_bytes": 5020
+  },
+  {
+    "name": "results/final-correctness.log",
+    "files": 1,
+    "uncompressed_bytes": 6485
+  },
+  {
+    "name": "results/x86-final.log",
+    "files": 1,
+    "uncompressed_bytes": 394
+  },
+  {
+    "name": "results/final-programs.log",
+    "files": 1,
+    "uncompressed_bytes": 150
+  },
+  {
+    "name": "results/final-bench.log",
+    "files": 1,
+    "uncompressed_bytes": 1447
+  },
+  {
+    "name": "results/final-pmu.log",
+    "files": 1,
+    "uncompressed_bytes": 791
+  },
+  {
+    "name": "results/final-samples.log",
+    "files": 1,
+    "uncompressed_bytes": 136
+  },
+  {
+    "name": "results/compile-program.log",
+    "files": 1,
+    "uncompressed_bytes": 415
+  },
+  {
+    "name": "results/supplementary.log",
+    "files": 1,
+    "uncompressed_bytes": 916
+  },
+  {
+    "name": "results/confirmation.log",
+    "files": 1,
+    "uncompressed_bytes": 654
+  },
+  {
+    "name": "results/final-build9.log",
+    "files": 1,
+    "uncompressed_bytes": 1605
+  },
+  {
+    "name": "results/drvfs-ctest.xml",
+    "files": 1,
+    "uncompressed_bytes": 19387
+  },
+  {
+    "name": "results/drvfs-ctest.log",
+    "files": 1,
+    "uncompressed_bytes": 9105
+  },
+  {
+    "name": "results/scaling-final-0.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 4979
+  },
+  {
+    "name": "results/scaling-final-1.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 4982
+  },
+  {
+    "name": "results/scaling-final-2.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 4983
+  },
+  {
+    "name": "results/domain-probe-final-0.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 59090
+  },
+  {
+    "name": "results/domain-probe-final-1.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 58980
+  },
+  {
+    "name": "results/domain-probe-final-2.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 59024
+  },
+  {
+    "name": "results/domain-probe-final-3.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 58983
+  },
+  {
+    "name": "results/domain-probe-final-4.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 58987
+  },
+  {
+    "name": "results/domain-probe-final-5.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 59008
+  },
+  {
+    "name": "results/domain-probe-final-6.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 59049
+  },
+  {
+    "name": "results/domain-probe-final-7.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 58908
+  },
+  {
+    "name": "results/domain-probe-final-8.jsonl",
+    "files": 1,
+    "uncompressed_bytes": 58988
+  },
+  {
+    "name": "diagnostics/pmu",
+    "files": 2368,
+    "uncompressed_bytes": 33389704
+  },
+  {
+    "name": "diagnostics/samples",
+    "files": 633,
+    "uncompressed_bytes": 8517393
+  },
+  {
+    "name": "correctness/arm-actual",
+    "files": 57258,
+    "uncompressed_bytes": 779744576
+  },
+  {
+    "name": "correctness/x86-actual",
+    "files": 1282,
+    "uncompressed_bytes": 173475020
+  },
+  {
+    "name": "correctness/x86-baseline",
+    "files": 1282,
+    "uncompressed_bytes": 173229523
+  },
+  {
+    "name": "correctness/x86-corpus",
+    "files": 639,
+    "uncompressed_bytes": 1152728
+  },
+  {
+    "name": "correctness/basic-arm64-corpus",
+    "files": 160,
+    "uncompressed_bytes": 288064
+  },
+  {
+    "name": "correctness/basic-arm32-corpus",
+    "files": 192,
+    "uncompressed_bytes": 344864
+  },
+  {
+    "name": "correctness/basic-arm64-oracle",
+    "files": 160,
+    "uncompressed_bytes": 21788798
+  },
+  {
+    "name": "correctness/basic-arm32-oracle",
+    "files": 192,
+    "uncompressed_bytes": 25998280
+  },
+  {
+    "name": "correctness/fp-corpus",
+    "files": 9217,
+    "uncompressed_bytes": 15978136
+  },
+  {
+    "name": "correctness/fp-oracle",
+    "files": 9216,
+    "uncompressed_bytes": 36740609
+  },
+  {
+    "name": "correctness/neon-corpus",
+    "files": 8436,
+    "uncompressed_bytes": 14157049
+  },
+  {
+    "name": "correctness/neon-oracle",
+    "files": 8432,
+    "uncompressed_bytes": 34280545
+  },
+  {
+    "name": "guests/benchmarks/integer",
+    "files": 1,
+    "uncompressed_bytes": 66360
+  },
+  {
+    "name": "guests/benchmarks/memory",
+    "files": 1,
+    "uncompressed_bytes": 66360
+  },
+  {
+    "name": "guests/benchmarks/shift",
+    "files": 1,
+    "uncompressed_bytes": 66360
+  },
+  {
+    "name": "guests/benchmarks/fp",
+    "files": 1,
+    "uncompressed_bytes": 66360
+  },
+  {
+    "name": "guests/benchmarks/compute",
+    "files": 1,
+    "uncompressed_bytes": 70056
+  },
+  {
+    "name": "guests/benchmarks/fp-u8",
+    "files": 1,
+    "uncompressed_bytes": 66392
+  },
+  {
+    "name": "guests/benchmarks/compute-matrix",
+    "files": 1,
+    "uncompressed_bytes": 67912
+  },
+  {
+    "name": "guests/benchmarks/compute-matrix-scalar",
+    "files": 1,
+    "uncompressed_bytes": 66928
+  },
+  {
+    "name": "guests/benchmarks/compute-sha",
+    "files": 1,
+    "uncompressed_bytes": 68848
+  },
+  {
+    "name": "guests/benchmarks/compute-sort",
+    "files": 1,
+    "uncompressed_bytes": 67128
+  },
+  {
+    "name": "guests/full-programs/arm64",
+    "files": 1,
+    "uncompressed_bytes": 4712
+  },
+  {
+    "name": "persistence/arm64.aot",
+    "files": 1,
+    "uncompressed_bytes": 49664
+  },
+  {
+    "name": "persistence/cache-arm64",
+    "files": 1,
+    "uncompressed_bytes": 60495
+  },
+  {
+    "name": "guests/full-programs/arm32",
+    "files": 1,
+    "uncompressed_bytes": 4036
+  },
+  {
+    "name": "persistence/arm32.aot",
+    "files": 1,
+    "uncompressed_bytes": 76560
+  },
+  {
+    "name": "persistence/cache-arm32",
+    "files": 1,
+    "uncompressed_bytes": 101638
+  },
+  {
+    "name": "guests/full-programs/thumb",
+    "files": 1,
+    "uncompressed_bytes": 3464
+  },
+  {
+    "name": "persistence/thumb.aot",
+    "files": 1,
+    "uncompressed_bytes": 76576
+  },
+  {
+    "name": "persistence/cache-thumb",
+    "files": 1,
+    "uncompressed_bytes": 108738
+  },
+  {
+    "name": "intermediate/initial-implementation/final-bench-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 771272
+  },
+  {
+    "name": "intermediate/initial-implementation/final-bench.log",
+    "files": 1,
+    "uncompressed_bytes": 1448
+  },
+  {
+    "name": "intermediate/initial-implementation/final-correctness-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 3834
+  },
+  {
+    "name": "intermediate/initial-implementation/final-correctness.log",
+    "files": 1,
+    "uncompressed_bytes": 6748
+  },
+  {
+    "name": "intermediate/initial-implementation/final-programs-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 120409
+  },
+  {
+    "name": "intermediate/initial-implementation/final-programs.log",
+    "files": 1,
+    "uncompressed_bytes": 150
+  },
+  {
+    "name": "intermediate/tuned-implementation/compile-program-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 208205
+  },
+  {
+    "name": "intermediate/tuned-implementation/compile-program.log",
+    "files": 1,
+    "uncompressed_bytes": 414
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-bench-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 772020
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-bench.log",
+    "files": 1,
+    "uncompressed_bytes": 1453
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-correctness-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 4029
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-correctness.log",
+    "files": 1,
+    "uncompressed_bytes": 6485
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-pmu-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 449447
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-pmu.log",
+    "files": 1,
+    "uncompressed_bytes": 791
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-programs-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 120408
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-programs.log",
+    "files": 1,
+    "uncompressed_bytes": 150
+  },
+  {
+    "name": "intermediate/tuned-implementation/final-samples.log",
+    "files": 1,
+    "uncompressed_bytes": 136
+  },
+  {
+    "name": "intermediate/tuned-implementation/scaling-steady-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 9255
+  },
+  {
+    "name": "intermediate/tuned-implementation/scaling-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 9371
+  },
+  {
+    "name": "intermediate/tuned-implementation/validated-ctest.log",
+    "files": 1,
+    "uncompressed_bytes": 5020
+  },
+  {
+    "name": "intermediate/tuned-implementation/x86-final.log",
+    "files": 1,
+    "uncompressed_bytes": 323
+  },
+  {
+    "name": "intermediate/tuned-implementation/x86-regression-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 5854
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/compile-program-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 208343
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/compile-program.log",
+    "files": 1,
+    "uncompressed_bytes": 416
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/confirmation-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 262862
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/confirmation.log",
+    "files": 1,
+    "uncompressed_bytes": 650
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-bench-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 772975
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-bench.log",
+    "files": 1,
+    "uncompressed_bytes": 1457
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-correctness-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 4029
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-correctness.log",
+    "files": 1,
+    "uncompressed_bytes": 6485
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-pmu-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 450406
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-pmu.log",
+    "files": 1,
+    "uncompressed_bytes": 791
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-programs-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 120397
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-programs.log",
+    "files": 1,
+    "uncompressed_bytes": 150
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/final-samples.log",
+    "files": 1,
+    "uncompressed_bytes": 136
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/fp-domains-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 1075691
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/scaling-final-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 37778
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/supplementary-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 258169
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/supplementary.log",
+    "files": 1,
+    "uncompressed_bytes": 916
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/validated-ctest.log",
+    "files": 1,
+    "uncompressed_bytes": 5020
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/x86-final.log",
+    "files": 1,
+    "uncompressed_bytes": 323
+  },
+  {
+    "name": "intermediate/before-narrow-flags-fix/x86-regression-summary.json",
+    "files": 1,
+    "uncompressed_bytes": 5854
+  },
+  {
+    "name": "intermediate/flags/flags_compare",
+    "files": 1,
+    "uncompressed_bytes": 7335080
+  },
+  {
+    "name": "intermediate/flags/flags_correctness",
+    "files": 1,
+    "uncompressed_bytes": 8983544
+  },
+  {
+    "name": "intermediate/flags/flags_linux",
+    "files": 1,
+    "uncompressed_bytes": 7358952
+  },
+  {
+    "name": "intermediate/flags/flags-smoke.json",
+    "files": 1,
+    "uncompressed_bytes": 4476
+  },
+  {
+    "name": "intermediate/flags/flags-ctest3.log",
+    "files": 1,
+    "uncompressed_bytes": 5020
+  },
+  {
+    "name": "documents/arm64-x64-mechanism-optimization-plan-2026-11-12.md",
+    "files": 1,
+    "uncompressed_bytes": 39450
+  },
+  {
+    "name": "documents/arm64-x64-mechanism-optimization-results-2026-11-12.md",
+    "files": 1,
+    "uncompressed_bytes": 15787
+  }
+]

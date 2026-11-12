@@ -1,6 +1,10 @@
 # Frozen measurement outputs retain their exact bytes and hashes, including
 # simpleperf's trailing spaces. Do not normalize or whitespace-check them.
 docs/evidence/parity-batch37/** -text -whitespace
+docs/evidence/dynarmic-bench-20261111/** -text -whitespace
+docs/evidence/dynarmic-gap-20261111/** -text -whitespace
+docs/evidence/arm64-x64-opt4-20261111/** -text -whitespace
+docs/evidence/arm64-x64-mechanisms-20261112/** -text -whitespace
 
 # Imported dependency snapshots retain upstream bytes and whitespace-sensitive
 # self-test fixtures. Project formatting applies to SwiftVM-owned sources.
