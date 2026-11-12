@@ -63,6 +63,17 @@ bool AotGuestEnv::Init(const std::string& guest_path,
         options.scope = artifact.code.key.requested_scope;
         options.mode = execution::ExecutionMode::JitOnly;
         options.artifact_path.clear();
+        if (!options.exception_handler)
+            options.exception_handler = [](void*,
+                                           runtime::GuestContextView,
+                                           const runtime::GuestExceptionInfo& event) {
+                // A failed named call returns to its host caller. Explicit
+                // embedding policies and asynchronous guest signals keep
+                // their ordinary VM behavior.
+                if (event.origin != runtime::GuestExceptionOrigin::Async)
+                    ThrowError("synchronous exception in guest call", ErrorKind::GuestFault);
+                return runtime::GuestExceptionDisposition::GuestOS;
+            };
         auto candidate = std::make_unique<Impl>(options);
         candidate->artifact = std::move(artifact);
         auto& image = candidate->artifact;

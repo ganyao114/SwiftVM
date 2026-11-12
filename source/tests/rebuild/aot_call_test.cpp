@@ -121,16 +121,30 @@ void Calls(swift::runtime::ir::Scope scope) {
         const U64 expected = UINT64_C(0x123456789abcdef0);
         REQUIRE(memory.Write(&expected, sizeof(expected)));
         const auto read = env.Lookup<U64(GuestPtr<const U64>)>("read");
-        CHECK(read(memory.as<const U64>()) == expected);
+        const auto first = read.Try(memory.as<const U64>());
+        INFO("initial call: " << env.LastFailure().Message());
+        REQUIRE(first);
+        CHECK(first.value() == expected);
         // No original file exists, no interpreter is allowed, and no fallback
         // compiler should be needed for any of these covered entries.
         CHECK(env.Stats().compile_attempts == 0);
         CHECK(env.Stats().interpreted_steps == 0);
         CHECK(env.Stats().native_bytes > 0);
-        const auto fault = read.Try(GuestPtr<const U64>{U64{0}});
-        CHECK(!fault);
-        CHECK(fault.status() == GuestCallStatus::GuestFault);
-        CHECK(read(memory.as<const U64>()) == expected);
+        for (unsigned repeat = 0; repeat < 2; ++repeat) {
+            const auto fault = read.Try(GuestPtr<const U64>{U64{0}});
+            CHECK(!fault);
+            CHECK(fault.status() == GuestCallStatus::GuestFault);
+            CHECK(fault.diagnostic().rip == swift::tests::aot_fixture::Read);
+            CHECK(env.LastFailure().kind == swift::ErrorKind::GuestFault);
+            const auto recovered = read.Try(memory.as<const U64>());
+            INFO("call after fault: " << env.LastFailure().Message());
+            REQUIRE(recovered);
+            CHECK(recovered.value() == expected);
+            CHECK(!env.LastFailure());
+        }
+        CHECK(env.Lookup<U64(U64)>("increment")(1) == 48);
+        CHECK(env.Stats().compile_attempts == 0);
+        CHECK(env.Stats().interpreted_steps == 0);
     }
     CHECK(env.Close().Complete());
 }
@@ -144,6 +158,55 @@ TEST_CASE("AOT Block entries support typed native guest calls after source remov
 TEST_CASE("AOT Function entries support typed native guest calls after source removal",
           "[native][aot]") {
     Calls(swift::runtime::ir::Scope::Function);
+}
+
+TEST_CASE("AOT calls preserve explicit exception termination policies", "[native][aot]") {
+    using swift::runtime::GuestExceptionDisposition;
+    const Fixture fixture{swift::runtime::ir::Scope::Function};
+
+    struct Policy {
+        GuestExceptionDisposition disposition;
+        unsigned calls{};
+    };
+
+    for (const auto disposition :
+         {GuestExceptionDisposition::GuestOS, GuestExceptionDisposition::Stop}) {
+        Policy policy{disposition};
+        execution::RuntimeOptions options;
+        options.exception_opaque = &policy;
+        options.exception_handler = [](void* opaque,
+                                       swift::runtime::GuestContextView,
+                                       const swift::runtime::GuestExceptionInfo&) {
+            auto& policy = *static_cast<Policy*>(opaque);
+            ++policy.calls;
+            return policy.disposition;
+        };
+        aot::AotGuestEnv env;
+        std::string error;
+        REQUIRE(env.Init(fixture.artifact, error, options));
+        const auto read = env.Lookup<U64(GuestPtr<const U64>)>("read");
+        const auto fault = read.Try(GuestPtr<const U64>{U64{0}});
+        CHECK(!fault && fault.status() == GuestCallStatus::GuestFault);
+        CHECK(policy.calls == 1);
+        const auto again = env.Lookup<U64()>("nine").Try();
+        CHECK(!again);
+        CHECK(env.LastFailure().kind == swift::ErrorKind::InvalidState);
+        CHECK(policy.calls == 1);
+        CHECK(env.Close().Complete());
+    }
+}
+
+TEST_CASE("AOT calls cannot revive a guest that explicitly exited", "[native][aot]") {
+    const Fixture fixture{swift::runtime::ir::Scope::Function};
+    aot::AotGuestEnv env;
+    std::string error;
+    REQUIRE(env.Init(fixture.artifact, error));
+    const auto exited = env.Lookup<void()>("_start").Try();
+    CHECK(!exited && exited.status() == GuestCallStatus::GuestFault);
+    const auto again = env.Lookup<U64()>("nine").Try();
+    CHECK(!again);
+    CHECK(env.LastFailure().kind == swift::ErrorKind::InvalidState);
+    CHECK(env.Close().Complete());
 }
 
 TEST_CASE("AOT startup reaches a precompiled stop snapshot and retains initialized globals",

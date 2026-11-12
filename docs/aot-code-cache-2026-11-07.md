@@ -79,6 +79,8 @@ CLI `call` 提供最多 8 个整数参数；完整 C++ GuestFn 支持独立 GPR�
 
 调用经当前 guest entry／dispatcher 执行，返回地址为独立的不可执行 sentinel；不会将符号中的 host code VA 强转成普通 C 函数调用。每次调用恢复调用前的架构寄存器，保留 guest 全局数据与映射；IFUNC resolver 也通过 GuestFn 执行并缓存选择结果。
 
+`AotGuestEnv` 默认将同步 guest 异常作为本次命名调用的 `GuestFault` 返回；调用方仍可继续调用，已提交的 guest 内存写入不会回滚。显式提供的 `exception_handler` 保留其原策略，异步信号仍由 guest OS 处理。guest 主动调用 `exit`，或显式策略选择终止后，不允许通过下一次命名调用恢复已退出的线程。
+
 依赖 libc／constructors 初始化的调用先使用显式 startup 流程：`PatchGuestStopByte(input,"main",patched,error)` 生成副本，再从该副本 compile artifact；`Init` 后调用 `env.RunStartupUntil("main",error)`。guest 从正常 ELF entry 与初始 Linux stack 执行，停在已预设的 F4 函数入口之前，之后的命名调用保留初始化后的 globals／TLS／映射。stop 函数的首字节保留为 F4，不继续调用其原实现。该 stop 的 source hash 已包含在产物中，不修改已校验的 guest bytes，不赋予普通 guest HLT 新语义；`patch_stop=true` 在 AOT 环境明确报错，要求先生成并编译副本。上例的字符串地址需按实际 guest 映射选择，C++ 调用可使用 ScopedGuestBuffer 传入字符串。
 
 ## 边界
