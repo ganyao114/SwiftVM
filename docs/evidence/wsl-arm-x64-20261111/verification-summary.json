@@ -1,0 +1,388 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-11",
+  "baseline_commit": "47d6fa47",
+  "host": "WSL Ubuntu 24.04 Linux x86-64; GCC 13.3 Release/IPO",
+  "binary_sha256": {
+    "svm_rebuild_linux": "e3f38b79924a7fe075aa4b9230b34a9dc00ff51ed0e8ac31c248e234c1e76e7a",
+    "svm_correctness": "807d133fb89006a6e03d6bcb9ee3017e37be2c98e73c3616b05427348e78209d",
+    "svm_aot": "0604997a7ca9955ae12dcafd0a75f399f71a37f79582f80e35afd38eb45906c3"
+  },
+  "ctest": {
+    "total": 38,
+    "passed": 31,
+    "skipped": 7,
+    "failed": 0
+  },
+  "differential": {
+    "boundary-basic-summary": {
+      "total": 4224,
+      "native_executed": 4224
+    },
+    "boundary-fp-summary": {
+      "total": 27648,
+      "native_executed": 27648
+    },
+    "dualword-summary": {
+      "total": 1092,
+      "native_executed": 1008
+    }
+  },
+  "program_runs": 18,
+  "benchmarks": {
+    "bench-dualword": {
+      "samples": 31,
+      "baseline_sha256": "ce2698dd7b6aee036a117358c115e386ee879be1642e6d0e501e644a7eb10f85",
+      "workloads": {
+        "arm-align8/block": {
+          "runtime_ratio": 1.2019206595665761,
+          "compile_ratio": 0.8380012116289752,
+          "native_bytes": {
+            "baseline": 1988,
+            "candidate": 2700
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm-align8/function": {
+          "runtime_ratio": 1.2115368799890471,
+          "compile_ratio": 0.7817421234510283,
+          "native_bytes": {
+            "baseline": 1084,
+            "candidate": 1452
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm-align4/block": {
+          "runtime_ratio": 1.229802349708555,
+          "compile_ratio": 0.8097113149578008,
+          "native_bytes": {
+            "baseline": 1988,
+            "candidate": 2700
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm-align4/function": {
+          "runtime_ratio": 1.2365500287495512,
+          "compile_ratio": 0.8078265159508385,
+          "native_bytes": {
+            "baseline": 1084,
+            "candidate": 1452
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "thumb-align8/block": {
+          "runtime_ratio": 1.2134659797010596,
+          "compile_ratio": 0.7919191623664683,
+          "native_bytes": {
+            "baseline": 1972,
+            "candidate": 2684
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "thumb-align8/function": {
+          "runtime_ratio": 1.2193327205597049,
+          "compile_ratio": 0.7709758210372561,
+          "native_bytes": {
+            "baseline": 1080,
+            "candidate": 1448
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "thumb-align4/block": {
+          "runtime_ratio": 1.244837022784409,
+          "compile_ratio": 0.8405655146922935,
+          "native_bytes": {
+            "baseline": 1972,
+            "candidate": 2684
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "thumb-align4/function": {
+          "runtime_ratio": 1.2448165947428353,
+          "compile_ratio": 0.7899076043349229,
+          "native_bytes": {
+            "baseline": 1080,
+            "candidate": 1448
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        }
+      }
+    },
+    "bench-boundary": {
+      "samples": 31,
+      "baseline_sha256": "ce2698dd7b6aee036a117358c115e386ee879be1642e6d0e501e644a7eb10f85",
+      "workloads": {
+        "arm64-integer/block": {
+          "runtime_ratio": 0.9855830108146554,
+          "compile_ratio": 0.9461404326655435,
+          "native_bytes": {
+            "baseline": 1224,
+            "candidate": 1224
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm64-integer/function": {
+          "runtime_ratio": 0.9905004080217995,
+          "compile_ratio": 0.9440324217794934,
+          "native_bytes": {
+            "baseline": 716,
+            "candidate": 716
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm64-memory/block": {
+          "runtime_ratio": 0.9823668034684107,
+          "compile_ratio": 0.945480646556039,
+          "native_bytes": {
+            "baseline": 1264,
+            "candidate": 1264
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm64-memory/function": {
+          "runtime_ratio": 0.9854259493195763,
+          "compile_ratio": 0.9618766359419614,
+          "native_bytes": {
+            "baseline": 732,
+            "candidate": 732
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm64-fp/block": {
+          "runtime_ratio": 0.9919127146434787,
+          "compile_ratio": 0.9452257054851714,
+          "native_bytes": {
+            "baseline": 1452,
+            "candidate": 1452
+          },
+          "spill_slots": {
+            "baseline": 80,
+            "candidate": 80
+          }
+        },
+        "arm64-fp/function": {
+          "runtime_ratio": 0.9823543993726871,
+          "compile_ratio": 0.9293658978028454,
+          "native_bytes": {
+            "baseline": 864,
+            "candidate": 864
+          },
+          "spill_slots": {
+            "baseline": 40,
+            "candidate": 40
+          }
+        },
+        "arm32-integer/block": {
+          "runtime_ratio": 0.9848723363992509,
+          "compile_ratio": 0.687831112245456,
+          "native_bytes": {
+            "baseline": 1436,
+            "candidate": 1436
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm32-integer/function": {
+          "runtime_ratio": 0.9908780173366579,
+          "compile_ratio": 0.7170620051611047,
+          "native_bytes": {
+            "baseline": 892,
+            "candidate": 892
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm32-memory/block": {
+          "runtime_ratio": 0.9931929883194667,
+          "compile_ratio": 0.7754062624659014,
+          "native_bytes": {
+            "baseline": 1644,
+            "candidate": 1644
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm32-memory/function": {
+          "runtime_ratio": 0.9931208329138317,
+          "compile_ratio": 0.7907135465973889,
+          "native_bytes": {
+            "baseline": 972,
+            "candidate": 972
+          },
+          "spill_slots": {
+            "baseline": 0,
+            "candidate": 0
+          }
+        },
+        "arm32-fp/block": {
+          "runtime_ratio": 0.9787439160044871,
+          "compile_ratio": 0.7884653376436782,
+          "native_bytes": {
+            "baseline": 1872,
+            "candidate": 1872
+          },
+          "spill_slots": {
+            "baseline": 80,
+            "candidate": 80
+          }
+        },
+        "arm32-fp/function": {
+          "runtime_ratio": 0.9845700596902047,
+          "compile_ratio": 0.7819392212041548,
+          "native_bytes": {
+            "baseline": 1216,
+            "candidate": 1216
+          },
+          "spill_slots": {
+            "baseline": 40,
+            "candidate": 40
+          }
+        }
+      }
+    }
+  },
+  "programs": {
+    "arm64": {
+      "guest_sha256": "3b1a1da64b0d7d355726f0cbf4bb5e49777f247d34e2da1e33acaeff4f4008d0",
+      "compile": {
+        "block": {
+          "baseline": 2281617,
+          "candidate": 2195868
+        },
+        "function": {
+          "baseline": 2013581,
+          "candidate": 1943364
+        }
+      }
+    },
+    "arm32": {
+      "guest_sha256": "7b3be352d5ade35b719130663deefeff2ab48670917f04e91222835f545907df",
+      "compile": {
+        "block": {
+          "baseline": 2116570,
+          "candidate": 2048865
+        },
+        "function": {
+          "baseline": 1732024,
+          "candidate": 1656082
+        }
+      }
+    },
+    "thumb": {
+      "guest_sha256": "55af38250475b3dc0c32d06c2eae0632504ceb22c2d9cc60e0b769278e34bcfb",
+      "compile": {
+        "block": {
+          "baseline": 1978579,
+          "candidate": 2030893
+        },
+        "function": {
+          "baseline": 1609215,
+          "candidate": 1616329
+        }
+      }
+    }
+  },
+  "source_sha256": {
+    "source/aot/call.cpp": "b316aad25b1c6d451573bd783128b85ab62f6b1c4a6ac5c33be39841752713cc",
+    "source/runtime/arch/arm64/fp_scalar.cpp": "8e36ef123fe9468f880ddb065412eb0c7975963bdc715536e26dbcddde16141c",
+    "source/runtime/backend/x64/emit_control.cpp": "7f43bc5bd795e79f77f501d0f1de5fa047f2ddd84a386591af7ae2d036a7688e",
+    "source/runtime/backend/x64/emit_flags.cpp": "fd9859081e9a8526f83e460f3db115f6358a9406f82226f743dda015fd6a6477",
+    "source/runtime/backend/x64/emit_memory.cpp": "3bb5e2555a77ae1b51a4fa46be2e416b9437844db256f4e68b776c1fed4a74c8",
+    "source/runtime/backend/x64/runtime.cpp": "cdf14f528ed1fb54673b7fb45fc79b31d4451e30ecfe4846666cd0ff2f20e523",
+    "source/runtime/execution/runtime.cpp": "e5fce90dd17b40ce159d6745234f4903a1cb9769a46ede5aba133d3fd5f96461",
+    "source/runtime/frontend/arm32/semantics_control.inc": "64ed6fc4a8861806be4a1a0d17e1027ef03d2d7e61776f61f2e157bf5626b0a7",
+    "source/runtime/frontend/arm32/semantics_memory.inc": "490ddfc2721ccc3d8555e4c956a126ccce240bdadaa475d2305ccee03379e06f",
+    "source/runtime/frontend/arm32/semantics_neon_integer.inc": "ce38748b795fa5c898fe959860d21f0f7dc4c58e28ba59a1d26777c4d851c2ee",
+    "source/tests/correctness/execute.cpp": "2df29253ef8920a7db52c9d7fdcd38d1da451bc2f8dd6c473798740443b28c0a",
+    "source/tests/correctness/main.cpp": "3eb2e704e2e7de7c5ad6a3b8e2ba19d9b8c52035725d0a90076a2dbb436c511b",
+    "source/tests/rebuild/aot_call_test.cpp": "ed9cf25ba3309a4b7697b8ccec2a7785346bdb4eab32213fddacb25c71541d5f",
+    "source/tests/rebuild/arm32_numeric_test.cpp": "b0b6e441e968a44eecd3861acbd3c6dec3ad345ecc4713da6748eda2deeeebb6",
+    "source/tests/rebuild/arm32_runtime_test.cpp": "e94a210df0cda0b376de6f674a5a67b63b77075a802ae441b640a050ba1dfd55",
+    "source/tests/rebuild/arm32_semantics_test.cpp": "06dcdbf6574f6ca2b403f81ffc30f41993e4cc90bd3f016a720e239064674d64",
+    "source/tests/rebuild/arm64_frontend_test.cpp": "68915ed3cae51b6e9d9a0705373d15f32f3624e0f64265d3a8c0534e74f18c29",
+    "source/tests/rebuild/runtime_engine_test.cpp": "b0b37899ac6566a1f6367269b14507dc3f36abe29eabe9abe1446fd1bb63f5d9",
+    "source/tests/rebuild/x64_compile_test.cpp": "2f0a18b4c386dc5eb37e94e6303ddea7745d99d02dbdfdb9c7c36e4873186232"
+  },
+  "arm32_inventory": {
+    "cases": 824,
+    "counts": {
+      "verified": 599,
+      "oracle_unsupported": 140,
+      "verified_with_gap": 15,
+      "exception_mismatch": 65,
+      "oracle_cpsr_gap": 1,
+      "profile_gap": 1,
+      "semantic_mismatch": 3
+    }
+  },
+  "limitations": [
+    "Finite ISA/input coverage; oracle unsupported and unknown/unpredictable differences remain explicit.",
+    "Strict ARM32 dual-word memory benchmark: runtime +20.2% to +24.5%, native code +34% to +36%; no compile regression.",
+    "Other-architecture native CTest entries skipped on x64.",
+    "WSL timing is not a full-application or PMU performance claim."
+  ],
+  "integration_check": {
+    "base_commit": "71a9b2c085ae99cfbce66df342b0670b1e565fd3",
+    "build_exit_code": 0,
+    "ctest": {
+      "total": 38,
+      "passed": 31,
+      "skipped": 7,
+      "failed": 0
+    },
+    "source_hashes_verified": 19,
+    "binary_sha256": {
+      "svm_rebuild_linux": "81668dbea5e614552e5b8931c1e595caf4bc8360a33ddb6f3c8814fd353d0711",
+      "svm_correctness": "3c7986ac8dc71afff304311b0804622d2d28b59feda0b2cdf55ca21dd554699f",
+      "svm_aot": "b79729f6879eeac47e7edd1a1da6370c08cdacfaa8988b9b40fe45c2bb65b8ec"
+    },
+    "scope": "Fresh build and complete CTest after integrating the disjoint LoongArch64 commit. Earlier differential matrices and benchmarks remain bound to the original binary hashes above.",
+    "local_evidence": [
+      "build/wsl-arm-x64/push-integration-build.log",
+      "build/wsl-arm-x64/push-integration-ctest.xml",
+      "build/wsl-arm-x64/push-integration-summary.json"
+    ]
+  }
+}
