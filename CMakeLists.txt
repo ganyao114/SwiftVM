@@ -410,6 +410,16 @@ if(SVM_BUILD_IR_BENCHMARK)
     endforeach()
 endif()
 
+option(SVM_BUILD_ARM64_COMPARE_BENCHMARK "Build the callable ARM64 comparison runner" OFF)
+if(SVM_BUILD_ARM64_COMPARE_BENCHMARK)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+            NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+        message(FATAL_ERROR "The ARM64 comparison runner requires Linux/x64")
+    endif()
+    add_executable(svm_arm64_compare_bench benchmarks/arm64_compare.cpp)
+    target_link_libraries(svm_arm64_compare_bench PRIVATE svm_execution svm_base)
+endif()
+
 if(BUILD_TESTING)
     add_subdirectory(source/tests)
 endif()
