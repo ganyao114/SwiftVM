@@ -279,3 +279,67 @@ python3 tools/bench_arm_x64.py \
 ```
 
 可审阅的精简证据为 `docs/evidence/arm64-x64-perf-20261111/summary.json`，包含基线／候选哈希、源码哈希、各组中位数、配对样本分布、代码体积、差分配置和限制。全部逐样本记录在上述 Linux cache 的 `final-benchmark/summary.json`、`flags-screen/summary.json`、`shift-screen/summary.json`、`compiled-program/summary.json`；完整 case observations 位于 `correctness/`。综合程序源码与 ELF 保留在 `compiled-program/`；其构建和测量脚本为本机 `build/arm64-x64-perf/bench_programs.py`。CTest 日志与 JUnit 位于 `build/arm64-x64-perf/final-ctest.log` 和 `final-ctest.xml`。
+
+## 本轮：32 位读取、立即数形式与直接结果寄存器
+
+以 `b00a11ae` 为基线完成此前筛选的第 1–3 项；测试和测量绑定本节证据中的最终二进制。前一节及探索原型的比例不与本节相加。
+
+### 实现范围
+
+1. `Read` 对非 raw 的 32 位消费使用 32 位寄存器、栈读取或 `movd`，在复制时完成零扩展。覆盖普通 SSA、向量低位、spill 和 helper 调用保存区；raw 消费保留原位模式。
+2. ADD/SUB 与 AND/OR/XOR 的直接立即数形式共用 `Immediate32` 检查。32 位操作使用低 32 位；64 位操作只接受正确符号扩展的 imm32。通过 U32 view 读取的 `0xffffffff` 不会误当作 64 位负一；不适合的常量继续使用寄存器形式。
+3. 简单算术、逻辑、移位、常量和 uniform 读取直接写入已有分配结果寄存器；安全的 uniform store 直接消费 resident scalar。`WriteResult` 合并 32 位截断与目标寄存器写入；只有 emitter 已产生完整规范值时才省略最终截断。调用和需要固定 ABI 的操作仍由原路径处理；spill、命名 flags snapshot、故障位置和状态提交顺序保留。布尔值算术与窄写入单独保留实际需要的截断。
+
+这些改动没有增加 IR pass、寄存器分配分析、跨节点状态表或宿主特性要求。新增的 `scalar_normalized` 是单个发射操作的结果属性；已有 allocator、调用保存和 fault recovery 继续拥有各自的状态。
+
+### 最终正确性验证
+
+- WSL Release/IPO 完整构建和 CTest：**38 total / 31 passed / 7 skipped / 0 failed**。
+- 永久回归新增 7,920 组立即数／寄存器结果与完整算术标志比较、250 组消费 view 与 uniform 写宽度组合、16 组布尔算术检查。两种 scope 的压力回归实际确认 scalar/vector spill、R8/R9 调用保存，并验证向量低位读取、raw bitcast、helper 参数与返回后的活值、guest flags 和 MXCSR。
+- A64/A32 × Block/Function × Known/Unknown/EarlyOff × opt on/off 的基础严格差分：**4,224/4,224 agreement**。
+- F32/F64 数值边界的 Block/Function/opt-off 三组严格差分：**27,648/27,648 agreement**。
+- 综合程序 A64/A32/Thumb × Block/Function × JIT/Mixed（hot threshold=0）× pin=0/2：**24/24 完整输出与 QEMU 一致**，无 fallback、无解释步数。全部 56 字节匹配，SHA256 字段另与 Python 独立预期一致。
+
+差分仍使用相同 case 的独立 Unicorn 参考观察与原比较器，未放宽掩码或分类。修改后的最终源码、runner 和 correctness binary 均由 SHA256 绑定；没有把中途构建的成功结果充当最终构建证据。
+
+### 31 对样本的运行与编译成本
+
+基线、仅第 1–2 项、最终第 1–3 项 runner 均保留在同一 Linux 文件系统。固定 CPU2、pin=0、相同 ELF、相同 Release/IPO 配置；每种模式先预热，再交错测量 31 对新进程，普通 wall time 与 `--decode-timing` 分开。整数／访存／移位各 12,000,000 次，FP 100,000 次；每次检查完整输出、原生执行和 scope。
+
+| 工作负载 | Scope | wall time 候选／基线 | compile_ns 候选／基线 | native bytes 前→后 |
+| --- | --- | ---: | ---: | ---: |
+| A64 integer | Block | 0.960 | 1.017 | 1144→996 |
+| A64 integer | Function | 0.956 | 1.028 | 668→556 |
+| A64 memory | Block | 0.977 | 1.037 | 1208→1044 |
+| A64 memory | Function | 0.982 | 1.017 | 700→572 |
+| A64 shift | Block | 0.942 | 1.020 | 1184→1020 |
+| A64 shift | Function | 0.970 | 1.015 | 684→572 |
+| A64 FP | Block | 1.014 | 1.025 | 1404→1256 |
+| A64 FP | Function | 0.989 | 0.996 | 832→704 |
+| A64 综合程序 | Block | 0.833 | 0.962 | 66636→54544 |
+| A64 综合程序 | Function | 0.844 | 0.981 | 43872→34428 |
+
+综合程序的 wall time 为 Block **32.973→27.453 ms**、Function **30.214→25.490 ms**，分别下降 **16.7%／15.6%**，两组均为 **31/31 对候选更快**。其 compile 中位数为 2.682→2.581 ms、2.300→2.256 ms，下降约 3.8%／1.9%；backend 阶段下降约 9.1%／7.3%。
+
+小微基准的 compile 中位数变化为 **-0.4% 至 +3.7%**，不能声称所有编译场景都有提升。增加量约 16–39 μs，配对比值的四分位范围均跨过 1；backend 阶段本身增加约 2–5 μs。保留这项冷启动成本，未用额外分析机制换取微基准编译数字。FP helper 未修改，FP 循环 -1.1%／+1.4% 的变化不作为算术加速结论。
+
+为隔离第 3 项，另以正式实现的第 1–2 项 runner 为基线测量 31 对：综合程序 Block／Function wall time 比例为 **0.891／0.884**，即额外下降约 **10.9%／11.6%**；分别 30/31、31/31 对更快。compile 比例为 0.995／1.000，spill 数不变。该独立批次与“原基线→最终实现”批次的比例不直接相乘或相加。
+
+综合程序静态代码体积下降 **18.1%／21.5%**，spill slots 保持 296／54。剔除静态链接表数据后的指令数为 15,631→11,015、11,002→7,403；寄存器间 MOV 为 7,213→3,157、5,528→2,419，约减少 56.2%。自拷贝 MOV 为 1,003→161、689→94。这是已编译代码的静态数量，未按运行次数加权，不等同于动态执行或 PMU 结论。
+
+### 证据与复现
+
+精简证据见 `docs/evidence/arm64-x64-impl123-20261111/summary.json`。本机完整观察保存在 `/home/proton/.cache/SwiftVM/arm64-x64-impl123-20261111/` 的 `correctness/`、`fp-validation/`、`programs-summary.json`、`micro/summary.json`、`compiled-summary.json` 和 `codegen-summary.json`；基线、仅前两项、最终 runner 分别位于 `baseline/`、`steps12/`、`candidate/`。中途边界审查前的结果另存于 `before-boundary-*`，本节不使用它们作为最终测量。
+
+```sh
+WORK="$HOME/.cache/SwiftVM/arm64-x64-impl123-20261111"
+python3 tools/bench_arm_x64.py \
+  --baseline "$WORK/baseline/svm_rebuild_linux" \
+  --candidate "$WORK/candidate/svm_rebuild_linux" \
+  --out build/arm64-x64-impl123/reproduce --isa arm64 --cpu 2 \
+  --samples 31 --iterations 12000000 \
+  --workload integer --workload memory --workload shift --workload fp
+python3 build/arm64-x64-impl123/benchmark_programs.py
+```
+
+本机复核脚本与构建、测试日志位于 `build/arm64-x64-impl123/`，最终 CTest JUnit 为 `audited-ctest.xml`。这些有限输入和 WSL 计时不外推为完整 ISA 证明或一般应用吞吐。
