@@ -642,6 +642,7 @@ python3 tools/correctness/run.py --workers workers.json --campaign mandatory --s
 - 验证：LA64 `svm_loongarch64_compile_test` native **15 cases / 15 assertions**、compile **16/17** 全过；x86 程序 hello/compute/fp/tiny 在 qemu-user 下 native 与 LA64 JIT 的 stdout/exit 完全一致；BT/BTS/BTR/BTC、LAHF/SAHF、BEXTR、ROR/ROL、CMOV、SETcc 的定向 probe 也一致。A64/ARM32 guest 在 qemu-user 下仍被 `process_vm_readv`（ARM exclusive/kuser）挡住，baseline 同样失败，前端语义继续由 IR 级 compile test 覆盖。
 - 性能（qemu-user TCG，基线 vs 优化，6 次中位数；x86 guest）：16× 展开 BEXTR **586.7ms → 336.8ms（-42.6%）**，native code **6228 → 5588 bytes**；16× 展开 ROR imm **170.2ms → 159.2ms（-6.5%）**，code **2796 → 2284 bytes（-18.3%）**；非展开循环中 BEXTR -7.3%、ROR -2.0%。CMOV 在 TCG 下与分支版持平（code 同为 2420 bytes），保留无分支实现以消除真机 misprediction，真机收益需 RedMagic/LA64 硬件复测。
 - 证据：`/Volumes/Data2/swiftvm-correctness-results/la64-isa-opt-20261111/`（`baseline/svm_rebuild_linux`、`la64-native.log`、`la64-compile.log`、`x86-native.txt`、`x86-la64.txt`、`bench-ops.jsonl`、`bench-op16.jsonl`、`summary.json`）；bench 源在 `/Volumes/Data2/swiftvm-program-tests-20261111/src/`。qemu-user TCG 只用于方向性 A/B，不作为真机性能结论。
+- LBT（`lbt_x86`）的后续方案、Box64 参考实现和验证前置条件见 [LoongArch LBT 优化方案](loongarch-lbt-optimization-plan-2026-11-11.md)；没有 LBT 真机或 QEMU fork 前不进入执行路径，当前继续以基础 ISA 软件 flags 为回退。
 
 ## 16. 实施顺序与阶段验收
 
