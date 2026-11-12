@@ -34,23 +34,25 @@ void Writer::Uniform(OpContext& c) {
                                   ? off - options.pinned_uniform_offset - pinned * 8
                                   : -1;
     if (c.operation.opcode == OpCode::LoadUniform) {
+        const auto destination = ScalarDestination(c);
         if (c.vector_result)
             movdqu(xmm0, ptr[r12 + off]);
         else if (off == options.flags_offset)
-            mov(rax, rbx);
-        else if (pinned >= 0 && relative == 0 && (width == 64 || width == 32 || width == 16 ||
-                                                   width == 8))
-            PinLoad(*this, rax, PinnedRegister(static_cast<unsigned>(pinned)), width);
+            mov(destination, rbx);
+        else if (pinned >= 0 && relative == 0 &&
+                 (width == 64 || width == 32 || width == 16 || width == 8))
+            PinLoad(*this, destination, PinnedRegister(static_cast<unsigned>(pinned)), width);
         else if (pinned >= 0) {
             // Rare in-slot access (for example AH): publish this slot, read
             // memory, then reload the register copy.
             mov(qword[r12 + options.pinned_uniform_offset + pinned * 8],
                 Reg64(PinnedRegister(static_cast<unsigned>(pinned))));
-            Load(rax, r12, off, c.width);
+            Load(destination, r12, off, c.width);
             mov(Reg64(PinnedRegister(static_cast<unsigned>(pinned))),
                 qword[r12 + options.pinned_uniform_offset + pinned * 8]);
         } else
-            Load(rax, r12, off, c.width);
+            Load(destination, r12, off, c.width);
+        c.scalar_normalized = off != options.flags_offset && width >= 8;
         return;
     }
     const auto value = *at;
@@ -58,19 +60,28 @@ void Writer::Uniform(OpContext& c) {
         ReadVector(value, xmm0);
         movdqu(ptr[r12 + off], xmm0);
     } else {
-        Read(value, rax);
+        Reg64 input = rax;
+        // A store consumes only its declared low bits. A resident scalar can
+        // supply them directly without copying through RAX or changing state.
+        if (value.Kind() == OperandKind::Value && width >= 8 && pinned < 0 &&
+            off != options.flags_offset && width <= TypeBits(View(value)) &&
+            source.Operations()[value.Payload()].type != ir::Type::V128 &&
+            !allocation.homes[value.Payload()].spilled)
+            input = Reg64(allocation.homes[value.Payload()].reg);
+        else
+            Read(value, input);
         if (pinned >= 0 && relative == 0 &&
             (width == 64 || width == 32 || width == 16 || width == 8))
-            PinStore(*this, PinnedRegister(static_cast<unsigned>(pinned)), rax, width);
+            PinStore(*this, PinnedRegister(static_cast<unsigned>(pinned)), input, width);
         else if (pinned >= 0) {
             mov(qword[r12 + options.pinned_uniform_offset + pinned * 8],
                 Reg64(PinnedRegister(static_cast<unsigned>(pinned))));
-            Store(rax, r12, off, TypeBits(u.TypeView()));
+            Store(input, r12, off, TypeBits(u.TypeView()));
             mov(Reg64(PinnedRegister(static_cast<unsigned>(pinned))),
                 qword[r12 + options.pinned_uniform_offset + pinned * 8]);
         } else
-            Store(rax, r12, off, TypeBits(u.TypeView()));
-        if (off == options.flags_offset) mov(rbx, rax);
+            Store(input, r12, off, TypeBits(u.TypeView()));
+        if (off == options.flags_offset) mov(rbx, input);
     }
     if (off == options.pc_offset) {
         static_pc_known = false;
@@ -96,7 +107,7 @@ void Writer::Handle(Op<OpCode::LoadUniform>, OpContext& c) { Uniform(c); }
 void Writer::Handle(Op<OpCode::StoreUniform>, OpContext& c) { Uniform(c); }
 
 void Writer::Handle(Op<OpCode::GetUniformAddress>, OpContext& c) {
-    lea(rax, ptr[r12 + c.Arg(0).Payload()]);
+    lea(ScalarDestination(c), ptr[r12 + c.Arg(0).Payload()]);
 }
 
 void Writer::Memory(OpContext& c) {

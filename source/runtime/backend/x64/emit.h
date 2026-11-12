@@ -32,6 +32,9 @@ struct OpContext {
     Reg64 destination{0};
     Xmm vector{0};
     bool vector_result{}, saved{};
+    // An emitter may omit final normalization only when it already wrote the
+    // complete scalar value, including the upper bits of narrow results.
+    bool scalar_normalized{};
 
     CellView Arg(unsigned i) const { return args[i]; }
 };
@@ -41,7 +44,17 @@ public:
     Writer(const Program&, const Allocation&, CompileResult&, CompileOptions);
     void Run();
     ir::Type View(CellView) const;
+    bool Immediate32(CellView, unsigned width, std::int32_t&) const;
     void Read(CellView, const Reg64&, bool raw = false);
+
+    Reg64 ScalarDestination(OpContext& c) const {
+        // Only leaf emitters that do not call helpers borrow the assigned home.
+        // Spilled results keep the ordinary RAX path and final stack store.
+        const auto& home = allocation.homes[c.node.value];
+        if (!home.spilled && !c.vector_result) c.destination = Reg64(home.reg);
+        return c.destination;
+    }
+
     void ReadVector(CellView, const Xmm&);
     void WriteResult(OpContext&);
     void Mask(const Reg64&, unsigned);

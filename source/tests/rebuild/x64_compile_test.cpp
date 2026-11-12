@@ -323,6 +323,221 @@ void ArithmeticFlagBoundaries() {
     }
 }
 
+void ImmediateOperandBoundaries() {
+    constexpr u64 reserved = (u64{1} << 55) | flags::Direction;
+    constexpr u64 constants[]{0,
+                              1,
+                              127,
+                              128,
+                              255,
+                              0x7fffffff,
+                              0x80000000,
+                              0xffffffff,
+                              0x100000000,
+                              UINT64_C(0xffffffff80000000),
+                              UINT64_MAX};
+    for (const auto scope : {Scope::Block, Scope::Function})
+        for (const auto type : {Type::U32, Type::U64}) {
+            const unsigned bits = TypeBits(type);
+            const u64 mask = UINT64_MAX >> (64 - bits), sign = u64{1} << (bits - 1);
+            for (const auto opcode :
+                 {OpCode::Add, OpCode::Sub, OpCode::And, OpCode::Or, OpCode::Xor})
+                for (const auto view : {Type::U8, Type::U32, Type::U64})
+                    for (const auto constant : constants)
+                        for (const bool literal : {false, true}) {
+                            Builder builder{scope};
+                            Begin(builder);
+                            const auto left = Load(builder, 0), right = Load(builder, 1);
+                            const bool subtract = opcode == OpCode::Sub;
+                            const bool arithmetic = opcode == OpCode::Add || subtract;
+                            const auto result = Emit(
+                                    builder,
+                                    opcode,
+                                    type,
+                                    {Operand::ValueOf(left, type),
+                                     literal ? Imm(constant & (UINT64_MAX >> (64 - TypeBits(view))),
+                                                   view)
+                                             : Operand::ValueOf(right, view)},
+                                    {FlagBits(Flag::All),
+                                     arithmetic ? FlagProfile::ArithmeticCanonicalCarry
+                                                : FlagProfile::LogicalZeroCVA});
+                            const auto program = Return(builder, result);
+                            const auto code = Compile(program);
+                            const u64 b = constant & (UINT64_MAX >> (64 - TypeBits(view))) & mask;
+                            for (const u64 a : {u64{0}, u64{1}, mask, sign, sign - 1, mask / 3}) {
+                                u64 answer;
+                                switch (opcode) {
+                                    case OpCode::Add:
+                                        answer = (a + b) & mask;
+                                        break;
+                                    case OpCode::Sub:
+                                        answer = (a - b) & mask;
+                                        break;
+                                    case OpCode::And:
+                                        answer = a & b;
+                                        break;
+                                    case OpCode::Or:
+                                        answer = a | b;
+                                        break;
+                                    default:
+                                        answer = a ^ b;
+                                        break;
+                                }
+                                const bool cf = arithmetic && (subtract ? a < b : answer < a);
+                                const bool of = arithmetic && (((subtract ? a ^ b : ~(a ^ b)) &
+                                                                (a ^ answer) & sign) != 0);
+                                const u64 expected =
+                                        reserved | (answer & 255) | (cf ? flags::Carry : 0) |
+                                        (of ? flags::Overflow : 0) | (!answer ? flags::Zero : 0) |
+                                        ((answer & sign) ? flags::Sign : 0) |
+                                        (arithmetic && ((a ^ b ^ answer) & 16) ? flags::Auxiliary
+                                                                               : 0);
+                                State state;
+                                state.scalars[0] = a | (~mask & UINT64_C(0x95f0abcdef012345));
+                                state.scalars[1] = constant;
+                                state.flags = reserved | flags::Arithmetic;
+                                if (Run(code, state, answer)) CHECK(state.flags == expected);
+                            }
+                        }
+        }
+}
+
+u64 NarrowHelper(u64 first, u64 second) {
+#if defined(__x86_64__) && defined(__linux__)
+    asm volatile("xor %%r8d, %%r8d\n\txor %%r9d, %%r9d" ::: "r8", "r9");
+#endif
+    return (first << 32) | second;
+}
+
+void NarrowReadsAndHelperABI() {
+    for (const auto scope : {Scope::Block, Scope::Function}) {
+        Builder builder{scope};
+        Begin(builder);
+        std::array<Value, 10> live;
+        for (unsigned i = 0; i < live.size(); ++i) live[i] = Load(builder, i);
+        const auto vector = LoadVector(builder, 0);
+        std::array<Value, 16> vectors;
+        for (auto& value : vectors) value = LoadVector(builder, 0);
+        const auto call = Emit(builder,
+                               OpCode::CallLambda,
+                               Type::U64,
+                               {Operand::Lambda(),
+                                Imm(reinterpret_cast<std::uintptr_t>(&NarrowHelper)),
+                                Operand::ValueOf(live[4], Type::U32),
+                                Operand::ValueOf(live[5], Type::U32)});
+        for (const unsigned i : {4u, 5u, 0u, 1u, 2u, 3u, 6u, 7u, 8u, 9u}) {
+            const auto low = Emit(builder,
+                                  OpCode::ZeroExtend64,
+                                  Type::U64,
+                                  {Operand::ValueOf(live[i], Type::U32)});
+            Store(builder, 10 + i, low);
+            const auto raw = Emit(
+                    builder, OpCode::BitCast, Type::U32, {Operand::ValueOf(live[i], Type::U32)});
+            const auto widened =
+                    Emit(builder, OpCode::ZeroExtend64, Type::U64, {Operand::ValueOf(raw)});
+            Store(builder, i, widened);
+        }
+        const auto vector_low = Emit(builder,
+                                     OpCode::GetResult,
+                                     Type::U32,
+                                     {Operand::ValueOf(vector), Operand::ValueOf(vector)});
+        Store(builder, 20, vector_low);
+        for (unsigned i = 0; i < 2; ++i) {
+            const auto low =
+                    Emit(builder,
+                         OpCode::ZeroExtend64,
+                         Type::U64,
+                         {Operand::ValueOf(i ? vectors.back() : vectors.front(), Type::U32)});
+            Store(builder, 21 + i, low);
+        }
+        for (unsigned i = 0; i < vectors.size(); ++i) StoreVector(builder, i, vectors[i]);
+        Store(builder, 24, call);
+        const auto program = Return(builder);
+        const auto allocation = scope == Scope::Block ? x64::AllocateBlock(program)
+                                                      : x64::AllocateFunction(program);
+        bool saved_r8{}, saved_r9{}, scalar_spill{}, vector_spill{};
+        for (const auto value : live) {
+            const auto& home = allocation.homes[value.node.value];
+            scalar_spill |= home.spilled;
+            saved_r8 |= !home.spilled && home.reg == 8;
+            saved_r9 |= !home.spilled && home.reg == 9;
+        }
+        for (const auto value : vectors) vector_spill |= allocation.homes[value.node.value].spilled;
+        INFO("scalar spill=" << scalar_spill << " vector spill=" << vector_spill
+                             << " saved r8=" << saved_r8 << " saved r9=" << saved_r9);
+        CHECK(scalar_spill && vector_spill && saved_r8 && saved_r9);
+        const auto code = Compile(program);
+        State state;
+        for (unsigned i = 0; i < live.size(); ++i)
+            state.scalars[i] = UINT64_C(0xfedcba9800000000) | (0x80000010 + i);
+        for (auto& value : state.vectors)
+            value = {UINT64_C(0xabcdef0123456789), UINT64_C(0xfedcba9876543210)};
+        state.flags = (u64{1} << 55) | flags::Direction | flags::Carry | 0xa5;
+        const auto previous_flags = state.flags;
+        if (Run(code, state)) {
+            for (unsigned i = 0; i < live.size(); ++i)
+                CHECK(state.scalars[i] == 0x80000010 + i &&
+                      state.scalars[10 + i] == 0x80000010 + i);
+            CHECK(state.scalars[24] == UINT64_C(0x8000001480000015));
+            CHECK(state.scalars[20] == 0x23456789);
+            CHECK(state.scalars[21] == 0x23456789 && state.scalars[22] == 0x23456789);
+            for (const auto value : state.vectors)
+                CHECK(value == Pair{UINT64_C(0xabcdef0123456789), UINT64_C(0xfedcba9876543210)});
+            CHECK(state.flags == previous_flags);
+        }
+    }
+}
+
+void UniformStoreViews() {
+    for (const auto scope : {Scope::Block, Scope::Function})
+        for (const auto view : {Type::Bool, Type::U8, Type::U16, Type::U32, Type::U64})
+            for (const auto width : {Type::Bool, Type::U8, Type::U16, Type::U32, Type::U64}) {
+                Builder builder{scope};
+                Begin(builder);
+                const auto input = Load(builder, 0);
+                Emit(builder,
+                     OpCode::StoreUniform,
+                     Type::Void,
+                     {Operand::Uniform(offsetof(State, scalars) + 8, width),
+                      Operand::ValueOf(input, view)});
+                const auto program = Return(builder, input);
+                const auto code = Compile(program);
+                for (const u64 value :
+                     {u64{0}, u64{1}, u64{2}, UINT64_C(0x95f0abcdef012345), UINT64_MAX}) {
+                    State state;
+                    state.scalars[0] = value;
+                    state.scalars[1] = UINT64_C(0xfedcba9876543210);
+                    const u64 read_mask = UINT64_MAX >> (64 - TypeBits(view));
+                    const unsigned store_bits = std::max(8u, TypeBits(width));
+                    const u64 store_mask = UINT64_MAX >> (64 - store_bits);
+                    const u64 expected =
+                            (state.scalars[1] & ~store_mask) | (value & read_mask & store_mask);
+                    if (Run(code, state, value))
+                        CHECK(state.scalars[1] == expected && state.scalars[0] == value);
+                }
+            }
+    for (const auto opcode : {OpCode::Add, OpCode::Sub}) {
+        Builder builder{Scope::Block};
+        Begin(builder);
+        const auto input = Load(builder, 0), other = Load(builder, 1);
+        const auto result = Emit(builder,
+                                 opcode,
+                                 Type::Bool,
+                                 {Operand::ValueOf(input, Type::Bool), Operand::ValueOf(other)});
+        const auto program = Return(builder, result);
+        const auto code = Compile(program);
+        for (const u64 left : {u64{0}, u64{1}})
+            for (const u64 right : {u64{0}, u64{1}, u64{2}, UINT64_MAX}) {
+                State state;
+                state.scalars[0] = left;
+                state.scalars[1] = right;
+                state.flags = (u64{1} << 55) | flags::Arithmetic;
+                const auto previous = state.flags;
+                if (Run(code, state, (left ^ right) & 1)) CHECK(state.flags == previous);
+            }
+    }
+}
+
 void ImmediateShiftBoundaries() {
     constexpr std::pair<OpCode, OpCode> shifts[]{
             {OpCode::LslImm, OpCode::LslValue},
@@ -1552,6 +1767,16 @@ TEST_CASE("ArithmeticFlagBoundaries", "[compile][x64-compile][native]") {
 TEST_CASE("ImmediateShiftBoundaries", "[compile][x64-compile][native]") {
     ImmediateShiftBoundaries();
 }
+
+TEST_CASE("ImmediateOperandBoundaries", "[compile][x64-compile][native]") {
+    ImmediateOperandBoundaries();
+}
+
+TEST_CASE("NarrowReadsAndHelperABI", "[compile][x64-compile][native]") {
+    NarrowReadsAndHelperABI();
+}
+
+TEST_CASE("UniformStoreViews", "[compile][x64-compile][native]") { UniformStoreViews(); }
 
 TEST_CASE("FunctionLoop", "[compile][x64-compile][native]") { CHECK_NOTHROW(FunctionLoop()); }
 

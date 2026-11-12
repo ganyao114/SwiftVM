@@ -2,17 +2,31 @@
 
 namespace swift::runtime::backend::x64::detail {
 void Writer::Arithmetic(OpContext& c) {
+    const auto destination = ScalarDestination(c);
     auto at = c.operands.begin();
     const bool negop = c.operation.opcode == OpCode::Neg;
-    if (negop)
-        Read(*at, rax);
-    else {
-        Read(*at++, rax);
-        Expression(at, c.operands.end(), rcx, 1);
+    std::int32_t immediate;
+    if (!negop && c.count == 2 &&
+        (c.operation.opcode == OpCode::Add || c.operation.opcode == OpCode::Sub) &&
+        Immediate32(c.Arg(1), c.width, immediate)) {
+        Read(c.Arg(0), destination);
+        if (c.operation.opcode == OpCode::Add)
+            add(R(destination, c.width), immediate);
+        else
+            sub(R(destination, c.width), immediate);
+        c.scalar_normalized = true;
+        CaptureFlags(c);
+        return;
     }
-    Mask(rax, c.width);
-    if (!negop) Mask(rcx, c.width);
-    const auto a = R(rax, c.width), b = R(rcx, c.width);
+    if (negop)
+        Read(*at, destination);
+    else {
+        const auto left = *at++;
+        Expression(at, c.operands.end(), rcx, 1);
+        Read(left, destination);
+    }
+    if (!negop && c.width < 8) Mask(rcx, c.width);
+    const auto a = R(destination, c.width), b = R(rcx, c.width);
     switch (c.operation.opcode) {
         case OpCode::Add:
             add(a, b);
@@ -34,6 +48,7 @@ void Writer::Arithmetic(OpContext& c) {
         default:
             Reject(CompileError::UnsupportedOpcode);
     }
+    c.scalar_normalized = c.width >= 32;
     CaptureFlags(c);
 }
 
@@ -49,40 +64,62 @@ AR(Neg)
 #undef AR
 
 void Writer::Logical(OpContext& c) {
+    const auto destination = ScalarDestination(c);
     auto at = c.operands.begin();
-    Read(*at++, rax);
+    const auto left = *at++;
     const bool unary = at == c.operands.end();
+    std::int32_t immediate;
+    if (!unary && c.count == 2 &&
+        (c.operation.opcode == OpCode::And || c.operation.opcode == OpCode::Or ||
+         c.operation.opcode == OpCode::Xor) &&
+        Immediate32(c.Arg(1), c.width, immediate)) {
+        Read(left, destination);
+        if (c.operation.opcode == OpCode::And)
+            and_(R(destination, c.width), immediate);
+        else if (c.operation.opcode == OpCode::Or)
+            or_(R(destination, c.width), immediate);
+        else
+            xor_(R(destination, c.width), immediate);
+        if (c.operation.flag_outputs ||
+            allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX)
+            test(R(destination, c.width), R(destination, c.width));
+        c.scalar_normalized = true;
+        CaptureFlags(c);
+        return;
+    }
     if (!unary) Expression(at, c.operands.end(), rcx, 1);
+    Read(left, destination);
     switch (c.operation.opcode) {
         case OpCode::And:
-            and_(rax, rcx);
+            and_(destination, rcx);
             break;
         case OpCode::Or:
-            or_(rax, rcx);
+            or_(destination, rcx);
             break;
         case OpCode::Xor:
-            xor_(rax, rcx);
+            xor_(destination, rcx);
             break;
         case OpCode::AndNot:
             not_(rcx);
-            and_(rax, rcx);
+            and_(destination, rcx);
             break;
         case OpCode::Not:
             if (unary) {
-                test(rax, rax);
-                sete(al);
-                movzx(eax, al);
+                test(destination, destination);
+                sete(destination.cvt8());
+                movzx(destination.cvt32(), destination.cvt8());
             } else {
-                mov(rax, rcx);
-                not_(rax);
+                mov(destination, rcx);
+                not_(destination);
             }
             break;
         default:
             Reject(CompileError::UnsupportedOpcode);
     }
-    Mask(rax, c.width);
+    Mask(destination, c.width);
     if (c.operation.flag_outputs || allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX)
-        test(R(rax, c.width), R(rax, c.width));
+        test(R(destination, c.width), R(destination, c.width));
+    c.scalar_normalized = true;
     CaptureFlags(c);
 }
 
@@ -158,7 +195,8 @@ void Writer::Handle(Op<OpCode::SignedDiv64>, OpContext& c) {
 }
 
 void Writer::Shift(OpContext& c) {
-    Read(c.Arg(0), rax);
+    const auto destination = ScalarDestination(c);
+    Read(c.Arg(0), destination);
     const auto op = c.operation.opcode;
     const bool immediate = c.Arg(1).Kind() == OperandKind::Immediate;
     if (!immediate) {
@@ -166,18 +204,18 @@ void Writer::Shift(OpContext& c) {
         and_(ecx, c.width - 1);
     }
     if (op == OpCode::AsrImm || op == OpCode::AsrValue)
-        Sign(rax, std::min(c.width, TypeBits(View(c.Arg(0)))));
+        Sign(destination, std::min(c.width, TypeBits(View(c.Arg(0)))));
     else
-        Mask(rax, c.width);
+        Mask(destination, c.width);
     const auto shift = [&](auto amount) {
         if (op == OpCode::LslImm || op == OpCode::LslValue)
-            shl(R(rax, c.width), amount);
+            shl(R(destination, c.width), amount);
         else if (op == OpCode::LsrImm || op == OpCode::LsrValue)
-            shr(R(rax, c.width), amount);
+            shr(R(destination, c.width), amount);
         else if (op == OpCode::AsrImm || op == OpCode::AsrValue)
-            sar(R(rax, c.width), amount);
+            sar(R(destination, c.width), amount);
         else
-            ror(R(rax, c.width), amount);
+            ror(R(destination, c.width), amount);
     };
     if (immediate) {
         const auto amount = c.Arg(1).Payload() & (c.width - 1);

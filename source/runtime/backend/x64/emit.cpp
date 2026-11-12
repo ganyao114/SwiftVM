@@ -217,11 +217,15 @@ void Writer::WriteResult(OpContext& c) {
             movdqa(Xmm(h.reg), c.vector);
         if (!h.spilled) vector_residents[h.reg] = c.node.value;
     } else {
-        Mask(c.destination, std::min(64u, c.width));
-        if (h.spilled)
-            mov(qword[rsp + h.stack_offset], c.destination);
-        else if (c.destination.getIdx() != h.reg)
-            mov(Reg64(h.reg), c.destination);
+        if (!c.scalar_normalized && c.width == 32 && !h.spilled)
+            mov(Reg32(h.reg), c.destination.cvt32());
+        else {
+            if (!c.scalar_normalized) Mask(c.destination, std::min(64u, c.width));
+            if (h.spilled)
+                mov(qword[rsp + h.stack_offset], c.destination);
+            else if (c.destination.getIdx() != h.reg)
+                mov(Reg64(h.reg), c.destination);
+        }
         if (!h.spilled) scalar_residents[h.reg] = c.node.value;
     }
 }
@@ -243,8 +247,7 @@ void Writer::Run() {
     if (Pinned()) {
         if (!Linked() || options.pinned_uniform_slots != 2 ||
             options.pinned_uniform_offset == UINT32_MAX ||
-            options.pinned_uniform_offset >
-                    UINT32_MAX - (options.pinned_uniform_slots * 8u - 1))
+            options.pinned_uniform_offset > UINT32_MAX - (options.pinned_uniform_slots * 8u - 1))
             Reject(CompileError::UnsupportedOperand);
         const auto bytes = options.pinned_uniform_slots * 8u;
         const auto overlaps = [&](std::uint32_t field) {

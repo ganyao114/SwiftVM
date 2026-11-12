@@ -1,11 +1,22 @@
-#include "emit.h"
 #include <algorithm>
+#include "emit.h"
 
 namespace swift::runtime::backend::x64::detail {
 ir::Type Writer::View(CellView c) const {
     return c.TypeView() != ir::Type::Void   ? c.TypeView()
            : c.Kind() == OperandKind::Value ? source.Operations()[c.Payload()].type
                                             : ir::Type::U64;
+}
+
+bool Writer::Immediate32(CellView c, unsigned width, std::int32_t& immediate) const {
+    if (c.Kind() != OperandKind::Immediate || (width != 32 && width != 64)) return false;
+    auto value = c.Payload();
+    const auto bits = TypeBits(View(c));
+    if (bits && bits < 64) value &= (u64{1} << bits) - 1;
+    immediate = static_cast<std::int32_t>(value);
+    // A 64-bit x64 instruction sign-extends its imm32. U32 0xffffffff is
+    // positive when read through that view and must keep the register form.
+    return width == 32 || value == u64(std::int64_t(immediate));
 }
 
 void Writer::Mask(const Reg64& r, unsigned bits) {
@@ -49,25 +60,41 @@ void Writer::Store(const Reg64& r, const Reg64& b, std::int32_t off, unsigned bi
 }
 
 void Writer::Read(CellView c, const Reg64& r, bool raw) {
+    const bool narrow = !raw && TypeBits(View(c)) == 32;
     if (c.Kind() == OperandKind::Value) {
         const auto& h = allocation.homes[c.Payload()];
         if (source.Operations()[c.Payload()].type == ir::Type::V128) {
-            if (h.spilled)
-                mov(r, qword[rsp + h.stack_offset]);
+            if (h.spilled) {
+                if (narrow)
+                    mov(r.cvt32(), dword[rsp + h.stack_offset]);
+                else
+                    mov(r, qword[rsp + h.stack_offset]);
+            } else if (narrow)
+                movd(r.cvt32(), Xmm(h.reg));
             else
                 movq(r, Xmm(h.reg));
-        } else if (h.spilled)
-            mov(r, qword[rsp + h.stack_offset]);
-        else if (in_call && (h.reg == 8 || h.reg == 9))
-            mov(r, qword[rsp + allocation.call_offset + 192 + (h.reg - 8) * 8]);
-        else if (r.getIdx() != h.reg)
-            mov(r, Reg64(h.reg));
+        } else {
+            if (h.spilled || (in_call && (h.reg == 8 || h.reg == 9))) {
+                const auto offset =
+                        h.spilled ? h.stack_offset : allocation.call_offset + 192 + (h.reg - 8) * 8;
+                if (narrow)
+                    mov(r.cvt32(), dword[rsp + offset]);
+                else
+                    mov(r, qword[rsp + offset]);
+            } else if (narrow)
+                mov(r.cvt32(), Reg32(h.reg));
+            else if (r.getIdx() != h.reg)
+                mov(r, Reg64(h.reg));
+        }
     } else if (c.Kind() == OperandKind::Immediate || c.Kind() == OperandKind::Condition ||
-               c.Kind() == OperandKind::Flags || c.Kind() == OperandKind::Lambda)
-        mov(r, c.Payload());
-    else
+               c.Kind() == OperandKind::Flags || c.Kind() == OperandKind::Lambda) {
+        if (narrow)
+            mov(r.cvt32(), u32(c.Payload()));
+        else
+            mov(r, c.Payload());
+    } else
         Reject(CompileError::UnsupportedOperand);
-    if (!raw) Mask(r, std::min(64u, TypeBits(View(c))));
+    if (!raw && !narrow) Mask(r, std::min(64u, TypeBits(View(c))));
 }
 
 void Writer::ReadVector(CellView c, const Xmm& r) {
@@ -137,22 +164,30 @@ void Writer::Expression(CellRange::Iterator& at,
 }
 
 void Writer::Handle(Op<OpCode::LoadImm>, OpContext& c) {
-    mov(rax, c.Arg(0).Payload());
-    if (c.vector_result) movq(xmm0, rax);
+    const auto destination = ScalarDestination(c);
+    if (!c.vector_result && c.width == 32) {
+        mov(destination.cvt32(), u32(c.Arg(0).Payload()));
+        c.scalar_normalized = true;
+    } else
+        mov(destination, c.Arg(0).Payload());
+    if (c.vector_result) movq(xmm0, destination);
 }
 
 void Writer::Handle(Op<OpCode::Zero>, OpContext& c) {
     if (c.vector_result)
         pxor(xmm0, xmm0);
-    else
-        xor_(eax, eax);
+    else {
+        const auto destination = ScalarDestination(c);
+        xor_(destination.cvt32(), destination.cvt32());
+        c.scalar_normalized = true;
+    }
 }
 
 void Writer::Handle(Op<OpCode::BitCast>, OpContext& c) {
     if (c.vector_result)
         ReadVector(c.Arg(0), xmm0);
     else
-        Read(c.Arg(0), rax, true);
+        Read(c.Arg(0), ScalarDestination(c), true);
 }
 
 void Writer::Handle(Op<OpCode::GetResult>, OpContext& c) { Handle(Op<OpCode::BitCast>{}, c); }
