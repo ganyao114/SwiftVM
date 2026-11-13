@@ -40,7 +40,7 @@ def prepare(work: Path, original: Path) -> dict:
                           '    void Diagnose() { gap::WriteStats(stats); }')
     source = replace_once(source,
                           'vm = std::make_unique<swift::runtime::execution::VM>(policy, stats, host.Bind());',
-                          'auto backend = host.Bind();\n        gap::Wrap(backend);\n'
+                          'auto backend = host.Bind();\n        gap::pinned_slots = options.pins;\n        gap::Wrap(backend);\n'
                           '        vm = std::make_unique<swift::runtime::execution::VM>(policy, stats, backend);')
     source = replace_once(source, 'const auto start = Clock::now();',
                           'gap::Start(run);\n            const auto start = Clock::now();')

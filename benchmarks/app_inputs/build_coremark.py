@@ -33,6 +33,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=Path("/Volumes/Data2/swiftvm-middle-build-cache/app-inputs/coremark"))
     parser.add_argument("--out", type=Path, default=Path("/Volumes/Data2/swiftvm-middle-build-cache/app-inputs/coremark-linux-x86_64"))
+    parser.add_argument("--toolchain", type=Path, default=NDK)
+    parser.add_argument("--warmup", action="store_true", help="Run one complete warmup before the timed CoreMark invocation")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     temporary = args.out / "tmp"; temporary.mkdir(exist_ok=True)
@@ -48,15 +50,24 @@ def main():
              "-fno-pie", "-fno-unwind-tables", "-fno-asynchronous-unwind-tables", "-std=c11",
              "-DPERFORMANCE_RUN=1", "-DTOTAL_DATA_SIZE=2000", "-I" + str(port), "-I" + str(args.source)]
     commands, objects = [], []
-    for source in [*(args.source / name for name in CORE), port / "core_portme.c", port / "start_x86_64.S"]:
+    sources = [*(args.source / name for name in CORE), port / "core_portme.c", port / "start_x86_64.S"]
+    warmup = args.out / "warmup.c"
+    if args.warmup:
+        warmup.write_text("int coremark_main(int, char **);\n"
+                          "int main(int argc, char **argv) {\n"
+                          "    int result = coremark_main(argc, argv);\n"
+                          "    return result ? result : coremark_main(argc, argv);\n}\n")
+        sources.append(warmup)
+    for source in sources:
         obj = args.out / (source.stem + ".o")
-        argv = [NDK / "clang", *flags, "-c", source, "-o", obj]
+        alias = ["-Dmain=coremark_main"] if args.warmup and source.name == "core_main.c" else []
+        argv = [args.toolchain / "clang", *flags, *alias, "-c", source, "-o", obj]
         run(argv, env); commands.append([str(x) for x in argv]); objects.append(obj)
     elf = args.out / "coremark-linux-x86_64"
-    argv = [NDK / "ld.lld", "-m", "elf_x86_64", "--static", "--entry=_start", "--build-id=sha1", "-z", "noexecstack", "-o", elf, *objects]
+    argv = [args.toolchain / "ld.lld", "-m", "elf_x86_64", "--static", "--entry=_start", "--build-id=sha1", "-z", "noexecstack", "-o", elf, *objects]
     run(argv, env); commands.append([str(x) for x in argv])
     shutil.copyfile(args.source / "LICENSE.md", args.out / "LICENSE.md")
-    disassembly = run([NDK / "llvm-objdump", "-d", "--no-show-raw-insn", "--x86-asm-syntax=intel", elf], env)
+    disassembly = run([args.toolchain / "llvm-objdump", "-d", "--no-show-raw-insn", "--x86-asm-syntax=intel", elf], env)
     (args.out / "disassembly.txt").write_text(disassembly)
     mnemonics, functions = Counter(), {}
     function = ""
@@ -72,9 +83,10 @@ def main():
                 "source_commit": source_revision, "source_files_unchanged": True,
                 "sources": [identity(args.source / name) for name in CORE + ["coremark.h", "LICENSE.md"]],
                 "port": [identity(port / name) for name in ("core_portme.h", "core_portme.c", "start_x86_64.S")],
-                "builder": identity(Path(__file__)), "compiler_version": run([NDK / "clang", "--version"], env).splitlines()[0],
-                "linker_version": run([NDK / "ld.lld", "--version"], env).strip(), "commands": commands,
-                "binary": identity(elf), "elf": run([NDK / "llvm-readelf", "-h", "-l", elf], env),
+                "builder": identity(Path(__file__)), "warmup": identity(warmup) if args.warmup else None,
+                "compiler_version": run([args.toolchain / "clang", "--version"], env).splitlines()[0],
+                "linker_version": run([args.toolchain / "ld.lld", "--version"], env).strip(), "commands": commands,
+                "binary": identity(elf), "elf": run([args.toolchain / "llvm-readelf", "-h", "-l", elf], env),
                 "configuration": {"optimization": "O2; no LTO/PGO; no vectorization/ISA disabling options", "HAS_FLOAT": 0,
                                   "timing": "CLOCK_MONOTONIC microsecond ticks; official integer seconds report", "SEED_METHOD": "SEED_ARG",
                                   "MEM_METHOD": "MEM_MALLOC port backed by 64KiB single-context arena", "TOTAL_DATA_SIZE": 2000, "MULTITHREAD": 1,

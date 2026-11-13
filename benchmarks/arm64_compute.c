@@ -122,6 +122,7 @@ __attribute__((noinline)) static uint32_t mix(uint32_t x) {
 }
 
 static void compute(void) {
+#ifndef SVM_BENCH_MATRIX_ONLY
     for (int i = 0; i < 300; ++i) data[i] = (uint8_t)(i * 37 + 11);
     Sha s = {{0x6a09e667,
               0xbb67ae85,
@@ -149,6 +150,7 @@ static void compute(void) {
     uint32_t hash = 1;
     for (unsigned i = 0; i < 65536; ++i) hash = mix(hash + i);
     benchmark_output.mixed = hash;
+#endif
     for (unsigned i = 0; i < 64; ++i) {
         a[i] = (double)(i + 1) * 0.03125;
         b[i] = (double)(65 - i) * 0.125;

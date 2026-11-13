@@ -14,6 +14,9 @@
 #include <unistd.h>
 
 #if !defined(SVM_BENCH_DYNARMIC)
+#include "runtime/arch/arm64/numeric.h"
+#include "runtime/backend/x64/allocate.h"
+#include "runtime/backend/x64/compile.h"
 #include "runtime/ir/format.h"
 #endif
 
@@ -176,6 +179,7 @@ namespace backend = swift::runtime::backend;
 inline decltype(exe::HostBackendOps::compile) original_compile;
 inline decltype(exe::HostBackendOps::synchronize_code) original_sync;
 inline unsigned unit{};
+inline unsigned pinned_slots{};
 inline std::uint64_t guest_pc{};
 struct Published { const std::uint8_t* address; std::size_t size; unsigned index; };
 inline std::vector<Published> published;
@@ -191,9 +195,32 @@ inline backend::CompileResult& Observe(void* opaque, const ir::Program& program,
     std::ofstream entries(prefix.string() + ".entries.tsv");
     for (const auto& entry : result.entries) entries << entry.pc << '\t' << entry.offset << '\n';
     std::ofstream metadata(Output() / "units.tsv", std::ios::app);
+    backend::x64::CompileOptions options;
+    options.local_flags = true;
+    options.private_state = request.private_state;
+    options.pinned_uniform_offset = pinned_slots ? 0 : UINT32_MAX;
+    options.flags_offset = offsetof(swift::runtime::arm64::GuestState, packed_flags);
+    options.pc_offset = offsetof(swift::runtime::arm64::GuestState, pc);
+    options.mxcsr_offset = offsetof(swift::runtime::arm64::GuestState, numeric_control);
+    options.arm_fpcr_offset = offsetof(swift::runtime::arm64::GuestState, fpcr);
+    options.arm_fpsr_offset = offsetof(swift::runtime::arm64::GuestState, fpsr);
+    options.arm_fpcr = swift::runtime::arm64::FPCRForDomain(request.fp_mode >> 2);
+    backend::x64::Allocation allocation;
+    if (program.ScopeKind() == ir::Scope::Function)
+        backend::x64::AllocateFunction(program, allocation, pinned_slots, &options);
+    else
+        backend::x64::AllocateBlock(program, allocation, pinned_slots, &options);
+    unsigned spills{}, loads{}, rematerialized{};
+    for (const auto& home : allocation.homes) {
+        spills += home.spilled && home.uniform_offset == UINT32_MAX;
+        rematerialized += home.spilled && home.uniform_offset != UINT32_MAX;
+    }
+    for (const auto& operation : program.Operations())
+        loads += operation.opcode == ir::OpCode::LoadUniform;
     metadata << unit << '\t' << request.entry_pc << '\t' << program.Blocks().size() << '\t'
              << program.Operations().size() << '\t' << result.words.size() * 4 << '\t'
-             << result.spill_slots << '\t' << result.frame_bytes << '\n';
+             << result.spill_slots << '\t' << result.frame_bytes << '\t' << spills << '\t' << loads
+             << '\t' << rematerialized << '\n';
     ++unit;
     return result;
 }

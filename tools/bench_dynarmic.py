@@ -72,8 +72,11 @@ _start:
 
 def build_program(out: Path, name: str, count: int, clang: str, qemu: Path) -> dict:
     sources = []
-    if name == "compute":
+    compute = name in ("compute", "compute-fma", "matrix-fma")
+    if compute:
         expected = expected_compute()
+        if name == "matrix-fma":
+            expected = bytes(48) + expected[48:]
         source = ROOT / "benchmarks/arm64_compute.c"
         sources.append(source)
         assembly = wrapper(len(expected))
@@ -83,6 +86,18 @@ def build_program(out: Path, name: str, count: int, clang: str, qemu: Path) -> d
             "memory": "1: str x0,[x4]\n ldr x3,[x4]\n add x0,x3,#3\n",
             "shift": "1: ror x0,x0,#13\n eor x0,x0,x0,lsr #7\n add x0,x0,#3\n",
             "fp": " fmov d0,#1.0\n fmov d1,#1.5\n1: fadd d0,d0,d1\n",
+            "cond": (" mov x2,#0\n1: add x0,x0,#1\n cmp x0,#7\n b.hi 2f\n"
+                     " add x2,x2,#3\n2: cmp x0,#5\n b.lt 3f\n add x2,x2,#5\n"
+                     "3: and x3,x0,#1\n cbz x3,4f\n add x2,x2,#7\n"
+                     "4: tbnz x0,#1,5f\n add x2,x2,#11\n5:\n"),
+            "cmpsep": ("1: subs x1,x1,#1\n add x0,x0,#3\n add x2,x0,#5\n"
+                       " sub x2,x2,#5\n eor x3,x2,x2,lsr #7\n"
+                       " eor x3,x3,x2,lsr #7\n ror x3,x3,#13\n"
+                       " ror x3,x3,#51\n add x0,x3,#0\n"),
+            "fpmix": (" fmov d1,#1.5\n fmov d2,#2.0\n fmov d3,#0.5\n"
+                      "1: fdiv d4,d2,d3\n scvtf d5,x0\n fadd d5,d5,d1\n"
+                      " fcvtzs x0,d5\n fabs d4,d4\n fmadd d6,d1,d3,d4\n"
+                      " fcmp d6,d2\n b.gt 2f\n add x0,x0,#7\n2:\n"),
         }[name]
         if name == "fp":
             expected = struct.pack("<d", 1.0 + count * 1.5)
@@ -97,6 +112,11 @@ def build_program(out: Path, name: str, count: int, clang: str, qemu: Path) -> d
                     value = ((value >> 13) | (value << 51)) & MASK64
                     value ^= value >> 7
                     value = (value + 3) & MASK64
+            elif name == "cond":
+                bit1_clear = count // 4 * 2 + int(count % 4 >= 1)
+                value = 3 * min(count, 7) + 5 * max(count - 4, 0) + 7 * ((count + 1) // 2) + 11 * bit1_clear
+            elif name == "fpmix":
+                value = count
             else:
                 value = count * 3 & MASK64
             expected = value.to_bytes(8, "little")
@@ -109,7 +129,9 @@ bench_entry:
  adrp x4,benchmark_output
  add x4,x4,:lo12:benchmark_output
  mov x0,#0
-""" + body + " subs x1,x1,#1\n b.ne 1b\n"
+""" + body + (" b.ne 1b\n" if name == "cmpsep" else " subs x1,x1,#1\n b.ne 1b\n")
+        if name == "cond":
+            assembly += " mov x0,x2\n"
         assembly += " str d0,[x4]\n" if name == "fp" else " str x0,[x4]\n"
         assembly += """ ret
 .size bench_entry,.-bench_entry
@@ -129,6 +151,12 @@ benchmark_output: .quad 0
                "-ffp-contract=off", "-O2", "-nostdlib", "-static", "-fuse-ld=lld",
                "-Wl,-e,_start", "-Wl,--build-id=none", "-Wl,-Ttext=0x410000",
                *map(str, sources), "-o", str(elf)]
+    if name in ("compute-fma", "matrix-fma"):
+        command[command.index("-ffp-contract=off")] = "-ffp-contract=on"
+    if name == "matrix-fma":
+        command.remove("-fno-vectorize")
+        command.remove("-fno-slp-vectorize")
+        command.insert(1, "-DSVM_BENCH_MATRIX_ONLY=1")
     subprocess.run(command, capture_output=True, check=True)
     symbols = {}
     for line in subprocess.check_output(["nm", "--defined-only", str(elf)], text=True).splitlines():
@@ -140,7 +168,7 @@ benchmark_output: .quad 0
     reference = subprocess.run([str(qemu), str(elf)], capture_output=True, timeout=60, check=True)
     if reference.stdout != expected:
         raise RuntimeError(f"{name}: QEMU {reference.stdout.hex()} != independent {expected.hex()}")
-    return {"path": str(elf), "sha256": digest(elf), "iterations": count if name != "compute" else None,
+    return {"path": str(elf), "sha256": digest(elf), "iterations": None if compute else count,
             "expected_hex": expected.hex(), "symbols": symbols, "build_command": command,
             "sources": {str(source): digest(source) for source in sources}, "qemu_verified": True}
 
@@ -195,7 +223,8 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--iterations", type=int, default=12_000_000)
     parser.add_argument("--fp-iterations", type=int, default=1_000_000)
-    parser.add_argument("--workload", action="append", choices=("integer", "memory", "shift", "fp", "compute"))
+    parser.add_argument("--workload", action="append", choices=("integer", "memory", "shift", "fp", "compute",
+                                                              "cond", "cmpsep", "fpmix", "compute-fma", "matrix-fma"))
     args = parser.parse_args()
     if args.samples < 3 or not 1 <= args.repeats <= 100 or not 0 < args.iterations < 2**32 or not 0 < args.fp_iterations < 2**32:
         parser.error("invalid sample, repetition or iteration count")
@@ -253,7 +282,7 @@ def main() -> int:
             if reference.stdout != bytes.fromhex(guest["expected_hex"]):
                 raise RuntimeError(f"reused guest QEMU result differs: {name}")
         else:
-            guest = build_program(args.out, name, args.fp_iterations if name == "fp" else args.iterations,
+            guest = build_program(args.out, name, args.fp_iterations if name in ("fp", "fpmix") else args.iterations,
                                   args.clang, args.qemu)
         print(f"{name}: QEMU and independent reference agree", flush=True)
         for config in configs.values():
