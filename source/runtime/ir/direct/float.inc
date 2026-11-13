@@ -2,6 +2,58 @@
 // and exception flags share one leaf with the checked architectural consumer.
 template <OpCode op>
 Interpreter::Value Interpreter::HandleFloating(Type type, std::span<const Operand> a) {
+    if constexpr (op == OpCode::ArmFPBitUnary) {
+        const auto control = a[1].payload, word = a[2].payload;
+        if (type != Type::V128 || word > UINT32_MAX || !arm64::IsFPBitUnary(word) ||
+            control > environment.uniforms.size() || environment.uniforms.size() - control < 4)
+            throw Exit{ExitKind::Unsupported};
+        u32 fpcr;
+        std::memcpy(&fpcr, environment.uniforms.data() + control, 4);
+        return Number(arm64::EvaluateFPBitUnary(static_cast<u64>(Raw(a[0])), word, fpcr), type);
+    }
+    if constexpr (op == OpCode::ArmFPTernary || op == OpCode::ArmFPUnary ||
+                  op == OpCode::ArmFPConvert || op == OpCode::ArmFPCompare) {
+        constexpr unsigned values = op == OpCode::ArmFPTernary   ? 3
+                                    : op == OpCode::ArmFPCompare ? 2
+                                                                 : 1;
+        const auto offsets = a[values].payload, encoded = a[values + 1].payload;
+        const auto control = static_cast<u32>(offsets), status = static_cast<u32>(offsets >> 32);
+        const auto info = arm64::DescribeFPValues(encoded);
+        const bool compare = op == OpCode::ArmFPCompare;
+        const bool valid = op == OpCode::ArmFPTernary ? info.kind == arm64::FPValueKind::Fused
+                           : compare                  ? info.kind == arm64::FPValueKind::Compare
+                           : op == OpCode::ArmFPConvert
+                                   ? info.kind == arm64::FPValueKind::FromInt ||
+                                             info.kind == arm64::FPValueKind::ToInt
+                                   : info.kind == arm64::FPValueKind::Sqrt ||
+                                             info.kind == arm64::FPValueKind::Precision;
+        const auto expected = compare                                  ? Type::Void
+                              : info.kind == arm64::FPValueKind::ToInt ? Type::U64
+                                                                       : Type::V128;
+        if (!valid || (!compare && type != expected) || control > environment.uniforms.size() ||
+            environment.uniforms.size() - control < 4 || status > environment.uniforms.size() ||
+            environment.uniforms.size() - status < 4)
+            throw Exit{ExitKind::Unsupported};
+        u128 inputs[3]{}, output{};
+        for (unsigned i = 0; i < values; ++i) {
+            if (View(a[i]) != (info.kind == arm64::FPValueKind::FromInt ? Type::U64 : Type::V128))
+                throw Exit{ExitKind::Unsupported};
+            inputs[i] = Raw(a[i]);
+        }
+        u32 fpcr;
+        std::memcpy(&fpcr, environment.uniforms.data() + control, 4);
+        if (arm64::EvaluateFPValues(
+                    &output, inputs, encoded, fpcr, environment.uniforms.data() + status))
+            throw Exit{ExitKind::Unsupported};
+        observed_effects = true;
+        auto result = Number(output, compare ? Type::Void : type);
+        if (compare) {
+            const auto nzcv = static_cast<u64>(output);
+            result.number.flags = nzcv << 28;
+            MergeFlags(result.number.flags, FlagBits(Flag::NZCV));
+        }
+        return result;
+    }
     if constexpr (op == OpCode::ArmFPBinary) {
         const auto mode = a[4].payload, control = a[2].payload, status = a[3].payload;
         if (type != Type::V128 || mode > UINT32_MAX || !arm64::ValidArmFPBinaryMode(mode) ||

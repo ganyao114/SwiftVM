@@ -35,7 +35,7 @@ void VisitNEONShiftImmediate(const vixl::aarch64::Instruction* instr) override {
     if (instr->GetNEONQ()) {
         WriteVHalves(instr->GetRd(), ReadVHalf(instr->GetRd(), false), packed);
     } else {
-        WriteVHalves(instr->GetRd(), packed, ImmValue(0, Type::U64));
+        WriteVRegister(instr->GetRd(), packed);
     }
 }
 
@@ -365,7 +365,7 @@ void VisitNEONScalarShiftImmediate(const vixl::aarch64::Instruction* instr) over
                 this->template Or<Type::U32>(previous, SingleOperand(qc)).WithView(Type::U32));
     }
     result = this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
-    WriteVHalves(instr->GetRd(), result, zero);
+    WriteVRegister(instr->GetRd(), result);
 }
 
 bool TryNEONVectorSaturatingShift(const vixl::aarch64::Instruction* instr) {

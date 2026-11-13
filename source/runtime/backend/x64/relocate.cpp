@@ -38,6 +38,8 @@ std::uintptr_t ResolveSymbol(HostSymbol s, const CompileOptions& o) noexcept {
             return reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric);
         case HostSymbol::ArmFPBinary:
             return reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateVectorBinaryFP);
+        case HostSymbol::ArmFPValues:
+            return reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateFPValues);
         case HostSymbol::X64WideDivide:
             return reinterpret_cast<std::uintptr_t>(&WideDivide);
         case HostSymbol::X64CheckedX87:

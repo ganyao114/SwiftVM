@@ -28,6 +28,23 @@ void Writer::HarvestArmFPStatus(bool saved, bool restore) {
 }
 
 void Writer::CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& slow) {
+    if (options.avx) {
+        const auto index = bits == 32 ? 0u : 2u;
+        fp_constants_used[index] = fp_constants_used[index + 1] = true;
+        if (bits == 32) {
+            vandps(xmm14, xmm0, ptr[rip + fp_constants[index]]);
+            vcmpps(xmm14, xmm14, ptr[rip + fp_constants[index + 1]], 8);
+        } else {
+            vandpd(xmm14, xmm0, ptr[rip + fp_constants[index]]);
+            vcmppd(xmm14, xmm14, ptr[rip + fp_constants[index + 1]], 8);
+        }
+        vpmovmskb(ecx, xmm14);
+        Label ready;
+        jrcxz(ready);
+        jmp(slow, T_NEAR);
+        L(ready);
+        return;
+    }
     if (options.sse41) {
         const auto index = bits == 32 ? 0u : 2u;
         fp_constants_used[index] = fp_constants_used[index + 1] = true;
@@ -533,7 +550,8 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
                format = c.Arg(4).Payload();
     const bool post_check =
             ArmNativeFP() && options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24));
-    if (options.local_flags && flags.dirty && !(post_check && options.sse41)) {
+    if (options.local_flags && flags.dirty &&
+        (flags.floating || !(post_check && (options.sse41 || options.avx)))) {
         SaveNativeFlags(true);
         flags.native = false;
     }
@@ -567,6 +585,12 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
         L(path.resume);
         return;
     }
+    if (kind == 3 && !ArmNativeFP()) {
+        jmp(slow, T_NEAR);
+        L(path.resume);
+        flags = preserved_flags;
+        return;
+    }
     if (options.arm_fpcr == UINT32_MAX) {
         cmp(dword[r12 + control], 0);
         jne(slow, T_NEAR);
@@ -582,9 +606,9 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
     }
     // Zero or central finite exponents only. For F32 e in [65,189],
     // F64 e in [513,1533]: even a product remains normal, and the smallest
-    // nonzero sum/difference is normal. Only IXC can arise; cancellation and
-    // signed zeros have identical round-to-nearest semantics. No speculative
-    // result or exception needs rollback, including the MinNorm boundary.
+    // nonzero sum/difference is normal. Add/sub/mul can only raise IXC here.
+    // Division also admits zero divisors through native FPSR accumulation
+    // and checks its result for NaN before committing the destination.
     if (!post_check)
         for (const auto input : {xmm0, xmm1}) {
             for (unsigned lane = 0; lane < lanes; ++lane) {
@@ -635,12 +659,13 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
                 subss(xmm0, xmm1);
             else
                 subps(xmm0, xmm1);
-        } else {
+        } else if (kind == 2) {
             if (scalar)
                 mulss(xmm0, xmm1);
             else
                 mulps(xmm0, xmm1);
-        }
+        } else
+            divss(xmm0, xmm1);
     } else {
         if (kind == 0) {
             if (scalar)
@@ -652,12 +677,13 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
                 subsd(xmm0, xmm1);
             else
                 subpd(xmm0, xmm1);
-        } else {
+        } else if (kind == 2) {
             if (scalar)
                 mulsd(xmm0, xmm1);
             else
                 mulpd(xmm0, xmm1);
-        }
+        } else
+            divsd(xmm0, xmm1);
     }
     if (!regional && !ArmNativeFP()) {
         stmxcsr(dword[rsp + tmp + 52]);
@@ -672,7 +698,7 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
         movd(xmm0, eax);
     } else if (!scalar && lanes * bits == 64)
         movq(xmm0, xmm0);
-    if (post_check) CheckArmFPResult(c, bits, lanes, slow);
+    if (post_check || kind == 3) CheckArmFPResult(c, bits, lanes, slow);
     L(path.resume);
     flags = preserved_flags;
 }
@@ -693,7 +719,10 @@ void Writer::EmitColdPaths() {
         if (path.flags.dirty) {
             flags = {true, false, true, false, true};
             if (path.flags.saved && !path.flags.saved_carry) {
-                xor_(qword[rsp + allocation.flags_slot], options.lahf ? 0x100 : 1);
+                if (options.lahf)
+                    xor_(word[rsp + allocation.flags_slot], 0x100);
+                else
+                    xor_(qword[rsp + allocation.flags_slot], 1);
                 flags.saved_carry = false;
             }
             if (path.flags.native) {
@@ -735,13 +764,103 @@ void Writer::EmitColdPaths() {
     for (auto& path : cold_numeric) {
         current = path.node;
         L(path.entry);
-        flags = {};
         OpContext context{source.Operations()[current.value], current, source.Operands(current)};
         for (const auto input : context.operands) context.args[context.count++] = input;
         context.width = TypeBits(context.operation.type);
+        if (context.operation.opcode != OpCode::CallLambda) {
+            flags = path.flags;
+            if (flags.dirty && (flags.native || flags.floating || flags.saved != 15))
+                SaveNativeFlags();
+            flags.native = 0;
+            const auto encoded = context.Arg(context.count - 1).Payload();
+            const auto info = runtime::arm64::DescribeFPValues(encoded);
+            const auto offsets = context.Arg(context.count - 2).Payload();
+            const unsigned inputs = context.count - 2;
+            for (unsigned i = 0; i < inputs; ++i) {
+                if (info.kind == runtime::arm64::FPValueKind::FromInt) {
+                    Read(context.Arg(i), rax);
+                    movq(xmm0, rax);
+                } else
+                    ReadVector(context.Arg(i), xmm0);
+                movdqu(ptr[rsp + tmp + i * 16], xmm0);
+            }
+            const NumericCallKey key{runtime::arm64::CanonicalFPValues(encoded, info),
+                                     u32(offsets),
+                                     u32(offsets >> 32),
+                                     path.masks.scalars,
+                                     path.masks.vectors,
+                                     flags.dirty,
+                                     flags.saved_carry};
+            const auto [stub, inserted] = numeric_stub_index.try_emplace(key, numeric_stubs.size());
+            if (inserted) numeric_stubs.push_back({key, {}});
+            call(numeric_stubs[stub->second].entry);
+            flags = {};
+            if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
+                key.control != options.arm_fpcr_offset) {
+                Label ready;
+                test(eax, eax);
+                jz(ready, T_NEAR);
+                guest_pc = path.pc;
+                Exit(runtime::ExitValue(runtime::NativeExit::FPEnvironment));
+                L(ready);
+            }
+            if (info.kind == runtime::arm64::FPValueKind::Compare) {
+                mov(rdx, qword[rsp + tmp + 48]);
+                if (options.local_flags) {
+                    mov(eax, 0x202);
+                    mov(ecx, 0x203);
+                    cmp(edx, 8);
+                    cmove(eax, ecx);
+                    mov(ecx, 0x242);
+                    cmp(edx, 6);
+                    cmove(eax, ecx);
+                    mov(ecx, 0x247);
+                    cmp(edx, 3);
+                    cmove(eax, ecx);
+                    if (options.lahf) {
+                        shl(eax, 8);
+                        sahf();
+                    } else {
+                        push(rax);
+                        popfq();
+                    }
+                } else {
+                    shl(rdx, 28);
+                    MergeFlags(rdx, 15);
+                }
+            } else if (info.kind == runtime::arm64::FPValueKind::ToInt)
+                mov(rax, qword[rsp + tmp + 48]);
+            else
+                movdqu(xmm0, ptr[rsp + tmp + 48]);
+            jmp(path.resume, T_NEAR);
+            continue;
+        }
+        flags = {};
         PrepareCall(path.masks);
         LambdaCall(context);
         jmp(path.resume, T_NEAR);
+    }
+    for (auto& stub : numeric_stubs) {
+        align(16);
+        L(stub.entry);
+        sub(rsp, 8);
+        stack_bias = 16;
+        flags = {stub.key.flags_saved, false, stub.key.flags_saved, false, stub.key.saved_carry};
+        PrepareCall({stub.key.scalars, stub.key.vectors});
+        lea(rdi, ptr[rsp + tmp + stack_bias + 48]);
+        lea(rsi, ptr[rsp + tmp + stack_bias]);
+        mov(rdx, stub.key.encoded);
+        if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
+            stub.key.control != options.arm_fpcr_offset)
+            mov(ecx, dword[r12 + stub.key.control]);
+        else
+            mov(ecx, options.arm_fpcr);
+        lea(r8, ptr[r12 + stub.key.status]);
+        Call(reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateFPValues),
+             HostSymbol::ArmFPValues);
+        add(rsp, 8);
+        ret();
+        stack_bias = 0;
     }
     for (auto& path : cold_events) {
         L(path.entry);

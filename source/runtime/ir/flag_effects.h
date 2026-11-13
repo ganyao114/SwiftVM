@@ -36,6 +36,16 @@ inline std::uint64_t FlagReads(OpCode opcode,
                                const UniformPolicy& policy) {
     constexpr auto all = FlagBits(Flag::All);
     if (opcode == OpCode::VecLoadConst || opcode == OpCode::VecSharedZero) return 0;
+    if (opcode == OpCode::ArmFPCompare && policy.flags) {
+        auto at = inputs.begin();
+        ++at;
+        ++at;
+        const auto offsets = *at;
+        if (offsets.Kind() == OperandKind::Immediate &&
+            !Overlaps({static_cast<std::uint32_t>(offsets.Payload()), 4}, *policy.flags) &&
+            !Overlaps({static_cast<std::uint32_t>(offsets.Payload() >> 32), 4}, *policy.flags))
+            return 0;
+    }
     if (HasAnyEffect(effects,
                      Effect::MayFault | Effect::Unknown | Effect::External | Effect::Control))
         return all;

@@ -46,7 +46,7 @@ FPBinaryResult EvaluatePrecisionFP(
         u64 value, u32 source_bits, u32 destination_bits, bool odd, u32 fpcr);
 FPBinaryResult EvaluateBinaryFP(u64 lhs, u64 rhs, u32 bits, u32 operation, u32 fpcr);
 
-// kind: 0=add, 1=sub, 2=mul; bits: 32/64; lanes: 1/2/4.
+// kind: 0=add, 1=sub, 2=mul, 3=div; bits: 32/64; lanes: 1/2/4.
 // An indexed RHS broadcasts one of its original 128-bit input's lanes.
 constexpr u32 ArmFPBinaryMode(u32 kind, u32 bits, u32 lanes, bool indexed = false, u32 index = 0) {
     return kind | (bits == 64 ? 4u : 0u) | (lanes << 3) | (indexed ? 64u : 0u) | (index << 7);
@@ -54,8 +54,9 @@ constexpr u32 ArmFPBinaryMode(u32 kind, u32 bits, u32 lanes, bool indexed = fals
 
 constexpr bool ValidArmFPBinaryMode(u32 mode) {
     const auto bits = mode & 4 ? 64u : 32u, lanes = (mode >> 3) & 7;
-    return !(mode & ~511u) && (mode & 3) < 3 && (lanes == 1 || lanes == 2 || lanes == 4) &&
-           lanes * bits <= 128 && ((mode & 64) ? (mode >> 7) < 128 / bits : !(mode >> 7));
+    return !(mode & ~511u) && (lanes == 1 || lanes == 2 || lanes == 4) && lanes * bits <= 128 &&
+           ((mode & 3) != 3 || lanes == 1) &&
+           ((mode & 64) ? (mode >> 7) < 128 / bits : !(mode >> 7));
 }
 
 // Inputs are snapshotted before any output; inactive destination lanes are
@@ -119,4 +120,24 @@ u64 ExecuteNumeric(u64 state, u64 family_and_instruction, u64 pc);
 constexpr u64 NumericCall(Numeric family, u32 word, u32 extra = 0) {
     return (u64(extra) << 40) | (u64(family) << 32) | word;
 }
+
+enum class FPValueKind { Invalid, Compare, Fused, Divide, Sqrt, Precision, FromInt, ToInt };
+
+struct FPValueInfo {
+    FPValueKind kind{FPValueKind::Invalid};
+    u32 bits{32}, lanes{1}, output_bits{32}, integer_bits{32}, control{};
+    bool indexed{};
+};
+
+FPValueInfo DescribeFPValues(u64 encoded) noexcept;
+u64 CanonicalFPValues(u64 encoded, const FPValueInfo&) noexcept;
+
+// Packed offsets keep exact ternary operations within the IR's five arguments.
+constexpr u64 FPStateOffsets(u32 control, u32 status) { return u64{control} | (u64{status} << 32); }
+
+// Inputs are three raw 128-bit SSA values. The temporary architectural state
+// belongs to this call and observes only these values and the explicit controls.
+u64 EvaluateFPValues(void* output, const void* inputs, u64 encoded, u32 fpcr, void* fpsr);
+bool IsFPBitUnary(u32 word) noexcept;
+u64 EvaluateFPBitUnary(u64 value, u32 word, u32 fpcr) noexcept;
 }  // namespace swift::runtime::arm64

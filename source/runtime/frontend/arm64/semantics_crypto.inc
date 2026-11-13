@@ -58,7 +58,7 @@ void VisitCrypto2RegSHA(const vixl::aarch64::Instruction* instr) override {
         return this->template RorImm<Type::U32>(word, Imm{right}).WithView(Type::U32);
     };
     if (op == 0x5E280800) {
-        WriteVHalves(instr->GetRd(), Widen(rotate(source[0], 2)), ImmValue(0, Type::U64));
+        WriteVRegister(instr->GetRd(), rotate(source[0], 2));
         return;
     }
     const auto old = words(instr->GetRd());

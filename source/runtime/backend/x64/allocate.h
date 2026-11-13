@@ -12,6 +12,7 @@ struct Home {
     bool spilled{}, terminal_only{};
     // A stored value can use its adjacent architectural write as backing.
     std::uint8_t uniform_store_bytes{};
+    bool reuse_rhs{};
 };
 
 struct Allocation {
@@ -27,7 +28,7 @@ struct Allocation {
     std::uint32_t flags_slot{UINT32_MAX};
     std::uint32_t condition_slot{UINT32_MAX};
     std::uint32_t cold_fp_count{}, cold_event_count{};
-    bool has_calls{}, fpcr_may_change{};
+    bool has_calls{}, fpcr_may_change{}, uses_fpcr{};
 
     explicit operator bool() const noexcept { return error == backend::CompileError::None; }
 };

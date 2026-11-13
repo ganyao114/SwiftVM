@@ -94,7 +94,7 @@ void VisitNEONExtract(const vixl::aarch64::Instruction* instr) override {
                                                        rm_low, Imm{64 - shift})))
                           .WithView(Type::U64);
         }
-        WriteVHalves(instr->GetRd(), low, ImmValue(0, Type::U64));
+        WriteVRegister(instr->GetRd(), low);
         return;
     }
     auto rn_high = ReadVHalf(instr->GetRn(), true);
@@ -144,7 +144,7 @@ void VisitNEONScalarCopy(const vixl::aarch64::Instruction* instr) override {
         value = this->template And<Type::U64>(value, SingleOperand(Imm{(u64{1} << bits) - 1}))
                         .WithView(Type::U64);
     }
-    WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
+    WriteVRegister(instr->GetRd(), value);
 }
 
 void VisitNEONPerm(const vixl::aarch64::Instruction* instr) override {

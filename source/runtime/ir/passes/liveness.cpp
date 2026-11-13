@@ -22,6 +22,7 @@ FlagWrite FlagWrites(const Builder& editor,
                      NodeId id,
                      const Operation& op,
                      OperationMetadata meta) {
+    if (op.opcode == OpCode::ArmFPCompare) return {FlagBits(Flag::NZCV), FlagWriteKind::Fixed};
     if (meta != OperationMetadata{}) {
         const bool integer = op.type == Type::U8 || op.type == Type::U16 || op.type == Type::U32 ||
                              op.type == Type::U64;

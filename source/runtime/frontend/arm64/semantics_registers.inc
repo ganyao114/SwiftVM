@@ -76,7 +76,12 @@ void WriteVRegister(u8 code, Value value) {
     value = Reinterpret(value, value.ViewType());
     if (TypeBits(value.ViewType()) <= 64) {
         // Scalar SIMD writes clear the complete remainder of the Q register.
-        WriteVHalves(code, Widen(value), ImmValue(0, Type::U64));
+        if (X64FP()) {
+            auto vector = Emit<OpCode::BitCast, Type::V128>(Widen(value));
+            auto offset = u32(offsetof(GuestState, q) + code * sizeof(u128));
+            this->StoreUniform(Uniform{offset, Type::V128}, vector);
+        } else
+            WriteVHalves(code, Widen(value), ImmValue(0, Type::U64));
         return;
     }
     auto offset = u32(offsetof(GuestState, q) + code * sizeof(u128));

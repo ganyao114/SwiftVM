@@ -693,13 +693,145 @@ u64 ExecuteScalarFP(u64 context_address, u64 instruction, u64 guest_pc) {
     return 0;
 }
 
+FPValueInfo DescribeFPValues(u64 encoded) noexcept {
+    FPValueInfo info;
+    if (encoded >> 40) return info;
+    const auto family = static_cast<Numeric>((encoded >> 32) & 255);
+    const u32 word = encoded, type = (word >> 22) & 3;
+    info.bits = type == 1 ? 64 : 32;
+    info.output_bits = info.bits;
+    info.integer_bits = word >> 31 ? 64 : 32;
+    if (family == Numeric::Scalar && type != 3) {
+        if ((word & FPCompareFMask) == FPCompareFixed ||
+            (word & FPConditionalCompareFMask) == FPConditionalCompareFixed)
+            info.kind = FPValueKind::Compare;
+        else if ((word & FPDataProcessing3SourceFMask) == FPDataProcessing3SourceFixed) {
+            info.kind = FPValueKind::Fused;
+            info.control = ((bool(word & (1u << 15)) != bool(word & (1u << 21))) ? 1u : 0u) |
+                           ((word & (1u << 21)) ? 2u : 0u);
+        } else if ((word & FPDataProcessing2SourceMask) == FDIV_s ||
+                   (word & FPDataProcessing2SourceMask) == FDIV_d)
+            info.kind = FPValueKind::Divide;
+        else if ((word & FPDataProcessing1SourceMask) == FSQRT_s ||
+                 (word & FPDataProcessing1SourceMask) == FSQRT_d)
+            info.kind = FPValueKind::Sqrt;
+        else if ((word & FPDataProcessing1SourceMask) == FCVT_ds ||
+                 (word & FPDataProcessing1SourceMask) == FCVT_sd) {
+            info.kind = FPValueKind::Precision;
+            info.output_bits = info.bits == 32 ? 64 : 32;
+        } else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
+                   (((word >> 16) & 31) == 2 || ((word >> 16) & 31) == 3))
+            info.kind = FPValueKind::FromInt;
+        else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
+                 (((word >> 16) & 31) == 24 || ((word >> 16) & 31) == 25))
+            info.kind = FPValueKind::ToInt;
+    } else if (family == Numeric::Fused &&
+               ((word & NEON3SameFPMask) == NEON_FMLA || (word & NEON3SameFPMask) == NEON_FMLS)) {
+        info.kind = FPValueKind::Fused;
+        info.bits = word & (1u << 22) ? 64 : 32;
+        info.lanes = (word & NEON_Q ? 128 : 64) / info.bits;
+        info.control = (word & NEON3SameFPMask) == NEON_FMLS ? 1 : 0;
+        info.output_bits = info.bits;
+    } else if (family == Numeric::Indexed && ((word >> 22) & 3) >= 2) {
+        const bool scalar = word & NEONScalar;
+        const auto mask =
+                scalar ? u32(NEONScalarByIndexedElementMask) : u32(NEONByIndexedElementMask);
+        const auto flags = scalar ? (u32(NEON_Q) | u32(NEONScalar)) : 0;
+        const auto op = word & mask;
+        if (op == (u32(NEON_FMLA_H_byelement) | flags) ||
+            op == (u32(NEON_FMLS_H_byelement) | flags)) {
+            info.kind = FPValueKind::Fused;
+            info.bits = ((word >> 22) & 3) == 2 ? 32 : 64;
+            info.lanes = scalar ? 1 : (word & NEON_Q ? 128 : 64) / info.bits;
+            info.control = op == (u32(NEON_FMLS_H_byelement) | flags) ? 1 : 0;
+            info.output_bits = info.bits;
+            info.indexed = true;
+        }
+    }
+    if (info.kind != FPValueKind::Invalid && !SupportsNumeric(family, word)) return {};
+    return info;
+}
+
+u64 CanonicalFPValues(u64 encoded, const FPValueInfo& info) noexcept {
+    // SSA inputs are independent of the descriptor's architectural register
+    // numbers. Use distinct temporary registers, including a real integer Rd.
+    u32 word = encoded;
+    word = (word & ~(31u << 5)) | (1u << 5);
+    if (info.kind != FPValueKind::Compare) word &= ~31u;
+    const bool zero = info.kind == FPValueKind::Compare &&
+                      (word & FPCompareFMask) == FPCompareFixed && (word & 8);
+    if (!zero && (info.kind == FPValueKind::Compare || info.kind == FPValueKind::Divide ||
+                  info.kind == FPValueKind::Fused))
+        word = (word & ~(31u << 16)) | (2u << 16);
+    const auto family = static_cast<Numeric>((encoded >> 32) & 255);
+    if (info.kind == FPValueKind::Fused && family == Numeric::Scalar)
+        word = (word & ~(31u << 10)) | (3u << 10);
+    return (encoded & ~u64{UINT32_MAX}) | word;
+}
+
+u64 EvaluateFPValues(void* output, const void* inputs, u64 encoded, u32 fpcr, void* fpsr) {
+    const auto info = DescribeFPValues(encoded);
+    if (info.kind == FPValueKind::Invalid || !IsSupportedFPCR(fpcr)) return 1;
+    GuestState state;
+    state.fpcr = fpcr;
+    std::memcpy(&state.fpsr, fpsr, 4);
+    const auto* values = static_cast<const u8*>(inputs);
+    encoded = CanonicalFPValues(encoded, info);
+    const u32 word = encoded;
+    const auto family = static_cast<Numeric>((encoded >> 32) & 255);
+    const u32 rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
+    const bool zero = info.kind == FPValueKind::Compare &&
+                      (word & FPCompareFMask) == FPCompareFixed && (word & 8);
+    if (info.kind == FPValueKind::FromInt)
+        std::memcpy(&state.gprs[rn], values, 8);
+    else
+        std::memcpy(state.q[rn], values, 16);
+    if ((info.kind == FPValueKind::Compare && !zero) || info.kind == FPValueKind::Divide ||
+        info.kind == FPValueKind::Fused)
+        std::memcpy(state.q[rm], values + 16, 16);
+    if (info.kind == FPValueKind::Fused) {
+        const auto addend = family == Numeric::Scalar ? (word >> 10) & 31 : rd;
+        std::memcpy(state.q[addend], values + 32, 16);
+    }
+    const auto result = ExecuteNumeric(reinterpret_cast<u64>(&state), encoded, 0);
+    if (state.helper_status) return 1;
+    u8 value[16]{};
+    if (info.kind == FPValueKind::Compare)
+        std::memcpy(value, &result, 8);
+    else if (info.kind == FPValueKind::ToInt)
+        std::memcpy(value, &state.gprs[rd], 8);
+    else
+        std::memcpy(value, state.q[rd], 16);
+    std::memcpy(output, value, 16);
+    std::memcpy(fpsr, &state.fpsr, 4);
+    return 0;
+}
+
+bool IsFPBitUnary(u32 word) noexcept {
+    const auto op = (word & FPDataProcessing1SourceMask) & ~(3u << 22);
+    return ((word >> 22) & 3) != 2 && (op == FMOV_s || op == FABS_s || op == FNEG_s);
+}
+
+u64 EvaluateFPBitUnary(u64 value, u32 word, u32 fpcr) noexcept {
+    const auto type = (word >> 22) & 3;
+    const auto bits = type == 3 ? 16u : type == 1 ? 64u : 32u;
+    const auto op = (word & FPDataProcessing1SourceMask) & ~(3u << 22);
+    const u64 mask = UINT64_MAX >> (64 - bits), sign = u64{1} << (bits - 1);
+    value &= mask;
+    const u64 exponent = bits == 16 ? 0x7c00 : bits == 32 ? 0x7f800000 : 0x7ff0000000000000;
+    const bool preserve =
+            (fpcr & 2) && (value & exponent) == exponent && (value & (mask & ~(sign | exponent)));
+    if (preserve || op == FMOV_s) return value;
+    return op == FABS_s ? value & ~sign : value ^ sign;
+}
+
 void EvaluateVectorBinaryFP(
         void* output, const void* lhs, const void* rhs, u32 mode, u32 fpcr, void* fpsr) noexcept {
     u8 left[16], right[16], result[16]{};
     std::memcpy(left, lhs, 16);
     std::memcpy(right, rhs, 16);
     const auto bytes = mode & 4 ? 8u : 4u, lanes = (mode >> 3) & 7;
-    constexpr u32 operations[]{2, 3, 0};
+    constexpr u32 operations[]{2, 3, 0, 1};
     u32 exceptions{};
     for (u32 lane = 0; lane < lanes; ++lane) {
         u64 a{}, b{};

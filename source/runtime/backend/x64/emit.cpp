@@ -389,7 +389,7 @@ void Writer::Run() {
             overlaps(options.mxcsr_offset))
             Reject(CompileError::UnsupportedOperand);
     }
-    const bool fp_guard = allocation.cold_fp_count && options.arm_fpcr != UINT32_MAX &&
+    const bool fp_guard = allocation.uses_fpcr && options.arm_fpcr != UINT32_MAX &&
                           options.arm_fpcr_offset != UINT32_MAX;
     const auto enter = [&](u32 b, u64 pc) {
         flags = {};

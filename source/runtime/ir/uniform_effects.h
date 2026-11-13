@@ -42,15 +42,24 @@ inline UniformEffects UniformEffectsFor(const Operation& op,
                 op.opcode != OpCode::LoadUniform);
             result.all_read = result.all_write = false;
         }
-    } else if (op.opcode == OpCode::ArmFPBinary) {
+    } else if (op.opcode == OpCode::ArmFPBinary || op.opcode == OpCode::ArmFPTernary ||
+               op.opcode == OpCode::ArmFPUnary || op.opcode == OpCode::ArmFPConvert ||
+               op.opcode == OpCode::ArmFPCompare || op.opcode == OpCode::ArmFPBitUnary) {
         auto at = inputs.begin();
-        ++at;
-        ++at;
-        const auto control = *at++, status = *at;
-        if (control.Kind() == OperandKind::Immediate && status.Kind() == OperandKind::Immediate &&
-            control.Payload() <= UINT32_MAX - 4 && status.Payload() <= UINT32_MAX - 4) {
-            add({static_cast<std::uint32_t>(control.Payload()), 4}, true, false);
-            add({static_cast<std::uint32_t>(status.Payload()), 4}, true, true);
+        const unsigned values =
+                op.opcode == OpCode::ArmFPTernary                                       ? 3
+                : op.opcode == OpCode::ArmFPBinary || op.opcode == OpCode::ArmFPCompare ? 2
+                                                                                        : 1;
+        for (unsigned i = 0; i < values; ++i) ++at;
+        const auto field = *at++;
+        const bool binary = op.opcode == OpCode::ArmFPBinary;
+        const bool bits = op.opcode == OpCode::ArmFPBitUnary;
+        const auto control = binary || bits ? field.Payload() : std::uint32_t(field.Payload());
+        const auto status = binary ? (*at).Payload() : field.Payload() >> 32;
+        if (field.Kind() == OperandKind::Immediate && control <= UINT32_MAX - 4 &&
+            (bits || status <= UINT32_MAX - 4)) {
+            add({static_cast<std::uint32_t>(control), 4}, true, false);
+            if (!bits) add({static_cast<std::uint32_t>(status), 4}, true, true);
             result.all_read = result.all_write = false;
         }
     } else if (policy.pc && (op.opcode == OpCode::AdvancePC || op.opcode == OpCode::SetLocation ||
@@ -67,8 +76,10 @@ inline UniformEffects UniformEffectsFor(const Operation& op,
             result.all_write |= write;
         }
     }
-    if (op.opcode != OpCode::ArmFPBinary &&
-        HasAnyEffect(effects, Effect::ReadHostState | Effect::WriteHostState)) {
+    const bool arm_fp = op.opcode == OpCode::ArmFPBinary || op.opcode == OpCode::ArmFPTernary ||
+                        op.opcode == OpCode::ArmFPUnary || op.opcode == OpCode::ArmFPConvert ||
+                        op.opcode == OpCode::ArmFPCompare;
+    if (!arm_fp && HasAnyEffect(effects, Effect::ReadHostState | Effect::WriteHostState)) {
         const bool write = HasAnyEffect(effects, Effect::WriteHostState);
         if (policy.numeric_control)
             add(*policy.numeric_control, true, write);

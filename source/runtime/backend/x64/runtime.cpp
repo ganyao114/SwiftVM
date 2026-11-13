@@ -25,10 +25,11 @@ Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
         options.aes = c & (1u << 25);
         options.pclmul = c & 2;
         options.cx16 = c & (1u << 13);
-        if ((c & (1u << 12)) && (c & (1u << 27)) && (c & (1u << 28))) {
+        if ((c & (1u << 27)) && (c & (1u << 28))) {
             unsigned lo, hi;
             asm volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
-            options.fma = (lo & 6) == 6;
+            options.avx = (lo & 6) == 6;
+            options.fma = options.avx && (c & (1u << 12));
         }
     }
     if (__get_cpuid_max(0, nullptr) >= 7) {
@@ -41,7 +42,7 @@ Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
                (options.sse42 ? abi::Sse42 : 0) | (options.fma ? abi::Fma : 0) |
                (options.aes ? abi::Aes : 0) | (options.pclmul ? abi::Pclmul : 0) |
                (options.sha ? abi::Sha : 0) | (options.cx16 ? abi::Cx16 : 0) |
-               (options.lahf ? abi::Lahf : 0);
+               (options.lahf ? abi::Lahf : 0) | (options.avx ? abi::Avx : 0);
 }
 
 execution::HostBackendOps Runtime::Bind() noexcept {

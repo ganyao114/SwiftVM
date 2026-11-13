@@ -19,7 +19,9 @@ bool RestoreGuestState(execution::FaultContext& c,
                                 (std::uint32_t{s.recovery[7]} << 16);
             std::memcpy(&stack, regs.data() + 4 * 8, 8);
             if (!stack || (offset & 7) || stack > UINT64_MAX - offset - 8) return false;
-            std::memcpy(&saved, reinterpret_cast<const void*>(stack + offset), 8);
+            std::memcpy(&saved,
+                        reinterpret_cast<const void*>(stack + offset),
+                        s.recovery[0] & 16 ? 2 : 8);
         }
         constexpr unsigned source_bits[]{0, 11, 6, 7}, image_bits[]{8, 0, 14, 15},
                 destination_bits[]{29, 28, 30, 31};

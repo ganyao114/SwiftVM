@@ -109,7 +109,7 @@ void VisitNEONScalar3Same(const vixl::aarch64::Instruction* instr) override {
         }
         result = this->Select(right, right_result, left_result).WithView(Type::U64);
     }
-    WriteVHalves(instr->GetRd(), result, zero);
+    WriteVRegister(instr->GetRd(), result);
 }
 
 void VisitNEONScalar2RegMisc(const vixl::aarch64::Instruction* instr) override {
@@ -207,7 +207,7 @@ void VisitNEONScalar2RegMisc(const vixl::aarch64::Instruction* instr) override {
                 status, this->template Or<Type::U32>(old, SingleOperand(qc)).WithView(Type::U32));
     }
     result = this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
-    WriteVHalves(instr->GetRd(), result, zero);
+    WriteVRegister(instr->GetRd(), result);
 }
 
 void VisitNEONScalarPairwise(const vixl::aarch64::Instruction* instr) override {
@@ -227,7 +227,7 @@ void VisitNEONScalarPairwise(const vixl::aarch64::Instruction* instr) override {
     }
     auto low = ReadVHalf(instr->GetRn(), false), high = ReadVHalf(instr->GetRn(), true);
     auto result = this->template Add<Type::U64>(low, SingleOperand(high)).WithView(Type::U64);
-    WriteVHalves(instr->GetRd(), result, ImmValue(0, Type::U64));
+    WriteVRegister(instr->GetRd(), result);
 }
 
 Value ScalarDoublingMultiply(
@@ -313,7 +313,7 @@ void VisitNEONScalar3Diff(const vixl::aarch64::Instruction* instr) override {
     auto old = accumulate ? ReadVHalf(instr->GetRd(), false) : zero;
     auto result =
             ScalarDoublingMultiply(lhs, rhs, old, bits, accumulate, op == NEON_SQDMLSL_scalar);
-    WriteVHalves(instr->GetRd(), result, zero);
+    WriteVRegister(instr->GetRd(), result);
 }
 
 void VisitNEONScalarByIndexedElement(const vixl::aarch64::Instruction* instr) override {
@@ -342,7 +342,7 @@ void VisitNEONScalarByIndexedElement(const vixl::aarch64::Instruction* instr) ov
     auto old = accumulate ? ReadVHalf(instr->GetRd(), false) : zero;
     auto result = ScalarDoublingMultiply(
             lhs, rhs, old, bits, accumulate, op == NEON_SQDMLSL_byelement_scalar);
-    WriteVHalves(instr->GetRd(), result, zero);
+    WriteVRegister(instr->GetRd(), result);
 }
 
 void VisitNEONByIndexedElement(const vixl::aarch64::Instruction* instr) override {

@@ -30,7 +30,6 @@ bool TryNativeScalarFP(const vixl::aarch64::Instruction* instr) {
                              ? 64
                              : 32;
     if (X64FP()) {
-        if (kind == 3) return false;
         EmitX64FP(instr->GetRd(),
                   instr->GetRn(),
                   instr->GetRm(),
@@ -41,6 +40,36 @@ bool TryNativeScalarFP(const vixl::aarch64::Instruction* instr) {
     auto rhs = ReadVRegister(instr->GetRm(), Type::V128);
     auto result = Emit<OpCode::ArmScalarFP, Type::V128>(lhs, rhs, Imm{u8(kind)}, Imm{u8(bits)});
     WriteVRegister(instr->GetRd(), result);
+    return true;
+}
+
+bool EmitX64Numeric(const vixl::aarch64::Instruction* instr, Numeric family) {
+    if (!X64FP()) return false;
+    using runtime::arm64::FPValueKind;
+    const u32 word = instr->GetInstructionBits();
+    const auto encoded = runtime::arm64::NumericCall(family, word);
+    const auto info = runtime::arm64::DescribeFPValues(encoded);
+    if (info.kind == FPValueKind::Invalid || info.kind == FPValueKind::Divide) return false;
+    const Imm offsets{runtime::arm64::FPStateOffsets(layout.fpcr_offset, layout.fpsr_offset)};
+    const Imm mode{encoded};
+    const u32 rn = instr->GetRn(), rm = (word >> 16) & 31, rd = instr->GetRd();
+    const auto lhs =
+            info.kind == FPValueKind::FromInt ? ReadXRegister(rn) : ReadVRegister(rn, Type::V128);
+    if (info.kind == FPValueKind::Compare) {
+        const auto rhs = ReadVRegister(rm, Type::V128);
+        Emit<OpCode::ArmFPCompare>(lhs, rhs, offsets, mode);
+    } else if (info.kind == FPValueKind::Fused) {
+        const auto rhs = ReadVRegister(rm, Type::V128);
+        const auto addend =
+                ReadVRegister(family == Numeric::Scalar ? instr->GetRa() : rd, Type::V128);
+        const auto result = Emit<OpCode::ArmFPTernary, Type::V128>(lhs, rhs, addend, offsets, mode);
+        WriteVRegister(rd, result);
+    } else if (info.kind == FPValueKind::FromInt) {
+        WriteVRegister(rd, Emit<OpCode::ArmFPConvert, Type::V128>(lhs, offsets, mode));
+    } else if (info.kind == FPValueKind::ToInt) {
+        WriteXRegister(rd, Emit<OpCode::ArmFPConvert, Type::U64>(lhs, offsets, mode));
+    } else
+        WriteVRegister(rd, Emit<OpCode::ArmFPUnary, Type::V128>(lhs, offsets, mode));
     return true;
 }
 
@@ -79,6 +108,7 @@ bool TryNativeScalarFMA(const vixl::aarch64::Instruction* instr) {
 void ScalarFPHelper(const vixl::aarch64::Instruction* instr, bool comparison = false) {
     if (!runtime::arm64::IsSupportedScalarFP(instr->GetInstructionBits()))
         throw Rejected{BuildError::Unsupported};
+    if (EmitX64Numeric(instr, Numeric::Scalar)) return;
     auto value = Helper(Numeric::Scalar);
     if (comparison) WriteNZCV(value);
 }
@@ -210,12 +240,11 @@ void VisitFPIntegerConvert(const vixl::aarch64::Instruction* instr) override {
             auto value = this->template And<Type::U64>(ReadXRegister(instr->GetRn()),
                                                        SingleOperand(Imm{u64{0xFFFF}}))
                                  .WithView(Type::U64);
-            WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
+            WriteVRegister(instr->GetRd(), value);
             return;
         }
         case FMOV_sw:
-            WriteVHalves(
-                    instr->GetRd(), Widen(ReadWRegister(instr->GetRn())), ImmValue(0, Type::U64));
+            WriteVRegister(instr->GetRd(), ReadWRegister(instr->GetRn()));
             return;
         case FMOV_xd:
             WriteXRegister(instr->GetRd(), ReadVHalf(instr->GetRn(), false));
@@ -230,7 +259,7 @@ void VisitFPIntegerConvert(const vixl::aarch64::Instruction* instr) override {
             return;
         }
         case FMOV_dx:
-            WriteVHalves(instr->GetRd(), ReadXRegister(instr->GetRn()), ImmValue(0, Type::U64));
+            WriteVRegister(instr->GetRd(), ReadXRegister(instr->GetRn()));
             return;
         default:
             ScalarFPHelper(instr);
@@ -263,7 +292,7 @@ void VisitFPImmediate(const vixl::aarch64::Instruction* instr) override {
             Interrupt(InterruptReason::FALLBACK, current_pc);
             return;
     }
-    WriteVHalves(instr->GetRd(), ImmValue(bits, Type::U64), ImmValue(0, Type::U64));
+    WriteVRegister(instr->GetRd(), ImmValue(bits, Type::U64));
 }
 
 void VisitFPDataProcessing1Source(const vixl::aarch64::Instruction* instr) override {
@@ -294,6 +323,14 @@ void VisitFPDataProcessing1Source(const vixl::aarch64::Instruction* instr) overr
     const u64 sign = u64{1} << (bits - 1);
     const bool is_abs = op == FABS_h || op == FABS_s || op == FABS_d;
     const bool is_neg = op == FNEG_h || op == FNEG_s || op == FNEG_d;
+    if (X64FP()) {
+        const auto value =
+                Emit<OpCode::ArmFPBitUnary, Type::V128>(ReadVRegister(instr->GetRn(), Type::V128),
+                                                        Imm{layout.fpcr_offset},
+                                                        Imm{instr->GetInstructionBits()});
+        WriteVRegister(instr->GetRd(), value);
+        return;
+    }
     auto value = this->template And<Type::U64>(
                              ReadVHalf(instr->GetRn(), false),
                              SingleOperand(Imm{is_abs ? lane_mask & ~sign : lane_mask}))
@@ -329,7 +366,7 @@ void VisitFPDataProcessing1Source(const vixl::aarch64::Instruction* instr) overr
                 this->template And<Type::U8>(alternate, SingleOperand(nan)).WithView(Type::U8);
         value = this->Select(preserve, original, value).WithView(Type::U64);
     }
-    WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
+    WriteVRegister(instr->GetRd(), value);
 }
 
 void WriteNZCV(Value source) {
@@ -398,5 +435,5 @@ void VisitFPConditionalSelect(const vixl::aarch64::Instruction* instr) override 
         value = this->template And<Type::U64>(value, SingleOperand(Imm{(u64{1} << bits) - 1}))
                         .WithView(Type::U64);
     }
-    WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
+    WriteVRegister(instr->GetRd(), value);
 }

@@ -13,7 +13,10 @@ void Writer::ImportLinkedFlags() {
         return;
     }
     mov(r11, qword[r12 + SVM_X64_CTX_EFLAGS - SVM_X64_CTX_STATE]);
-    mov(qword[rsp + allocation.flags_slot + stack_bias], r11);
+    if (options.lahf)
+        mov(word[rsp + allocation.flags_slot + stack_bias], r11w);
+    else
+        mov(qword[rsp + allocation.flags_slot + stack_bias], r11);
     flags = {true, false, true, false, true};
 }
 
@@ -23,7 +26,10 @@ void Writer::ExportLinkedFlags() {
         return;
     }
     SaveNativeFlags(true);
-    mov(r11, qword[rsp + allocation.flags_slot + stack_bias]);
+    if (options.lahf)
+        movzx(r11d, word[rsp + allocation.flags_slot + stack_bias]);
+    else
+        mov(r11, qword[rsp + allocation.flags_slot + stack_bias]);
     mov(qword[r12 + SVM_X64_CTX_EFLAGS - SVM_X64_CTX_STATE], r11);
 }
 
@@ -41,7 +47,7 @@ void Writer::ImportPackedFlags() {
         shr(rax, 28);
         and_(eax, 1);
         or_(edx, eax);
-        mov(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], rdx);
+        mov(word[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], dx);
         flags = {true, false, true, false, true};
         return;
     }
@@ -65,13 +71,69 @@ void Writer::ImportPackedFlags() {
     flags = {true, false, true, false, true};
 }
 
+void Writer::MaterializeFPFlags() {
+    mov(edx, 2);
+    mov(r10d, 8);
+    cmovb(edx, r10d);
+    mov(r10d, 6);
+    cmove(edx, r10d);
+    mov(r10d, 3);
+    cmovp(edx, r10d);
+    shl(rdx, 28);
+    MergeFlags(rdx, 15);
+    flags = {};
+}
+
 void Writer::SaveNativeFlags(bool canonical) {
     if (!options.local_flags) return;
+    if (flags.floating) {
+        push(rax);
+        push(rdx);
+        push(r10);
+        push(rsi);
+        flags_stack_bias += 32;
+        MaterializeFPFlags();
+        ImportPackedFlags();
+        flags_stack_bias -= 32;
+        pop(rsi);
+        pop(r10);
+        pop(rdx);
+        pop(rax);
+        return;
+    }
     if (!flags.dirty) {
         if (canonical) ImportPackedFlags();
         return;
     }
-    if (flags.saved && (!canonical || flags.saved_carry)) return;
+    if (flags.saved == 15 && (!canonical || flags.saved_carry)) return;
+    if (flags.native && flags.native != 15) {
+        const auto selected = flags.native;
+        const unsigned mask =
+                options.lahf
+                        ? ((selected & 1) ? 0x100u : 0u) | ((selected & 2) ? 1u : 0u) |
+                                  ((selected & 4) ? 0x4000u : 0u) | ((selected & 8) ? 0x8000u : 0u)
+                        : ((selected & 1) ? 1u : 0u) | ((selected & 2) ? 0x800u : 0u) |
+                                  ((selected & 4) ? 0x40u : 0u) | ((selected & 8) ? 0x80u : 0u);
+        const auto slot = rsp + allocation.flags_slot + stack_bias + flags_stack_bias + 8;
+        push(rax);
+        if (options.lahf) {
+            lahf();
+            seto(al);
+            and_(eax, mask);
+            and_(word[slot], static_cast<std::uint16_t>(~mask));
+            or_(word[slot], ax);
+        } else {
+            pushfq();
+            pop(rax);
+            and_(eax, mask);
+            and_(qword[slot], static_cast<std::int32_t>(~mask));
+            or_(qword[slot], rax);
+        }
+        pop(rax);
+        if (selected & 1) flags.saved_carry = flags.carry;
+        flags.native = 0;
+        flags.saved = 15;
+    }
     if (flags.native) {
         if (canonical && !flags.carry) {
             cmc();
@@ -88,19 +150,28 @@ void Writer::SaveNativeFlags(bool canonical) {
             pop(r11);
             mov(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], r11);
         }
-        flags.saved = true;
+        flags.saved = 15;
         flags.saved_carry = flags.carry;
     } else if (canonical && !flags.saved_carry) {
-        xor_(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias],
-             options.lahf ? 0x100 : 1);
+        if (options.lahf)
+            xor_(word[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], 0x100);
+        else
+            xor_(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], 1);
         flags.saved_carry = true;
     }
 }
 
 void Writer::MaterializeFlags() {
     if (!options.local_flags || !flags.dirty) return;
+    if (flags.floating) {
+        MaterializeFPFlags();
+        return;
+    }
     SaveNativeFlags();
-    mov(rdx, qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
+    if (options.lahf)
+        movzx(edx, word[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
+    else
+        mov(rdx, qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
     if (options.lahf) {
         mov(r10d, edx);
         and_(r10d, 0xc000);
@@ -119,9 +190,11 @@ void Writer::MaterializeFlags() {
     flags = {};
 }
 
-void Writer::EnsureNativeFlags() {
+void Writer::EnsureNativeFlags(unsigned needed) {
+    if (flags.floating) SaveNativeFlags();
     if (!flags.dirty) ImportPackedFlags();
-    if (!flags.native) {
+    if ((flags.native & needed) != needed) {
+        SaveNativeFlags();
         if (options.lahf) {
             mov(r11, rax);
             movzx(eax, word[rsp + allocation.flags_slot + stack_bias]);
@@ -132,7 +205,7 @@ void Writer::EnsureNativeFlags() {
             push(qword[rsp + allocation.flags_slot + stack_bias]);
             popfq();
         }
-        flags.native = true;
+        flags.native = 15;
         flags.carry = flags.saved_carry;
     }
 }
@@ -140,8 +213,15 @@ void Writer::EnsureNativeFlags() {
 void Writer::PrepareFlags(OpContext& c) {
     if (!options.local_flags) return;
     const auto op = c.operation.opcode;
-    if (op == O::ArmFPBinary && ArmNativeFP() && options.sse41 && options.arm_fpcr != UINT32_MAX &&
-        !(options.arm_fpcr & (1u << 24)) && !allocation.fpcr_may_change)
+    if (op == O::ArmFPCompare) {
+        flags = {};
+        return;
+    }
+    if (flags.floating && HasAnyEffect(EffectsFor(op, c.operation.Metadata()), Effect::MayFault))
+        MaterializeFlags();
+    if (op == O::ArmFPBinary && ArmNativeFP() && (options.sse41 || options.avx) &&
+        options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24)) &&
+        !allocation.fpcr_may_change)
         return;
     const bool arithmetic =
             op == O::Add || op == O::Sub || op == O::Neg || op == O::Adc || op == O::Sbb;
@@ -151,10 +231,9 @@ void Writer::PrepareFlags(OpContext& c) {
                                (c.width == 32 || c.width == 64) &&
                                allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX &&
                                (arithmetic || logical);
-    defer_flags = native_output && c.operation.flag_outputs == 15;
-    merge_native_flags = native_output && !defer_flags;
+    defer_flags = native_output;
     if (native_output) {
-        if (merge_native_flags || op == O::Adc || op == O::Sbb) {
+        if (c.operation.flag_outputs != 15 || op == O::Adc || op == O::Sbb) {
             SaveNativeFlags(true);
             flags.native = false;
         } else
@@ -203,7 +282,7 @@ void Writer::ClobberFlags(OpContext& c) {
     const auto condition = allocation.terminal_conditions[block.value];
     const bool complete =
             condition < 16 && term == ir::ConditionFlags(static_cast<ir::Condition>(condition));
-    if (term && complete && !condition_saved && flags.native) {
+    if (term && complete && !condition_saved && (flags.native & term) == term) {
         const auto cc = NativeCondition(static_cast<ir::Condition>(condition));
         if (cc == 16)
             mov(byte[rsp + allocation.condition_slot], 1);
@@ -239,6 +318,12 @@ void Writer::ClobberFlags(OpContext& c) {
                     break;
                 case 9:
                     setns(target);
+                    break;
+                case 10:
+                    setp(target);
+                    break;
+                case 11:
+                    setnp(target);
                     break;
                 case 12:
                     setl(target);
@@ -294,7 +379,50 @@ bool Writer::PreservesFlags(OpContext& c) const {
 }
 
 unsigned Writer::NativeCondition(ir::Condition condition) {
-    EnsureNativeFlags();
+    if (flags.floating) {
+        switch (condition) {
+            case ir::Condition::VS:
+                return 10;
+            case ir::Condition::VC:
+                return 11;
+            case ir::Condition::GE:
+                return 3;
+            case ir::Condition::LT:
+                return 2;
+            case ir::Condition::GT:
+                return 7;
+            case ir::Condition::LE:
+                return 6;
+            case ir::Condition::AL:
+            case ir::Condition::NV:
+                return 16;
+            default:
+                break;
+        }
+        const bool equal = condition == ir::Condition::EQ || condition == ir::Condition::NE;
+        const bool high = condition == ir::Condition::HI || condition == ir::Condition::LS;
+        if (equal) {
+            sete(al);
+            setnp(dl);
+        } else {
+            if (high)
+                seta(al);
+            else
+                setnc(al);
+            setp(dl);
+        }
+        movzx(eax, al);
+        movzx(edx, dl);
+        SaveNativeFlags();
+        if (equal)
+            and_(eax, edx);
+        else
+            or_(eax, edx);
+        const bool inverse = condition == ir::Condition::NE || condition == ir::Condition::CC ||
+                             condition == ir::Condition::MI || condition == ir::Condition::LS;
+        return inverse ? 4 : 5;
+    }
+    EnsureNativeFlags(ir::ConditionFlags(condition));
     if ((condition == ir::Condition::HI || condition == ir::Condition::LS) && !flags.carry) {
         cmc();
         flags.carry = true;
@@ -365,6 +493,12 @@ void Writer::NativeJump(unsigned condition, Label& target) {
         case 9:
             jns(target, T_NEAR);
             break;
+        case 10:
+            jp(target, T_NEAR);
+            break;
+        case 11:
+            jnp(target, T_NEAR);
+            break;
         case 12:
             jl(target, T_NEAR);
             break;
@@ -403,8 +537,8 @@ void Writer::BranchTo(BlockId target) {
 void Writer::ConditionalBranch(unsigned cc, BlockId yes, BlockId no) {
     const auto ready = [&](BlockId target) {
         return !options.local_flags || !allocation.flags_input[target.value] ||
-               (allocation.native_entry[target.value] ? flags.native && flags.carry
-                                                      : flags.saved && flags.saved_carry);
+               (allocation.native_entry[target.value] ? flags.native == 15 && flags.carry
+                                                      : flags.saved == 15 && flags.saved_carry);
     };
     if (ready(yes)) {
         NativeJump(cc, blocks[yes.value]);
@@ -491,36 +625,9 @@ void Writer::CaptureFlags(OpContext& c) {
                  false,
                  subtract && c.operation.Metadata().profile == FlagProfile::ArithmeticRaw,
                  false};
-        return;
-    }
-    if (options.local_flags && merge_native_flags) {
-        const auto selected = c.operation.flag_outputs;
-        const unsigned mask =
-                options.lahf
-                        ? ((selected & 1) ? 0x100u : 0u) | ((selected & 2) ? 1u : 0u) |
-                                  ((selected & 4) ? 0x4000u : 0u) | ((selected & 8) ? 0x8000u : 0u)
-                        : ((selected & 1) ? 1u : 0u) | ((selected & 2) ? 0x800u : 0u) |
-                                  ((selected & 4) ? 0x40u : 0u) | ((selected & 8) ? 0x80u : 0u);
-        const auto op = c.operation.opcode;
-        const bool raw_subtract = (op == O::Sub || op == O::Sbb || op == O::Neg) &&
-                                  c.operation.Metadata().profile == FlagProfile::ArithmeticRaw;
-        pushfq();
-        pop(rdx);
-        if ((selected & 1) && !raw_subtract) xor_(edx, 1);
-        if (options.lahf) {
-            mov(r11d, edx);
-            shl(edx, 8);
-            and_(edx, 0xc100);
-            shr(r11d, 11);
-            and_(r11d, 1);
-            or_(edx, r11d);
-        }
-        and_(edx, mask);
-        mov(r11, qword[rsp + allocation.flags_slot]);
-        and_(r11, static_cast<std::int32_t>(~mask));
-        or_(r11, rdx);
-        mov(qword[rsp + allocation.flags_slot], r11);
-        flags = {true, false, true, false, true};
+        flags.native = c.operation.flag_outputs;
+        flags.saved = 15 & ~flags.native;
+        flags.saved_carry = true;
         return;
     }
     pushfq();

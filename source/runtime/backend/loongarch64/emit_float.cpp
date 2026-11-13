@@ -453,6 +453,16 @@ void Writer::Handle(Op<O::ArmScalarFP>, OpContext&) { Reject(CompileError::Unsup
 
 void Writer::Handle(Op<O::ArmFPBinary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
 
+void Writer::Handle(Op<O::ArmFPTernary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+
+void Writer::Handle(Op<O::ArmFPUnary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+
+void Writer::Handle(Op<O::ArmFPConvert>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+
+void Writer::Handle(Op<O::ArmFPCompare>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+
+void Writer::Handle(Op<O::ArmFPBitUnary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+
 void Writer::Handle(Op<O::ArmScalarFMA>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
 
 void Writer::Handle(Op<O::VecFCmp>, OpContext& ctx) {

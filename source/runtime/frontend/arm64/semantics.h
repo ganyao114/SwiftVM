@@ -539,6 +539,7 @@ private:
 
     bool TryNumeric(const vixl::aarch64::Instruction* instr, Numeric family) {
         if (!runtime::arm64::SupportsNumeric(family, instr->GetInstructionBits())) return false;
+        if (EmitX64Numeric(instr, family)) return true;
         Helper(family);
         return true;
     }

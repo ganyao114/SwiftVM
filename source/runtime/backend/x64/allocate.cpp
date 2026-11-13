@@ -136,6 +136,7 @@ private:
         result.block = block;
         result.spill_bytes = result.call_offset = 0;
         result.has_calls = false;
+        result.uses_fpcr = false;
         result.fpcr_may_change = false;
         result.flags_slot = result.condition_slot = UINT32_MAX;
         result.native_entry.clear();
@@ -155,8 +156,15 @@ private:
             for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i, ++position) {
                 const auto& operation = operations[i];
                 if (options && options->arm_fpcr != UINT32_MAX) ObserveFPCR(operation, NodeId{i});
+                const bool fp_values = operation.opcode == OpCode::ArmFPTernary ||
+                                       operation.opcode == OpCode::ArmFPUnary ||
+                                       operation.opcode == OpCode::ArmFPConvert ||
+                                       operation.opcode == OpCode::ArmFPCompare;
                 result.cold_fp_count += operation.opcode == OpCode::ArmFPBinary ||
-                                        operation.opcode == OpCode::CallLambda;
+                                        operation.opcode == OpCode::CallLambda || fp_values;
+                result.uses_fpcr |= operation.opcode == OpCode::ArmFPBinary ||
+                                    operation.opcode == OpCode::CallLambda || fp_values ||
+                                    operation.opcode == OpCode::ArmFPBitUnary;
                 result.cold_event_count += operation.opcode == OpCode::GuestSafepoint ||
                                            operation.opcode == OpCode::GuestDispatchSafepoint;
                 if (!SupportedType(operation.type)) {
@@ -173,8 +181,8 @@ private:
                 }
                 if (operation.opcode == OpCode::CompareAndSwap128 ||
                     operation.opcode == OpCode::CallLambda ||
-                    operation.opcode == OpCode::ArmFPBinary || operation.opcode == OpCode::Cpuid ||
-                    operation.opcode == OpCode::ReadSystem ||
+                    operation.opcode == OpCode::ArmFPBinary || fp_values ||
+                    operation.opcode == OpCode::Cpuid || operation.opcode == OpCode::ReadSystem ||
                     operation.opcode == OpCode::ReadSystemPair ||
                     operation.opcode == OpCode::X87Op || operation.opcode == OpCode::X87Execute ||
                     operation.opcode == OpCode::Div128 ||
@@ -237,7 +245,20 @@ private:
 
     void ObserveFPCR(const Operation& operation, NodeId id) {
         const auto opcode = operation.opcode;
-        if (opcode == OpCode::CallLambda) {
+        if (opcode == OpCode::ArmFPBinary || opcode == OpCode::ArmFPTernary ||
+            opcode == OpCode::ArmFPUnary || opcode == OpCode::ArmFPConvert ||
+            opcode == OpCode::ArmFPCompare) {
+            const bool binary = opcode == OpCode::ArmFPBinary;
+            const unsigned argument = binary || opcode == OpCode::ArmFPCompare ? 2
+                                      : opcode == OpCode::ArmFPTernary         ? 3
+                                                                               : 1;
+            auto at = program.Operands(id).begin();
+            for (unsigned i = 0; i < argument; ++i) ++at;
+            const auto offsets = (*at++).Payload();
+            const auto control = static_cast<u32>(offsets);
+            const auto status = static_cast<u32>(binary ? (*at).Payload() : offsets >> 32);
+            result.fpcr_may_change |= Overlaps({control, 4}, {status, 4});
+        } else if (opcode == OpCode::CallLambda) {
             auto at = program.Operands(id).begin();
             ++at;
             const bool exact_numeric =
@@ -302,6 +323,7 @@ private:
                 auto& home = result.homes[at];
                 const auto inputs = program.Operands(NodeId{at});
                 unsigned outputs = op.flag_outputs & 15;
+                if (op.opcode == OpCode::ArmFPCompare) outputs |= 15;
                 if (op.opcode == OpCode::SetCarry || op.opcode == OpCode::InvertCarry) outputs |= 1;
                 if (op.opcode == OpCode::SetOverflow) outputs |= 2;
                 if (op.opcode == OpCode::ClearFlags) outputs |= inputs.front().Payload() & 15;
@@ -641,18 +663,26 @@ private:
                 unsigned chosen = count;
                 bool reused{};
                 if (DestructiveInput(operations[i])) {
-                    const auto input = program.Operands(NodeId{i}).front();
-                    if (input.Kind() == OperandKind::Value &&
-                        operations[input.Payload()].type == operations[i].type &&
-                        !result.homes[input.Payload()].spilled &&
-                        result.homes[input.Payload()].last_use == h.definition_position) {
+                    const auto reuse = [&](CellView input) {
+                        if (input.Kind() != OperandKind::Value ||
+                            operations[input.Payload()].type != operations[i].type ||
+                            result.homes[input.Payload()].spilled ||
+                            result.homes[input.Payload()].last_use != h.definition_position)
+                            return count;
                         for (unsigned j = 0; j < count; ++j)
-                            if (bank[j] == input.Payload()) {
-                                chosen = j;
-                                reused = true;
-                                break;
-                            }
+                            if (bank[j] == input.Payload()) return j;
+                        return count;
+                    };
+                    auto inputs = program.Operands(NodeId{i}).begin();
+                    chosen = reuse(*inputs++);
+                    const auto opcode = operations[i].opcode;
+                    if (chosen == count && !vector && operations[i].operand_count == 2 &&
+                        (opcode == OpCode::Add || opcode == OpCode::And || opcode == OpCode::Or ||
+                         opcode == OpCode::Xor)) {
+                        chosen = reuse(*inputs);
+                        h.reuse_rhs = chosen != count;
                     }
+                    reused = chosen != count;
                 }
                 u32 far = h.last_use;
                 for (unsigned j = 0; !reused && j < count; ++j) {

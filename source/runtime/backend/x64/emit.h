@@ -69,6 +69,8 @@ public:
     void CallRegister(const Reg64&);
     void LambdaCall(OpContext&);
     bool TryArmNumeric(OpContext&);
+    void ArmFPValues(OpContext&);
+    void MaterializeFPFlags();
     void CheckArmFPInput(const Xmm&, unsigned bits, unsigned lanes, bool central, Label&);
     void PrepareCall();
 
@@ -88,7 +90,7 @@ public:
     void ImportPackedFlags();
     void ImportLinkedFlags();
     void ExportLinkedFlags();
-    void EnsureNativeFlags();
+    void EnsureNativeFlags(unsigned needed = 15);
     void PrepareFlags(OpContext&);
     void ClobberFlags(OpContext&);
     bool PreservesFlags(OpContext&) const;
@@ -125,12 +127,11 @@ public:
         site.recovery[4] = static_cast<std::uint8_t>(access);
         site.recovery[5] = static_cast<std::uint8_t>(bytes);
         if (options.local_flags && flags.dirty && !fault_committed_flags) {
-            if (flags.native) {
-                site.recovery[0] = 2 | (flags.carry << 2);
-                site.recovery[1] = 0x0f;
-            } else {
-                site.recovery[0] = 2 | (flags.saved_carry << 3) | (options.lahf << 4);
-                site.recovery[1] = 0xf0;
+            const auto saved = 15 & ~flags.native;
+            site.recovery[0] =
+                    2 | (flags.carry << 2) | (flags.saved_carry << 3) | (options.lahf << 4);
+            site.recovery[1] = flags.native | (saved << 4);
+            if (saved) {
                 site.recovery[2] = allocation.flags_slot;
                 site.recovery[3] = allocation.flags_slot >> 8;
                 site.recovery[7] = allocation.flags_slot >> 16;
@@ -191,10 +192,21 @@ public:
     bool in_call{}, fault_committed_flags{};
 
     struct FlagsState {
-        bool dirty{}, native{}, saved{}, carry{}, saved_carry{};
+        bool dirty{};
+        std::uint8_t native{}, saved{};
+        bool carry{}, saved_carry{}, floating{};
+
+        FlagsState() = default;
+
+        FlagsState(bool dirty, bool native, bool saved, bool carry, bool saved_carry)
+                : dirty(dirty)
+                , native(native ? 15 : 0)
+                , saved(saved ? 15 : 0)
+                , carry(carry)
+                , saved_carry(saved_carry) {}
     } flags;
 
-    bool defer_flags{}, merge_native_flags{};
+    bool defer_flags{};
     bool condition_saved{};
     unsigned flags_stack_bias{};
     unsigned stack_bias{};
@@ -248,9 +260,40 @@ public:
         NodeId node;
         Label entry, resume;
         CallMasks masks;
+        FlagsState flags;
+        u64 pc{};
     };
 
     std::vector<NumericColdPath> cold_numeric;
+
+    struct NumericCallKey {
+        u64 encoded{};
+        u32 control{}, status{}, scalars{}, vectors{};
+        bool flags_saved{}, saved_carry{};
+        friend bool operator==(const NumericCallKey&, const NumericCallKey&) = default;
+    };
+
+    struct NumericCallHash {
+        std::size_t operator()(const NumericCallKey& key) const noexcept {
+            std::size_t hash = key.encoded ^ (key.encoded >> 32);
+            for (auto value : {key.control,
+                               key.status,
+                               key.scalars,
+                               key.vectors,
+                               u32(key.flags_saved),
+                               u32(key.saved_carry)})
+                hash ^= value + std::size_t{0x9e3779b9} + (hash << 6) + (hash >> 2);
+            return hash;
+        }
+    };
+
+    struct NumericCallStub {
+        NumericCallKey key;
+        Label entry;
+    };
+
+    std::vector<NumericCallStub> numeric_stubs;
+    std::unordered_map<NumericCallKey, u32, NumericCallHash> numeric_stub_index;
     std::array<Label, 4> fp_constants;
     std::array<bool, 4> fp_constants_used{};
 

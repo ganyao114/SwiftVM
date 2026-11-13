@@ -759,3 +759,43 @@ INST(ArmFPBinary,
      Imm,
      Imm,
      Imm)
+
+// Exact ARM numerical operations. The final two immediates hold packed
+// FPCR/FPSR offsets and NumericCall's validated operation descriptor.
+INST(ArmFPTernary,
+     Value,
+     Arg0,
+     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
+      Effect::WriteHostState),
+     Value,
+     Value,
+     Value,
+     Imm,
+     Imm)
+INST(ArmFPUnary,
+     Value,
+     Arg0,
+     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
+      Effect::WriteHostState),
+     Value,
+     Imm,
+     Imm)
+INST(ArmFPConvert,
+     Value,
+     Explicit,
+     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
+      Effect::WriteHostState),
+     Value,
+     Imm,
+     Imm)
+INST(ArmFPCompare,
+     Void,
+     Void,
+     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
+      Effect::WriteHostState | Effect::WriteFlags),
+     Value,
+     Value,
+     Imm,
+     Imm)
+// Scalar FMOV/FABS/FNEG observe AH where applicable and leave FPSR alone.
+INST(ArmFPBitUnary, Value, Arg0, (Effect::ReadGuestState), Value, Imm, Imm)

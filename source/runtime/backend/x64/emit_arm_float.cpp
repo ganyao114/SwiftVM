@@ -50,96 +50,88 @@ void Writer::CheckArmFPInput(
 bool Writer::TryArmNumeric(OpContext& c) {
     using namespace vixl::aarch64;
     using runtime::arm64::Numeric;
+    using Operation = runtime::arm64::FPValueKind;
     using State = runtime::arm64::GuestState;
-    if (!ArmNativeFP() || options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
-        c.count != 5 || c.Arg(1).Kind() != OperandKind::Immediate ||
-        c.Arg(1).Payload() != reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric) ||
-        c.Arg(2).Kind() != OperandKind::Value)
-        return false;
-    const auto pointer = NodeId{u32(c.Arg(2).Payload())};
-    if (source.Operations()[pointer.value].opcode != OpCode::GetUniformAddress) return false;
-    const auto base = source.Operands(pointer).front().Payload();
-    if (base > INT32_MAX - sizeof(State) ||
-        options.arm_fpcr_offset != base + offsetof(State, fpcr) ||
-        options.arm_fpsr_offset != base + offsetof(State, fpsr))
-        return false;
-    const auto constant = [&](CellView cell, u64& value) {
-        if (cell.Kind() == OperandKind::Immediate) {
-            value = cell.Payload();
-            return true;
-        }
-        if (cell.Kind() != OperandKind::Value ||
-            source.Operations()[cell.Payload()].opcode != OpCode::LoadImm)
+    const bool typed = c.operation.opcode != OpCode::CallLambda;
+    u64 base{}, encoded{};
+    if (typed) {
+        if (c.count < 3 || c.count > c.args.size() ||
+            c.Arg(c.count - 1).Kind() != OperandKind::Immediate ||
+            c.Arg(c.count - 2).Kind() != OperandKind::Immediate)
+            Reject(CompileError::UnsupportedOperand);
+        encoded = c.Arg(c.count - 1).Payload();
+    } else {
+        if (!ArmNativeFP() || options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
+            c.count != 5 || c.Arg(1).Kind() != OperandKind::Immediate ||
+            c.Arg(1).Payload() !=
+                    reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric) ||
+            c.Arg(2).Kind() != OperandKind::Value)
             return false;
-        value = source.Operands(NodeId{u32(cell.Payload())}).front().Payload();
-        return true;
-    };
-    u64 encoded;
-    if (!constant(c.Arg(3), encoded)) return false;
+        const auto pointer = NodeId{u32(c.Arg(2).Payload())};
+        if (source.Operations()[pointer.value].opcode != OpCode::GetUniformAddress) return false;
+        base = source.Operands(pointer).front().Payload();
+        if (base > INT32_MAX - sizeof(State) ||
+            options.arm_fpcr_offset != base + offsetof(State, fpcr) ||
+            options.arm_fpsr_offset != base + offsetof(State, fpsr))
+            return false;
+        auto instruction = c.Arg(3);
+        if (instruction.Kind() == OperandKind::Value &&
+            source.Operations()[instruction.Payload()].opcode == OpCode::LoadImm)
+            instruction = source.Operands(NodeId{u32(instruction.Payload())}).front();
+        if (instruction.Kind() != OperandKind::Immediate) return false;
+        encoded = instruction.Payload();
+    }
+    const auto info = runtime::arm64::DescribeFPValues(encoded);
+    const auto operation = info.kind;
+    if (operation == Operation::Invalid) return false;
     const auto family = static_cast<Numeric>((encoded >> 32) & 255);
-    const u32 word = encoded, type = (word >> 22) & 3;
-    unsigned bits = type == 1 ? 64 : 32, lanes = 1;
+    const u32 word = encoded, bits = info.bits, lanes = info.lanes, control = info.control,
+              output_bits = info.output_bits, integer_bits = info.integer_bits;
     const unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
-    enum class Operation { Compare, Fused, Divide, Sqrt, Precision, FromInt, ToInt };
-    Operation operation;
-    unsigned control = 0, output_bits = bits, integer_bits = word >> 31 ? 64 : 32;
-    bool indexed = false;
-    if (family == Numeric::Scalar && type != 3) {
-        if ((word & FPCompareFMask) == FPCompareFixed ||
-            (word & FPConditionalCompareFMask) == FPConditionalCompareFixed)
-            operation = Operation::Compare;
-        else if ((word & FPDataProcessing3SourceFMask) == FPDataProcessing3SourceFixed) {
-            operation = Operation::Fused;
-            control = ((bool(word & (1u << 15)) != bool(word & (1u << 21))) ? 1u : 0u) |
-                      ((word & (1u << 21)) ? 2u : 0u);
-        } else if ((word & FPDataProcessing2SourceMask) == FDIV_s ||
-                   (word & FPDataProcessing2SourceMask) == FDIV_d)
-            operation = Operation::Divide;
-        else if ((word & FPDataProcessing1SourceMask) == FSQRT_s ||
-                 (word & FPDataProcessing1SourceMask) == FSQRT_d)
-            operation = Operation::Sqrt;
-        else if ((word & FPDataProcessing1SourceMask) == FCVT_ds ||
-                 (word & FPDataProcessing1SourceMask) == FCVT_sd) {
-            operation = Operation::Precision;
-            output_bits = bits == 32 ? 64 : 32;
-        } else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
-                   (((word >> 16) & 31) == 2 || ((word >> 16) & 31) == 3))
-            operation = Operation::FromInt;
-        else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
-                 (((word >> 16) & 31) == 24 || ((word >> 16) & 31) == 25))
-            operation = Operation::ToInt;
-        else
-            return false;
-    } else if (family == Numeric::Fused &&
-               ((word & NEON3SameFPMask) == NEON_FMLA || (word & NEON3SameFPMask) == NEON_FMLS)) {
-        operation = Operation::Fused;
-        bits = word & (1u << 22) ? 64 : 32;
-        lanes = (word & NEON_Q ? 128 : 64) / bits;
-        control = (word & NEON3SameFPMask) == NEON_FMLS ? 1 : 0;
-        output_bits = bits;
-    } else if (family == Numeric::Indexed && ((word >> 22) & 3) >= 2) {
-        const bool scalar = word & NEONScalar;
-        const auto mask =
-                scalar ? u32(NEONScalarByIndexedElementMask) : u32(NEONByIndexedElementMask);
-        const auto flags = scalar ? (u32(NEON_Q) | u32(NEONScalar)) : 0;
-        const auto op = word & mask;
-        if (op != (u32(NEON_FMLA_H_byelement) | flags) &&
-            op != (u32(NEON_FMLS_H_byelement) | flags))
-            return false;
-        operation = Operation::Fused;
-        bits = ((word >> 22) & 3) == 2 ? 32 : 64;
-        lanes = scalar ? 1 : (word & NEON_Q ? 128 : 64) / bits;
-        control = op == (u32(NEON_FMLS_H_byelement) | flags) ? 1 : 0;
-        output_bits = bits;
-        indexed = true;
-    } else
-        return false;
-    if (operation == Operation::Fused && !options.fma) return false;
-    if (!runtime::arm64::SupportsNumeric(family, word)) return false;
-
-    cold_numeric.push_back({c.node, {}, {}, LiveCallMasks()});
+    const bool indexed = info.indexed;
+    if (typed) {
+        const unsigned inputs = operation == Operation::Fused     ? 3
+                                : operation == Operation::Compare ? 2
+                                                                  : 1;
+        const auto op = c.operation.opcode;
+        const bool valid =
+                op == OpCode::ArmFPTernary   ? operation == Operation::Fused
+                : op == OpCode::ArmFPCompare ? operation == Operation::Compare
+                : op == OpCode::ArmFPConvert
+                        ? operation == Operation::FromInt || operation == Operation::ToInt
+                        : op == OpCode::ArmFPUnary && (operation == Operation::Sqrt ||
+                                                       operation == Operation::Precision);
+        const auto offsets = c.Arg(c.count - 2).Payload();
+        if (!valid || c.count != inputs + 2 || u32(offsets) > INT32_MAX - 4 ||
+            (offsets >> 32) > INT32_MAX - 4 ||
+            (operation == Operation::Compare ? c.operation.type != ir::Type::Void
+             : operation == Operation::ToInt ? c.operation.type != ir::Type::U64
+                                             : c.operation.type != ir::Type::V128))
+            Reject(CompileError::UnsupportedOperand);
+        for (unsigned i = 0; i < inputs; ++i)
+            if (View(c.Arg(i)) !=
+                (operation == Operation::FromInt ? ir::Type::U64 : ir::Type::V128))
+                Reject(CompileError::UnsupportedOperand);
+        if (ArmNativeFP() &&
+            (u32(offsets) != options.arm_fpcr_offset || (offsets >> 32) != options.arm_fpsr_offset))
+            Reject(CompileError::UnsupportedOperand);
+    }
+    const bool native = ArmNativeFP() && options.arm_fpcr != UINT32_MAX &&
+                        !allocation.fpcr_may_change &&
+                        (operation != Operation::Fused || options.fma);
+    if (!typed && !native) return false;
+    cold_numeric.push_back({c.node, {}, {}, LiveCallMasks(), flags, guest_pc});
     auto& path = cold_numeric.back();
     auto& slow = path.entry;
+    if (!native) {
+        jmp(slow, T_NEAR);
+        L(path.resume);
+        if (operation == Operation::Compare && options.local_flags) {
+            flags = {true, true, false, false, false};
+            flags.floating = true;
+        }
+        return true;
+    }
     const bool flush = options.arm_fpcr & (1u << 24);
     const auto vector_offset = [&](unsigned reg) { return base + offsetof(State, q) + reg * 16; };
     const auto clear_inactive = [&](const Xmm& value) {
@@ -150,7 +142,9 @@ bool Writer::TryArmNumeric(OpContext& c) {
             movq(value, value);
     };
     const auto read_gpr = [&](unsigned reg) {
-        if (reg == 31)
+        if (typed)
+            Read(c.Arg(0), rax);
+        else if (reg == 31)
             mov(eax, 0);
         else {
             const auto offset = base + reg * 8;
@@ -162,7 +156,7 @@ bool Writer::TryArmNumeric(OpContext& c) {
         }
     };
     const auto write_gpr = [&](unsigned reg) {
-        if (reg == 31) return;
+        if (typed || reg == 31) return;
         const auto offset = base + reg * 8;
         const auto pin = PinnedSlot(offset, 8);
         if (pin >= 0)
@@ -188,13 +182,18 @@ bool Writer::TryArmNumeric(OpContext& c) {
         else
             cvtsi2sd(xmm0, rax);
     } else {
-        movdqu(xmm0, ptr[r12 + vector_offset(rn)]);
+        if (typed)
+            ReadVector(c.Arg(0), xmm0);
+        else
+            movdqu(xmm0, ptr[r12 + vector_offset(rn)]);
         clear_inactive(xmm0);
         if (operation == Operation::Compare || operation == Operation::Divide ||
             operation == Operation::Fused) {
             if (operation == Operation::Compare && (word & FPCompareFMask) == FPCompareFixed &&
                 (word & 8))
                 pxor(xmm1, xmm1);
+            else if (typed)
+                ReadVector(c.Arg(1), xmm1);
             else
                 movdqu(xmm1, ptr[r12 + vector_offset(rm)]);
             if (indexed) {
@@ -206,7 +205,10 @@ bool Writer::TryArmNumeric(OpContext& c) {
         }
         if (operation == Operation::Fused) {
             const auto addend = family == Numeric::Scalar ? (word >> 10) & 31 : rd;
-            movdqu(xmm14, ptr[r12 + vector_offset(addend)]);
+            if (typed)
+                ReadVector(c.Arg(2), xmm14);
+            else
+                movdqu(xmm14, ptr[r12 + vector_offset(addend)]);
             clear_inactive(xmm14);
         }
         if (flush) {
@@ -235,13 +237,22 @@ bool Writer::TryArmNumeric(OpContext& c) {
                 else
                     ucomisd(xmm0, xmm1);
             }
-            mov(eax, 2);
-            mov(edx, 8);
-            cmovb(eax, edx);
-            mov(edx, 6);
-            cmove(eax, edx);
-            mov(edx, 3);
-            cmovp(eax, edx);
+            if (typed && options.local_flags) {
+                flags = {true, true, false, false, false};
+                flags.floating = true;
+            } else {
+                mov(eax, 2);
+                mov(edx, 8);
+                cmovb(eax, edx);
+                mov(edx, 6);
+                cmove(eax, edx);
+                mov(edx, 3);
+                cmovp(eax, edx);
+                if (typed) {
+                    shl(rax, 28);
+                    MergeFlags(rax, 15);
+                }
+            }
         } else if (operation == Operation::ToInt) {
             const bool is_unsigned = word & (1u << 16);
             movq(rax, xmm0);
@@ -265,7 +276,7 @@ bool Writer::TryArmNumeric(OpContext& c) {
                 cvttsd2si(rax, xmm0);
             if (integer_bits == 32) mov(eax, eax);
             write_gpr(rd);
-            mov(eax, 0);
+            if (!typed) mov(eax, 0);
         } else {
             if (operation == Operation::Fused) {
                 // Negate only the active lanes before ARM NaN source selection.
@@ -313,13 +324,68 @@ bool Writer::TryArmNumeric(OpContext& c) {
             CheckArmFPResult(c, output_bits, lanes, slow);
         }
     }
-    if (operation != Operation::Compare && operation != Operation::ToInt) {
-        movdqu(ptr[r12 + vector_offset(rd)], xmm0);
-        mov(eax, 0);
+    if (!typed) {
+        if (operation != Operation::Compare && operation != Operation::ToInt) {
+            movdqu(ptr[r12 + vector_offset(rd)], xmm0);
+            mov(eax, 0);
+        }
+        mov(dword[r12 + base + offsetof(State, helper_status)], 0);
     }
-    mov(dword[r12 + base + offsetof(State, helper_status)], 0);
     L(path.resume);
     c.scalar_normalized = true;
     return true;
+}
+
+void Writer::ArmFPValues(OpContext& c) {
+    if (!TryArmNumeric(c)) Reject(CompileError::UnsupportedOperand);
+}
+
+void Writer::Handle(Op<OpCode::ArmFPTernary>, OpContext& c) { ArmFPValues(c); }
+
+void Writer::Handle(Op<OpCode::ArmFPUnary>, OpContext& c) { ArmFPValues(c); }
+
+void Writer::Handle(Op<OpCode::ArmFPConvert>, OpContext& c) { ArmFPValues(c); }
+
+void Writer::Handle(Op<OpCode::ArmFPCompare>, OpContext& c) { ArmFPValues(c); }
+
+void Writer::Handle(Op<OpCode::ArmFPBitUnary>, OpContext& c) {
+    const auto control = c.Arg(1).Payload(), word = c.Arg(2).Payload();
+    if (!c.vector_result || View(c.Arg(0)) != ir::Type::V128 || control > INT32_MAX - 4 ||
+        word > UINT32_MAX || !runtime::arm64::IsFPBitUnary(word))
+        Reject(CompileError::UnsupportedOperand);
+    const auto type = (word >> 22) & 3;
+    const auto bits = type == 3 ? 16u : type == 1 ? 64u : 32u;
+    const auto op = (word & vixl::aarch64::FPDataProcessing1SourceMask) & ~(3u << 22);
+    const u64 mask = UINT64_MAX >> (64 - bits), sign = u64{1} << (bits - 1);
+    ReadVector(c.Arg(0), xmm0);
+    movq(rax, xmm0);
+    if (bits < 64) and_(eax, static_cast<u32>(mask));
+    if (op != vixl::aarch64::FMOV_s) {
+        const bool dynamic = options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
+                             control != options.arm_fpcr_offset;
+        if (dynamic) mov(rdx, rax);
+        mov(r10, op == vixl::aarch64::FABS_s ? mask & ~sign : sign);
+        if (op == vixl::aarch64::FABS_s)
+            and_(rax, r10);
+        else
+            xor_(rax, r10);
+        if (dynamic) {
+            Label done;
+            const u64 exponent = bits == 16 ? 0x7c00 : bits == 32 ? 0x7f800000 : 0x7ff0000000000000;
+            mov(r10, exponent);
+            mov(r11, rdx);
+            and_(r11, r10);
+            cmp(r11, r10);
+            jne(done, T_NEAR);
+            mov(r10, mask & ~(sign | exponent));
+            test(rdx, r10);
+            jz(done, T_NEAR);
+            test(dword[r12 + control], 2);
+            jz(done, T_NEAR);
+            mov(rax, rdx);
+            L(done);
+        }
+    }
+    movq(xmm0, rax);
 }
 }  // namespace swift::runtime::backend::x64::detail

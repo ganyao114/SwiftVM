@@ -3,6 +3,15 @@
 namespace swift::runtime::backend::x64::detail {
 void Writer::Arithmetic(OpContext& c) {
     const auto destination = ScalarDestination(c);
+    if (allocation.homes[c.node.value].reuse_rhs) {
+        Reg64 left = rcx;
+        if (!ResidentScalar(c.Arg(0), c.width, left)) Read(c.Arg(0), rcx);
+        Read(c.Arg(1), destination);
+        add(R(destination, c.width), R(left, c.width));
+        c.scalar_normalized = true;
+        CaptureFlags(c);
+        return;
+    }
     auto at = c.operands.begin();
     const bool negop = c.operation.opcode == OpCode::Neg;
     Reg64 right = rcx;
@@ -46,16 +55,22 @@ void Writer::Arithmetic(OpContext& c) {
             sub(a, b);
             break;
         case OpCode::Adc:
-            if (options.local_flags && (defer_flags || merge_native_flags)) {
-                bt(qword[rsp + allocation.flags_slot], options.lahf ? 8 : 0);
+            if (options.local_flags && defer_flags) {
+                if (options.lahf)
+                    bt(word[rsp + allocation.flags_slot], 8);
+                else
+                    bt(qword[rsp + allocation.flags_slot], 0);
                 if (flags.saved_carry) cmc();
             } else
                 bt(rbx, 29);
             adc(a, b);
             break;
         case OpCode::Sbb:
-            if (options.local_flags && (defer_flags || merge_native_flags)) {
-                bt(qword[rsp + allocation.flags_slot], options.lahf ? 8 : 0);
+            if (options.local_flags && defer_flags) {
+                if (options.lahf)
+                    bt(word[rsp + allocation.flags_slot], 8);
+                else
+                    bt(qword[rsp + allocation.flags_slot], 0);
                 if (flags.saved_carry) cmc();
             } else
                 bt(rbx, 29);
@@ -107,9 +122,14 @@ void Writer::Logical(OpContext& c) {
         CaptureFlags(c);
         return;
     }
-    if (!unary && (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right)))
-        Expression(at, c.operands.end(), rcx, 1);
-    Read(left, destination);
+    if (allocation.homes[c.node.value].reuse_rhs) {
+        if (!ResidentScalar(c.Arg(0), c.width, right)) Read(c.Arg(0), rcx);
+        Read(c.Arg(1), destination);
+    } else {
+        if (!unary && (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right)))
+            Expression(at, c.operands.end(), rcx, 1);
+        Read(left, destination);
+    }
     const auto a = R(destination, c.width == 32 ? 32 : 64);
     const auto b = R(right, c.width == 32 ? 32 : 64);
     switch (c.operation.opcode) {
