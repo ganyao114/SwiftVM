@@ -72,6 +72,8 @@ public:
 
     std::size_t PageSize() const noexcept { return page_size; }
 
+    std::uint64_t Generation() const noexcept { return generation; }
+
     // One admission decision from the actual region ledger. Missing means no
     // readable/executable mapping. Device/unknown backing is Volatile and has
     // neither persistent-JIT nor direct-fetch qualification in this service.
@@ -92,6 +94,7 @@ private:
     std::uint64_t brk_start{}, brk_current{}, brk_limit{};
     std::uint64_t address_limit{UINT64_MAX};
     std::uint64_t next_low_address{0x10000000};
+    std::uint64_t generation{1};
     std::vector<MemoryRegion> Replaced(std::uint64_t address,
                                        std::size_t length,
                                        int protection,

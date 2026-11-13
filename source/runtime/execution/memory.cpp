@@ -104,6 +104,7 @@ MappingRelease GuestMemory::Release() noexcept {
     }
     regions.resize(kept);
     result.remaining_views = kept;
+    ++generation;
     file_regions = executable_file_regions = 0;
     for (const auto& region : regions)
         if (IsFile(region)) {
@@ -249,13 +250,17 @@ bool GuestMemory::RefreshFileMappings(int fd) {
     if (fstat(fd, &status)) SystemError("refresh guest file mapping");
     if (!S_ISREG(status.st_mode)) return false;
     if (status.st_size < 0) Error("negative guest file size");
-    bool executable{};
+    bool executable{}, updated{};
     for (auto& region : regions)
         if (IsFile(region) && region.device == static_cast<u64>(status.st_dev) &&
             region.inode == static_cast<u64>(status.st_ino)) {
-            region.file_size = static_cast<u64>(status.st_size);
+            if (region.file_size != static_cast<u64>(status.st_size)) {
+                region.file_size = static_cast<u64>(status.st_size);
+                updated = true;
+            }
             executable |= (region.protection & PROT_EXEC) != 0;
         }
+    if (updated) ++generation;
     return executable;
 }
 
@@ -298,6 +303,7 @@ std::vector<MemoryRegion> GuestMemory::Replaced(u64 address,
 
 void GuestMemory::CommitRegions(std::vector<MemoryRegion>& next) noexcept {
     regions.swap(next);
+    ++generation;
     file_regions = executable_file_regions = 0;
     for (const auto& region : regions)
         if (IsFile(region)) {

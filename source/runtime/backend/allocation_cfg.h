@@ -1,7 +1,9 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <span>
 #include <vector>
 
 #include "runtime/ir/program.h"
@@ -13,6 +15,10 @@ namespace swift::runtime::backend::detail {
 // Block and single-exit Function callers leave this empty and skip BuildOrder.
 class AllocationCFG {
 public:
+    AllocationCFG() = default;
+    AllocationCFG(const AllocationCFG&) = delete;
+    AllocationCFG& operator=(const AllocationCFG&) = delete;
+
     void BuildOrder(const ir::Program&, std::vector<std::uint32_t>& order);
     void CloseLoops(const ir::Program&, const std::vector<std::uint32_t>& order);
 
@@ -57,7 +63,11 @@ public:
     }
 
 private:
-    std::vector<std::uint32_t> rank, starts, headers, ends;
+    static constexpr std::size_t inline_blocks = 64;
+    std::array<std::uint32_t, inline_blocks> local_rank, local_starts, local_headers;
+    std::array<std::uint32_t, inline_blocks * 2> local_ends;
+    std::vector<std::uint32_t> rank_storage, starts_storage, headers_storage, ends_storage;
+    std::span<std::uint32_t> rank, starts, headers, ends;
     std::size_t base{1};
     bool backedge{};
 };

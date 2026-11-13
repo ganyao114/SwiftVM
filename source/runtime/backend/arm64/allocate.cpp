@@ -9,7 +9,9 @@ void ResetAllocation(Allocation& result, CompileError error, NodeId node, BlockI
     result.node = node;
     result.block = block;
     result.spill_bytes = 0;
+    result.used_vector_mask = 0;
     result.publish_entry_pc = false;
+    result.has_save_flags = false;
     result.homes.clear();
     result.block_order.clear();
 }
@@ -26,7 +28,8 @@ void Allocator::Run() try {
     }
     pinned = options && options->pinned_uniform_offset != UINT32_MAX;
     if (pinned &&
-        ((options->pinned_uniform_slots != 8 && options->pinned_uniform_slots != 12 &&
+        (options->pinned_uniform_slots == 0 ||
+         (options->pinned_uniform_slots > 8 && options->pinned_uniform_slots != 12 &&
           options->pinned_uniform_slots != 16) ||
          options->pinned_uniform_offset > UINT32_MAX - (options->pinned_uniform_slots * 8u - 1))) {
         Reject(CompileError::UnsupportedOperand);
@@ -38,7 +41,8 @@ void Allocator::Run() try {
         return;
     }
     const bool linked = options && options->dispatcher && options->exit_handler;
-    base_scalar_registers = pinned ? 14u - (options->pinned_uniform_slots - 8u) : 14u;
+    base_scalar_registers =
+            pinned && options->pinned_uniform_slots > 8u ? 14u - (options->pinned_uniform_slots - 8u) : 14u;
     scalar_registers = base_scalar_registers + (linked ? 1u : 0u);
     borrow_pins = (pinned || vector_pinned) && options->private_uniforms;
     raw_flags = options && options->native_nzcv && linked;
@@ -106,6 +110,7 @@ bool Allocator::InitializeHomes() {
                                  barriers))
                     result.homes[terminal_value.value].terminal_only = false;
             }
+            if (operations[i].opcode == OpCode::SaveFlags) result.has_save_flags = true;
             if (operations[i].opcode == OpCode::Div128 || operations[i].opcode == OpCode::Cpuid) {
                 if (result.spill_bytes == 32768) {
                     Reject(CompileError::FrameTooLarge, NodeId{i});
@@ -184,9 +189,12 @@ void Allocator::AssignRegisters() {
     for (const auto b : result.block_order) {
         const auto& body = blocks[b];
         for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
-            if (operations[i].type == Type::Void || result.homes[i].terminal_only ||
-                result.homes[i].reg)
+            if (operations[i].type == Type::Void || result.homes[i].terminal_only) continue;
+            if (result.homes[i].reg) {
+                if (operations[i].type == Type::V128)
+                    result.used_vector_mask |= 1u << result.homes[i].reg;
                 continue;
+            }
             const auto outputs = operations[i].Metadata().flag_outputs;
             if (raw_flags && IntegerType(operations[i].type) &&
                 ReadsBeforeWrite(operations[i].opcode) &&
@@ -252,10 +260,12 @@ void Allocator::AssignRegisters() {
             // The explicit vector ABI reserves v16..v31 and v0/v1/v8/v9;
             // its dynamic bank is v2..v7,v10..v15. The default keeps its old
             // twenty-register mapping. Only linked scalar banks append x28.
-            result.homes[i].reg = static_cast<std::uint8_t>(
+            const auto assigned = static_cast<std::uint8_t>(
                     vector ? abi::VectorHomeRegister(static_cast<unsigned>(slot), vector_pinned)
                            : abi::ScalarHomeRegister(static_cast<unsigned>(slot),
                                                      base_scalar_registers));
+            result.homes[i].reg = assigned;
+            if (vector) result.used_vector_mask |= 1u << assigned;
             resident[slot] = i;
         }
     }

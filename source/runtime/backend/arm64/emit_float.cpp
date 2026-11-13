@@ -58,6 +58,36 @@ void Writer::ConvertFloatToInteger(unsigned destination,
                                    unsigned integer_bits,
                                    bool truncate) {
     const auto fp = float_bits == 32 ? S(0) : D(0);
+    const bool fast_allowed =
+            options.mxcsr_flush_mode == 0 || options.mxcsr_flush_offset == UINT32_MAX;
+    u32 fast_done = UINT32_MAX, zero_done = UINT32_MAX;
+    if (fast_allowed) {
+        const unsigned fraction = float_bits == 32 ? 23 : 52;
+        const unsigned exponent = float_bits == 32 ? 8 : 11;
+        const unsigned bias = float_bits == 32 ? 127 : 1023;
+        const unsigned max_fast_exp = bias + integer_bits - (truncate ? 2 : 3);
+        const unsigned scratch = raw == 17 ? 0u : 17u;
+        Extract(scratch, raw, fraction, exponent);
+        const auto zero_or_denorm = masm.Here();
+        __ cbz(X(scratch), std::int64_t{0});
+        __ sub(X(scratch), X(scratch), Operand(max_fast_exp + 1));
+        const auto slow = masm.Here();
+        __ tbz(X(scratch), 63, std::int64_t{0});
+        __ fmov(fp, R(raw, float_bits));
+        if (!truncate) __ frintx(fp, fp);
+        __ fcvtzs(R(destination, integer_bits == 64 ? 64 : 32), fp);
+        fast_done = masm.Here();
+        __ b(std::int64_t{0});
+        masm.Patch(zero_or_denorm, masm.Here());
+        __ lsl(R(scratch, float_bits), R(raw, float_bits), 1);
+        const auto denorm_slow = masm.Here();
+        __ cbnz(R(scratch, float_bits), std::int64_t{0});
+        Immediate(destination, 0);
+        zero_done = masm.Here();
+        __ b(std::int64_t{0});
+        masm.Patch(slow, masm.Here());
+        masm.Patch(denorm_slow, masm.Here());
+    }
     __ fmov(fp, R(raw, float_bits));
     LoadMxcsrFlushControl();
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
@@ -100,6 +130,8 @@ void Writer::ConvertFloatToInteger(unsigned destination,
     __ msr(v::FPSR, v::x0);
     Immediate(destination, u64{1} << (integer_bits - 1));
     masm.Patch(converted, masm.Here());
+    if (fast_done != UINT32_MAX) masm.Patch(fast_done, masm.Here());
+    if (zero_done != UINT32_MAX) masm.Patch(zero_done, masm.Here());
     if (integer_bits < 32) Narrow(destination, destination, integer_bits);
 }
 
@@ -344,6 +376,46 @@ void Writer::HandleVecFCmpFamily(OpContext& ctx) {
                          UINT32_MAX,
                          ProvenNoDenormal(left_cell, bits, 1),
                          ProvenNoDenormal(right_cell, bits, 1));
+    if (ctx.operation.Metadata() == OperationMetadata{} && !ctx.home.spilled && Enabled() &&
+        NativeNZCV() && RawAF() && !deferred_test.bits) {
+        if (const auto consumer = NextNonNop(node.value + 1)) {
+            const auto& next = source.Operations()[consumer.value];
+            const auto& next_home = allocation.homes[consumer.value];
+            if (next.opcode == OpCode::PublishFCmpFlags && next.block == ctx.operation.block &&
+                next.Metadata() == OperationMetadata{} &&
+                ctx.home.last_use == next_home.definition_position) {
+                const auto operands = source.Operands(consumer);
+                auto at = operands.begin();
+                if (at != operands.end()) {
+                    const auto input = *at++;
+                    if (at == operands.end() && input.Kind() == OperandKind::Value &&
+                        input.Payload() == node.value) {
+                        if (encoded & 128)
+                            __ fcmpe(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
+                        else
+                            __ fcmp(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
+                        __ cset(v::w1, v::vc);
+                        Move(29, 31);
+                        __ cset(v::w16, v::eq);
+                        __ csinc(v::w16, v::w16, v::wzr, v::vc);
+                        __ cset(v::w17, v::ge);
+                        __ lsl(v::w16, v::w16, 30);
+                        __ bfi(v::w16, v::w17, 29, 1);
+                        __ msr(v::NZCV, v::x16);
+                        deferred_logical = {};
+                        deferred_parity = 0;
+                        direct_carry = false;
+                        nzcv_matches = 0;
+                        packed_current = false;
+                        shadow_dirty = true;
+                        ElideConsumer(consumer);
+                        ctx.saved = true;
+                        return;
+                    }
+                }
+            }
+        }
+    }
     __ mrs(v::x30, v::NZCV);  // Preserve the actual guest/packed-mode host NZCV.
     if (encoded & 128)
         __ fcmpe(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));

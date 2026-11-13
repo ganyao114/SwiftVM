@@ -22,6 +22,7 @@ struct UniformPolicy {
     bool guest_memory_disjoint{};
     // Implicit numerical status writes affect this control/status field only.
     std::optional<UniformRange> numeric_control;
+    std::optional<UniformRange> fp_status;
     std::optional<UniformRange> pc;
 };
 

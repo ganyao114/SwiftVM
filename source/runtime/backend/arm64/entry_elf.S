@@ -10,11 +10,13 @@ mov w17, #-1
 cmp x16, x17
 b.eq 1f
 add x16, x19, x16
+ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_SLOTS)]
+cmp x17, #8
+b.lo 14f
 stp x20, x21, [x16]
 stp x22, x23, [x16, #16]
 stp x24, x25, [x16, #32]
 stp x26, x27, [x16, #48]
-ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_SLOTS)]
 cmp x17, #16
 b.eq 12f
 cmp x17, #12
@@ -27,6 +29,26 @@ stp x8, x9, [x16, #64]
 stp x10, x11, [x16, #80]
 stp x12, x13, [x16, #96]
 stp x14, x15, [x16, #112]
+b 1f
+14:
+cmp x17, #1
+b.lo 1f
+str x20, [x16]
+b.eq 1f
+str x21, [x16, #8]
+cmp x17, #3
+b.lo 1f
+str x22, [x16, #16]
+b.eq 1f
+str x23, [x16, #24]
+cmp x17, #5
+b.lo 1f
+str x24, [x16, #32]
+b.eq 1f
+str x25, [x16, #40]
+cmp x17, #7
+b.lo 1f
+str x26, [x16, #48]
 1:
 .endm
 
@@ -332,11 +354,13 @@ mov w17, #-1
 cmp x16, x17
 b.eq 1f
 add x16, x19, x16
+ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_SLOTS)]
+cmp x17, #8
+b.lo 14f
 ldp x20, x21, [x16]
 ldp x22, x23, [x16, #16]
 ldp x24, x25, [x16, #32]
 ldp x26, x27, [x16, #48]
-ldur x17, [x19, #SVM_A64_CTX_REL(SVM_A64_CTX_PIN_SLOTS)]
 cmp x17, #16
 b.eq 12f
 cmp x17, #12
@@ -349,6 +373,26 @@ ldp x8, x9, [x16, #64]
 ldp x10, x11, [x16, #80]
 ldp x12, x13, [x16, #96]
 ldp x14, x15, [x16, #112]
+b 1f
+14:
+cmp x17, #1
+b.lo 1f
+ldr x20, [x16]
+b.eq 1f
+ldr x21, [x16, #8]
+cmp x17, #3
+b.lo 1f
+ldr x22, [x16, #16]
+b.eq 1f
+ldr x23, [x16, #24]
+cmp x17, #5
+b.lo 1f
+ldr x24, [x16, #32]
+b.eq 1f
+ldr x25, [x16, #40]
+cmp x17, #7
+b.lo 1f
+ldr x26, [x16, #48]
 1:
 
 SVM_RELOAD_VECTORS

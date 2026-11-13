@@ -101,8 +101,8 @@ void Writer::HandleDiv128Family(OpContext& ctx) {
         Width(View(divisor)) != bits || sign > 1)
         Reject(CompileError::UnsupportedOperand);
     Shadow(false);
-    PublishPinned();
-    HelperFPEnvironment(false);
+    FlushDenormalBatch();
+    NativePhase(SVM_NATIVE_PHASE_HELPER);
     Move(0, Read(high, 0));
     Move(16, Read(low, 16));
     Move(17, Read(divisor, 17));
@@ -112,10 +112,9 @@ void Writer::HandleDiv128Family(OpContext& ctx) {
     HostAddress(30, DivisionHelper(bits, sign != 0), symbol);
     __ blr(v::x30);  // BLR x30.
     // The private helper returns a real status in x17; no host signal
-    // crosses its C++ frame. Test before restoring FP controls clobbers x17.
+    // crosses its C++ frame.
     const auto valid = masm.Here();
     __ cbnz(v::x17, std::int64_t{0});
-    HelperFPEnvironment(true);
     if (has_fault_location && options.pc_offset != UINT32_MAX) {
         Immediate(0, fault_location);
         PCMemory(false);
@@ -123,7 +122,6 @@ void Writer::HandleDiv128Family(OpContext& ctx) {
     Immediate(0, ExitValue(NativeExit::DivideFault));
     Epilogue();
     masm.Patch(valid, masm.Here());
-    HelperFPEnvironment(true);
     nzcv_matches = 0;
     Memory(false, 64, 16, 31, home.extra_slot - 1);
     Move(destination, 0);

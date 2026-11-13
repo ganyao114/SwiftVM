@@ -105,6 +105,11 @@ NativeCode CompileService::Compile(ir::Scope scope) {
                         .flags = ir::UniformRange{vm.layout.flags_offset, sizeof(std::uint64_t)},
                         .guest_memory_disjoint = private_guest_state,
                         .numeric_control = ir::UniformRange{vm.layout.numeric_control_offset, 4},
+                        .fp_status = vm.ISA() == GuestISA::Arm64
+                                             ? std::optional<ir::UniformRange>{{offsetof(
+                                                       arm64::GuestState, fpsr),
+                                                       4}}
+                                             : std::nullopt,
                         .pc = ir::UniformRange{vm.layout.pc_offset, 8}});
         if (options.decode_timing) {
             stats.optimized_erased += optimized.stats.erased;
@@ -242,7 +247,9 @@ NativeCode CompileService::Restore(const CodeUnit& unit, bool sources_verified) 
 
 void CompileService::Release() noexcept {
     reusable = {};
+    reusable_x86_decoded = {};
     last = nullptr;
+    region_windows_generation = 0;
     std::vector<std::uint64_t>{}.swap(optimizer_rows);
     std::vector<SourceSpan>{}.swap(source_spans);
     std::vector<std::uint64_t>{}.swap(continuations);

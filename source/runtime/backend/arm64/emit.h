@@ -292,8 +292,13 @@ private:
     u64 fault_location{};
     bool has_fault_location{};
     u32 unaligned_word{UINT32_MAX};  // Actual current-op recoverable fast instruction.
-    NodeId elided_consumer{};        // Only the adjacent numeric consumer already emitted with its
-                                     // producer.
+    u32 elided_until{UINT32_MAX};
+    u32 x17_imm_start{UINT32_MAX};
+    u32 x17_imm_checked{UINT32_MAX};
+    u64 x17_imm_value{};
+
+    void ElideConsumer(NodeId consumer) { elided_until = consumer.value; }
+
     u64 static_pc{};
     bool static_pc_valid{};
     u64 alternate_pc{};
@@ -308,6 +313,8 @@ private:
         std::uint8_t denominator;
         std::uint8_t input_count;
         std::uint8_t peer_count;
+        std::uint8_t bits;
+        std::uint8_t count;
     };
 
     struct ColdDenormalStub {
@@ -324,16 +331,18 @@ private:
         std::uint8_t count;
         bool negative_invalid;
         std::uint8_t batch_op_count;
-        std::array<DenormalBatchOp, 4> batch_ops;
+        u32 check_mask_32{};
+        u32 check_mask_64{};
+        std::array<DenormalBatchOp, 16> batch_ops;
     };
 
     struct PendingDenormalBatch {
-        u32 check_mask{};
+        u32 check_mask_32{};
+        u32 check_mask_64{};
         u32 protected_mask{};
-        std::uint8_t bits{};
-        std::uint8_t count{};
         std::uint8_t op_count{};
-        std::array<DenormalBatchOp, 4> ops;
+        std::uint8_t preserved_count{};
+        std::array<DenormalBatchOp, 16> ops;
     } pending_denormal;
 
     struct ColdExitStub {
@@ -366,10 +375,10 @@ private:
     u32 vec_mul_widen_words{UINT32_MAX};
     std::uint8_t vec_mul_widen_right{UINT8_MAX}, vec_mul_widen_size{};
 
-    std::array<ColdDenormalStub, 256> cold_denormal_stubs;
-    std::array<ColdExitStub, 128> cold_exit_stubs;
-    u32 cold_denormal_count{};
-    u32 cold_exit_count{};
+    static constexpr std::size_t max_cold_denormal_stubs = 256;
+    static constexpr std::size_t max_cold_exit_stubs = 128;
+    std::vector<ColdDenormalStub> cold_denormal_stubs;
+    std::vector<ColdExitStub> cold_exit_stubs;
 
     // One streaming recurrence in this Writer. Prefix operations are emitted
     // normally; these two actual sites acquire recipes only at the tail TEST.
@@ -448,7 +457,29 @@ private:
     }
 
     void CompleteDeferredLogical();
-    bool FlagsDeadFrom(u32 start_node) const;
+    bool TryEmitSelectConsumer(OpContext&, unsigned host_condition, bool flip_carry = false);
+
+    NodeId NextNonNop(u32 from) const {
+        const auto& body = source.Blocks()[block.value];
+        const u32 limit = body.first_node + body.node_count;
+        while (from < limit) {
+            const auto& op = source.Operations()[from];
+            if (op.opcode != OpCode::Nop || op.Metadata() != OperationMetadata{})
+                return NodeId{from};
+            ++from;
+        }
+        return {};
+    }
+
+    void ProtectDestinationRegister(unsigned reg, u32 consumer_id) {
+        if (deferred_parity && reg == deferred_parity) CompleteParity();
+        if (deferred_logical.bits && reg == deferred_logical.reg) {
+            if (allocation.homes[consumer_id].flags_dead_after)
+                deferred_logical = {};
+            else
+                CompleteDeferredLogical();
+        }
+    }
 
     void CompleteLocalFlags() {
         CompleteDeferredLogical();
@@ -490,6 +521,27 @@ private:
     }
 
     void Immediate(unsigned reg, u64 bits) {
+        if (reg == 17 && x17_imm_start != UINT32_MAX && x17_imm_value == bits &&
+            masm.local_fixups.empty() && masm.last_branch_target <= x17_imm_start &&
+            output.words.size() >= x17_imm_checked &&
+            output.words.size() - x17_imm_checked <= 16) {
+            bool intact = true;
+            for (std::size_t idx = x17_imm_checked; idx < output.words.size(); ++idx) {
+                const u32 w = output.words[idx];
+                const bool dp_imm =
+                        (w & 0x1c000000u) == 0x10000000u && (w & 0x1f000000u) != 0x10000000u;
+                const bool dp_reg = (w & 0x0e000000u) == 0x0a000000u;
+                if ((!dp_imm && !dp_reg) || (w & 31u) == 17u) {
+                    intact = false;
+                    break;
+                }
+            }
+            if (intact) {
+                x17_imm_checked = static_cast<u32>(output.words.size());
+                return;
+            }
+        }
+        const auto start = static_cast<u32>(output.words.size());
         const auto parts = bits <= UINT32_MAX ? 2u : 4u;
         unsigned zero{}, full{};
         for (unsigned part = 0; part < parts; ++part) {
@@ -508,6 +560,11 @@ private:
         for (unsigned part = 0; part < parts; ++part) {
             const auto word = static_cast<u32>((bits >> (part * 16)) & 0xffff);
             if (part != first && word != (invert ? 0xffffu : 0u)) __ movk(target, word, part * 16);
+        }
+        if (reg == 17) {
+            x17_imm_start = start;
+            x17_imm_checked = static_cast<u32>(output.words.size());
+            x17_imm_value = bits;
         }
     }
 
@@ -626,7 +683,10 @@ private:
         return reg >= 2 && reg != VectorTemporary() && reg != VectorTemporary(true);
     }
     bool CanBatchDenormal(unsigned bits, unsigned count) const;
+    bool HasUpcomingBatchOp(u32 from) const;
+    bool PreserveBatchedRegister(unsigned reg);
     void FlushDenormalBatch();
+    u32 EmitBatchZeroFilter(u32 check_mask_32, u32 check_mask_64);
     void QueueDenormalInputs(unsigned left,
                              unsigned right,
                              unsigned lane_bits,
@@ -717,7 +777,7 @@ private:
                 bits = carrier_bits;
                 sign = false;
             }
-            if (native_width == 32 && bits >= 32) return reg;
+            if (native_width <= 32 && bits >= native_width) return reg;
             // Numeric producers already normalize to their natural width.
             // Raw transport is the exception; its narrow label is not a mask.
             if (!narrow_pin && !sign && Bits(producer.type) <= bits &&

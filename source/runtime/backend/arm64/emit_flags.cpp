@@ -117,38 +117,45 @@ void Writer::CompleteDeferredLogical() {
     }
 }
 
-bool Writer::FlagsDeadFrom(u32 start_node) const {
-    const auto& body = source.Blocks()[block.value];
-    const u32 end = body.first_node + body.node_count;
-    const u32 limit = std::min(end, start_node + 16u);
-    for (u32 idx = start_node; idx < limit; ++idx) {
-        const auto& op = source.Operations()[idx];
-        if ((op.opcode == OpCode::Nop || op.opcode == OpCode::FaultLocation) &&
-            op.Metadata() == OperationMetadata{})
-            continue;
-        const auto meta = op.Metadata();
-        const auto eff = EffectsFor(op.opcode, meta);
-        if (HasAnyEffect(eff,
-                         Effect::ReadFlags | Effect::MayFault | Effect::Unknown |
-                                 Effect::External | Effect::Control))
-            return false;
-        if ((op.opcode == OpCode::LoadUniform || op.opcode == OpCode::StoreUniform ||
-             op.opcode == OpCode::StoreUniformSelectImm) &&
-            OverlapsShadow(source.Operands(NodeId{idx}).front()))
-            return false;
-        if (op.opcode == OpCode::StoreUniform && Linked()) {
-            const auto uniform = source.Operands(NodeId{idx}).front();
-            if (uniform.TypeView() == Type::U64 && uniform.Payload() == options.pc_offset &&
-                idx + 1 == end && body.terminal.kind == TerminalKind::Dispatch)
-                return false;
-        }
-        if (meta == OperationMetadata{} && HasAnyEffect(eff, Effect::WriteFlags)) return false;
-        if (meta.flag_outputs && !LegacyMask(NodeId{idx}, NodeId{idx + 1}) &&
-            !LegacyMask(NodeId{idx}, NodeId{idx + 2}) &&
-            ((meta.flag_outputs & all_flags) == all_flags || meta.discard_omitted_flags))
-            return true;
-    }
-    return false;
+bool Writer::TryEmitSelectConsumer(OpContext& ctx, unsigned host_condition, bool flip_carry) {
+    if (ctx.home.spilled || ctx.operation.Metadata() != OperationMetadata{}) return false;
+    const auto consumer = NextNonNop(node.value + 1);
+    if (!consumer) return false;
+    const auto& next = source.Operations()[consumer.value];
+    const auto& next_home = allocation.homes[consumer.value];
+    if (next.opcode != OpCode::Select || next.block != ctx.operation.block ||
+        next.Metadata() != OperationMetadata{} || next.type == Type::Void ||
+        next.type == Type::V128 || next_home.spilled ||
+        ctx.home.last_use != next_home.definition_position)
+        return false;
+    const auto operands = source.Operands(consumer);
+    auto at = operands.begin();
+    if (at == operands.end()) return false;
+    const auto check = *at++;
+    if (at == operands.end()) return false;
+    const auto yes = *at++;
+    if (at == operands.end()) return false;
+    const auto no = *at++;
+    const bool uses_self = (yes.Kind() == OperandKind::Value && yes.Payload() == node.value) ||
+                           (no.Kind() == OperandKind::Value && no.Payload() == node.value);
+    if (at != operands.end() || check.Kind() != OperandKind::Value ||
+        check.Payload() != node.value || uses_self)
+        return false;
+    const auto sel_width = Width(next.type);
+    const auto sel_native = sel_width == 32 ? 32u : 64u;
+    const auto yes_reg = Read(yes, 16, 64, false, sel_native),
+               no_reg = Read(no, 17, 64, false, sel_native);
+    ProtectDestinationRegister(next_home.reg, consumer.value);
+    if (flip_carry) __ cfinv();
+    __ csel(R(next_home.reg, sel_native),
+            R(yes_reg, sel_native),
+            R(no_reg, sel_native),
+            static_cast<v::Condition>(host_condition));
+    if (flip_carry) __ cfinv();
+    if (sel_width != 32) Narrow(next_home.reg, next_home.reg, sel_width);
+    ElideConsumer(consumer);
+    ctx.saved = true;
+    return true;
 }
 
 void Writer::CompleteDeferredTest() {
@@ -409,6 +416,7 @@ void Writer::Metadata(const Operation& op) const {
 }
 
 u64 Writer::LegacyMask(NodeId owner, NodeId save) const {
+    if (!allocation.has_save_flags) return 0;
     const auto operations = source.Operations();
     if (owner.value >= operations.size() || save.value >= operations.size() ||
         save.value <= owner.value || save.value - owner.value > 2)
@@ -446,7 +454,9 @@ u64 Writer::LegacyMask(NodeId owner, NodeId save) const {
 }
 
 u64 Writer::CaptureLegacy(const Operation& op) {
-    if (!Enabled() || (!Arithmetic(op.opcode) && !Logical(op.opcode))) return 0;
+    if (!allocation.has_save_flags || !Enabled() ||
+        (!Arithmetic(op.opcode) && !Logical(op.opcode)))
+        return 0;
     NodeId save{node.value + 1};
     if (save.value < source.Operations().size() &&
         source.Operations()[save.value].opcode == OpCode::ClearFlags)
@@ -697,49 +707,7 @@ void Writer::HandleTestFlagsFamily(OpContext& ctx) {
                                 : mask == negative ? 4u
                                                    : 9u) ^
                                static_cast<unsigned>(inverse);
-        if (!home.spilled && operation.Metadata() == OperationMetadata{} &&
-            node.value + 1 < source.Operations().size()) {
-            const NodeId consumer{node.value + 1};
-            const auto& next = source.Operations()[consumer.value];
-            const auto& next_home = allocation.homes[consumer.value];
-            if (next.opcode == OpCode::Select && next.block == operation.block &&
-                next.Metadata() == OperationMetadata{} && next.type != Type::Void &&
-                next.type != Type::V128 && !next_home.spilled &&
-                home.last_use == next_home.definition_position) {
-                const auto operands = source.Operands(consumer);
-                auto at = operands.begin();
-                if (at != operands.end()) {
-                    const auto check = *at++;
-                    if (at != operands.end()) {
-                        const auto yes = *at++;
-                        if (at != operands.end()) {
-                            const auto no = *at++;
-                            const bool uses_self =
-                                    (yes.Kind() == OperandKind::Value &&
-                                     yes.Payload() == node.value) ||
-                                    (no.Kind() == OperandKind::Value &&
-                                     no.Payload() == node.value);
-                            if (at == operands.end() && check.Kind() == OperandKind::Value &&
-                                check.Payload() == node.value && !uses_self) {
-                                const auto sel_width = Width(next.type);
-                                const auto sel_native = sel_width == 32 ? 32u : 64u;
-                                const auto yes_reg = Read(yes, 16, 64, false, sel_native),
-                                           no_reg = Read(no, 17, 64, false, sel_native);
-                                __ csel(R(next_home.reg, sel_native),
-                                        R(yes_reg, sel_native),
-                                        R(no_reg, sel_native),
-                                        static_cast<v::Condition>(condition));
-                                if (sel_width != 32)
-                                    Narrow(next_home.reg, next_home.reg, sel_width);
-                                elided_consumer = consumer;
-                                ctx.saved = true;
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        if (TryEmitSelectConsumer(ctx, condition)) return;
         __ cset(X(destination), static_cast<v::Condition>(condition));
     } else
         Test(mask, destination, inverse);
@@ -748,11 +716,6 @@ void Writer::HandleTestFlagsFamily(OpContext& ctx) {
 void Writer::HandleSetCarryFamily(OpContext& ctx) {
     const auto& operation = ctx.operation;
     auto& cursor = ctx.cursor;
-    if (node == elided_consumer) {
-        cursor.Take();
-        elided_consumer = {};
-        return;
-    }
     CompleteLocalFlags();
     RequireFlags();
     const auto value = Read(cursor.Take(), 16);

@@ -62,9 +62,9 @@ execution::HostBackendOps Runtime::Bind() noexcept {
                 layout.pinned_uniform_slots ? layout.gprs_offset : UINT32_MAX;
         self.options.pinned_uniform_slots = layout.pinned_uniform_slots;
         self.vector_offset = layout.vectors_offset;
-        if (layout.isa == GuestISA::Arm64)
-            self.options.fpsr_offset =
-                    offsetof(::swift::runtime::arm64::GuestState, fpsr);
+        self.options.fpsr_offset = layout.isa == GuestISA::Arm64
+                                           ? offsetof(::swift::runtime::arm64::GuestState, fpsr)
+                                           : UINT32_MAX;
         if (!self.capabilities.afp) self.options.mxcsr_flush_offset = layout.numeric_control_offset;
     };
     ops.compile = [](void* raw,

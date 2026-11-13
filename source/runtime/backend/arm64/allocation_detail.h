@@ -58,6 +58,7 @@ private:
         std::uint64_t needed_nzcv{FlagBits(Flag::NZCV)};
         std::array<u32, 32> next_pinned_write, pending;
         u32 pending_mask{};
+        bool all_flags_dead{};
     };
 
     void CancelPending(BlockSelection&, unsigned slot);

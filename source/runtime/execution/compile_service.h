@@ -5,6 +5,7 @@
 #include "runtime/code_source.h"
 #include "runtime/frontend/build_result.h"
 #include "runtime/frontend/source.h"
+#include "runtime/frontend/x86/region.h"
 #include "runtime/ir/program.h"
 
 namespace swift::runtime::execution {
@@ -59,9 +60,10 @@ private:
     std::vector<std::uint64_t> optimizer_rows;
     const backend::CompileResult* last{};
     std::uint64_t entry_pc{};
-    // Rebuilt from current mappings before each synchronous BuildFrontend.
-    // Retained entries are never used to qualify later source mappings.
+    // Refreshed when GuestMemory::Generation() advances.
     std::vector<frontend::BlockWindow> region_windows;
+    std::uint64_t region_windows_generation{};
+    ::swift::x86::DecodedFunction reusable_x86_decoded;
     std::vector<SourceSpan> source_spans;
     std::vector<std::uint64_t> continuations;
     CompileFailure failure{};

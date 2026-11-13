@@ -172,6 +172,56 @@ bool FoldExtractShift(const Builder& editor,
     return true;
 }
 
+bool FoldShiftMask(const Builder& editor,
+                   std::span<const Operation> operations,
+                   NodeId id,
+                   const std::vector<u64>& rows,
+                   std::span<Operand> cells,
+                   std::size_t& count,
+                   OpCode& opcode) {
+    const auto& op = operations[id.value];
+    const auto width = TypeBits(op.type);
+    if ((width != 8 && width != 16 && width != 32 && width != 64) || count != 2 ||
+        cells[0].kind != OperandKind::Value || ReadType(cells[0], operations) != op.type)
+        return false;
+    Constant mask_const;
+    if (!ReadConstant(editor, operations, cells[1], mask_const) || mask_const.type != op.type)
+        return false;
+    const u64 mask_bits = mask_const.bits & Mask(width);
+    if (!mask_bits || (mask_bits & (mask_bits + 1)) != 0) return false;
+    const unsigned len = std::countr_one(mask_bits);
+    const auto shift_id = static_cast<std::uint32_t>(cells[0].payload);
+    const auto& shift_op = operations[shift_id];
+    if (shift_op.opcode != OpCode::LsrImm || shift_op.type != op.type || Metadata(shift_op) ||
+        shift_op.block != op.block || shift_op.operand_count != 2 ||
+        (rows[shift_id] & count_mask) != 1 || (rows[shift_id] & pin_bit))
+        return false;
+    const auto inputs = editor.Operands(NodeId{shift_id});
+    auto at = inputs.begin();
+    const auto parent = *at++, amount = *at;
+    if (parent.Kind() != OperandKind::Value || operations[parent.Payload()].type != op.type ||
+        (parent.TypeView() != Type::Void && parent.TypeView() != op.type) ||
+        amount.Kind() != OperandKind::Immediate || !Scalar(amount.TypeView()))
+        return false;
+    const unsigned shift_mask_bits = std::min(TypeBits(amount.TypeView()), 6u);
+    const unsigned shift = static_cast<unsigned>(
+            amount.Payload() & (width - 1) & ((u64{1} << shift_mask_bits) - 1));
+    if (!shift || shift >= width) return false;
+    cells[0] = Operand::ValueOf(
+            {editor.UnitId(), NodeId{static_cast<std::uint32_t>(parent.Payload())}},
+            parent.TypeView());
+    cells[1] = Operand::Immediate(shift, Type::U8);
+    if (shift + len >= width) {
+        count = 2;
+        opcode = OpCode::LsrImm;
+        return true;
+    }
+    cells[2] = Operand::Immediate(len, Type::U8);
+    count = 3;
+    opcode = OpCode::BitExtract;
+    return true;
+}
+
 bool FuseSignedMulWidenLow(const Builder& editor,
                            std::span<const Operation> operations,
                            NodeId id,

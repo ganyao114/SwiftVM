@@ -166,13 +166,25 @@ static Value Address(Emitter& builder,
                     return finish(combined);
             } else if (instruction.disp != 0 && !address32 && !extra_offset &&
                        segment != Register::FS && segment != Register::GS) {
-                if (const auto base = builder.AddressLiteral(
-                            target,
-                            address_type,
-                            narrow ? static_cast<u32>(instruction.disp) : instruction.disp)) {
+                const u64 full_disp = narrow ? static_cast<u32>(instruction.disp) : instruction.disp;
+                u64 base_disp = full_disp;
+                u64 tail_disp = 0;
+                if (final_disp && !narrow && (operand.size <= 64 || (full_disp & 15u) == 0)) {
+                    const u64 low_disp = full_disp & 0xffu;
+                    const u64 high_disp = full_disp - low_disp;
+                    if (low_disp != 0 && high_disp != 0 &&
+                        (builder.HasAddressLiteral(address_type, high_disp) ||
+                         ((full_disp & 0xffffu) != 0 && (high_disp & 0xffffu) == 0))) {
+                        base_disp = high_disp;
+                        tail_disp = low_disp;
+                    }
+                }
+                if (const auto base = builder.AddressLiteral(target, address_type, base_disp)) {
                     if (const auto combined =
-                                builder.ShiftedAddress(target, address_type, base, index, shift))
+                                builder.ShiftedAddress(target, address_type, base, index, shift)) {
+                        if (tail_disp) *final_disp = tail_disp;
                         return combined;
+                    }
                 }
             }
             index = Require(builder.LslImm(narrow ? Type::U32 : Type::Void,
@@ -367,8 +379,67 @@ static unsigned MandatoryRepeatPrefixes(Op opcode) {
     }
 }
 
+static bool DirectOpcodeByte(std::uint8_t byte) noexcept {
+    switch (byte) {
+        case 0x26:
+        case 0x2e:
+        case 0x36:
+        case 0x3e:
+        case 0x62:
+        case 0x64:
+        case 0x65:
+        case 0x66:
+        case 0x67:
+        case 0xc4:
+        case 0xc5:
+        case 0xf0:
+        case 0xf2:
+        case 0xf3:
+            return false;
+        default:
+            return byte < 0x40 || byte > 0x4f;
+    }
+}
+
+static bool AllowedPrefixSummary(const InstructionData& instruction) {
+    const auto summary = instruction.reserved[0];
+    if (summary == 1u &&
+        !(instruction.flags & (InstructionFlag::Locked | InstructionFlag::Repeat |
+                               InstructionFlag::RepeatNotEqual)) &&
+        instruction.address_bits == 64)
+        return true;
+    if (summary & 64u) return true;
+    if (summary & 128u) return false;
+    const bool need_repeat =
+            (instruction.flags & (InstructionFlag::Repeat | InstructionFlag::RepeatNotEqual)) ||
+            (summary & (4u | 8u));
+    const auto repeat_prefixes = need_repeat ? MandatoryRepeatPrefixes(instruction.opcode) : 0u;
+    const bool mandatory_f3 = (repeat_prefixes & 2) != 0, mandatory_f2 = (repeat_prefixes & 1) != 0;
+    if (((instruction.flags & InstructionFlag::Locked) || (summary & 2u)) &&
+        !LockedMemoryForm(instruction))
+        return false;
+    if (((instruction.flags & InstructionFlag::Repeat) || (summary & 8u)) && !mandatory_f3)
+        return false;
+    if (((instruction.flags & InstructionFlag::RepeatNotEqual) || (summary & 4u)) && !mandatory_f2)
+        return false;
+    if (instruction.address_bits != 64 && instruction.address_bits != 32) return false;
+    if ((summary & 16u) && instruction.address_bits != 32) return false;
+    if ((summary & 32u) && instruction.vector_bytes == 0 && !BmiMnemonic(instruction.opcode))
+        return false;
+    return (summary & 1u) != 0;
+}
+
 static bool AllowedPrefixes(const InstructionData& instruction,
                             std::span<const std::uint8_t> bytes) {
+    if (bytes.empty()) return AllowedPrefixSummary(instruction);
+    if (!(instruction.flags & (InstructionFlag::Locked | InstructionFlag::Repeat |
+                               InstructionFlag::RepeatNotEqual)) &&
+        instruction.address_bits == 64) {
+        if (DirectOpcodeByte(bytes[0]) ||
+            (bytes.size() >= 2 && bytes[0] >= 0x40 && bytes[0] <= 0x4f &&
+             DirectOpcodeByte(bytes[1])))
+            return true;
+    }
     if (instruction.opcode == Op::NOP && bytes[0] == 0xf3 &&
         instruction.size == DisabledCetHintSize(bytes))
         return true;  // Exact disabled-CET architectural hints only.

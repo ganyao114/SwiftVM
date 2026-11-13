@@ -111,6 +111,7 @@ using runtime::frontend::BuildResult;
         ReadyEntryLookup ready = {},
         runtime::x86::GuestCpuModel model = runtime::x86::BaselineGuestCpu,
         std::vector<runtime::SourceSpan>* source_spans = nullptr,
-        std::vector<std::uint64_t>* continuations = nullptr);
+        std::vector<std::uint64_t>* continuations = nullptr,
+        DecodedFunction* reusable_decoded = nullptr);
 
 }  // namespace swift::x86

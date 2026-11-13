@@ -1,6 +1,8 @@
 #pragma once
 
 #include "encoding.h"
+#include <algorithm>
+#include <array>
 #include <span>
 #include <vector>
 
@@ -11,7 +13,8 @@ using WordOffset = std::uint32_t;
 // into the borrowed words; only actual branch uses grow these fixup vectors.
 class Assembler {
 private:
-    WordOffset single_label{UINT32_MAX};
+    static constexpr std::size_t inline_labels = 64;
+    std::array<WordOffset, inline_labels> local_labels;
     std::vector<WordOffset> label_storage;
 
 public:
@@ -26,11 +29,13 @@ public:
     };
 
     Assembler(std::vector<std::uint32_t>& words, std::size_t blocks)
-            : label_storage(blocks == 1 ? 0 : blocks, UINT32_MAX)
+            : label_storage(blocks <= inline_labels ? 0 : blocks, UINT32_MAX)
             , exact(words)
-            , labels(blocks == 1 ? std::span<WordOffset>{&single_label, 1}
-                                 : std::span<WordOffset>{label_storage})
-            , words(words) {}
+            , labels(blocks <= inline_labels ? std::span<WordOffset>{local_labels.data(), blocks}
+                                             : std::span<WordOffset>{label_storage})
+            , words(words) {
+        if (blocks <= inline_labels) std::fill_n(local_labels.data(), blocks, UINT32_MAX);
+    }
 
     Assembler(const Assembler&) = delete;
     Assembler& operator=(const Assembler&) = delete;
@@ -51,6 +56,7 @@ public:
     std::span<WordOffset> labels;
     std::vector<Fixup> fixups;
     std::vector<LocalFixup> local_fixups;
+    WordOffset last_branch_target{};
 
 private:
     std::vector<std::uint32_t>& words;

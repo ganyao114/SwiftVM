@@ -14,7 +14,6 @@ frontend::BuildResult CompileService::BuildFrontend(ir::Scope scope,
                                                     bool mutable_entry,
                                                     bool private_state,
                                                     bool collect) {
-    region_windows.clear();
     const bool function = scope == ir::Scope::Function && !mutable_entry;
     if (scope == ir::Scope::Function && mutable_entry)
         ++vm.stats.smc_function_single_block_attempts;
@@ -36,12 +35,17 @@ frontend::BuildResult CompileService::BuildFrontend(ir::Scope scope,
     const frontend::BlockWindow block{address, vm.memory.CodeAt(address)};
     std::span<const frontend::BlockWindow> windows{&block, 1};
     if (function) {
-        for (const auto& region : vm.memory.Regions())
-            if ((region.protection & (PROT_READ | PROT_EXEC)) == (PROT_READ | PROT_EXEC) &&
-                vm.memory.ClassifySource(region.address) == SourceMode::Immutable) {
-                const auto bytes = vm.memory.CodeAt(region.address);
-                if (!bytes.empty()) region_windows.push_back({region.address, bytes});
-            }
+        const auto generation = vm.memory.Generation();
+        if (region_windows_generation != generation) {
+            region_windows.clear();
+            for (const auto& region : vm.memory.Regions())
+                if ((region.protection & (PROT_READ | PROT_EXEC)) == (PROT_READ | PROT_EXEC) &&
+                    vm.memory.ClassifySource(region.address) == SourceMode::Immutable) {
+                    const auto bytes = vm.memory.CodeAt(region.address);
+                    if (!bytes.empty()) region_windows.push_back({region.address, bytes});
+                }
+            region_windows_generation = generation;
+        }
         windows = region_windows;
     }
     if (vm.ISA() == GuestISA::Arm64) {
@@ -125,7 +129,8 @@ frontend::BuildResult CompileService::BuildFrontend(ir::Scope scope,
                                              ready,
                                              x86::BaselineGuestCpu,
                                              sources,
-                                             after);
+                                             after,
+                                             &reusable_x86_decoded);
     return ::swift::x86::BuildIR(windows,
                                  scope,
                                  layout,

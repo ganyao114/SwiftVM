@@ -125,6 +125,12 @@ private:
             InstructionRange following,
             std::span<const std::uint8_t> available) const;
     void FinishDispatch(u64 reason);
+    bool HasAddressLiteral(Type type, u64 bits) const noexcept {
+        if (!private_gprs) return false;
+        for (const auto& entry : recent_literals)
+            if (entry.node && entry.type == type && entry.bits == bits) return true;
+        return false;
+    }
     Value AddressExpression(Type type, std::initializer_list<Operand> inputs);
     Value AddressLiteral(TargetInfo target, Type type, u64 bits);
     Value ShiftedAddress(TargetInfo target, Type type, Value base, Value index, std::uint8_t shift);
@@ -571,14 +577,15 @@ BuildResult EmitDecoded(InstructionRange instructions,
                         Program* reusable = nullptr,
                         bool formed_function = false,
                         std::vector<runtime::SourceSpan>* source_spans = nullptr,
-                        std::vector<std::uint64_t>* continuations = nullptr) {
+                        std::vector<std::uint64_t>* continuations = nullptr,
+                        bool trusted_decode = false) {
     if (collected) *collected = {};
     if (entry_block >= blocks.size() ||
-        (formed_function
+        (trusted_decode
                  ? blocks.size() > BlockId::invalid
                  : !ValidRequest(blocks.size(), scope, layout, target) || !ValidSources(sources)))
         return {BuildError::InvalidInput, 0, 0, 0, Error::None, {}};
-    if (!formed_function)
+    if (!trusted_decode)
         for (std::size_t i = 0; i < blocks.size(); ++i) {
             const auto& block = blocks[i];
             const std::size_t first = block.first_instruction;
@@ -609,7 +616,21 @@ BuildResult EmitDecoded(InstructionRange instructions,
             return target.Has(TargetFeature::ConditionalUniformStore) && !internal(taken) &&
                    !internal(next);
         };
-        std::vector<u64> exits;
+        std::array<u64, 32> local_exits;
+        std::size_t exit_count{};
+        std::vector<u64> heap_exits;
+        const auto push_exit = [&](u64 target_pc) {
+            if (heap_exits.empty() && exit_count < local_exits.size()) {
+                local_exits[exit_count++] = target_pc;
+                return;
+            }
+            if (heap_exits.empty()) {
+                heap_exits.reserve(local_exits.size() * 2);
+                heap_exits.assign(local_exits.begin(), local_exits.begin() + exit_count);
+            }
+            heap_exits.push_back(target_pc);
+        };
+        std::span<u64> exits;
         if (scope == Scope::Function) {
             // Only real conditional outgoing edges need extra IR bodies. This
             // reads terminal records, not a second whole-instruction plan.
@@ -629,11 +650,14 @@ BuildResult EmitDecoded(InstructionRange instructions,
                 if (target.Has(TargetFeature::ConditionalUniformStore) && !taken_internal &&
                     !next_internal)
                     continue;
-                if (!taken_internal) exits.push_back(taken);
-                if (!next_internal) exits.push_back(next);
+                if (!taken_internal) push_exit(taken);
+                if (!next_internal) push_exit(next);
             }
+            exits = heap_exits.empty() ? std::span<u64>{local_exits.data(), exit_count}
+                                       : std::span<u64>{heap_exits};
             std::sort(exits.begin(), exits.end());
-            exits.erase(std::unique(exits.begin(), exits.end()), exits.end());
+            exits = exits.first(
+                    static_cast<std::size_t>(std::unique(exits.begin(), exits.end()) - exits.begin()));
             if (exits.size() > BlockId::invalid - blocks.size())
                 throw Rejected{BuildError::IRRejected, Error::CapacityOverflow};
         }
@@ -704,8 +728,8 @@ BuildResult EmitDecoded(InstructionRange instructions,
         for (std::size_t block = 0; block < blocks.size(); ++block) {
             const auto& slice = blocks[block];
             pc = slice.pc;
-            // DecodeFunction already bounds each slice to one readable window.
-            if (formed_function)
+            // Byte-decoded slices are already bounded to one readable window.
+            if (trusted_decode)
                 while (source + 1 < sources.size() && sources[source + 1].pc <= pc) ++source;
             Require(builder.BeginBlock({unit, BlockId{static_cast<u32>(block)}}));
             // Empty budget frontiers dispatch to their own PC so a later
@@ -717,7 +741,7 @@ BuildResult EmitDecoded(InstructionRange instructions,
             unsigned x87_following{};
             for (std::size_t i = 0; i < slice.instruction_count; ++i) {
                 const auto& instruction = instructions[slice.first_instruction + i].Record();
-                if (!formed_function) {
+                if (!trusted_decode) {
                     if (instruction.addr != pc) throw Rejected{BuildError::InvalidInput};
                     if (instruction.flags == InstructionFlag::Invalid || !instruction.size ||
                         instruction.size > 15)
@@ -725,7 +749,7 @@ BuildResult EmitDecoded(InstructionRange instructions,
                     while (source + 1 < sources.size() && sources[source + 1].pc <= pc) ++source;
                 }
                 const auto& window = sources[source];
-                if (!formed_function) {
+                if (!trusted_decode) {
                     if (pc < window.pc || pc - window.pc > window.bytes.size() ||
                         instruction.size >
                                 window.bytes.size() - static_cast<std::size_t>(pc - window.pc))
@@ -734,11 +758,16 @@ BuildResult EmitDecoded(InstructionRange instructions,
                                                       instruction.size > blocks[block + 1].pc - pc))
                         throw Rejected{BuildError::InvalidInput};
                 }
-                const auto bytes = window.bytes.subspan(static_cast<std::size_t>(pc - window.pc),
-                                                        instruction.size);
+                const auto offset = static_cast<std::size_t>(pc - window.pc);
+                const bool has_summary = trusted_decode && instruction.reserved[0] != 0;
+                const auto bytes =
+                        has_summary
+                                ? std::span<const std::uint8_t>{}
+                                : std::span<const std::uint8_t>{window.bytes.data() + offset,
+                                                                instruction.size};
                 if (!Sem::AllowedPrefixes(instruction, bytes)) Unsupported();
                 const u64 next_pc = pc + instruction.size;
-                if (!formed_function && instruction.unit_boundary &&
+                if (!trusted_decode && instruction.unit_boundary &&
                     i + 1 != slice.instruction_count)
                     throw Rejected{BuildError::InvalidInput};
                 // Every original x87 record retains prefix/form admission and
@@ -768,7 +797,8 @@ BuildResult EmitDecoded(InstructionRange instructions,
                                                                       i % runtime::frontend::
                                                                                       GuestEventInstructionBudget)
                                                     : slice.instruction_count - i),
-                                    window.bytes.subspan(static_cast<std::size_t>(pc - window.pc)),
+                                    std::span<const std::uint8_t>{window.bytes.data() + offset,
+                                                                  window.bytes.size() - offset},
                                     i && i % runtime::frontend::GuestEventInstructionBudget == 0) -
                             1;
                 decoded += instruction.size;
@@ -856,14 +886,15 @@ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
                             ReadyEntryLookup ready,
                             runtime::x86::GuestCpuModel model,
                             std::vector<runtime::SourceSpan>* source_spans,
-                            std::vector<std::uint64_t>* continuations) {
+                            std::vector<std::uint64_t>* continuations,
+                            DecodedFunction* reusable_decoded) {
     if (source_spans) source_spans->clear();
     if (continuations) continuations->clear();
     if (collected) *collected = {};
     if (!ValidRequest(1, Scope::Function, layout, target))
         return {BuildError::InvalidInput, entry_pc, 0, 0, Error::None, {}};
     const bool entries = target.Has(TargetFeature::ExternalEntries);
-    const auto decoded = [&] {
+    auto decoded = [&] {
         runtime::frontend::ScopedBuildTimer formation_time{
                 timing && timing->stages ? &timing->formation_ns : nullptr};
         return DecodeFunction(readable,
@@ -873,8 +904,20 @@ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
                               entries ? ready : ReadyEntryLookup{},
                               model,
                               source_spans,
-                              continuations);
+                              continuations,
+                              reusable_decoded);
     }();
+    const auto reclaim = [&] {
+        if (!reusable_decoded) return;
+        if (decoded.instructions.capacity() <= 65536) {
+            decoded.instructions.clear();
+            reusable_decoded->instructions = std::move(decoded.instructions);
+        }
+        if (decoded.blocks.capacity() <= 16384) {
+            decoded.blocks.clear();
+            reusable_decoded->blocks = std::move(decoded.blocks);
+        }
+    };
     if (!decoded) {
         const auto error = decoded.error == DecodeError::InvalidInput ? BuildError::InvalidInput
                            : decoded.error == DecodeError::Truncated  ? BuildError::Truncated
@@ -883,24 +926,31 @@ BuildResult BuildFunctionIR(std::span<const BlockWindow> readable,
                            : decoded.error == DecodeError::UnsupportedGuestFeature
                                    ? BuildError::Unsupported
                                    : BuildError::InvalidEncoding;
-        return {error, decoded.error_pc, 0, 0, Error::None, {}};
+        const auto error_pc = decoded.error_pc;
+        reclaim();
+        return {error, error_pc, 0, 0, Error::None, {}};
     }
     // Request/source/record structure was established by this DecodeFunction.
-    // Public decoded inputs and byte-decoded Blocks retain all emitter checks.
+    // Public decoded inputs retain all emitter checks.
     runtime::frontend::ScopedBuildTimer birth_time{timing && timing->stages ? &timing->ir_birth_ns
                                                                             : nullptr};
-    return EmitDecoded(decoded.instructions,
-                       decoded.blocks,
-                       readable,
-                       Scope::Function,
-                       layout,
-                       target,
-                       collected,
-                       {},
-                       decoded.entry_block,
-                       false,
-                       reusable,
-                       true);
+    auto result = EmitDecoded(decoded.instructions,
+                              decoded.blocks,
+                              readable,
+                              Scope::Function,
+                              layout,
+                              target,
+                              collected,
+                              {},
+                              decoded.entry_block,
+                              false,
+                              reusable,
+                              true,
+                              nullptr,
+                              nullptr,
+                              true);
+    reclaim();
+    return result;
 }
 
 BuildResult BuildIR(std::span<const BlockWindow> windows,
@@ -1020,7 +1070,11 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
                        failure,
                        0,
                        external_edges,
-                       reusable);
+                       reusable,
+                       false,
+                       nullptr,
+                       nullptr,
+                       true);
 }
 
 }  // namespace swift::x86

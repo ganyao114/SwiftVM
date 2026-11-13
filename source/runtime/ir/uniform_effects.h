@@ -79,11 +79,21 @@ inline UniformEffects UniformEffectsFor(const Operation& op,
     const bool arm_fp = op.opcode == OpCode::ArmFPBinary || op.opcode == OpCode::ArmFPTernary ||
                         op.opcode == OpCode::ArmFPUnary || op.opcode == OpCode::ArmFPConvert ||
                         op.opcode == OpCode::ArmFPCompare;
+    const bool arm_scalar_fp =
+            op.opcode == OpCode::ArmScalarFP || op.opcode == OpCode::ArmScalarFMA;
     if (!arm_fp && HasAnyEffect(effects, Effect::ReadHostState | Effect::WriteHostState)) {
         const bool write = HasAnyEffect(effects, Effect::WriteHostState);
-        if (policy.numeric_control)
+        if (arm_scalar_fp) {
+            if (policy.numeric_control && policy.fp_status) {
+                add(*policy.numeric_control, true, false);
+                add(*policy.fp_status, true, write);
+            } else {
+                result.all_read = true;
+                result.all_write |= write;
+            }
+        } else if (policy.numeric_control) {
             add(*policy.numeric_control, true, write);
-        else {
+        } else {
             result.all_read = true;
             result.all_write |= write;
         }

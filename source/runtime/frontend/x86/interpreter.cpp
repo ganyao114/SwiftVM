@@ -102,6 +102,8 @@ public:
         return GetOperand(type, operands).GetValue();
     }
 
+    bool HasAddressLiteral(Type, u64) const noexcept { return false; }
+
     Value AddressLiteral(TargetInfo, Type, u64) { return {}; }
 
     Value ShiftedAddress(TargetInfo, Type, Value, Value, std::uint8_t) { return {}; }

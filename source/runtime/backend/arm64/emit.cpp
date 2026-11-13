@@ -16,7 +16,7 @@ bool Writer::Run() try {
     if (Linked() && Enabled() && options.flags_offset < u64{options.pc_offset} + 8 &&
         options.pc_offset < u64{options.flags_offset} + 8)
         Reject(CompileError::UnsupportedOperand);
-    if (options.private_uniforms && (!Linked() || !Pinned()))
+    if (options.private_uniforms && (!Linked() || (!Pinned() && !VectorPinned())))
         Reject(CompileError::UnsupportedOperand);
     if (VectorPinned() && (!Linked() || !options.private_uniforms || !options.fault_locations ||
                            options.pinned_vector_offset > UINT32_MAX - 255u))
@@ -33,8 +33,9 @@ bool Writer::Run() try {
     if (options.deferred_pc && (!Linked() || !options.private_uniforms || !options.fault_locations))
         Reject(CompileError::UnsupportedOperand);
     if (Pinned()) {
-        if (!Linked() || (options.pinned_uniform_slots != 8 && options.pinned_uniform_slots != 12 &&
-                          options.pinned_uniform_slots != 16))
+        if (!Linked() || options.pinned_uniform_slots == 0 ||
+            (options.pinned_uniform_slots > 8 && options.pinned_uniform_slots != 12 &&
+             options.pinned_uniform_slots != 16))
             Reject(CompileError::UnsupportedOperand);
         const auto bytes = options.pinned_uniform_slots * 8u;
         if (options.pinned_uniform_offset > UINT32_MAX - (bytes - 1))
@@ -73,11 +74,14 @@ bool Writer::Run() try {
         static_pc_valid = false;
         alternate_pc_valid = false;
         dispatch_emitted = false;
-        elided_consumer = {};
+        elided_until = UINT32_MAX;
+        x17_imm_start = UINT32_MAX;
+        x17_imm_checked = UINT32_MAX;
         deferred_logical = {};
         deferred_parity = 0;
         direct_carry = false;
-        pending_denormal.check_mask = 0;
+        pending_denormal.check_mask_32 = 0;
+        pending_denormal.check_mask_64 = 0;
         pending_denormal.protected_mask = 0;
         pending_denormal.op_count = 0;
         checked_alignment_count = 0;
@@ -99,6 +103,10 @@ bool Writer::Run() try {
                   body.terminal.kind == TerminalKind::Dispatch));
         for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
             node = NodeId{i};
+            if (elided_until != UINT32_MAX && i <= elided_until) {
+                if (i == elided_until) elided_until = UINT32_MAX;
+                continue;
+            }
             const auto& operation = source.Operations()[i];
             if (operation.opcode == OpCode::EntryPoint) {
                 if (source.ScopeKind() != Scope::Function || !Linked())
@@ -188,8 +196,9 @@ bool Writer::Run() try {
         }
         masm.exact.b(inbound);
     }
-    for (u32 i = 0; i < cold_denormal_count; ++i) {
-        const auto& stub = cold_denormal_stubs[i];
+    for (const auto& stub : cold_denormal_stubs) {
+        x17_imm_start = UINT32_MAX;
+        x17_imm_checked = UINT32_MAX;
         const auto target = masm.Here();
         for (unsigned b = 0; b < stub.branch_count; ++b) {
             const auto distance = static_cast<std::int64_t>(target) -
@@ -201,13 +210,16 @@ bool Writer::Run() try {
             masm.Patch(stub.branch_words[b], target);
         }
         const auto disabled = DenormalControlGuard();
+        const u32 zero_only = (stub.check_mask_32 || stub.check_mask_64)
+                                      ? EmitBatchZeroFilter(stub.check_mask_32, stub.check_mask_64)
+                                      : UINT32_MAX;
         if (stub.batch_op_count) {
             for (unsigned k = 0; k < stub.batch_op_count; ++k) {
                 const auto& op = stub.batch_ops[k];
                 const u32 denom = op.denominator == UINT8_MAX ? UINT32_MAX : u32{op.denominator};
                 RecordDenormalLanes(std::span<const std::uint8_t>{op.inputs.data(), op.input_count},
-                                    stub.bits,
-                                    stub.count,
+                                    op.bits,
+                                    op.count,
                                     std::span<const std::uint8_t>{op.peers.data(), op.peer_count},
                                     denom,
                                     UINT32_MAX,
@@ -222,6 +234,7 @@ bool Writer::Run() try {
                                 stub.fma_flags,
                                 stub.negative_invalid);
         }
+        if (zero_only != UINT32_MAX) masm.Patch(zero_only, masm.Here());
         if (disabled != UINT32_MAX) masm.Patch(disabled, masm.Here());
         const auto back = static_cast<std::int64_t>(stub.return_word) -
                           static_cast<std::int64_t>(masm.Here());
@@ -229,8 +242,9 @@ bool Writer::Run() try {
             Reject(CompileError::CodeTooLarge);
         masm.exact.b(back);
     }
-    for (u32 i = 0; i < cold_exit_count; ++i) {
-        const auto& stub = cold_exit_stubs[i];
+    for (const auto& stub : cold_exit_stubs) {
+        x17_imm_start = UINT32_MAX;
+        x17_imm_checked = UINT32_MAX;
         const auto target = masm.Here();
         const auto distance =
                 static_cast<std::int64_t>(target) - static_cast<std::int64_t>(stub.branch_word);
@@ -299,14 +313,17 @@ void Writer::Emit(const Operation& operation, Effect effects) {
                                                 Effect::WriteHostState);
         if (!flush_batch && !batch_candidate && produces && vector &&
             ((pending_denormal.protected_mask >> destination) & 1u)) {
-            flush_batch = true;
+            bool same_pinned_load = false;
             if (operation.opcode == OpCode::LoadUniform) {
                 const auto uniform = *cells.begin();
                 if (uniform.Kind() == OperandKind::Uniform && uniform.Payload() <= UINT32_MAX &&
                     VectorPinnedSlot(static_cast<u32>(uniform.Payload()), 16) ==
                             static_cast<int>(destination))
-                    flush_batch = false;
+                    same_pinned_load = true;
             }
+            if (!same_pinned_load &&
+                !(HasUpcomingBatchOp(node.value + 1) && PreserveBatchedRegister(destination)))
+                flush_batch = true;
         }
         if (!flush_batch &&
             (operation.opcode == OpCode::LoadUniform || operation.opcode == OpCode::StoreUniform ||
@@ -335,7 +352,10 @@ void Writer::Emit(const Operation& operation, Effect effects) {
                                           !allocation.homes[val.Payload()].spilled &&
                                           allocation.homes[val.Payload()].reg ==
                                                   static_cast<unsigned>(pinned);
-                        if (!self) flush_batch = true;
+                        if (!self &&
+                            !(HasUpcomingBatchOp(node.value + 1) &&
+                              PreserveBatchedRegister(static_cast<unsigned>(pinned))))
+                            flush_batch = true;
                     }
                 }
             }
@@ -392,9 +412,9 @@ void Writer::Emit(const Operation& operation, Effect effects) {
         destination == deferred_logical.reg) {
         const bool scalar_load =
                 operation.opcode == OpCode::LoadMemory || operation.opcode == OpCode::LoadMemoryTSO;
-        if (scalar_load && has_fault_location && FlagsDeadFrom(node.value + 1))
+        if (scalar_load && has_fault_location && home.flags_dead_after)
             clear_logical_after_load = true;
-        else if (!scalar_load && FlagsDeadFrom(node.value))
+        else if (!scalar_load && home.flags_dead_after)
             deferred_logical = {};
         else
             CompleteDeferredLogical();

@@ -151,6 +151,13 @@ bool FoldExtractShift(const Builder&,
                       std::span<Operand>,
                       std::size_t&,
                       OpCode&);
+bool FoldShiftMask(const Builder&,
+                   std::span<const Operation>,
+                   NodeId,
+                   const std::vector<u64>&,
+                   std::span<Operand>,
+                   std::size_t&,
+                   OpCode&);
 bool FuseSignedMulWidenLow(const Builder&,
                            std::span<const Operation>,
                            NodeId,

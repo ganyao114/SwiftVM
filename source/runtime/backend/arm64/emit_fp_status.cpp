@@ -48,9 +48,42 @@ u32 Writer::DenormalControlGuard() {
 bool Writer::ProvenNoDenormal(CellView cell, unsigned bits, unsigned count) const {
     if (cell.Kind() != OperandKind::Value || cell.Payload() >= source.Operations().size())
         return false;
-    const auto id = static_cast<u32>(cell.Payload());
+    auto id = static_cast<u32>(cell.Payload());
+    for (unsigned depth = 0; depth < 4; ++depth) {
+        const auto& cur = source.Operations()[id];
+        if (cur.opcode != OpCode::BitCast || cur.type != Type::V128 ||
+            cur.Metadata() != OperationMetadata{})
+            break;
+        const auto args = source.Operands(NodeId{id});
+        if (args.begin() == args.end()) return false;
+        const auto inner = args.front();
+        if (inner.Kind() != OperandKind::Value || inner.Payload() >= source.Operations().size())
+            return false;
+        id = static_cast<u32>(inner.Payload());
+    }
     const auto& op = source.Operations()[id];
     if (op.opcode == OpCode::VecSharedZero) return true;
+    if (op.opcode == OpCode::VecFCvtPacked) {
+        const auto args = source.Operands(NodeId{id});
+        auto at = args.begin();
+        if (at == args.end()) return false;
+        ++at;
+        if (at == args.end() || (*at).Kind() != OperandKind::Immediate) return false;
+        const auto kind = (*at).Payload();
+        return (kind == 0 && bits == 32) || ((kind == 1 || kind == 6) && bits == 64);
+    }
+    if (op.opcode == OpCode::VecFRoundInt) {
+        const auto args = source.Operands(NodeId{id});
+        auto at = args.begin();
+        for (unsigned k = 0; k < 2 && at != args.end(); ++k) ++at;
+        if (at == args.end() || (*at).Kind() != OperandKind::Immediate) return false;
+        const auto lane_bits = (*at++).Payload();
+        if (at == args.end()) return false;
+        ++at;
+        if (at == args.end() || (*at).Kind() != OperandKind::Immediate) return false;
+        const auto scalar = (*at).Payload();
+        return lane_bits == bits && (!scalar || count == 1);
+    }
     u64 low{}, high{};
     if (op.opcode == OpCode::VecLoadConst) {
         const auto args = source.Operands(NodeId{id});
@@ -67,6 +100,26 @@ bool Writer::ProvenNoDenormal(CellView cell, unsigned bits, unsigned count) cons
         auto at = args.begin();
         if (at == args.end()) return false;
         const auto literal = *at;
+        if (literal.Kind() == OperandKind::Value &&
+            literal.Payload() < source.Operations().size()) {
+            const auto scalar_id = static_cast<u32>(literal.Payload());
+            const auto& scalar_op = source.Operations()[scalar_id];
+            if (scalar_op.opcode == OpCode::VecFCvtIntToFloat) {
+                const auto sargs = source.Operands(NodeId{scalar_id});
+                auto sat = sargs.begin();
+                for (unsigned k = 0; k < 2 && sat != sargs.end(); ++k) ++sat;
+                return sat != sargs.end() && (*sat).Kind() == OperandKind::Immediate &&
+                       (*sat).Payload() == bits;
+            }
+            if (scalar_op.opcode == OpCode::VecFCvtScalar && bits == 64) {
+                const auto sargs = source.Operands(NodeId{scalar_id});
+                auto sat = sargs.begin();
+                if (sat != sargs.end()) ++sat;
+                return sat != sargs.end() && (*sat).Kind() == OperandKind::Immediate &&
+                       (*sat).Payload() == 32;
+            }
+            return false;
+        }
         if (literal.Kind() != OperandKind::Immediate) return false;
         const auto view_bits = Bits(literal.TypeView());
         if (!view_bits || view_bits > 64) return false;
@@ -203,70 +256,238 @@ bool Writer::CanBatchDenormal(unsigned bits, unsigned count) const {
     return options.mxcsr_flush_offset == UINT32_MAX || options.mxcsr_flush_mode == 0;
 }
 
+bool Writer::HasUpcomingBatchOp(u32 from) const {
+    if (!node || block.value >= source.Blocks().size()) return false;
+    const auto& body = source.Blocks()[block.value];
+    const u32 limit = std::min(body.first_node + body.node_count, from + 24u);
+    const auto allow_bits = [&](u64 bits) {
+        if ((bits == 64 && pending_denormal.check_mask_64) ||
+            (bits == 32 && pending_denormal.check_mask_32))
+            return true;
+        return pending_denormal.preserved_count < 2;
+    };
+    for (u32 i = from; i < limit; ++i) {
+        const auto& op = source.Operations()[i];
+        if ((op.opcode == OpCode::Nop || op.opcode == OpCode::FaultLocation) &&
+            op.Metadata() == OperationMetadata{})
+            continue;
+        if (op.opcode == OpCode::VecFAdd || op.opcode == OpCode::VecFSub ||
+            op.opcode == OpCode::VecFMul || op.opcode == OpCode::VecFDiv) {
+            const auto args = source.Operands(NodeId{i});
+            auto at = args.begin();
+            for (unsigned k = 0; k < 2 && at != args.end(); ++k) ++at;
+            if (at == args.end() || (*at).Kind() != OperandKind::Immediate) return false;
+            return allow_bits((*at).Payload());
+        }
+        if (op.opcode == OpCode::VecFCmpMask || op.opcode == OpCode::VecFMinMax) {
+            const auto args = source.Operands(NodeId{i});
+            auto at = args.begin();
+            for (unsigned k = 0; k < 2 && at != args.end(); ++k) ++at;
+            if (at == args.end() || (*at).Kind() != OperandKind::Immediate) return false;
+            const u64 bits = (*at).Payload();
+            CellView last{};
+            for (const auto cell : args) last = cell;
+            return last.Kind() == OperandKind::Immediate && last.Payload() == 0 &&
+                   allow_bits(bits);
+        }
+        const auto effects = EffectsFor(op.opcode, op.Metadata());
+        if (HasAnyEffect(effects,
+                         Effect::MayFault | Effect::Unknown | Effect::External | Effect::Control |
+                                 Effect::ReadHostState | Effect::WriteHostState))
+            return false;
+        if ((op.opcode == OpCode::LoadUniform || op.opcode == OpCode::StoreUniform ||
+             op.opcode == OpCode::StoreUniformSelectImm) &&
+            options.fpsr_offset != UINT32_MAX) {
+            const auto args = source.Operands(NodeId{i});
+            if (args.begin() != args.end() && (*args.begin()).Payload() == options.fpsr_offset)
+                return false;
+        }
+    }
+    return false;
+}
+
+bool Writer::PreserveBatchedRegister(unsigned reg) {
+    if (!pending_denormal.op_count || !((pending_denormal.protected_mask >> reg) & 1u)) return true;
+    const u32 pool = VectorPinned() ? 0x0000fcfcu : 0x3fff00fcu;
+    const u32 avail = pool & ~allocation.used_vector_mask & ~pending_denormal.protected_mask;
+    if (!avail) return false;
+    const unsigned copy = std::countr_zero(avail);
+    VectorMove(copy, reg);
+    ++pending_denormal.preserved_count;
+    const u32 old_bit = u32{1} << reg;
+    const u32 new_bit = u32{1} << copy;
+    if (pending_denormal.check_mask_32 & old_bit)
+        pending_denormal.check_mask_32 = (pending_denormal.check_mask_32 & ~old_bit) | new_bit;
+    if (pending_denormal.check_mask_64 & old_bit)
+        pending_denormal.check_mask_64 = (pending_denormal.check_mask_64 & ~old_bit) | new_bit;
+    pending_denormal.protected_mask = (pending_denormal.protected_mask & ~old_bit) | new_bit;
+    for (unsigned k = 0; k < pending_denormal.op_count; ++k) {
+        auto& op = pending_denormal.ops[k];
+        for (unsigned i = 0; i < op.input_count; ++i)
+            if (op.inputs[i] == reg) op.inputs[i] = static_cast<std::uint8_t>(copy);
+        for (unsigned i = 0; i < op.peer_count; ++i)
+            if (op.peers[i] == reg) op.peers[i] = static_cast<std::uint8_t>(copy);
+        if (op.denominator == reg) op.denominator = static_cast<std::uint8_t>(copy);
+    }
+    return true;
+}
+
+u32 Writer::EmitBatchZeroFilter(u32 check_mask_32, u32 check_mask_64) {
+    std::array<std::uint8_t, 32> regs64, regs32;
+    unsigned reg_count_64{}, reg_count_32{};
+    for (u32 mask = check_mask_64; mask; mask &= mask - 1)
+        regs64[reg_count_64++] = static_cast<std::uint8_t>(std::countr_zero(mask));
+    for (u32 mask = check_mask_32; mask; mask &= mask - 1)
+        regs32[reg_count_32++] = static_cast<std::uint8_t>(std::countr_zero(mask));
+    if (!reg_count_64 && !reg_count_32) return UINT32_MAX;
+    const unsigned ones = 0u, t0 = 1u;
+    const unsigned first = VectorTemporary(), second = VectorTemporary(true);
+    __ cmeq(Lanes(ones, 64), Lanes(ones, 64), Lanes(ones, 64));
+    if (reg_count_64) {
+        __ shl(Lanes(first, 64), Lanes(regs64[0], 64), 1);
+        __ add(Lanes(first, 64), Lanes(first, 64), Lanes(ones, 64));
+        if (reg_count_64 > 1) {
+            __ shl(Lanes(t0, 64), Lanes(regs64[1], 64), 1);
+            __ add(Lanes(t0, 64), Lanes(t0, 64), Lanes(ones, 64));
+            __ uzp2(Lanes(first, 32), Lanes(first, 32), Lanes(t0, 32));
+        } else {
+            __ uzp2(Lanes(first, 32), Lanes(first, 32), Lanes(first, 32));
+        }
+        for (unsigned i = 2; i < reg_count_64; i += 2) {
+            __ shl(Lanes(second, 64), Lanes(regs64[i], 64), 1);
+            __ add(Lanes(second, 64), Lanes(second, 64), Lanes(ones, 64));
+            if (i + 1 < reg_count_64) {
+                __ shl(Lanes(t0, 64), Lanes(regs64[i + 1], 64), 1);
+                __ add(Lanes(t0, 64), Lanes(t0, 64), Lanes(ones, 64));
+                __ uzp2(Lanes(second, 32), Lanes(second, 32), Lanes(t0, 32));
+            } else {
+                __ uzp2(Lanes(second, 32), Lanes(second, 32), Lanes(second, 32));
+            }
+            __ umin(Lanes(first, 32), Lanes(first, 32), Lanes(second, 32));
+        }
+    }
+    if (reg_count_32) {
+        const unsigned acc32 = reg_count_64 ? second : first;
+        __ shl(Lanes(acc32, 32), Lanes(regs32[0], 32), 1);
+        __ add(Lanes(acc32, 32), Lanes(acc32, 32), Lanes(ones, 32));
+        for (unsigned i = 1; i < reg_count_32; ++i) {
+            __ shl(Lanes(t0, 32), Lanes(regs32[i], 32), 1);
+            __ add(Lanes(t0, 32), Lanes(t0, 32), Lanes(ones, 32));
+            __ umin(Lanes(acc32, 32), Lanes(acc32, 32), Lanes(t0, 32));
+        }
+        if (reg_count_64) {
+            __ ushr(Lanes(acc32, 32), Lanes(acc32, 32), 3);
+            __ umin(Lanes(first, 32), Lanes(first, 32), Lanes(acc32, 32));
+        }
+    }
+    __ uminp(Lanes(first, 32), Lanes(first, 32), Lanes(first, 32));
+    __ uminp(Lanes(first, 32, 64), Lanes(first, 32, 64), Lanes(first, 32, 64));
+    __ fmov(v::w16, S(first));
+    __ lsr(v::w16, v::w16, reg_count_64 ? 21 : 24);
+    const u32 zero_only = masm.Here();
+    __ cbnz(v::w16, std::int64_t{0});
+    return zero_only;
+}
+
 void Writer::FlushDenormalBatch() {
     if (!pending_denormal.op_count) return;
-    const u32 check_mask = pending_denormal.check_mask;
-    const unsigned bits = pending_denormal.bits;
-    const unsigned count = pending_denormal.count;
+    const u32 check_mask_32 = pending_denormal.check_mask_32;
+    const u32 check_mask_64 = pending_denormal.check_mask_64;
     const unsigned op_count = pending_denormal.op_count;
-    std::array<DenormalBatchOp, 4> ops;
+    std::array<DenormalBatchOp, 16> ops;
     for (unsigned k = 0; k < op_count; ++k) ops[k] = pending_denormal.ops[k];
-    pending_denormal.check_mask = 0;
+    pending_denormal.check_mask_32 = 0;
+    pending_denormal.check_mask_64 = 0;
     pending_denormal.protected_mask = 0;
     pending_denormal.op_count = 0;
+    pending_denormal.preserved_count = 0;
     if (op_count == 1) {
         const auto& op = ops[0];
         const u32 denom = op.denominator == UINT8_MAX ? UINT32_MAX : u32{op.denominator};
         if (op.input_count == 1) {
             if (op.peer_count == 1)
-                RecordDenormalInput(op.inputs[0], bits, count, {op.peers[0]}, denom);
+                RecordDenormalInput(op.inputs[0], op.bits, op.count, {op.peers[0]}, denom);
             else
-                RecordDenormalInput(op.inputs[0], bits, count, {}, denom);
+                RecordDenormalInput(op.inputs[0], op.bits, op.count, {}, denom);
         } else if (op.input_count == 2) {
-            RecordDenormalInputs(op.inputs[0], op.inputs[1], bits, count, denom);
+            RecordDenormalInputs(op.inputs[0], op.inputs[1], op.bits, op.count, denom);
         }
         return;
     }
-    std::array<std::uint8_t, 32> regs;
-    unsigned reg_count{};
-    u32 mask = check_mask;
-    while (mask) {
-        const unsigned r = std::countr_zero(mask);
-        mask &= mask - 1;
-        regs[reg_count++] = static_cast<std::uint8_t>(r);
-    }
-    if (!reg_count) return;
+    std::array<std::uint8_t, 32> regs64, regs32;
+    unsigned reg_count_64{}, reg_count_32{};
+    for (u32 mask = check_mask_64; mask; mask &= mask - 1)
+        regs64[reg_count_64++] = static_cast<std::uint8_t>(std::countr_zero(mask));
+    for (u32 mask = check_mask_32; mask; mask &= mask - 1)
+        regs32[reg_count_32++] = static_cast<std::uint8_t>(std::countr_zero(mask));
+    if (!reg_count_64 && !reg_count_32) return;
+    const unsigned t0 = 0u, t1 = 1u;
     const unsigned first = VectorTemporary(), second = VectorTemporary(true);
-    if (bits == 64) {
-        const unsigned r0 = regs[0], r1 = reg_count > 1 ? regs[1] : regs[0];
-        __ uzp2(Lanes(first, 32), Lanes(r0, 32), Lanes(r1, 32));
-        __ shl(Lanes(first, 32), Lanes(first, 32), 1);
-        for (unsigned i = 2; i < reg_count; i += 2) {
-            const unsigned ra = regs[i], rb = i + 1 < reg_count ? regs[i + 1] : regs[i];
-            __ uzp2(Lanes(second, 32), Lanes(ra, 32), Lanes(rb, 32));
-            __ shl(Lanes(second, 32), Lanes(second, 32), 1);
+    const auto emit_pair64 = [&](unsigned dst, unsigned idx) {
+        const unsigned r0 = regs64[idx];
+        const unsigned r1 = idx + 1 < reg_count_64 ? regs64[idx + 1] : r0;
+        __ uzp2(Lanes(dst, 32), Lanes(r0, 32), Lanes(r1, 32));
+        __ shl(Lanes(dst, 32), Lanes(dst, 32), 1);
+    };
+    if (reg_count_64) {
+        emit_pair64(first, 0);
+        if (reg_count_64 > 2) {
+            emit_pair64(second, 2);
+            unsigned pair_idx = 0;
+            for (unsigned i = 4; i < reg_count_64; i += 2, ++pair_idx) {
+                const unsigned tmp = (pair_idx & 1u) ? t1 : t0;
+                const unsigned acc = (pair_idx & 1u) ? second : first;
+                emit_pair64(tmp, i);
+                __ umin(Lanes(acc, 32), Lanes(acc, 32), Lanes(tmp, 32));
+            }
             __ umin(Lanes(first, 32), Lanes(first, 32), Lanes(second, 32));
         }
-    } else {
-        __ shl(Lanes(first, 32), Lanes(regs[0], 32), 1);
-        for (unsigned i = 1; i < reg_count; ++i) {
-            __ shl(Lanes(second, 32), Lanes(regs[i], 32), 1);
+    }
+    if (reg_count_32) {
+        if (!reg_count_64) {
+            __ shl(Lanes(first, 32), Lanes(regs32[0], 32), 1);
+            if (reg_count_32 > 1) {
+                __ shl(Lanes(second, 32), Lanes(regs32[1], 32), 1);
+                for (unsigned i = 2; i < reg_count_32; ++i) {
+                    const unsigned tmp = (i & 1u) ? t1 : t0;
+                    const unsigned acc = (i & 1u) ? second : first;
+                    __ shl(Lanes(tmp, 32), Lanes(regs32[i], 32), 1);
+                    __ umin(Lanes(acc, 32), Lanes(acc, 32), Lanes(tmp, 32));
+                }
+                __ umin(Lanes(first, 32), Lanes(first, 32), Lanes(second, 32));
+            }
+        } else {
+            __ shl(Lanes(second, 32), Lanes(regs32[0], 32), 1);
+            if (reg_count_32 > 1) {
+                __ shl(Lanes(t1, 32), Lanes(regs32[1], 32), 1);
+                for (unsigned i = 2; i < reg_count_32; ++i) {
+                    const unsigned acc = (i & 1u) ? t1 : second;
+                    __ shl(Lanes(t0, 32), Lanes(regs32[i], 32), 1);
+                    __ umin(Lanes(acc, 32), Lanes(acc, 32), Lanes(t0, 32));
+                }
+                __ umin(Lanes(second, 32), Lanes(second, 32), Lanes(t1, 32));
+            }
+            __ ushr(Lanes(second, 32), Lanes(second, 32), 3);
             __ umin(Lanes(first, 32), Lanes(first, 32), Lanes(second, 32));
         }
     }
     __ uminv(S(first), Lanes(first, 32));
     __ fmov(v::w16, S(first));
-    __ lsr(v::w16, v::w16, bits == 32 ? 24 : 21);
-    if (!long_forward_branches && cold_denormal_count < cold_denormal_stubs.size()) {
+    __ lsr(v::w16, v::w16, reg_count_64 ? 21 : 24);
+    if (!long_forward_branches && cold_denormal_stubs.size() < max_cold_denormal_stubs) {
+        if (cold_denormal_stubs.empty()) cold_denormal_stubs.reserve(16);
         const auto branch = masm.Here();
         __ cbz(v::w16, std::int64_t{0});
-        auto& stub = cold_denormal_stubs[cold_denormal_count++];
+        cold_denormal_stubs.emplace_back();
+        auto& stub = cold_denormal_stubs.back();
         stub.branch_words[0] = branch;
         stub.branch_count = 1;
         stub.return_word = masm.Here();
-        stub.bits = static_cast<std::uint8_t>(bits);
-        stub.count = static_cast<std::uint8_t>(count);
+        stub.bits = 0;
+        stub.count = 0;
         stub.batch_op_count = static_cast<std::uint8_t>(op_count);
+        stub.check_mask_32 = check_mask_32;
+        stub.check_mask_64 = check_mask_64;
         for (unsigned k = 0; k < op_count; ++k) stub.batch_ops[k] = ops[k];
         return;
     }
@@ -277,8 +498,8 @@ void Writer::FlushDenormalBatch() {
         const auto& op = ops[k];
         const u32 denom = op.denominator == UINT8_MAX ? UINT32_MAX : u32{op.denominator};
         RecordDenormalLanes(std::span<const std::uint8_t>{op.inputs.data(), op.input_count},
-                            bits,
-                            count,
+                            op.bits,
+                            op.count,
                             std::span<const std::uint8_t>{op.peers.data(), op.peer_count},
                             denom,
                             UINT32_MAX,
@@ -298,8 +519,14 @@ void Writer::QueueDenormalInputs(unsigned left,
                                  u32 clobber_mask) {
     if (options.mxcsr_flush_mode != UINT8_MAX && (options.mxcsr_flush_mode & 1)) return;
     if (skip_left && skip_right) {
-        if (pending_denormal.op_count && (pending_denormal.protected_mask & clobber_mask))
-            FlushDenormalBatch();
+        if (pending_denormal.op_count && (pending_denormal.protected_mask & clobber_mask)) {
+            bool preserved = HasUpcomingBatchOp(node.value + 1);
+            for (u32 m = pending_denormal.protected_mask & clobber_mask; preserved && m;
+                 m &= m - 1) {
+                preserved = PreserveBatchedRegister(std::countr_zero(m));
+            }
+            if (!preserved) FlushDenormalBatch();
+        }
         return;
     }
     const bool check_left = !skip_left && IsStableVectorHome(left);
@@ -313,31 +540,28 @@ void Writer::QueueDenormalInputs(unsigned left,
         RecordDenormalInputs(left, right, bits, count, denominator, skip_left, skip_right);
         return;
     }
-    if (pending_denormal.op_count &&
-        (pending_denormal.bits != bits || pending_denormal.count != count ||
-         pending_denormal.op_count == pending_denormal.ops.size())) {
+    if (pending_denormal.op_count == pending_denormal.ops.size()) {
         FlushDenormalBatch();
     }
-    if (cold_denormal_count >= cold_denormal_stubs.size()) {
+    if (cold_denormal_stubs.size() >= max_cold_denormal_stubs) {
         FlushDenormalBatch();
         RecordDenormalInputs(left, right, bits, count, denominator, skip_left, skip_right);
         return;
-    }
-    if (!pending_denormal.op_count) {
-        pending_denormal.bits = static_cast<std::uint8_t>(bits);
-        pending_denormal.count = static_cast<std::uint8_t>(count);
     }
     auto& op = pending_denormal.ops[pending_denormal.op_count++];
     op.denominator = denominator == UINT32_MAX ? UINT8_MAX : static_cast<std::uint8_t>(denominator);
     op.input_count = 0;
     op.peer_count = 0;
+    op.bits = static_cast<std::uint8_t>(bits);
+    op.count = static_cast<std::uint8_t>(count);
+    u32& check_mask = bits == 64 ? pending_denormal.check_mask_64 : pending_denormal.check_mask_32;
     if (!skip_left) {
         op.inputs[op.input_count++] = static_cast<std::uint8_t>(left);
-        pending_denormal.check_mask |= u32{1} << left;
+        check_mask |= u32{1} << left;
     }
     if (!skip_right && (skip_left || right != left)) {
         op.inputs[op.input_count++] = static_cast<std::uint8_t>(right);
-        pending_denormal.check_mask |= u32{1} << right;
+        check_mask |= u32{1} << right;
     }
     if (skip_left) {
         op.peers[op.peer_count++] = static_cast<std::uint8_t>(left);
@@ -349,9 +573,16 @@ void Writer::QueueDenormalInputs(unsigned left,
     }
     pending_denormal.protected_mask |= (u32{1} << left) | (u32{1} << right);
     if (denominator != UINT32_MAX) pending_denormal.protected_mask |= u32{1} << denominator;
-    if ((pending_denormal.protected_mask & clobber_mask) ||
-        pending_denormal.op_count == pending_denormal.ops.size()) {
+    if (pending_denormal.op_count == pending_denormal.ops.size()) {
         FlushDenormalBatch();
+        return;
+    }
+    if (const u32 conflict = pending_denormal.protected_mask & clobber_mask) {
+        bool preserved = HasUpcomingBatchOp(node.value + 1);
+        for (u32 m = conflict; preserved && m; m &= m - 1) {
+            preserved = PreserveBatchedRegister(std::countr_zero(m));
+        }
+        if (!preserved) FlushDenormalBatch();
     }
 }
 
@@ -376,7 +607,7 @@ void Writer::RecordDenormalInput(unsigned value,
     const bool negative_invalid =
             node && source.Operations()[node.value].opcode == OpCode::VecFUnary;
     const bool defer_cold =
-            !long_forward_branches && cold_denormal_count < cold_denormal_stubs.size();
+            !long_forward_branches && cold_denormal_stubs.size() < max_cold_denormal_stubs;
     const u32 disabled = defer_cold ? UINT32_MAX : DenormalControlGuard();
     std::array<u32, 3> rare{};
     std::uint8_t rare_count{};
@@ -404,7 +635,7 @@ void Writer::RecordDenormalInput(unsigned value,
             const unsigned input = input_regs[i];
             if (bits == 64) {
                 __ uzp2(Lanes(scratch, 32), Lanes(input, 32), Lanes(input, 32));
-                __ shl(Lanes(scratch, 32, 64), Lanes(scratch, 32, 64), 1);
+                __ shl(Lanes(scratch, 32), Lanes(scratch, 32), 1);
                 __ uminp(Lanes(scratch, 32, 64), Lanes(scratch, 32, 64), Lanes(scratch, 32, 64));
                 __ fmov(v::w16, S(scratch));
                 __ lsr(v::w16, v::w16, 21);
@@ -419,7 +650,9 @@ void Writer::RecordDenormalInput(unsigned value,
         }
     }
     if (defer_cold) {
-        auto& stub = cold_denormal_stubs[cold_denormal_count++];
+        if (cold_denormal_stubs.empty()) cold_denormal_stubs.reserve(16);
+        cold_denormal_stubs.emplace_back();
+        auto& stub = cold_denormal_stubs.back();
         stub.branch_words = rare;
         stub.return_word = masm.Here();
         stub.denominator = denominator;
@@ -475,7 +708,7 @@ void Writer::RecordDenormalInputs(unsigned left,
     }
     if (options.mxcsr_flush_mode != UINT8_MAX && (options.mxcsr_flush_mode & 1)) return;
     const bool defer_cold =
-            !long_forward_branches && cold_denormal_count < cold_denormal_stubs.size();
+            !long_forward_branches && cold_denormal_stubs.size() < max_cold_denormal_stubs;
     const auto disabled = defer_cold ? UINT32_MAX : DenormalControlGuard();
     // All candidates are reserved scratches, never pinned/allocated homes.
     // Spilled inputs can occupy v0/v1, so exclude both actual source registers.
@@ -488,8 +721,6 @@ void Writer::RecordDenormalInputs(unsigned left,
     }
     const auto first = scratch[0], second = scratch[1];
     if (bits == 64) {
-        // Pack the four high words; their unsigned minimum after removing
-        // sign has a zero exponent iff some input lane needs classification.
         __ uzp2(Lanes(first, 32), Lanes(left, 32), Lanes(right, 32));
         __ shl(Lanes(first, 32), Lanes(first, 32), 1);
     } else {
@@ -503,9 +734,11 @@ void Writer::RecordDenormalInputs(unsigned left,
     const std::array<std::uint8_t, 3> inputs{
             static_cast<std::uint8_t>(left), static_cast<std::uint8_t>(right), 0};
     if (defer_cold) {
+        if (cold_denormal_stubs.empty()) cold_denormal_stubs.reserve(16);
         const auto branch = masm.Here();
         __ cbz(v::w16, std::int64_t{0});
-        auto& stub = cold_denormal_stubs[cold_denormal_count++];
+        cold_denormal_stubs.emplace_back();
+        auto& stub = cold_denormal_stubs.back();
         stub.branch_words = {branch, 0, 0};
         stub.return_word = masm.Here();
         stub.denominator = denominator;
@@ -519,6 +752,13 @@ void Writer::RecordDenormalInputs(unsigned left,
         stub.count = static_cast<std::uint8_t>(count);
         stub.negative_invalid = false;
         stub.batch_op_count = 0;
+        if (IsStableVectorHome(left) && IsStableVectorHome(right)) {
+            const u32 pair_mask = (u32{1} << left) | (u32{1} << right);
+            if (bits == 64)
+                stub.check_mask_64 = pair_mask;
+            else
+                stub.check_mask_32 = pair_mask;
+        }
         return;
     }
     const auto normal = masm.Here();

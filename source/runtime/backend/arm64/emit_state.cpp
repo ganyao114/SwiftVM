@@ -67,7 +67,7 @@ void Writer::Uniform(bool load, CellView uniform, unsigned value) {
                 CompleteParity();
             if (deferred_logical.bits && deferred_logical.reg == value &&
                 (value != static_cast<unsigned>(pinned) || first || bits < deferred_logical.bits)) {
-                if (FlagsDeadFrom(node.value + 1))
+                if (allocation.homes[node.value].flags_dead_after)
                     deferred_logical = {};
                 else
                     CompleteDeferredLogical();
@@ -83,7 +83,7 @@ void Writer::Uniform(bool load, CellView uniform, unsigned value) {
             if (deferred_logical.bits && deferred_logical.reg == static_cast<unsigned>(pinned) &&
                 first < deferred_logical.bits &&
                 (bits < deferred_logical.bits || first || value != static_cast<unsigned>(pinned))) {
-                if (FlagsDeadFrom(node.value + 1))
+                if (allocation.homes[node.value].flags_dead_after)
                     deferred_logical = {};
                 else
                     CompleteDeferredLogical();
@@ -102,7 +102,7 @@ void Writer::Uniform(bool load, CellView uniform, unsigned value) {
     }
     if (load && deferred_parity == value) CompleteParity();
     if (load && deferred_logical.bits && deferred_logical.reg == value) {
-        if (FlagsDeadFrom(node.value + 1))
+        if (allocation.homes[node.value].flags_dead_after)
             deferred_logical = {};
         else
             CompleteDeferredLogical();
@@ -277,8 +277,9 @@ void Writer::HandleStoreUniformFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto test_prefix = ctx.test_prefix;
     const auto uniform = cursor.Take();
-    if (options.fpsr_offset != UINT32_MAX && uniform.Payload() == options.fpsr_offset)
-        PublishGuestFPSR();
+    const bool fpsr_store =
+            options.fpsr_offset != UINT32_MAX && uniform.Payload() == options.fpsr_offset;
+    if (fpsr_store && uniform.TypeView() != Type::U32) PublishGuestFPSR();
     const bool overlap = OverlapsShadow(uniform);
     if (overlap) Shadow(false);  // Before materializing a possibly spilled store input.
     const auto input = cursor.Take();
@@ -309,7 +310,7 @@ void Writer::HandleStoreUniformFamily(OpContext& ctx) {
                                        allocation.homes[input.Payload()].CarrierBits()) >=
                                       deferred_logical.bits;
             if (!self) {
-                if (FlagsDeadFrom(node.value + 1))
+                if (allocation.homes[node.value].flags_dead_after)
                     deferred_logical = {};
                 else
                     CompleteDeferredLogical();
@@ -390,6 +391,7 @@ void Writer::HandleStoreUniformFamily(OpContext& ctx) {
                                    : Read(input, pinned >= 0 ? static_cast<unsigned>(pinned) : 16);
         Uniform(false, uniform, value);
     }
+    if (fpsr_store) __ msr(v::FPSR, v::xzr);
     if (overlap) Shadow(true);
 }
 

@@ -126,35 +126,36 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
     fault_carry = direct_carry;
     fault_logical_code = EncodeDeferredLogical(deferred_logical.bits, deferred_logical.reg);
     if (ordered && (operation.type == Type::U16 || operation.type == Type::U32) &&
-        metadata == OperationMetadata{} && RcpcImm9() && !home.spilled &&
-        node.value + 1 < source.Operations().size()) {
-        const NodeId consumer{node.value + 1};
-        const auto& next = source.Operations()[consumer.value];
-        const auto& next_home = allocation.homes[consumer.value];
-        if (next.opcode == OpCode::SignExtend &&
-            next.type == (width == 16 ? Type::U32 : Type::U64) && next.block == operation.block &&
-            next.Metadata() == OperationMetadata{} && !next_home.spilled &&
-            home.last_use == next_home.definition_position && next_home.reg != deferred_parity &&
-            (!deferred_logical.bits || next_home.reg != deferred_logical.reg)) {
-            const auto inputs = source.Operands(consumer);
-            auto at = inputs.begin();
-            if (at != inputs.end()) {
-                const auto input = *at++;
-                if (at == inputs.end() && input.Kind() == OperandKind::Value &&
-                    input.Payload() == node.value && Width(View(input)) == width) {
-                    // The adjacent pure SXT is the load's only use. A fault
-                    // leaves its destination (including a guest pin) unchanged.
-                    unaligned_word = static_cast<u32>(output.words.size());
-                    if (width == 16)
-                        __ ldapursh(W(next_home.reg), MemOperand(Base(address), offset));
-                    else
-                        __ ldapursw(X(next_home.reg),
-                                    MemOperand(Base(address),
-                                               offset));  // LDAPURSH W / LDAPURSW X.
-                    RecordGuestAccess(unaligned_word, 1, width / 8);
-                    elided_consumer = consumer;
-                    saved = true;
-                    return;
+        metadata == OperationMetadata{} && RcpcImm9() && !home.spilled) {
+        if (const auto consumer = NextNonNop(node.value + 1)) {
+            const auto& next = source.Operations()[consumer.value];
+            const auto& next_home = allocation.homes[consumer.value];
+            if (next.opcode == OpCode::SignExtend &&
+                next.type == (width == 16 ? Type::U32 : Type::U64) &&
+                next.block == operation.block && next.Metadata() == OperationMetadata{} &&
+                !next_home.spilled && home.last_use == next_home.definition_position &&
+                next_home.reg != deferred_parity &&
+                (!deferred_logical.bits || next_home.reg != deferred_logical.reg)) {
+                const auto inputs = source.Operands(consumer);
+                auto at = inputs.begin();
+                if (at != inputs.end()) {
+                    const auto input = *at++;
+                    if (at == inputs.end() && input.Kind() == OperandKind::Value &&
+                        input.Payload() == node.value && Width(View(input)) == width) {
+                        // The pure SXT is the load's only use. A fault
+                        // leaves its destination (including a guest pin) unchanged.
+                        unaligned_word = static_cast<u32>(output.words.size());
+                        if (width == 16)
+                            __ ldapursh(W(next_home.reg), MemOperand(Base(address), offset));
+                        else
+                            __ ldapursw(X(next_home.reg),
+                                        MemOperand(Base(address),
+                                                   offset));  // LDAPURSH W / LDAPURSW X.
+                        RecordGuestAccess(unaligned_word, 1, width / 8);
+                        ElideConsumer(consumer);
+                        saved = true;
+                        return;
+                    }
                 }
             }
         }
@@ -229,7 +230,7 @@ void Writer::HandleStoreMemoryFamily(OpContext& ctx) {
         deferred_test.active = IntegerType(type) && TypeBits(type) <= 64;
     }
     const auto bits = Width(View(input));
-    const auto value = Read(input, 17, 64, false, bits == 32 ? 32 : 64);
+    const auto value = Read(input, 17, 64, false, bits <= 32 ? bits : 64);
     fault_parity = static_cast<std::uint8_t>(deferred_parity);
     fault_carry = direct_carry;
     fault_logical_code = EncodeDeferredLogical(deferred_logical.bits, deferred_logical.reg);
@@ -274,6 +275,26 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
                     if (it == args.end()) canonical_id = base_id;
                 }
             }
+        } else if (def.opcode == OpCode::GetOperand && def.type == Type::U64 &&
+                   def.Metadata() == OperationMetadata{}) {
+            const auto args = source.Operands(NodeId{id});
+            auto it = args.begin();
+            if (it != args.end() && (*it).Kind() == OperandKind::Expression &&
+                (*it).Count() == 2 &&
+                ((*it).ExpressionOp() == OperandOp::Add ||
+                 (*it).ExpressionOp() == OperandOp::Sub)) {
+                ++it;
+                if (it != args.end() && (*it).Kind() == OperandKind::Value &&
+                    View(*it) == Type::U64) {
+                    const auto base_id = static_cast<u32>((*it).Payload());
+                    ++it;
+                    if (it != args.end() && (*it).Kind() == OperandKind::Immediate &&
+                        (*it).TypeView() == Type::U64 && ((*it).Payload() & bits) == 0) {
+                        ++it;
+                        if (it == args.end()) canonical_id = base_id;
+                    }
+                }
+            }
         }
         for (unsigned i = 0; i < checked_alignment_count; ++i) {
             if (checked_alignments[i].node_id == canonical_id &&
@@ -301,20 +322,21 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
         Immediate(17, bits);
         __ and_(v::x0, X(address), Operand(v::x17));
     }
-    if (!long_forward_branches && cold_exit_count < cold_exit_stubs.size()) {
-        cold_exit_stubs[cold_exit_count++] = {masm.Here(),
-                                              fault_location,
-                                              ExitValue(NativeExit::AlignmentFault),
-                                              nzcv_matches,
-                                              static_cast<std::uint8_t>(deferred_parity),
-                                              deferred_test.bits,
-                                              deferred_test.value_register,
-                                              deferred_logical.bits,
-                                              deferred_logical.reg,
-                                              has_fault_location && options.pc_offset != UINT32_MAX,
-                                              shadow_dirty,
-                                              packed_current,
-                                              direct_carry};
+    if (!long_forward_branches && cold_exit_stubs.size() < max_cold_exit_stubs) {
+        if (cold_exit_stubs.empty()) cold_exit_stubs.reserve(8);
+        cold_exit_stubs.push_back({masm.Here(),
+                                   fault_location,
+                                   ExitValue(NativeExit::AlignmentFault),
+                                   nzcv_matches,
+                                   static_cast<std::uint8_t>(deferred_parity),
+                                   deferred_test.bits,
+                                   deferred_test.value_register,
+                                   deferred_logical.bits,
+                                   deferred_logical.reg,
+                                   has_fault_location && options.pc_offset != UINT32_MAX,
+                                   shadow_dirty,
+                                   packed_current,
+                                   direct_carry});
         __ cbnz(v::x0, std::int64_t{0});
         record_checked();
         return;

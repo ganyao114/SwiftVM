@@ -296,6 +296,7 @@ void VM::ExecuteHostCall(std::uint64_t stop_pc) {
     host_returned = false;
     host_call_active = true;
     try {
+        UpdateFPEnvironment(true);
         Execute();
         host_call_active = false;
         if (!host_returned)
@@ -365,9 +366,11 @@ void VM::Execute() {
                 // installed hardware FPSR; publish them into the uniform state.
                 // MSR FPSR/FPCR exits own the architectural write instead.
                 if (ISA() == GuestISA::Arm64 && backend.target.target == 0xa64 &&
-                    reason != NativeExit::FPEnvironment)
+                    reason != NativeExit::FPEnvironment) {
                     thread.native.arm_state.fpsr |=
-                            static_cast<std::uint32_t>(thread.native.guest_fpsr);
+                            static_cast<std::uint32_t>(thread.native.guest_fpsr) & 0x080000ffu;
+                    thread.native.guest_fpsr = 0;
+                }
                 thread.faults.active.store(nullptr);
                 if (thread.bridge_failure) throw swift::RuntimeError(thread.bridge_failure);
                 if (reason == NativeExit::Syscall) {

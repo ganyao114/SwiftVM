@@ -19,20 +19,21 @@ void Writer::HandleGuestSafepointFamily(OpContext& ctx) {
     if (!Linked() || options.pc_offset == UINT32_MAX) Reject(CompileError::UnsupportedOperand);
     const auto resume_pc = IntegerImmediate(ctx.cursor.Take());
     ContextMemory(true, 16, abi::ContextOffset(SVM_A64_CTX_PENDING_EVENTS));
-    if (!long_forward_branches && cold_exit_count < cold_exit_stubs.size()) {
-        cold_exit_stubs[cold_exit_count++] = {masm.Here(),
-                                              resume_pc,
-                                              runtime::ExitValue(runtime::NativeExit::GuestEvents),
-                                              nzcv_matches,
-                                              static_cast<std::uint8_t>(deferred_parity),
-                                              deferred_test.bits,
-                                              deferred_test.value_register,
-                                              deferred_logical.bits,
-                                              deferred_logical.reg,
-                                              true,
-                                              shadow_dirty,
-                                              packed_current,
-                                              direct_carry};
+    if (!long_forward_branches && cold_exit_stubs.size() < max_cold_exit_stubs) {
+        if (cold_exit_stubs.empty()) cold_exit_stubs.reserve(8);
+        cold_exit_stubs.push_back({masm.Here(),
+                                   resume_pc,
+                                   runtime::ExitValue(runtime::NativeExit::GuestEvents),
+                                   nzcv_matches,
+                                   static_cast<std::uint8_t>(deferred_parity),
+                                   deferred_test.bits,
+                                   deferred_test.value_register,
+                                   deferred_logical.bits,
+                                   deferred_logical.reg,
+                                   true,
+                                   shadow_dirty,
+                                   packed_current,
+                                   direct_carry});
         __ cbnz(v::x16, std::int64_t{0});
         return;
     }
@@ -333,50 +334,7 @@ void Writer::HandleCondSetFamily(OpContext& ctx) {
         const bool flip = NativeNZCV() && (condition == 8 || condition == 9);
         const auto host =
                 NativeNZCV() && (condition == 2 || condition == 3) ? condition ^ 1 : condition;
-        if (!home.spilled && ctx.operation.Metadata() == OperationMetadata{} &&
-            node.value + 1 < source.Operations().size()) {
-            const NodeId consumer{node.value + 1};
-            const auto& next = source.Operations()[consumer.value];
-            const auto& next_home = allocation.homes[consumer.value];
-            if (next.opcode == OpCode::Select && next.block == ctx.operation.block &&
-                next.Metadata() == OperationMetadata{} && next.type != Type::Void &&
-                next.type != Type::V128 && !next_home.spilled &&
-                home.last_use == next_home.definition_position) {
-                const auto operands = source.Operands(consumer);
-                auto at = operands.begin();
-                if (at != operands.end()) {
-                    const auto check = *at++;
-                    if (at != operands.end()) {
-                        const auto yes = *at++;
-                        if (at != operands.end()) {
-                            const auto no = *at++;
-                            const bool uses_self = (yes.Kind() == OperandKind::Value &&
-                                                    yes.Payload() == node.value) ||
-                                                   (no.Kind() == OperandKind::Value &&
-                                                    no.Payload() == node.value);
-                            if (at == operands.end() && check.Kind() == OperandKind::Value &&
-                                check.Payload() == node.value && !uses_self) {
-                                const auto sel_width = Width(next.type);
-                                const auto sel_native = sel_width == 32 ? 32u : 64u;
-                                const auto yes_reg = Read(yes, 16, 64, false, sel_native),
-                                           no_reg = Read(no, 17, 64, false, sel_native);
-                                if (flip) __ cfinv();
-                                __ csel(R(next_home.reg, sel_native),
-                                        R(yes_reg, sel_native),
-                                        R(no_reg, sel_native),
-                                        static_cast<v::Condition>(host));
-                                if (flip) __ cfinv();
-                                if (sel_width != 32)
-                                    Narrow(next_home.reg, next_home.reg, sel_width);
-                                elided_consumer = consumer;
-                                ctx.saved = true;
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        if (TryEmitSelectConsumer(ctx, host, flip)) return;
         if (flip) __ cfinv();
         __ cset(X(destination), static_cast<v::Condition>(host));
         if (flip) __ cfinv();
@@ -460,18 +418,12 @@ void Writer::HandleBindLabelFamily(OpContext& ctx) {
     v128_anchor_pending = false;
     tso_store_barrier_ready = false;
     vec_mul_widen_words = UINT32_MAX;
+    x17_imm_start = UINT32_MAX;
+    x17_imm_checked = UINT32_MAX;
 }
 
 void Writer::HandleSelectFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
-    if (node == elided_consumer) {
-        cursor.Take();
-        cursor.Take();
-        cursor.Take();
-        elided_consumer = {};
-        ctx.saved = true;
-        return;
-    }
     const auto destination = ctx.destination;
     const auto width = ctx.width;
     SnapshotCompareNZCV();

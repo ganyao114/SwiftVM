@@ -353,13 +353,23 @@ static void Return(Emitter& builder,
                    std::span<const std::uint8_t> bytes) {
     OneOperand(instruction);
     u64 adjust{};
-    auto opcode_bytes = bytes;
-    // FS/GS do not change the implicit stack read.
-    while (!opcode_bytes.empty() && (opcode_bytes.front() == 0x64 || opcode_bytes.front() == 0x65))
-        opcode_bytes = opcode_bytes.subspan(1);
-    if (opcode_bytes.size() == 1 && opcode_bytes[0] == 0xc3 &&
+    std::size_t tail_size{};
+    std::uint8_t first_opcode{};
+    if (bytes.empty() && instruction.reserved[0]) {
+        tail_size = instruction.reserved[1];
+        first_opcode = instruction.reserved[4];
+    } else {
+        auto opcode_bytes = bytes;
+        // FS/GS do not change the implicit stack read.
+        while (!opcode_bytes.empty() &&
+               (opcode_bytes.front() == 0x64 || opcode_bytes.front() == 0x65))
+            opcode_bytes = opcode_bytes.subspan(1);
+        tail_size = opcode_bytes.size();
+        first_opcode = tail_size ? opcode_bytes[0] : 0;
+    }
+    if (tail_size == 1 && first_opcode == 0xc3 &&
         instruction.ops[0].type == GuestOperandKind::None) {
-    } else if (opcode_bytes.size() == 3 && opcode_bytes[0] == 0xc2 &&
+    } else if (tail_size == 3 && first_opcode == 0xc2 &&
                instruction.ops[0].type == GuestOperandKind::Immediate &&
                instruction.ops[0].size == 16)
         adjust = static_cast<std::uint16_t>(instruction.immediate);

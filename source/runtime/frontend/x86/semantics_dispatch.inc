@@ -309,10 +309,42 @@ template <class Flow>
             case Op::SHR:
             case Op::SAR:
             case Op::ROL:
-            case Op::ROR:
-                pending.Flush(builder);
+            case Op::ROR: {
+                const auto bits = instruction.ops[0].size;
+                if (instruction.ops[0].type == GuestOperandKind::Register &&
+                    instruction.ops[1].type == GuestOperandKind::Immediate &&
+                    instruction.ops[2].type == GuestOperandKind::None &&
+                    instruction.ops[3].type == GuestOperandKind::None &&
+                    (bits == 8 || bits == 16 || bits == 32 || bits == 64)) {
+                    const unsigned count =
+                            static_cast<unsigned>(static_cast<std::uint8_t>(instruction.immediate)) &
+                            (bits == 64 ? 63u : 31u);
+                    if (count != 0) {
+                        const bool rotate =
+                                instruction.opcode == Op::ROL || instruction.opcode == Op::ROR;
+                        const u64 written =
+                                (rotate ? FlagBits(Flag::Carry)
+                                        : FlagBits(Flag::Carry | Flag::Parity | Flag::Zero |
+                                                   Flag::Negate)) |
+                                (count == 1 ? FlagBits(Flag::Overflow) : 0);
+                        if (pending.recipe.result) {
+                            const bool prev_mul = pending.recipe.opcode == Op::MUL ||
+                                                  pending.recipe.opcode == Op::IMUL;
+                            if (prev_mul && (written & FlagBits(Flag::Carry | Flag::Overflow)) ==
+                                                    FlagBits(Flag::Carry | Flag::Overflow))
+                                pending.recipe = {};
+                            else
+                                pending.Observe(builder, FlagBits(Flag::All) & ~written);
+                        }
+                        pending.outputs &= ~written;
+                        if (!pending.outputs) pending.producer = {};
+                    }
+                } else {
+                    pending.Flush(builder);
+                }
                 Shift(builder, layout, instruction, pending, pc, next_pc, target);
                 break;
+            }
             case Op::NOT:
                 if (Memory(instruction.ops[0])) pending.Flush(builder);
                 Complement(builder, layout, instruction, pc, next_pc, target);

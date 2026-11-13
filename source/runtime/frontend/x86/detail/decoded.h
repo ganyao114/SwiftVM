@@ -242,13 +242,66 @@ inline void CorrectWidths(InstructionData& out, std::span<const std::uint8_t> by
 }
 
 struct DecoderAccess {
-    static Instruction Own(const InstructionData& data) noexcept {
+    static void SummarizeBytes(InstructionData& out,
+                               std::span<const std::uint8_t> bytes,
+                               bool adapted_cet_hint = false) noexcept {
+        if (bytes.empty()) return;
+        if (adapted_cet_hint) {
+            out.reserved[0] = 1u | 64u;
+        } else {
+            std::uint8_t summary{};
+            bool resolved{};
+            for (const auto byte : bytes) {
+                if (byte == 0xf0) {
+                    summary |= 2u;
+                    continue;
+                }
+                if (byte == 0xf2) {
+                    summary |= 4u;
+                    continue;
+                }
+                if (byte == 0xf3) {
+                    summary |= 8u;
+                    continue;
+                }
+                if (byte == 0x67) {
+                    summary |= 16u;
+                    continue;
+                }
+                if (byte == 0x26 || byte == 0x2e || byte == 0x36 || byte == 0x3e || byte == 0x64 ||
+                    byte == 0x65 || byte == 0x66 || (byte >= 0x40 && byte <= 0x4f))
+                    continue;
+                if (byte == 0xc4 || byte == 0xc5)
+                    summary |= 1u | 32u;
+                else if (byte == 0x62)
+                    summary |= 128u;
+                else
+                    summary |= 1u;
+                resolved = true;
+                break;
+            }
+            if (!resolved) summary |= 128u;
+            out.reserved[0] = summary;
+        }
+        std::size_t fs_gs{};
+        while (fs_gs < bytes.size() && (bytes[fs_gs] == 0x64 || bytes[fs_gs] == 0x65)) ++fs_gs;
+        out.reserved[1] = static_cast<std::uint8_t>(bytes.size() - fs_gs);
+        out.reserved[2] = bytes[0];
+        out.reserved[3] = bytes.size() >= 2 ? bytes[1] : 0;
+        out.reserved[4] = fs_gs < bytes.size() ? bytes[fs_gs] : 0;
+    }
+
+    static Instruction Own(const InstructionData& data,
+                           std::span<const std::uint8_t> bytes = {}) noexcept {
         Instruction out;
         out.data = data;
+        SummarizeBytes(out.data, bytes);
         return out;
     }
 
-    static Instruction Own(const _DInst& raw, std::span<const std::uint8_t> bytes = {}) noexcept {
+    static Instruction Own(const _DInst& raw,
+                           std::span<const std::uint8_t> bytes = {},
+                           bool adapted_cet_hint = false) noexcept {
         Instruction owned;
         auto& out = owned.data;
         std::memcpy(&out.immediate, &raw.imm, sizeof(out.immediate));
@@ -309,6 +362,7 @@ struct DecoderAccess {
                 break;
         }
         CorrectWidths(out, bytes);
+        SummarizeBytes(out, bytes, adapted_cet_hint);
         return owned;
     }
 };

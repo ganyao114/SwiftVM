@@ -82,10 +82,6 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
     const auto destination = ctx.destination;
     const auto width = ctx.width;
     const auto input = cursor.Take();
-    if (node == elided_consumer) {
-        elided_consumer = {};
-        return;
-    }
     const auto limit =
             operation.opcode == OpCode::ZeroExtend32 || operation.opcode == OpCode::ZeroExtend32To64
                     ? 32u
@@ -94,10 +90,26 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
     if (width == 32) {
         const auto source_bits = std::min(Width(View(input)), limit);
         const auto value = Read(input, destination, limit, false, 32);
-        if (sign && source_bits < 32)
+        if (sign && source_bits < 32) {
             __ sbfx(W(destination), W(value), 0, source_bits);  // SXTB/SXTH W.
-        else
+        } else if (!sign && source_bits <= 32) {
+            bool canonical = input.Kind() == OperandKind::Immediate;
+            if (!canonical && input.Kind() == OperandKind::Value) {
+                const auto id = static_cast<u32>(input.Payload());
+                const auto& producer = source.Operations()[id];
+                const auto& home = allocation.homes[id];
+                canonical = !home.narrow_pin && Bits(producer.type) <= 32 &&
+                            producer.opcode != OpCode::BitCast &&
+                            producer.opcode != OpCode::GetResult &&
+                            producer.opcode != OpCode::GetFlags;
+            }
+            if (canonical)
+                Move(destination, value);
+            else
+                Narrow(destination, value, 32);
+        } else {
             Narrow(destination, value, 32);
+        }
     } else {
         const auto value = Read(input, destination, limit, sign);
         Narrow(destination, value, width);
@@ -683,12 +695,6 @@ void Writer::HandleBinaryALU(OpContext& ctx) {
     const auto& operation = ctx.operation;
     auto& cursor = ctx.cursor;
     const auto test_prefix = ctx.test_prefix;
-    if (node == elided_consumer) {
-        cursor.Take();
-        cursor.Take();
-        elided_consumer = {};
-        return;
-    }
     if (test_prefix && operation.opcode == OpCode::And && DeferTest(operation, cursor)) {
         cursor.Done();
         return;
@@ -899,47 +905,48 @@ void Writer::HandleMulFamily(OpContext& ctx) {
     auto& saved = ctx.saved;
     const auto input = cursor.Take();
     const auto operand = *cursor.at;
-    if (operation.type == Type::U32 && metadata == OperationMetadata{} && !home.spilled &&
-        node.value + 1 < source.Operations().size()) {
-        const NodeId consumer{node.value + 1};
-        const auto& next = source.Operations()[consumer.value];
-        const auto& next_home = allocation.homes[consumer.value];
-        if (next.opcode == OpCode::Add && next.type == Type::U32 && next.block == operation.block &&
-            next.Metadata() == OperationMetadata{} && !next_home.spilled &&
-            home.last_use == next_home.definition_position && next_home.reg != deferred_parity &&
-            (!deferred_logical.bits || next_home.reg != deferred_logical.reg)) {
-            const auto addends = source.Operands(consumer);
-            auto at = addends.begin();
-            if (at != addends.end()) {
-                const auto first = *at++;
+    if (operation.type == Type::U32 && metadata == OperationMetadata{} && !home.spilled) {
+        if (const auto consumer = NextNonNop(node.value + 1)) {
+            const auto& next = source.Operations()[consumer.value];
+            const auto& next_home = allocation.homes[consumer.value];
+            if (next.opcode == OpCode::Add && next.type == Type::U32 &&
+                next.block == operation.block && next.Metadata() == OperationMetadata{} &&
+                !next_home.spilled && home.last_use == next_home.definition_position) {
+                const auto addends = source.Operands(consumer);
+                auto at = addends.begin();
                 if (at != addends.end()) {
-                    const auto second = *at++;
-                    const bool first_product =
-                            first.Kind() == OperandKind::Value && first.Payload() == node.value;
-                    const bool second_product =
-                            second.Kind() == OperandKind::Value && second.Payload() == node.value;
-                    const auto accumulator = first_product ? second : first;
-                    const auto register_input = [&](CellView value) {
-                        return value.Kind() == OperandKind::Value && View(value) == Type::U32 &&
-                               !allocation.homes[value.Payload()].spilled &&
-                               allocation.homes[value.Payload()].CarrierBits() >= 32;
-                    };
-                    NodeId publication{consumer.value + 1};
-                    if (publication.value < source.Operations().size() &&
-                        source.Operations()[publication.value].opcode == OpCode::ClearFlags)
-                        ++publication.value;
-                    if (at == addends.end() && first_product != second_product &&
-                        View(first_product ? first : second) == Type::U32 &&
-                        register_input(input) && register_input(operand) &&
-                        register_input(accumulator) && !LegacyMask(consumer, publication)) {
-                        cursor.Take();
-                        const auto left = Read(input, 16, 64, false, 32);
-                        const auto right = Read(operand, 17, 64, false, 32);
-                        const auto addend = Read(accumulator, 16, 64, false, 32);
-                        __ madd(W(next_home.reg), W(left), W(right), W(addend));
-                        elided_consumer = consumer;
-                        saved = true;
-                        return;
+                    const auto first = *at++;
+                    if (at != addends.end()) {
+                        const auto second = *at++;
+                        const bool first_product =
+                                first.Kind() == OperandKind::Value && first.Payload() == node.value;
+                        const bool second_product = second.Kind() == OperandKind::Value &&
+                                                    second.Payload() == node.value;
+                        const auto accumulator = first_product ? second : first;
+                        const auto register_input = [&](CellView value) {
+                            return value.Kind() == OperandKind::Value &&
+                                   View(value) == Type::U32 &&
+                                   !allocation.homes[value.Payload()].spilled &&
+                                   allocation.homes[value.Payload()].CarrierBits() >= 32;
+                        };
+                        NodeId publication{consumer.value + 1};
+                        if (publication.value < source.Operations().size() &&
+                            source.Operations()[publication.value].opcode == OpCode::ClearFlags)
+                            ++publication.value;
+                        if (at == addends.end() && first_product != second_product &&
+                            View(first_product ? first : second) == Type::U32 &&
+                            register_input(input) && register_input(operand) &&
+                            register_input(accumulator) && !LegacyMask(consumer, publication)) {
+                            cursor.Take();
+                            const auto left = Read(input, 16, 64, false, 32);
+                            const auto right = Read(operand, 17, 64, false, 32);
+                            const auto addend = Read(accumulator, 16, 64, false, 32);
+                            ProtectDestinationRegister(next_home.reg, consumer.value);
+                            __ madd(W(next_home.reg), W(left), W(right), W(addend));
+                            ElideConsumer(consumer);
+                            saved = true;
+                            return;
+                        }
                     }
                 }
             }
@@ -1160,29 +1167,29 @@ void Writer::HandleTestZeroFamily(OpContext& ctx) {
     const auto destination = ctx.destination;
     const auto tested = cursor.Take();
     if (NativeNZCV() && operation.opcode == OpCode::TestNotZero &&
-        operation.Metadata() == OperationMetadata{} && !ctx.home.spilled &&
-        node.value + 1 < source.Operations().size()) {
-        const NodeId consumer{node.value + 1};
-        const auto& next = source.Operations()[consumer.value];
-        const auto& next_home = allocation.homes[consumer.value];
-        if (next.opcode == OpCode::SetCarry && next.block == operation.block &&
-            next.Metadata() == OperationMetadata{} && !next_home.spilled &&
-            ctx.home.last_use == next_home.definition_position) {
-            const auto operands = source.Operands(consumer);
-            auto at = operands.begin();
-            const auto input = *at++;
-            if (at == operands.end() && input.Kind() == OperandKind::Value &&
-                input.Payload() == node.value && View(input) == operation.type) {
-                CompleteLocalFlags();
-                RequireFlags();
-                // The zero predicate already is inverted guest CF: neither inversion is needed.
-                Predicate(destination, Read(tested, 16), true);
-                Rmif(destination, 63, 2);
-                packed_current = false;
-                shadow_dirty = true;
-                elided_consumer = consumer;
-                ctx.saved = true;
-                return;
+        operation.Metadata() == OperationMetadata{} && !ctx.home.spilled) {
+        if (const auto consumer = NextNonNop(node.value + 1)) {
+            const auto& next = source.Operations()[consumer.value];
+            const auto& next_home = allocation.homes[consumer.value];
+            if (next.opcode == OpCode::SetCarry && next.block == operation.block &&
+                next.Metadata() == OperationMetadata{} && !next_home.spilled &&
+                ctx.home.last_use == next_home.definition_position) {
+                const auto operands = source.Operands(consumer);
+                auto at = operands.begin();
+                const auto input = *at++;
+                if (at == operands.end() && input.Kind() == OperandKind::Value &&
+                    input.Payload() == node.value && View(input) == operation.type) {
+                    CompleteLocalFlags();
+                    RequireFlags();
+                    // The zero predicate already is inverted guest CF: neither inversion is needed.
+                    Predicate(destination, Read(tested, 16), true);
+                    Rmif(destination, 63, 2);
+                    packed_current = false;
+                    shadow_dirty = true;
+                    ElideConsumer(consumer);
+                    ctx.saved = true;
+                    return;
+                }
             }
         }
     }
@@ -1216,56 +1223,49 @@ void Writer::HandleLslImmFamily(OpContext& ctx) {
                 static_cast<unsigned>(IntegerImmediate(amount) & (width - 1) &
                                       ((u64{1} << std::min(Width(amount.TypeView()), 6u)) - 1));
         const auto value = Read(input, 16, width, asr, width == 32 ? 32 : 64);
-        if (width == 64 && operation.Metadata() == OperationMetadata{} && !ctx.home.spilled &&
-            node.value + 1 < source.Operations().size()) {
-            const NodeId consumer{node.value + 1};
-            const auto& next = source.Operations()[consumer.value];
-            const auto& next_home = allocation.homes[consumer.value];
-            if (next.block == operation.block && next.type == Type::U64 &&
-                next.Metadata() == OperationMetadata{} &&
-                (next.opcode == OpCode::Xor || next.opcode == OpCode::And ||
-                 next.opcode == OpCode::Or) &&
-                !next_home.spilled && ctx.home.last_use == next_home.definition_position) {
-                const auto operands = source.Operands(consumer);
-                auto at = operands.begin();
-                const auto first = *at++;
-                const auto second = *at++;
-                const bool first_shift =
-                        first.Kind() == OperandKind::Value && first.Payload() == node.value;
-                const bool second_shift =
-                        second.Kind() == OperandKind::Value && second.Payload() == node.value;
-                NodeId publication{consumer.value + 1};
-                if (publication.value < source.Operations().size() &&
-                    source.Operations()[publication.value].opcode == OpCode::ClearFlags)
-                    ++publication.value;
-                if (at == operands.end() && first.Kind() == OperandKind::Value &&
-                    second.Kind() == OperandKind::Value && first_shift != second_shift &&
-                    View(first_shift ? first : second) == Type::U64 &&
-                    !LegacyMask(consumer, publication)) {
-                    const auto other = Read(first_shift ? second : first, 17);
-                    // The next Emit would protect this carrier before replacing its pin.
-                    if (next_home.reg == deferred_parity) CompleteParity();
-                    if (deferred_logical.bits && next_home.reg == deferred_logical.reg) {
-                        if (FlagsDeadFrom(consumer.value + 1))
-                            deferred_logical = {};
+        if (width == 64 && operation.Metadata() == OperationMetadata{} && !ctx.home.spilled) {
+            if (const auto consumer = NextNonNop(node.value + 1)) {
+                const auto& next = source.Operations()[consumer.value];
+                const auto& next_home = allocation.homes[consumer.value];
+                if (next.block == operation.block && next.type == Type::U64 &&
+                    next.Metadata() == OperationMetadata{} &&
+                    (next.opcode == OpCode::Xor || next.opcode == OpCode::And ||
+                     next.opcode == OpCode::Or) &&
+                    !next_home.spilled && ctx.home.last_use == next_home.definition_position) {
+                    const auto operands = source.Operands(consumer);
+                    auto at = operands.begin();
+                    const auto first = *at++;
+                    const auto second = *at++;
+                    const bool first_shift =
+                            first.Kind() == OperandKind::Value && first.Payload() == node.value;
+                    const bool second_shift =
+                            second.Kind() == OperandKind::Value && second.Payload() == node.value;
+                    NodeId publication{consumer.value + 1};
+                    if (publication.value < source.Operations().size() &&
+                        source.Operations()[publication.value].opcode == OpCode::ClearFlags)
+                        ++publication.value;
+                    if (at == operands.end() && first.Kind() == OperandKind::Value &&
+                        second.Kind() == OperandKind::Value && first_shift != second_shift &&
+                        View(first_shift ? first : second) == Type::U64 &&
+                        !LegacyMask(consumer, publication)) {
+                        const auto other = Read(first_shift ? second : first, 17);
+                        ProtectDestinationRegister(next_home.reg, consumer.value);
+                        const Operand shifted{X(value),
+                                              ror   ? v::ROR
+                                              : asr ? v::ASR
+                                              : lsl ? v::LSL
+                                                    : v::LSR,
+                                              count};
+                        if (next.opcode == OpCode::Xor)
+                            __ eor(X(next_home.reg), X(other), shifted);
+                        else if (next.opcode == OpCode::And)
+                            __ and_(X(next_home.reg), X(other), shifted);
                         else
-                            CompleteDeferredLogical();
+                            __ orr(X(next_home.reg), X(other), shifted);
+                        ElideConsumer(consumer);
+                        ctx.saved = true;
+                        return;
                     }
-                    const Operand shifted{X(value),
-                                          ror   ? v::ROR
-                                          : asr ? v::ASR
-                                          : lsl ? v::LSL
-                                                : v::LSR,
-                                          count};
-                    if (next.opcode == OpCode::Xor)
-                        __ eor(X(next_home.reg), X(other), shifted);
-                    else if (next.opcode == OpCode::And)
-                        __ and_(X(next_home.reg), X(other), shifted);
-                    else
-                        __ orr(X(next_home.reg), X(other), shifted);
-                    elided_consumer = consumer;
-                    ctx.saved = true;
-                    return;
                 }
             }
         }

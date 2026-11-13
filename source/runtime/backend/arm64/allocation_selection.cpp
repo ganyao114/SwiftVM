@@ -149,6 +149,7 @@ namespace swift::runtime::backend::arm64::detail {
     const auto& operation = operations[i];
     const auto metadata = operation.Metadata();
     if (raw_flags) {
+        home.flags_dead_after = selection.all_flags_dead;
         // Literal metadata already describes definite writes. Keep
         // the unclassified writers/real observers conservative,
         // without introducing another flags opcode classification.
@@ -177,6 +178,18 @@ namespace swift::runtime::backend::arm64::detail {
             }
         }
         if (observed) selection.needed_nzcv = FlagBits(Flag::NZCV);
+        if (result.has_save_flags) {
+            selection.all_flags_dead = false;
+        } else if (!((operation.opcode == OpCode::Nop ||
+                      operation.opcode == OpCode::FaultLocation) &&
+                     metadata == OperationMetadata{})) {
+            if (observed)
+                selection.all_flags_dead = false;
+            else if (metadata.flag_outputs &&
+                     ((metadata.flag_outputs & FlagBits(Flag::All)) == FlagBits(Flag::All) ||
+                      metadata.discard_omitted_flags))
+                selection.all_flags_dead = true;
+        }
     }
 }
 

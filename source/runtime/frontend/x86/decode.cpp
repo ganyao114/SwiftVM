@@ -40,7 +40,8 @@ DecodeOneResult DecodeOne(std::span<const std::uint8_t> bytes,
     if (extended.handled) {
         out.error = extended.error;
         if (out.error == DecodeError::None)
-            out.instruction = detail::DecoderAccess::Own(extended.instruction);
+            out.instruction = detail::DecoderAccess::Own(
+                    extended.instruction, bytes.first(extended.instruction.size));
         return out;
     }
     _CodeInfo code{};
@@ -86,7 +87,8 @@ DecodeOneResult DecodeOne(std::span<const std::uint8_t> bytes,
     else if (instruction.size > bytes.size())
         out.error = DecodeError::Truncated;
     if (out.error == DecodeError::None)
-        out.instruction = detail::DecoderAccess::Own(instruction, bytes.first(instruction.size));
+        out.instruction =
+                detail::DecoderAccess::Own(instruction, bytes.first(instruction.size), adapted_hint);
     return out;
 }
 

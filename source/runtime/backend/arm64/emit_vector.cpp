@@ -173,7 +173,118 @@ void Writer::HandleVecXorFamily(OpContext& ctx) {
     const auto& operation = ctx.operation;
     auto& cursor = ctx.cursor;
     const auto destination = ctx.destination;
-    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+    const auto left_cell = cursor.Take(), right_cell = cursor.Take();
+    if ((operation.opcode == OpCode::VecAnd || operation.opcode == OpCode::VecAndNot) &&
+        operation.Metadata() == OperationMetadata{} && !ctx.home.spilled) {
+        if (const auto c2 = NextNonNop(node.value + 1)) {
+            const auto& op2 = source.Operations()[c2.value];
+            const auto& home2 = allocation.homes[c2.value];
+            const auto expected_op2 =
+                    operation.opcode == OpCode::VecAnd ? OpCode::VecAndNot : OpCode::VecAnd;
+            if (op2.opcode == expected_op2 && op2.block == operation.block &&
+                op2.Metadata() == OperationMetadata{} && !home2.spilled) {
+                if (const auto c3 = NextNonNop(c2.value + 1)) {
+                    const auto& op3 = source.Operations()[c3.value];
+                    const auto& home3 = allocation.homes[c3.value];
+                    if (op3.opcode == OpCode::VecOr && op3.block == operation.block &&
+                        op3.Metadata() == OperationMetadata{} && !home3.spilled &&
+                        ctx.home.last_use == home3.definition_position &&
+                        home2.last_use == home3.definition_position) {
+                        const auto args2 = source.Operands(c2);
+                        const auto args3 = source.Operands(c3);
+                        auto it2 = args2.begin(), it3 = args3.begin();
+                        if (it2 != args2.end() && it3 != args3.end()) {
+                            const auto l2 = *it2++;
+                            const auto l3 = *it3++;
+                            if (it2 != args2.end() && it3 != args3.end()) {
+                                const auto r2 = *it2++;
+                                const auto r3 = *it3++;
+                                const bool c2_uses_c1 =
+                                        (l2.Kind() == OperandKind::Value &&
+                                         l2.Payload() == node.value) ||
+                                        (r2.Kind() == OperandKind::Value &&
+                                         r2.Payload() == node.value);
+                                const bool c3_pair =
+                                        l3.Kind() == OperandKind::Value &&
+                                        r3.Kind() == OperandKind::Value &&
+                                        ((l3.Payload() == node.value && r3.Payload() == c2.value) ||
+                                         (l3.Payload() == c2.value && r3.Payload() == node.value));
+                                if (it2 == args2.end() && it3 == args3.end() && !c2_uses_c1 &&
+                                    c3_pair) {
+                                    const auto peel_val = [&](CellView c) -> u32 {
+                                        if (c.Kind() != OperandKind::Value ||
+                                            c.Payload() >= source.Operations().size())
+                                            return UINT32_MAX;
+                                        auto id = static_cast<u32>(c.Payload());
+                                        for (unsigned d = 0; d < 4; ++d) {
+                                            const auto& cur = source.Operations()[id];
+                                            if (cur.opcode != OpCode::BitCast ||
+                                                cur.type != Type::V128 ||
+                                                cur.Metadata() != OperationMetadata{})
+                                                break;
+                                            const auto a = source.Operands(NodeId{id});
+                                            if (a.begin() == a.end() ||
+                                                a.front().Kind() != OperandKind::Value ||
+                                                a.front().Payload() >= source.Operations().size())
+                                                break;
+                                            id = static_cast<u32>(a.front().Payload());
+                                        }
+                                        return id;
+                                    };
+                                    const bool c1_is_and = operation.opcode == OpCode::VecAnd;
+                                    const CellView and_lhs = c1_is_and ? left_cell : l2;
+                                    const CellView and_rhs = c1_is_and ? right_cell : r2;
+                                    const CellView bic_val = c1_is_and ? l2 : left_cell;
+                                    const CellView bic_mask = c1_is_and ? r2 : right_cell;
+                                    const u32 mask_id = peel_val(bic_mask);
+                                    CellView true_cell{};
+                                    bool matched = false;
+                                    if (mask_id != UINT32_MAX) {
+                                        if (peel_val(and_rhs) == mask_id) {
+                                            true_cell = and_lhs;
+                                            matched = true;
+                                        } else if (peel_val(and_lhs) == mask_id) {
+                                            true_cell = and_rhs;
+                                            matched = true;
+                                        }
+                                    }
+                                    if (matched) {
+                                        const unsigned m = VectorValue(bic_mask, 0);
+                                        const unsigned t = VectorValue(true_cell, 1);
+                                        const unsigned f =
+                                                VectorValue(bic_val, VectorTemporary());
+                                        const unsigned out = home3.reg;
+                                        if (pending_denormal.op_count &&
+                                            ((pending_denormal.protected_mask >> out) & 1u)) {
+                                            if (!(HasUpcomingBatchOp(c3.value + 1) &&
+                                                  PreserveBatchedRegister(out)))
+                                                FlushDenormalBatch();
+                                        }
+                                        if (t == f) {
+                                            VectorMove(out, t);
+                                        } else if (out == m) {
+                                            __ bsl(Lanes(out, 8), Lanes(t, 8), Lanes(f, 8));
+                                        } else if (out == f) {
+                                            __ bit(Lanes(out, 8), Lanes(t, 8), Lanes(m, 8));
+                                        } else if (out == t) {
+                                            __ bif(Lanes(out, 8), Lanes(f, 8), Lanes(m, 8));
+                                        } else {
+                                            VectorMove(out, m);
+                                            __ bsl(Lanes(out, 8), Lanes(t, 8), Lanes(f, 8));
+                                        }
+                                        ElideConsumer(c3);
+                                        ctx.saved = true;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    const auto left = VectorValue(left_cell, 0), right = VectorValue(right_cell, 1);
     const bool logical = operation.opcode == OpCode::VecXor || operation.opcode == OpCode::VecAnd ||
                          operation.opcode == OpCode::VecOr || operation.opcode == OpCode::VecAndNot;
     const auto bits = logical ? 8u
@@ -250,15 +361,6 @@ void Writer::HandleVecSignedMulWidenLowFamily(OpContext& ctx) {
 
 void Writer::HandleVecMulWidenFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
-    if (node == elided_consumer) {
-        cursor.Take();
-        cursor.Take();
-        cursor.Take();
-        cursor.Take();
-        elided_consumer = {};
-        ctx.saved = true;
-        return;
-    }
     const auto destination = ctx.destination;
     const auto first_temp = VectorTemporary();
     const auto second_temp = VectorTemporary(true);
@@ -342,6 +444,13 @@ void Writer::HandleVecShuffle32Family(OpContext& ctx) {
     const unsigned base = high ? 4 : 0, size = half ? 1 : 2;
     if (!half && ((control & 3) * 0x55 == control)) {
         __ dup(Lanes(destination, 32), Lanes(input, 32), control & 3);
+    } else if (!half && (control == 0x44 || control == 0xee)) {
+        __ dup(Lanes(destination, 64), Lanes(input, 64), control == 0xee ? 1 : 0);
+    } else if (!half && (control == 0x39 || control == 0x4e || control == 0x93)) {
+        const unsigned imm = control == 0x39 ? 4 : control == 0x4e ? 8 : 12;
+        __ ext(Lanes(destination, 8), Lanes(input, 8), Lanes(input, 8), imm);
+    } else if (!half && control == 0xb1) {
+        __ rev64(Lanes(destination, 32), Lanes(input, 32));
     } else if (!half && (control == 0xa0 || control == 0xf5 || control == 0x50 || control == 0xfa ||
                          control == 0x88 || control == 0xdd)) {
         const auto vd = Lanes(destination, 32), vn = Lanes(input, 32);
@@ -390,81 +499,90 @@ void Writer::HandleVecShiftLeftImmFamily(OpContext& ctx) {
         return;
     }
     if (operation.opcode == OpCode::VecShiftRightImm && count == 32 && bits == 64 &&
-        !ctx.home.spilled && node.value + 1 < source.Operations().size()) {
-        const NodeId consumer{node.value + 1};
-        const auto& next = source.Operations()[consumer.value];
-        const auto& next_home = allocation.homes[consumer.value];
-        if (next.opcode == OpCode::VecMulWiden && next.block == operation.block &&
-            next.Metadata() == OperationMetadata{} && !next_home.spilled &&
-            ctx.home.last_use == next_home.definition_position) {
-            const auto inputs = source.Operands(consumer);
-            auto at = inputs.begin();
-            if (at != inputs.end()) {
-                const auto lhs_cell = *at++;
+        !ctx.home.spilled) {
+        if (const auto consumer = NextNonNop(node.value + 1)) {
+            const auto& next = source.Operations()[consumer.value];
+            const auto& next_home = allocation.homes[consumer.value];
+            if (next.opcode == OpCode::VecMulWiden && next.block == operation.block &&
+                next.Metadata() == OperationMetadata{} && !next_home.spilled &&
+                ctx.home.last_use == next_home.definition_position) {
+                const auto inputs = source.Operands(consumer);
+                auto at = inputs.begin();
                 if (at != inputs.end()) {
-                    const auto rhs_cell = *at++;
+                    const auto lhs_cell = *at++;
                     if (at != inputs.end()) {
-                        const auto size = LaneSize(IntegerImmediate(*at++), false);
-                        if (at != inputs.end() && size == 2) {
-                            const auto sign = IntegerImmediate(*at++);
-                            const bool lhs_is_node = lhs_cell.Kind() == OperandKind::Value &&
-                                                     lhs_cell.Payload() == node.value;
-                            const bool rhs_is_node = rhs_cell.Kind() == OperandKind::Value &&
-                                                     rhs_cell.Payload() == node.value;
-                            if (at == inputs.end() && sign <= 1 && (lhs_is_node || rhs_is_node)) {
-                                const auto first_temp = VectorTemporary();
-                                const auto second_temp = VectorTemporary(true);
-                                if (lhs_is_node && rhs_is_node) {
-                                    __ uzp2(Lanes(first_temp, 32),
-                                            Lanes(input, 32),
-                                            Lanes(input, 32));
-                                    if (sign)
-                                        __ smull(Lanes(next_home.reg, 64),
-                                                 Lanes(first_temp, 32, 64),
-                                                 Lanes(first_temp, 32, 64));
-                                    else
-                                        __ umull(Lanes(next_home.reg, 64),
-                                                 Lanes(first_temp, 32, 64),
-                                                 Lanes(first_temp, 32, 64));
-                                    vec_mul_widen_words = UINT32_MAX;
-                                } else {
-                                    const auto other_cell = lhs_is_node ? rhs_cell : lhs_cell;
-                                    const bool right_unspilled =
-                                            other_cell.Kind() == OperandKind::Value &&
-                                            other_cell.Payload() < allocation.homes.size() &&
-                                            !allocation.homes[other_cell.Payload()].spilled;
-                                    const bool check_reuse =
-                                            right_unspilled &&
-                                            output.words.size() == vec_mul_widen_words;
-                                    const auto right = VectorValue(other_cell, 1);
-                                    __ uzp2(Lanes(first_temp, 32),
-                                            Lanes(input, 32),
-                                            Lanes(input, 32));
-                                    if (!(check_reuse && vec_mul_widen_right == right &&
-                                          vec_mul_widen_size == 2)) {
-                                        __ uzp1(Lanes(second_temp, 32),
-                                                Lanes(right, 32),
-                                                Lanes(right, 32));
+                        const auto rhs_cell = *at++;
+                        if (at != inputs.end()) {
+                            const auto size = LaneSize(IntegerImmediate(*at++), false);
+                            if (at != inputs.end() && size == 2) {
+                                const auto sign = IntegerImmediate(*at++);
+                                const bool lhs_is_node = lhs_cell.Kind() == OperandKind::Value &&
+                                                         lhs_cell.Payload() == node.value;
+                                const bool rhs_is_node = rhs_cell.Kind() == OperandKind::Value &&
+                                                         rhs_cell.Payload() == node.value;
+                                if (at == inputs.end() && sign <= 1 &&
+                                    (lhs_is_node || rhs_is_node)) {
+                                    if (pending_denormal.op_count &&
+                                        ((pending_denormal.protected_mask >> next_home.reg) & 1u)) {
+                                        if (!(HasUpcomingBatchOp(consumer.value + 1) &&
+                                              PreserveBatchedRegister(next_home.reg)))
+                                            FlushDenormalBatch();
                                     }
-                                    if (sign)
-                                        __ smull(Lanes(next_home.reg, 64),
-                                                 Lanes(first_temp, 32, 64),
-                                                 Lanes(second_temp, 32, 64));
-                                    else
-                                        __ umull(Lanes(next_home.reg, 64),
-                                                 Lanes(first_temp, 32, 64),
-                                                 Lanes(second_temp, 32, 64));
-                                    if (right_unspilled && next_home.reg != right) {
-                                        vec_mul_widen_words = static_cast<u32>(output.words.size());
-                                        vec_mul_widen_right = static_cast<std::uint8_t>(right);
-                                        vec_mul_widen_size = 2;
-                                    } else {
+                                    const auto first_temp = VectorTemporary();
+                                    const auto second_temp = VectorTemporary(true);
+                                    if (lhs_is_node && rhs_is_node) {
+                                        __ uzp2(Lanes(first_temp, 32),
+                                                Lanes(input, 32),
+                                                Lanes(input, 32));
+                                        if (sign)
+                                            __ smull(Lanes(next_home.reg, 64),
+                                                     Lanes(first_temp, 32, 64),
+                                                     Lanes(first_temp, 32, 64));
+                                        else
+                                            __ umull(Lanes(next_home.reg, 64),
+                                                     Lanes(first_temp, 32, 64),
+                                                     Lanes(first_temp, 32, 64));
                                         vec_mul_widen_words = UINT32_MAX;
+                                    } else {
+                                        const auto other_cell = lhs_is_node ? rhs_cell : lhs_cell;
+                                        const bool right_unspilled =
+                                                other_cell.Kind() == OperandKind::Value &&
+                                                other_cell.Payload() < allocation.homes.size() &&
+                                                !allocation.homes[other_cell.Payload()].spilled;
+                                        const bool check_reuse =
+                                                right_unspilled &&
+                                                output.words.size() == vec_mul_widen_words;
+                                        const auto right = VectorValue(other_cell, 1);
+                                        __ uzp2(Lanes(first_temp, 32),
+                                                Lanes(input, 32),
+                                                Lanes(input, 32));
+                                        if (!(check_reuse && vec_mul_widen_right == right &&
+                                              vec_mul_widen_size == 2)) {
+                                            __ uzp1(Lanes(second_temp, 32),
+                                                    Lanes(right, 32),
+                                                    Lanes(right, 32));
+                                        }
+                                        if (sign)
+                                            __ smull(Lanes(next_home.reg, 64),
+                                                     Lanes(first_temp, 32, 64),
+                                                     Lanes(second_temp, 32, 64));
+                                        else
+                                            __ umull(Lanes(next_home.reg, 64),
+                                                     Lanes(first_temp, 32, 64),
+                                                     Lanes(second_temp, 32, 64));
+                                        if (right_unspilled && next_home.reg != right) {
+                                            vec_mul_widen_words =
+                                                    static_cast<u32>(output.words.size());
+                                            vec_mul_widen_right = static_cast<std::uint8_t>(right);
+                                            vec_mul_widen_size = 2;
+                                        } else {
+                                            vec_mul_widen_words = UINT32_MAX;
+                                        }
                                     }
+                                    ElideConsumer(consumer);
+                                    ctx.saved = true;
+                                    return;
                                 }
-                                elided_consumer = consumer;
-                                ctx.saved = true;
-                                return;
                             }
                         }
                     }

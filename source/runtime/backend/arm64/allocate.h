@@ -24,8 +24,9 @@ struct Home {
                                      // materialized.
     std::uint8_t narrow_pin : 2 {};  // 0: canonical; 1/2/3: borrowed low8/16/32 pin.
     std::uint8_t nzcv_clobber
-            : 4 {};              // Unobserved NZCV fields the actual local writer may clobber.
-    std::uint16_t extra_slot{};  // Div128 remainder: 8B slot index + 1; zero otherwise.
+            : 4 {};                    // Unobserved NZCV fields the actual local writer may clobber.
+    std::uint16_t extra_slot : 15 {};  // Div128 remainder: 8B slot index + 1; zero otherwise.
+    bool flags_dead_after : 1 {};      // All guest flags are overwritten before any later observer.
 
     unsigned CarrierBits() const noexcept { return narrow_pin ? 4u << narrow_pin : 64u; }
 };
@@ -39,7 +40,9 @@ struct Allocation {
     std::vector<Home> homes;
     std::vector<std::uint32_t> block_order;  // One actual CFG reverse-postorder schedule.
     std::uint32_t spill_bytes{};
+    std::uint32_t used_vector_mask{};
     bool publish_entry_pc{};  // This unit needs canonical incoming PC at entry.
+    bool has_save_flags{};
 
     explicit operator bool() const noexcept { return error == CompileError::None; }
 };
