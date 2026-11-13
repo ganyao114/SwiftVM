@@ -96,7 +96,17 @@ private:
                 case OpCode::VecFSubScalar64:
                 case OpCode::VecFMulScalar64:
                 case OpCode::VecFDivScalar64:
+                case OpCode::VecFAddScalar32:
+                case OpCode::VecFSubScalar32:
+                case OpCode::VecFMulScalar32:
+                case OpCode::VecFDivScalar32:
                 case OpCode::VecFCmpMask:
+                case OpCode::VecFMinMax:
+                case OpCode::VecFUnary:
+                case OpCode::VecFRoundInt:
+                case OpCode::VecFMulAdd:
+                case OpCode::ArmScalarFP:
+                case OpCode::ArmScalarFMA:
                     return true;
                 default:
                     return false;

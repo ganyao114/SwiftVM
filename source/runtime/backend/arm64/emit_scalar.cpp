@@ -29,6 +29,7 @@ bool Writer::PartialByteStore(const Operation& operation, const Home& home) cons
 }
 
 void Writer::HandleZeroFamily(OpContext& ctx) {
+    if (ctx.home.spilled && ctx.home.stack_offset == UINT32_MAX) return;
     const auto destination = ctx.destination;
     Immediate(destination, 0);
 }
@@ -41,6 +42,7 @@ void Writer::HandleLoadImmFamily(OpContext& ctx) {
     const auto input = cursor.Take();
     if (input.Kind() != OperandKind::Immediate) Reject(CompileError::UnsupportedOperand);
     Width(input.TypeView());
+    if (home.spilled && home.stack_offset == UINT32_MAX) return;
     if (!home.terminal_only)
         Immediate(destination,
                   width == 64 ? input.Payload() : input.Payload() & ((u64{1} << width) - 1));
@@ -113,19 +115,21 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
     const auto flag_mask = ctx.flag_mask;
     const auto legacy_mask = ctx.legacy_mask;
     auto& saved = ctx.saved;
-    if (RawAF() && !legacy_mask && operation.opcode == OpCode::And && operation.type == Type::U64 &&
-        flag_mask == all_flags && metadata.profile == FlagProfile::LogicalZeroCVA &&
+    if (RawAF() && !legacy_mask && operation.opcode == OpCode::And &&
+        (width == 32 || width == 64) && flag_mask == all_flags &&
+        metadata.profile == FlagProfile::LogicalZeroCVA &&
         home.last_use == home.definition_position && !home.spilled &&
         input.Kind() == OperandKind::Value && operand.Kind() == OperandKind::Value &&
-        input.Payload() == operand.Payload() && View(input) == Type::U64 &&
-        View(operand) == Type::U64) {
+        input.Payload() == operand.Payload() && View(input) == operation.type &&
+        View(operand) == operation.type) {
         cursor.Take();
-        const auto value = Read(input, 16);
+        const auto value = Read(input, 16, 64, false, width);
         nzcv_matches = 0;
         PrepareNZCV(all_flags);
-        __ subs(v::x1, X(value),
-                Operand(0));  // SUBS x1,value,#0 also supplies inverted guest C=1.
-        LogicalFlags(1, 64, all_flags, true, /*nzcv_ready=*/true, /*invert_carry=*/false);
+        __ subs(R(1, width),
+                R(value, width),
+                Operand(0));  // SUBS w1/x1,value,#0 also supplies inverted guest C=1.
+        LogicalFlags(1, width, all_flags, true, /*nzcv_ready=*/true, /*invert_carry=*/false);
         saved = true;
         return true;
     }
@@ -147,42 +151,46 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
         saved = true;
         return true;
     }
-    if (NativeNZCV() && operation.opcode == OpCode::And &&
-        (flag_mask == zero || flag_mask == (carry | zero)) && input.Kind() == OperandKind::Value &&
+    if (NativeNZCV() && operation.opcode == OpCode::And && (flag_mask & (zero | negative)) &&
+        !(flag_mask & ~nzcv_flags) && input.Kind() == OperandKind::Value &&
         home.last_use == home.definition_position &&
         (operand.Kind() == OperandKind::Immediate ||
          (operand.Kind() == OperandKind::Value && input.Payload() == operand.Payload() &&
           View(input) == View(operand)))) {
         auto tested_bits = std::min(width, Width(View(input)));
         tested_bits = std::min(tested_bits, allocation.homes[input.Payload()].CarrierBits());
-        const auto test_width = tested_bits <= 32 ? 32u : 64u;
-        const bool immediate = operand.Kind() == OperandKind::Immediate;
-        const bool immediate_test = immediate || tested_bits < 32;
-        LogicalMask mask;
-        u64 tested_mask{};
-        bool encodable = true;
-        if (immediate) {
-            const auto literal_bits = std::min(tested_bits, Width(operand.TypeView()));
-            const auto literal = IntegerImmediate(operand) & (~u64{} >> (64 - literal_bits));
-            tested_mask = literal;
-            encodable = mask.Encode(literal, test_width);
-        } else if (immediate_test) {
-            tested_mask = (u64{1} << tested_bits) - 1;
-            mask.Encode(tested_mask, test_width);
-        }
-        if (encodable) {
-            cursor.Take();
-            const auto value = RawValue(static_cast<u32>(input.Payload()), 16, true);
-            nzcv_matches = 0;
-            PrepareNZCV(flag_mask);
-            if (immediate_test)
-                mask.Emit(masm.exact, R(31, test_width), R(value, test_width), v::ANDS);
-            else
-                __ tst(R(value, test_width), Operand(R(value, test_width)));
-            FinishNZCV(flag_mask,
-                       true);  // TST's C=0 needs the native inverted guest carry.
-            saved = true;      // No numerical reader exists, including a spill reader.
-            return true;
+        const bool needs_sign = (flag_mask & negative) != 0;
+        if (!needs_sign || (tested_bits == width && (width == 32 || width == 64))) {
+            const auto test_width = tested_bits <= 32 ? 32u : 64u;
+            const bool immediate = operand.Kind() == OperandKind::Immediate;
+            const bool immediate_test = immediate || tested_bits < 32;
+            LogicalMask mask;
+            u64 tested_mask{};
+            bool encodable = true;
+            if (immediate) {
+                const auto literal_bits = std::min(tested_bits, Width(operand.TypeView()));
+                const auto literal = IntegerImmediate(operand) & (~u64{} >> (64 - literal_bits));
+                tested_mask = literal;
+                encodable = mask.Encode(literal, test_width);
+            } else if (immediate_test) {
+                tested_mask = (u64{1} << tested_bits) - 1;
+                mask.Encode(tested_mask, test_width);
+            }
+            if (encodable) {
+                cursor.Take();
+                const auto value = RawValue(static_cast<u32>(input.Payload()), 16, true);
+                nzcv_matches = 0;
+                PrepareNZCV(flag_mask);
+                if (immediate_test) {
+                    mask.Emit(masm.exact, R(31, test_width), R(value, test_width), v::ANDS);
+                    FinishNZCV(flag_mask, true);  // TST's C=0 needs the native inverted carry.
+                } else {
+                    __ cmp(R(value, test_width), Operand(0));
+                    FinishNZCV(flag_mask, false);  // CMP supplies inverted guest C=1 directly.
+                }
+                saved = true;  // No numerical reader exists, including a spill reader.
+                return true;
+            }
         }
     }
     return false;

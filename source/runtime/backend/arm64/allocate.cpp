@@ -124,14 +124,57 @@ void Allocator::AssignRegisters() {
     std::array<u32, 20> vector_resident;
     scalar_resident.fill(NodeId::invalid);
     vector_resident.fill(NodeId::invalid);
+    const auto rematerializable = [&](u32 node) {
+        if (!pinned) return false;
+        const auto& op = operations[node];
+        if (op.Metadata() != OperationMetadata{}) return false;
+        if (op.opcode == OpCode::Zero && IntegerType(op.type)) return true;
+        if (op.opcode == OpCode::VecSharedZero && op.type == Type::V128) return true;
+        if (op.opcode == OpCode::VecLoadConst && op.type == Type::V128) {
+            const auto args = program.Operands(NodeId{node});
+            auto at = args.begin();
+            if (at == args.end()) return false;
+            const auto first = *at++;
+            if (first.Kind() != OperandKind::Immediate || at == args.end()) return false;
+            const auto second = *at;
+            if (second.Kind() != OperandKind::Immediate) return false;
+            const auto low = first.Payload(), high = second.Payload();
+            return (!low && !high) || (low == UINT64_MAX && high == UINT64_MAX);
+        }
+        if (op.opcode == OpCode::LoadImm && IntegerType(op.type)) {
+            const auto args = program.Operands(NodeId{node});
+            auto at = args.begin();
+            if (at == args.end()) return false;
+            const auto literal = *at;
+            if (literal.Kind() != OperandKind::Immediate) return false;
+            const auto width = TypeBits(op.type);
+            const auto bits = width == 64 ? literal.Payload()
+                                          : (literal.Payload() & ((std::uint64_t{1} << width) - 1));
+            const unsigned parts = bits <= UINT32_MAX ? 2u : 4u;
+            unsigned zero{}, full{};
+            for (unsigned part = 0; part < parts; ++part) {
+                const auto word = static_cast<unsigned>((bits >> (part * 16)) & 0xffff);
+                zero += word == 0;
+                full += word == 0xffff;
+            }
+            return zero >= parts - 1 || full >= parts - 1;
+        }
+        return false;
+    };
     const auto spill = [&](u32 node) {
+        auto& home = result.homes[node];
+        if (rematerializable(node)) {
+            home.spilled = true;
+            home.reg = 0;
+            home.stack_offset = UINT32_MAX;
+            return true;
+        }
         const auto size = operations[node].type == Type::V128 ? 16u : 8u;
         const auto offset = (result.spill_bytes + size - 1) & ~(size - 1);
         if (offset + size > 32768) {
             Reject(CompileError::FrameTooLarge, NodeId{node}, operations[node].block);
             return false;
         }
-        auto& home = result.homes[node];
         home.spilled = true;
         home.reg = 0;
         home.stack_offset = offset;

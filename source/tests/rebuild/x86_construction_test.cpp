@@ -2020,3 +2020,43 @@ TEST_CASE("x86 software exceptions preserve ISA fault and resume PCs",
         CHECK(state.gprs[swift::runtime::x86::RAX] == 123 && state.packed_flags == flags);
     }
 }
+
+TEST_CASE("x86 scaled literal base, RCPC stack push and VecScalar lowering",
+          "[compile][x86-construction]") {
+    // mov eax, [0x410000 + rcx*8]; add eax, [0x410000 + rdx*8]; push rax; movd xmm0, eax
+    const std::uint8_t code[]{
+            0x8b, 0x04, 0xcd, 0x00, 0x00, 0x41, 0x00, 0x03, 0x04, 0xd5,
+            0x00, 0x00, 0x41, 0x00, 0x50, 0x66, 0x0f, 0x6e, 0xc0,
+    };
+    const BlockWindow window{0x2000, code};
+    auto sse_layout = layout;
+    sse_layout.fprs_offset = 0x300;
+    const auto features = static_cast<std::uint64_t>(TargetFeature::ShiftedAddress) |
+                          static_cast<std::uint64_t>(TargetFeature::PrivateGPRState) |
+                          static_cast<std::uint64_t>(TargetFeature::FaultLocations);
+    auto built =
+            BuildIR({&window, 1}, Scope::Block, sse_layout, {TargetMode::Known, 0xa64, features});
+    REQUIRE(bool(built));
+    std::size_t shifted{}, shifts{}, literal_base{}, vec_scalar{}, store_index{}, rsp_write_index{};
+    for (std::size_t i = 0; i < built.program.Operations().size(); ++i) {
+        const auto& op = built.program.Operations()[i];
+        shifts += op.opcode == OpCode::LslImm;
+        vec_scalar += op.opcode == OpCode::VecScalar;
+        if (op.opcode == OpCode::LoadImm &&
+            built.program.Operands(op).front().Payload() == 0x410000)
+            ++literal_base;
+        if (op.opcode == OpCode::GetOperand &&
+            built.program.Operands(op).front().ExpressionOp() == OperandOp::AddShift)
+            ++shifted;
+        if (op.opcode == OpCode::StoreMemoryTSO) store_index = i;
+        if (op.opcode == OpCode::StoreUniform &&
+            built.program.Operands(op).front().Payload() ==
+                    sse_layout.gprs_offset + 4 * sse_layout.stride)
+            rsp_write_index = i;
+    }
+    CHECK(shifted == 2);
+    CHECK(shifts == 0);
+    CHECK(literal_base == 1);
+    CHECK(vec_scalar == 1);
+    CHECK(store_index < rsp_write_index);
+}

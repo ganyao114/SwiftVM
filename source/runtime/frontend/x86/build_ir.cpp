@@ -51,7 +51,13 @@ public:
     template <class Body> void IfNonZero(Value count, Body&& body) {
         const auto skip = Emit<OpCode::NotGoto>(Type::U64, {Operand::ValueOf(count)});
         if (!skip) throw detail::Rejected{BuildError::IRRejected, skip.error};
+        const auto saved_address = last_address;
+        const auto saved_literals = recent_literals;
+        const auto saved_literal_slot = next_literal_slot;
         body();
+        last_address = saved_address;
+        recent_literals = saved_literals;
+        next_literal_slot = saved_literal_slot;
         const auto bind = Emit<OpCode::BindLabel>(Type::Void, {Operand::ValueOf(skip.GetValue())});
         if (!bind) throw detail::Rejected{BuildError::IRRejected, bind.error};
     }
@@ -71,6 +77,8 @@ public:
             pending_gprs = 0;
             valid_vectors = 0;
             last_address = {};
+            recent_literals = {};
+            next_literal_slot = 0;
             x87_state = {};
             x87_zero = {};
         }
@@ -118,6 +126,7 @@ private:
             std::span<const std::uint8_t> available) const;
     void FinishDispatch(u64 reason);
     Value AddressExpression(Type type, std::initializer_list<Operand> inputs);
+    Value AddressLiteral(TargetInfo target, Type type, u64 bits);
     Value ShiftedAddress(TargetInfo target, Type type, Value base, Value index, std::uint8_t shift);
     void PrepareFault(StateLayout layout, u64 pc, TargetInfo target, bool external_helper);
     void MaterializeGPR(unsigned slot);
@@ -128,12 +137,20 @@ private:
         Type field_type{Type::Void};
     };
 
+    struct CachedLiteral {
+        u64 bits{};
+        NodeId node{};
+        Type type{Type::Void};
+    };
+
     static_assert(sizeof(CachedGPR) == 12);
     std::array<CachedGPR, 16> gprs;
     // Whole-parent coverage is independent of dirty: a U32 read lacks high32,
     // whereas an EAX write defines the full zero-high parent after publication.
     std::uint16_t valid_gprs{}, dirty_gprs{}, whole_gprs{}, pending_gprs{};
     NodeId last_address, x87_state, x87_zero;
+    std::array<CachedLiteral, 2> recent_literals{};
+    std::uint8_t next_literal_slot{};
     std::array<NodeId, 16> vectors;
     std::uint16_t valid_vectors{}, dirty_vectors{};
     const StateLayout layout;
@@ -182,6 +199,21 @@ Value Emitter::AddressExpression(Type type, std::initializer_list<Operand> input
     }
     const auto value = Require(Emit<OpCode::GetOperand>(type, inputs));
     last_address = cache ? value.node : NodeId{};
+    return value;
+}
+
+Value Emitter::AddressLiteral(TargetInfo target, Type type, u64 bits) {
+    if (!target.Has(TargetFeature::ShiftedAddress)) return {};
+    if (private_gprs) {
+        for (const auto& entry : recent_literals)
+            if (entry.node && entry.type == type && entry.bits == bits)
+                return {UnitId(), entry.node};
+    }
+    const auto value = Require(EmitImm<OpCode::LoadImm>(type, bits, type));
+    if (private_gprs) {
+        recent_literals[next_literal_slot] = {bits, value.node, type};
+        next_literal_slot ^= 1u;
+    }
     return value;
 }
 

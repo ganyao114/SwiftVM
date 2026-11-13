@@ -160,10 +160,21 @@ static Value Address(Emitter& builder,
         if (scale > 1) {
             if (scale != 2 && scale != 4 && scale != 8) Unsupported();
             const auto shift = static_cast<std::uint8_t>(scale == 2 ? 1 : scale == 4 ? 2 : 3);
-            if (address)
+            if (address) {
                 if (const auto combined =
                             builder.ShiftedAddress(target, address_type, address, index, shift))
                     return finish(combined);
+            } else if (instruction.disp != 0 && !address32 && !extra_offset &&
+                       segment != Register::FS && segment != Register::GS) {
+                if (const auto base = builder.AddressLiteral(
+                            target,
+                            address_type,
+                            narrow ? static_cast<u32>(instruction.disp) : instruction.disp)) {
+                    if (const auto combined =
+                                builder.ShiftedAddress(target, address_type, base, index, shift))
+                        return combined;
+                }
+            }
             index = Require(builder.LslImm(narrow ? Type::U32 : Type::Void,
                                            {use(index), Operand::Immediate(shift, Type::U8)}));
         }
@@ -178,11 +189,15 @@ static u64 ImmediateBits(const InstructionData& instruction, unsigned bits) {
 }
 
 static Value LoadMemory(Emitter& builder, Type type, Value address, u64 displacement = 0) {
-    if (displacement)
-        return Require(builder.LoadMemoryTSO(type,
-                                             {Operand::Expression(OperandOp::Add, 2),
-                                              Operand::ValueOf(address),
-                                              Operand::Immediate(displacement, Type::U64)}));
+    if (displacement) {
+        const bool negative_narrow = (displacement >> 63) && u64{} - displacement <= UINT32_MAX;
+        return Require(builder.LoadMemoryTSO(
+                type,
+                {Operand::Expression(negative_narrow ? OperandOp::Sub : OperandOp::Add, 2),
+                 Operand::ValueOf(address),
+                 Operand::Immediate(negative_narrow ? u64{} - displacement : displacement,
+                                    Type::U64)}));
+    }
     return Require(builder.LoadMemoryTSO(type, {Operand::ValueOf(address)}));
 }
 
@@ -212,13 +227,16 @@ static Value ReadData(Emitter& builder,
 template <OpCode op = OpCode::StoreMemoryTSO> static void StoreMemory(
         Emitter& builder, Value address, Value value, unsigned bits, u64 displacement = 0) {
     const auto type = bits == 128 ? Type::V128 : ScalarType(bits);
-    if (displacement)
-        Require(builder.template Emit<op>(Type::Void,
-                                          {Operand::Expression(OperandOp::Add, 2),
-                                           Operand::ValueOf(address),
-                                           Operand::Immediate(displacement, Type::U64),
-                                           Operand::ValueOf(value, type)}));
-    else
+    if (displacement) {
+        const bool negative_narrow = (displacement >> 63) && u64{} - displacement <= UINT32_MAX;
+        Require(builder.template Emit<op>(
+                Type::Void,
+                {Operand::Expression(negative_narrow ? OperandOp::Sub : OperandOp::Add, 2),
+                 Operand::ValueOf(address),
+                 Operand::Immediate(negative_narrow ? u64{} - displacement : displacement,
+                                    Type::U64),
+                 Operand::ValueOf(value, type)}));
+    } else
         Require(builder.template Emit<op>(
                 Type::Void, {Operand::ValueOf(address), Operand::ValueOf(value, type)}));
 }

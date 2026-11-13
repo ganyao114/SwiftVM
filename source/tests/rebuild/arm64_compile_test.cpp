@@ -1820,3 +1820,43 @@ TEST_CASE("Dynamic dispatch defers its event poll to the exact L1 probe", "[comp
     CHECK(fallback.words == ordinary.words);
     CHECK(fallback.faults.empty());
 }
+
+TEST_CASE("Pinned constant spill recomputation and CMP zero flags-only TEST", "[compile][arm64]") {
+    using swift::runtime::x86::GuestState;
+    Builder builder{Scope::Block};
+    Need(builder.BeginBlock(Create(builder)));
+    std::array<Value, 20> constants{};
+    for (std::size_t i = 0; i < constants.size(); ++i) constants[i] = Constant(builder, 0x1000 + i);
+    const auto input = Load(builder, offsetof(GuestState, gprs));
+    Need(builder.Append(OpCode::And,
+                        Type::U32,
+                        {Operand::ValueOf(input, Type::U32), Operand::ValueOf(input, Type::U32)},
+                        {FlagBits(Flag::Negate | Flag::Zero), FlagProfile::LogicalZeroCVA, false}));
+    const auto non_negative =
+            Need(builder.Emit<OpCode::CondSet>(Type::Bool, {Operand::Condition(Condition::PL)}));
+    auto sum = Need(builder.Emit<OpCode::Select>(Type::U64,
+                                                 {Operand::ValueOf(non_negative),
+                                                  Operand::ValueOf(constants[0]),
+                                                  Operand::ValueOf(constants[1])}));
+    for (const auto item : constants)
+        sum = Need(builder.Emit<OpCode::Add>(Type::U64,
+                                             {Operand::ValueOf(sum), Operand::ValueOf(item)}));
+    Store(builder, offsetof(GuestState, gprs), sum);
+    Store(builder, offsetof(GuestState, pc), Constant(builder, 0x2000));
+    Need(builder.EndBlock(Terminal::Dispatch()));
+    auto program = Submit(builder);
+    arm64::CompileOptions options;
+    options.dispatcher = 0x1000;
+    options.exit_handler = 0x2000;
+    options.pc_offset = offsetof(GuestState, pc);
+    options.flags_offset = offsetof(GuestState, packed_flags);
+    options.pinned_uniform_offset = offsetof(GuestState, gprs);
+    options.pinned_uniform_slots = 16;
+    options.private_uniforms = options.fault_locations = options.deferred_pc = true;
+    options.native_nzcv = options.local_flags = true;
+    const auto code = arm64::Compile(program, options);
+    REQUIRE(bool(code));
+    // All evicted 1-instruction constants recompute inline without stack spill slots.
+    CHECK(code.spill_slots == 0);
+    CHECK(code.frame_bytes == 0);
+}

@@ -1561,3 +1561,69 @@ TEST_CASE("Wide pending uniform stores retain tail observations", "[compile][ir-
         }
     }
 }
+
+TEST_CASE("Ordered store displacement folding and separated GetOperand reuse",
+          "[compile][ir-optimize]") {
+    Builder builder{Scope::Block, TargetInfo{TargetMode::Known, 0xa64, UINT64_MAX}};
+    const auto block = builder.CreateBlock();
+    REQUIRE(bool(block));
+    REQUIRE(builder.BeginBlock(block.block) == Error::None);
+    const auto base =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+    const auto idx_a =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
+    const auto idx_b =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
+    const auto addr_a1 = Emit(builder,
+                              OpCode::GetOperand,
+                              Type::U64,
+                              {Operand::Expression(OperandOp::AddShift, 2, 3),
+                               Operand::ValueOf(base),
+                               Operand::ValueOf(idx_a)});
+    const auto val_a = Emit(builder, OpCode::LoadMemoryTSO, Type::U32, {Operand::ValueOf(addr_a1)});
+    const auto addr_b = Emit(builder,
+                             OpCode::GetOperand,
+                             Type::U64,
+                             {Operand::Expression(OperandOp::AddShift, 2, 3),
+                              Operand::ValueOf(base),
+                              Operand::ValueOf(idx_b)});
+    const auto val_b = Emit(builder, OpCode::LoadMemoryTSO, Type::U32, {Operand::ValueOf(addr_b)});
+    const auto sum = Emit(
+            builder, OpCode::Add, Type::U32, {Operand::ValueOf(val_a), Operand::ValueOf(val_b)});
+    const auto addr_a2 = Emit(builder,
+                              OpCode::GetOperand,
+                              Type::U64,
+                              {Operand::Expression(OperandOp::AddShift, 2, 3),
+                               Operand::ValueOf(base),
+                               Operand::ValueOf(idx_a)});
+    const auto store_addr = Emit(builder,
+                                 OpCode::Sub,
+                                 Type::U64,
+                                 {Operand::ValueOf(addr_a2), Operand::Immediate(8, Type::U64)});
+    Emit(builder,
+         OpCode::StoreMemoryTSO,
+         Type::Void,
+         {Operand::ValueOf(store_addr), Operand::ValueOf(sum)});
+    REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+    const auto optimized = Optimize(Submit(builder));
+    REQUIRE(bool(optimized));
+    std::size_t get_operands{}, folded_stores{};
+    for (const auto& op : optimized.program.Operations()) {
+        if (op.opcode == OpCode::GetOperand) ++get_operands;
+        if (op.opcode == OpCode::StoreMemoryTSO) {
+            const auto cells = optimized.program.Operands(op);
+            auto at = cells.begin();
+            REQUIRE(at != cells.end());
+            const auto expr = *at++;
+            CHECK(expr.Kind() == OperandKind::Expression);
+            CHECK(expr.ExpressionOp() == OperandOp::Sub);
+            const auto addr_cell = *at++;
+            CHECK(addr_cell.Payload() == addr_a1.node.value);
+            const auto disp_cell = *at++;
+            CHECK(disp_cell.Payload() == 8);
+            ++folded_stores;
+        }
+    }
+    CHECK(get_operands == 2);
+    CHECK(folded_stores == 1);
+}

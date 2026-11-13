@@ -8,9 +8,10 @@ namespace swift::runtime::backend::arm64 {
 namespace detail {
 bool Writer::DeferTest(const Operation& operation, Cursor& cursor) {
     const auto& body = source.Blocks()[block.value];
+    const auto body_end = body.first_node + body.node_count;
     const bool block_tail = source.ScopeKind() == Scope::Block;
     if (!deferred_test.value || deferred_test.site_count != 2 ||
-        node.value != body.first_node + body.node_count - (block_tail ? 4u : 3u) ||
+        node.value + (block_tail ? 4u : 3u) > body_end ||
         (operation.type != Type::U32 && operation.type != Type::U64) ||
         (block_tail && operation.type != Type::U64) ||
         operation.Metadata() != OperationMetadata{all_flags, FlagProfile::LogicalZeroCVA, false})
@@ -25,10 +26,19 @@ bool Writer::DeferTest(const Operation& operation, Cursor& cursor) {
         source.Operations()[deferred_test.value.value].type != operation.type)
         return false;
 
-    // Both forms publish the previous pointer and read NE. A Block then
+    // Both forms publish the previous pointer and read NE. Backward loop
+    // edges may place one GuestSafepoint before CondSet; a Block then
     // selects its actual self/exit PC. Validate the complete tail before
     // suppressing TEST; the emitted prefix needs no rollback on a mismatch.
-    const auto tail_store = NodeId{node.value + 1}, condition = NodeId{node.value + 2};
+    const auto tail_store = NodeId{node.value + 1};
+    auto condition = NodeId{node.value + 2};
+    if (source.Operations()[condition.value].opcode == OpCode::GuestSafepoint) {
+        if (!Linked() || options.pc_offset == UINT32_MAX ||
+            source.Operations()[condition.value].Metadata() != OperationMetadata{})
+            return false;
+        condition = NodeId{node.value + 3};
+    }
+    if (condition.value + (block_tail ? 2u : 1u) != body_end) return false;
     const auto& store = source.Operations()[tail_store.value];
     const auto& check = source.Operations()[condition.value];
     if (store.opcode != OpCode::StoreUniform || store.Metadata() != OperationMetadata{} ||
@@ -94,7 +104,7 @@ void Writer::CompleteDeferredTest() {
     __ orr(v::w29,
            v::wzr,
            Operand(v::w1));  // MOV w29,w1: AF=(w29^w1).bit4 is zero and the tag is gone.
-    __ cmp(X(deferred_test.value_register),
+    __ cmp(R(deferred_test.value_register, deferred_test.bits == 64 ? 64 : 32),
            Operand(0));  // CMP actual next,#0; inverted C=1.
 }
 

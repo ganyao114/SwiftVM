@@ -6,6 +6,7 @@ namespace swift::runtime::backend::arm64 {
 
 namespace detail {
 void Writer::HandleVecSharedZeroFamily(OpContext& ctx) {
+    if (ctx.home.spilled && ctx.home.stack_offset == UINT32_MAX) return;
     const auto destination = ctx.destination;
     __ eor(Lanes(destination, 8), Lanes(destination, 8), Lanes(destination, 8));
 }
@@ -14,8 +15,22 @@ void Writer::HandleVecLoadConstFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto destination = ctx.destination;
     const auto low = IntegerImmediate(cursor.Take()), high = IntegerImmediate(cursor.Take());
+    if (ctx.home.spilled && ctx.home.stack_offset == UINT32_MAX) return;
+    if (!low && !high) {
+        __ eor(Lanes(destination, 8), Lanes(destination, 8), Lanes(destination, 8));
+        return;
+    }
+    if (low == UINT64_MAX && high == UINT64_MAX) {
+        __ cmeq(Lanes(destination, 64), Lanes(destination, 64), Lanes(destination, 64));
+        return;
+    }
     Immediate(16, low);
+    if (low == high) {
+        __ dup(Lanes(destination, 64), v::x16);
+        return;
+    }
     __ fmov(D(destination), v::x16);
+    if (!high) return;
     Immediate(17, high);
     __ ins(Lanes(destination, 64), 1, v::x17);
 }
@@ -25,6 +40,17 @@ void Writer::HandleVecDup64Family(OpContext& ctx) {
     const auto destination = ctx.destination;
     const auto input = Read(cursor.Take(), 16);
     __ dup(Lanes(destination, 64), X(input));
+}
+
+void Writer::HandleVecScalarFamily(OpContext& ctx) {
+    if (!ctx.vector) Reject(CompileError::UnsupportedType);
+    const auto input_cell = ctx.cursor.Take();
+    const auto bits = Width(View(input_cell));
+    const auto input = Read(input_cell, 16, 64, false, bits == 32 ? 32u : 64u);
+    if (bits <= 32)
+        __ fmov(S(ctx.destination), W(input));
+    else
+        __ fmov(D(ctx.destination), X(input));
 }
 
 void Writer::HandleVecMinFamily(OpContext& ctx) {

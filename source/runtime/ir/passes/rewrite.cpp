@@ -226,6 +226,8 @@ Error RewriteValues(Context& context) {
     // one copy edge or a neighboring extract, without a value cache.
     UniformCache uniforms;
     BlockId block{};
+    std::array<NodeId, 2> recent_operands{};
+    std::uint8_t next_operand_slot{};
     // Only algebra/folding and Uniform opcode changes need a bounded external
     // draft. Collect its post-copy inputs and uses while editing copy
     // edges in the actual word store, without decoding the range again.
@@ -236,7 +238,14 @@ Error RewriteValues(Context& context) {
         const auto op = operations[at];
         if (op.block != block) {
             uniforms.Clear();
+            recent_operands = {};
+            next_operand_slot = 0;
             block = op.block;
+        }
+        if (op.opcode == OpCode::Goto || op.opcode == OpCode::NotGoto ||
+            op.opcode == OpCode::BindLabel) {
+            recent_operands = {};
+            next_operand_slot = 0;
         }
         const auto meta = op.Metadata();
         const auto effects = EffectsFor(op.opcode, meta);
@@ -285,13 +294,15 @@ Error RewriteValues(Context& context) {
         bool folding = editable && !has_metadata && Foldable(op);
         const bool vector_draft = editable && !has_metadata && signed_mul_widen_low &&
                                   op.opcode == OpCode::VecMadd16 && op.type == Type::V128;
-        const bool address_draft = editable && !has_metadata &&
-                                   op.opcode == OpCode::LoadMemoryTSO && op.operand_count == 1 &&
-                                   (op.type == Type::U8 || op.type == Type::U16 ||
-                                    op.type == Type::U32 || op.type == Type::U64);
+        const bool address_draft =
+                editable && !has_metadata &&
+                ((op.opcode == OpCode::LoadMemoryTSO && op.operand_count == 1 && Scalar(op.type)) ||
+                 (op.opcode == OpCode::StoreMemoryTSO && op.operand_count == 2));
+        const bool operand_draft = editable && !has_metadata && op.opcode == OpCode::GetOperand &&
+                                   (op.type == Type::U32 || op.type == Type::U64);
         const bool uniform_op =
                 op.opcode == OpCode::LoadUniform || op.opcode == OpCode::StoreUniform;
-        const bool draft = folding || uniform_op || vector_draft || address_draft;
+        const bool draft = folding || uniform_op || vector_draft || address_draft || operand_draft;
         std::size_t count{}, old_use_count{};
         bool complete = true;
         const auto inputs = editor.Operands(id);
@@ -338,10 +349,45 @@ Error RewriteValues(Context& context) {
         }
         if (!draft || !complete) continue;
         const auto uniform = count && cells[0].kind == OperandKind::Uniform ? cells[0] : Operand{};
-        bool uniform_forward{};
+        bool uniform_forward{}, operand_forward{};
         auto opcode = op.opcode;
         auto new_count = count;
         if (editable) {
+            if (operand_draft && count <= 4) {
+                for (const auto candidate_id : recent_operands) {
+                    if (!candidate_id || !(rows[candidate_id.value] & live_bit)) continue;
+                    const auto& previous = operations[candidate_id.value];
+                    if (previous.opcode != OpCode::GetOperand || previous.type != op.type ||
+                        Metadata(previous))
+                        continue;
+                    const auto actual = editor.Operands(candidate_id);
+                    auto cell_it = actual.begin();
+                    bool same = true;
+                    for (std::size_t i = 0; i < count; ++i) {
+                        if (cell_it == actual.end()) {
+                            same = false;
+                            break;
+                        }
+                        const auto prev_cell = *cell_it++;
+                        if (prev_cell.Kind() != cells[i].kind ||
+                            prev_cell.TypeView() != cells[i].type ||
+                            prev_cell.Payload() != cells[i].payload ||
+                            prev_cell.Count() != cells[i].count ||
+                            prev_cell.Code() != cells[i].code) {
+                            same = false;
+                            break;
+                        }
+                    }
+                    if (same && cell_it == actual.end()) {
+                        cells[0] = Operand::ValueOf({unit, candidate_id}, op.type);
+                        opcode = op.type == Type::U32 ? OpCode::ZeroExtend32 : OpCode::ZeroExtend64;
+                        new_count = 1;
+                        operand_forward = true;
+                        folding = false;
+                        break;
+                    }
+                }
+            }
             if (!has_metadata && op.opcode == OpCode::LoadUniform && count == 1 &&
                 uniform.kind == OperandKind::Uniform && uniform.type == op.type &&
                 CachedBytes(op.type)) {
@@ -358,18 +404,19 @@ Error RewriteValues(Context& context) {
                 }
             }
             const bool combined =
-                    (folding &&
-                     (FoldIdentity(editor, operations, op, cells, new_count, opcode) ||
-                      (opcode == OpCode::BitInsert &&
-                       FoldLowByteMask(editor, operations, id, cells, new_count, opcode)) ||
-                      ((opcode == OpCode::BitExtract || opcode == OpCode::LsrImm) &&
-                       FoldExtractShift(
-                               editor, operations, id, rows, cells, new_count, opcode)))) ||
-                    (vector_draft &&
-                     FuseSignedMulWidenLow(
-                             editor, operations, id, rows, cells, new_count, opcode)) ||
-                    (address_draft &&
-                     FoldOrderedLoadAddress(editor, operations, id, rows, cells, new_count));
+                    !operand_forward &&
+                    ((folding &&
+                      (FoldIdentity(editor, operations, op, cells, new_count, opcode) ||
+                       (opcode == OpCode::BitInsert &&
+                        FoldLowByteMask(editor, operations, id, cells, new_count, opcode)) ||
+                       ((opcode == OpCode::BitExtract || opcode == OpCode::LsrImm) &&
+                        FoldExtractShift(
+                                editor, operations, id, rows, cells, new_count, opcode)))) ||
+                     (vector_draft &&
+                      FuseSignedMulWidenLow(
+                              editor, operations, id, rows, cells, new_count, opcode)) ||
+                     (address_draft &&
+                      FoldOrderedLoadAddress(editor, operations, id, rows, cells, new_count)));
             u64 bits{};
             const auto candidate =
                     Operation{op.flag_outputs, 0, 0, op.block, opcode, op.type, op.properties};
@@ -380,7 +427,7 @@ Error RewriteValues(Context& context) {
                 cells[0] = Operand::Immediate(bits, op.type);
                 new_count = 1;
             }
-            if (uniform_forward || folded || combined) {
+            if (uniform_forward || operand_forward || folded || combined) {
                 const auto replacement = std::span<const Operand>{cells.data(), new_count};
                 if (const auto error = editor.Rewrite(id, opcode, op.type, replacement, meta);
                     error != Error::None)
@@ -394,7 +441,10 @@ Error RewriteValues(Context& context) {
                         return Error::CapacityOverflow;
                 stats.uniform_forwarded += uniform_forward;
                 // Includes constant folds and bounded scalar/vector/address algebra.
-                stats.folded += folded || combined;
+                stats.folded += operand_forward || folded || combined;
+            } else if (operand_draft && count <= 4) {
+                recent_operands[next_operand_slot] = id;
+                next_operand_slot ^= 1u;
             }
         }
         if (op.opcode == OpCode::StoreUniform && count == 2 &&

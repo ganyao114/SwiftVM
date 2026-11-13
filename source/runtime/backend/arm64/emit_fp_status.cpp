@@ -45,12 +45,53 @@ u32 Writer::DenormalControlGuard() {
     return UINT32_MAX;
 }
 
-void Writer::RecordDenormalLanes(std::span<const unsigned> inputs,
+bool Writer::ProvenNoDenormal(CellView cell, unsigned bits, unsigned count) const {
+    if (cell.Kind() != OperandKind::Value || cell.Payload() >= source.Operations().size())
+        return false;
+    const auto id = static_cast<u32>(cell.Payload());
+    const auto& op = source.Operations()[id];
+    if (op.opcode == OpCode::VecSharedZero) return true;
+    u64 low{}, high{};
+    if (op.opcode == OpCode::VecLoadConst) {
+        const auto args = source.Operands(NodeId{id});
+        auto at = args.begin();
+        if (at == args.end()) return false;
+        const auto first = *at++;
+        if (first.Kind() != OperandKind::Immediate || at == args.end()) return false;
+        const auto second = *at;
+        if (second.Kind() != OperandKind::Immediate) return false;
+        low = first.Payload();
+        high = second.Payload();
+    } else if (op.opcode == OpCode::VecScalar) {
+        const auto args = source.Operands(NodeId{id});
+        auto at = args.begin();
+        if (at == args.end()) return false;
+        const auto literal = *at;
+        if (literal.Kind() != OperandKind::Immediate) return false;
+        const auto view_bits = Bits(literal.TypeView());
+        if (!view_bits || view_bits > 64) return false;
+        low = view_bits == 64 ? literal.Payload()
+                              : (literal.Payload() & ((u64{1} << view_bits) - 1));
+    } else {
+        return false;
+    }
+    const u64 exp_mask = bits == 64 ? (u64{0x7ff} << 52) : (u64{0xff} << 23);
+    const u64 frac_mask = bits == 64 ? ((u64{1} << 52) - 1) : ((u64{1} << 23) - 1);
+    for (unsigned i = 0; i < count; ++i) {
+        const u64 word = bits == 64 ? (i == 0 ? low : high)
+                                    : (((i < 2 ? low : high) >> ((i & 1) * 32)) & UINT32_MAX);
+        if ((word & exp_mask) == 0 && (word & frac_mask) != 0) return false;
+    }
+    return true;
+}
+
+void Writer::RecordDenormalLanes(std::span<const std::uint8_t> inputs,
                                  unsigned bits,
                                  unsigned count,
-                                 std::initializer_list<unsigned> peers,
+                                 std::span<const std::uint8_t> peers,
                                  unsigned denominator,
-                                 unsigned fma_flags) {
+                                 unsigned fma_flags,
+                                 bool negative_invalid) {
     const unsigned fraction = bits == 32 ? 23 : 52, exponent = bits == 32 ? 8 : 11;
     const u64 exponent_mask = ((u64{1} << exponent) - 1) << fraction;
     const bool fused = fma_flags != UINT32_MAX;
@@ -104,14 +145,14 @@ void Writer::RecordDenormalLanes(std::span<const unsigned> inputs,
             __ lsl(R(17, bits), R(16, bits), 1);
             skip_zero(R(17, bits));
         }
-        if (source.Operations()[node.value].opcode == OpCode::VecFUnary) {
+        if (negative_invalid) {
             done[done_count++] = masm.Here();
             __ tbnz(R(16, bits), bits - 1, std::int64_t{0});  // Negative sqrt: IE takes priority.
         }
         for (const auto peer : peers) nan(peer);
         if (denominator != UINT32_MAX) zero(denominator);  // ZE takes priority over same-lane DE.
         if (fused) {
-            const auto a = peers.begin()[0], b = peers.begin()[1], c = peers.begin()[2];
+            const auto a = peers[0], b = peers[1], c = peers[2];
             const auto infinity = [&](unsigned reg) {
                 read(reg);
                 __ and_(R(17, bits), R(16, bits), Operand((u64{1} << (bits - 1)) - 1));
@@ -164,49 +205,118 @@ void Writer::RecordDenormalInput(unsigned value,
                                  unsigned fma_flags) {
     if (options.mxcsr_flush_mode != UINT8_MAX && (options.mxcsr_flush_mode & 1)) return;
     const bool fused = fma_flags != UINT32_MAX;
-    const std::span<const unsigned> inputs =
-            fused ? std::span<const unsigned>{peers.begin(), peers.size()}
-                  : std::span<const unsigned>{&value, 1};
-    const auto disabled = DenormalControlGuard();
-    u32 normal = UINT32_MAX;
-    if (bits == 32 && count == 4) {
+    std::array<std::uint8_t, 3> input_regs{};
+    std::uint8_t input_count{};
+    if (fused) {
+        for (const auto peer : peers) input_regs[input_count++] = static_cast<std::uint8_t>(peer);
+    } else {
+        input_regs[input_count++] = static_cast<std::uint8_t>(value);
+    }
+    std::array<std::uint8_t, 3> peer_regs{};
+    std::uint8_t peer_count{};
+    for (const auto peer : peers) peer_regs[peer_count++] = static_cast<std::uint8_t>(peer);
+    const bool negative_invalid =
+            node && source.Operations()[node.value].opcode == OpCode::VecFUnary;
+    const bool defer_cold =
+            !long_forward_branches && cold_denormal_count < cold_denormal_stubs.size();
+    const u32 disabled = defer_cold ? UINT32_MAX : DenormalControlGuard();
+    std::array<u32, 3> rare{};
+    std::uint8_t rare_count{};
+    if (count == 1) {
+        for (unsigned i = 0; i < input_count; ++i) {
+            const unsigned input = input_regs[i];
+            __ fmov(R(16, bits), bits == 32 ? S(input) : D(input));
+            __ lsl(R(16, bits), R(16, bits), 1);
+            __ sub(R(16, bits), R(16, bits), Operand(1));
+            __ lsr(R(16, bits), R(16, bits), bits == 32 ? 24 : 53);
+            rare[rare_count++] = masm.Here();
+            __ cbz(v::w16, std::int64_t{0});
+        }
+    } else {
         unsigned scratch{};
         for (const unsigned candidate : {VectorTemporary(), VectorTemporary(true), 0u, 1u}) {
-            bool input = candidate == value;
-            for (const auto peer : peers) input |= candidate == peer;
-            if (!input) {
+            bool used = candidate == value;
+            for (const auto peer : peers) used |= candidate == peer;
+            if (!used) {
                 scratch = candidate;
                 break;
             }
         }
-        std::array<u32, 3> rare{};
-        unsigned rare_count{};
-        for (const auto input : inputs) {
-            __ shl(Lanes(scratch, 32), Lanes(input, 32), 1);
-            __ ushr(Lanes(scratch, 32), Lanes(scratch, 32), 24);
-            __ uminv(S(scratch), Lanes(scratch, 32));
-            __ fmov(v::w16, S(scratch));
+        for (unsigned i = 0; i < input_count; ++i) {
+            const unsigned input = input_regs[i];
+            if (bits == 64) {
+                __ uzp2(Lanes(scratch, 32), Lanes(input, 32), Lanes(input, 32));
+                __ shl(Lanes(scratch, 32, 64), Lanes(scratch, 32, 64), 1);
+                __ uminp(Lanes(scratch, 32, 64), Lanes(scratch, 32, 64), Lanes(scratch, 32, 64));
+                __ fmov(v::w16, S(scratch));
+                __ lsr(v::w16, v::w16, 21);
+            } else {
+                __ shl(Lanes(scratch, 32), Lanes(input, 32), 1);
+                __ uminv(S(scratch), Lanes(scratch, 32));
+                __ fmov(v::w16, S(scratch));
+                __ lsr(v::w16, v::w16, 24);
+            }
             rare[rare_count++] = masm.Here();
             __ cbz(v::w16, std::int64_t{0});
         }
-        normal = masm.Here();
-        __ b(std::int64_t{0});
-        for (unsigned i = 0; i < rare_count; ++i) masm.Patch(rare[i], masm.Here());
     }
-    RecordDenormalLanes(inputs, bits, count, peers, denominator, fma_flags);
-    if (normal != UINT32_MAX) masm.Patch(normal, masm.Here());
+    if (defer_cold) {
+        cold_denormal_stubs[cold_denormal_count++] = {rare,
+                                                      masm.Here(),
+                                                      denominator,
+                                                      fma_flags,
+                                                      input_regs,
+                                                      peer_regs,
+                                                      rare_count,
+                                                      input_count,
+                                                      peer_count,
+                                                      static_cast<std::uint8_t>(bits),
+                                                      static_cast<std::uint8_t>(count),
+                                                      negative_invalid};
+        return;
+    }
+    const auto normal = masm.Here();
+    __ b(std::int64_t{0});
+    for (unsigned i = 0; i < rare_count; ++i) masm.Patch(rare[i], masm.Here());
+    RecordDenormalLanes(std::span<const std::uint8_t>{input_regs.data(), input_count},
+                        bits,
+                        count,
+                        std::span<const std::uint8_t>{peer_regs.data(), peer_count},
+                        denominator,
+                        fma_flags,
+                        negative_invalid);
+    masm.Patch(normal, masm.Here());
     if (disabled != UINT32_MAX) masm.Patch(disabled, masm.Here());
 }
 
-void Writer::RecordDenormalInputs(
-        unsigned left, unsigned right, unsigned bits, unsigned count, unsigned denominator) {
+void Writer::RecordDenormalInputs(unsigned left,
+                                  unsigned right,
+                                  unsigned bits,
+                                  unsigned count,
+                                  unsigned denominator,
+                                  bool skip_left,
+                                  bool skip_right) {
+    if (skip_left && skip_right) return;
+    if (skip_left) {
+        RecordDenormalInput(right, bits, count, {left}, denominator);
+        return;
+    }
+    if (skip_right || left == right) {
+        if (left == right)
+            RecordDenormalInput(left, bits, count, {}, denominator);
+        else
+            RecordDenormalInput(left, bits, count, {right}, denominator);
+        return;
+    }
     if (count == 1) {
         RecordDenormalInput(left, bits, count, {right}, denominator);
         RecordDenormalInput(right, bits, count, {left}, denominator);
         return;
     }
     if (options.mxcsr_flush_mode != UINT8_MAX && (options.mxcsr_flush_mode & 1)) return;
-    const auto disabled = DenormalControlGuard();
+    const bool defer_cold =
+            !long_forward_branches && cold_denormal_count < cold_denormal_stubs.size();
+    const auto disabled = defer_cold ? UINT32_MAX : DenormalControlGuard();
     // All candidates are reserved scratches, never pinned/allocated homes.
     // Spilled inputs can occupy v0/v1, so exclude both actual source registers.
     std::array<unsigned, 2> scratch{};
@@ -230,12 +340,36 @@ void Writer::RecordDenormalInputs(
     __ uminv(S(first), Lanes(first, 32));
     __ fmov(v::w16, S(first));
     __ lsr(v::w16, v::w16, bits == 32 ? 24 : 21);
+    const std::array<std::uint8_t, 3> inputs{
+            static_cast<std::uint8_t>(left), static_cast<std::uint8_t>(right), 0};
+    if (defer_cold) {
+        const auto branch = masm.Here();
+        __ cbz(v::w16, std::int64_t{0});
+        cold_denormal_stubs[cold_denormal_count++] = {{branch, 0, 0},
+                                                      masm.Here(),
+                                                      denominator,
+                                                      UINT32_MAX,
+                                                      inputs,
+                                                      inputs,
+                                                      1,
+                                                      2,
+                                                      2,
+                                                      static_cast<std::uint8_t>(bits),
+                                                      static_cast<std::uint8_t>(count),
+                                                      false};
+        return;
+    }
     const auto normal = masm.Here();
     __ cbnz(v::x16, std::int64_t{0});
-    const std::array inputs{left, right};
     // One lane classification handles both inputs and checks NaN/invalid
     // precedence before setting DE. No source or guest integer flags change.
-    RecordDenormalLanes(inputs, bits, count, {left, right}, denominator, UINT32_MAX);
+    RecordDenormalLanes(std::span<const std::uint8_t>{inputs.data(), 2},
+                        bits,
+                        count,
+                        std::span<const std::uint8_t>{inputs.data(), 2},
+                        denominator,
+                        UINT32_MAX,
+                        false);
     masm.Patch(normal, masm.Here());
     if (disabled != UINT32_MAX) masm.Patch(disabled, masm.Here());
 }

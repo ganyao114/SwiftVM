@@ -173,7 +173,8 @@ void Writer::HandleVecFAddFamily(OpContext& ctx) {
     const auto first_temp = VectorTemporary();
     const auto second_temp = VectorTemporary(true);
     if (!vector) Reject(CompileError::UnsupportedType);
-    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+    const auto left_cell = cursor.Take(), right_cell = cursor.Take();
+    const auto left = VectorValue(left_cell, 0), right = VectorValue(right_cell, 1);
     const auto bits = IntegerImmediate(cursor.Take());
     if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
     const auto emit = [&](unsigned dst, unsigned lhs, unsigned rhs) {
@@ -188,27 +189,34 @@ void Writer::HandleVecFAddFamily(OpContext& ctx) {
             __ fdiv(vd, vn, vm);
     };
     unsigned a = left, b = right;
+    const auto lanes = static_cast<unsigned>(128 / bits);
     LoadMxcsrFlushControl();
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
         VectorMove(first_temp, left);
         VectorMove(second_temp, right);
-        const auto lanes = static_cast<unsigned>(128 / bits);
         FlushScalarDenormal(first_temp, 6, 0, static_cast<unsigned>(bits), lanes);
         FlushScalarDenormal(second_temp, 6, 0, static_cast<unsigned>(bits), lanes);
         a = first_temp;
         b = second_temp;
     }
     const auto denominator = operation.opcode == OpCode::VecFDiv ? b : UINT32_MAX;
-    RecordDenormalInputs(a, b, bits, 128 / bits, denominator);
+    RecordDenormalInputs(a,
+                         b,
+                         bits,
+                         lanes,
+                         denominator,
+                         ProvenNoDenormal(left_cell, bits, lanes),
+                         ProvenNoDenormal(right_cell, bits, lanes));
     emit(destination, a, b);
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
-        FlushScalarDenormal(destination, 15, 0, static_cast<unsigned>(bits), 128 / bits);
+        FlushScalarDenormal(destination, 15, 0, static_cast<unsigned>(bits), lanes);
 }
 
 void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& cursor = ctx.cursor;
-    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+    const auto left_cell = cursor.Take(), right_cell = cursor.Take();
+    const auto left = VectorValue(left_cell, 0), right = VectorValue(right_cell, 1);
     const auto opcode = ctx.operation.opcode;
     const bool single = opcode == OpCode::VecFAddScalar32 || opcode == OpCode::VecFSubScalar32 ||
                         opcode == OpCode::VecFMulScalar32 || opcode == OpCode::VecFDivScalar32;
@@ -226,6 +234,8 @@ void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
         else
             __ fdiv(out, lhs, rhs);
     };
+    const bool skip_left = ProvenNoDenormal(left_cell, bits, 1);
+    const bool skip_right = ProvenNoDenormal(right_cell, bits, 1);
     LoadMxcsrFlushControl();
     const bool divide = opcode == OpCode::VecFDivScalar32 || opcode == OpCode::VecFDivScalar64;
     if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
@@ -233,11 +243,13 @@ void Writer::HandleVecFAddScalar64Family(OpContext& ctx) {
         VectorMove(second, right);
         FlushScalarDenormal(first, 6, 0, bits, 1);
         FlushScalarDenormal(second, 6, 0, bits, 1);
-        RecordDenormalInputs(first, second, bits, 1, divide ? second : UINT32_MAX);
+        RecordDenormalInputs(
+                first, second, bits, 1, divide ? second : UINT32_MAX, skip_left, skip_right);
         emit(first, second);
         FlushScalarDenormal(first, 15, 0, bits, 1);
     } else {
-        RecordDenormalInputs(left, right, bits, 1, divide ? right : UINT32_MAX);
+        RecordDenormalInputs(
+                left, right, bits, 1, divide ? right : UINT32_MAX, skip_left, skip_right);
         emit(left, right);
     }
     VectorMove(ctx.destination, left);
@@ -305,7 +317,8 @@ void Writer::HandleVecFCmpFamily(OpContext& ctx) {
     const auto destination = ctx.destination;
     const auto first_temp = VectorTemporary();
     const auto second_temp = VectorTemporary(true);
-    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+    const auto left_cell = cursor.Take(), right_cell = cursor.Take();
+    const auto left = VectorValue(left_cell, 0), right = VectorValue(right_cell, 1);
     const auto encoded = IntegerImmediate(cursor.Take());
     const auto bits = encoded & ~u64{128};
     if (bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
@@ -320,7 +333,13 @@ void Writer::HandleVecFCmpFamily(OpContext& ctx) {
         a = first_temp;
         b = second_temp;
     }
-    RecordDenormalInputs(a, b, bits, 1);
+    RecordDenormalInputs(a,
+                         b,
+                         bits,
+                         1,
+                         UINT32_MAX,
+                         ProvenNoDenormal(left_cell, bits, 1),
+                         ProvenNoDenormal(right_cell, bits, 1));
     __ mrs(v::x30, v::NZCV);  // Preserve the actual guest/packed-mode host NZCV.
     if (encoded & 128)
         __ fcmpe(bits == 32 ? S(a) : D(a), bits == 32 ? S(b) : D(b));
@@ -372,7 +391,8 @@ void Writer::HandleVecFCvtPackedFamily(OpContext& ctx) {
 void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& cursor = ctx.cursor;
-    const auto left = VectorValue(cursor.Take(), 0), right = VectorValue(cursor.Take(), 1);
+    const auto left_cell = cursor.Take(), right_cell = cursor.Take();
+    const auto left = VectorValue(left_cell, 0), right = VectorValue(right_cell, 1);
     const auto bits = IntegerImmediate(cursor.Take()), encoded = IntegerImmediate(cursor.Take());
     const auto relations = encoded & 15;
     const auto scalar = IntegerImmediate(cursor.Take());
@@ -401,7 +421,13 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
             break;
         }
     const unsigned count = scalar ? 1 : 128 / bits;
-    RecordDenormalInputs(a, b, bits, count);
+    RecordDenormalInputs(a,
+                         b,
+                         bits,
+                         count,
+                         UINT32_MAX,
+                         ProvenNoDenormal(left_cell, bits, count),
+                         ProvenNoDenormal(right_cell, bits, count));
     const bool invert = relations & 8;
     const auto ordered = static_cast<unsigned>(invert ? ~relations & 7 : relations);
     // FCMEQ is quiet, while FCMGT/FCMGE signal on every NaN. Preserve their
@@ -451,11 +477,13 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
 void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& c = ctx.cursor;
-    const auto left = VectorValue(c.Take(), 0), right = VectorValue(c.Take(), 1);
+    const auto left_cell = c.Take(), right_cell = c.Take();
+    const auto left = VectorValue(left_cell, 0), right = VectorValue(right_cell, 1);
     const auto bits = IntegerImmediate(c.Take()), maximum = IntegerImmediate(c.Take()),
                scalar = IntegerImmediate(c.Take());
     if ((bits != 32 && bits != 64) || maximum > 1 || scalar > 1)
         Reject(CompileError::UnsupportedOperand);
+    const unsigned count = scalar ? 1 : 128 / bits;
     unsigned a = left, b = right, result = VectorTemporary();
     LoadMxcsrFlushControl();
     if (options.mxcsr_flush_offset != UINT32_MAX &&
@@ -465,10 +493,16 @@ void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
         result = ctx.destination == 0 ? 1 : 0;
         VectorMove(a, left);
         VectorMove(b, right);
-        FlushScalarDenormal(a, 6, 0, bits, scalar ? 1 : 128 / bits);
-        FlushScalarDenormal(b, 6, 0, bits, scalar ? 1 : 128 / bits);
+        FlushScalarDenormal(a, 6, 0, bits, count);
+        FlushScalarDenormal(b, 6, 0, bits, count);
     }
-    RecordDenormalInputs(a, b, bits, scalar ? 1 : 128 / bits);
+    RecordDenormalInputs(a,
+                         b,
+                         bits,
+                         count,
+                         UINT32_MAX,
+                         ProvenNoDenormal(left_cell, bits, count),
+                         ProvenNoDenormal(right_cell, bits, count));
     // Strict comparison selects source 2 for equal values and unordered,
     // retaining that operand's zero sign and even its signaling NaN payload.
     const auto fp = [&](unsigned reg) {
@@ -477,7 +511,7 @@ void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
     __ fcmgt(fp(result), fp(maximum ? a : b), fp(maximum ? b : a));
     __ bsl(Lanes(result, 8), Lanes(a, 8), Lanes(b, 8));
     if (options.mxcsr_flush_offset == UINT32_MAX && options.native_fp_environment)
-        FlushScalarDenormal(result, 6, 0, bits, scalar ? 1 : 128 / bits);
+        FlushScalarDenormal(result, 6, 0, bits, count);
     if (scalar) {
         VectorMove(ctx.destination, a);
         __ ins(Lanes(ctx.destination, bits), 0, Lanes(result, bits), 0);
@@ -488,7 +522,9 @@ void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
 void Writer::HandleVecFUnaryFamily(OpContext& ctx) {
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& c = ctx.cursor;
-    const auto merge = VectorValue(c.Take(), 0), input = VectorValue(c.Take(), 1);
+    const auto merge = VectorValue(c.Take(), 0);
+    const auto input_cell = c.Take();
+    const auto input = VectorValue(input_cell, 1);
     const auto bits = IntegerImmediate(c.Take()), kind = IntegerImmediate(c.Take()),
                scalar = IntegerImmediate(c.Take());
     if ((bits != 32 && bits != 64) || kind > 2 || scalar > 1 || (kind && bits != 32))
@@ -514,7 +550,7 @@ void Writer::HandleVecFUnaryFamily(OpContext& ctx) {
         LoadMxcsrFlushControl();
         if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
             FlushScalarDenormal(value, 6, 0, bits, count);
-        RecordDenormalInput(value, bits, count);
+        if (!ProvenNoDenormal(input_cell, bits, count)) RecordDenormalInput(value, bits, count);
     }
     if (kind) __ mrs(v::x30, v::FPSR);  // RCP/RSQRT do not publish SIMD FP exceptions.
     if (scalar) {

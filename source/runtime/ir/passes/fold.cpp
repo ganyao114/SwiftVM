@@ -225,8 +225,10 @@ bool FoldOrderedLoadAddress(const Builder& editor,
                             const std::vector<u64>& rows,
                             std::span<Operand> cells,
                             std::size_t& count) {
-    if (count != 1 || cells[0].kind != OperandKind::Value ||
-        ReadType(cells[0], operations) != Type::U64)
+    const bool store = operations[id.value].opcode == OpCode::StoreMemoryTSO;
+    if (count != (store ? 2u : 1u) || cells[0].kind != OperandKind::Value ||
+        ReadType(cells[0], operations) != Type::U64 ||
+        (store && (cells[1].kind != OperandKind::Value || !Scalar(ReadType(cells[1], operations)))))
         return false;
     const auto address_id = static_cast<std::uint32_t>(cells[0].payload);
     const auto& address = operations[address_id];
@@ -246,15 +248,22 @@ bool FoldOrderedLoadAddress(const Builder& editor,
     const auto displacement =
             address.opcode == OpCode::Sub ? u64{} - literal.Payload() : literal.Payload();
     if (displacement > 255 && displacement < u64{} - 256) return false;
-    // The load plus its exclusive Add/Sub cover four edit words. Even a
-    // negative wide literal needs only Expression + Value + two Imm words.
+    // The access plus its exclusive Add/Sub cover four edit words. Stores
+    // keep their value cell and turn negative wide literals into narrow Sub.
     // No other structural rewrite creates or grows these address producers.
-    cells[0] =
-            Operand::Expression(address.opcode == OpCode::Add ? OperandOp::Add : OperandOp::Sub, 2);
+    const auto stored = store ? cells[1] : Operand{};
+    auto op = address.opcode == OpCode::Add ? OperandOp::Add : OperandOp::Sub;
+    auto amount = literal.Payload();
+    if (store && amount > UINT32_MAX) {
+        op = op == OperandOp::Add ? OperandOp::Sub : OperandOp::Add;
+        amount = u64{} - amount;
+    }
+    cells[0] = Operand::Expression(op, 2);
     cells[1] = Operand::ValueOf(
             {editor.UnitId(), NodeId{static_cast<std::uint32_t>(base.Payload())}}, base.TypeView());
-    cells[2] = Operand::Immediate(literal.Payload(), Type::U64);
-    count = 3;
+    cells[2] = Operand::Immediate(amount, Type::U64);
+    if (store) cells[3] = stored;
+    count = store ? 4 : 3;
     return true;
 }
 

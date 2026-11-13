@@ -125,8 +125,18 @@ unsigned Writer::VectorValue(CellView cell, unsigned scratch) {
     if (cell.Kind() != OperandKind::Value || cell.Payload() >= allocation.homes.size() ||
         source.Operations()[cell.Payload()].type != Type::V128)
         Reject(CompileError::UnsupportedType);
-    const auto& home = allocation.homes[cell.Payload()];
+    const auto id = static_cast<u32>(cell.Payload());
+    const auto& home = allocation.homes[id];
     if (!home.spilled) return home.reg;
+    if (home.stack_offset == UINT32_MAX) {
+        const auto& op = source.Operations()[id];
+        if (op.opcode == OpCode::VecLoadConst &&
+            source.Operands(NodeId{id}).front().Payload() == UINT64_MAX)
+            __ cmeq(Lanes(scratch, 64), Lanes(scratch, 64), Lanes(scratch, 64));
+        else
+            __ eor(Lanes(scratch, 8), Lanes(scratch, 8), Lanes(scratch, 8));
+        return scratch;
+    }
     VectorMemory(true, scratch, 31, home.stack_offset / 16);
     return scratch;
 }

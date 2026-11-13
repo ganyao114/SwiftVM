@@ -74,10 +74,12 @@ private:
 
     void SaveResult(OpContext& ctx) {
         if (ctx.produces && ctx.home.spilled) {
-            if (ctx.vector)
-                VectorMemory(false, ctx.destination, 31, ctx.home.stack_offset / 16);
-            else
-                Memory(false, 64, ctx.destination, 31, ctx.home.stack_offset / 8);
+            if (ctx.home.stack_offset != UINT32_MAX) {
+                if (ctx.vector)
+                    VectorMemory(false, ctx.destination, 31, ctx.home.stack_offset / 16);
+                else
+                    Memory(false, 64, ctx.destination, 31, ctx.home.stack_offset / 8);
+            }
             ctx.saved = true;
         }
     }
@@ -208,6 +210,7 @@ private:
     void HandleVecSharedZeroFamily(OpContext&);
     void HandleVecLoadConstFamily(OpContext&);
     void HandleVecDup64Family(OpContext&);
+    void HandleVecScalarFamily(OpContext&);
     void HandleVecFCvtIntToFloatFamily(OpContext&);
     void HandleVecFCvtFloatToIntFamily(OpContext&);
     void HandleVecFAddFamily(OpContext&);
@@ -290,6 +293,41 @@ private:
     bool alternate_pc_valid{};
     bool dispatch_emitted{};             // The actual final PC store emitted its dispatch.
     u32 dispatcher_literal{UINT32_MAX};  // Immutable DATA in this unit, never an outer link target.
+    u32 exit_literal{UINT32_MAX};
+
+    struct ColdDenormalStub {
+        std::array<u32, 3> branch_words;
+        u32 return_word;
+        u32 denominator;
+        u32 fma_flags;
+        std::array<std::uint8_t, 3> inputs;
+        std::array<std::uint8_t, 3> peers;
+        std::uint8_t branch_count;
+        std::uint8_t input_count;
+        std::uint8_t peer_count;
+        std::uint8_t bits;
+        std::uint8_t count;
+        bool negative_invalid;
+    };
+
+    struct ColdExitStub {
+        u32 branch_word;
+        u64 pc;
+        u64 exit_value;
+        u64 matching;
+        std::uint8_t parity_source;
+        std::uint8_t deferred_bits;
+        std::uint8_t deferred_value_reg;
+        bool has_pc;
+        bool dirty;
+        bool packed;
+        bool carry_source;
+    };
+
+    std::array<ColdDenormalStub, 256> cold_denormal_stubs;
+    std::array<ColdExitStub, 128> cold_exit_stubs;
+    u32 cold_denormal_count{};
+    u32 cold_exit_count{};
 
     // One streaming recurrence in this Writer. Prefix operations are emitted
     // normally; these two actual sites acquire recipes only at the tail TEST.
@@ -519,17 +557,21 @@ private:
 
     void LoadMxcsrFlushControl();
     u32 DenormalControlGuard();
-    void RecordDenormalLanes(std::span<const unsigned> inputs,
+    bool ProvenNoDenormal(CellView cell, unsigned lane_bits, unsigned lane_count) const;
+    void RecordDenormalLanes(std::span<const std::uint8_t> inputs,
                              unsigned lane_bits,
                              unsigned lane_count,
-                             std::initializer_list<unsigned> peers,
+                             std::span<const std::uint8_t> peers,
                              unsigned denominator,
-                             unsigned fma_flags);
+                             unsigned fma_flags,
+                             bool negative_invalid);
     void RecordDenormalInputs(unsigned left,
                               unsigned right,
                               unsigned lane_bits,
                               unsigned lane_count,
-                              unsigned denominator = UINT32_MAX);
+                              unsigned denominator = UINT32_MAX,
+                              bool skip_left = false,
+                              bool skip_right = false);
     void RecordDenormalInput(unsigned value,
                              unsigned lane_bits,
                              unsigned lane_count,
@@ -554,7 +596,18 @@ private:
         const auto& home = allocation.homes[id];
         unsigned reg = home.reg;
         if (home.spilled) {
-            Memory(true, 64, scratch, 31, home.stack_offset / 8);
+            if (home.stack_offset == UINT32_MAX) {
+                const auto& op = source.Operations()[id];
+                if (op.opcode == OpCode::Zero) {
+                    Immediate(scratch, 0);
+                } else {
+                    const auto width = Width(op.type);
+                    const auto raw = source.Operands(NodeId{id}).front().Payload();
+                    Immediate(scratch, width == 64 ? raw : (raw & ((u64{1} << width) - 1)));
+                }
+            } else {
+                Memory(true, 64, scratch, 31, home.stack_offset / 8);
+            }
             reg = scratch;
         }
         if (home.narrow_pin && !physical) {
