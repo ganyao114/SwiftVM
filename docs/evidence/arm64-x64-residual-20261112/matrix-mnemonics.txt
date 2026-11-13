@@ -1,0 +1,27 @@
+compute-matrix / swiftvm / process 0: 3114 instructions in [70b3efb00f00, 70b3efb04b00]
+   573  movdqa
+   286  add
+   269  shr
+   258  sub
+   257  je
+   256  movq
+   256  cmp
+   256  ja
+   249  movdqu
+   128  psrldq
+   120  mov
+    32  mulpd
+    32  addpd
+    28  pshufd
+    26  stmxcsr
+    26  ldmxcsr
+    23  por
+    13  and
+    13  or
+     4  jmp
+     2  pushf
+     2  pop
+     2  jrcxz
+     1  push
+     1  popf
+     1  jne

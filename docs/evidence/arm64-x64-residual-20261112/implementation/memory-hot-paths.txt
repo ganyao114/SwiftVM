@@ -1,0 +1,37 @@
+baseline, 18 instructions per taken iteration
++0000  mov    r13,QWORD PTR [r12+0x20]
++0005  mov    r14,QWORD PTR [r12]
++0009  mov    QWORD PTR [r13+0x0],r14
++000d  mov    r14d,0x0
++0013  mov    DWORD PTR [r12+0x32c],r14d
++001b  mov    r14,QWORD PTR [r13+0x0]
++001f  mov    QWORD PTR [r12+0x18],r14
++0024  add    r14,0x3
++0028  mov    QWORD PTR [r12],r14
++002c  mov    r13,QWORD PTR [r12+0x8]
++0031  sub    r13,0x1
++0035  mov    QWORD PTR [r12+0x8],r13
++003a  mov    rcx,QWORD PTR [r12+0x380]
++0042  jrcxz  0xb0
++0049  pushf
++004a  pop    r11
++004c  mov    QWORD PTR [rsp],r11
++0050  jne    0x67
+
+candidate, 15 instructions per taken iteration
++0000  mov    r13,QWORD PTR [r12+0x20]
++0005  mov    r14,QWORD PTR [r12]
++0009  mov    QWORD PTR [r13+0x0],r14
++000d  mov    r14d,0x0
++0013  mov    DWORD PTR [r12+0x32c],r14d
++001b  mov    r14,QWORD PTR [r13+0x0]
++001f  mov    QWORD PTR [r12+0x18],r14
++0024  lea    r14,[r14+0x3]
++0028  mov    QWORD PTR [r12],r14
++002c  mov    r13,QWORD PTR [r12+0x8]
++0031  sub    r13,0x1
++0035  mov    QWORD PTR [r12+0x8],r13
++003a  mov    rcx,QWORD PTR [r12+0x380]
++0042  jrcxz  0xbd
++0049  jne    0x74
+

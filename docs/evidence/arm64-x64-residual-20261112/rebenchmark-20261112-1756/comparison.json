@@ -1,0 +1,232 @@
+{
+  "local_date": "2026-11-12",
+  "started_local": "2026-11-12T18:02:01.410251-08:00",
+  "scope": "SwiftVM Function/pin0, Dynarmic normal block linking",
+  "cpu": 2,
+  "samples_per_engine": 31,
+  "build_reused_after_filesystem_error": true,
+  "code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"045cbc5e2551348c2c212350f19a834302969b0afbf7c7cbb58613e281d50d42\"\n",
+  "dynarmic_commit": "9d4582339990d4eae53f1dc7160686920fc2075c",
+  "rows": [
+    {
+      "workload": "integer",
+      "swiftvm_ms": 7.811136,
+      "dynarmic_ms": 13.390382,
+      "ratio_of_medians": 0.5833392953240617,
+      "paired_ratio": {
+        "median": 0.5999504675935107,
+        "q1": 0.5896279909882364,
+        "q3": 0.6073890824408394,
+        "min": 0.464407674704111,
+        "max": 0.6700134740903385
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "memory",
+      "swiftvm_ms": 12.726803,
+      "dynarmic_ms": 15.429882,
+      "ratio_of_medians": 0.8248153161508299,
+      "paired_ratio": {
+        "median": 0.8356388517206564,
+        "q1": 0.8260066664710142,
+        "q3": 0.8450317362961188,
+        "min": 0.791241722912456,
+        "max": 0.8728059611413302
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "shift",
+      "swiftvm_ms": 10.715454,
+      "dynarmic_ms": 16.046829,
+      "ratio_of_medians": 0.6677614624048153,
+      "paired_ratio": {
+        "median": 0.66933658175959,
+        "q1": 0.6634352547548507,
+        "q3": 0.6749627321743474,
+        "min": 0.6019722834659684,
+        "max": 0.7208422036953643
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "fp",
+      "swiftvm_ms": 2.694716,
+      "dynarmic_ms": 4.115316,
+      "ratio_of_medians": 0.6548017211800989,
+      "paired_ratio": {
+        "median": 0.6546571918355669,
+        "q1": 0.6480040803288016,
+        "q3": 0.662326375868806,
+        "min": 0.6372476911739492,
+        "max": 0.6866348667298332
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "compute",
+      "swiftvm_ms": 4.740186,
+      "dynarmic_ms": 4.113941,
+      "ratio_of_medians": 1.1522250805249759,
+      "paired_ratio": {
+        "median": 1.1557473300954009,
+        "q1": 1.1428182623282768,
+        "q3": 1.1725641926249917,
+        "min": 0.9372426019692295,
+        "max": 1.2025634283437512
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "fp-u8",
+      "swiftvm_ms": 1.193786,
+      "dynarmic_ms": 2.415103,
+      "ratio_of_medians": 0.494300243095222,
+      "paired_ratio": {
+        "median": 0.49661681933607316,
+        "q1": 0.49283527424043805,
+        "q3": 0.5016362689296467,
+        "min": 0.4715175463490735,
+        "max": 0.5260846170313535
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "compute-matrix",
+      "swiftvm_ms": 0.197564,
+      "dynarmic_ms": 0.115372,
+      "ratio_of_medians": 1.7124085566688625,
+      "paired_ratio": {
+        "median": 1.7267271041840149,
+        "q1": 1.7053053304906425,
+        "q3": 1.7499746283846678,
+        "min": 1.0262253754839807,
+        "max": 1.8649764732980159
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "compute-matrix-scalar",
+      "swiftvm_ms": 1.619889,
+      "dynarmic_ms": 0.426247,
+      "ratio_of_medians": 3.800352847058161,
+      "paired_ratio": {
+        "median": 3.799597034820264,
+        "q1": 3.7105392430712762,
+        "q3": 3.840928263578748,
+        "min": 3.510469536224421,
+        "max": 4.014993309105084
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "compute-sha",
+      "swiftvm_ms": 3.243051,
+      "dynarmic_ms": 2.881083,
+      "ratio_of_medians": 1.1256360889290589,
+      "paired_ratio": {
+        "median": 1.1248145039237225,
+        "q1": 1.103716198948411,
+        "q3": 1.1500300655849505,
+        "min": 1.0815758732096628,
+        "max": 1.167748997122662
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "compute-sort",
+      "swiftvm_ms": 0.419216,
+      "dynarmic_ms": 0.587819,
+      "ratio_of_medians": 0.7131719117619539,
+      "paired_ratio": {
+        "median": 0.7133662807836059,
+        "q1": 0.6985513368594284,
+        "q3": 0.7268347284061436,
+        "min": 0.6528797176268458,
+        "max": 0.7553629918321655
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "cond",
+      "swiftvm_ms": 64.969231,
+      "dynarmic_ms": 35.845116,
+      "ratio_of_medians": 1.8124988352667069,
+      "paired_ratio": {
+        "median": 1.819779593822363,
+        "q1": 1.8107172353488694,
+        "q3": 1.8331057601358192,
+        "min": 1.7598153536497922,
+        "max": 1.9335714593790703
+      },
+      "warm_repeats_per_process": 9
+    },
+    {
+      "workload": "cmpsep",
+      "swiftvm_ms": 21.823246,
+      "dynarmic_ms": 25.054435,
+      "ratio_of_medians": 0.8710332521966669,
+      "paired_ratio": {
+        "median": 0.8706206866605234,
+        "q1": 0.8560180680198461,
+        "q3": 0.8869015821861936,
+        "min": 0.7893285026014766,
+        "max": 0.9157502373241555
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "fpmix",
+      "swiftvm_ms": 21.317632,
+      "dynarmic_ms": 6.928814,
+      "ratio_of_medians": 3.076663913910808,
+      "paired_ratio": {
+        "median": 2.972666387628458,
+        "q1": 2.937695161741088,
+        "q3": 3.004618463239933,
+        "min": 2.8710189500398773,
+        "max": 3.2478097777593633
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "compute-fma",
+      "swiftvm_ms": 4.444108,
+      "dynarmic_ms": 3.837374,
+      "ratio_of_medians": 1.1581117712268858,
+      "paired_ratio": {
+        "median": 1.1622768860725294,
+        "q1": 1.145332668012239,
+        "q3": 1.17422902639283,
+        "min": 1.0637488173147296,
+        "max": 1.248422310169748
+      },
+      "warm_repeats_per_process": 3
+    },
+    {
+      "workload": "matrix-fma",
+      "swiftvm_ms": 0.192664,
+      "dynarmic_ms": 0.116418,
+      "ratio_of_medians": 1.6549330859489082,
+      "paired_ratio": {
+        "median": 1.6511562040327812,
+        "q1": 1.639836170548809,
+        "q3": 1.665912362044779,
+        "min": 0.8927597378136066,
+        "max": 1.8301660038042538
+      },
+      "warm_repeats_per_process": 3
+    }
+  ],
+  "swiftvm_faster_workloads": [
+    "integer",
+    "memory",
+    "shift",
+    "fp",
+    "fp-u8",
+    "compute-sort",
+    "cmpsep"
+  ],
+  "confirmation_note": "cond uses the additional 31-process run with 9 warm calls per process. The initial 31-process run with 3 warm calls is retained in summary.json."
+}

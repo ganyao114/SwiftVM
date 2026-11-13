@@ -1,0 +1,67 @@
+{
+  "prior_validated_build_manifest": "../implementation/manifest.json",
+  "validation": {
+    "primary_workloads": 15,
+    "primary_measured_processes": 930,
+    "confirmation_measured_processes": 62,
+    "all_outputs_verified": true,
+    "all_warm_cache_reuse_verified": true,
+    "all_fallback_interpreter_data_callback_counts_zero": true,
+    "order_per_workload": {
+      "AB": 16,
+      "BA": 15
+    }
+  },
+  "runners": {
+    "swiftvm": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-rebench-20261112-1756/runners/swiftvm",
+      "sha256": "763a9b5c4406c2f100ad810112935c41435739925eade12025b8c4b563c0be50"
+    },
+    "dynarmic": {
+      "path": "/home/proton/.cache/SwiftVM/dynarmic-rebench-20261112-1756/runners/dynarmic",
+      "sha256": "a9808d5b0a8c3daa96330e4cc4a7480fbe226ba0bf7097f8584731db2a66b383"
+    }
+  },
+  "files": {
+    "summary.json": {
+      "bytes": 843236,
+      "sha256": "e174fb4b7ed6be1d9c2ebaf339122cfe7308158f1b44bb030030c91ae67a1fb1"
+    },
+    "comparison.json": {
+      "bytes": 6666,
+      "sha256": "a875cd12bd80995d2038e64d1c1f59bf4db581e65ded4a86da66bead245e2f6b"
+    },
+    "runs.jsonl": {
+      "bytes": 579434,
+      "sha256": "8f98e130f4d892fc73bd73b5ea602c627e0ce01f3ff7ea65f93f4e3f0b920ffe"
+    },
+    "confirmation-cond.json": {
+      "bytes": 54922,
+      "sha256": "de0bef09e4bc7b378206947b7c70965919cc398a3efb60daf8869d9d3f61531e"
+    },
+    "source-verification.json": {
+      "bytes": 7984,
+      "sha256": "eb4a201f145a2443924ade83a5b01a6f88f2e9713cf27cc8ee77e8a5e6fe902c"
+    },
+    "build.log": {
+      "bytes": 136,
+      "sha256": "4df82321c664d431881527db28ebcdec0d78341d861a425ddc4a49fc61182b49"
+    },
+    "benchmark.log": {
+      "bytes": 1055,
+      "sha256": "77315ce68c4f077ea4ac05fd73f573b6457a68fba7ced1aea21a2da8280ae243"
+    },
+    "confirmation-cond.log": {
+      "bytes": 222,
+      "sha256": "984e78ccbb79a7ea13a62faf743d26d35a36331206d2724b16144c8c369c3420"
+    },
+    "run.py": {
+      "bytes": 5187,
+      "sha256": "a5e4e83a88d5db096ca03d1bbeeceef9b201bef28f87e3039aa997a087286971"
+    },
+    "confirm-cond.py": {
+      "bytes": 1210,
+      "sha256": "0a5b76c6f7ecf82fb990a0e40e8db3a1f6b137139dd13a378dcf1e7c8a1223d6"
+    }
+  }
+}

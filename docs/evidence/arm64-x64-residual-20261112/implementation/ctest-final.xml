@@ -1,0 +1,408 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Linux-c++"
+	tests="38"
+	failures="0"
+	disabled="0"
+	skipped="7"
+	hostname="swift"
+	time="4"
+	timestamp="2026-11-12T11:28:51"
+	>
+	<testcase name="x86_floating_contract" classname="x86_floating_contract" time="0.0444854" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 1058025006
+===============================================================================
+All tests passed (125 assertions in 6 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="instruction_coverage" classname="instruction_coverage" time="0.0467291" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 1719959688
+===============================================================================
+All tests passed (5 assertions in 5 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="instruction_coverage_native" classname="instruction_coverage_native" time="0.0412924" status="notrun">
+		<skipped message="SKIP_RETURN_CODE=77"/>
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>native execution unavailable for this target; skipped
+</system-out>
+	</testcase>
+	<testcase name="avx_coverage" classname="avx_coverage" time="0.0447631" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>AVX direct bytes=c4e271b8c2 input_mxcsr=00001f80 raised=20 actual=00001fa0 expected=00001fa0
+Filters: [compile]
+Randomness seeded to: 126814737
+===============================================================================
+All tests passed (4 assertions in 4 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="avx_coverage_native" classname="avx_coverage_native" time="0.0377299" status="notrun">
+		<skipped message="SKIP_RETURN_CODE=77"/>
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>native execution unavailable for this target; skipped
+</system-out>
+	</testcase>
+	<testcase name="x87_coverage" classname="x87_coverage" time="0.0425094" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 3271943211
+===============================================================================
+All tests passed (7 assertions in 7 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="x87_coverage_native" classname="x87_coverage_native" time="0.0364231" status="notrun">
+		<skipped message="SKIP_RETURN_CODE=77"/>
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>native execution unavailable for this target; skipped
+</system-out>
+	</testcase>
+	<testcase name="ir_construction_contract" classname="ir_construction_contract" time="0.054984" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 3492691167
+===============================================================================
+All tests passed (17 assertions in 17 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="x86_construction_contract" classname="x86_construction_contract" time="0.0618919" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 978800865
+===============================================================================
+All tests passed (99 assertions in 25 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="arm64_frontend_contract" classname="arm64_frontend_contract" time="0.052483" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 1333036249
+===============================================================================
+All tests passed (118 assertions in 15 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="arm32_frontend_contract" classname="arm32_frontend_contract" time="0.0700739" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 823534403
+===============================================================================
+All tests passed (303 assertions in 23 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="arm32_frontend_native_contract" classname="arm32_frontend_native_contract" time="0.0639139" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>Filters: [native]
+Randomness seeded to: 2211724742
+===============================================================================
+All tests passed (55 assertions in 2 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="ir_optimize_contract" classname="ir_optimize_contract" time="0.0213584" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 2189122330
+===============================================================================
+All tests passed (76 assertions in 25 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="arm64_compile_contract" classname="arm64_compile_contract" time="0.0638103" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 139994056
+===============================================================================
+All tests passed (80 assertions in 38 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="compile_pipeline_contract" classname="compile_pipeline_contract" time="0.0475236" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 1772964887
+===============================================================================
+All tests passed (6 assertions in 7 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="x86_interpreter_contract" classname="x86_interpreter_contract" time="0.0400737" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 4191403165
+===============================================================================
+All tests passed (11 assertions in 11 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="ir_direct_contract" classname="ir_direct_contract" time="0.0456692" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 4184930124
+===============================================================================
+All tests passed (4 assertions in 6 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="riscv64_compile_contract" classname="riscv64_compile_contract" time="0.0364051" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 3976890796
+===============================================================================
+All tests passed (527 assertions in 15 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="x64_compile_contract" classname="x64_compile_contract" time="0.0512225" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 1417427983
+===============================================================================
+All tests passed (6583 assertions in 48 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="x64_native_contract" classname="x64_native_contract" time="4.49133" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>Filters: [native]
+Randomness seeded to: 3668445702
+===============================================================================
+All tests passed (4531 assertions in 44 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="loongarch64_compile_contract" classname="loongarch64_compile_contract" time="0.0469345" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 1037630128
+===============================================================================
+All tests passed (17 assertions in 16 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="loongarch64_native_contract" classname="loongarch64_native_contract" time="0.0382295" status="notrun">
+		<skipped message="SKIP_RETURN_CODE=77"/>
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>native execution unavailable for this target; skipped
+</system-out>
+	</testcase>
+	<testcase name="arm64_native_contract" classname="arm64_native_contract" time="0.0371734" status="notrun">
+		<skipped message="SKIP_RETURN_CODE=77"/>
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>native execution unavailable for this target; skipped
+</system-out>
+	</testcase>
+	<testcase name="pipeline_native_contract" classname="pipeline_native_contract" time="0.0314699" status="notrun">
+		<skipped message="SKIP_RETURN_CODE=77"/>
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>native execution unavailable for this target; skipped
+</system-out>
+	</testcase>
+	<testcase name="riscv64_native_contract" classname="riscv64_native_contract" time="0.0266588" status="notrun">
+		<skipped message="SKIP_RETURN_CODE=77"/>
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>native execution unavailable for this target; skipped
+</system-out>
+	</testcase>
+	<testcase name="arm32_runtime_contract" classname="arm32_runtime_contract" time="0.0444953" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 2470119936
+===============================================================================
+All tests passed (15 assertions in 2 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="arm32_runtime_native_contract" classname="arm32_runtime_native_contract" time="0.181053" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>Filters: [native]
+Randomness seeded to: 3542963732
+===============================================================================
+All tests passed (3766 assertions in 7 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="runtime_engine_contract" classname="runtime_engine_contract" time="0.254193" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 1867690872
+===============================================================================
+All tests passed (100 assertions in 13 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="runtime_engine_native_contract" classname="runtime_engine_native_contract" time="0.18263" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>Filters: [native]
+Randomness seeded to: 600416101
+atomic128 native_hardware=1
+===============================================================================
+All tests passed (473 assertions in 26 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="ir_format_contract" classname="ir_format_contract" time="0.038186" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 3614160052
+===============================================================================
+All tests passed (17 assertions in 3 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="base_contract" classname="base_contract" time="0.0377144" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 3538092627
+===============================================================================
+All tests passed (20 assertions in 4 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="code_image_contract" classname="code_image_contract" time="0.0421134" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 1811995033
+===============================================================================
+All tests passed (49 assertions in 7 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="persistence_relocation_contract" classname="persistence_relocation_contract" time="0.0439017" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 2934743149
+===============================================================================
+test cases: 4 | 4 passed
+assertions: - none -
+
+</system-out>
+	</testcase>
+	<testcase name="persistence_relocation_native" classname="persistence_relocation_native" time="0.0404726" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>Filters: [native]
+Randomness seeded to: 913041685
+===============================================================================
+test cases: 1 | 1 passed
+assertions: - none -
+
+</system-out>
+	</testcase>
+	<testcase name="aot_artifact_contract" classname="aot_artifact_contract" time="0.0416313" status="run">
+		<properties>
+			<property name="cmake_labels" value="compile;portable;unit"/>
+		</properties>
+		<system-out>Filters: [compile]
+Randomness seeded to: 2338043645
+===============================================================================
+All tests passed (9 assertions in 4 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="aot_call_native" classname="aot_call_native" time="0.082355" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>Filters: [native]
+Randomness seeded to: 84066932
+===============================================================================
+All tests passed (41 assertions in 5 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="runtime_persistence_native" classname="runtime_persistence_native" time="0.0695932" status="run">
+		<properties>
+			<property name="cmake_labels" value="native;unit"/>
+		</properties>
+		<system-out>Filters: [native]
+Randomness seeded to: 3271626606
+===============================================================================
+All tests passed (64 assertions in 5 test cases)
+
+</system-out>
+	</testcase>
+	<testcase name="correctness_protocol" classname="correctness_protocol" time="0.0641713" status="run">
+		<properties>
+			<property name="cmake_labels" value="correctness;portable"/>
+		</properties>
+		<system-out>{"selftest":"passed","cases":560,"instruction_faults":7}
+</system-out>
+	</testcase>
+</testsuite>

@@ -1,0 +1,205 @@
+{
+  "provenance": {
+    "git_head": "ba00658dd54d9b74bb3c0f65e0d22f805389f84b",
+    "source_state": "working tree refactor over ba00658d, source.patch plus new source files",
+    "new_source_files": [
+      "source/runtime/backend/x64/emit_arm_float.cpp",
+      "source/runtime/ir/flag_effects.h"
+    ],
+    "code_build_id_header": "#pragma once\n#define SVM_CODE_BUILD_ID \"045cbc5e2551348c2c212350f19a834302969b0afbf7c7cbb58613e281d50d42\"\n",
+    "source_patch_sha256": "33a8b247fc23574a27374dea845edb85bec36c0691f6f5f81872733348fc4e01",
+    "runners": {
+      "baseline_compare": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/baseline_compare",
+        "sha256": "5d6520d11607439948d56b4739ab0aea3454e76a3a95b94b4a7eb2ecb9172af1",
+        "bytes": 7369208
+      },
+      "baseline_linux": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/baseline_linux",
+        "sha256": "f317a73331a50064e9413eef41ebc4c80d6ce571df353a680643d03986ccead4",
+        "bytes": 7405072
+      },
+      "baseline_aot": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/baseline_aot",
+        "sha256": "c304a8468d989afc94c4d026d24221e4021bfcf7cd16312e8360b7a2ac114119",
+        "bytes": 7493552
+      },
+      "baseline_correctness": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/baseline_correctness",
+        "sha256": "3654793280735090e4abb7f617e10f22abc91081e02a8049e4867c615ebf5cab",
+        "bytes": 9026640
+      },
+      "final_compare": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final_compare",
+        "sha256": "763a9b5c4406c2f100ad810112935c41435739925eade12025b8c4b563c0be50",
+        "bytes": 7420272
+      },
+      "final_linux": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final_linux",
+        "sha256": "1c7c2ccddbfc92966e641ec12aed0dbbc76d3c1fe836acae6942726e0a841c09",
+        "bytes": 7456504
+      },
+      "final_aot": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final_aot",
+        "sha256": "50d88be6636a39b6ca76b70348561523ccf8b9e90fae16732a5ffa8be12e87ca",
+        "bytes": 7536352
+      },
+      "final_correctness": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final_correctness",
+        "sha256": "0f1eb66e99bf1ddd7cc718e9c0518e991f44b12ecfd7d905d45b2d9f9b03c8b9",
+        "bytes": 9073632
+      },
+      "scaling": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/scaling",
+        "sha256": "9a6301029022c507b9b8cc4a19974a6a79baed2aa4203252904ded32ffd04ddd",
+        "bytes": 700128
+      },
+      "domain-probe": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/domain-probe",
+        "sha256": "5d7ad534d9417274464e80245ff49e303b00e2ef91590b045d2854de6af66377",
+        "bytes": 7389648
+      },
+      "cache8-no-backing_probe": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/cache8-no-backing_probe",
+        "sha256": "05520d9b289b36841da1cee968b1f02e1ae3ec2999010112d782e1d5605ffe0c",
+        "bytes": 7454320
+      },
+      "cache128-no-backing_probe": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/cache128-no-backing_probe",
+        "sha256": "d323ba72ad14742e5860fb64122cdb28ca6ef2c77878d03b5043a4153f53ac97",
+        "bytes": 7454544
+      },
+      "pre-policy_linux": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/pre-policy_linux",
+        "sha256": "c1b893852f5bd82621c7de4d5e0635692bb907492154fd709696aeaf6fb5fe78",
+        "bytes": 7450768
+      },
+      "packed_linux": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/packed_linux",
+        "sha256": "54b9965d435c41d343c5eaf3f52029932ed46b4a070c9d63418b7bec7b7be423",
+        "bytes": 7450632
+      },
+      "old52_linux": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-mechanisms-20261112/baseline_linux",
+        "sha256": "fc71968aec0ddf745ce515b2a12b948e1a7d37ed55f451dfbceba6c6e8aa34fc",
+        "bytes": 7352384
+      },
+      "swiftvm_gap_probe": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final-pmu/swiftvm_gap_probe",
+        "sha256": "4934b9ddbdf51f7aabbc6962f164baaba52ab71c75f990322a8b3f74a1fffbed",
+        "bytes": 7462896
+      },
+      "dynarmic_gap_probe": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final-pmu/dynarmic_gap_probe",
+        "sha256": "e985cb0000332cf4d7d6e7d3505b060bc1178b1ec7614247722ea7d72401b390",
+        "bytes": 6354536
+      },
+      "dynarmic_compare": {
+        "path": "/home/proton/.cache/SwiftVM/dynarmic-bench-20261111/runners/dynarmic_arm64_compare_bench",
+        "sha256": "a9808d5b0a8c3daa96330e4cc4a7480fbe226ba0bf7097f8584731db2a66b383",
+        "bytes": 6334112
+      },
+      "baseline_scaling": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-mechanisms-20261112/scaling",
+        "sha256": "b400b1e64189a1aaec44e23233fe9b9c8364793867f707154be59a56b2026f05",
+        "bytes": 650752
+      }
+    },
+    "environment": {
+      "platform": "Linux-6.18.58.1-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+      "compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+      "cmake": "cmake version 3.28.3",
+      "ninja": "1.11.1",
+      "cpu": "AMD Ryzen 9 7950X3D 16-Core Processor",
+      "build": "Release, SVM_ENABLE_IPO=ON",
+      "wsl_distribution": "ProtonHM",
+      "measurement_affinity": [
+        2
+      ]
+    },
+    "references": {
+      "mechanism_production_commit": "98e4d829",
+      "diagnostic_harness_commit": "0297f745",
+      "dynarmic_commit": "9d4582339990d4eae53f1dc7160686920fc2075c",
+      "coremark_commit": "1f483d5b8316753a742cbf5590caf5bd0a4e4777",
+      "coremark_measurement": "500 iterations, one full invocation warmup and one timed invocation, compare elapsed microseconds and CRCs",
+      "qemu": {
+        "qemu-aarch64": {
+          "path": "/home/proton/.cache/SwiftVM/wsl-arm-x64-20261111/qemu-packages/root/usr/bin/qemu-aarch64",
+          "sha256": "0338d0ed6013abe5e0f41c5a22976ac6fe2f1b5869edf05d4a9098c121248f02"
+        },
+        "qemu-arm": {
+          "path": "/home/proton/.cache/SwiftVM/wsl-arm-x64-20261111/qemu-packages/root/usr/bin/qemu-arm",
+          "sha256": "4876ad2fd157fc99ebe5f9ec59719fb4a79e5506a91b8c5ae934c953fb5e6190"
+        }
+      }
+    },
+    "reproduction": {
+      "repo": "/mnt/d/Dev/SwiftVM",
+      "work": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112",
+      "build": [
+        "cmake",
+        "--build",
+        "build/host",
+        "-j",
+        "8"
+      ],
+      "test_environment": {
+        "SVM_TEST_SCRATCH": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/test-scratch"
+      },
+      "scripts": [
+        "validate-storage.py",
+        "run-measurements.py",
+        "analyze-final.py",
+        "package-final.py"
+      ]
+    }
+  },
+  "archive": {
+    "path": "raw-evidence.tar.gz",
+    "sha256": "2bfcd8cf2866afcddff4c82e4808051a337f0db2e88064c5a5c3b492a0a6c769",
+    "bytes": 76990765
+  },
+  "files": {
+    "archive-index.json": {
+      "sha256": "d903eef763fbcc318a18b76b8f5d8d3e044c8d80f3322fb1d75f2fe610e18e6f",
+      "bytes": 17387
+    },
+    "ctest-final.xml": {
+      "sha256": "58dad45299e25b6395ad90e12b6f74337d603c477e73f25acc731c0c65b9ee70",
+      "bytes": 15674
+    },
+    "fp-hot-paths.txt": {
+      "sha256": "3a1f613bfe539a8d8d7c3f4e7274f99c98560eb2d47df0f4c36888e72ce648bd",
+      "bytes": 1839
+    },
+    "integer-hot-paths.txt": {
+      "sha256": "dd70a6f6f9e7a78e318a4b3c7a3300e31f321c523417d33d75e3b9ad3885e5ca",
+      "bytes": 781
+    },
+    "matrix-hot-paths.txt": {
+      "sha256": "c549bfad89e8023196215ed506e02d5105f6003d175351f330c188a2446bd629",
+      "bytes": 37815
+    },
+    "memory-hot-paths.txt": {
+      "sha256": "783b50da2d7e83eab230966fdd34c8bae79f4b5d4b1a5f8ea19e1e0f4390cb27",
+      "bytes": 1134
+    },
+    "raw-evidence.tar.gz": {
+      "sha256": "2bfcd8cf2866afcddff4c82e4808051a337f0db2e88064c5a5c3b492a0a6c769",
+      "bytes": 76990765
+    },
+    "shift-hot-paths.txt": {
+      "sha256": "403b7f2dee270d1e35ce8da45f8b0f4902f04c587c47ae4da0774d2672639de9",
+      "bytes": 825
+    },
+    "sort-hot-paths.txt": {
+      "sha256": "9a7b41fe9a48f1180590d0cb7cc25a0b7ab32dc5b0b93d918e8671fb456fd4b3",
+      "bytes": 143
+    },
+    "summary.json": {
+      "sha256": "3b6e1ca661e97d8ece492fc300d5d149a0a667b040a412490ec2c819e13eb99c",
+      "bytes": 3178624
+    }
+  }
+}

@@ -1,0 +1,173 @@
+fp / swiftvm / process 0: 2399 samples, densest 36-instruction window holds 2394 (99.8%)
+    0  0014d  movdqa xmm2,xmm0
+    3  00151  movdqu xmm0,XMMWORD PTR [r12+0x120]
+    0  0015b  movdqa xmm3,xmm0
+   67  0015f  stmxcsr DWORD PTR [rsp+0x110]
+  783  00167  mov    DWORD PTR [rsp+0x114],0x1f80
+   49  00172  ldmxcsr DWORD PTR [rsp+0x114]
+    1  0017a  movdqa xmm0,xmm2
+    0  0017e  movdqa xmm1,xmm3
+    0  00182  movq   rax,xmm0
+    0  00187  add    rax,rax
+    0  0018a  je     0x733acad001a0
+    0  0018c  shr    rax,0x35
+    0  00190  sub    eax,0x201
+    0  00195  cmp    eax,0x3fc
+   54  0019a  ja     0x733acad00298
+    0  001a0  movq   rax,xmm1
+    0  001a5  add    rax,rax
+    0  001a8  je     0x733acad001be
+    0  001aa  shr    rax,0x35
+    0  001ae  sub    eax,0x201
+    0  001b3  cmp    eax,0x3fc
+    0  001b8  ja     0x733acad00298
+    0  001be  movq   xmm0,xmm0
+    0  001c2  movq   xmm1,xmm1
+    0  001c6  addsd  xmm0,xmm1
+   66  001ca  movdqa xmm4,xmm0
+    0  001ce  movdqa xmm0,xmm4
+    0  001d2  movdqu XMMWORD PTR [r12+0x110],xmm0
+    0  001dc  mov    r13,QWORD PTR [r12+0x8]
+    0  001e1  stmxcsr DWORD PTR [rsp+0x114]
+  846  001e9  ldmxcsr DWORD PTR [rsp+0x110]
+   54  001f1  mov    r11d,DWORD PTR [rsp+0x114]
+  293  001f9  shr    r11d,1
+  121  001fc  and    r11d,0x10
+    0  00200  or     DWORD PTR [r12+0x314],r11d
+   57  00208  sub    r13,0x1
+
+fp / dynarmic / process 0: 1138 samples, densest 26-instruction window holds 1078 (94.7%)
+    0  ce7bd  movq rax, xmm15
+    0  ce7c2  shl rax, 0x0D
+    0  ce7c6  jbe 0x00007385B2BCE6F8
+    0  ce7cc  vorps xmm14, xmm15, [0x00007385B27FE040]
+    0  ce7d4  jmp 0x00007385B2BCE6F8
+    0  ce7d9  int3
+    0  ce7da  nop [rax+rax*1], ax
+    0  ce7e0  movaps xmm1, [r15+0x110]
+  136  ce7e8  movq rax, xmm1
+  107  ce7ed  movaps xmm1, [r15+0x120]
+    0  ce7f5  movq r14, xmm1
+    0  ce7fa  vmovq xmm1, rax
+  237  ce7ff  vmovq xmm15, r14
+    0  ce804  movaps xmm14, xmm1
+    0  ce808  addsd xmm14, xmm15
+  206  ce80d  ucomisd xmm14, xmm14
+  120  ce812  jp 0x00007385B2BCE8B9
+  209  ce818  movq xmm14, xmm14
+    0  ce81d  movaps [r15+0x110], xmm14
+    0  ce825  mov rax, [r15+0x08]
+    0  ce829  mov [rsp+0x10], rax
+    0  ce82e  xor eax, eax
+    0  ce830  mov r14, [rsp+0x10]
+    0  ce835  mov r12d, 0x01
+    0  ce83b  sub r14, r12
+   63  ce83e  cmc
+
+memory / swiftvm / process 0: 4777 samples, densest 18-instruction window holds 4771 (99.9%)
+    6  0006c  mov    r14,QWORD PTR [r12]
+  350  00070  mov    QWORD PTR [r13+0x0],r14
+  296  00074  mov    r14d,0x0
+    3  0007a  mov    DWORD PTR [r12+0x32c],r14d
+   36  00082  mov    r14,QWORD PTR [r13+0x0]
+ 1721  00086  mov    QWORD PTR [r12+0x18],r14
+    5  0008b  add    r14,0x3
+    0  0008f  mov    QWORD PTR [r12],r14
+    0  00093  mov    r13,QWORD PTR [r12+0x8]
+  113  00098  sub    r13,0x1
+    0  0009c  mov    QWORD PTR [r12+0x8],r13
+    2  000a1  mov    rcx,QWORD PTR [r12+0x380]
+   14  000a9  jrcxz  0x71c9c3b000b0
+    0  000ab  jmp    0x71c9c3b00121
+    0  000b0  pushf
+ 1386  000b1  pop    r11
+  836  000b3  mov    QWORD PTR [rsp],r11
+    3  000b7  jne    0x71c9c3b00067
+
+compute-sha / swiftvm / process 0: 1567 samples, densest 44-instruction window holds 536 (34.2%)
+    1  ffbee  mov    QWORD PTR [r12+0x88],r14
+    0  ffbf6  mov    ebp,DWORD PTR [r12+0xd0]
+  104  ffbfe  mov    ecx,ebp
+    0  ffc00  add    r13d,ecx
+    0  ffc03  mov    QWORD PTR [r12+0xb0],r13
+    0  ffc0b  mov    ebp,DWORD PTR [r12+0xc0]
+    0  ffc13  mov    ecx,ebp
+    0  ffc15  mov    r8d,r15d
+    0  ffc18  add    r8d,ecx
+    0  ffc1b  mov    QWORD PTR [r12+0xb8],r8
+    0  ffc23  sub    r14,0x100
+   21  ffc2a  pushf
+   23  ffc2b  pop    r11
+   87  ffc2d  mov    QWORD PTR [rsp+0x48],r11
+    0  ffc32  mov    ecx,r15d
+    0  ffc35  add    r13d,ecx
+    0  ffc38  mov    QWORD PTR [r12+0xa8],r13
+    0  ffc40  mov    r13d,0x0
+    0  ffc46  mov    r14d,DWORD PTR [r12+0xa0]
+    0  ffc4e  mov    ecx,r14d
+    0  ffc51  mov    r15d,r13d
+   13  ffc54  or     r15,rcx
+    0  ffc57  mov    r15d,r15d
+    0  ffc5a  mov    QWORD PTR [r12+0xb0],r15
+    0  ffc62  mov    r13d,0x0
+    0  ffc68  mov    r14d,DWORD PTR [r12+0x20]
+    0  ffc6d  mov    ecx,r14d
+    0  ffc70  mov    r15d,r13d
+    0  ffc73  or     r15,rcx
+    0  ffc76  mov    r15d,r15d
+    0  ffc79  mov    QWORD PTR [r12+0xc0],r15
+   17  ffc81  mov    r13d,0x0
+    0  ffc87  mov    r14d,DWORD PTR [r12+0x30]
+    0  ffc8c  mov    ecx,r14d
+    0  ffc8f  mov    r15d,r13d
+    0  ffc92  or     r15,rcx
+    0  ffc95  mov    r15d,r15d
+    0  ffc98  mov    QWORD PTR [r12+0xc8],r15
+    0  ffca0  mov    rcx,QWORD PTR [r12+0x380]
+    0  ffca8  jrcxz  0x7017df7ffcaf
+    0  ffcaa  jmp    0x7017df800115
+    0  ffcaf  push   QWORD PTR [rsp+0x48]
+   23  ffcb3  popf
+  247  ffcb4  jne    0x7017df7ff8ca
+
+compute-sort / swiftvm / process 0: 189 samples, densest 26-instruction window holds 143 (75.7%)
+    0  fe3b3  sub    r13d,0x1
+    1  fe3b7  mov    QWORD PTR [r12+0x58],r13
+    0  fe3bc  mov    ecx,0xffffffff
+    7  fe3c1  mov    r14,r13
+    0  fe3c4  and    r14,rcx
+    0  fe3c7  shl    r14,0x2
+    0  fe3cb  mov    r13,QWORD PTR [r12+0x98]
+    0  fe3d3  mov    rcx,r14
+    0  fe3d6  add    r13,rcx
+    0  fe3d9  mov    r14d,DWORD PTR [r13+0x0]
+    5  fe3dd  mov    QWORD PTR [r12+0x60],r14
+    0  fe3e2  mov    r13d,DWORD PTR [r12+0x48]
+   10  fe3e7  mov    ecx,r13d
+    0  fe3ea  sub    r14d,ecx
+    4  fe3ed  mov    rcx,QWORD PTR [r12+0x380]
+    0  fe3f5  jrcxz  0x72e641efe3fc
+    0  fe3f7  jmp    0x72e641efe7dc
+    0  fe3fc  sete   al
+    5  fe3ff  movzx  eax,al
+    6  fe402  mov    r13,rax
+    0  fe405  setb   al
+    6  fe408  movzx  eax,al
+   12  fe40b  mov    r14,rax
+    0  fe40e  pushf
+   17  fe40f  pop    r11
+   70  fe411  mov    QWORD PTR [rsp],r11
+
+compute-matrix / dynarmic / process 0: 29 samples, densest 12-instruction window holds 4 (13.8%)
+    1  d63c5  mulpd xmm6, xmm14
+    0  d63ca  vcmppd xmm5, xmm6, xmm6, 0x03
+    0  d63cf  ptest xmm5, xmm5
+    1  d63d4  jnz 0x00007AA3A45D9F71
+    0  d63da  vmovaps xmm1, [rsp+0x10]
+    0  d63e0  vpermilpd xmm1, xmm1, 0x00
+    0  d63e6  movaps xmm14, xmm12
+    0  d63ea  mulpd xmm14, xmm1
+    0  d63ef  vcmppd xmm5, xmm14, xmm14, 0x03
+    0  d63f5  ptest xmm5, xmm5
+    0  d63fa  jnz 0x00007AA3A45DA0B2
+    2  d6400  movaps xmm1, xmm13

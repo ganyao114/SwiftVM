@@ -1,0 +1,139 @@
+integer / swiftvm: 6821 samples
+   83.1%  guest state memory
+    8.6%  gpr move
+    6.6%  other register op
+    1.6%  branch
+    0.1%  outside generated code
+integer / dynarmic: 10230 samples
+   54.8%  frame memory
+   35.4%  guest state memory
+    6.2%  other register op
+    2.4%  flags transfer
+    1.1%  other memory
+    0.1%  outside generated code
+memory / swiftvm: 14695 samples
+   42.1%  other memory
+   28.9%  flags transfer
+   18.1%  other register op
+   10.7%  guest state memory
+    0.1%  frame memory
+    0.1%  gpr move
+    0.1%  outside generated code
+memory / dynarmic: 12437 samples
+   66.2%  other memory
+   12.9%  gpr move
+   12.2%  branch
+    4.3%  guest state memory
+    2.9%  flags transfer
+    1.2%  frame memory
+    0.2%  other register op
+    0.0%  outside generated code
+shift / swiftvm: 8154 samples
+   48.3%  other register op
+   34.0%  guest state memory
+   17.3%  gpr move
+    0.3%  branch
+    0.1%  outside generated code
+shift / dynarmic: 12587 samples
+   52.6%  frame memory
+   21.5%  guest state memory
+   13.4%  other register op
+    4.6%  flags transfer
+    3.4%  other memory
+    2.9%  gpr move
+    1.5%  branch
+    0.0%  outside generated code
+fp / swiftvm: 7041 samples
+   70.3%  mxcsr
+   14.6%  frame memory
+    7.5%  other register op
+    2.7%  xmm move
+    2.4%  guest state memory
+    2.4%  fp arithmetic
+    0.1%  outside generated code
+fp / dynarmic: 3409 samples
+   30.2%  xmm move
+   19.8%  fp arithmetic
+   19.2%  branch
+   15.5%  other register op
+   15.3%  guest state memory
+    0.1%  outside generated code
+compute / swiftvm: 6175 samples
+   26.6%  other register op
+   25.1%  flags transfer
+   19.0%  guest state memory
+   15.1%  gpr move
+    4.9%  other memory
+    4.5%  mxcsr
+    2.3%  frame memory
+    1.2%  xmm move
+    0.9%  branch
+    0.6%  outside generated code
+    0.0%  fp arithmetic
+compute / dynarmic: 3021 samples
+   25.0%  frame memory
+   24.7%  other memory
+   16.8%  guest state memory
+   16.7%  other register op
+    7.0%  flags transfer
+    4.1%  branch
+    3.8%  gpr move
+    1.2%  outside generated code
+    0.5%  xmm move
+    0.3%  fp arithmetic
+compute-matrix / swiftvm: 545 samples
+   45.3%  mxcsr
+   20.9%  other register op
+   13.9%  xmm move
+    8.3%  frame memory
+    8.1%  guest state memory
+    1.7%  flags transfer
+    0.9%  outside generated code
+    0.6%  gpr move
+    0.2%  other memory
+    0.2%  fp arithmetic
+compute-matrix / dynarmic: 90 samples
+   31.1%  other register op
+   26.7%  branch
+   15.6%  frame memory
+    8.9%  other memory
+    7.8%  guest state memory
+    5.6%  fp arithmetic
+    4.4%  xmm move
+compute-sha / swiftvm: 4679 samples
+   29.4%  flags transfer
+   23.1%  other register op
+   22.1%  guest state memory
+   15.8%  gpr move
+    7.1%  other memory
+    2.1%  frame memory
+    0.1%  outside generated code
+    0.1%  xmm move
+    0.1%  branch
+compute-sha / dynarmic: 2274 samples
+   27.8%  frame memory
+   24.0%  other memory
+   20.5%  other register op
+   17.0%  guest state memory
+    3.7%  gpr move
+    3.5%  flags transfer
+    3.3%  branch
+    0.1%  outside generated code
+    0.0%  xmm move
+compute-sort / swiftvm: 658 samples
+   54.6%  other register op
+   13.5%  guest state memory
+   12.3%  flags transfer
+    9.7%  gpr move
+    5.0%  branch
+    3.0%  other memory
+    1.2%  outside generated code
+    0.6%  frame memory
+compute-sort / dynarmic: 452 samples
+   25.9%  guest state memory
+   23.7%  flags transfer
+   17.3%  frame memory
+   16.4%  other memory
+    9.3%  branch
+    5.8%  gpr move
+    1.8%  other register op

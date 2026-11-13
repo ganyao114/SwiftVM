@@ -1,0 +1,31 @@
+baseline, 14 instructions per taken iteration
++0000  mov    r13,QWORD PTR [r12]
++0004  ror    r13,0xd
++0008  mov    r14,r13
++000b  shr    r14,0x7
++000f  mov    rcx,r14
++0012  xor    r13,rcx
++0015  add    r13,0x3
++0019  mov    QWORD PTR [r12],r13
++001d  mov    r13,QWORD PTR [r12+0x8]
++0022  sub    r13,0x1
++0026  mov    QWORD PTR [r12+0x8],r13
++002b  mov    rcx,QWORD PTR [r12+0x380]
++0033  jrcxz  0x95
++003a  jne    0x5b
+
+candidate, 13 instructions per taken iteration
++0000  mov    r13,QWORD PTR [r12]
++0004  ror    r13,0xd
++0008  mov    r14,r13
++000b  shr    r14,0x7
++000f  xor    r13,r14
++0012  add    r13,0x3
++0016  mov    QWORD PTR [r12],r13
++001a  mov    r13,QWORD PTR [r12+0x8]
++001f  sub    r13,0x1
++0023  mov    QWORD PTR [r12+0x8],r13
++0028  mov    rcx,QWORD PTR [r12+0x380]
++0030  jrcxz  0x92
++0037  jne    0x5b
+

@@ -1,0 +1,1240 @@
+matrix, unit 0, 1239 ordinary-path instructions
++0000 mov    r13,QWORD PTR [r12+0x58]
++0005 mov    r14,QWORD PTR [r12+0x40]
++000a add    r14,r13
++000d mov    QWORD PTR [r12+0x60],r14
++0012 movdqu xmm2,XMMWORD PTR [r12+0x1d0]
++001c movdqa xmm0,xmm2
++0020 movdqa xmm1,xmm2
++0024 por    xmm0,xmm1
++0028 movdqu XMMWORD PTR [r12+0x2c0],xmm0
++0032 movdqu xmm4,XMMWORD PTR [r12+0x1a0]
++003c movdqa xmm0,xmm4
++0040 movdqa xmm1,xmm4
++0044 por    xmm0,xmm1
++0048 movdqu XMMWORD PTR [r12+0x120],xmm0
++0052 mov    r15,r14
++0055 add    r15,0x30
++0059 mov    rbp,r15
++005c add    rbp,0x8
++0060 mov    r8,QWORD PTR [r15]
++0063 mov    r15,QWORD PTR [rbp+0x0]
++0067 mov    ebp,0x0
++006c mov    QWORD PTR [r12+0x130],r8
++0074 mov    QWORD PTR [r12+0x138],rbp
++007c mov    ebp,0x0
++0081 mov    QWORD PTR [r12+0x280],r15
++0089 mov    QWORD PTR [r12+0x288],rbp
++0091 movdqu xmm5,XMMWORD PTR [r12+0x270]
++009b movdqa xmm0,xmm5
++009f movdqa xmm1,xmm5
++00a3 por    xmm0,xmm1
++00a7 movdqu XMMWORD PTR [r12+0x1a0],xmm0
++00b1 mov    r15,r14
++00b4 add    r15,0x20
++00b8 mov    rbp,r15
++00bb add    rbp,0x8
++00bf mov    r8,QWORD PTR [r15]
++00c2 mov    r15,QWORD PTR [rbp+0x0]
++00c6 mov    ebp,0x0
++00cb mov    QWORD PTR [r12+0x150],r8
++00d3 mov    QWORD PTR [r12+0x158],rbp
++00db mov    ebp,0x0
++00e0 mov    QWORD PTR [r12+0x140],r15
++00e8 mov    QWORD PTR [r12+0x148],rbp
++00f0 mov    r15,r14
++00f3 add    r15,0x10
++00f7 mov    rbp,r15
++00fa add    rbp,0x8
++00fe mov    r8,QWORD PTR [r15]
++0101 mov    r15,QWORD PTR [rbp+0x0]
++0105 mov    ebp,0x0
++010a mov    QWORD PTR [r12+0x170],r8
++0112 mov    QWORD PTR [r12+0x178],rbp
++011a mov    ebp,0x0
++011f mov    QWORD PTR [r12+0x160],r15
++0127 mov    QWORD PTR [r12+0x168],rbp
++012f mov    r15d,0x8
++0135 mov    rbp,QWORD PTR [r14]
++0138 mov    QWORD PTR [r12+0x180],rbp
++0140 mov    QWORD PTR [r12+0x188],rbp
++0148 add    r14,r15
++014b mov    QWORD PTR [r12+0x60],r14
++0150 mov    r15,QWORD PTR [r14]
++0153 mov    r14d,0x0
++0159 mov    QWORD PTR [r12+0x230],r15
++0161 mov    QWORD PTR [r12+0x238],r14
++0169 mov    r14,QWORD PTR [r12+0xf8]
++0171 mov    r15,r14
++0174 add    r15,0x50
++0178 mov    rbp,r15
++017b add    rbp,0x10
++017f movdqu xmm6,XMMWORD PTR [r15]
++0184 movdqu xmm7,XMMWORD PTR [rbp+0x0]
++0189 movdqu XMMWORD PTR [r12+0x220],xmm6
++0193 movdqu XMMWORD PTR [r12+0x210],xmm7
++019d mov    r15,r14
++01a0 add    r15,0x30
++01a4 movdqu xmm8,XMMWORD PTR [r15]
++01a9 movdqu XMMWORD PTR [r12+0x110],xmm8
++01b3 mov    r15,QWORD PTR [r12+0x50]
++01b8 add    r15,r13
++01bb mov    QWORD PTR [r12+0x60],r15
++01c0 add    r13,0x40
++01c4 mov    QWORD PTR [r12+0x58],r13
++01c9 movdqu xmm9,XMMWORD PTR [r12+0x180]
++01d3 movdqa xmm0,xmm9
++01d8 movdqa xmm1,xmm2
++01dc mulpd  xmm0,xmm1
++01e0 movdqa xmm14,xmm0
++01e5 movdqu xmm15,XMMWORD PTR [rip+0x9569]        # 0xa290
++01ee pand   xmm14,xmm15
++01f3 movdqu xmm15,XMMWORD PTR [rip+0x956b]        # 0xa2a0
++01fc pcmpeqq xmm14,xmm15
++0202 movdqa xmm15,xmm0
++0207 cmpunordpd xmm15,xmm0
++020d por    xmm14,xmm15
++0212 pmovmskb ecx,xmm14
++0217 jrcxz  0xd57
++021e movdqa xmm10,xmm0
++0223 movdqu xmm2,XMMWORD PTR [r12+0x230]
++022d movdqa xmm0,xmm8
++0232 movdqa xmm1,xmm2
++0236 pshufd xmm1,xmm1,0x44
++023b mulpd  xmm0,xmm1
++023f movdqa xmm14,xmm0
++0244 movdqu xmm15,XMMWORD PTR [rip+0x950a]        # 0xa290
++024d pand   xmm14,xmm15
++0252 movdqu xmm15,XMMWORD PTR [rip+0x950c]        # 0xa2a0
++025b pcmpeqq xmm14,xmm15
++0261 movdqa xmm15,xmm0
++0266 cmpunordpd xmm15,xmm0
++026c por    xmm14,xmm15
++0271 pmovmskb ecx,xmm14
++0276 jrcxz  0xdb6
++027d movdqa xmm11,xmm0
++0282 movdqu XMMWORD PTR [r12+0x260],xmm11
++028c mov    ebp,0x0
++0291 mov    r8d,0x0
++0297 mov    QWORD PTR [r12+0x110],rbp
++029f mov    QWORD PTR [r12+0x118],r8
++02a7 movdqa xmm0,xmm9
++02ac movdqa xmm1,xmm7
++02b0 mulpd  xmm0,xmm1
++02b4 movdqa xmm14,xmm0
++02b9 movdqu xmm15,XMMWORD PTR [rip+0x9495]        # 0xa290
++02c2 pand   xmm14,xmm15
++02c7 movdqu xmm15,XMMWORD PTR [rip+0x9497]        # 0xa2a0
++02d0 pcmpeqq xmm14,xmm15
++02d6 movdqa xmm15,xmm0
++02db cmpunordpd xmm15,xmm0
++02e1 por    xmm14,xmm15
++02e6 pmovmskb ecx,xmm14
++02eb jrcxz  0xe2b
++02f2 movdqa xmm8,xmm0
++02f7 movdqa xmm0,xmm9
++02fc movdqa xmm1,xmm6
++0300 mulpd  xmm0,xmm1
++0304 movdqa xmm14,xmm0
++0309 movdqu xmm15,XMMWORD PTR [rip+0x9445]        # 0xa290
++0312 pand   xmm14,xmm15
++0317 movdqu xmm15,XMMWORD PTR [rip+0x9447]        # 0xa2a0
++0320 pcmpeqq xmm14,xmm15
++0326 movdqa xmm15,xmm0
++032b cmpunordpd xmm15,xmm0
++0331 por    xmm14,xmm15
++0336 pmovmskb ecx,xmm14
++033b jrcxz  0xe7b
++0342 movdqa xmm7,xmm0
++0346 movdqu xmm6,XMMWORD PTR [r12+0x1f0]
++0350 movdqa xmm0,xmm9
++0355 movdqa xmm1,xmm6
++0359 mulpd  xmm0,xmm1
++035d movdqa xmm14,xmm0
++0362 movdqu xmm15,XMMWORD PTR [rip+0x93ec]        # 0xa290
++036b pand   xmm14,xmm15
++0370 movdqu xmm15,XMMWORD PTR [rip+0x93ee]        # 0xa2a0
++0379 pcmpeqq xmm14,xmm15
++037f movdqa xmm15,xmm0
++0384 cmpunordpd xmm15,xmm0
++038a por    xmm14,xmm15
++038f pmovmskb ecx,xmm14
++0394 jrcxz  0xed4
++039b movdqa xmm12,xmm0
++03a0 movdqu XMMWORD PTR [r12+0x180],xmm12
++03aa movdqu xmm6,XMMWORD PTR [r12+0x2a0]
++03b4 movdqa xmm0,xmm6
++03b8 movdqa xmm1,xmm6
++03bc por    xmm0,xmm1
++03c0 movdqu XMMWORD PTR [r12+0x1d0],xmm0
++03ca movdqu xmm9,XMMWORD PTR [r12+0x250]
++03d4 movdqa xmm0,xmm9
++03d9 movdqa xmm1,xmm9
++03de por    xmm0,xmm1
++03e2 movdqu XMMWORD PTR [r12+0x2a0],xmm0
++03ec movdqa xmm0,xmm9
++03f1 movdqa xmm1,xmm2
++03f5 pshufd xmm1,xmm1,0x44
++03fa mulpd  xmm0,xmm1
++03fe movdqa xmm14,xmm0
++0403 movdqu xmm15,XMMWORD PTR [rip+0x934b]        # 0xa290
++040c pand   xmm14,xmm15
++0411 movdqu xmm15,XMMWORD PTR [rip+0x934d]        # 0xa2a0
++041a pcmpeqq xmm14,xmm15
++0420 movdqa xmm15,xmm0
++0425 cmpunordpd xmm15,xmm0
++042b por    xmm14,xmm15
++0430 pmovmskb ecx,xmm14
++0435 jrcxz  0xf75
++043c movdqa xmm4,xmm0
++0440 movdqu XMMWORD PTR [r12+0x250],xmm4
++044a sub    r13,0x200
++0451 movdqu xmm9,XMMWORD PTR [r12+0x110]
++045b movdqa xmm0,xmm10
++0460 movdqa xmm1,xmm9
++0465 addpd  xmm0,xmm1
++0469 movdqa xmm14,xmm0
++046e movdqu xmm15,XMMWORD PTR [rip+0x92e0]        # 0xa290
++0477 pand   xmm14,xmm15
++047c movdqu xmm15,XMMWORD PTR [rip+0x92e2]        # 0xa2a0
++0485 pcmpeqq xmm14,xmm15
++048b movdqa xmm15,xmm0
++0490 cmpunordpd xmm15,xmm0
++0496 por    xmm14,xmm15
++049b pmovmskb ecx,xmm14
++04a0 jrcxz  0xfe0
++04a7 movdqu XMMWORD PTR [r12+0x240],xmm0
++04b1 movdqu xmm10,XMMWORD PTR [r12+0x1b0]
++04bb movdqa xmm0,xmm8
++04c0 movdqa xmm1,xmm10
++04c5 addpd  xmm0,xmm1
++04c9 movdqa xmm14,xmm0
++04ce movdqu xmm15,XMMWORD PTR [rip+0x9280]        # 0xa290
++04d7 pand   xmm14,xmm15
++04dc movdqu xmm15,XMMWORD PTR [rip+0x9282]        # 0xa2a0
++04e5 pcmpeqq xmm14,xmm15
++04eb movdqa xmm15,xmm0
++04f0 cmpunordpd xmm15,xmm0
++04f6 por    xmm14,xmm15
++04fb pmovmskb ecx,xmm14
++0500 jrcxz  0x1040
++0507 movdqa xmm6,xmm0
++050b movdqu XMMWORD PTR [r12+0x210],xmm6
++0515 movdqa xmm0,xmm7
++0519 movdqa xmm1,xmm10
++051e addpd  xmm0,xmm1
++0522 movdqa xmm14,xmm0
++0527 movdqu xmm15,XMMWORD PTR [rip+0x9227]        # 0xa290
++0530 pand   xmm14,xmm15
++0535 movdqu xmm15,XMMWORD PTR [rip+0x9229]        # 0xa2a0
++053e pcmpeqq xmm14,xmm15
++0544 movdqa xmm15,xmm0
++0549 cmpunordpd xmm15,xmm0
++054f por    xmm14,xmm15
++0554 pmovmskb ecx,xmm14
++0559 jrcxz  0x1099
++0560 movdqa xmm8,xmm0
++0565 movdqu XMMWORD PTR [r12+0x220],xmm8
++056f movdqu xmm7,XMMWORD PTR [r12+0x2f0]
++0579 setne  BYTE PTR [rsp+0x8]
++057e mov    r11,rax
++0581 lahf
++0582 seto   al
++0585 mov    WORD PTR [rsp],ax
++0589 mov    rax,r11
++058c movdqa xmm0,xmm7
++0590 movdqa xmm1,xmm7
++0594 por    xmm0,xmm1
++0598 movdqu XMMWORD PTR [r12+0x1b0],xmm0
++05a2 movdqu xmm10,XMMWORD PTR [r12+0x2e0]
++05ac movdqa xmm0,xmm10
++05b1 movdqa xmm1,xmm10
++05b6 por    xmm0,xmm1
++05ba movdqu XMMWORD PTR [r12+0x2f0],xmm0
++05c4 movdqu xmm13,XMMWORD PTR [r12+0x2d0]
++05ce movdqa xmm0,xmm13
++05d3 movdqa xmm1,xmm13
++05d8 por    xmm0,xmm1
++05dc movdqu XMMWORD PTR [r12+0x2e0],xmm0
++05e6 movdqu xmm5,XMMWORD PTR [r12+0x200]
++05f0 movdqa xmm0,xmm5
++05f4 movdqa xmm1,xmm5
++05f8 por    xmm0,xmm1
++05fc movdqu XMMWORD PTR [r12+0x2d0],xmm0
++0606 movdqu xmm7,XMMWORD PTR [r12+0x1c0]
++0610 movdqa xmm1,xmm7
++0614 por    xmm7,xmm1
++0618 movdqu XMMWORD PTR [r12+0x200],xmm7
++0622 movdqu xmm3,XMMWORD PTR [r12+0x190]
++062c movdqa xmm1,xmm3
++0630 por    xmm3,xmm1
++0634 movdqu XMMWORD PTR [r12+0x1c0],xmm3
++063e movdqu xmm10,XMMWORD PTR [r12+0x300]
++0648 movdqa xmm1,xmm10
++064d por    xmm10,xmm1
++0652 movdqu XMMWORD PTR [r12+0x190],xmm10
++065c mov    r13,r14
++065f add    r13,0xa0
++0666 mov    rbp,r13
++0669 add    rbp,0x10
++066d movdqu xmm13,XMMWORD PTR [r13+0x0]
++0673 movdqu xmm5,XMMWORD PTR [rbp+0x0]
++0678 movdqu XMMWORD PTR [r12+0x300],xmm13
++0682 movdqu XMMWORD PTR [r12+0x270],xmm5
++068c movdqa xmm0,xmm12
++0691 movdqa xmm1,xmm9
++0696 addpd  xmm0,xmm1
++069a movdqa xmm14,xmm0
++069f movdqu xmm15,XMMWORD PTR [rip+0x90af]        # 0xa290
++06a8 pand   xmm14,xmm15
++06ad movdqu xmm15,XMMWORD PTR [rip+0x90b1]        # 0xa2a0
++06b6 pcmpeqq xmm14,xmm15
++06bc movdqa xmm15,xmm0
++06c1 cmpunordpd xmm15,xmm0
++06c7 por    xmm14,xmm15
++06cc pmovmskb ecx,xmm14
++06d1 jrcxz  0x1211
++06d8 movdqu XMMWORD PTR [r12+0x180],xmm0
++06e2 mov    r13,r14
++06e5 add    r13,0xf0
++06ec movdqu xmm9,XMMWORD PTR [r13+0x0]
++06f2 movdqu XMMWORD PTR [r12+0x110],xmm9
++06fc movdqa xmm0,xmm6
++0700 movdqa xmm1,xmm4
++0704 addpd  xmm0,xmm1
++0708 movdqa xmm14,xmm0
++070d movdqu xmm15,XMMWORD PTR [rip+0x9041]        # 0xa290
++0716 pand   xmm14,xmm15
++071b movdqu xmm15,XMMWORD PTR [rip+0x9043]        # 0xa2a0
++0724 pcmpeqq xmm14,xmm15
++072a movdqa xmm15,xmm0
++072f cmpunordpd xmm15,xmm0
++0735 por    xmm14,xmm15
++073a pmovmskb ecx,xmm14
++073f jrcxz  0x127f
++0746 movdqa xmm12,xmm0
++074b movdqu XMMWORD PTR [r12+0x210],xmm12
++0755 movdqa xmm0,xmm8
++075a movdqa xmm1,xmm11
++075f addpd  xmm0,xmm1
++0763 movdqa xmm14,xmm0
++0768 movdqu xmm15,XMMWORD PTR [rip+0x8fe6]        # 0xa290
++0771 pand   xmm14,xmm15
++0776 movdqu xmm15,XMMWORD PTR [rip+0x8fe8]        # 0xa2a0
++077f pcmpeqq xmm14,xmm15
++0785 movdqa xmm15,xmm0
++078a cmpunordpd xmm15,xmm0
++0790 por    xmm14,xmm15
++0795 pmovmskb ecx,xmm14
++079a jrcxz  0x12da
++07a1 movdqa xmm4,xmm0
++07a5 movdqu XMMWORD PTR [r12+0x220],xmm4
++07af movdqa xmm0,xmm5
++07b3 movdqa xmm1,xmm2
++07b7 pshufd xmm1,xmm1,0x44
++07bc mulpd  xmm0,xmm1
++07c0 movdqa xmm14,xmm0
++07c5 movdqu xmm15,XMMWORD PTR [rip+0x8f89]        # 0xa290
++07ce pand   xmm14,xmm15
++07d3 movdqu xmm15,XMMWORD PTR [rip+0x8f8b]        # 0xa2a0
++07dc pcmpeqq xmm14,xmm15
++07e2 movdqa xmm15,xmm0
++07e7 cmpunordpd xmm15,xmm0
++07ed por    xmm14,xmm15
++07f2 pmovmskb ecx,xmm14
++07f7 jrcxz  0x1337
++07fe movdqa xmm6,xmm0
++0802 movdqu XMMWORD PTR [r12+0x270],xmm6
++080c movdqu xmm5,XMMWORD PTR [r12+0x170]
++0816 movdqa xmm0,xmm9
++081b movdqa xmm1,xmm5
++081f pshufd xmm1,xmm1,0x44
++0824 mulpd  xmm0,xmm1
++0828 movdqa xmm14,xmm0
++082d movdqu xmm15,XMMWORD PTR [rip+0x8f21]        # 0xa290
++0836 pand   xmm14,xmm15
++083b movdqu xmm15,XMMWORD PTR [rip+0x8f23]        # 0xa2a0
++0844 pcmpeqq xmm14,xmm15
++084a movdqa xmm15,xmm0
++084f cmpunordpd xmm15,xmm0
++0855 por    xmm14,xmm15
++085a pmovmskb ecx,xmm14
++085f jrcxz  0x139f
++0866 movdqa xmm8,xmm0
++086b movdqu XMMWORD PTR [r12+0x250],xmm8
++0875 mov    r13,r14
++0878 add    r13,0xe0
++087f movdqu xmm9,XMMWORD PTR [r13+0x0]
++0885 movdqu XMMWORD PTR [r12+0x110],xmm9
++088f movdqa xmm0,xmm13
++0894 movdqa xmm1,xmm2
++0898 pshufd xmm1,xmm1,0x44
++089d mulpd  xmm0,xmm1
++08a1 movdqa xmm14,xmm0
++08a6 movdqu xmm15,XMMWORD PTR [rip+0x8ea8]        # 0xa290
++08af pand   xmm14,xmm15
++08b4 movdqu xmm15,XMMWORD PTR [rip+0x8eaa]        # 0xa2a0
++08bd pcmpeqq xmm14,xmm15
++08c3 movdqa xmm15,xmm0
++08c8 cmpunordpd xmm15,xmm0
++08ce por    xmm14,xmm15
++08d3 pmovmskb ecx,xmm14
++08d8 jrcxz  0x1418
++08df movdqa xmm11,xmm0
++08e4 movdqu XMMWORD PTR [r12+0x230],xmm11
++08ee movdqa xmm0,xmm10
++08f3 movdqa xmm1,xmm10
++08f8 por    xmm0,xmm1
++08fc movdqu XMMWORD PTR [r12+0x300],xmm0
++0906 movdqa xmm0,xmm3
++090a movdqa xmm1,xmm3
++090e por    xmm0,xmm1
++0912 movdqu XMMWORD PTR [r12+0x190],xmm0
++091c movdqa xmm0,xmm9
++0921 movdqa xmm1,xmm5
++0925 pshufd xmm1,xmm1,0x44
++092a mulpd  xmm0,xmm1
++092e movdqa xmm14,xmm0
++0933 movdqu xmm15,XMMWORD PTR [rip+0x8e1b]        # 0xa290
++093c pand   xmm14,xmm15
++0941 movdqu xmm15,XMMWORD PTR [rip+0x8e1d]        # 0xa2a0
++094a pcmpeqq xmm14,xmm15
++0950 movdqa xmm15,xmm0
++0955 cmpunordpd xmm15,xmm0
++095b por    xmm14,xmm15
++0960 pmovmskb ecx,xmm14
++0965 jrcxz  0x14a5
++096c movdqa xmm2,xmm0
++0970 movdqu XMMWORD PTR [r12+0x260],xmm2
++097a mov    r13,r14
++097d add    r13,0x90
++0984 movdqu xmm9,XMMWORD PTR [r13+0x0]
++098a movdqu XMMWORD PTR [r12+0x110],xmm9
++0994 movdqa xmm0,xmm7
++0998 movdqa xmm1,xmm7
++099c por    xmm0,xmm1
++09a0 movdqu XMMWORD PTR [r12+0x1c0],xmm0
++09aa movdqu xmm13,XMMWORD PTR [r12+0x2d0]
++09b4 movdqu xmm1,XMMWORD PTR [r12+0x2d0]
++09be por    xmm13,xmm1
++09c3 movdqu XMMWORD PTR [r12+0x200],xmm13
++09cd movdqu xmm7,XMMWORD PTR [r12+0x2e0]
++09d7 movdqu xmm1,XMMWORD PTR [r12+0x2e0]
++09e1 por    xmm7,xmm1
++09e5 movdqu XMMWORD PTR [r12+0x2d0],xmm7
++09ef movdqu xmm0,XMMWORD PTR [r12+0x2f0]
++09f9 movdqu xmm1,XMMWORD PTR [r12+0x2f0]
++0a03 por    xmm0,xmm1
++0a07 movdqu XMMWORD PTR [r12+0x2e0],xmm0
++0a11 movdqu xmm0,XMMWORD PTR [r12+0x240]
++0a1b movdqa xmm1,xmm6
++0a1f addpd  xmm0,xmm1
++0a23 movdqa xmm14,xmm0
++0a28 movdqu xmm15,XMMWORD PTR [rip+0x8d26]        # 0xa290
++0a31 pand   xmm14,xmm15
++0a36 movdqu xmm15,XMMWORD PTR [rip+0x8d28]        # 0xa2a0
++0a3f pcmpeqq xmm14,xmm15
++0a45 movdqa xmm15,xmm0
++0a4a cmpunordpd xmm15,xmm0
++0a50 por    xmm14,xmm15
++0a55 pmovmskb ecx,xmm14
++0a5a jrcxz  0x159a
++0a61 movdqa xmm3,xmm0
++0a65 movdqu XMMWORD PTR [r12+0x240],xmm3
++0a6f movdqa xmm0,xmm9
++0a74 movdqa xmm1,xmm5
++0a78 pshufd xmm1,xmm1,0x44
++0a7d mulpd  xmm0,xmm1
++0a81 movdqa xmm14,xmm0
++0a86 movdqu xmm15,XMMWORD PTR [rip+0x8cc8]        # 0xa290
++0a8f pand   xmm14,xmm15
++0a94 movdqu xmm15,XMMWORD PTR [rip+0x8cca]        # 0xa2a0
++0a9d pcmpeqq xmm14,xmm15
++0aa3 movdqa xmm15,xmm0
++0aa8 cmpunordpd xmm15,xmm0
++0aae por    xmm14,xmm15
++0ab3 pmovmskb ecx,xmm14
++0ab8 jrcxz  0x15f8
++0abf movdqa xmm6,xmm0
++0ac3 movdqu XMMWORD PTR [r12+0x270],xmm6
++0acd mov    r13,r14
++0ad0 add    r13,0x80
++0ad7 movdqu xmm9,XMMWORD PTR [r13+0x0]
++0add movdqu XMMWORD PTR [r12+0x110],xmm9
++0ae7 movdqu xmm0,XMMWORD PTR [r12+0x180]
++0af1 movdqa xmm1,xmm11
++0af6 addpd  xmm0,xmm1
++0afa movdqa xmm14,xmm0
++0aff movdqu xmm15,XMMWORD PTR [rip+0x8c4f]        # 0xa290
++0b08 pand   xmm14,xmm15
++0b0d movdqu xmm15,XMMWORD PTR [rip+0x8c51]        # 0xa2a0
++0b16 pcmpeqq xmm14,xmm15
++0b1c movdqa xmm15,xmm0
++0b21 cmpunordpd xmm15,xmm0
++0b27 por    xmm14,xmm15
++0b2c pmovmskb ecx,xmm14
++0b31 jrcxz  0x1671
++0b38 movdqa xmm10,xmm0
++0b3d movdqu XMMWORD PTR [r12+0x180],xmm10
++0b47 movdqa xmm0,xmm12
++0b4c movdqa xmm1,xmm8
++0b51 addpd  xmm0,xmm1
++0b55 movdqa xmm14,xmm0
++0b5a movdqu xmm15,XMMWORD PTR [rip+0x8bf4]        # 0xa290
++0b63 pand   xmm14,xmm15
++0b68 movdqu xmm15,XMMWORD PTR [rip+0x8bf6]        # 0xa2a0
++0b71 pcmpeqq xmm14,xmm15
++0b77 movdqa xmm15,xmm0
++0b7c cmpunordpd xmm15,xmm0
++0b82 por    xmm14,xmm15
++0b87 pmovmskb ecx,xmm14
++0b8c jrcxz  0x16cc
++0b93 movdqa xmm11,xmm0
++0b98 movdqu XMMWORD PTR [r12+0x210],xmm11
++0ba2 movdqu xmm0,XMMWORD PTR [r12+0x1b0]
++0bac movdqu xmm1,XMMWORD PTR [r12+0x1b0]
++0bb6 por    xmm0,xmm1
++0bba movdqu XMMWORD PTR [r12+0x2f0],xmm0
++0bc4 movdqa xmm0,xmm9
++0bc9 movdqa xmm1,xmm5
++0bcd pshufd xmm1,xmm1,0x44
++0bd2 mulpd  xmm0,xmm1
++0bd6 movdqa xmm14,xmm0
++0bdb movdqu xmm15,XMMWORD PTR [rip+0x8b73]        # 0xa290
++0be4 pand   xmm14,xmm15
++0be9 movdqu xmm15,XMMWORD PTR [rip+0x8b75]        # 0xa2a0
++0bf2 pcmpeqq xmm14,xmm15
++0bf8 movdqa xmm15,xmm0
++0bfd cmpunordpd xmm15,xmm0
++0c03 por    xmm14,xmm15
++0c08 pmovmskb ecx,xmm14
++0c0d jrcxz  0x174d
++0c14 movdqa xmm12,xmm0
++0c19 movdqu XMMWORD PTR [r12+0x170],xmm12
++0c23 mov    r13,r14
++0c26 add    r13,0xd0
++0c2d movdqu xmm5,XMMWORD PTR [r13+0x0]
++0c33 movdqu XMMWORD PTR [r12+0x110],xmm5
++0c3d movdqa xmm0,xmm4
++0c41 movdqa xmm1,xmm2
++0c45 addpd  xmm0,xmm1
++0c49 movdqa xmm14,xmm0
++0c4e movdqu xmm15,XMMWORD PTR [rip+0x8b00]        # 0xa290
++0c57 pand   xmm14,xmm15
++0c5c movdqu xmm15,XMMWORD PTR [rip+0x8b02]        # 0xa2a0
++0c65 pcmpeqq xmm14,xmm15
++0c6b movdqa xmm15,xmm0
++0c70 cmpunordpd xmm15,xmm0
++0c76 por    xmm14,xmm15
++0c7b pmovmskb ecx,xmm14
++0c80 jrcxz  0x17c0
++0c87 movdqa xmm9,xmm0
++0c8c movdqu XMMWORD PTR [r12+0x220],xmm9
++0c96 movdqu xmm2,XMMWORD PTR [r12+0x160]
++0ca0 movdqa xmm0,xmm13
++0ca5 movdqa xmm1,xmm2
++0ca9 pshufd xmm1,xmm1,0x44
++0cae mulpd  xmm0,xmm1
++0cb2 movdqa xmm14,xmm0
++0cb7 movdqu xmm15,XMMWORD PTR [rip+0x8a97]        # 0xa290
++0cc0 pand   xmm14,xmm15
++0cc5 movdqu xmm15,XMMWORD PTR [rip+0x8a99]        # 0xa2a0
++0cce pcmpeqq xmm14,xmm15
++0cd4 movdqa xmm15,xmm0
++0cd9 cmpunordpd xmm15,xmm0
++0cdf por    xmm14,xmm15
++0ce4 pmovmskb ecx,xmm14
++0ce9 jrcxz  0x1829
++0cf0 movdqa xmm4,xmm0
++0cf4 movdqu XMMWORD PTR [r12+0x260],xmm4
++0cfe mov    r13d,0x0
++0d04 mov    ebp,0x0
++0d09 mov    QWORD PTR [r12+0x1b0],r13
++0d11 mov    QWORD PTR [r12+0x1b8],rbp
++0d19 movdqa xmm0,xmm5
++0d1d movdqa xmm1,xmm2
++0d21 pshufd xmm1,xmm1,0x44
++0d26 mulpd  xmm0,xmm1
++0d2a movdqa xmm14,xmm0
++0d2f movdqu xmm15,XMMWORD PTR [rip+0x8a1f]        # 0xa290
++0d38 pand   xmm14,xmm15
++0d3d movdqu xmm15,XMMWORD PTR [rip+0x8a21]        # 0xa2a0
++0d46 pcmpeqq xmm14,xmm15
++0d4c movdqa xmm15,xmm0
++0d51 cmpunordpd xmm15,xmm0
++0d57 por    xmm14,xmm15
++0d5c pmovmskb ecx,xmm14
++0d61 jrcxz  0x18a1
++0d68 movdqa xmm13,xmm0
++0d6d movdqu XMMWORD PTR [r12+0x230],xmm13
++0d77 mov    r13,r14
++0d7a add    r13,0xc0
++0d81 movdqu xmm5,XMMWORD PTR [r13+0x0]
++0d87 movdqu XMMWORD PTR [r12+0x110],xmm5
++0d91 movdqa xmm0,xmm3
++0d95 movdqa xmm1,xmm6
++0d99 addpd  xmm0,xmm1
++0d9d movdqa xmm14,xmm0
++0da2 movdqu xmm15,XMMWORD PTR [rip+0x89ac]        # 0xa290
++0dab pand   xmm14,xmm15
++0db0 movdqu xmm15,XMMWORD PTR [rip+0x89ae]        # 0xa2a0
++0db9 pcmpeqq xmm14,xmm15
++0dbf movdqa xmm15,xmm0
++0dc4 cmpunordpd xmm15,xmm0
++0dca por    xmm14,xmm15
++0dcf pmovmskb ecx,xmm14
++0dd4 jrcxz  0x1914
++0ddb movdqa xmm8,xmm0
++0de0 movdqu XMMWORD PTR [r12+0x240],xmm8
++0dea movdqu xmm0,XMMWORD PTR [r12+0x1a0]
++0df4 movdqu xmm1,XMMWORD PTR [r12+0x1a0]
++0dfe por    xmm0,xmm1
++0e02 movdqu XMMWORD PTR [r12+0x270],xmm0
++0e0c movdqu xmm6,XMMWORD PTR [r12+0x120]
++0e16 movdqu xmm1,XMMWORD PTR [r12+0x120]
++0e20 por    xmm6,xmm1
++0e24 movdqu XMMWORD PTR [r12+0x1a0],xmm6
++0e2e movdqa xmm0,xmm5
++0e32 movdqa xmm1,xmm2
++0e36 pshufd xmm1,xmm1,0x44
++0e3b mulpd  xmm0,xmm1
++0e3f movdqa xmm14,xmm0
++0e44 movdqu xmm15,XMMWORD PTR [rip+0x890a]        # 0xa290
++0e4d pand   xmm14,xmm15
++0e52 movdqu xmm15,XMMWORD PTR [rip+0x890c]        # 0xa2a0
++0e5b pcmpeqq xmm14,xmm15
++0e61 movdqa xmm15,xmm0
++0e66 cmpunordpd xmm15,xmm0
++0e6c por    xmm14,xmm15
++0e71 pmovmskb ecx,xmm14
++0e76 jrcxz  0x19b6
++0e7d movdqa xmm6,xmm0
++0e81 movdqu XMMWORD PTR [r12+0x250],xmm6
++0e8b mov    r13,r14
++0e8e add    r13,0x20
++0e92 movdqu xmm5,XMMWORD PTR [r13+0x0]
++0e98 movdqu XMMWORD PTR [r12+0x110],xmm5
++0ea2 movdqa xmm0,xmm10
++0ea7 movdqa xmm1,xmm12
++0eac addpd  xmm0,xmm1
++0eb0 movdqa xmm14,xmm0
++0eb5 movdqu xmm15,XMMWORD PTR [rip+0x8899]        # 0xa290
++0ebe pand   xmm14,xmm15
++0ec3 movdqu xmm15,XMMWORD PTR [rip+0x889b]        # 0xa2a0
++0ecc pcmpeqq xmm14,xmm15
++0ed2 movdqa xmm15,xmm0
++0ed7 cmpunordpd xmm15,xmm0
++0edd por    xmm14,xmm15
++0ee2 pmovmskb ecx,xmm14
++0ee7 jrcxz  0x1a27
++0eee movdqa xmm3,xmm0
++0ef2 movdqa xmm0,xmm7
++0ef6 movdqa xmm1,xmm2
++0efa pshufd xmm1,xmm1,0x44
++0eff mulpd  xmm0,xmm1
++0f03 movdqa xmm14,xmm0
++0f08 movdqu xmm15,XMMWORD PTR [rip+0x8846]        # 0xa290
++0f11 pand   xmm14,xmm15
++0f16 movdqu xmm15,XMMWORD PTR [rip+0x8848]        # 0xa2a0
++0f1f pcmpeqq xmm14,xmm15
++0f25 movdqa xmm15,xmm0
++0f2a cmpunordpd xmm15,xmm0
++0f30 por    xmm14,xmm15
++0f35 pmovmskb ecx,xmm14
++0f3a jrcxz  0x1a7a
++0f41 movdqa xmm10,xmm0
++0f46 movdqa xmm0,xmm11
++0f4b movdqa xmm1,xmm13
++0f50 addpd  xmm0,xmm1
++0f54 movdqa xmm14,xmm0
++0f59 movdqu xmm15,XMMWORD PTR [rip+0x87f5]        # 0xa290
++0f62 pand   xmm14,xmm15
++0f67 movdqu xmm15,XMMWORD PTR [rip+0x87f7]        # 0xa2a0
++0f70 pcmpeqq xmm14,xmm15
++0f76 movdqa xmm15,xmm0
++0f7b cmpunordpd xmm15,xmm0
++0f81 por    xmm14,xmm15
++0f86 pmovmskb ecx,xmm14
++0f8b jrcxz  0x1acb
++0f92 movdqa xmm2,xmm0
++0f96 movdqu xmm7,XMMWORD PTR [r12+0x150]
++0fa0 movdqa xmm0,xmm5
++0fa4 movdqa xmm1,xmm7
++0fa8 pshufd xmm1,xmm1,0x44
++0fad mulpd  xmm0,xmm1
++0fb1 movdqa xmm14,xmm0
++0fb6 movdqu xmm15,XMMWORD PTR [rip+0x8798]        # 0xa290
++0fbf pand   xmm14,xmm15
++0fc4 movdqu xmm15,XMMWORD PTR [rip+0x879a]        # 0xa2a0
++0fcd pcmpeqq xmm14,xmm15
++0fd3 movdqa xmm15,xmm0
++0fd8 cmpunordpd xmm15,xmm0
++0fde por    xmm14,xmm15
++0fe3 pmovmskb ecx,xmm14
++0fe8 jrcxz  0x1b28
++0fef movdqa xmm11,xmm0
++0ff4 movdqu xmm0,XMMWORD PTR [r12+0x300]
++0ffe movdqa xmm1,xmm7
++1002 pshufd xmm1,xmm1,0x44
++1007 mulpd  xmm0,xmm1
++100b movdqa xmm14,xmm0
++1010 movdqu xmm15,XMMWORD PTR [rip+0x873e]        # 0xa290
++1019 pand   xmm14,xmm15
++101e movdqu xmm15,XMMWORD PTR [rip+0x8740]        # 0xa2a0
++1027 pcmpeqq xmm14,xmm15
++102d movdqa xmm15,xmm0
++1032 cmpunordpd xmm15,xmm0
++1038 por    xmm14,xmm15
++103d pmovmskb ecx,xmm14
++1042 jrcxz  0x1b82
++1049 movdqa xmm5,xmm0
++104d movdqa xmm0,xmm8
++1052 movdqa xmm1,xmm4
++1056 addpd  xmm0,xmm1
++105a movdqa xmm14,xmm0
++105f movdqu xmm15,XMMWORD PTR [rip+0x86ef]        # 0xa290
++1068 pand   xmm14,xmm15
++106d movdqu xmm15,XMMWORD PTR [rip+0x86f1]        # 0xa2a0
++1076 pcmpeqq xmm14,xmm15
++107c movdqa xmm15,xmm0
++1081 cmpunordpd xmm15,xmm0
++1087 por    xmm14,xmm15
++108c pmovmskb ecx,xmm14
++1091 jrcxz  0x1bd1
++1098 movdqa xmm12,xmm0
++109d movdqu XMMWORD PTR [r12+0x240],xmm12
++10a7 movdqa xmm0,xmm9
++10ac movdqa xmm1,xmm6
++10b0 addpd  xmm0,xmm1
++10b4 movdqa xmm14,xmm0
++10b9 movdqu xmm15,XMMWORD PTR [rip+0x8695]        # 0xa290
++10c2 pand   xmm14,xmm15
++10c7 movdqu xmm15,XMMWORD PTR [rip+0x8697]        # 0xa2a0
++10d0 pcmpeqq xmm14,xmm15
++10d6 movdqa xmm15,xmm0
++10db cmpunordpd xmm15,xmm0
++10e1 por    xmm14,xmm15
++10e6 pmovmskb ecx,xmm14
++10eb jrcxz  0x1c2b
++10f2 movdqa xmm4,xmm0
++10f6 movdqu XMMWORD PTR [r12+0x220],xmm4
++1100 movdqu xmm0,XMMWORD PTR [r12+0x2e0]
++110a movdqa xmm1,xmm7
++110e pshufd xmm1,xmm1,0x44
++1113 mulpd  xmm0,xmm1
++1117 movdqa xmm14,xmm0
++111c movdqu xmm15,XMMWORD PTR [rip+0x8632]        # 0xa290
++1125 pand   xmm14,xmm15
++112a movdqu xmm15,XMMWORD PTR [rip+0x8634]        # 0xa2a0
++1133 pcmpeqq xmm14,xmm15
++1139 movdqa xmm15,xmm0
++113e cmpunordpd xmm15,xmm0
++1144 por    xmm14,xmm15
++1149 pmovmskb ecx,xmm14
++114e jrcxz  0x1c8e
++1155 movdqa xmm6,xmm0
++1159 movdqu xmm0,XMMWORD PTR [r12+0x2f0]
++1163 movdqa xmm1,xmm7
++1167 pshufd xmm1,xmm1,0x44
++116c mulpd  xmm0,xmm1
++1170 movdqa xmm14,xmm0
++1175 movdqu xmm15,XMMWORD PTR [rip+0x85d9]        # 0xa290
++117e pand   xmm14,xmm15
++1183 movdqu xmm15,XMMWORD PTR [rip+0x85db]        # 0xa2a0
++118c pcmpeqq xmm14,xmm15
++1192 movdqa xmm15,xmm0
++1197 cmpunordpd xmm15,xmm0
++119d por    xmm14,xmm15
++11a2 pmovmskb ecx,xmm14
++11a7 jrcxz  0x1ce7
++11ae movdqa xmm8,xmm0
++11b3 movdqu XMMWORD PTR [r12+0x150],xmm8
++11bd movdqa xmm0,xmm3
++11c1 movdqa xmm1,xmm10
++11c6 addpd  xmm0,xmm1
++11ca movdqa xmm14,xmm0
++11cf movdqu xmm15,XMMWORD PTR [rip+0x857f]        # 0xa290
++11d8 pand   xmm14,xmm15
++11dd movdqu xmm15,XMMWORD PTR [rip+0x8581]        # 0xa2a0
++11e6 pcmpeqq xmm14,xmm15
++11ec movdqa xmm15,xmm0
++11f1 cmpunordpd xmm15,xmm0
++11f7 por    xmm14,xmm15
++11fc pmovmskb ecx,xmm14
++1201 jrcxz  0x1d41
++1208 movdqa xmm7,xmm0
++120c movdqu XMMWORD PTR [r12+0x160],xmm7
++1216 movdqa xmm0,xmm2
++121a movdqa xmm1,xmm11
++121f addpd  xmm0,xmm1
++1223 movdqa xmm14,xmm0
++1228 movdqu xmm15,XMMWORD PTR [rip+0x8526]        # 0xa290
++1231 pand   xmm14,xmm15
++1236 movdqu xmm15,XMMWORD PTR [rip+0x8528]        # 0xa2a0
++123f pcmpeqq xmm14,xmm15
++1245 movdqa xmm15,xmm0
++124a cmpunordpd xmm15,xmm0
++1250 por    xmm14,xmm15
++1255 pmovmskb ecx,xmm14
++125a jrcxz  0x1d9a
++1261 movdqa xmm3,xmm0
++1265 movdqu XMMWORD PTR [r12+0x170],xmm3
++126f movdqu xmm2,XMMWORD PTR [r12+0x140]
++1279 movdqu xmm0,XMMWORD PTR [r12+0x270]
++1283 movdqa xmm1,xmm2
++1287 pshufd xmm1,xmm1,0x44
++128c mulpd  xmm0,xmm1
++1290 movdqa xmm14,xmm0
++1295 movdqu xmm15,XMMWORD PTR [rip+0x84b9]        # 0xa290
++129e pand   xmm14,xmm15
++12a3 movdqu xmm15,XMMWORD PTR [rip+0x84bb]        # 0xa2a0
++12ac pcmpeqq xmm14,xmm15
++12b2 movdqa xmm15,xmm0
++12b7 cmpunordpd xmm15,xmm0
++12bd por    xmm14,xmm15
++12c2 pmovmskb ecx,xmm14
++12c7 jrcxz  0x1e07
++12ce movdqa xmm9,xmm0
++12d3 movdqu XMMWORD PTR [r12+0x180],xmm9
++12dd movdqa xmm0,xmm4
++12e1 movdqa xmm1,xmm5
++12e5 addpd  xmm0,xmm1
++12e9 movdqa xmm14,xmm0
++12ee movdqu xmm15,XMMWORD PTR [rip+0x8460]        # 0xa290
++12f7 pand   xmm14,xmm15
++12fc movdqu xmm15,XMMWORD PTR [rip+0x8462]        # 0xa2a0
++1305 pcmpeqq xmm14,xmm15
++130b movdqa xmm15,xmm0
++1310 cmpunordpd xmm15,xmm0
++1316 por    xmm14,xmm15
++131b pmovmskb ecx,xmm14
++1320 jrcxz  0x1e60
++1327 movdqa xmm10,xmm0
++132c movdqu XMMWORD PTR [r12+0x210],xmm10
++1336 movdqa xmm0,xmm12
++133b movdqa xmm1,xmm6
++133f addpd  xmm0,xmm1
++1343 movdqa xmm14,xmm0
++1348 movdqu xmm15,XMMWORD PTR [rip+0x8406]        # 0xa290
++1351 pand   xmm14,xmm15
++1356 movdqu xmm15,XMMWORD PTR [rip+0x8408]        # 0xa2a0
++135f pcmpeqq xmm14,xmm15
++1365 movdqa xmm15,xmm0
++136a cmpunordpd xmm15,xmm0
++1370 por    xmm14,xmm15
++1375 pmovmskb ecx,xmm14
++137a jrcxz  0x1eba
++1381 movdqa xmm4,xmm0
++1385 movdqu XMMWORD PTR [r12+0x230],xmm4
++138f movdqu xmm5,XMMWORD PTR [r12+0x2a0]
++1399 movdqu xmm1,XMMWORD PTR [r12+0x2a0]
++13a3 por    xmm5,xmm1
++13a7 movdqu XMMWORD PTR [r12+0x250],xmm5
++13b1 movdqu xmm5,XMMWORD PTR [r12+0x1d0]
++13bb movdqu xmm1,XMMWORD PTR [r12+0x1d0]
++13c5 por    xmm5,xmm1
++13c9 movdqu XMMWORD PTR [r12+0x2a0],xmm5
++13d3 movdqu xmm6,XMMWORD PTR [r12+0x2c0]
++13dd movdqu xmm1,XMMWORD PTR [r12+0x2c0]
++13e7 por    xmm6,xmm1
++13eb movdqu XMMWORD PTR [r12+0x1d0],xmm6
++13f5 mov    r13,r14
++13f8 add    r13,0x40
++13fc movdqu xmm6,XMMWORD PTR [r13+0x0]
++1402 movdqu XMMWORD PTR [r12+0x2c0],xmm6
++140c movdqu xmm0,XMMWORD PTR [r12+0x190]
++1416 movdqa xmm1,xmm2
++141a pshufd xmm1,xmm1,0x44
++141f mulpd  xmm0,xmm1
++1423 movdqa xmm14,xmm0
++1428 movdqu xmm15,XMMWORD PTR [rip+0x8326]        # 0xa290
++1431 pand   xmm14,xmm15
++1436 movdqu xmm15,XMMWORD PTR [rip+0x8328]        # 0xa2a0
++143f pcmpeqq xmm14,xmm15
++1445 movdqa xmm15,xmm0
++144a cmpunordpd xmm15,xmm0
++1450 por    xmm14,xmm15
++1455 pmovmskb ecx,xmm14
++145a jrcxz  0x1f9a
++1461 movdqa xmm11,xmm0
++1466 movdqa xmm0,xmm7
++146a movdqa xmm1,xmm8
++146f addpd  xmm0,xmm1
++1473 movdqa xmm14,xmm0
++1478 movdqu xmm15,XMMWORD PTR [rip+0x82d6]        # 0xa290
++1481 pand   xmm14,xmm15
++1486 movdqu xmm15,XMMWORD PTR [rip+0x82d8]        # 0xa2a0
++148f pcmpeqq xmm14,xmm15
++1495 movdqa xmm15,xmm0
++149a cmpunordpd xmm15,xmm0
++14a0 por    xmm14,xmm15
++14a5 pmovmskb ecx,xmm14
++14aa jrcxz  0x1fea
++14b1 movdqa xmm12,xmm0
++14b6 movdqa xmm0,xmm3
++14ba movdqa xmm1,xmm9
++14bf addpd  xmm0,xmm1
++14c3 movdqa xmm14,xmm0
++14c8 movdqu xmm15,XMMWORD PTR [rip+0x8286]        # 0xa290
++14d1 pand   xmm14,xmm15
++14d6 movdqu xmm15,XMMWORD PTR [rip+0x8288]        # 0xa2a0
++14df pcmpeqq xmm14,xmm15
++14e5 movdqa xmm15,xmm0
++14ea cmpunordpd xmm15,xmm0
++14f0 por    xmm14,xmm15
++14f5 pmovmskb ecx,xmm14
++14fa jrcxz  0x203a
++1501 movdqa xmm7,xmm0
++1505 movdqu XMMWORD PTR [r12+0x160],xmm7
++150f movdqa xmm0,xmm6
++1513 movdqa xmm1,xmm2
++1517 pshufd xmm1,xmm1,0x44
++151c mulpd  xmm0,xmm1
++1520 movdqa xmm14,xmm0
++1525 movdqu xmm15,XMMWORD PTR [rip+0x8229]        # 0xa290
++152e pand   xmm14,xmm15
++1533 movdqu xmm15,XMMWORD PTR [rip+0x822b]        # 0xa2a0
++153c pcmpeqq xmm14,xmm15
++1542 movdqa xmm15,xmm0
++1547 cmpunordpd xmm15,xmm0
++154d por    xmm14,xmm15
++1552 pmovmskb ecx,xmm14
++1557 jrcxz  0x2097
++155e movdqa xmm3,xmm0
++1562 movdqu XMMWORD PTR [r12+0x240],xmm3
++156c movdqu xmm6,XMMWORD PTR [r12+0x2b0]
++1576 movdqa xmm0,xmm6
++157a movdqa xmm1,xmm2
++157e pshufd xmm1,xmm1,0x44
++1583 mulpd  xmm0,xmm1
++1587 movdqa xmm14,xmm0
++158c movdqu xmm15,XMMWORD PTR [rip+0x81c2]        # 0xa290
++1595 pand   xmm14,xmm15
++159a movdqu xmm15,XMMWORD PTR [rip+0x81c4]        # 0xa2a0
++15a3 pcmpeqq xmm14,xmm15
++15a9 movdqa xmm15,xmm0
++15ae cmpunordpd xmm15,xmm0
++15b4 por    xmm14,xmm15
++15b9 pmovmskb ecx,xmm14
++15be jrcxz  0x20fe
++15c5 movdqa xmm8,xmm0
++15ca movdqu xmm2,XMMWORD PTR [r12+0x130]
++15d4 movdqa xmm0,xmm5
++15d8 movdqa xmm1,xmm2
++15dc pshufd xmm1,xmm1,0x44
++15e1 mulpd  xmm0,xmm1
++15e5 movdqa xmm14,xmm0
++15ea movdqu xmm15,XMMWORD PTR [rip+0x8164]        # 0xa290
++15f3 pand   xmm14,xmm15
++15f8 movdqu xmm15,XMMWORD PTR [rip+0x8166]        # 0xa2a0
++1601 pcmpeqq xmm14,xmm15
++1607 movdqa xmm15,xmm0
++160c cmpunordpd xmm15,xmm0
++1612 por    xmm14,xmm15
++1617 pmovmskb ecx,xmm14
++161c jrcxz  0x215c
++1623 movdqa xmm6,xmm0
++1627 movdqu XMMWORD PTR [r12+0x170],xmm6
++1631 movdqa xmm0,xmm10
++1636 movdqa xmm1,xmm11
++163b addpd  xmm0,xmm1
++163f movdqa xmm14,xmm0
++1644 movdqu xmm15,XMMWORD PTR [rip+0x810a]        # 0xa290
++164d pand   xmm14,xmm15
++1652 movdqu xmm15,XMMWORD PTR [rip+0x810c]        # 0xa2a0
++165b pcmpeqq xmm14,xmm15
++1661 movdqa xmm15,xmm0
++1666 cmpunordpd xmm15,xmm0
++166c por    xmm14,xmm15
++1671 pmovmskb ecx,xmm14
++1676 jrcxz  0x21b6
++167d movdqa xmm5,xmm0
++1681 movdqu XMMWORD PTR [r12+0x180],xmm5
++168b movdqu xmm0,XMMWORD PTR [r12+0x120]
++1695 movdqa xmm1,xmm2
++1699 pshufd xmm1,xmm1,0x44
++169e mulpd  xmm0,xmm1
++16a2 movdqa xmm14,xmm0
++16a7 movdqu xmm15,XMMWORD PTR [rip+0x80a7]        # 0xa290
++16b0 pand   xmm14,xmm15
++16b5 movdqu xmm15,XMMWORD PTR [rip+0x80a9]        # 0xa2a0
++16be pcmpeqq xmm14,xmm15
++16c4 movdqa xmm15,xmm0
++16c9 cmpunordpd xmm15,xmm0
++16cf por    xmm14,xmm15
++16d4 pmovmskb ecx,xmm14
++16d9 jrcxz  0x2219
++16e0 movdqa xmm9,xmm0
++16e5 movdqu XMMWORD PTR [r12+0x210],xmm9
++16ef movdqa xmm0,xmm4
++16f3 movdqa xmm1,xmm3
++16f7 addpd  xmm0,xmm1
++16fb movdqa xmm14,xmm0
++1700 movdqu xmm15,XMMWORD PTR [rip+0x804e]        # 0xa290
++1709 pand   xmm14,xmm15
++170e movdqu xmm15,XMMWORD PTR [rip+0x8050]        # 0xa2a0
++1717 pcmpeqq xmm14,xmm15
++171d movdqa xmm15,xmm0
++1722 cmpunordpd xmm15,xmm0
++1728 por    xmm14,xmm15
++172d pmovmskb ecx,xmm14
++1732 jrcxz  0x2272
++1739 movdqa xmm10,xmm0
++173e movdqu XMMWORD PTR [r12+0x220],xmm10
++1748 movdqu xmm3,XMMWORD PTR [r12+0x290]
++1752 movdqa xmm0,xmm3
++1756 movdqa xmm1,xmm2
++175a pshufd xmm1,xmm1,0x44
++175f mulpd  xmm0,xmm1
++1763 movdqa xmm14,xmm0
++1768 movdqu xmm15,XMMWORD PTR [rip+0x7fe6]        # 0xa290
++1771 pand   xmm14,xmm15
++1776 movdqu xmm15,XMMWORD PTR [rip+0x7fe8]        # 0xa2a0
++177f pcmpeqq xmm14,xmm15
++1785 movdqa xmm15,xmm0
++178a cmpunordpd xmm15,xmm0
++1790 por    xmm14,xmm15
++1795 pmovmskb ecx,xmm14
++179a jrcxz  0x22da
++17a1 movdqa xmm4,xmm0
++17a5 movdqu XMMWORD PTR [r12+0x230],xmm4
++17af movdqa xmm0,xmm12
++17b4 movdqa xmm1,xmm8
++17b9 addpd  xmm0,xmm1
++17bd movdqa xmm14,xmm0
++17c2 movdqu xmm15,XMMWORD PTR [rip+0x7f8c]        # 0xa290
++17cb pand   xmm14,xmm15
++17d0 movdqu xmm15,XMMWORD PTR [rip+0x7f8e]        # 0xa2a0
++17d9 pcmpeqq xmm14,xmm15
++17df movdqa xmm15,xmm0
++17e4 cmpunordpd xmm15,xmm0
++17ea por    xmm14,xmm15
++17ef pmovmskb ecx,xmm14
++17f4 jrcxz  0x2334
++17fb movdqa xmm3,xmm0
++17ff movdqu XMMWORD PTR [r12+0x140],xmm3
++1809 movdqu xmm8,XMMWORD PTR [r12+0x1e0]
++1813 movdqa xmm0,xmm8
++1818 movdqa xmm1,xmm2
++181c pshufd xmm1,xmm1,0x44
++1821 mulpd  xmm0,xmm1
++1825 movdqa xmm14,xmm0
++182a movdqu xmm15,XMMWORD PTR [rip+0x7f24]        # 0xa290
++1833 pand   xmm14,xmm15
++1838 movdqu xmm15,XMMWORD PTR [rip+0x7f26]        # 0xa2a0
++1841 pcmpeqq xmm14,xmm15
++1847 movdqa xmm15,xmm0
++184c cmpunordpd xmm15,xmm0
++1852 por    xmm14,xmm15
++1857 pmovmskb ecx,xmm14
++185c jrcxz  0x239c
++1863 movdqa xmm11,xmm0
++1868 movdqu XMMWORD PTR [r12+0x130],xmm11
++1872 movdqa xmm0,xmm7
++1876 movdqa xmm1,xmm6
++187a addpd  xmm0,xmm1
++187e movdqa xmm14,xmm0
++1883 movdqu xmm15,XMMWORD PTR [rip+0x7ecb]        # 0xa290
++188c pand   xmm14,xmm15
++1891 movdqu xmm15,XMMWORD PTR [rip+0x7ecd]        # 0xa2a0
++189a pcmpeqq xmm14,xmm15
++18a0 movdqa xmm15,xmm0
++18a5 cmpunordpd xmm15,xmm0
++18ab por    xmm14,xmm15
++18b0 pmovmskb ecx,xmm14
++18b5 jrcxz  0x23f5
++18bc movdqa xmm2,xmm0
++18c0 movdqu XMMWORD PTR [r12+0x150],xmm2
++18ca mov    r13,r14
++18cd add    r13,0x70
++18d1 movdqu xmm6,XMMWORD PTR [r13+0x0]
++18d7 movdqu XMMWORD PTR [r12+0x240],xmm6
++18e1 movdqa xmm0,xmm5
++18e5 movdqa xmm1,xmm9
++18ea addpd  xmm0,xmm1
++18ee movdqa xmm14,xmm0
++18f3 movdqu xmm15,XMMWORD PTR [rip+0x7e5b]        # 0xa290
++18fc pand   xmm14,xmm15
++1901 movdqu xmm15,XMMWORD PTR [rip+0x7e5d]        # 0xa2a0
++190a pcmpeqq xmm14,xmm15
++1910 movdqa xmm15,xmm0
++1915 cmpunordpd xmm15,xmm0
++191b por    xmm14,xmm15
++1920 pmovmskb ecx,xmm14
++1925 jrcxz  0x2465
++192c movdqa xmm7,xmm0
++1930 movdqu XMMWORD PTR [r12+0x170],xmm7
++193a movdqu xmm5,XMMWORD PTR [r12+0x280]
++1944 movdqa xmm0,xmm6
++1948 movdqa xmm1,xmm5
++194c pshufd xmm1,xmm1,0x44
++1951 mulpd  xmm0,xmm1
++1955 movdqa xmm14,xmm0
++195a movdqu xmm15,XMMWORD PTR [rip+0x7df4]        # 0xa290
++1963 pand   xmm14,xmm15
++1968 movdqu xmm15,XMMWORD PTR [rip+0x7df6]        # 0xa2a0
++1971 pcmpeqq xmm14,xmm15
++1977 movdqa xmm15,xmm0
++197c cmpunordpd xmm15,xmm0
++1982 por    xmm14,xmm15
++1987 pmovmskb ecx,xmm14
++198c jrcxz  0x24cc
++1993 movdqa xmm8,xmm0
++1998 movdqu XMMWORD PTR [r12+0x160],xmm8
++19a2 movdqu xmm0,XMMWORD PTR [r12+0x1c0]
++19ac movdqa xmm1,xmm5
++19b0 pshufd xmm1,xmm1,0x44
++19b5 mulpd  xmm0,xmm1
++19b9 movdqa xmm14,xmm0
++19be movdqu xmm15,XMMWORD PTR [rip+0x7d90]        # 0xa290
++19c7 pand   xmm14,xmm15
++19cc movdqu xmm15,XMMWORD PTR [rip+0x7d92]        # 0xa2a0
++19d5 pcmpeqq xmm14,xmm15
++19db movdqa xmm15,xmm0
++19e0 cmpunordpd xmm15,xmm0
++19e6 por    xmm14,xmm15
++19eb pmovmskb ecx,xmm14
++19f0 jrcxz  0x2530
++19f7 movdqa xmm6,xmm0
++19fb movdqu XMMWORD PTR [r12+0x180],xmm6
++1a05 movdqa xmm0,xmm10
++1a0a movdqa xmm1,xmm4
++1a0e addpd  xmm0,xmm1
++1a12 movdqa xmm14,xmm0
++1a17 movdqu xmm15,XMMWORD PTR [rip+0x7d37]        # 0xa290
++1a20 pand   xmm14,xmm15
++1a25 movdqu xmm15,XMMWORD PTR [rip+0x7d39]        # 0xa2a0
++1a2e pcmpeqq xmm14,xmm15
++1a34 movdqa xmm15,xmm0
++1a39 cmpunordpd xmm15,xmm0
++1a3f por    xmm14,xmm15
++1a44 pmovmskb ecx,xmm14
++1a49 jrcxz  0x2589
++1a50 movdqa xmm9,xmm0
++1a55 movdqu XMMWORD PTR [r12+0x210],xmm9
++1a5f mov    r13,r14
++1a62 add    r13,0x10
++1a66 movdqu xmm4,XMMWORD PTR [r14]
++1a6b movdqu xmm10,XMMWORD PTR [r13+0x0]
++1a71 movdqu XMMWORD PTR [r12+0x230],xmm10
++1a7b movdqa xmm0,xmm3
++1a7f movdqa xmm1,xmm11
++1a84 addpd  xmm0,xmm1
++1a88 movdqa xmm14,xmm0
++1a8d movdqu xmm15,XMMWORD PTR [rip+0x7cc1]        # 0xa290
++1a96 pand   xmm14,xmm15
++1a9b movdqu xmm15,XMMWORD PTR [rip+0x7cc3]        # 0xa2a0
++1aa4 pcmpeqq xmm14,xmm15
++1aaa movdqa xmm15,xmm0
++1aaf cmpunordpd xmm15,xmm0
++1ab5 por    xmm14,xmm15
++1aba pmovmskb ecx,xmm14
++1abf jrcxz  0x25ff
++1ac6 movdqa xmm12,xmm0
++1acb movdqu XMMWORD PTR [r12+0x130],xmm12
++1ad5 movdqa xmm0,xmm10
++1ada movdqa xmm1,xmm5
++1ade pshufd xmm1,xmm1,0x44
++1ae3 mulpd  xmm0,xmm1
++1ae7 movdqa xmm14,xmm0
++1aec movdqu xmm15,XMMWORD PTR [rip+0x7c62]        # 0xa290
++1af5 pand   xmm14,xmm15
++1afa movdqu xmm15,XMMWORD PTR [rip+0x7c64]        # 0xa2a0
++1b03 pcmpeqq xmm14,xmm15
++1b09 movdqa xmm15,xmm0
++1b0e cmpunordpd xmm15,xmm0
++1b14 por    xmm14,xmm15
++1b19 pmovmskb ecx,xmm14
++1b1e jrcxz  0x265e
++1b25 movdqa xmm3,xmm0
++1b29 movdqu XMMWORD PTR [r12+0x220],xmm3
++1b33 movdqa xmm0,xmm4
++1b37 movdqa xmm1,xmm5
++1b3b pshufd xmm1,xmm1,0x44
++1b40 mulpd  xmm0,xmm1
++1b44 movdqa xmm14,xmm0
++1b49 movdqu xmm15,XMMWORD PTR [rip+0x7c05]        # 0xa290
++1b52 pand   xmm14,xmm15
++1b57 movdqu xmm15,XMMWORD PTR [rip+0x7c07]        # 0xa2a0
++1b60 pcmpeqq xmm14,xmm15
++1b66 movdqa xmm15,xmm0
++1b6b cmpunordpd xmm15,xmm0
++1b71 por    xmm14,xmm15
++1b76 pmovmskb ecx,xmm14
++1b7b jrcxz  0x26bb
++1b82 movdqa xmm10,xmm0
++1b87 movdqa xmm0,xmm2
++1b8b movdqa xmm1,xmm8
++1b90 addpd  xmm0,xmm1
++1b94 movdqa xmm14,xmm0
++1b99 movdqu xmm15,XMMWORD PTR [rip+0x7bb5]        # 0xa290
++1ba2 pand   xmm14,xmm15
++1ba7 movdqu xmm15,XMMWORD PTR [rip+0x7bb7]        # 0xa2a0
++1bb0 pcmpeqq xmm14,xmm15
++1bb6 movdqa xmm15,xmm0
++1bbb cmpunordpd xmm15,xmm0
++1bc1 por    xmm14,xmm15
++1bc6 pmovmskb ecx,xmm14
++1bcb jrcxz  0x270b
++1bd2 movdqa xmm4,xmm0
++1bd6 movdqu XMMWORD PTR [r12+0x140],xmm4
++1be0 movdqa xmm0,xmm7
++1be4 movdqa xmm1,xmm6
++1be8 addpd  xmm0,xmm1
++1bec movdqa xmm14,xmm0
++1bf1 movdqu xmm15,XMMWORD PTR [rip+0x7b5d]        # 0xa290
++1bfa pand   xmm14,xmm15
++1bff movdqu xmm15,XMMWORD PTR [rip+0x7b5f]        # 0xa2a0
++1c08 pcmpeqq xmm14,xmm15
++1c0e movdqa xmm15,xmm0
++1c13 cmpunordpd xmm15,xmm0
++1c19 por    xmm14,xmm15
++1c1e pmovmskb ecx,xmm14
++1c23 jrcxz  0x2763
++1c2a movdqa xmm2,xmm0
++1c2e movdqu XMMWORD PTR [r12+0x150],xmm2
++1c38 movdqa xmm0,xmm9
++1c3d movdqa xmm1,xmm3
++1c41 addpd  xmm0,xmm1
++1c45 movdqa xmm14,xmm0
++1c4a movdqu xmm15,XMMWORD PTR [rip+0x7b04]        # 0xa290
++1c53 pand   xmm14,xmm15
++1c58 movdqu xmm15,XMMWORD PTR [rip+0x7b06]        # 0xa2a0
++1c61 pcmpeqq xmm14,xmm15
++1c67 movdqa xmm15,xmm0
++1c6c cmpunordpd xmm15,xmm0
++1c72 por    xmm14,xmm15
++1c77 pmovmskb ecx,xmm14
++1c7c jrcxz  0x27bc
++1c83 movdqa xmm5,xmm0
++1c87 movdqu XMMWORD PTR [r12+0x160],xmm5
++1c91 movdqa xmm0,xmm12
++1c96 movdqa xmm1,xmm10
++1c9b addpd  xmm0,xmm1
++1c9f movdqa xmm14,xmm0
++1ca4 movdqu xmm15,XMMWORD PTR [rip+0x7aaa]        # 0xa290
++1cad pand   xmm14,xmm15
++1cb2 movdqu xmm15,XMMWORD PTR [rip+0x7aac]        # 0xa2a0
++1cbb pcmpeqq xmm14,xmm15
++1cc1 movdqa xmm15,xmm0
++1cc6 cmpunordpd xmm15,xmm0
++1ccc por    xmm14,xmm15
++1cd1 pmovmskb ecx,xmm14
++1cd6 jrcxz  0x2816
++1cdd movdqa xmm3,xmm0
++1ce1 movdqu XMMWORD PTR [r12+0x120],xmm3
++1ceb mov    r13,r15
++1cee add    r13,0x10
++1cf2 movdqu XMMWORD PTR [r15],xmm4
++1cf7 mov    r14d,0x0
++1cfd mov    DWORD PTR [r12+0x32c],r14d
++1d05 movdqu XMMWORD PTR [r13+0x0],xmm2
++1d0b add    r15,0x20
++1d0f mov    r13,r15
++1d12 add    r13,0x10
++1d16 movdqu XMMWORD PTR [r15],xmm5
++1d1b movdqu XMMWORD PTR [r13+0x0],xmm3
++1d21 mov    rcx,QWORD PTR [r12+0x380]
++1d29 jrcxz  0x2869
++1d30 cmp    BYTE PTR [rsp+0x8],0x0
++1d35 jne    0xb39

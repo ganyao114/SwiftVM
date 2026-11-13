@@ -1,0 +1,1 @@
+ninja: error: rebuilding 'build.ninja': stat(/mnt/d/Dev/SwiftVM/source/runtime/externals/SoftFloat-3e/CMakeLists.txt): Invalid argument

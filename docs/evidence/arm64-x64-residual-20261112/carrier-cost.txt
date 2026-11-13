@@ -1,0 +1,19 @@
+host: AMD Ryzen 9 7950X3D 16-Core Processor
+build: gcc -O2 -msse4.1 -o carrier_cost carrier_cost.c carrier_cost.S
+run: taskset -c 2 ./carrier_cost   (200,000,000 iterations per kernel, best of 7)
+cycles: ns/iter divided by the base loop, which runs at one cycle per iteration
+
+int: add; sub; jne (base, 1 cycle)            0.205 ns/iter    1.0 cycles
+int: + pushfq/pop/mov save                    0.820 ns/iter    4.0 cycles
+int: + pushfq save + push/popfq restore       4.965 ns/iter   24.5 cycles
+int: + lahf/seto/mov save                     0.409 ns/iter    2.0 cycles
+int: + lahf save + add al,7f/sahf restore     0.818 ns/iter    4.0 cycles
+int: + setne ... test/jne                     0.205 ns/iter    1.0 cycles
+int: + re-test result                         0.205 ns/iter    1.0 cycles
+fp : addsd only                               0.614 ns/iter    3.0 cycles
+fp : addsd + ucomisd/jp                       0.822 ns/iter    4.1 cycles
+fp : addsd + NaN & MinNormal post-check       0.617 ns/iter    3.0 cycles
+fp : 2-input admission + addsd                0.825 ns/iter    4.1 cycles
+fp : MXCSR region + admission + addsd         8.036 ns/iter   39.6 cycles
+vec: 4-lane admission + addpd                 1.437 ns/iter    7.1 cycles
+vec: addpd + SSE4.1 post-check                0.898 ns/iter    4.4 cycles

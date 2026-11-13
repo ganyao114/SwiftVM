@@ -5,6 +5,7 @@ docs/evidence/dynarmic-bench-20261111/** -text -whitespace
 docs/evidence/dynarmic-gap-20261111/** -text -whitespace
 docs/evidence/arm64-x64-opt4-20261111/** -text -whitespace
 docs/evidence/arm64-x64-mechanisms-20261112/** -text -whitespace
+docs/evidence/arm64-x64-residual-20261112/** -text -whitespace
 
 # Imported dependency snapshots retain upstream bytes and whitespace-sensitive
 # self-test fixtures. Project formatting applies to SwiftVM-owned sources.

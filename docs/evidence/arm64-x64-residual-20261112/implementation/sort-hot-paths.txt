@@ -1,0 +1,5 @@
+sort, unit 2, 4 ordinary-path instructions
++0000 sub    r14d,r13d
++0003 mov    rcx,QWORD PTR [r12+0x380]
++000b jrcxz  0x136
++0012 jbe    0x14f

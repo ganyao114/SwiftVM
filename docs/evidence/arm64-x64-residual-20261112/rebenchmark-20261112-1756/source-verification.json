@@ -1,0 +1,168 @@
+{
+  "source_matches": 1199,
+  "source_changes": [],
+  "source_unreadable": [
+    {
+      "path": "source/runtime/frontend/arm32/build_ir.cpp",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/build_ir.cpp'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/build_ir.h",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/build_ir.h'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode.cpp",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode.cpp'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode.h",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode.h'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/LICENSE.txt",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/LICENSE.txt'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/NOTICE",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/NOTICE'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/arm.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/arm.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/generated_dispatch.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/generated_dispatch.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/generated_metadata.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/generated_metadata.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/generated_statistics.json",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/generated_statistics.json'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/generated_tables.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/generated_tables.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/neon.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/neon.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/signatures.json",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/signatures.json'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/thumb16.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/thumb16.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/thumb32.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/thumb32.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/decode/vfp.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/decode/vfp.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/instruction.h",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/instruction.h'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/interpreter.cpp",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/interpreter.cpp'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/interpreter.h",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/interpreter.h'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/opcodes.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/opcodes.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/region.cpp",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/region.cpp'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/region.h",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/region.h'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics.h",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics.h'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_control.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_control.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_dsp.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_dsp.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_integer.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_integer.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_memory.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_memory.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_multiply.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_multiply.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_neon_float.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_neon_float.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_neon_integer.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_neon_integer.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_neon_memory.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_neon_memory.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_registers.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_registers.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_shift_flags.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_shift_flags.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_system.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_system.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/semantics_vfp.inc",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/semantics_vfp.inc'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/sink.h",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/sink.h'"
+    },
+    {
+      "path": "source/runtime/frontend/arm32/types.h",
+      "error": "[Errno 22] Invalid argument: '/mnt/d/Dev/SwiftVM/source/runtime/frontend/arm32/types.h'"
+    }
+  ],
+  "frozen_code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"045cbc5e2551348c2c212350f19a834302969b0afbf7c7cbb58613e281d50d42\"\n",
+  "frozen_binary": {
+    "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final_compare",
+    "sha256": "763a9b5c4406c2f100ad810112935c41435739925eade12025b8c4b563c0be50",
+    "bytes": 7420272
+  },
+  "build_runner": {
+    "path": "/mnt/d/Dev/SwiftVM/build/host/svm_arm64_compare_bench",
+    "sha256": "763a9b5c4406c2f100ad810112935c41435739925eade12025b8c4b563c0be50"
+  },
+  "frozen_runner": {
+    "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final_compare",
+    "sha256": "763a9b5c4406c2f100ad810112935c41435739925eade12025b8c4b563c0be50"
+  }
+}

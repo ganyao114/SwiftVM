@@ -1,0 +1,62 @@
+baseline, 33 instructions per taken iteration
++0000  movdqu xmm0,XMMWORD PTR [r12+0x110]
++000a  movdqa xmm2,xmm0
++000e  movdqu xmm0,XMMWORD PTR [r12+0x120]
++0018  movdqa xmm3,xmm0
++001c  stmxcsr DWORD PTR [rsp+0x110]
++0024  mov    DWORD PTR [rsp+0x114],0x1f80
++002f  ldmxcsr DWORD PTR [rsp+0x114]
++0037  movdqa xmm0,xmm2
++003b  movdqa xmm1,xmm3
++003f  movq   rax,xmm0
++0044  add    rax,rax
++0047  je     0x1a0
++005d  movq   rax,xmm1
++0062  add    rax,rax
++0065  je     0x1be
++007b  movq   xmm0,xmm0
++007f  movq   xmm1,xmm1
++0083  addsd  xmm0,xmm1
++0087  movdqa xmm4,xmm0
++008b  movdqa xmm0,xmm4
++008f  movdqu XMMWORD PTR [r12+0x110],xmm0
++0099  mov    r13,QWORD PTR [r12+0x8]
++009e  stmxcsr DWORD PTR [rsp+0x114]
++00a6  ldmxcsr DWORD PTR [rsp+0x110]
++00ae  mov    r11d,DWORD PTR [rsp+0x114]
++00b6  shr    r11d,1
++00b9  and    r11d,0x10
++00bd  or     DWORD PTR [r12+0x314],r11d
++00c5  sub    r13,0x1
++00c9  mov    QWORD PTR [r12+0x8],r13
++00ce  mov    rcx,QWORD PTR [r12+0x380]
++00d6  jrcxz  0x220
++00dd  jne    0x143
+
+candidate, 25 instructions per taken iteration
++0000  movdqu xmm2,XMMWORD PTR [r12+0x110]
++000a  movdqu xmm3,XMMWORD PTR [r12+0x120]
++0014  movdqa xmm0,xmm2
++0018  movdqa xmm1,xmm3
++001c  movq   xmm0,xmm0
++0020  movq   xmm1,xmm1
++0024  addsd  xmm0,xmm1
++0028  movdqa xmm14,xmm0
++002d  movdqu xmm15,XMMWORD PTR [rip+0x45c]        # 0x5d0
++0036  pand   xmm14,xmm15
++003b  movdqu xmm15,XMMWORD PTR [rip+0x45e]        # 0x5e0
++0044  pcmpeqq xmm14,xmm15
++004a  movdqa xmm15,xmm0
++004f  cmpunordpd xmm15,xmm0
++0055  por    xmm14,xmm15
++005a  pmovmskb ecx,xmm14
++005f  jrcxz  0x1a4
++0066  movdqa xmm4,xmm0
++006a  movdqu XMMWORD PTR [r12+0x110],xmm4
++0074  mov    r13,QWORD PTR [r12+0x8]
++0079  sub    r13,0x1
++007d  mov    QWORD PTR [r12+0x8],r13
++0082  mov    rcx,QWORD PTR [r12+0x380]
++008a  jrcxz  0x1cf
++0091  jne    0x13e
+

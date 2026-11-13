@@ -1,0 +1,16 @@
+integer {'swiftvm': 7.811136, 'dynarmic': 13.390382} ratio 0.6
+memory {'swiftvm': 12.726803, 'dynarmic': 15.429882} ratio 0.8356
+shift {'swiftvm': 10.715454, 'dynarmic': 16.046829} ratio 0.6693
+fp {'swiftvm': 2.694716, 'dynarmic': 4.115316} ratio 0.6547
+compute {'swiftvm': 4.740186, 'dynarmic': 4.113941} ratio 1.1557
+fp-u8 {'swiftvm': 1.193786, 'dynarmic': 2.415103} ratio 0.4966
+compute-matrix {'swiftvm': 0.197564, 'dynarmic': 0.115372} ratio 1.7267
+compute-matrix-scalar {'swiftvm': 1.619889, 'dynarmic': 0.426247} ratio 3.7996
+compute-sha {'swiftvm': 3.243051, 'dynarmic': 2.881083} ratio 1.1248
+compute-sort {'swiftvm': 0.419216, 'dynarmic': 0.587819} ratio 0.7134
+cond {'swiftvm': 84.053907, 'dynarmic': 48.838644} ratio 1.69
+cmpsep {'swiftvm': 21.823246, 'dynarmic': 25.054435} ratio 0.8706
+fpmix {'swiftvm': 21.317632, 'dynarmic': 6.928814} ratio 2.9727
+compute-fma {'swiftvm': 4.444108, 'dynarmic': 3.837374} ratio 1.1623
+matrix-fma {'swiftvm': 0.192664, 'dynarmic': 0.116418} ratio 1.6512
+completed 15 workloads, 930 paired measured processes
