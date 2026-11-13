@@ -3632,3 +3632,236 @@ TEST_CASE("Uniform backing crosses disjoint uniform stores while honoring early 
     }
     if (Run(code, state)) CHECK(state.vectors[15] == expected);
 }
+
+TEST_CASE("Composite SIB load addressing, zero-identity copies, and BMI1/BMI2 lowering",
+          "[compile][x64-compile][native]") {
+    bool bmi1_available = false, bmi2_available = false;
+#if defined(__x86_64__) && defined(__linux__)
+    bmi1_available = __builtin_cpu_supports("bmi");
+    bmi2_available = __builtin_cpu_supports("bmi2");
+#endif
+    alignas(16) std::array<u32, 16> table{};
+    for (unsigned i = 0; i < table.size(); ++i) table[i] = 0x10000000u + i * 0x01020304u;
+
+    for (bool use_bmi : {false, true}) {
+        if (use_bmi && NativeMode() && (!bmi1_available || !bmi2_available)) continue;
+        Builder builder{Scope::Function};
+        const auto entry = Block(builder), loop = Block(builder), exit = Block(builder);
+        Need(builder.BeginBlock(entry));
+        const auto zero = Literal(builder, 0);
+        const auto init_cnt = Load(builder, 0);
+        const auto cnt0 = Emit(builder,
+                               OpCode::Sub,
+                               Type::U64,
+                               {Operand::ValueOf(init_cnt), Imm(0)},
+                               {15, FlagProfile::ArithmeticCanonicalCarry, false});
+        Store(builder, 0, cnt0);
+        Need(builder.EndBlock(Terminal::Jump(loop)));
+
+        Need(builder.BeginBlock(loop));
+        const auto base = Load(builder, 1);
+        const auto raw_idx = Load(builder, 2);
+        // Upper 32 bits of raw_idx are dirty; ZeroExtend32To64 + LslImm(2) + Add(disp) fuses into SIB load.
+        const auto uxtw =
+                Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(raw_idx, Type::U32)});
+        const auto scaled = Emit(builder, OpCode::LslImm, Type::U64, {Operand::ValueOf(uxtw), Imm(2)});
+        const auto sum_addr =
+                Emit(builder, OpCode::Add, Type::U64, {Operand::ValueOf(base), Operand::ValueOf(scaled)});
+        const auto disp_addr =
+                Emit(builder, OpCode::Add, Type::U64, {Operand::ValueOf(sum_addr), Imm(8)});
+        const auto elem = Emit(builder, OpCode::LoadMemory, Type::U32, {Operand::ValueOf(disp_addr)});
+
+        // 64-bit And with 0xffffffff lowers to zero-extending move without clobbering flags.
+        const auto masked64 =
+                Emit(builder, OpCode::And, Type::U64, {Operand::ValueOf(raw_idx), Imm(0xffffffffu)});
+        // RorImm under BMI2 (rorx) and zero-identity Or/Xor/Add/Sub preserve native flags.
+        const auto rot = Emit(builder, OpCode::RorImm, Type::U64, {Operand::ValueOf(masked64), Imm(7)});
+        const auto copy_or =
+                Emit(builder, OpCode::Or, Type::U32, {Operand::ValueOf(zero, Type::U32), Operand::ValueOf(elem)});
+        const auto copy_xor = Emit(
+                builder, OpCode::Xor, Type::U64, {Operand::ValueOf(rot), Operand::ValueOf(zero)});
+        const auto combined0 =
+                Emit(builder, OpCode::Add, Type::U64, {Operand::ValueOf(copy_xor), Operand::ValueOf(copy_or, Type::U32)});
+        const auto combined =
+                Emit(builder, OpCode::Adc, Type::U64, {Operand::ValueOf(combined0), Imm(0)});
+        // AndNot (a & ~b) with and without flags.
+        const auto mask_inv = Load(builder, 3);
+        const auto bic = Emit(
+                builder, OpCode::AndNot, Type::U64, {Operand::ValueOf(combined), Operand::ValueOf(mask_inv)});
+        const auto prev_acc = Load(builder, 4);
+        const auto next_acc =
+                Emit(builder, OpCode::Xor, Type::U64, {Operand::ValueOf(prev_acc), Operand::ValueOf(bic)});
+        Store(builder, 4, next_acc);
+
+        // Decrement loop counter with flags, followed by zero-identity copies before Branch.
+        const auto cnt = Load(builder, 0);
+        const auto next_cnt = Emit(builder,
+                                   OpCode::Sub,
+                                   Type::U64,
+                                   {Operand::ValueOf(cnt), Imm(1)},
+                                   {15, FlagProfile::ArithmeticCanonicalCarry, false});
+        const auto copied_cnt =
+                Emit(builder, OpCode::Or, Type::U64, {Operand::ValueOf(zero), Operand::ValueOf(next_cnt)});
+        Store(builder, 0, copied_cnt);
+        const auto next_idx = Emit(builder, OpCode::Add, Type::U32, {Operand::ValueOf(raw_idx, Type::U32), Imm(1)});
+        const auto copied_idx =
+                Emit(builder, OpCode::Add, Type::U32, {Operand::ValueOf(zero, Type::U32), Operand::ValueOf(next_idx)});
+        Store(builder, 2, copied_idx);
+        const auto more =
+                Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(Condition::NE)});
+        Need(builder.EndBlock(Terminal::Branch(more, loop, exit)));
+
+        Need(builder.BeginBlock(exit));
+        const auto bics = Emit(builder,
+                               OpCode::AndNot,
+                               Type::U64,
+                               {Operand::ValueOf(Load(builder, 4)), Operand::ValueOf(Load(builder, 5))},
+                               {15, FlagProfile::LogicalZeroCVA, false});
+        const auto program = Return(builder, bics);
+
+        auto options = Options();
+        options.local_flags = true;
+        options.bmi1 = use_bmi;
+        options.bmi2 = use_bmi;
+        swift::runtime::backend::CompileResult code;
+        x64::Allocation allocation;
+        x64::Compile(program, options, code, allocation);
+        REQUIRE(bool(code));
+        CHECK(allocation.homes[zero.node.value].rematerialize);
+        CHECK(allocation.homes[uxtw.node.value].rematerialize);
+        CHECK(allocation.homes[scaled.node.value].rematerialize);
+        CHECK(allocation.homes[sum_addr.node.value].rematerialize);
+        CHECK(allocation.homes[disp_addr.node.value].rematerialize);
+        CHECK(allocation.native_entry[loop.id.value]);
+
+        State state;
+        state.scalars[0] = 4;
+        state.scalars[1] = reinterpret_cast<std::uintptr_t>(table.data());
+        state.scalars[2] = UINT64_C(0xfeedface00000001);
+        state.scalars[3] = UINT64_C(0x00ff00ff00ff00ff);
+        state.scalars[4] = 0;
+        state.scalars[5] = UINT64_C(0xf00000000000000f);
+        u64 expected_acc = 0;
+        for (u32 step = 0; step < 4; ++step) {
+            const u32 idx32 = 1u + step;
+            const u32 loaded = table[idx32 + 2];
+            const u64 rotated = (u64{idx32} >> 7) | (u64{idx32} << 57);
+            const u64 comb = rotated + loaded + 1;
+            expected_acc ^= comb & ~state.scalars[3];
+        }
+        const u64 expected_ret = expected_acc & ~state.scalars[5];
+        if (Run(code, state, expected_ret)) {
+            CHECK(state.scalars[0] == 0);
+            CHECK(state.scalars[2] == 5);
+            CHECK(state.scalars[4] == expected_acc);
+            const bool zf = expected_ret == 0;
+            const bool sf = (expected_ret >> 63) != 0;
+            CHECK(bool(state.flags & flags::Zero) == zf);
+            CHECK(bool(state.flags & flags::Sign) == sf);
+            CHECK(!(state.flags & (flags::Carry | flags::Overflow)));
+        }
+    }
+}
+
+TEST_CASE("Resident AVX single-precision and 2S fused/binary FP match ARM oracle",
+          "[compile][x64-compile][native]") {
+    namespace arm = swift::runtime::arm64;
+    using namespace vixl::aarch64;
+    bool fma_available = false;
+#if defined(__x86_64__) && defined(__linux__)
+    fma_available = __builtin_cpu_supports("avx") && __builtin_cpu_supports("fma");
+#endif
+    if (NativeMode() && !fma_available) return;
+
+    for (unsigned rmode = 0; rmode < 4; ++rmode) {
+        const u32 fpcr = rmode << 22;
+        for (u32 fma_op : {u32(FMADD_s), u32(FMSUB_s), u32(FNMADD_s), u32(FNMSUB_s)}) {
+            Builder builder{Scope::Block};
+            Begin(builder);
+            // Force resident XMM allocation via VecXor with zero before ArmFPBinary / ArmFPTernary.
+            const auto zvec = Vector(builder, {0, 0});
+            const auto a = Emit(builder, OpCode::VecXor, Type::V128, {Operand::ValueOf(LoadVector(builder, 0)), Operand::ValueOf(zvec)});
+            const auto b = Emit(builder, OpCode::VecXor, Type::V128, {Operand::ValueOf(LoadVector(builder, 1)), Operand::ValueOf(zvec)});
+            const auto c = Emit(builder, OpCode::VecXor, Type::V128, {Operand::ValueOf(LoadVector(builder, 2)), Operand::ValueOf(zvec)});
+            const auto offsets =
+                    Imm(arm::FPStateOffsets(offsetof(State, fpcr), offsetof(State, fpsr)));
+            const u32 scalar_word = fma_op | (1u << 5) | (2u << 16) | (3u << 10);
+            const auto s_res = Emit(builder,
+                                    OpCode::ArmFPTernary,
+                                    Type::V128,
+                                    {Operand::ValueOf(a),
+                                     Operand::ValueOf(b),
+                                     Operand::ValueOf(c),
+                                     offsets,
+                                     Imm(arm::NumericCall(arm::Numeric::Scalar, scalar_word))});
+            const u32 fmls_2s = u32(NEON_FMLS) | (1u << 5) | (2u << 16);
+            const auto v_res = Emit(builder,
+                                    OpCode::ArmFPTernary,
+                                    Type::V128,
+                                    {Operand::ValueOf(a),
+                                     Operand::ValueOf(b),
+                                     Operand::ValueOf(c),
+                                     offsets,
+                                     Imm(arm::NumericCall(arm::Numeric::Fused, fmls_2s))});
+            const auto bin_s = Emit(builder,
+                                    OpCode::ArmFPBinary,
+                                    Type::V128,
+                                    {Operand::ValueOf(a),
+                                     Operand::ValueOf(b),
+                                     Imm(offsetof(State, fpcr)),
+                                     Imm(offsetof(State, fpsr)),
+                                     Imm(arm::ArmFPBinaryMode(2, 32, 1, true, 1))});
+            StoreVector(builder, 3, s_res);
+            StoreVector(builder, 4, v_res);
+            StoreVector(builder, 5, bin_s);
+
+            auto options = Options();
+            options.local_flags = true;
+            options.avx = true;
+            options.fma = true;
+            options.arm_fpcr = fpcr;
+            options.arm_fpcr_offset = offsetof(State, fpcr);
+            options.arm_fpsr_offset = offsetof(State, fpsr);
+            const auto code = x64::Compile(Return(builder), options);
+            REQUIRE(bool(code));
+
+            for (bool zero_cancel : {false, true}) {
+                State state;
+                state.fpcr = fpcr;
+                // Put signaling/quiet NaNs in upper inactive lanes to verify zero spurious exceptions!
+                state.vectors[0] = zero_cancel
+                                           ? Lanes32(0x00000000, 0x3f800000, 0x7f800001, 0x7fc00042)
+                                           : Lanes32(0x3fc00000, 0xbf800000, 0x7f800001, 0x7fc00042);
+                state.vectors[1] = zero_cancel
+                                           ? Lanes32(0x3f800000, 0x3f800000, 0x7f800001, 0xff800000)
+                                           : Lanes32(0x40000000, 0x40200000, 0x7f800001, 0xff800000);
+                state.vectors[2] = zero_cancel
+                                           ? Lanes32(0x00000000, 0x3f800000, 0x7f800001, 0x7fc00042)
+                                           : Lanes32(0x3f000000, 0x40400000, 0x7f800001, 0x7fc00042);
+                if (!Run(code, state)) continue;
+
+                const bool neg_add = scalar_word & (1u << 21);
+                const bool neg_lhs = bool(scalar_word & (1u << 15)) != neg_add;
+                const u32 ctrl = (neg_lhs ? 1u : 0u) | (neg_add ? 2u : 0u);
+                const auto exp_s = arm::EvaluateFusedFP(
+                        u32(state.vectors[0].low), u32(state.vectors[1].low), u32(state.vectors[2].low), 32, ctrl, fpcr);
+                const auto exp_2s_0 = arm::EvaluateFusedFP(
+                        u32(state.vectors[0].low), u32(state.vectors[1].low), u32(state.vectors[2].low), 32, 1, fpcr);
+                const auto exp_2s_1 = arm::EvaluateFusedFP(
+                        u32(state.vectors[0].low >> 32),
+                        u32(state.vectors[1].low >> 32),
+                        u32(state.vectors[2].low >> 32),
+                        32,
+                        1,
+                        fpcr);
+                const auto exp_bin = arm::EvaluateBinaryFP(
+                        u32(state.vectors[0].low), u32(state.vectors[1].low >> 32), 32, 0, fpcr);
+                CHECK(state.vectors[3] == (Pair{u32(exp_s.value), 0}));
+                CHECK(state.vectors[4] == Lanes32(u32(exp_2s_0.value), u32(exp_2s_1.value), 0, 0));
+                CHECK(state.vectors[5] == (Pair{u32(exp_bin.value), 0}));
+                CHECK(state.fpsr ==
+                      (exp_s.exceptions | exp_2s_0.exceptions | exp_2s_1.exceptions | exp_bin.exceptions));
+            }
+        }
+    }
+}
