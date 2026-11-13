@@ -17,6 +17,23 @@
 .macro IMPORT_EFLAGS
  cmp qword ptr [r12+SVM_X64_CTX_NATIVE_EFLAGS-SVM_X64_CTX_STATE],0
  je 8f
+ cmp qword ptr [r12+SVM_X64_CTX_NATIVE_EFLAGS-SVM_X64_CTX_STATE],2
+ jne .Lraw_import\@
+ mov rdx,rbx
+ shr rdx,16
+ and edx,0xc000
+ mov rax,rbx
+ shr rax,21
+ and eax,0x100
+ xor eax,0x100
+ or edx,eax
+ mov rax,rbx
+ shr rax,28
+ and eax,1
+ or edx,eax
+ mov qword ptr [r12+SVM_X64_CTX_EFLAGS-SVM_X64_CTX_STATE],rdx
+ jmp 8f
+.Lraw_import\@:
  pushfq
  pop rdx
  and rdx,-2242
@@ -40,6 +57,21 @@
  cmp qword ptr [r12+SVM_X64_CTX_NATIVE_EFLAGS-SVM_X64_CTX_STATE],0
  je 8f
  mov rdx,qword ptr [r12+SVM_X64_CTX_EFLAGS-SVM_X64_CTX_STATE]
+ cmp qword ptr [r12+SVM_X64_CTX_NATIVE_EFLAGS-SVM_X64_CTX_STATE],2
+ jne .Lraw_pack\@
+ mov eax,edx
+ and eax,0xc000
+ shl eax,16
+ mov ecx,edx
+ and ecx,1
+ shl ecx,28
+ or eax,ecx
+ and edx,0x100
+ shl edx,21
+ xor edx,0x20000000
+ or eax,edx
+ jmp .Lpack_merge\@
+.Lraw_pack\@:
  mov eax,edx
  and eax,0xc0
  shl eax,24
@@ -51,6 +83,7 @@
  shl edx,29
  xor edx,0x20000000
  or eax,edx
+.Lpack_merge\@:
  movabs rcx,0xffffffff0fffffff
  and rbx,rcx
  or rbx,rax

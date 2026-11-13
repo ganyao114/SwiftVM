@@ -129,14 +129,10 @@ Value ShiftOperand(bool is64, Value value, Shift shift, u32 amount) {
                 return amount ? this->template AsrImm<Type::U32>(value, Imm{amount})
                                         .WithView(Type::U32)
                               : value;
-            case ROR: {
-                // 32 bit rotate of a zero extended value.
-                if (!amount) return value;
-                auto lo = this->template LsrImm<Type::U32>(value, Imm{amount}).WithView(Type::U32);
-                auto hi = this->template LslImm<Type::U32>(value, Imm{32 - amount})
-                                  .WithView(Type::U32);
-                return this->template Or<Type::U32>(lo, SingleOperand(hi)).WithView(Type::U32);
-            }
+            case ROR:
+                return amount ? this->template RorImm<Type::U32>(value, Imm{amount})
+                                        .WithView(Type::U32)
+                              : value;
             default:
                 VIXL_UNREACHABLE();
         }
@@ -197,6 +193,8 @@ Value BoolXor(Value a, Value b) {
 }
 
 Value CondPassed(vixl::aarch64::Condition cond) {
+    if (target.mode == TargetMode::Known && target.target == 0x8664 && unsigned(cond) < 14)
+        return this->CondSet(static_cast<runtime::ir::Condition>(cond)).WithView(Type::U8);
     auto boolean = [](Value value) { return Value{value.WithView(Type::U8)}; };
     auto n = [&] { return boolean(this->TestFlags(Flag::Negate)); };
     auto z = [&] { return boolean(this->TestFlags(Flag::Zero)); };

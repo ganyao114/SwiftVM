@@ -280,6 +280,7 @@ private:
     ARM_OP(Or)
     ARM_OP(Xor)
     ARM_OP(AndNot)
+    ARM_OP(CondSet)
     ARM_OP(LslImm)
     ARM_OP(LsrImm)
     ARM_OP(AsrImm)

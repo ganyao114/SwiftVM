@@ -30,7 +30,7 @@ void Writer::Handle(Op<OpCode::GuestDispatchSafepoint>, OpContext& ctx) {
 }
 
 void Writer::SelectValue(OpContext& c) {
-    if (options.local_flags && c.operation.opcode == OpCode::CondSelect) {
+    if (options.local_flags && flags.dirty && c.operation.opcode == OpCode::CondSelect) {
         const auto condition = NativeCondition(static_cast<ir::Condition>(c.Arg(0).Payload()));
         if (c.vector_result) {
             Label other, done;
@@ -117,6 +117,7 @@ void Writer::Handle(Op<OpCode::NotGoto>, OpContext& c) {
 void Writer::Handle(Op<OpCode::BindLabel>, OpContext& c) {
     if (options.local_flags) SaveNativeFlags(true);
     L(locals[c.Arg(0).Payload()]);
+    condition_saved = false;
     if (options.local_flags) flags = {true, false, true, false, true};
     static_pc_known = false;
 }

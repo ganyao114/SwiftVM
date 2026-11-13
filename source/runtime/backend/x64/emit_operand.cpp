@@ -19,6 +19,17 @@ bool Writer::Immediate32(CellView c, unsigned width, std::int32_t& immediate) co
     return width == 32 || value == u64(std::int64_t(immediate));
 }
 
+bool Writer::ResidentScalar(CellView value, unsigned width, Reg64& result) const {
+    if (width < 32 || in_call || value.Kind() != OperandKind::Value) return false;
+    const auto natural = source.Operations()[value.Payload()].type;
+    const auto& home = allocation.homes[value.Payload()];
+    if (natural == ir::Type::V128 || home.spilled ||
+        (TypeBits(View(value)) < width && natural != View(value)))
+        return false;
+    result = Reg64(home.reg);
+    return true;
+}
+
 void Writer::Mask(const Reg64& r, unsigned bits) {
     if (bits == 32)
         mov(r.cvt32(), r.cvt32());
@@ -63,6 +74,14 @@ void Writer::Read(CellView c, const Reg64& r, bool raw) {
     const bool narrow = !raw && TypeBits(View(c)) == 32;
     if (c.Kind() == OperandKind::Value) {
         const auto& h = allocation.homes[c.Payload()];
+        if (h.spilled && h.uniform_offset != UINT32_MAX) {
+            Load(r,
+                 r12,
+                 h.uniform_offset,
+                 std::min(64u, TypeBits(source.Operations()[c.Payload()].type)));
+            if (!raw) Mask(r, std::min(64u, TypeBits(View(c))));
+            return;
+        }
         if (source.Operations()[c.Payload()].type == ir::Type::V128) {
             if (h.spilled) {
                 if (narrow)
@@ -103,7 +122,9 @@ void Writer::Read(CellView c, const Reg64& r, bool raw) {
 void Writer::ReadVector(CellView c, const Xmm& r) {
     if (c.Kind() == OperandKind::Value && source.Operations()[c.Payload()].type == ir::Type::V128) {
         const auto& h = allocation.homes[c.Payload()];
-        if (h.spilled)
+        if (h.spilled && h.uniform_offset != UINT32_MAX)
+            movdqu(r, ptr[r12 + h.uniform_offset]);
+        else if (h.spilled)
             movdqu(r, ptr[rsp + h.stack_offset]);
         else if (r.getIdx() != h.reg)
             movdqa(r, Xmm(h.reg));
@@ -132,14 +153,18 @@ void Writer::Expression(CellRange::Iterator& at,
     Expression(at, end, rhs, depth + 1);
     switch (c.ExpressionOp()) {
         case OperandOp::Add:
-            add(out, rhs);
+            lea(out, ptr[out + rhs]);
             break;
         case OperandOp::Sub:
             sub(out, rhs);
             break;
         case OperandOp::AddShift:
-            if (c.ShiftAmount()) shl(rhs, c.ShiftAmount());
-            add(out, rhs);
+            if (c.ShiftAmount() <= 3)
+                lea(out, ptr[out + rhs * (1u << c.ShiftAmount())]);
+            else {
+                shl(rhs, c.ShiftAmount());
+                add(out, rhs);
+            }
             break;
         case OperandOp::Lsl:
         case OperandOp::Lsr:

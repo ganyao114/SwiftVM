@@ -37,12 +37,14 @@ void Writer::PrepareCall(CallMasks masks) {
         if (masks.vectors & (1u << reg))
             movdqu(ptr[rsp + stack_bias + allocation.call_offset + (reg - 2) * 16], Xmm(reg));
     PublishFlags();
-    if (options.native_fp_environment && Linked()) {
+    if ((options.native_fp_environment || ArmNativeFP()) && Linked()) {
         stmxcsr(dword[r12 - 40]);
+        HarvestArmFPStatus(true, false);
         ldmxcsr(dword[r12 - 56]);
     } else if (!Linked()) {
-        if (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX)
+        if (ArmNativeFP() || (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX))
             stmxcsr(dword[rsp + stack_bias + mxcsr_slot + 4]);
+        HarvestArmFPStatus(true, false);
         ldmxcsr(dword[rsp + stack_bias + mxcsr_slot]);
     }
     in_call = true;
@@ -50,7 +52,7 @@ void Writer::PrepareCall(CallMasks masks) {
 
 void Writer::FinishCall() {
     flags = {};
-    if (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX) {
+    if (ArmNativeFP() || (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX)) {
         if (Linked())
             ldmxcsr(dword[r12 - 40]);
         else
@@ -94,7 +96,12 @@ void Writer::CallRegister(const Reg64& reg) {
 void Writer::Handle(Op<OpCode::CallLambda>, OpContext& c) {
     if (c.count < 2 || c.count > 5 || c.Arg(0).Kind() != OperandKind::Lambda)
         Reject(CompileError::UnsupportedOperand);
+    if (TryArmNumeric(c)) return;
     PrepareCall();
+    LambdaCall(c);
+}
+
+void Writer::LambdaCall(OpContext& c) {
     const auto target = c.Arg(1);
     if (target.Kind() == OperandKind::Immediate)
         HostAddress(r11, target.Payload(), HostSymbol::None);

@@ -5,11 +5,21 @@ void Writer::Arithmetic(OpContext& c) {
     const auto destination = ScalarDestination(c);
     auto at = c.operands.begin();
     const bool negop = c.operation.opcode == OpCode::Neg;
+    Reg64 right = rcx;
     std::int32_t immediate;
     if (!negop && c.count == 2 &&
         (c.operation.opcode == OpCode::Add || c.operation.opcode == OpCode::Sub) &&
         Immediate32(c.Arg(1), c.width, immediate)) {
         Read(c.Arg(0), destination);
+        const auto displacement = c.operation.opcode == OpCode::Add ? std::int64_t{immediate}
+                                                                    : -std::int64_t{immediate};
+        if (options.local_flags && flags.native && !c.operation.flag_outputs && c.width >= 32 &&
+            allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX &&
+            displacement >= INT32_MIN && displacement <= INT32_MAX) {
+            lea(R(destination, c.width), ptr[destination + displacement]);
+            c.scalar_normalized = true;
+            return;
+        }
         if (c.operation.opcode == OpCode::Add)
             add(R(destination, c.width), immediate);
         else
@@ -22,11 +32,12 @@ void Writer::Arithmetic(OpContext& c) {
         Read(*at, destination);
     else {
         const auto left = *at++;
-        Expression(at, c.operands.end(), rcx, 1);
+        if (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right))
+            Expression(at, c.operands.end(), rcx, 1);
         Read(left, destination);
     }
     if (!negop && c.width < 8) Mask(rcx, c.width);
-    const auto a = R(destination, c.width), b = R(rcx, c.width);
+    const auto a = R(destination, c.width), b = R(right, c.width);
     switch (c.operation.opcode) {
         case OpCode::Add:
             add(a, b);
@@ -36,7 +47,7 @@ void Writer::Arithmetic(OpContext& c) {
             break;
         case OpCode::Adc:
             if (options.local_flags && (defer_flags || merge_native_flags)) {
-                bt(qword[rsp + allocation.flags_slot], 0);
+                bt(qword[rsp + allocation.flags_slot], options.lahf ? 8 : 0);
                 if (flags.saved_carry) cmc();
             } else
                 bt(rbx, 29);
@@ -44,7 +55,7 @@ void Writer::Arithmetic(OpContext& c) {
             break;
         case OpCode::Sbb:
             if (options.local_flags && (defer_flags || merge_native_flags)) {
-                bt(qword[rsp + allocation.flags_slot], 0);
+                bt(qword[rsp + allocation.flags_slot], options.lahf ? 8 : 0);
                 if (flags.saved_carry) cmc();
             } else
                 bt(rbx, 29);
@@ -76,6 +87,7 @@ void Writer::Logical(OpContext& c) {
     auto at = c.operands.begin();
     const auto left = *at++;
     const bool unary = at == c.operands.end();
+    Reg64 right = rcx;
     std::int32_t immediate;
     if (!unary && c.count == 2 &&
         (c.operation.opcode == OpCode::And || c.operation.opcode == OpCode::Or ||
@@ -95,21 +107,25 @@ void Writer::Logical(OpContext& c) {
         CaptureFlags(c);
         return;
     }
-    if (!unary) Expression(at, c.operands.end(), rcx, 1);
+    if (!unary && (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right)))
+        Expression(at, c.operands.end(), rcx, 1);
     Read(left, destination);
+    const auto a = R(destination, c.width == 32 ? 32 : 64);
+    const auto b = R(right, c.width == 32 ? 32 : 64);
     switch (c.operation.opcode) {
         case OpCode::And:
-            and_(destination, rcx);
+            and_(a, b);
             break;
         case OpCode::Or:
-            or_(destination, rcx);
+            or_(a, b);
             break;
         case OpCode::Xor:
-            xor_(destination, rcx);
+            xor_(a, b);
             break;
         case OpCode::AndNot:
+            if (right.getIdx() != rcx.getIdx()) mov(rcx, right);
             not_(rcx);
-            and_(destination, rcx);
+            and_(a, R(rcx, c.width == 32 ? 32 : 64));
             break;
         case OpCode::Not:
             if (unary) {
@@ -117,14 +133,14 @@ void Writer::Logical(OpContext& c) {
                 sete(destination.cvt8());
                 movzx(destination.cvt32(), destination.cvt8());
             } else {
-                mov(destination, rcx);
-                not_(destination);
+                mov(destination, right);
+                not_(a);
             }
             break;
         default:
             Reject(CompileError::UnsupportedOpcode);
     }
-    Mask(destination, c.width);
+    if (c.width != 32) Mask(destination, c.width);
     if (c.operation.flag_outputs || allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX)
         test(R(destination, c.width), R(destination, c.width));
     c.scalar_normalized = true;
@@ -143,11 +159,15 @@ LOG(Not)
 #undef LOG
 
 void Writer::Handle(Op<OpCode::Mul>, OpContext& c) {
-    Read(c.Arg(0), rax);
+    const auto destination = ScalarDestination(c);
+    Reg64 right = rcx;
     auto at = c.operands.begin();
     ++at;
-    Expression(at, c.operands.end(), rcx, 1);
-    imul(rax, rcx);
+    if (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right))
+        Expression(at, c.operands.end(), rcx, 1);
+    Read(c.Arg(0), destination);
+    imul(R(destination, c.width == 32 ? 32 : 64), R(right, c.width == 32 ? 32 : 64));
+    c.scalar_normalized = c.width >= 32;
 }
 
 void Writer::Handle(Op<OpCode::MulSub>, OpContext& c) {
@@ -206,6 +226,14 @@ void Writer::Shift(OpContext& c) {
     const auto destination = ScalarDestination(c);
     Read(c.Arg(0), destination);
     const auto op = c.operation.opcode;
+    if (options.local_flags && flags.native && op == OpCode::LslImm &&
+        (c.width == 32 || c.width == 64) && !c.operation.flag_outputs &&
+        (c.Arg(1).Payload() & (c.width - 1)) <= 3) {
+        const auto amount = c.Arg(1).Payload() & (c.width - 1);
+        if (amount) lea(R(destination, c.width), ptr[destination * (1u << amount)]);
+        c.scalar_normalized = true;
+        return;
+    }
     const bool immediate = c.Arg(1).Kind() == OperandKind::Immediate;
     if (!immediate) {
         Read(c.Arg(1), rcx);
@@ -230,7 +258,8 @@ void Writer::Shift(OpContext& c) {
         if (amount) shift(static_cast<int>(amount));
     } else
         shift(cl);
-    c.scalar_normalized = c.width >= 32;
+    c.scalar_normalized = c.width >= 32 && !(immediate && !(c.Arg(1).Payload() & (c.width - 1)) &&
+                                             (op == OpCode::AsrImm || op == OpCode::AsrValue));
 }
 
 #define SH(name)                                                                                   \

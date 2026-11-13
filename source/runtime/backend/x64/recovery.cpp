@@ -8,9 +8,7 @@ bool RestoreGuestState(execution::FaultContext& c,
                        std::span<const std::byte> regs,
                        std::uint64_t native_flags) noexcept {
     const auto mode = s.recovery[0] & 3;
-    if (mode > 2 || (s.recovery[0] & ~15u) || (mode != 2 && s.recovery[0] != mode) ||
-        regs.size() < 16 * 8)
-        return false;
+    if (!ValidRecovery(s) || regs.size() < 16 * 8) return false;
     if (mode == 2 && c.flags_offset != UINT32_MAX) {
         std::uint64_t packed{}, saved{}, stack{};
         std::memcpy(&packed, regs.data() + 3 * 8, 8);
@@ -23,11 +21,14 @@ bool RestoreGuestState(execution::FaultContext& c,
             if (!stack || (offset & 7) || stack > UINT64_MAX - offset - 8) return false;
             std::memcpy(&saved, reinterpret_cast<const void*>(stack + offset), 8);
         }
-        constexpr unsigned source_bits[]{0, 11, 6, 7}, destination_bits[]{29, 28, 30, 31};
+        constexpr unsigned source_bits[]{0, 11, 6, 7}, image_bits[]{8, 0, 14, 15},
+                destination_bits[]{29, 28, 30, 31};
         for (unsigned bit = 0; bit < 4; ++bit) {
             if (!((native_mask | saved_mask) & (1u << bit))) continue;
             const bool use_saved = saved_mask & (1u << bit);
-            auto value = ((use_saved ? saved : native_flags) >> source_bits[bit]) & 1;
+            const auto source =
+                    use_saved && (s.recovery[0] & 16) ? image_bits[bit] : source_bits[bit];
+            auto value = ((use_saved ? saved : native_flags) >> source) & 1;
             if (!bit) value ^= (s.recovery[0] >> (use_saved ? 3 : 2)) & 1;
             const auto mask = std::uint64_t{1} << destination_bits[bit];
             packed = (packed & ~mask) | (value << destination_bits[bit]);

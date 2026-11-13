@@ -167,6 +167,10 @@ void VisitCompareBranch(const vixl::aarch64::Instruction* instr) override {
 void VisitTestBranch(const vixl::aarch64::Instruction* instr) override {
     const auto bit = (instr->GetImmTestBranchBit5() << 5) | instr->GetImmTestBranchBit40();
     auto condition = TestBit(ReadXRegister(instr->GetRt()), Imm{bit});
+    if (X64FP() && instr->Mask(TestBranchMask) == TBZ) {
+        BranchChoice(condition, NextPC(), current_pc + s64(instr->GetImmTestBranch()) * 4);
+        return;
+    }
     if (instr->Mask(TestBranchMask) == TBZ) condition = TestZero(condition);
     BranchChoice(condition, current_pc + s64(instr->GetImmTestBranch()) * 4, NextPC());
 }

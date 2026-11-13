@@ -118,58 +118,45 @@ struct UniformEntry {
     Type type{Type::Void};
     Operand value;
     NodeId store;
+    std::uint64_t valid_epoch{}, pending_epoch{};
 };
 
 class UniformCache {
 public:
     void Clear() {
-        valid = pending = 0;
-        next = 0;
+        Advance(valid_epoch);
+        Advance(pending_epoch);
     }
 
     const Operand* Find(std::uint32_t offset, std::uint32_t bytes, Type type) const {
-        const Operand* wide{};
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-            const auto& entry = entries[i];
-            if (!(valid & (1u << i)) || entry.offset != offset) continue;
-            if (entry.bytes == bytes && entry.type == type) return &entry.value;
-            // Architectural U32 writes use a complete U64 slot. A subsequent
-            // U32 read still gets a real ZeroExtend32, including raw sources.
-            if (type == Type::U32 && bytes == 4 && entry.type == Type::U64 && entry.bytes == 8)
-                wide = &entry.value;
-        }
-        return wide;
+        const auto& entry = entries[(offset >> 3) & (capacity - 1)];
+        if (entry.valid_epoch != valid_epoch || entry.offset != offset) return nullptr;
+        if ((entry.bytes == bytes && entry.type == type) ||
+            (type == Type::U32 && bytes == 4 && entry.type == Type::U64 && entry.bytes == 8))
+            return &entry.value;
+        return nullptr;
     }
 
     void Invalidate(std::uint32_t offset, std::uint32_t bytes) {
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-            const auto& entry = entries[i];
-            if (((valid | pending) & (1u << i)) && u64{entry.offset} < u64{offset} + bytes &&
-                u64{offset} < u64{entry.offset} + entry.bytes) {
-                valid &= ~(1u << i);
-                pending &= ~(1u << i);
-            }
-        }
+        Visit({offset, bytes},
+              [&](UniformEntry& entry) { entry.valid_epoch = entry.pending_epoch = 0; });
     }
 
-    void ClearPending() { pending = 0; }
+    void ClearPending() { Advance(pending_epoch); }
 
     void Observe(UniformRange range) {
-        for (std::size_t i = 0; i < entries.size(); ++i)
-            if ((pending & (1u << i)) && Overlaps(range, {entries[i].offset, entries[i].bytes}))
-                pending &= ~(1u << i);
+        Visit(range, [](UniformEntry& entry) { entry.pending_epoch = 0; });
     }
 
     unsigned Cover(UniformRange range, std::array<NodeId, 8>& stores) {
         unsigned count{};
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-            const auto& entry = entries[i];
-            if (!(pending & (1u << i)) || !Overlaps(range, {entry.offset, entry.bytes})) continue;
-            if (range.offset <= entry.offset &&
-                u64{range.offset} + range.bytes >= u64{entry.offset} + entry.bytes)
+        Visit(range, [&](UniformEntry& entry) {
+            if (entry.pending_epoch == pending_epoch && range.offset <= entry.offset &&
+                std::uint64_t{range.offset} + range.bytes >=
+                        std::uint64_t{entry.offset} + entry.bytes)
                 stores[count++] = entry.store;
-            pending &= ~(1u << i);
-        }
+            entry.pending_epoch = 0;
+        });
         return count;
     }
 
@@ -179,36 +166,45 @@ public:
              Operand value,
              NodeId store = {},
              bool cacheable = true) {
-        auto slot = entries.size();
-        for (std::size_t i = 0; i < entries.size(); ++i) {
-            const auto& entry = entries[i];
-            if (!((valid | pending) & (1u << i)) || u64{entry.offset} >= u64{offset} + bytes ||
-                u64{offset} >= u64{entry.offset} + entry.bytes)
-                continue;
-            if (entry.offset == offset && entry.bytes == bytes && entry.type == type) slot = i;
-            valid &= ~(1u << i);
-            if (slot != i) pending &= ~(1u << i);
-        }
-        // Updating PC or the same GPR occupies its existing slot. Repeated
-        // writes must not rotate through the table and evict unrelated values.
-        if (slot == entries.size()) {
-            slot = next;
-            next = (next + 1) % entries.size();
-            pending &= ~(1u << slot);
-        }
-        const auto previous_store = entries[slot].store;
-        entries[slot] = {offset, bytes, type, value, store ? store : previous_store};
-        if (cacheable)
-            valid |= 1u << slot;
-        else
-            valid &= ~(1u << slot);
-        if (store) pending |= 1u << slot;
+        auto& entry = entries[(offset >> 3) & (capacity - 1)];
+        const bool same = entry.offset == offset && entry.bytes == bytes && entry.type == type;
+        const auto previous = same && entry.pending_epoch == pending_epoch ? entry.store : NodeId{};
+        Invalidate(offset, bytes);
+        entry = {offset,
+                 bytes,
+                 type,
+                 value,
+                 store ? store : previous,
+                 cacheable ? valid_epoch : 0,
+                 store || previous ? pending_epoch : 0};
     }
 
 private:
-    std::array<UniformEntry, 8> entries{};
-    std::size_t next{};
-    unsigned valid{}, pending{};
+    static constexpr unsigned capacity = 128;
+    std::array<UniformEntry, capacity> entries{};
+    std::uint64_t valid_epoch{1}, pending_epoch{1};
+
+    void Advance(std::uint64_t& epoch) {
+        if (++epoch) return;
+        entries = {};
+        valid_epoch = pending_epoch = 1;
+    }
+
+    template <class F> void Visit(UniformRange range, F visit) {
+        if (!range.bytes) return;
+        // Cached values and pending stores span at most 32 bytes. Include their possible
+        // start before the queried interval and verify the full byte range.
+        constexpr auto preceding = TypeBits(Type::V256) / 8 - 1;
+        const auto first = (range.offset > preceding ? range.offset - preceding : 0) >> 3;
+        const auto last = (std::uint64_t{range.offset} + range.bytes - 1) >> 3;
+        const auto count = std::min<std::uint64_t>(capacity, last - first + 1);
+        for (unsigned i = 0; i < count; ++i) {
+            auto& entry = entries[(first + i) & (capacity - 1)];
+            if ((entry.valid_epoch == valid_epoch || entry.pending_epoch == pending_epoch) &&
+                Overlaps(range, {entry.offset, entry.bytes}))
+                visit(entry);
+        }
+    }
 };
 
 std::uint32_t CachedBytes(Type type) {
@@ -363,7 +359,8 @@ Error RewriteValues(Context& context) {
             }
             const bool combined =
                     (folding &&
-                     ((opcode == OpCode::BitInsert &&
+                     (FoldIdentity(editor, operations, op, cells, new_count, opcode) ||
+                      (opcode == OpCode::BitInsert &&
                        FoldLowByteMask(editor, operations, id, cells, new_count, opcode)) ||
                       ((opcode == OpCode::BitExtract || opcode == OpCode::LsrImm) &&
                        FoldExtractShift(
@@ -402,10 +399,31 @@ Error RewriteValues(Context& context) {
         }
         if (op.opcode == OpCode::StoreUniform && count == 2 &&
             uniform.kind == OperandKind::Uniform) {
-            const auto bytes = TypeBits(uniform.type) / 8;
+            const auto bytes = (TypeBits(uniform.type) + 7) / 8;
             if (!bytes) {
                 uniforms.Clear();
                 continue;
+            }
+            if (!has_metadata && !(rows[at] & pin_bit)) {
+                const auto* previous = uniforms.Find(
+                        static_cast<std::uint32_t>(uniform.payload), bytes, uniform.type);
+                Constant old_bits, new_bits;
+                if (previous && ReadConstant(editor, operations, *previous, old_bits) &&
+                    ReadConstant(editor, operations, cells[1], new_bits) &&
+                    (old_bits.bits & Mask(TypeBits(uniform.type))) ==
+                            (new_bits.bits & Mask(TypeBits(uniform.type)))) {
+                    for (const auto input : editor.Operands(id))
+                        if (input.Kind() == OperandKind::Value && !DropUse(rows, input.Payload()))
+                            return Error::InvalidValue;
+                    if (const auto error = editor.Rewrite(id, OpCode::Nop, Type::Void, {});
+                        error != Error::None)
+                        return error;
+                    rows[at] = 0;
+                    ++stats.erased;
+                    ++stats.uniform_stores_erased;
+                    needs_final_cleanup = true;
+                    continue;
+                }
             }
             std::array<NodeId, 8> stores;
             const auto covered =
@@ -454,8 +472,8 @@ Error RewriteValues(Context& context) {
                                  ? cells[0]
                                  : Operand::ValueOf({unit, id}, op.type));
         } else if (op.opcode == OpCode::LoadUniform && uniform.kind == OperandKind::Uniform) {
-            uniforms.Observe(
-                    {static_cast<std::uint32_t>(uniform.payload), TypeBits(uniform.type) / 8});
+            uniforms.Observe({static_cast<std::uint32_t>(uniform.payload),
+                              (TypeBits(uniform.type) + 7) / 8});
         }
     }
     return Error::None;

@@ -253,6 +253,7 @@ add_library(svm_x64 STATIC
     source/runtime/backend/x64/emit_flags.cpp
     source/runtime/backend/x64/emit_vector.cpp
     source/runtime/backend/x64/emit_float.cpp
+    source/runtime/backend/x64/emit_arm_float.cpp
     source/runtime/backend/x64/emit_crypto.cpp
     source/runtime/backend/x64/emit_atomic.cpp
     source/runtime/backend/x64/emit_control.cpp

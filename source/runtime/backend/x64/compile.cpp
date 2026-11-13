@@ -24,6 +24,11 @@ void Compile(const ir::Program& program,
     result.block = {};
     result.frame_bytes = result.spill_slots = 0;
     ClearCode(result);
+    if (options.linked_flags && (!options.local_flags || !options.dispatcher ||
+                                 !options.exit_handler || options.flags_offset > INT32_MAX - 8)) {
+        result.error = CompileError::UnsupportedOperand;
+        return;
+    }
     options.linked_flags &= options.local_flags && options.dispatcher && options.exit_handler;
     options.local_flags &= options.flags_offset <= INT32_MAX - 8;
     options.linked_flags &= options.local_flags;
@@ -42,6 +47,9 @@ void Compile(const ir::Program& program,
     if (options.local_flags && allocation.flags_slot > 0xffffff) {
         if (options.linked_flags) {
             result.error = CompileError::FrameTooLarge;
+            result.node = {program.Blocks()[program.EntryBlock().value].first_node};
+            result.block = program.EntryBlock();
+            ClearCode(result);
             return;
         }
         options.local_flags = options.linked_flags = false;
@@ -51,6 +59,9 @@ void Compile(const ir::Program& program,
             AllocateFunction(program, allocation, options.pinned_uniform_slots, &options);
         if (!allocation) {
             result.error = allocation.error;
+            result.node = allocation.node;
+            result.block = allocation.block;
+            ClearCode(result);
             return;
         }
     }

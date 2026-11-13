@@ -7,8 +7,11 @@ struct CompileOptions;
 
 struct Home {
     std::uint32_t definition_position{}, last_use{}, stack_offset{}, auxiliary_offset{UINT32_MAX};
-    std::uint8_t reg{};
+    std::uint8_t reg{}, flag_reads{}, flag_writes{}, flags_need{};
+    std::uint32_t uniform_offset{UINT32_MAX};
     bool spilled{}, terminal_only{};
+    // A stored value can use its adjacent architectural write as backing.
+    std::uint8_t uniform_store_bytes{};
 };
 
 struct Allocation {
@@ -18,8 +21,11 @@ struct Allocation {
     std::vector<Home> homes;
     std::vector<std::uint32_t> block_order;
     std::vector<std::uint8_t> flags_input;
+    std::vector<bool> native_entry;
+    std::vector<std::uint8_t> terminal_conditions;
     std::uint32_t spill_bytes{}, call_offset{};
     std::uint32_t flags_slot{UINT32_MAX};
+    std::uint32_t condition_slot{UINT32_MAX};
     std::uint32_t cold_fp_count{}, cold_event_count{};
     bool has_calls{}, fpcr_may_change{};
 

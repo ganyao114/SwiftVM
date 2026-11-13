@@ -24,8 +24,10 @@ struct CompileOptions {
     std::uint64_t entry_pc{};
     std::uint32_t arm_fpcr{UINT32_MAX};
     std::uint32_t arm_fpcr_offset{UINT32_MAX};
+    std::uint32_t arm_fpsr_offset{UINT32_MAX};
     bool native_fp_environment{}, fault_locations{}, relocatable{}, local_flags{}, linked_flags{};
-    bool cx16{true}, ssse3{}, sse41{}, sse42{}, fma{}, aes{}, pclmul{}, sha{};
+    bool private_state{};
+    bool cx16{true}, ssse3{}, sse41{}, sse42{}, fma{}, aes{}, pclmul{}, sha{}, lahf{};
 };
 
 backend::CompileResult Compile(const ir::Program&, CompileOptions = {});

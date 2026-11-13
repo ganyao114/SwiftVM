@@ -47,17 +47,23 @@ void Writer::Uniform(OpContext& c) {
     const auto off = u.Payload();
     if (off > INT32_MAX) Reject(CompileError::UnsupportedOperand);
     const auto width = c.operation.opcode == OpCode::LoadUniform ? c.width : TypeBits(u.TypeView());
+    if (ArmNativeFP() && off < std::uint64_t{options.arm_fpsr_offset} + 4 &&
+        options.arm_fpsr_offset < off + (width + 7) / 8)
+        HarvestArmFPStatus();
+    const auto bytes = (width + 7) / 8;
     const bool flags_access = options.flags_offset != UINT32_MAX &&
                               off < u64(options.flags_offset) + 8 &&
-                              u64(options.flags_offset) < off + width / 8;
+                              u64(options.flags_offset) < off + bytes;
     if (flags_access) PublishFlags();
-    const auto pinned = PinnedSlot(off, width / 8);
+    const auto pinned = PinnedSlot(off, bytes);
     const auto relative = pinned >= 0 ? off - options.pinned_uniform_offset - pinned * 8 : -1;
     if (c.operation.opcode == OpCode::LoadUniform) {
         const auto destination = ScalarDestination(c);
-        if (c.vector_result)
-            movdqu(xmm0, ptr[r12 + off]);
-        else if (off == options.flags_offset)
+        if (c.vector_result) {
+            const auto& home = allocation.homes[c.node.value];
+            if (!home.spilled) c.vector = Xmm(home.reg);
+            movdqu(c.vector, ptr[r12 + off]);
+        } else if (off == options.flags_offset)
             mov(destination, rbx);
         else if (pinned >= 0 && relative == 0 &&
                  (width == 64 || width == 32 || width == 16 || width == 8))
@@ -76,32 +82,54 @@ void Writer::Uniform(OpContext& c) {
         return;
     }
     const auto value = *at;
+    if (value.Kind() == OperandKind::Value) {
+        const auto& home = allocation.homes[value.Payload()];
+        if (home.spilled && home.uniform_store_bytes && home.uniform_offset == off) return;
+    }
     if (View(value) == ir::Type::V128) {
-        ReadVector(value, xmm0);
-        movdqu(ptr[r12 + off], xmm0);
-    } else {
-        Reg64 input = rax;
-        // A store consumes only its declared low bits. A resident scalar can
-        // supply them directly without copying through RAX or changing state.
-        if (value.Kind() == OperandKind::Value && width >= 8 && pinned < 0 &&
-            off != options.flags_offset && width <= TypeBits(View(value)) &&
-            source.Operations()[value.Payload()].type != ir::Type::V128 &&
+        if (value.Kind() == OperandKind::Value &&
+            source.Operations()[value.Payload()].type == ir::Type::V128 &&
             !allocation.homes[value.Payload()].spilled)
-            input = Reg64(allocation.homes[value.Payload()].reg);
-        else
-            Read(value, input);
-        if (pinned >= 0 && relative == 0 &&
-            (width == 64 || width == 32 || width == 16 || width == 8))
-            PinStore(*this, PinnedRegister(static_cast<unsigned>(pinned)), input, width);
-        else if (pinned >= 0) {
-            mov(qword[r12 + options.pinned_uniform_offset + pinned * 8],
-                Reg64(PinnedRegister(static_cast<unsigned>(pinned))));
-            Store(input, r12, off, TypeBits(u.TypeView()));
-            mov(Reg64(PinnedRegister(static_cast<unsigned>(pinned))),
-                qword[r12 + options.pinned_uniform_offset + pinned * 8]);
-        } else
-            Store(input, r12, off, TypeBits(u.TypeView()));
-        if (off == options.flags_offset && width == 64) mov(rbx, input);
+            movdqu(ptr[r12 + off], Xmm(allocation.homes[value.Payload()].reg));
+        else {
+            ReadVector(value, xmm0);
+            movdqu(ptr[r12 + off], xmm0);
+        }
+    } else {
+        std::int32_t literal;
+        if (pinned < 0 && !flags_access && width >= 8 && Immediate32(value, width, literal)) {
+            if (width == 8)
+                mov(byte[r12 + off], literal);
+            else if (width == 16)
+                mov(word[r12 + off], literal);
+            else if (width == 32)
+                mov(dword[r12 + off], literal);
+            else
+                mov(qword[r12 + off], literal);
+        } else {
+            Reg64 input = rax;
+            // A store consumes only its declared low bits. A resident scalar can
+            // supply them directly without copying through RAX or changing state.
+            if (value.Kind() == OperandKind::Value && width >= 8 && pinned < 0 &&
+                off != options.flags_offset && width <= TypeBits(View(value)) &&
+                source.Operations()[value.Payload()].type != ir::Type::V128 &&
+                !allocation.homes[value.Payload()].spilled)
+                input = Reg64(allocation.homes[value.Payload()].reg);
+            else
+                Read(value, input);
+            if (pinned >= 0 && relative == 0 &&
+                (width == 64 || width == 32 || width == 16 || width == 8))
+                PinStore(*this, PinnedRegister(static_cast<unsigned>(pinned)), input, width);
+            else if (pinned >= 0) {
+                mov(qword[r12 + options.pinned_uniform_offset + pinned * 8],
+                    Reg64(PinnedRegister(static_cast<unsigned>(pinned))));
+                Store(input, r12, off, TypeBits(u.TypeView()));
+                mov(Reg64(PinnedRegister(static_cast<unsigned>(pinned))),
+                    qword[r12 + options.pinned_uniform_offset + pinned * 8]);
+            } else
+                Store(input, r12, off, TypeBits(u.TypeView()));
+            if (off == options.flags_offset && width == 64) mov(rbx, input);
+        }
     }
     if (off == options.pc_offset) {
         static_pc_known = false;
@@ -177,7 +205,7 @@ void Writer::Memory(OpContext& c) {
                 !allocation.homes[v.Payload()].spilled)
                 input = Reg64(allocation.homes[v.Payload()].reg);
             else
-                Read(v, input);
+                Read(v, input, true);
             const auto first = static_cast<u32>(getSize());
             Store(input, address, 0, bits);
             RecordGuestAccess(first, 2, TypeBits(View(v)) / 8);

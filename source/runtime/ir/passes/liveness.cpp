@@ -1,5 +1,5 @@
 #include "detail.h"
-#include "runtime/ir/uniform_effects.h"
+#include "runtime/ir/flag_effects.h"
 
 namespace swift::runtime::ir::passes {
 namespace {
@@ -68,74 +68,6 @@ bool Observable(Effect effects, FlagWrite write) {
             static_cast<unsigned>(Effect::ReadGuestState | Effect::ReadLocal |
                                   Effect::ReadHostState | Effect::ReadFlags | Effect::WriteFlags);
     return write.kind == FlagWriteKind::Opaque || (static_cast<unsigned>(effects) & ~reads);
-}
-
-bool FlagsUniform(OpCode opcode, CellRange inputs, const UniformPolicy& policy) {
-    if (!policy.flags) return true;
-    Operation op{};
-    op.opcode = opcode;
-    const auto accesses = UniformEffectsFor(op, inputs, policy);
-    if (accesses.all_read || accesses.all_write) return true;
-    for (unsigned i = 0; i < accesses.count; ++i)
-        if (Overlaps(accesses.fields[i].range, *policy.flags)) return true;
-    return false;
-}
-
-u64 FlagReads(OpCode opcode, Effect effects, CellRange inputs, const UniformPolicy& policy) {
-    if (HasAnyEffect(effects, flag_observers) ||
-        (HasAnyEffect(effects, uniform_access) && FlagsUniform(opcode, inputs, policy)))
-        return all_flags;
-    if (!HasAnyEffect(effects, Effect::ReadFlags)) return 0;
-    switch (opcode) {
-        case OpCode::Adc:
-        case OpCode::Sbb:
-        case OpCode::InvertCarry:
-            return FlagBits(Flag::Carry);
-        case OpCode::TestFlags:
-        case OpCode::TestNotFlags: {
-            const auto flags = inputs.front();
-            return flags.Kind() == OperandKind::Flags && !(flags.Payload() & ~all_flags)
-                           ? flags.Payload()
-                           : all_flags;
-        }
-        case OpCode::CondSet:
-        case OpCode::LocalCondSet:
-        case OpCode::CondSelect: {
-            const auto condition = inputs.front();
-            if (condition.Kind() != OperandKind::Condition) return all_flags;
-            switch (static_cast<Condition>(condition.Payload())) {
-                case Condition::EQ:
-                case Condition::NE:
-                    return FlagBits(Flag::Zero);
-                case Condition::CS:
-                case Condition::CC:
-                    return FlagBits(Flag::Carry);
-                case Condition::MI:
-                case Condition::PL:
-                    return FlagBits(Flag::Negate);
-                case Condition::VS:
-                case Condition::VC:
-                    return FlagBits(Flag::Overflow);
-                case Condition::HI:
-                case Condition::LS:
-                    return FlagBits(Flag::Carry | Flag::Zero);
-                case Condition::GE:
-                case Condition::LT:
-                    return FlagBits(Flag::Negate | Flag::Overflow);
-                case Condition::GT:
-                case Condition::LE:
-                    return FlagBits(Flag::Zero | Flag::Negate | Flag::Overflow);
-                case Condition::AL:
-                case Condition::NV:
-                    return 0;
-            }
-            return all_flags;
-        }
-        // GetFlags returns the whole opaque carrier, regardless of its mask.
-        // Unclassified readers do not acquire a narrower implicit contract.
-        default:
-            return all_flags;
-    }
 }
 
 u64 KeptFlags(FlagWrite write, u64 needed) {

@@ -359,7 +359,8 @@ void VM::Execute() {
                 if (test_boundary_active) test_boundary_native_status = status;
 #endif
                 thread.native.phase.store(SVM_NATIVE_PHASE_RUNTIME, std::memory_order_release);
-                if (reason != NativeExit::FPEnvironment) MergeFPStatus();
+                if (reason != NativeExit::FPEnvironment || backend.target.target == 0x8664)
+                    MergeFPStatus();
                 // AArch64 native FP leaves accumulate exception flags in the
                 // installed hardware FPSR; publish them into the uniform state.
                 // MSR FPSR/FPCR exits own the architectural write instead.
@@ -460,6 +461,11 @@ void VM::Execute() {
 void VM::MergeFPStatus() noexcept {
     if (ISA() == GuestISA::X86_64 && backend.floating_status)
         NumericControl() |= backend.floating_status(thread.native);
+    if (ISA() == GuestISA::Arm64 && backend.target.target == 0x8664) {
+        const auto raised = thread.native.guest_fpcr & 0x3d;
+        ArmState().fpsr |= static_cast<std::uint32_t>((raised & 1) | ((raised >> 1) & 0x1e));
+        thread.native.guest_fpcr &= ~std::uint64_t{63};
+    }
 }
 
 void VM::SelectFPMode(std::uint8_t mode) {

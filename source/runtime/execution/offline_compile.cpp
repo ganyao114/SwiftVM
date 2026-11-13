@@ -29,11 +29,10 @@ CodeImage VM::Precompile(std::span<const std::uint8_t> bytes,
         {
             FaultScope registration{thread.faults, uniform_data, PC()};
             const auto initial_mxcsr = NumericControl();
+            const auto initial_mode = thread.fp_mode;
             const unsigned domains = backend.specializes_fp_flush ? 4 : 1;
             for (unsigned domain = 0; domain < domains; ++domain) {
-                NumericControl() = (initial_mxcsr & ~UINT32_C(0x8040)) | ((domain & 1u) << 6) |
-                                   ((domain >> 1) << 15);
-                UpdateFPEnvironment();
+                SelectFPMode(static_cast<std::uint8_t>((initial_mode & ~3u) | domain));
                 std::set<std::uint64_t> pending, attempted;
                 const auto entry_key = [&](std::uint64_t value) {
                     return ISA() == GuestISA::Arm32 && !(value >> 32)
@@ -71,6 +70,7 @@ CodeImage VM::Precompile(std::span<const std::uint8_t> bytes,
                 }
             }
             NumericControl() = initial_mxcsr;
+            SelectFPMode(initial_mode);
             PC() = ISA() == GuestISA::Arm32
                            ? arm32::Location::Make(
                                      image.entry & ~1u, image.entry & 1u, 0, Arm32State().fpscr)

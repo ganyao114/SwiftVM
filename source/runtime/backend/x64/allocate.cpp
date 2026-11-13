@@ -3,7 +3,7 @@
 #include "helpers.h"
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/backend/allocation_cfg.h"
-#include "runtime/ir/uniform_effects.h"
+#include "runtime/ir/flag_effects.h"
 
 #include <algorithm>
 #include <array>
@@ -34,6 +34,7 @@ bool DestructiveInput(const Operation& operation) {
         case OpCode::Adc:
         case OpCode::Sbb:
         case OpCode::Neg:
+        case OpCode::Mul:
         case OpCode::And:
         case OpCode::Or:
         case OpCode::Xor:
@@ -111,6 +112,8 @@ public:
         if (!InitializeHomes()) return;
         if (graph) cfg.CloseLoops(program, result.block_order);
         if (!ObserveUses() || !AllocatePayloads()) return;
+        if (options && options->local_flags) AnalyzeFlags();
+        AnalyzeUniformBacking();
         AssignRegisters();
     }
 
@@ -134,7 +137,9 @@ private:
         result.spill_bytes = result.call_offset = 0;
         result.has_calls = false;
         result.fpcr_may_change = false;
-        result.flags_slot = UINT32_MAX;
+        result.flags_slot = result.condition_slot = UINT32_MAX;
+        result.native_entry.clear();
+        result.terminal_conditions.clear();
         result.flags_input.clear();
         result.cold_fp_count = result.cold_event_count = 0;
         result.homes.clear();
@@ -150,7 +155,8 @@ private:
             for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i, ++position) {
                 const auto& operation = operations[i];
                 if (options && options->arm_fpcr != UINT32_MAX) ObserveFPCR(operation, NodeId{i});
-                result.cold_fp_count += operation.opcode == OpCode::ArmFPBinary;
+                result.cold_fp_count += operation.opcode == OpCode::ArmFPBinary ||
+                                        operation.opcode == OpCode::CallLambda;
                 result.cold_event_count += operation.opcode == OpCode::GuestSafepoint ||
                                            operation.opcode == OpCode::GuestDispatchSafepoint;
                 if (!SupportedType(operation.type)) {
@@ -209,10 +215,16 @@ private:
                      operation.opcode == OpCode::TestNotFlags ||
                      (options && options->local_flags &&
                       (operation.opcode == OpCode::CondSet ||
-                       operation.opcode == OpCode::LocalCondSet)))) {
+                       operation.opcode == OpCode::LocalCondSet ||
+                       operation.opcode == OpCode::TestZero ||
+                       operation.opcode == OpCode::TestNotZero ||
+                       operation.opcode == OpCode::TestBit)))) {
                     const auto mask = program.Operands(NodeId{i}).front().Payload();
                     home.terminal_only = operation.opcode == OpCode::CondSet ||
-                                         operation.opcode == OpCode::LocalCondSet || !(mask & 16);
+                                         operation.opcode == OpCode::LocalCondSet ||
+                                         operation.opcode == OpCode::TestZero ||
+                                         operation.opcode == OpCode::TestNotZero ||
+                                         operation.opcode == OpCode::TestBit || !(mask & 16);
                 }
                 // Ordinary flag metadata updates the live RBX word. Only an
                 // actual named snapshot consumer below needs a saved payload.
@@ -220,7 +232,6 @@ private:
                     home.auxiliary_offset = 0;  // Allocate only after the actual use walk.
             }
         }
-        if (options && options->local_flags) AnalyzeFlags();
         return true;
     }
 
@@ -247,7 +258,7 @@ private:
                     options->arm_fpcr_offset == UINT32_MAX ||
                     (field.Payload() < std::uint64_t{options->arm_fpcr_offset} + 4 &&
                      options->arm_fpcr_offset < field.Payload() + bytes);
-        } else if (!options->local_flags &&
+        } else if (!options->private_state &&
                    HasAnyEffect(EffectsFor(opcode, operation.Metadata()), Effect::WriteMemory)) {
             result.fpcr_may_change = true;
         }
@@ -288,38 +299,26 @@ private:
             unsigned needed{}, killed{};
             for (u32 at = body.first_node + body.node_count; at-- > body.first_node;) {
                 const auto& op = operations[at];
-                const auto outputs = op.flag_outputs & 15;
+                auto& home = result.homes[at];
+                const auto inputs = program.Operands(NodeId{at});
+                unsigned outputs = op.flag_outputs & 15;
+                if (op.opcode == OpCode::SetCarry || op.opcode == OpCode::InvertCarry) outputs |= 1;
+                if (op.opcode == OpCode::SetOverflow) outputs |= 2;
+                if (op.opcode == OpCode::ClearFlags) outputs |= inputs.front().Payload() & 15;
+                if (op.opcode == OpCode::RestoreFlags || op.opcode == OpCode::SaveFlags ||
+                    op.opcode == OpCode::BranchOnlyFlags) {
+                    auto input = inputs.begin();
+                    ++input;
+                    outputs |= (*input).Payload() & 15;
+                }
+                const auto reads =
+                        ir::FlagReads(
+                                op.opcode, EffectsFor(op.opcode, op.Metadata()), inputs, uniforms) &
+                        15;
+                home.flag_reads = reads;
+                home.flag_writes = outputs;
                 needed &= ~outputs;
                 killed |= outputs;
-                const auto effects = EffectsFor(op.opcode, op.Metadata());
-                unsigned reads{};
-                if (HasAnyEffect(effects, Effect::ReadFlags)) {
-                    reads = 15;
-                    const auto inputs = program.Operands(NodeId{at});
-                    if (op.opcode == OpCode::Adc || op.opcode == OpCode::Sbb ||
-                        op.opcode == OpCode::InvertCarry)
-                        reads = 1;
-                    else if (op.opcode == OpCode::TestFlags || op.opcode == OpCode::TestNotFlags)
-                        reads = inputs.front().Payload() & 15;
-                    else if (op.opcode == OpCode::CondSet || op.opcode == OpCode::LocalCondSet ||
-                             op.opcode == OpCode::CondSelect) {
-                        constexpr unsigned condition_masks[]{
-                                4, 4, 1, 1, 8, 8, 2, 2, 5, 5, 10, 10, 14, 14, 0, 0};
-                        const auto condition = inputs.front().Payload();
-                        if (condition < 16) reads = condition_masks[condition];
-                    }
-                }
-                if (HasAnyEffect(effects,
-                                 Effect::MayFault | Effect::Unknown | Effect::External |
-                                         Effect::Control))
-                    reads = 15;
-                if (HasAnyEffect(effects, Effect::ReadGuestState | Effect::WriteGuestState)) {
-                    const auto accesses =
-                            ir::UniformEffectsFor(op, program.Operands(NodeId{at}), uniforms);
-                    if (accesses.all_read || accesses.all_write) reads = 15;
-                    for (unsigned i = 0; i < accesses.count; ++i)
-                        if (ir::Overlaps(accesses.fields[i].range, *uniforms.flags)) reads = 15;
-                }
                 needed |= reads;
             }
             facts[b].gen = needed;
@@ -370,6 +369,76 @@ private:
                 ++pending;
             }
         }
+        result.terminal_conditions.assign(size, 255);
+        result.native_entry.assign(size, false);
+        std::vector<bool> native_output(size);
+        std::vector<u32> rank(size);
+        for (u32 i = 0; i < result.block_order.size(); ++i) rank[result.block_order[i]] = i;
+        for (u32 b = 0; b < size; ++b) {
+            const auto& body = blocks[b];
+            const auto& terminal = body.terminal;
+            unsigned other = 15, term = 0;
+            if (terminal.kind == TerminalKind::Jump)
+                other = result.flags_input[terminal.first.value];
+            if (terminal.kind == TerminalKind::Branch) {
+                other = result.flags_input[terminal.first.value] |
+                        result.flags_input[terminal.second.value];
+                const auto& op = operations[terminal.value.value];
+                if (result.homes[terminal.value.value].terminal_only) {
+                    std::optional<Condition> condition;
+                    if (op.opcode == OpCode::CondSet || op.opcode == OpCode::LocalCondSet)
+                        condition = static_cast<Condition>(
+                                program.Operands(terminal.value).front().Payload());
+                    else if (op.opcode == OpCode::TestFlags || op.opcode == OpCode::TestNotFlags)
+                        condition = ir::FlagCondition(
+                                program.Operands(terminal.value).front().Payload(),
+                                op.opcode == OpCode::TestNotFlags);
+                    if (condition) result.terminal_conditions[b] = unsigned(*condition);
+                }
+            }
+            for (u32 at = body.first_node + body.node_count; at-- > body.first_node;) {
+                auto& home = result.homes[at];
+                other &= ~home.flag_writes;
+                term &= ~home.flag_writes;
+                if (terminal.kind == TerminalKind::Branch && terminal.value.value == at &&
+                    result.terminal_conditions[b] != 255)
+                    term |= home.flag_reads;
+                else
+                    other |= home.flag_reads;
+                home.flags_need = other | (term << 4);
+            }
+            bool native = false;
+            for (u32 at = body.first_node; at < body.first_node + body.node_count; ++at) {
+                const auto& op = operations[at];
+                const auto code = op.opcode;
+                if (op.flag_outputs == 15 && result.homes[at].auxiliary_offset == UINT32_MAX &&
+                    (op.type == Type::U32 || op.type == Type::U64) &&
+                    (code == OpCode::Add || code == OpCode::Sub || code == OpCode::Neg ||
+                     code == OpCode::Adc || code == OpCode::Sbb || code == OpCode::And ||
+                     code == OpCode::Or || code == OpCode::Xor))
+                    native = true;
+                else if (!(code == OpCode::Nop || code == OpCode::InvertCarry ||
+                           code == OpCode::FaultLocation || code == OpCode::GuestSafepoint ||
+                           code == OpCode::GuestDispatchSafepoint ||
+                           (code == OpCode::LoadUniform && TypeBits(op.type) >= 8) ||
+                           (code == OpCode::StoreUniform &&
+                            TypeBits(program.Operands(NodeId{at}).front().TypeView()) >= 32) ||
+                           (code == OpCode::LoadImm && TypeBits(op.type) >= 32) ||
+                           result.homes[at].terminal_only))
+                    native = false;
+            }
+            native_output[b] = native;
+        }
+        for (u32 b = 0; b < size; ++b) {
+            bool backedge = false, all_native = true;
+            for (auto at = offsets[b]; at < offsets[b + 1]; ++at) {
+                const auto previous = predecessors[at];
+                if (rank[previous] < rank[b]) continue;
+                backedge = true;
+                all_native &= native_output[previous];
+            }
+            result.native_entry[b] = backedge && all_native && result.flags_input[b];
+        }
     }
 
     bool RecordUse(u32 definition, u32 at, u32 block = BlockId::invalid) {
@@ -414,6 +483,120 @@ private:
         return true;
     }
 
+    void AnalyzeUniformBacking() {
+        if (!options) return;
+        UniformPolicy policy;
+        policy.flags = UniformRange{options->flags_offset, 8};
+        policy.pc = UniformRange{options->pc_offset, 8};
+        policy.numeric_control = UniformRange{options->mxcsr_offset, 4};
+        for (const auto b : result.block_order) {
+            const auto& body = blocks[b];
+            if (!body.node_count) continue;
+            std::array<u32, 128> next_write;
+            next_write.fill(UINT32_MAX);
+            u32 barrier = UINT32_MAX;
+            const auto end = result.homes[body.first_node].definition_position + body.node_count;
+            for (u32 at = body.first_node + body.node_count; at-- > body.first_node;) {
+                const auto& op = operations[at];
+                auto& home = result.homes[at];
+                const auto inputs = program.Operands(NodeId{at});
+                if (op.opcode == OpCode::StoreUniform && op.Metadata() == OperationMetadata{}) {
+                    auto input = inputs.begin();
+                    const auto field = *input++, value = *input;
+                    if (value.Kind() == OperandKind::Value && value.Payload() < at &&
+                        at - value.Payload() <= 3 &&
+                        operations[value.Payload()].block == op.block) {
+                        const auto& producer = operations[value.Payload()];
+                        auto& backing = result.homes[value.Payload()];
+                        const auto bits = TypeBits(producer.type),
+                                   bytes = TypeBits(field.TypeView()) / 8;
+                        const auto view =
+                                value.TypeView() == Type::Void ? producer.type : value.TypeView();
+                        const bool matching =
+                                producer.type == Type::V128
+                                        ? view == Type::V128 && field.TypeView() == Type::V128
+                                        : (producer.type == Type::U32 ||
+                                           producer.type == Type::U64) &&
+                                                  view != Type::V128 &&
+                                                  (field.TypeView() == Type::U32 ||
+                                                   field.TypeView() == Type::U64);
+                        const UniformRange range{u32(field.Payload()), bytes};
+                        bool adjacent =
+                                producer.opcode == OpCode::VecLoadConst ||
+                                !HasAnyEffect(EffectsFor(producer.opcode, producer.Metadata()),
+                                              Effect::Control);
+                        for (auto between = value.Payload() + 1; between < at; ++between)
+                            adjacent &= operations[between].opcode == OpCode::Nop &&
+                                        operations[between].Metadata() == OperationMetadata{};
+                        const bool pinned =
+                                pinned_slots &&
+                                (options->pinned_uniform_offset == UINT32_MAX ||
+                                 Overlaps(range,
+                                          {options->pinned_uniform_offset, pinned_slots * 8}));
+                        bool ordinary = !pinned;
+                        for (auto offset : {options->flags_offset,
+                                            options->pc_offset,
+                                            options->mxcsr_offset,
+                                            options->arm_fpcr_offset,
+                                            options->arm_fpsr_offset})
+                            ordinary &= offset == UINT32_MAX || !Overlaps(range, {offset, 8});
+                        if (adjacent && ordinary && field.Payload() < 1024 && bytes &&
+                            range.offset + bytes <= 1024 && bits <= bytes * 8 &&
+                            TypeBits(view) >= bits && matching && backing.last_use <= end) {
+                            auto limit = barrier;
+                            for (auto slot = range.offset / 8;
+                                 slot <= (range.offset + bytes - 1) / 8;
+                                 ++slot)
+                                limit = std::min(limit, next_write[slot]);
+                            if (backing.last_use < limit) {
+                                backing.uniform_offset = range.offset;
+                                backing.uniform_store_bytes = bytes;
+                            }
+                        }
+                    }
+                }
+                if (op.opcode == OpCode::LoadUniform && !home.uniform_store_bytes &&
+                    home.last_use <= end &&
+                    (op.type == Type::U32 || op.type == Type::U64 || op.type == Type::V128)) {
+                    const auto field = inputs.front();
+                    const UniformRange range{u32(field.Payload()), TypeBits(op.type) / 8};
+                    const bool pinned =
+                            pinned_slots &&
+                            (options->pinned_uniform_offset == UINT32_MAX ||
+                             Overlaps(range, {options->pinned_uniform_offset, pinned_slots * 8}));
+                    if (field.Payload() < 1024 && range.offset + range.bytes <= 1024 && !pinned &&
+                        !Overlaps(range, *policy.flags)) {
+                        auto limit = barrier;
+                        for (auto slot = range.offset / 8;
+                             slot <= (range.offset + range.bytes - 1) / 8;
+                             ++slot)
+                            limit = std::min(limit, next_write[slot]);
+                        if (home.last_use < limit) home.uniform_offset = range.offset;
+                    }
+                }
+                const auto effects = EffectsFor(op.opcode, op.Metadata());
+                if (op.opcode == OpCode::VecLoadConst || op.opcode == OpCode::VecSharedZero)
+                    continue;
+                if (HasAnyEffect(effects, Effect::Unknown | Effect::External | Effect::Control) ||
+                    (!options->private_state && HasAnyEffect(effects, Effect::WriteMemory))) {
+                    barrier = home.definition_position;
+                    continue;
+                }
+                const auto accesses = UniformEffectsFor(op, inputs, policy);
+                if (accesses.all_write) barrier = home.definition_position;
+                for (unsigned i = 0; i < accesses.count; ++i) {
+                    const auto& access = accesses.fields[i];
+                    if (!access.write || !access.range.bytes || access.range.offset >= 1024)
+                        continue;
+                    const auto last = std::min<std::uint64_t>(
+                            1024, std::uint64_t{access.range.offset} + access.range.bytes);
+                    for (auto slot = access.range.offset / 8; slot <= (last - 1) / 8; ++slot)
+                        next_write[slot] = home.definition_position;
+                }
+            }
+        }
+    }
+
     bool Reserve(u32 bytes, u32 alignment, u32 node, u32& offset) {
         constexpr auto limit = static_cast<u32>(std::numeric_limits<std::int32_t>::max()) - 16;
         if (result.spill_bytes > limit - bytes - alignment) {
@@ -440,7 +623,8 @@ private:
         const auto spill = [&](u32 id, auto& residents) {
             auto& h = result.homes[id];
             unsigned bytes = operations[id].type == ir::Type::V128 ? 16 : 8;
-            if (!Reserve(bytes, bytes, id, h.stack_offset)) return false;
+            if (h.uniform_offset == UINT32_MAX && !Reserve(bytes, bytes, id, h.stack_offset))
+                return false;
             h.spilled = true;
             for (auto& r : residents)
                 if (r == id) r = NodeId::invalid;
@@ -494,7 +678,9 @@ private:
                 bank[chosen] = i;
             }
         }
-        if (options && options->local_flags && !Reserve(8, 8, 0, result.flags_slot)) return;
+        if (options && options->local_flags &&
+            (!Reserve(8, 8, 0, result.flags_slot) || !Reserve(1, 1, 0, result.condition_slot)))
+            return;
         result.spill_bytes = (result.spill_bytes + 15) & ~15u;
         result.call_offset = result.spill_bytes;
         if (result.has_calls) result.spill_bytes += 320;

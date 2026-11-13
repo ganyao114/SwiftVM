@@ -10,7 +10,8 @@ enum Feature : std::uint64_t {
     Aes = 16,
     Pclmul = 32,
     Sha = 64,
-    Cx16 = 128
+    Cx16 = 128,
+    Lahf = 256
 };
 
 inline constexpr unsigned StateRegister = 12, FlagsRegister = 3;

@@ -1,6 +1,7 @@
 #include "abi_layout.inc"
 #include "emit.h"
 #include "runtime/arch/x86/flags.h"
+#include "runtime/ir/flag_effects.h"
 
 namespace swift::runtime::backend::x64::detail {
 namespace f = runtime::x86::flags;
@@ -27,6 +28,23 @@ void Writer::ExportLinkedFlags() {
 }
 
 void Writer::ImportPackedFlags() {
+    if (options.lahf) {
+        mov(rdx, rbx);
+        shr(rdx, 16);
+        and_(edx, 0xc000);
+        mov(rax, rbx);
+        shr(rax, 21);
+        and_(eax, 0x100);
+        xor_(eax, 0x100);
+        or_(edx, eax);
+        mov(rax, rbx);
+        shr(rax, 28);
+        and_(eax, 1);
+        or_(edx, eax);
+        mov(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], rdx);
+        flags = {true, false, true, false, true};
+        return;
+    }
     pushfq();
     pop(rdx);
     and_(rdx, ~0x8c1);
@@ -59,13 +77,22 @@ void Writer::SaveNativeFlags(bool canonical) {
             cmc();
             flags.carry = true;
         }
-        pushfq();
-        pop(r11);
-        mov(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], r11);
+        if (options.lahf) {
+            mov(r11, rax);
+            lahf();
+            seto(al);
+            mov(word[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], ax);
+            mov(rax, r11);
+        } else {
+            pushfq();
+            pop(r11);
+            mov(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], r11);
+        }
         flags.saved = true;
         flags.saved_carry = flags.carry;
     } else if (canonical && !flags.saved_carry) {
-        xor_(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], 1);
+        xor_(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias],
+             options.lahf ? 0x100 : 1);
         flags.saved_carry = true;
     }
 }
@@ -74,7 +101,19 @@ void Writer::MaterializeFlags() {
     if (!options.local_flags || !flags.dirty) return;
     SaveNativeFlags();
     mov(rdx, qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
-    PackFlags(rdx, rax, 15);
+    if (options.lahf) {
+        mov(r10d, edx);
+        and_(r10d, 0xc000);
+        shl(r10d, 16);
+        mov(r11d, edx);
+        and_(r11d, 0x100);
+        shl(r11d, 21);
+        or_(r10d, r11d);
+        and_(edx, 1);
+        shl(edx, 28);
+        or_(r10d, edx);
+    } else
+        PackFlags(rdx, rax, 15);
     if (flags.saved_carry) btc(r10, 29);
     MergeFlags(r10, 15);
     flags = {};
@@ -83,8 +122,16 @@ void Writer::MaterializeFlags() {
 void Writer::EnsureNativeFlags() {
     if (!flags.dirty) ImportPackedFlags();
     if (!flags.native) {
-        push(qword[rsp + allocation.flags_slot + stack_bias]);
-        popfq();
+        if (options.lahf) {
+            mov(r11, rax);
+            movzx(eax, word[rsp + allocation.flags_slot + stack_bias]);
+            add(al, 0x7f);
+            sahf();
+            mov(rax, r11);
+        } else {
+            push(qword[rsp + allocation.flags_slot + stack_bias]);
+            popfq();
+        }
         flags.native = true;
         flags.carry = flags.saved_carry;
     }
@@ -93,6 +140,9 @@ void Writer::EnsureNativeFlags() {
 void Writer::PrepareFlags(OpContext& c) {
     if (!options.local_flags) return;
     const auto op = c.operation.opcode;
+    if (op == O::ArmFPBinary && ArmNativeFP() && options.sse41 && options.arm_fpcr != UINT32_MAX &&
+        !(options.arm_fpcr & (1u << 24)) && !allocation.fpcr_may_change)
+        return;
     const bool arithmetic =
             op == O::Add || op == O::Sub || op == O::Neg || op == O::Adc || op == O::Sbb;
     const bool logical =
@@ -128,6 +178,13 @@ void Writer::PrepareFlags(OpContext& c) {
     }
     const auto effects = EffectsFor(op, c.operation.Metadata());
     if (HasAnyEffect(effects, Effect::ReadFlags | Effect::WriteFlags)) {
+        if ((allocation.homes[c.node.value].flag_writes & 15) == 15 &&
+            !HasAnyEffect(effects,
+                          Effect::ReadFlags | Effect::ReadGuestState | Effect::MayFault |
+                                  Effect::Unknown | Effect::External | Effect::Control)) {
+            flags = {};
+            return;
+        }
         MaterializeFlags();
         return;
     }
@@ -135,8 +192,105 @@ void Writer::PrepareFlags(OpContext& c) {
         (op == O::StoreUniform && TypeBits(View(c.Arg(1))) >= 32) ||
         (op == O::LoadImm && c.width >= 32))
         return;
-    SaveNativeFlags();
+    if (PreservesFlags(c)) return;
+    ClobberFlags(c);
+}
+
+void Writer::ClobberFlags(OpContext& c) {
+    if (!flags.dirty) return;
+    const auto need = allocation.homes[c.node.value].flags_need;
+    const auto other = need & 15, term = need >> 4;
+    const auto condition = allocation.terminal_conditions[block.value];
+    const bool complete =
+            condition < 16 && term == ir::ConditionFlags(static_cast<ir::Condition>(condition));
+    if (term && complete && !condition_saved && flags.native) {
+        const auto cc = NativeCondition(static_cast<ir::Condition>(condition));
+        if (cc == 16)
+            mov(byte[rsp + allocation.condition_slot], 1);
+        else {
+            const auto target = byte[rsp + allocation.condition_slot];
+            switch (cc) {
+                case 0:
+                    seto(target);
+                    break;
+                case 1:
+                    setno(target);
+                    break;
+                case 2:
+                    setc(target);
+                    break;
+                case 3:
+                    setnc(target);
+                    break;
+                case 4:
+                    sete(target);
+                    break;
+                case 5:
+                    setne(target);
+                    break;
+                case 6:
+                    setbe(target);
+                    break;
+                case 7:
+                    seta(target);
+                    break;
+                case 8:
+                    sets(target);
+                    break;
+                case 9:
+                    setns(target);
+                    break;
+                case 12:
+                    setl(target);
+                    break;
+                case 13:
+                    setge(target);
+                    break;
+                case 14:
+                    setle(target);
+                    break;
+                case 15:
+                    setg(target);
+                    break;
+            }
+        }
+        condition_saved = true;
+    }
+    if (other || (term && !condition_saved))
+        SaveNativeFlags();
+    else
+        flags = {};
     flags.native = false;
+}
+
+bool Writer::ExpressionPreservesFlags(CellRange::Iterator& at, CellRange::Iterator end) const {
+    if (at == end) return false;
+    const auto cell = *at++;
+    if (cell.Kind() != OperandKind::Expression) return TypeBits(View(cell)) >= 32;
+    if (cell.ExpressionOp() != OperandOp::Add &&
+        !(cell.ExpressionOp() == OperandOp::AddShift && cell.ShiftAmount() <= 3))
+        return false;
+    for (unsigned i = 0; i < cell.Count(); ++i)
+        if (!ExpressionPreservesFlags(at, end)) return false;
+    return true;
+}
+
+bool Writer::PreservesFlags(OpContext& c) const {
+    const auto op = c.operation.opcode;
+    if (op == O::LoadMemory || op == O::LoadMemoryTSO || op == O::StoreMemory ||
+        op == O::StoreMemoryTSO) {
+        if ((op == O::LoadMemory || op == O::LoadMemoryTSO) && c.width < 8) return false;
+        auto at = c.operands.begin();
+        return ExpressionPreservesFlags(at, c.operands.end());
+    }
+    if (c.operation.flag_outputs || allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX ||
+        (c.width != 32 && c.width != 64))
+        return false;
+    std::int32_t immediate;
+    return ((op == O::Add || op == O::Sub) && c.count == 2 &&
+            Immediate32(c.Arg(1), c.width, immediate) &&
+            (op != O::Sub || immediate != INT32_MIN)) ||
+           (op == O::LslImm && (c.Arg(1).Payload() & (c.width - 1)) <= 3);
 }
 
 unsigned Writer::NativeCondition(ir::Condition condition) {
@@ -229,9 +383,44 @@ void Writer::NativeJump(unsigned condition, Label& target) {
     }
 }
 
+void Writer::PrepareEdge(BlockId target) {
+    if (!options.local_flags || !allocation.flags_input[target.value]) return;
+    if (allocation.native_entry[target.value]) {
+        EnsureNativeFlags();
+        if (!flags.carry) {
+            cmc();
+            flags.carry = true;
+        }
+    } else
+        SaveNativeFlags(true);
+}
+
 void Writer::BranchTo(BlockId target) {
-    if (options.local_flags && allocation.flags_input[target.value]) SaveNativeFlags(true);
+    PrepareEdge(target);
     jmp(blocks[target.value], T_NEAR);
+}
+
+void Writer::ConditionalBranch(unsigned cc, BlockId yes, BlockId no) {
+    const auto ready = [&](BlockId target) {
+        return !options.local_flags || !allocation.flags_input[target.value] ||
+               (allocation.native_entry[target.value] ? flags.native && flags.carry
+                                                      : flags.saved && flags.saved_carry);
+    };
+    if (ready(yes)) {
+        NativeJump(cc, blocks[yes.value]);
+        BranchTo(no);
+    } else if (ready(no)) {
+        NativeJump(cc ^ 1, blocks[no.value]);
+        BranchTo(yes);
+    } else {
+        Label taken;
+        const auto previous = flags;
+        NativeJump(cc, taken);
+        BranchTo(no);
+        L(taken);
+        flags = previous;
+        BranchTo(yes);
+    }
 }
 
 void Writer::Handle(Op<OpCode::ReadFPStatus>, OpContext& c) {
@@ -306,14 +495,26 @@ void Writer::CaptureFlags(OpContext& c) {
     }
     if (options.local_flags && merge_native_flags) {
         const auto selected = c.operation.flag_outputs;
-        const unsigned mask = ((selected & 1) ? 1u : 0u) | ((selected & 2) ? 0x800u : 0u) |
-                              ((selected & 4) ? 0x40u : 0u) | ((selected & 8) ? 0x80u : 0u);
+        const unsigned mask =
+                options.lahf
+                        ? ((selected & 1) ? 0x100u : 0u) | ((selected & 2) ? 1u : 0u) |
+                                  ((selected & 4) ? 0x4000u : 0u) | ((selected & 8) ? 0x8000u : 0u)
+                        : ((selected & 1) ? 1u : 0u) | ((selected & 2) ? 0x800u : 0u) |
+                                  ((selected & 4) ? 0x40u : 0u) | ((selected & 8) ? 0x80u : 0u);
         const auto op = c.operation.opcode;
         const bool raw_subtract = (op == O::Sub || op == O::Sbb || op == O::Neg) &&
                                   c.operation.Metadata().profile == FlagProfile::ArithmeticRaw;
         pushfq();
         pop(rdx);
         if ((selected & 1) && !raw_subtract) xor_(edx, 1);
+        if (options.lahf) {
+            mov(r11d, edx);
+            shl(edx, 8);
+            and_(edx, 0xc100);
+            shr(r11d, 11);
+            and_(r11d, 1);
+            or_(edx, r11d);
+        }
         and_(edx, mask);
         mov(r11, qword[rsp + allocation.flags_slot]);
         and_(r11, static_cast<std::int32_t>(~mask));
@@ -341,7 +542,7 @@ void Writer::CaptureFlags(OpContext& c) {
 }
 
 void Writer::Condition(const Reg64& out, ir::Condition c) {
-    if (options.local_flags) {
+    if (options.local_flags && flags.dirty) {
         const auto condition = NativeCondition(c);
         if (condition == 16)
             mov(out, 1);
@@ -353,6 +554,10 @@ void Writer::Condition(const Reg64& out, ir::Condition c) {
         }
         return;
     }
+    PackedCondition(out, c);
+}
+
+void Writer::PackedCondition(const Reg64& out, ir::Condition c) {
     const auto bit = [&](const Reg64& r, unsigned b) {
         mov(r, rbx);
         shr(r, b);
@@ -516,26 +721,10 @@ void Writer::Handle(Op<OpCode::TestNotFlags>, OpContext& c) {
 }
 
 bool Writer::NativeFlagTest(OpContext& c, bool inverse) {
-    if (!options.local_flags) return false;
-    ir::Condition condition;
-    switch (c.Arg(0).Payload()) {
-        case 1:
-            condition = ir::Condition::CS;
-            break;
-        case 2:
-            condition = ir::Condition::VS;
-            break;
-        case 4:
-            condition = ir::Condition::EQ;
-            break;
-        case 8:
-            condition = ir::Condition::MI;
-            break;
-        default:
-            return false;
-    }
-    if (inverse) condition = static_cast<ir::Condition>(unsigned(condition) ^ 1);
-    Condition(rax, condition);
+    if (!options.local_flags || !flags.dirty) return false;
+    const auto condition = ir::FlagCondition(c.Arg(0).Payload(), inverse);
+    if (!condition) return false;
+    Condition(rax, *condition);
     c.scalar_normalized = true;
     return true;
 }

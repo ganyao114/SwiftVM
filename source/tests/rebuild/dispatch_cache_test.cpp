@@ -191,12 +191,21 @@ TEST_CASE("shared dispatch interrupt returns to its owner and accepts an in-flig
             const auto target = (u64{0x12345} << SVM_DISPATCH_L1_BITS) |
                                 (pending ? 0 : execution::DispatchCache::Entries - 1);
             native.state.pc = target;
+#if defined(__x86_64__)
+            native.native_eflags = 2;
+            native.flags_offset = faults.flags_offset = offsetof(x86::GuestState, packed_flags);
+            native.state.packed_flags = (u64{1} << 55) | (pending ? 0x90000025 : 0x600000a5);
+            const auto expected_flags = native.state.packed_flags;
+#endif
             native.pending_events.store(pending);
             native.l1.store(interrupt.Data());
             const auto before = faults.dispatch_interrupts.load();
             REQUIRE(execution::SvmRunNative(&native) ==
                     swift::runtime::ExitValue(swift::runtime::NativeExit::GuestEvents));
             CHECK(native.state.pc == target);
+#if defined(__x86_64__)
+            CHECK(native.state.packed_flags == expected_flags);
+#endif
             CHECK(!faults.exception_pending);
             CHECK(faults.signal_number == 0);
             CHECK(faults.dispatch_interrupts.load() == before + 1);

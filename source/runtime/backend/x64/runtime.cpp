@@ -35,11 +35,13 @@ Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
         __cpuid_count(7, 0, a, b, c, d);
         options.sha = b & (1u << 29);
     }
+    if (__get_cpuid(0x80000001, &a, &b, &c, &d)) options.lahf = c & 1;
 #endif
     features = (options.ssse3 ? abi::Ssse3 : 0) | (options.sse41 ? abi::Sse41 : 0) |
                (options.sse42 ? abi::Sse42 : 0) | (options.fma ? abi::Fma : 0) |
                (options.aes ? abi::Aes : 0) | (options.pclmul ? abi::Pclmul : 0) |
-               (options.sha ? abi::Sha : 0) | (options.cx16 ? abi::Cx16 : 0);
+               (options.sha ? abi::Sha : 0) | (options.cx16 ? abi::Cx16 : 0) |
+               (options.lahf ? abi::Lahf : 0);
 }
 
 execution::HostBackendOps Runtime::Bind() noexcept {
@@ -59,15 +61,19 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         v.options.mxcsr_offset = l.numeric_control_offset;
         v.options.pinned_uniform_offset = l.pinned_uniform_slots ? l.gprs_offset : UINT32_MAX;
         v.options.pinned_uniform_slots = l.pinned_uniform_slots;
-        v.options.local_flags = true;
+        // Full x86 RFLAGS publications include PF/AF and remain packed.
+        // Keeping their unit ABI packed avoids snapshot imports at partial writers.
+        v.options.local_flags = l.isa != GuestISA::X86_64;
         v.options.linked_flags = v.options.local_flags;
         v.options.arm_fpcr_offset =
                 l.isa == GuestISA::Arm64 ? offsetof(runtime::arm64::GuestState, fpcr) : UINT32_MAX;
+        v.options.arm_fpsr_offset =
+                l.isa == GuestISA::Arm64 ? offsetof(runtime::arm64::GuestState, fpsr) : UINT32_MAX;
         v.options.dispatcher = reinterpret_cast<std::uintptr_t>(
-                v.options.local_flags ? (v.diagnostic ? &execution::SvmNativeDispatchNZCVCounted
-                                                      : &execution::SvmNativeDispatchNZCV)
-                                      : (v.diagnostic ? &execution::SvmNativeDispatchCounted
-                                                      : &execution::SvmNativeDispatch));
+                v.options.linked_flags ? (v.diagnostic ? &execution::SvmNativeDispatchNZCVCounted
+                                                       : &execution::SvmNativeDispatchNZCV)
+                                       : (v.diagnostic ? &execution::SvmNativeDispatchCounted
+                                                       : &execution::SvmNativeDispatch));
     };
     o.compile =
             [](void* p, const ir::Program& s, execution::HostCompileRequest r) -> CompileResult& {
@@ -75,7 +81,13 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         auto c = v.options;
         c.entry_pc = r.entry_pc;
         c.fault_locations = r.fault_locations;
+        c.private_state = r.private_state;
         c.relocatable = r.relocatable;
+        if (c.linked_flags && (!r.private_state || !r.fault_locations)) {
+            v.output = {};
+            v.output.error = CompileError::UnsupportedOperand;
+            return v.output;
+        }
         c.local_flags &= r.private_state && r.fault_locations;
         c.linked_flags &= c.local_flags;
         if (v.options.arm_fpcr_offset != UINT32_MAX)
@@ -114,7 +126,8 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     };
     o.update_fp = [](void* p, execution::NativeRunContext& n, std::uint32_t control) noexcept {
         n.guest_fpcr = (control & 0xe040) | 0x1f80;
-        n.native_eflags = static_cast<Runtime*>(p)->options.linked_flags;
+        const auto& options = static_cast<Runtime*>(p)->options;
+        n.native_eflags = options.linked_flags ? (options.lahf ? 2 : 1) : 0;
     };
     o.floating_status = [](const execution::NativeRunContext& n) noexcept -> std::uint32_t {
         return n.guest_fpcr & 63;

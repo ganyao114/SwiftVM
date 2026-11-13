@@ -333,6 +333,12 @@ void VisitFPDataProcessing1Source(const vixl::aarch64::Instruction* instr) overr
 }
 
 void WriteNZCV(Value source) {
+    if (X64FP()) {
+        // Numerical leaves return the architectural N:Z:C:V nibble.
+        auto packed = this->template LslImm<Type::U64>(source, Imm{28u}).WithView(Type::U64);
+        Emit<OpCode::RestoreFlags>(packed, Flag::NZCV);
+        return;
+    }
     auto bit = [&](u32 position) {
         auto shifted = this->template LsrImm<Type::U64>(source, Imm{position}).WithView(Type::U64);
         return this->template And<Type::U64>(shifted, SingleOperand(Imm{u64{1}}))

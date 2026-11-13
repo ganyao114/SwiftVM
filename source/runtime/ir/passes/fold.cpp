@@ -3,12 +3,6 @@
 #include <algorithm>
 
 namespace swift::runtime::ir::passes {
-namespace {
-struct Constant {
-    u64 bits{};
-    Type type{Type::Void};
-};
-
 bool ReadConstant(const Builder& editor,
                   std::span<const Operation> operations,
                   const Operand& input,
@@ -34,8 +28,6 @@ bool ReadConstant(const Builder& editor,
     value.bits = literal.Payload() & Mask(TypeBits(value.type));
     return true;
 }
-
-}  // namespace
 
 bool FoldLowByteMask(const Builder& editor,
                      std::span<const Operation> operations,
@@ -263,6 +255,49 @@ bool FoldOrderedLoadAddress(const Builder& editor,
             {editor.UnitId(), NodeId{static_cast<std::uint32_t>(base.Payload())}}, base.TypeView());
     cells[2] = Operand::Immediate(literal.Payload(), Type::U64);
     count = 3;
+    return true;
+}
+
+bool FoldIdentity(const Builder& editor,
+                  std::span<const Operation> operations,
+                  const Operation& op,
+                  std::span<Operand> cells,
+                  std::size_t& count,
+                  OpCode& opcode) {
+    if (count != 2 || Metadata(op) || !Scalar(op.type)) return false;
+    Constant right;
+    if (!ReadConstant(editor, operations, cells[1], right)) return false;
+    if (opcode == OpCode::And && !right.bits) {
+        opcode = OpCode::LoadImm;
+        cells[0] = Operand::Immediate(0, op.type);
+        count = 1;
+        return true;
+    }
+    if ((op.type != Type::U32 && op.type != Type::U64) || ReadType(cells[0], operations) != op.type)
+        return false;
+    bool identity{};
+    switch (opcode) {
+        case OpCode::Add:
+        case OpCode::Sub:
+        case OpCode::Or:
+        case OpCode::Xor:
+            identity = !right.bits;
+            break;
+        case OpCode::And:
+            identity = right.bits == Mask(TypeBits(op.type));
+            break;
+        case OpCode::LslImm:
+        case OpCode::LsrImm:
+        case OpCode::AsrImm:
+        case OpCode::RorImm:
+            identity = !(right.bits & (TypeBits(op.type) - 1));
+            break;
+        default:
+            break;
+    }
+    if (!identity) return false;
+    opcode = op.type == Type::U32 ? OpCode::ZeroExtend32 : OpCode::ZeroExtend64;
+    count = 1;
     return true;
 }
 

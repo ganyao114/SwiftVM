@@ -97,8 +97,8 @@ struct NativeRunContext {
     std::atomic<std::uint64_t> phase{SVM_NATIVE_PHASE_RUNTIME};
     std::atomic<std::uint64_t> pending_events{};
     FaultContext* faults{};
-    // x64 ARM64 units exchange a canonical raw RFLAGS snapshot. Physical CF
-    // is the inverse of architectural C. Other portable flags remain in RBX.
+    // x64 format 1 exchanges raw RFLAGS, format 2 the LAHF/OF image.
+    // Both use CF = !C. The remaining portable flags stay in RBX.
     std::uint64_t native_eflags{}, eflags{};
 };
 

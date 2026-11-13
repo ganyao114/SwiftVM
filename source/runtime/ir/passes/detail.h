@@ -9,6 +9,13 @@
 
 namespace swift::runtime::ir::passes {
 using u64 = std::uint64_t;
+
+struct Constant {
+    u64 bits{};
+    Type type{Type::Void};
+};
+
+bool ReadConstant(const Builder&, std::span<const Operation>, const Operand&, Constant&);
 inline constexpr u64 all_flags = FlagBits(Flag::All);
 inline constexpr u64 live_bit = u64{1} << 62, pin_bit = u64{1} << 63, count_mask = live_bit - 1;
 
@@ -155,6 +162,13 @@ bool FoldOrderedLoadAddress(const Builder&,
                             const std::vector<u64>&,
                             std::span<Operand>,
                             std::size_t&);
+bool FoldIdentity(const Builder&,
+                  std::span<const Operation>,
+                  const Operation&,
+                  std::span<Operand>,
+                  std::size_t& count,
+                  OpCode&);
+
 bool Fold(const Builder&,
           std::span<const Operation>,
           const Operation&,

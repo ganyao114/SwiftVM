@@ -47,6 +47,7 @@ public:
     ir::Type View(CellView) const;
     bool Immediate32(CellView, unsigned width, std::int32_t&) const;
     void Read(CellView, const Reg64&, bool raw = false);
+    bool ResidentScalar(CellView, unsigned width, Reg64&) const;
 
     Reg64 ScalarDestination(OpContext& c) const {
         // Only leaf emitters that do not call helpers borrow the assigned home.
@@ -66,6 +67,9 @@ public:
     void HostAddress(const Reg64&, std::uintptr_t, HostSymbol);
     void Call(std::uintptr_t, HostSymbol);
     void CallRegister(const Reg64&);
+    void LambdaCall(OpContext&);
+    bool TryArmNumeric(OpContext&);
+    void CheckArmFPInput(const Xmm&, unsigned bits, unsigned lanes, bool central, Label&);
     void PrepareCall();
 
     struct CallMasks {
@@ -86,9 +90,14 @@ public:
     void ExportLinkedFlags();
     void EnsureNativeFlags();
     void PrepareFlags(OpContext&);
+    void ClobberFlags(OpContext&);
+    bool PreservesFlags(OpContext&) const;
+    bool ExpressionPreservesFlags(CellRange::Iterator&, CellRange::Iterator) const;
     unsigned NativeCondition(ir::Condition);
     void NativeJump(unsigned, Label&);
     void BranchTo(BlockId);
+    void PrepareEdge(BlockId);
+    void ConditionalBranch(unsigned, BlockId, BlockId);
 
     bool Pinned() const { return options.pinned_uniform_slots != 0; }
 
@@ -101,6 +110,7 @@ public:
     void PublishPinned();
     void ReloadPinned();
     void Condition(const Reg64&, ir::Condition);
+    void PackedCondition(const Reg64&, ir::Condition);
     bool NativeFlagTest(OpContext&, bool inverse);
     void MergeFlags(const Reg64&, u64);
     void CaptureFlags(OpContext&);
@@ -115,11 +125,16 @@ public:
         site.recovery[4] = static_cast<std::uint8_t>(access);
         site.recovery[5] = static_cast<std::uint8_t>(bytes);
         if (options.local_flags && flags.dirty && !fault_committed_flags) {
-            site.recovery[0] = 2 | (flags.saved_carry << 3);
-            site.recovery[1] = 0xf0;
-            site.recovery[2] = allocation.flags_slot;
-            site.recovery[3] = allocation.flags_slot >> 8;
-            site.recovery[7] = allocation.flags_slot >> 16;
+            if (flags.native) {
+                site.recovery[0] = 2 | (flags.carry << 2);
+                site.recovery[1] = 0x0f;
+            } else {
+                site.recovery[0] = 2 | (flags.saved_carry << 3) | (options.lahf << 4);
+                site.recovery[1] = 0xf0;
+                site.recovery[2] = allocation.flags_slot;
+                site.recovery[3] = allocation.flags_slot >> 8;
+                site.recovery[7] = allocation.flags_slot >> 16;
+            }
         }
     }
 
@@ -136,6 +151,12 @@ public:
     void BeginArmFPRegion(u32 control, u32 status);
     void EndArmFPRegion();
     void PrepareArmFPRegion(OpContext&);
+
+    bool ArmNativeFP() const { return options.arm_fpsr_offset != UINT32_MAX; }
+
+    void HarvestArmFPStatus(bool saved = false, bool restore = true);
+    void CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& slow);
+    void EmitFPConstants();
     void EmitColdPaths();
     void Vector(OpContext&);
     void Crypto(OpContext&);
@@ -174,6 +195,7 @@ public:
     } flags;
 
     bool defer_flags{}, merge_native_flags{};
+    bool condition_saved{};
     unsigned flags_stack_bias{};
     unsigned stack_bias{};
     bool arm_fp_region{};
@@ -203,6 +225,7 @@ public:
         NodeId node;
         Label entry, resume;
         u32 stub{};
+        FlagsState flags;
     };
 
     struct FPCallStub {
@@ -220,6 +243,16 @@ public:
     std::vector<FPCallStub> fp_stubs;
     std::unordered_map<FPCallKey, u32, FPCallHash> fp_stub_index;
     std::vector<EventColdPath> cold_events;
+
+    struct NumericColdPath {
+        NodeId node;
+        Label entry, resume;
+        CallMasks masks;
+    };
+
+    std::vector<NumericColdPath> cold_numeric;
+    std::array<Label, 4> fp_constants;
+    std::array<bool, 4> fp_constants_used{};
 
     bool Linked() const { return options.dispatcher && options.exit_handler; }
 

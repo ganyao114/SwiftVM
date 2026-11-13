@@ -1092,7 +1092,7 @@ void ExtractShiftAlgebra() {
     auto result = Optimize(std::move(input));
     CHECK(result);
     CHECK(result.program.UnitId() == unit && result.program.Operations().size() == nodes);
-    CHECK(result.stats.folded == 4 && result.stats.erased == 7 && result.stats.copy_forwarded == 3);
+    CHECK(result.stats.folded == 5 && result.stats.erased == 8 && result.stats.copy_forwarded == 4);
     CHECK(result.stats.words_after <= words + 2 * nodes);
     const auto combined = [&](Value value, unsigned first, Type view) {
         const auto& op = result.program.Operations()[value.node.value];
@@ -1114,8 +1114,9 @@ void ExtractShiftAlgebra() {
     CHECK(result.program.Operations()[raw.node.value].opcode == OpCode::Nop);
     for (const auto value : {shared, flagged, narrow, zero})
         CHECK(result.program.Operations()[value.node.value].opcode == OpCode::BitExtract);
-    for (const auto value : {shared_shift, flagged_shift, narrow_shift, zero_shift})
+    for (const auto value : {shared_shift, flagged_shift, narrow_shift})
         CHECK(result.program.Operations()[value.node.value].opcode == OpCode::LsrImm);
+    CHECK(result.program.Operations()[zero_shift.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operations()[flagged_shift.node.value].Metadata() == profile);
     CHECK(result.program.Operations()[bit.node.value].opcode == OpCode::Nop);
     CHECK(result.program.Operations()[masked.node.value].opcode == OpCode::And);
@@ -1495,5 +1496,68 @@ TEST_CASE("Uniform overwritten stores honor observations and partial ranges",
         REQUIRE(bool(result));
         CHECK((result.program.Operations()[old.value].opcode == OpCode::Nop) == (observer < 2));
         CHECK(result.stats.uniform_stores_erased == (observer < 2 ? 1 : 0));
+    }
+}
+
+TEST_CASE("Uniform forwarding covers separated slots and partial byte writes",
+          "[compile][ir-optimize]") {
+    for (unsigned scenario = 0; scenario < 4; ++scenario) {
+        Builder builder{Scope::Block};
+        const auto block = builder.CreateBlock();
+        REQUIRE(bool(block));
+        REQUIRE(builder.BeginBlock(block.block) == Error::None);
+        const auto type = scenario == 2 ? Type::V128 : Type::U64;
+        const auto offset = scenario == 2 ? 7u : 0u;
+        const auto first =
+                Emit(builder, OpCode::LoadUniform, type, {Operand::Uniform(offset, type)});
+        Store(builder, 256, first, type);
+        if (scenario < 2) {
+            const unsigned count = scenario == 0 ? 16 : 1;
+            for (unsigned i = 1; i <= count; ++i) {
+                const auto at = scenario == 0 ? i * 8 : 1024;
+                const auto next = Emit(
+                        builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(at, Type::U64)});
+                Store(builder, 512 + i * 8, next);
+            }
+        } else {
+            const auto value = Literal(builder, 0, scenario == 3 ? Type::Bool : Type::U64);
+            Store(builder, scenario == 3 ? 5 : 16, value, scenario == 3 ? Type::Bool : Type::U64);
+        }
+        const auto reread =
+                Emit(builder, OpCode::LoadUniform, type, {Operand::Uniform(offset, type)});
+        Store(builder, 768, reread, type);
+        REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+        const auto result = Optimize(Submit(builder));
+        REQUIRE(bool(result));
+        CHECK((result.program.Operations()[reread.node.value].opcode != OpCode::LoadUniform) ==
+              (scenario == 0));
+    }
+}
+
+TEST_CASE("Wide pending uniform stores retain tail observations", "[compile][ir-optimize]") {
+    for (unsigned offset : {0u, 7u}) {
+        for (const auto type : {Type::U64, Type::Bool}) {
+            Builder builder{Scope::Block};
+            const auto block = builder.CreateBlock();
+            REQUIRE(bool(block));
+            REQUIRE(builder.BeginBlock(block.block) == Error::None);
+            const auto first = Emit(
+                    builder, OpCode::LoadUniform, Type::V256, {Operand::Uniform(64, Type::V256)});
+            const auto second = Emit(
+                    builder, OpCode::LoadUniform, Type::V256, {Operand::Uniform(128, Type::V256)});
+            const auto old = builder.Operations().size();
+            Store(builder, offset, first, Type::V256);
+            const auto tail =
+                    Emit(builder,
+                         OpCode::LoadUniform,
+                         type,
+                         {Operand::Uniform(offset + (type == Type::Bool ? 31 : 24), type)});
+            Store(builder, 96, tail, type);
+            Store(builder, offset, second, Type::V256);
+            REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+            const auto result = Optimize(Submit(builder));
+            REQUIRE(bool(result));
+            CHECK(result.program.Operations()[old].opcode == OpCode::StoreUniform);
+        }
     }
 }

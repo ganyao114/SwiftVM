@@ -84,7 +84,10 @@ bool RecoverNative(execution::FaultContext& context,
             dispatch_state.recovery[1] = 15;
         }
         auto dispatch_machine = machine;
-        if (native->native_eflags) dispatch_machine.uc_mcontext.gregs[REG_EFL] = native->eflags;
+        if (native->native_eflags)
+            dispatch_machine.uc_mcontext.gregs[REG_EFL] =
+                    native->native_eflags == 2 ? backend::x64::FlagsImageToNative(native->eflags)
+                                               : native->eflags;
         if (!RestoreSignalState(context, dispatch_state, dispatch_machine)) return false;
         *context.guest_pc = static_cast<std::uint64_t>(machine.uc_mcontext.gregs[REG_RDI]);
         context.dispatch_interrupts.fetch_add(1, std::memory_order_relaxed);

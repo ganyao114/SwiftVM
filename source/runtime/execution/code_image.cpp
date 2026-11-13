@@ -1,5 +1,6 @@
 #include "base/error.h"
 #include "code_image.h"
+#include "runtime/backend/x64/recovery.h"
 
 #include <algorithm>
 #include <bit>
@@ -123,18 +124,8 @@ void Validate(const CodeUnit& unit, bool byte_code, GuestISA isa) {
     Require(owns_entry, "code unit entry is outside its source dependencies");
     for (const auto& site : code.faults) {
         if (byte_code) {
-            const auto mode = site.recovery[0] & 3;
-            const auto native = site.recovery[1] & 15, saved = site.recovery[1] >> 4;
-            const auto offset = site.recovery[2] | (std::uint32_t{site.recovery[3]} << 8) |
-                                (std::uint32_t{site.recovery[7]} << 16);
-            Require(mode <= 2 && !(site.recovery[0] & ~15u) &&
-                            (mode == 2 || site.recovery[0] == mode),
-                    "invalid x64 flags recovery mode");
-            if (mode == 2)
-                Require(!(native & saved) && (native | saved) &&
-                                (!saved || (!(offset & 7) && code.frame_bytes >= 8 &&
-                                            offset <= code.frame_bytes - 8)),
-                        "invalid x64 flags recovery source");
+            Require(backend::x64::ValidRecovery(site, code.frame_bytes),
+                    "invalid x64 flags recovery source");
         }
         Require(site.Kind() == backend::FaultSiteKind::GuestMemory ||
                         site.Kind() == backend::FaultSiteKind::DispatchInterrupt,

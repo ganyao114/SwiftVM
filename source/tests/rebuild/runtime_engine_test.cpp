@@ -1,7 +1,9 @@
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/x86/flags.h"
+#include "runtime/backend/x64/runtime.h"
 #include "runtime/execution/runtime.h"
 #include "runtime/execution/vm.h"
+#include "runtime/ir/builder.h"
 #include "runtime/platform/linux/faultable_atomic.h"
 #include "runtime/platform/linux/host_runtime.h"
 #include "tests/support/check.h"
@@ -1378,5 +1380,95 @@ TEST_CASE("ARM FPCR domains compile on demand and reuse every supported profile"
         CHECK(stats.fallbacks == 0);
         CHECK(vm.Close().Complete());
     }
+}
+#endif
+
+#if defined(__x86_64__)
+TEST_CASE("Linked flags reject incompatible compile requests", "[compile]") {
+    namespace ir = swift::runtime::ir;
+    ir::Builder builder{ir::Scope::Block};
+    const auto block = builder.CreateBlock();
+    REQUIRE(bool(block));
+    REQUIRE(builder.BeginBlock(block.block) == ir::Error::None);
+    REQUIRE(builder.EndBlock(ir::Terminal::Return()) == ir::Error::None);
+    const auto program = builder.Submit();
+    REQUIRE(bool(program));
+    swift::runtime::backend::x64::Runtime runtime{false};
+    auto backend = runtime.Bind();
+    swift::runtime::GuestLayout layout;
+    layout.isa = swift::runtime::GuestISA::Arm64;
+    layout.flags_offset = offsetof(swift::runtime::arm64::GuestState, packed_flags);
+    layout.pc_offset = 24;
+    backend.configure(backend.context, layout);
+    for (const bool private_state : {false, true}) {
+        swift::runtime::execution::HostCompileRequest request;
+        request.private_state = private_state;
+        request.fault_locations = !private_state;
+        const auto& result = backend.compile(backend.context, program.program, request);
+        CHECK(result.error == swift::runtime::backend::CompileError::UnsupportedOperand);
+        CHECK(result.words.empty() && result.faults.empty() && result.entries.empty());
+    }
+}
+#endif
+
+TEST_CASE("ARM64 AOT selects all legacy flush domains", "[compile]") {
+    constexpr std::uint8_t ret[]{0xc0, 0x03, 0x5f, 0xd6};
+    GuestFile guest{ret, PF_R | PF_X, EM_AARCH64};
+    swift::runtime::platform::HostRuntime host{false};
+    auto backend = host.Bind();
+    backend.specializes_fp_flush = true;
+    backend.specializes_arm_fpcr = false;
+    execution::RuntimeOptions options;
+    options.scope = swift::runtime::ir::Scope::Block;
+    execution::RuntimeStats stats;
+    execution::VM vm{options, stats, backend};
+    const auto image = vm.Precompile(guest.Path(), {}, false);
+    unsigned domains = 0;
+    for (const auto& unit : image.units) domains |= 1u << (unit.fp_mode & 3);
+    CHECK(domains == 15);
+    CHECK(image.units.size() == 4);
+    CHECK(vm.Close().Complete());
+}
+
+#if defined(__x86_64__)
+TEST_CASE("ARM64 faults harvest pending FP status and native NZCV", "[native]") {
+    REQUIRE(NativeMode());
+    // FADD S2,S0,S1; SUBS X4,X4,1; LDR X3,[X0]; FADD S5,S0,S6.
+    constexpr std::uint32_t instructions[]{
+            0x1e212802, 0xf1000484, 0xf9400003, 0x1e262805, 0xd2800540, 0xd2800ba8, 0xd4000001};
+    const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(instructions),
+                                              sizeof(instructions)};
+    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+    for (const auto scope : {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function})
+        for (unsigned domain = 0; domain < 32; ++domain) {
+            execution::RuntimeOptions options;
+            options.scope = scope;
+            execution::RuntimeStats stats;
+            swift::runtime::platform::HostRuntime host{false};
+            execution::VM vm{options, stats, host.Bind()};
+            vm.PrepareGuest(guest.Path());
+            auto& state = vm.ArmState();
+            const auto fault_pc = state.pc + 8;
+            state.fpcr = swift::runtime::arm64::FPCRForDomain(domain);
+            state.fpsr = 0x08000000;
+            state.packed_flags = (std::uint64_t{1} << 55) | 0x90000025;
+            state.gprs[0] = 0;
+            state.gprs[4] = 1;
+            const std::uint32_t one = 0x3f800000, half_ulp = 0x33800000, snan = 0x7f800001;
+            std::memcpy(state.q[0], &one, 4);
+            std::memcpy(state.q[1], &half_ulp, 4);
+            std::memcpy(state.q[6], &snan, 4);
+            std::memset(state.q[5], 0xa5, 16);
+            (void)vm.RunPrepared();
+            const auto fault = vm.CaptureException();
+            REQUIRE(fault);
+            CHECK(fault->info.instruction_pc == fault_pc);
+            CHECK(state.fpsr == 0x08000010);
+            CHECK(state.packed_flags == ((std::uint64_t{1} << 55) | 0x60000025));
+            CHECK(state.gprs[4] == 0);
+            for (const auto byte : state.q[5]) CHECK(byte == 0xa5);
+            CHECK(stats.interpreted_steps == 0 && stats.fallbacks == 0);
+            CHECK(vm.Close().Complete());
+        }
 }
 #endif
