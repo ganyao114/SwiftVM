@@ -21,6 +21,7 @@ crypto::Block128 ExecuteCrypto(u64 metadata, const crypto::Block128* arguments) 
 std::uintptr_t CryptoAddress() noexcept { return reinterpret_cast<std::uintptr_t>(&ExecuteCrypto); }
 
 void Writer::HandleCryptoFamily(OpContext& ctx) {
+    FlushDenormalBatch();
     if (!ctx.vector) Reject(CompileError::UnsupportedType);
     auto& cursor = ctx.cursor;
     std::array<CellView, 3> inputs{};

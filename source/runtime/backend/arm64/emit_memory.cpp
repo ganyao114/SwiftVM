@@ -92,12 +92,18 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
     auto& saved = ctx.saved;
     if (vector) {
         if (!options.private_uniforms) Shadow(false);
-        const auto address = Expression(cursor, 16, 17);
+        u32 scaled{};
+        const auto address = VectorAddress(cursor, scaled);
         fault_parity = static_cast<std::uint8_t>(deferred_parity);
         fault_carry = direct_carry;
-        GuestVectorMemory(true, destination, address);
+        fault_logical_code = EncodeDeferredLogical(deferred_logical.bits, deferred_logical.reg);
+        GuestVectorMemory(true, destination, address, scaled);
         if (operation.opcode == OpCode::LoadMemoryTSO)
             __ dmb(v::InnerShareable, v::BarrierReads);  // DMB ISHLD.
+        v128_anchor_words = (address == 16 && v128_anchor_pending && !home.spilled)
+                                    ? static_cast<u32>(output.words.size())
+                                    : UINT32_MAX;
+        v128_anchor_pending = false;
         return;
     }
     if (test_prefix) {
@@ -118,6 +124,7 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
     const auto address = ordered ? OrderedAddress(cursor, offset) : Expression(cursor, 16, 17);
     fault_parity = static_cast<std::uint8_t>(deferred_parity);
     fault_carry = direct_carry;
+    fault_logical_code = EncodeDeferredLogical(deferred_logical.bits, deferred_logical.reg);
     if (ordered && (operation.type == Type::U16 || operation.type == Type::U32) &&
         metadata == OperationMetadata{} && RcpcImm9() && !home.spilled &&
         node.value + 1 < source.Operations().size()) {
@@ -127,7 +134,8 @@ void Writer::HandleLoadMemoryFamily(OpContext& ctx) {
         if (next.opcode == OpCode::SignExtend &&
             next.type == (width == 16 ? Type::U32 : Type::U64) && next.block == operation.block &&
             next.Metadata() == OperationMetadata{} && !next_home.spilled &&
-            home.last_use == next_home.definition_position && next_home.reg != deferred_parity) {
+            home.last_use == next_home.definition_position && next_home.reg != deferred_parity &&
+            (!deferred_logical.bits || next_home.reg != deferred_logical.reg)) {
             const auto inputs = source.Operands(consumer);
             auto at = inputs.begin();
             if (at != inputs.end()) {
@@ -161,6 +169,46 @@ void Writer::HandleStoreMemoryFamily(OpContext& ctx) {
     const auto& operation = ctx.operation;
     auto& cursor = ctx.cursor;
     const auto test_prefix = ctx.test_prefix;
+    const bool ordered = operation.opcode == OpCode::StoreMemoryTSO;
+    {
+        auto look = cursor;
+        const auto head = look.Take();
+        if (head.Kind() == OperandKind::Expression) {
+            for (u32 i = 0; i < head.Count(); ++i) (void)look.Take();
+        }
+        if (look.at != look.end && (*look.at).Kind() == OperandKind::Value &&
+            (*look.at).Payload() < source.Operations().size() &&
+            source.Operations()[(*look.at).Payload()].type == Type::V128) {
+            deferred_test.active = false;
+            if (!options.private_uniforms) Shadow(false);
+            u32 scaled{};
+            const auto address = VectorAddress(cursor, scaled);
+            const auto input = cursor.Take();
+            const auto value = VectorValue(input, 0);
+            fault_parity = static_cast<std::uint8_t>(deferred_parity);
+            fault_carry = direct_carry;
+            fault_logical_code = EncodeDeferredLogical(deferred_logical.bits, deferred_logical.reg);
+            if (ordered) {
+                if (tso_store_barrier_ready) {
+                    __ dmb(v::InnerShareable, v::BarrierWrites);
+                } else {
+                    __ dmb(v::InnerShareable, v::BarrierAll);
+                    tso_store_barrier_ready = true;
+                }
+            }
+            GuestVectorMemory(false, value, address, scaled);
+            if (!options.private_uniforms) {
+                Shadow(true);
+                v128_anchor_words = UINT32_MAX;
+            } else {
+                v128_anchor_words = (address == 16 && v128_anchor_pending)
+                                            ? static_cast<u32>(output.words.size())
+                                            : UINT32_MAX;
+            }
+            v128_anchor_pending = false;
+            return;
+        }
+    }
     if (test_prefix) {
         const auto address = *cursor.at;
         deferred_test.active =
@@ -170,7 +218,6 @@ void Writer::HandleStoreMemoryFamily(OpContext& ctx) {
                 (address.TypeView() == Type::Void || address.TypeView() == Type::U64);
     }
     if (!options.private_uniforms) Shadow(false);
-    const bool ordered = operation.opcode == OpCode::StoreMemoryTSO;
     std::int32_t offset{};
     const auto address =
             ordered ? OrderedAddress(cursor, offset, true) : Expression(cursor, 16, 17);
@@ -181,23 +228,15 @@ void Writer::HandleStoreMemoryFamily(OpContext& ctx) {
                                   : Type::Void;
         deferred_test.active = IntegerType(type) && TypeBits(type) <= 64;
     }
-    const bool vector_input = input.Kind() == OperandKind::Value &&
-                              source.Operations()[input.Payload()].type == Type::V128;
-    const auto bits = vector_input ? 128u : Width(View(input));
-    const auto value =
-            vector_input ? VectorValue(input, 0) : Read(input, 17, 64, false, bits == 32 ? 32 : 64);
-    if (vector_input) {
-        CompleteLocalFlags();
-        if (operation.opcode == OpCode::StoreMemoryTSO) __ dmb(v::InnerShareable, v::BarrierAll);
-        GuestVectorMemory(false, value, address, static_cast<u32>(offset) / 16);
-    } else {
-        fault_parity = static_cast<std::uint8_t>(deferred_parity);
-        fault_carry = direct_carry;
-        if (ordered)
-            OrderedMemory(false, bits, value, address, offset);
-        else
-            GuestMemory(false, bits, value, address);
-    }
+    const auto bits = Width(View(input));
+    const auto value = Read(input, 17, 64, false, bits == 32 ? 32 : 64);
+    fault_parity = static_cast<std::uint8_t>(deferred_parity);
+    fault_carry = direct_carry;
+    fault_logical_code = EncodeDeferredLogical(deferred_logical.bits, deferred_logical.reg);
+    if (ordered)
+        OrderedMemory(false, bits, value, address, offset);
+    else
+        GuestMemory(false, bits, value, address);
     if (!options.private_uniforms) Shadow(true);  // Generic raw pointers may alias the flags field.
 }
 
@@ -205,8 +244,10 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
     const auto address_cell = cursor.Take();
     const auto bits = IntegerImmediate(cursor.Take());
+    if (!bits) return;
     if (address_cell.Kind() == OperandKind::Immediate && (address_cell.Payload() & bits) == 0)
         return;
+    u32 canonical_id = UINT32_MAX;
     if (address_cell.Kind() == OperandKind::Value &&
         address_cell.Payload() < source.Operations().size()) {
         const auto id = static_cast<u32>(address_cell.Payload());
@@ -218,7 +259,39 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
                 (args.front().Payload() & bits) == 0)
                 return;
         }
+        canonical_id = id;
+        if ((def.opcode == OpCode::Add || def.opcode == OpCode::Sub) && def.type == Type::U64 &&
+            def.Metadata() == OperationMetadata{}) {
+            const auto args = source.Operands(NodeId{id});
+            auto it = args.begin();
+            if (it != args.end() && (*it).Kind() == OperandKind::Value &&
+                View(*it) == Type::U64) {
+                const auto base_id = static_cast<u32>((*it).Payload());
+                ++it;
+                if (it != args.end() && (*it).Kind() == OperandKind::Immediate &&
+                    (*it).TypeView() == Type::U64 && ((*it).Payload() & bits) == 0) {
+                    ++it;
+                    if (it == args.end()) canonical_id = base_id;
+                }
+            }
+        }
+        for (unsigned i = 0; i < checked_alignment_count; ++i) {
+            if (checked_alignments[i].node_id == canonical_id &&
+                (checked_alignments[i].mask & bits) == bits)
+                return;
+        }
     }
+    const auto record_checked = [&] {
+        if (canonical_id == UINT32_MAX) return;
+        for (unsigned i = 0; i < checked_alignment_count; ++i) {
+            if (checked_alignments[i].node_id == canonical_id) {
+                checked_alignments[i].mask |= bits;
+                return;
+            }
+        }
+        if (checked_alignment_count < checked_alignments.size())
+            checked_alignments[checked_alignment_count++] = {canonical_id, bits};
+    };
     if (!options.private_uniforms) Shadow(false);
     const auto address = Read(address_cell, 16);
     LogicalMask mask;
@@ -233,20 +306,27 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
                                               fault_location,
                                               ExitValue(NativeExit::AlignmentFault),
                                               nzcv_matches,
-                                              0,
-                                              0,
-                                              0,
+                                              static_cast<std::uint8_t>(deferred_parity),
+                                              deferred_test.bits,
+                                              deferred_test.value_register,
+                                              deferred_logical.bits,
+                                              deferred_logical.reg,
                                               has_fault_location && options.pc_offset != UINT32_MAX,
                                               shadow_dirty,
                                               packed_current,
-                                              false};
+                                              direct_carry};
         __ cbnz(v::x0, std::int64_t{0});
+        record_checked();
         return;
     }
     const auto aligned = masm.Here();
     __ cbz(v::x0, std::int64_t{0});
     const auto dirty = shadow_dirty, packed = packed_current;
     const auto matching = nzcv_matches;
+    const auto parity_source = deferred_parity;
+    const auto carry_source = direct_carry;
+    const auto saved_logical = deferred_logical;
+    if (deferred_test.bits) CompleteDeferredTest();
     Shadow(false);
     if (has_fault_location && options.pc_offset != UINT32_MAX) {
         Immediate(0, fault_location);
@@ -257,11 +337,16 @@ void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
     shadow_dirty = dirty;
     packed_current = packed;
     nzcv_matches = matching;
+    deferred_parity = parity_source;
+    direct_carry = carry_source;
+    deferred_logical = saved_logical;
     masm.Patch(aligned, masm.Here());
+    record_checked();
 }
 
 void Writer::HandleMemoryBarrierTSOFamily(OpContext& /*ctx*/) {
     __ dmb(v::InnerShareable, v::BarrierAll);
+    tso_store_barrier_ready = true;
 }
 
 void Writer::HandleMemoryStoreFenceFamily(OpContext& /*ctx*/) {

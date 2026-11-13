@@ -6,6 +6,7 @@
 #include "allocate.h"
 #include "assembler.h"
 #include "compile.h"
+#include "recovery.h"
 #include "relocate.h"
 
 #include <algorithm>
@@ -132,6 +133,7 @@ private:
         site.recovery[3] = fault_carry;
         site.recovery[4] = static_cast<std::uint8_t>(access);
         site.recovery[5] = static_cast<std::uint8_t>(bytes);
+        site.recovery[7] = fault_logical_code;
         if (deferred_test.active && deferred_test.site_count < deferred_test.sites.size())
             deferred_test.sites[deferred_test.site_count++] = output.faults.size() - 1;
     }
@@ -278,8 +280,13 @@ private:
     u64 nzcv_matches{};          // Host NZCV bits currently equal the authoritative packed x1.
     unsigned deferred_parity{};  // Zero means x1; otherwise this actual pin supplies its low byte.
     bool direct_carry{};         // Hardware C equals guest C until its deferred inversion.
-    std::uint8_t fault_parity{},
-            fault_carry{};  // Captured at the actual scalar memory instruction.
+
+    struct DeferredLogical {
+        std::uint8_t reg{}, bits{};
+    } deferred_logical{};
+
+    std::uint8_t fault_parity{}, fault_carry{},
+            fault_logical_code{};  // Captured at the actual guest memory instruction.
     unsigned terminal_condition{
             18};  // 0..15 neutral cond; 16/17 AF; 20/21 native C|Z; 18 materialized.
     u64 fault_location{};
@@ -295,6 +302,14 @@ private:
     u32 dispatcher_literal{UINT32_MAX};  // Immutable DATA in this unit, never an outer link target.
     u32 exit_literal{UINT32_MAX};
 
+    struct DenormalBatchOp {
+        std::array<std::uint8_t, 2> inputs;
+        std::array<std::uint8_t, 2> peers;
+        std::uint8_t denominator;
+        std::uint8_t input_count;
+        std::uint8_t peer_count;
+    };
+
     struct ColdDenormalStub {
         std::array<u32, 3> branch_words;
         u32 return_word;
@@ -308,7 +323,18 @@ private:
         std::uint8_t bits;
         std::uint8_t count;
         bool negative_invalid;
+        std::uint8_t batch_op_count;
+        std::array<DenormalBatchOp, 4> batch_ops;
     };
+
+    struct PendingDenormalBatch {
+        u32 check_mask{};
+        u32 protected_mask{};
+        std::uint8_t bits{};
+        std::uint8_t count{};
+        std::uint8_t op_count{};
+        std::array<DenormalBatchOp, 4> ops;
+    } pending_denormal;
 
     struct ColdExitStub {
         u32 branch_word;
@@ -318,11 +344,27 @@ private:
         std::uint8_t parity_source;
         std::uint8_t deferred_bits;
         std::uint8_t deferred_value_reg;
+        std::uint8_t logical_bits;
+        std::uint8_t logical_reg;
         bool has_pc;
         bool dirty;
         bool packed;
         bool carry_source;
     };
+
+    struct CheckedAlignment {
+        u32 node_id;
+        u64 mask;
+    };
+
+    std::array<CheckedAlignment, 4> checked_alignments;
+    std::uint8_t checked_alignment_count{};
+    u32 v128_anchor_words{UINT32_MAX}, v128_anchor_base{UINT32_MAX};
+    u64 v128_anchor_disp{};
+    bool v128_anchor_pending{};
+    bool tso_store_barrier_ready{};
+    u32 vec_mul_widen_words{UINT32_MAX};
+    std::uint8_t vec_mul_widen_right{UINT8_MAX}, vec_mul_widen_size{};
 
     std::array<ColdDenormalStub, 256> cold_denormal_stubs;
     std::array<ColdExitStub, 128> cold_exit_stubs;
@@ -394,7 +436,22 @@ private:
         }
     }
 
+    static bool CanHoldDeferredLogical(unsigned reg) {
+        return (reg >= 2 && reg <= 15) || (reg >= 20 && reg <= 28);
+    }
+
+    bool CanDeferLogicalFlags(const OpContext& ctx, unsigned reg) const {
+        return options.local_flags && RawAF() && Pinned() && options.private_uniforms &&
+               options.fault_locations && !deferred_test.active && !deferred_test.bits &&
+               !ctx.legacy_mask && ctx.flag_mask == all_flags &&
+               ctx.metadata.profile == FlagProfile::LogicalZeroCVA && CanHoldDeferredLogical(reg);
+    }
+
+    void CompleteDeferredLogical();
+    bool FlagsDeadFrom(u32 start_node) const;
+
     void CompleteLocalFlags() {
+        CompleteDeferredLogical();
         CompleteParity();
         CompleteCarry();
     }
@@ -565,6 +622,19 @@ private:
                              unsigned denominator,
                              unsigned fma_flags,
                              bool negative_invalid);
+    bool IsStableVectorHome(unsigned reg) const {
+        return reg >= 2 && reg != VectorTemporary() && reg != VectorTemporary(true);
+    }
+    bool CanBatchDenormal(unsigned bits, unsigned count) const;
+    void FlushDenormalBatch();
+    void QueueDenormalInputs(unsigned left,
+                             unsigned right,
+                             unsigned lane_bits,
+                             unsigned lane_count,
+                             unsigned denominator,
+                             bool skip_left,
+                             bool skip_right,
+                             u32 clobber_mask);
     void RecordDenormalInputs(unsigned left,
                               unsigned right,
                               unsigned lane_bits,
@@ -698,6 +768,7 @@ private:
                         unsigned second,
                         unsigned native_width = 64);
     unsigned OrderedAddress(Cursor& cursor, std::int32_t& offset, bool store = false);
+    unsigned VectorAddress(Cursor& cursor, u32& scaled);
     bool PartialByteStore(const Operation& operation, const Home& home) const;
     void Uniform(bool load, CellView uniform, unsigned value);
 

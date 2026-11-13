@@ -177,6 +177,10 @@ static Value Address(Emitter& builder,
             }
             index = Require(builder.LslImm(narrow ? Type::U32 : Type::Void,
                                            {use(index), Operand::Immediate(shift, Type::U8)}));
+        } else if (address) {
+            if (const auto combined =
+                        builder.ShiftedAddress(target, address_type, address, index, 0))
+                return finish(combined);
         }
         address = address ? add(address, use(index)) : index;
     }

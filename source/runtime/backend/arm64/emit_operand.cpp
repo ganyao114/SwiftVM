@@ -121,6 +121,53 @@ unsigned Writer::OrderedAddress(Cursor& cursor, std::int32_t& offset, bool store
     return Read(base, 16);
 }
 
+unsigned Writer::VectorAddress(Cursor& cursor, u32& scaled) {
+    auto look = cursor;
+    const auto expression = look.Take();
+    if (expression.Kind() == OperandKind::Expression && expression.Count() == 2 &&
+        !expression.ShiftAmount() &&
+        (expression.ExpressionOp() == OperandOp::Add ||
+         expression.ExpressionOp() == OperandOp::Sub)) {
+        const auto base = look.Take(), literal = look.Take();
+        if (base.Kind() == OperandKind::Value && literal.Kind() == OperandKind::Immediate &&
+            literal.TypeView() == Type::U64) {
+            auto displacement = literal.Payload();
+            if (expression.ExpressionOp() == OperandOp::Sub) displacement = u64{} - displacement;
+            if (displacement <= 4095u * 16u && !(displacement & 15)) {
+                scaled = static_cast<u32>(displacement / 16);
+                cursor.at = look.at;
+                v128_anchor_pending = false;
+                return Read(base, 16);
+            }
+            const u64 anchor = displacement & ~u64{0xfff0};
+            if (!(displacement & 15) && anchor != 0 && (anchor >> 12) <= 4095u) {
+                scaled = static_cast<u32>((displacement & 0xfff0u) / 16u);
+                cursor.at = look.at;
+                const bool full_u64 = View(base) == Type::U64 &&
+                                      allocation.homes[base.Payload()].CarrierBits() == 64;
+                if (full_u64 && v128_anchor_words == output.words.size() &&
+                    v128_anchor_base == base.Payload() && v128_anchor_disp == anchor) {
+                    v128_anchor_pending = true;
+                    return 16;
+                }
+                const auto left = Read(base, 16);
+                __ add(v::x16, X(left), Operand(anchor));
+                if (full_u64) {
+                    v128_anchor_base = static_cast<u32>(base.Payload());
+                    v128_anchor_disp = anchor;
+                    v128_anchor_pending = true;
+                } else {
+                    v128_anchor_pending = false;
+                }
+                return 16;
+            }
+        }
+    }
+    scaled = 0;
+    v128_anchor_pending = false;
+    return Expression(cursor, 16, 17);
+}
+
 unsigned Writer::VectorValue(CellView cell, unsigned scratch) {
     if (cell.Kind() != OperandKind::Value || cell.Payload() >= allocation.homes.size() ||
         source.Operations()[cell.Payload()].type != Type::V128)

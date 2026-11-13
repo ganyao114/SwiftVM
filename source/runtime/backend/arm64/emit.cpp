@@ -74,8 +74,17 @@ bool Writer::Run() try {
         alternate_pc_valid = false;
         dispatch_emitted = false;
         elided_consumer = {};
+        deferred_logical = {};
         deferred_parity = 0;
         direct_carry = false;
+        pending_denormal.check_mask = 0;
+        pending_denormal.protected_mask = 0;
+        pending_denormal.op_count = 0;
+        checked_alignment_count = 0;
+        v128_anchor_words = UINT32_MAX;
+        v128_anchor_pending = false;
+        tso_store_barrier_ready = false;
+        vec_mul_widen_words = UINT32_MAX;
         const auto& body = source.Blocks()[b];
         deferred_test = {};
         deferred_test.active =
@@ -113,7 +122,7 @@ bool Writer::Run() try {
                 continue;
             }
             unaligned_word = UINT32_MAX;
-            fault_parity = fault_carry = 0;
+            fault_parity = fault_carry = fault_logical_code = 0;
             const auto effects = EffectsFor(operation.opcode, operation.Metadata());
             Emit(operation, effects);
         }
@@ -192,13 +201,27 @@ bool Writer::Run() try {
             masm.Patch(stub.branch_words[b], target);
         }
         const auto disabled = DenormalControlGuard();
-        RecordDenormalLanes(std::span<const std::uint8_t>{stub.inputs.data(), stub.input_count},
-                            stub.bits,
-                            stub.count,
-                            std::span<const std::uint8_t>{stub.peers.data(), stub.peer_count},
-                            stub.denominator,
-                            stub.fma_flags,
-                            stub.negative_invalid);
+        if (stub.batch_op_count) {
+            for (unsigned k = 0; k < stub.batch_op_count; ++k) {
+                const auto& op = stub.batch_ops[k];
+                const u32 denom = op.denominator == UINT8_MAX ? UINT32_MAX : u32{op.denominator};
+                RecordDenormalLanes(std::span<const std::uint8_t>{op.inputs.data(), op.input_count},
+                                    stub.bits,
+                                    stub.count,
+                                    std::span<const std::uint8_t>{op.peers.data(), op.peer_count},
+                                    denom,
+                                    UINT32_MAX,
+                                    false);
+            }
+        } else {
+            RecordDenormalLanes(std::span<const std::uint8_t>{stub.inputs.data(), stub.input_count},
+                                stub.bits,
+                                stub.count,
+                                std::span<const std::uint8_t>{stub.peers.data(), stub.peer_count},
+                                stub.denominator,
+                                stub.fma_flags,
+                                stub.negative_invalid);
+        }
         if (disabled != UINT32_MAX) masm.Patch(disabled, masm.Here());
         const auto back = static_cast<std::int64_t>(stub.return_word) -
                           static_cast<std::int64_t>(masm.Here());
@@ -221,6 +244,7 @@ bool Writer::Run() try {
         nzcv_matches = stub.matching;
         deferred_parity = stub.parity_source;
         direct_carry = stub.carry_source;
+        deferred_logical = {stub.logical_reg, stub.logical_bits};
         deferred_test.bits = stub.deferred_bits;
         deferred_test.value_register = stub.deferred_value_reg;
         if (deferred_test.bits) CompleteDeferredTest();
@@ -263,22 +287,96 @@ void Writer::Emit(const Operation& operation, Effect effects) {
                                  : vector                  ? VectorTemporary(true)
                                                            : 16;
     const auto width = produces && !vector ? Width(operation.type) : 0;
+    if (pending_denormal.op_count) {
+        const bool batch_candidate =
+                operation.opcode == OpCode::VecFAdd || operation.opcode == OpCode::VecFSub ||
+                operation.opcode == OpCode::VecFMul || operation.opcode == OpCode::VecFDiv ||
+                operation.opcode == OpCode::VecFCmpMask || operation.opcode == OpCode::VecFMinMax;
+        bool flush_batch = !batch_candidate &&
+                           HasAnyEffect(effects,
+                                        Effect::MayFault | Effect::Unknown | Effect::External |
+                                                Effect::Control | Effect::ReadHostState |
+                                                Effect::WriteHostState);
+        if (!flush_batch && !batch_candidate && produces && vector &&
+            ((pending_denormal.protected_mask >> destination) & 1u)) {
+            flush_batch = true;
+            if (operation.opcode == OpCode::LoadUniform) {
+                const auto uniform = *cells.begin();
+                if (uniform.Kind() == OperandKind::Uniform && uniform.Payload() <= UINT32_MAX &&
+                    VectorPinnedSlot(static_cast<u32>(uniform.Payload()), 16) ==
+                            static_cast<int>(destination))
+                    flush_batch = false;
+            }
+        }
+        if (!flush_batch &&
+            (operation.opcode == OpCode::LoadUniform || operation.opcode == OpCode::StoreUniform ||
+             operation.opcode == OpCode::StoreUniformSelectImm)) {
+            auto it = cells.begin();
+            const auto uniform = *it++;
+            if (options.fpsr_offset != UINT32_MAX && uniform.Payload() == options.fpsr_offset)
+                flush_batch = true;
+            else if (operation.opcode != OpCode::LoadUniform && VectorPinned() &&
+                     uniform.Payload() <= UINT32_MAX) {
+                const auto offset = static_cast<u32>(uniform.Payload());
+                const auto bytes = TypeBits(uniform.TypeView()) / 8;
+                if (offset < u64{options.pinned_vector_offset} + 256 &&
+                    options.pinned_vector_offset < u64{offset} + bytes) {
+                    const int pinned =
+                            (operation.opcode == OpCode::StoreUniform &&
+                             uniform.TypeView() == Type::V128)
+                                    ? VectorPinnedSlot(offset, 16)
+                                    : -1;
+                    if (pinned < 0)
+                        flush_batch = true;
+                    else if ((pending_denormal.protected_mask >> pinned) & 1u) {
+                        const auto val = *it;
+                        const bool self = val.Kind() == OperandKind::Value &&
+                                          val.Payload() < allocation.homes.size() &&
+                                          !allocation.homes[val.Payload()].spilled &&
+                                          allocation.homes[val.Payload()].reg ==
+                                                  static_cast<unsigned>(pinned);
+                        if (!self) flush_batch = true;
+                    }
+                }
+            }
+        }
+        if (flush_batch) FlushDenormalBatch();
+    }
+    if (tso_store_barrier_ready &&
+        (HasAnyEffect(effects, Effect::ReadMemory | Effect::Unknown | Effect::External) ||
+         (HasAnyEffect(effects, Effect::Control) &&
+          operation.opcode != OpCode::CheckMemoryAlignment &&
+          operation.opcode != OpCode::GuestSafepoint &&
+          operation.opcode != OpCode::GuestDispatchSafepoint)))
+        tso_store_barrier_ready = false;
     // Full literal writers can replace the old local representation. All
     // actual readers and opaque boundaries retain the ordinary complete ABI.
     const bool reads_flags = HasAnyEffect(effects, Effect::ReadFlags);
     const auto pf_af = parity | auxiliary;
+    const bool full_or_discard_flags =
+            !reads_flags && !legacy_mask && metadata.flag_outputs &&
+            ((metadata.flag_outputs & all_flags) == all_flags || metadata.discard_omitted_flags);
+    if (full_or_discard_flags) {
+        deferred_logical = {};
+        deferred_parity = 0;
+        direct_carry = false;
+    } else if (deferred_logical.bits && !reads_flags && metadata.flag_outputs) {
+        CompleteDeferredLogical();
+    }
     const bool replaces_pf = !reads_flags && (metadata.flag_outputs & pf_af) == pf_af;
     if (replaces_pf) deferred_parity = 0;
     if (!reads_flags && (metadata.flag_outputs & carry)) direct_carry = false;
     const bool memory =
             operation.opcode == OpCode::LoadMemory || operation.opcode == OpCode::LoadMemoryTSO ||
             operation.opcode == OpCode::StoreMemory || operation.opcode == OpCode::StoreMemoryTSO;
+    const bool alignment_guard =
+            operation.opcode == OpCode::CheckMemoryAlignment && options.private_uniforms;
     if (operation.opcode != OpCode::GuestSafepoint &&
-        operation.opcode != OpCode::GuestDispatchSafepoint &&
+        operation.opcode != OpCode::GuestDispatchSafepoint && !alignment_guard &&
         (reads_flags || legacy_mask ||
          HasAnyEffect(effects, Effect::Unknown | Effect::External | Effect::Control) ||
          (metadata == OperationMetadata{} && HasAnyEffect(effects, Effect::WriteFlags)) ||
-         (HasAnyEffect(effects, Effect::MayFault) && (!has_fault_location || !memory || vector)) ||
+         (HasAnyEffect(effects, Effect::MayFault) && (!has_fault_location || !memory)) ||
          operation.opcode == OpCode::Div128 || operation.opcode == OpCode::Cpuid ||
          operation.opcode == OpCode::ReadSystem))
         CompleteLocalFlags();
@@ -289,6 +387,18 @@ void Writer::Emit(const Operation& operation, Effect effects) {
     if (deferred_parity && produces && !vector && operation.opcode != OpCode::LoadUniform &&
         destination == deferred_parity)
         CompleteParity();
+    bool clear_logical_after_load = false;
+    if (deferred_logical.bits && produces && !vector && operation.opcode != OpCode::LoadUniform &&
+        destination == deferred_logical.reg) {
+        const bool scalar_load =
+                operation.opcode == OpCode::LoadMemory || operation.opcode == OpCode::LoadMemoryTSO;
+        if (scalar_load && has_fault_location && FlagsDeadFrom(node.value + 1))
+            clear_logical_after_load = true;
+        else if (!scalar_load && FlagsDeadFrom(node.value))
+            deferred_logical = {};
+        else
+            CompleteDeferredLogical();
+    }
 
     OpContext ctx{operation,
                   cursor,
@@ -302,6 +412,7 @@ void Writer::Emit(const Operation& operation, Effect effects) {
                   vector,
                   test_prefix};
     Dispatch(ctx);
+    if (clear_logical_after_load) deferred_logical = {};
     ctx.cursor.Done();
     if (!ctx.saved) SaveResult(ctx);
 }

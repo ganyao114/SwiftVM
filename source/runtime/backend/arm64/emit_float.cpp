@@ -190,8 +190,10 @@ void Writer::HandleVecFAddFamily(OpContext& ctx) {
     };
     unsigned a = left, b = right;
     const auto lanes = static_cast<unsigned>(128 / bits);
+    const bool flush = options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0;
     LoadMxcsrFlushControl();
-    if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0) {
+    if (flush) {
+        FlushDenormalBatch();
         VectorMove(first_temp, left);
         VectorMove(second_temp, right);
         FlushScalarDenormal(first_temp, 6, 0, static_cast<unsigned>(bits), lanes);
@@ -200,15 +202,16 @@ void Writer::HandleVecFAddFamily(OpContext& ctx) {
         b = second_temp;
     }
     const auto denominator = operation.opcode == OpCode::VecFDiv ? b : UINT32_MAX;
-    RecordDenormalInputs(a,
-                         b,
-                         bits,
-                         lanes,
-                         denominator,
-                         ProvenNoDenormal(left_cell, bits, lanes),
-                         ProvenNoDenormal(right_cell, bits, lanes));
+    const bool skip_left = ProvenNoDenormal(left_cell, bits, lanes);
+    const bool skip_right = ProvenNoDenormal(right_cell, bits, lanes);
+    if (!flush) {
+        QueueDenormalInputs(
+                a, b, bits, lanes, denominator, skip_left, skip_right, u32{1} << destination);
+    } else {
+        RecordDenormalInputs(a, b, bits, lanes, denominator, skip_left, skip_right);
+    }
     emit(destination, a, b);
-    if (options.mxcsr_flush_offset != UINT32_MAX && options.mxcsr_flush_mode != 0)
+    if (flush)
         FlushScalarDenormal(destination, 15, 0, static_cast<unsigned>(bits), lanes);
 }
 
@@ -302,6 +305,7 @@ void Writer::HandleArmScalarFMAFamily(OpContext& ctx) {
 }
 
 void Writer::PublishGuestFPSR() {
+    FlushDenormalBatch();
     // The guest FPCR/FPSR are installed for the whole native unit, so the
     // hardware flags are architectural. Publish the cumulative exception
     // bits after every operation; helpers and MRS read the uniform copy.
@@ -401,6 +405,13 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
     const auto first = VectorTemporary(), second = VectorTemporary(true);
     const bool flush = options.mxcsr_flush_offset != UINT32_MAX &&
                        (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u));
+    const bool invert = relations & 8;
+    const auto ordered = static_cast<unsigned>(invert ? ~relations & 7 : relations);
+    // FCMEQ is quiet, while FCMGT/FCMGE signal on every NaN. Preserve their
+    // accrued exceptions when that exactly matches the guest predicate.
+    const bool native_status = ordered && bool(encoded & 16) == (ordered != 2);
+    const bool can_batch = !scalar && !flush && native_status;
+    if (!can_batch) FlushDenormalBatch();
     unsigned a = left, b = right;
     const unsigned destination = scalar ? (ctx.destination == 0 ? 1 : 0) : ctx.destination;
     LoadMxcsrFlushControl();
@@ -421,18 +432,14 @@ void Writer::HandleVecFCmpMaskFamily(OpContext& ctx) {
             break;
         }
     const unsigned count = scalar ? 1 : 128 / bits;
-    RecordDenormalInputs(a,
-                         b,
-                         bits,
-                         count,
-                         UINT32_MAX,
-                         ProvenNoDenormal(left_cell, bits, count),
-                         ProvenNoDenormal(right_cell, bits, count));
-    const bool invert = relations & 8;
-    const auto ordered = static_cast<unsigned>(invert ? ~relations & 7 : relations);
-    // FCMEQ is quiet, while FCMGT/FCMGE signal on every NaN. Preserve their
-    // accrued exceptions when that exactly matches the guest predicate.
-    const bool native_status = ordered && bool(encoded & 16) == (ordered != 2);
+    const bool skip_left = ProvenNoDenormal(left_cell, bits, count);
+    const bool skip_right = ProvenNoDenormal(right_cell, bits, count);
+    if (can_batch) {
+        QueueDenormalInputs(
+                a, b, bits, count, UINT32_MAX, skip_left, skip_right, u32{1} << destination);
+    } else {
+        RecordDenormalInputs(a, b, bits, count, UINT32_MAX, skip_left, skip_right);
+    }
     if (!native_status) {
         RecordNaNInput(a, bits, count, encoded & 16);
         RecordNaNInput(b, bits, count, encoded & 16);
@@ -484,10 +491,15 @@ void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
     if ((bits != 32 && bits != 64) || maximum > 1 || scalar > 1)
         Reject(CompileError::UnsupportedOperand);
     const unsigned count = scalar ? 1 : 128 / bits;
+    const bool flush = options.mxcsr_flush_offset != UINT32_MAX &&
+                       (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u));
+    const bool afp_post_flush =
+            options.mxcsr_flush_offset == UINT32_MAX && options.native_fp_environment;
+    const bool can_batch = !scalar && !flush && !afp_post_flush;
+    if (!can_batch) FlushDenormalBatch();
     unsigned a = left, b = right, result = VectorTemporary();
     LoadMxcsrFlushControl();
-    if (options.mxcsr_flush_offset != UINT32_MAX &&
-        (options.mxcsr_flush_mode == UINT8_MAX || (options.mxcsr_flush_mode & 1u))) {
+    if (flush) {
         a = VectorTemporary();
         b = VectorTemporary(true);
         result = ctx.destination == 0 ? 1 : 0;
@@ -496,13 +508,14 @@ void Writer::HandleVecFMinMaxFamily(OpContext& ctx) {
         FlushScalarDenormal(a, 6, 0, bits, count);
         FlushScalarDenormal(b, 6, 0, bits, count);
     }
-    RecordDenormalInputs(a,
-                         b,
-                         bits,
-                         count,
-                         UINT32_MAX,
-                         ProvenNoDenormal(left_cell, bits, count),
-                         ProvenNoDenormal(right_cell, bits, count));
+    const bool skip_left = ProvenNoDenormal(left_cell, bits, count);
+    const bool skip_right = ProvenNoDenormal(right_cell, bits, count);
+    if (can_batch) {
+        QueueDenormalInputs(
+                a, b, bits, count, UINT32_MAX, skip_left, skip_right, u32{1} << ctx.destination);
+    } else {
+        RecordDenormalInputs(a, b, bits, count, UINT32_MAX, skip_left, skip_right);
+    }
     // Strict comparison selects source 2 for equal values and unordered,
     // retaining that operand's zero sign and even its signaling NaN payload.
     const auto fp = [&](unsigned reg) {

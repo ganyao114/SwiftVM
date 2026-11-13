@@ -220,10 +220,11 @@ Value Emitter::AddressLiteral(TargetInfo target, Type type, u64 bits) {
 Value Emitter::ShiftedAddress(
         TargetInfo target, Type type, Value base, Value index, std::uint8_t shift) {
     if (!target.Has(TargetFeature::ShiftedAddress)) return {};
-    return AddressExpression(type,
-                             {Operand::Expression(OperandOp::AddShift, 2, shift),
-                              Operand::ValueOf(base, type == Type::U32 ? Type::U32 : Type::Void),
-                              Operand::ValueOf(index, type == Type::U32 ? Type::U32 : Type::Void)});
+    return AddressExpression(
+            type,
+            {Operand::Expression(shift ? OperandOp::AddShift : OperandOp::Add, 2, shift),
+             Operand::ValueOf(base, type == Type::U32 ? Type::U32 : Type::Void),
+             Operand::ValueOf(index, type == Type::U32 ? Type::U32 : Type::Void)});
 }
 
 void Emitter::PrepareFault(StateLayout layout, u64 pc, TargetInfo target, bool external_helper) {

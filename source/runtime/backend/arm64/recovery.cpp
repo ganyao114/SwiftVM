@@ -57,6 +57,15 @@ bool RestoreGuestState(execution::FaultContext& context,
                                            : raw;
                 packed |= (value & UINT64_C(0xff)) | (std::uint64_t{value == 0} << 30) |
                           (((value >> (recipe.test_bits - 1)) & 1) << 31);
+            } else if (recipe.logical_bits) {
+                if ((recipe.logical_register + 1u) * 8u > gprs.size()) return false;
+                const auto raw = registers[recipe.logical_register];
+                const auto mask = recipe.logical_bits == 64
+                                          ? ~UINT64_C(0)
+                                          : (UINT64_C(1) << recipe.logical_bits) - 1;
+                const auto value = raw & mask;
+                packed |= (value & UINT64_C(0xff)) | (std::uint64_t{value == 0} << 30) |
+                          (((value >> (recipe.logical_bits - 1)) & 1) << 31);
             } else {
                 const auto pf = registers[recipe.parity_register ? recipe.parity_register : 1];
                 const auto carry_flip = recipe.carry_direct ? UINT64_C(0) : UINT64_C(0x20000000);

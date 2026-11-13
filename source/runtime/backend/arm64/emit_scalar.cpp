@@ -122,6 +122,21 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
         input.Kind() == OperandKind::Value && operand.Kind() == OperandKind::Value &&
         input.Payload() == operand.Payload() && View(input) == operation.type &&
         View(operand) == operation.type) {
+        const auto input_id = static_cast<u32>(input.Payload());
+        if (input_id < allocation.homes.size() && source.Operations()[input_id].type != Type::Void) {
+            const auto& input_home = allocation.homes[input_id];
+            if (!input_home.spilled && input_home.CarrierBits() >= width &&
+                CanDeferLogicalFlags(ctx, input_home.reg)) {
+                cursor.Take();
+                deferred_logical = {input_home.reg, static_cast<std::uint8_t>(width)};
+                deferred_parity = 0;
+                direct_carry = false;
+                packed_current = false;
+                nzcv_matches = 0;
+                saved = true;
+                return true;
+            }
+        }
         cursor.Take();
         const auto value = Read(input, 16, 64, false, width);
         nzcv_matches = 0;
@@ -137,9 +152,22 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
         flag_mask == all_flags && home.last_use == home.definition_position && !home.spilled &&
         input.Kind() == OperandKind::Value && operand.Kind() == OperandKind::Value &&
         input.Payload() == operand.Payload() && input.TypeView() == operand.TypeView()) {
-        cursor.Take();
+        const auto input_id = static_cast<u32>(input.Payload());
         const auto available =
                 std::min(Width(View(input)), allocation.homes[input.Payload()].CarrierBits());
+        if (input_id < allocation.homes.size() && source.Operations()[input_id].type != Type::Void &&
+            available >= width && !allocation.homes[input_id].spilled &&
+            CanDeferLogicalFlags(ctx, allocation.homes[input_id].reg)) {
+            cursor.Take();
+            deferred_logical = {allocation.homes[input_id].reg, static_cast<std::uint8_t>(width)};
+            deferred_parity = 0;
+            direct_carry = false;
+            packed_current = false;
+            nzcv_matches = 0;
+            saved = true;
+            return true;
+        }
+        cursor.Take();
         const auto value = available >= width
                                    ? RawValue(static_cast<u32>(input.Payload()), 16, true)
                                    : Read(input, 16, width);
@@ -160,6 +188,18 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
         auto tested_bits = std::min(width, Width(View(input)));
         tested_bits = std::min(tested_bits, allocation.homes[input.Payload()].CarrierBits());
         const bool needs_sign = (flag_mask & negative) != 0;
+        if (needs_sign && tested_bits == width && (width == 8 || width == 16) &&
+            operand.Kind() == OperandKind::Value) {
+            cursor.Take();
+            const auto value = RawValue(static_cast<u32>(input.Payload()), 16, true);
+            __ sbfx(v::w16, W(value), 0, width);
+            nzcv_matches = 0;
+            PrepareNZCV(flag_mask);
+            __ cmp(v::w16, Operand(0));
+            FinishNZCV(flag_mask, false);
+            saved = true;
+            return true;
+        }
         if (!needs_sign || (tested_bits == width && (width == 32 || width == 64))) {
             const auto test_width = tested_bits <= 32 ? 32u : 64u;
             const bool immediate = operand.Kind() == OperandKind::Immediate;
@@ -320,7 +360,16 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
             mask.Emit(masm.exact, W(destination), W(left), v::AND);
             if (flag_mask) {
                 save_result();
-                LogicalFlags(destination, width, flag_mask, !legacy_mask);
+                if (!ctx.home.spilled && CanDeferLogicalFlags(ctx, destination)) {
+                    deferred_logical = {static_cast<std::uint8_t>(destination),
+                                        static_cast<std::uint8_t>(width)};
+                    deferred_parity = 0;
+                    direct_carry = false;
+                    packed_current = false;
+                    nzcv_matches = 0;
+                } else {
+                    LogicalFlags(destination, width, flag_mask, !legacy_mask);
+                }
             }
             return true;
         }
@@ -334,7 +383,9 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
         if (mask.Encode(literal, width)) {
             cursor.Take();
             const auto left = Read(input, 16, 64, false, native_width);
+            const bool defer_flags = !ctx.home.spilled && CanDeferLogicalFlags(ctx, destination);
             const bool set_nzcv =
+                    !defer_flags &&
                     (operation.opcode == OpCode::And || operation.opcode == OpCode::AndNot) &&
                     (flag_mask & (negative | zero));
             if (set_nzcv) {
@@ -352,7 +403,16 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
                 mask.Emit(masm.exact, result, source_reg, v::AND);
             if (flag_mask) {
                 save_result();
-                LogicalFlags(destination, width, flag_mask, !legacy_mask, set_nzcv);
+                if (defer_flags) {
+                    deferred_logical = {static_cast<std::uint8_t>(destination),
+                                        static_cast<std::uint8_t>(width)};
+                    deferred_parity = 0;
+                    direct_carry = false;
+                    packed_current = false;
+                    nzcv_matches = 0;
+                } else {
+                    LogicalFlags(destination, width, flag_mask, !legacy_mask, set_nzcv);
+                }
             }
             return true;
         }
@@ -376,8 +436,13 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
         auto literal = IntegerImmediate(operand);
         const auto literal_width = std::min(Width(operand.TypeView()), width);
         if (literal_width < 64) literal &= (u64{1} << literal_width) - 1;
+        const u64 af_bit4 = literal & 16;
         bool subtract = operation.opcode == OpCode::Sub;
-        if (!flag_mask && (literal & (u64{1} << (width - 1)))) {
+        const bool can_flip =
+                !flag_mask ||
+                ((operation.opcode == OpCode::Add || operation.opcode == OpCode::Sub) &&
+                 width >= 32);
+        if (can_flip && (literal & (u64{1} << (width - 1)))) {
             literal = (-literal) & (~u64{} >> (64 - width));
             subtract = !subtract;
         }
@@ -400,11 +465,11 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
                 // ArithmeticFlags consumes only (left ^ right).bit4.
                 // Capture it before a destination pin overwrites left.
                 if (RawAF()) {
-                    if (literal & 16)
+                    if (af_bit4)
                         __ eor(v::w29, W(left), Operand(16));  // EOR W29,Wleft,#16.
                     else
                         __ mov(v::w29, W(left));
-                } else if (literal & 16)
+                } else if (af_bit4)
                     __ eor(v::x0, X(left), Operand(16));  // EOR x0,left,#16.
                 else
                     Move(0, left);
@@ -441,10 +506,10 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
             if (width < 32 && !partial_byte_store) Narrow(destination, destination, width);
             if (flag_mask) {
                 save_result();
-                ArithmeticFlags(
-                        destination,
-                        flag_mask,
-                        subtract && metadata.profile == FlagProfile::ArithmeticCanonicalCarry);
+                ArithmeticFlags(destination,
+                                flag_mask,
+                                operation.opcode == OpCode::Sub &&
+                                        metadata.profile == FlagProfile::ArithmeticCanonicalCarry);
             }
             return true;
         }
@@ -465,7 +530,34 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
     const auto legacy_mask = ctx.legacy_mask;
     const auto save_result = [&] { SaveResult(ctx); };
     const auto native_width = width == 32 ? 32u : 64u;
+    const bool defer_flags = Logical(operation.opcode) && !ctx.home.spilled &&
+                             CanDeferLogicalFlags(ctx, destination);
+    if (operation.opcode == OpCode::Xor && input.Kind() == OperandKind::Value &&
+        operand.Kind() == OperandKind::Value && input.Payload() == operand.Payload() &&
+        View(input) == View(operand)) {
+        Width(View(input));
+        if (input.Payload() >= allocation.homes.size() ||
+            source.Operations()[input.Payload()].type == Type::Void)
+            Reject(CompileError::InvalidProgram);
+        cursor.Take();
+        Immediate(destination, 0);
+        if (flag_mask) {
+            save_result();
+            if (defer_flags) {
+                deferred_logical = {static_cast<std::uint8_t>(destination),
+                                    static_cast<std::uint8_t>(width)};
+                deferred_parity = 0;
+                direct_carry = false;
+                packed_current = false;
+                nzcv_matches = 0;
+            } else {
+                LogicalFlags(destination, width, flag_mask, !legacy_mask, false);
+            }
+        }
+        return;
+    }
     const bool logical_nzcv =
+            !defer_flags &&
             (operation.opcode == OpCode::And || operation.opcode == OpCode::AndNot) &&
             width >= 32 && (flag_mask & (negative | zero));
     const bool set_nzcv =
@@ -575,7 +667,14 @@ void Writer::HandleZeroExtend32Family(OpContext& ctx) {
                             flag_mask,
                             operation.opcode == OpCode::Sub &&
                                     metadata.profile == FlagProfile::ArithmeticCanonicalCarry);
-        else
+        else if (defer_flags) {
+            deferred_logical = {static_cast<std::uint8_t>(destination),
+                                static_cast<std::uint8_t>(width)};
+            deferred_parity = 0;
+            direct_carry = false;
+            packed_current = false;
+            nzcv_matches = 0;
+        } else
             LogicalFlags(destination, width, flag_mask, !legacy_mask, logical_nzcv);
     }
 }
@@ -807,7 +906,8 @@ void Writer::HandleMulFamily(OpContext& ctx) {
         const auto& next_home = allocation.homes[consumer.value];
         if (next.opcode == OpCode::Add && next.type == Type::U32 && next.block == operation.block &&
             next.Metadata() == OperationMetadata{} && !next_home.spilled &&
-            home.last_use == next_home.definition_position && next_home.reg != deferred_parity) {
+            home.last_use == next_home.definition_position && next_home.reg != deferred_parity &&
+            (!deferred_logical.bits || next_home.reg != deferred_logical.reg)) {
             const auto addends = source.Operands(consumer);
             auto at = addends.begin();
             if (at != addends.end()) {
@@ -1145,6 +1245,12 @@ void Writer::HandleLslImmFamily(OpContext& ctx) {
                     const auto other = Read(first_shift ? second : first, 17);
                     // The next Emit would protect this carrier before replacing its pin.
                     if (next_home.reg == deferred_parity) CompleteParity();
+                    if (deferred_logical.bits && next_home.reg == deferred_logical.reg) {
+                        if (FlagsDeadFrom(consumer.value + 1))
+                            deferred_logical = {};
+                        else
+                            CompleteDeferredLogical();
+                    }
                     const Operand shifted{X(value),
                                           ror   ? v::ROR
                                           : asr ? v::ASR

@@ -197,6 +197,164 @@ void Writer::RecordDenormalLanes(std::span<const std::uint8_t> inputs,
     }
 }
 
+bool Writer::CanBatchDenormal(unsigned bits, unsigned count) const {
+    if (count <= 1 || (bits != 32 && bits != 64) || long_forward_branches) return false;
+    if (options.mxcsr_flush_mode != UINT8_MAX && (options.mxcsr_flush_mode & 1)) return false;
+    return options.mxcsr_flush_offset == UINT32_MAX || options.mxcsr_flush_mode == 0;
+}
+
+void Writer::FlushDenormalBatch() {
+    if (!pending_denormal.op_count) return;
+    const u32 check_mask = pending_denormal.check_mask;
+    const unsigned bits = pending_denormal.bits;
+    const unsigned count = pending_denormal.count;
+    const unsigned op_count = pending_denormal.op_count;
+    std::array<DenormalBatchOp, 4> ops;
+    for (unsigned k = 0; k < op_count; ++k) ops[k] = pending_denormal.ops[k];
+    pending_denormal.check_mask = 0;
+    pending_denormal.protected_mask = 0;
+    pending_denormal.op_count = 0;
+    if (op_count == 1) {
+        const auto& op = ops[0];
+        const u32 denom = op.denominator == UINT8_MAX ? UINT32_MAX : u32{op.denominator};
+        if (op.input_count == 1) {
+            if (op.peer_count == 1)
+                RecordDenormalInput(op.inputs[0], bits, count, {op.peers[0]}, denom);
+            else
+                RecordDenormalInput(op.inputs[0], bits, count, {}, denom);
+        } else if (op.input_count == 2) {
+            RecordDenormalInputs(op.inputs[0], op.inputs[1], bits, count, denom);
+        }
+        return;
+    }
+    std::array<std::uint8_t, 32> regs;
+    unsigned reg_count{};
+    u32 mask = check_mask;
+    while (mask) {
+        const unsigned r = std::countr_zero(mask);
+        mask &= mask - 1;
+        regs[reg_count++] = static_cast<std::uint8_t>(r);
+    }
+    if (!reg_count) return;
+    const unsigned first = VectorTemporary(), second = VectorTemporary(true);
+    if (bits == 64) {
+        const unsigned r0 = regs[0], r1 = reg_count > 1 ? regs[1] : regs[0];
+        __ uzp2(Lanes(first, 32), Lanes(r0, 32), Lanes(r1, 32));
+        __ shl(Lanes(first, 32), Lanes(first, 32), 1);
+        for (unsigned i = 2; i < reg_count; i += 2) {
+            const unsigned ra = regs[i], rb = i + 1 < reg_count ? regs[i + 1] : regs[i];
+            __ uzp2(Lanes(second, 32), Lanes(ra, 32), Lanes(rb, 32));
+            __ shl(Lanes(second, 32), Lanes(second, 32), 1);
+            __ umin(Lanes(first, 32), Lanes(first, 32), Lanes(second, 32));
+        }
+    } else {
+        __ shl(Lanes(first, 32), Lanes(regs[0], 32), 1);
+        for (unsigned i = 1; i < reg_count; ++i) {
+            __ shl(Lanes(second, 32), Lanes(regs[i], 32), 1);
+            __ umin(Lanes(first, 32), Lanes(first, 32), Lanes(second, 32));
+        }
+    }
+    __ uminv(S(first), Lanes(first, 32));
+    __ fmov(v::w16, S(first));
+    __ lsr(v::w16, v::w16, bits == 32 ? 24 : 21);
+    if (!long_forward_branches && cold_denormal_count < cold_denormal_stubs.size()) {
+        const auto branch = masm.Here();
+        __ cbz(v::w16, std::int64_t{0});
+        auto& stub = cold_denormal_stubs[cold_denormal_count++];
+        stub.branch_words[0] = branch;
+        stub.branch_count = 1;
+        stub.return_word = masm.Here();
+        stub.bits = static_cast<std::uint8_t>(bits);
+        stub.count = static_cast<std::uint8_t>(count);
+        stub.batch_op_count = static_cast<std::uint8_t>(op_count);
+        for (unsigned k = 0; k < op_count; ++k) stub.batch_ops[k] = ops[k];
+        return;
+    }
+    const auto disabled = DenormalControlGuard();
+    const auto normal = masm.Here();
+    __ cbnz(v::x16, std::int64_t{0});
+    for (unsigned k = 0; k < op_count; ++k) {
+        const auto& op = ops[k];
+        const u32 denom = op.denominator == UINT8_MAX ? UINT32_MAX : u32{op.denominator};
+        RecordDenormalLanes(std::span<const std::uint8_t>{op.inputs.data(), op.input_count},
+                            bits,
+                            count,
+                            std::span<const std::uint8_t>{op.peers.data(), op.peer_count},
+                            denom,
+                            UINT32_MAX,
+                            false);
+    }
+    masm.Patch(normal, masm.Here());
+    if (disabled != UINT32_MAX) masm.Patch(disabled, masm.Here());
+}
+
+void Writer::QueueDenormalInputs(unsigned left,
+                                 unsigned right,
+                                 unsigned bits,
+                                 unsigned count,
+                                 unsigned denominator,
+                                 bool skip_left,
+                                 bool skip_right,
+                                 u32 clobber_mask) {
+    if (options.mxcsr_flush_mode != UINT8_MAX && (options.mxcsr_flush_mode & 1)) return;
+    if (skip_left && skip_right) {
+        if (pending_denormal.op_count && (pending_denormal.protected_mask & clobber_mask))
+            FlushDenormalBatch();
+        return;
+    }
+    const bool check_left = !skip_left && IsStableVectorHome(left);
+    const bool check_right = !skip_right && IsStableVectorHome(right);
+    const bool peer_left = IsStableVectorHome(left);
+    const bool peer_right = IsStableVectorHome(right);
+    const bool denom_ok = denominator == UINT32_MAX || IsStableVectorHome(denominator);
+    if (!CanBatchDenormal(bits, count) || (!skip_left && !check_left) ||
+        (!skip_right && !check_right) || !peer_left || !peer_right || !denom_ok) {
+        FlushDenormalBatch();
+        RecordDenormalInputs(left, right, bits, count, denominator, skip_left, skip_right);
+        return;
+    }
+    if (pending_denormal.op_count &&
+        (pending_denormal.bits != bits || pending_denormal.count != count ||
+         pending_denormal.op_count == pending_denormal.ops.size())) {
+        FlushDenormalBatch();
+    }
+    if (cold_denormal_count >= cold_denormal_stubs.size()) {
+        FlushDenormalBatch();
+        RecordDenormalInputs(left, right, bits, count, denominator, skip_left, skip_right);
+        return;
+    }
+    if (!pending_denormal.op_count) {
+        pending_denormal.bits = static_cast<std::uint8_t>(bits);
+        pending_denormal.count = static_cast<std::uint8_t>(count);
+    }
+    auto& op = pending_denormal.ops[pending_denormal.op_count++];
+    op.denominator = denominator == UINT32_MAX ? UINT8_MAX : static_cast<std::uint8_t>(denominator);
+    op.input_count = 0;
+    op.peer_count = 0;
+    if (!skip_left) {
+        op.inputs[op.input_count++] = static_cast<std::uint8_t>(left);
+        pending_denormal.check_mask |= u32{1} << left;
+    }
+    if (!skip_right && (skip_left || right != left)) {
+        op.inputs[op.input_count++] = static_cast<std::uint8_t>(right);
+        pending_denormal.check_mask |= u32{1} << right;
+    }
+    if (skip_left) {
+        op.peers[op.peer_count++] = static_cast<std::uint8_t>(left);
+    } else if (skip_right) {
+        op.peers[op.peer_count++] = static_cast<std::uint8_t>(right);
+    } else if (left != right) {
+        op.peers[op.peer_count++] = static_cast<std::uint8_t>(left);
+        op.peers[op.peer_count++] = static_cast<std::uint8_t>(right);
+    }
+    pending_denormal.protected_mask |= (u32{1} << left) | (u32{1} << right);
+    if (denominator != UINT32_MAX) pending_denormal.protected_mask |= u32{1} << denominator;
+    if ((pending_denormal.protected_mask & clobber_mask) ||
+        pending_denormal.op_count == pending_denormal.ops.size()) {
+        FlushDenormalBatch();
+    }
+}
+
 void Writer::RecordDenormalInput(unsigned value,
                                  unsigned bits,
                                  unsigned count,
@@ -261,18 +419,20 @@ void Writer::RecordDenormalInput(unsigned value,
         }
     }
     if (defer_cold) {
-        cold_denormal_stubs[cold_denormal_count++] = {rare,
-                                                      masm.Here(),
-                                                      denominator,
-                                                      fma_flags,
-                                                      input_regs,
-                                                      peer_regs,
-                                                      rare_count,
-                                                      input_count,
-                                                      peer_count,
-                                                      static_cast<std::uint8_t>(bits),
-                                                      static_cast<std::uint8_t>(count),
-                                                      negative_invalid};
+        auto& stub = cold_denormal_stubs[cold_denormal_count++];
+        stub.branch_words = rare;
+        stub.return_word = masm.Here();
+        stub.denominator = denominator;
+        stub.fma_flags = fma_flags;
+        stub.inputs = input_regs;
+        stub.peers = peer_regs;
+        stub.branch_count = rare_count;
+        stub.input_count = input_count;
+        stub.peer_count = peer_count;
+        stub.bits = static_cast<std::uint8_t>(bits);
+        stub.count = static_cast<std::uint8_t>(count);
+        stub.negative_invalid = negative_invalid;
+        stub.batch_op_count = 0;
         return;
     }
     const auto normal = masm.Here();
@@ -345,18 +505,20 @@ void Writer::RecordDenormalInputs(unsigned left,
     if (defer_cold) {
         const auto branch = masm.Here();
         __ cbz(v::w16, std::int64_t{0});
-        cold_denormal_stubs[cold_denormal_count++] = {{branch, 0, 0},
-                                                      masm.Here(),
-                                                      denominator,
-                                                      UINT32_MAX,
-                                                      inputs,
-                                                      inputs,
-                                                      1,
-                                                      2,
-                                                      2,
-                                                      static_cast<std::uint8_t>(bits),
-                                                      static_cast<std::uint8_t>(count),
-                                                      false};
+        auto& stub = cold_denormal_stubs[cold_denormal_count++];
+        stub.branch_words = {branch, 0, 0};
+        stub.return_word = masm.Here();
+        stub.denominator = denominator;
+        stub.fma_flags = UINT32_MAX;
+        stub.inputs = inputs;
+        stub.peers = inputs;
+        stub.branch_count = 1;
+        stub.input_count = 2;
+        stub.peer_count = 2;
+        stub.bits = static_cast<std::uint8_t>(bits);
+        stub.count = static_cast<std::uint8_t>(count);
+        stub.negative_invalid = false;
+        stub.batch_op_count = 0;
         return;
     }
     const auto normal = masm.Here();

@@ -44,7 +44,7 @@ static Value VRead(Emitter& builder,
                                  next_pc,
                                  target,
                                  {},
-                                 aligned ? nullptr : &displacement);
+                                 (aligned && (instruction.disp & 15)) ? nullptr : &displacement);
     if (aligned && !AlignedLiteralAddress(instruction, operand, next_pc))
         Require(builder.CheckMemoryAlignment(
                 Type::Void, {Operand::ValueOf(address), Operand::Immediate(15, Type::U8)}));
@@ -75,7 +75,7 @@ template <OpCode op = OpCode::StoreMemoryTSO> static void VWrite(Emitter& builde
                                  next_pc,
                                  target,
                                  {},
-                                 aligned ? nullptr : &displacement);
+                                 (aligned && (instruction.disp & 15)) ? nullptr : &displacement);
     if (aligned && !AlignedLiteralAddress(instruction, operand, next_pc))
         Require(builder.CheckMemoryAlignment(
                 Type::Void, {Operand::ValueOf(address), Operand::Immediate(15, Type::U8)}));

@@ -65,6 +65,13 @@ void Writer::Uniform(bool load, CellView uniform, unsigned value) {
         if (load) {
             if (deferred_parity == value && (value != static_cast<unsigned>(pinned) || first))
                 CompleteParity();
+            if (deferred_logical.bits && deferred_logical.reg == value &&
+                (value != static_cast<unsigned>(pinned) || first || bits < deferred_logical.bits)) {
+                if (FlagsDeadFrom(node.value + 1))
+                    deferred_logical = {};
+                else
+                    CompleteDeferredLogical();
+            }
             if (bits == 64)
                 Move(value, static_cast<unsigned>(pinned));
             else
@@ -73,14 +80,33 @@ void Writer::Uniform(bool load, CellView uniform, unsigned value) {
             if (deferred_parity == static_cast<unsigned>(pinned) && !first &&
                 (bits != 64 || value != static_cast<unsigned>(pinned)))
                 CompleteParity();
+            if (deferred_logical.bits && deferred_logical.reg == static_cast<unsigned>(pinned) &&
+                first < deferred_logical.bits &&
+                (bits < deferred_logical.bits || first || value != static_cast<unsigned>(pinned))) {
+                if (FlagsDeadFrom(node.value + 1))
+                    deferred_logical = {};
+                else
+                    CompleteDeferredLogical();
+            }
             if (bits == 64)
                 Move(static_cast<unsigned>(pinned), value);
             else
                 Insert(static_cast<unsigned>(pinned), value, first, bits);
+            if (deferred_logical.bits && deferred_logical.reg == value && !first &&
+                bits >= deferred_logical.bits &&
+                CanHoldDeferredLogical(static_cast<unsigned>(pinned))) {
+                deferred_logical.reg = static_cast<std::uint8_t>(pinned);
+            }
         }
         return;
     }
     if (load && deferred_parity == value) CompleteParity();
+    if (load && deferred_logical.bits && deferred_logical.reg == value) {
+        if (FlagsDeadFrom(node.value + 1))
+            deferred_logical = {};
+        else
+            CompleteDeferredLogical();
+    }
     // A narrow or crossing field still uses its exact original memory access.
     // Publish the overlapping complete XMM state so untouched lanes survive.
     VectorAlias(false, offset, size);
@@ -269,6 +295,27 @@ void Writer::HandleStoreUniformFamily(OpContext& ctx) {
             if (!self) CompleteParity();  // Read(input,pinned) may itself overwrite the low byte.
         }
     }
+    if (deferred_logical.bits && uniform.TypeView() != Type::V128 &&
+        uniform.Payload() <= UINT32_MAX) {
+        const auto size = Width(uniform.TypeView()) / 8;
+        const auto pinned = PinnedSlot(static_cast<u32>(uniform.Payload()), size);
+        const auto first = ((uniform.Payload() - options.pinned_uniform_offset) & 7u) * 8;
+        if (pinned == static_cast<int>(deferred_logical.reg) && first < deferred_logical.bits) {
+            const bool self = !first && size * 8 >= deferred_logical.bits &&
+                              input.Kind() == OperandKind::Value &&
+                              !allocation.homes[input.Payload()].spilled &&
+                              allocation.homes[input.Payload()].reg == deferred_logical.reg &&
+                              std::min(Width(View(input)),
+                                       allocation.homes[input.Payload()].CarrierBits()) >=
+                                      deferred_logical.bits;
+            if (!self) {
+                if (FlagsDeadFrom(node.value + 1))
+                    deferred_logical = {};
+                else
+                    CompleteDeferredLogical();
+            }
+        }
+    }
     if (test_prefix && deferred_test.snapshot && uniform.TypeView() == Type::U64 &&
         TestField(uniform) && input.Kind() == OperandKind::Value) {
         const auto& producer = source.Operations()[input.Payload()];
@@ -306,6 +353,7 @@ void Writer::HandleStoreUniformFamily(OpContext& ctx) {
     if (Linked() && uniform.TypeView() == Type::U64 && uniform.Payload() == options.pc_offset &&
         !alternate_pc_valid && node.value + 1 == body.first_node + body.node_count &&
         body.terminal.kind == TerminalKind::Dispatch) {
+        FlushDenormalBatch();
         CompleteLocalFlags();
         if (!options.private_uniforms) Shadow(false);
         if (!options.deferred_pc || !static_pc_valid) {
@@ -357,6 +405,7 @@ void Writer::HandleStoreUniformSelectImmFamily(OpContext& ctx) {
     if (Linked() && uniform.Payload() == options.pc_offset &&
         node.value + 1 == body.first_node + body.node_count &&
         body.terminal.kind == TerminalKind::Dispatch) {
+        FlushDenormalBatch();
         if (source.ScopeKind() == Scope::Block && deferred_test.bits == 64) {
             Width(View(check));
             const auto head = static_cast<u32>(output.words.size());

@@ -88,6 +88,7 @@ bool Writer::DeferTest(const Operation& operation, Cursor& cursor) {
     }
     cursor.at = at;
     deferred_test_used = true;
+    deferred_logical = {};
     deferred_parity = 0;
     direct_carry = false;  // The qualified TEST replaces all ordinary local flags.
     Immediate(29, abi::DeferredTestTag);
@@ -95,6 +96,59 @@ bool Writer::DeferTest(const Operation& operation, Cursor& cursor) {
     packed_current = false;
     nzcv_matches = 0;
     return true;
+}
+
+void Writer::CompleteDeferredLogical() {
+    if (!deferred_logical.bits) return;
+    const unsigned reg = deferred_logical.reg;
+    const unsigned bits = deferred_logical.bits;
+    deferred_logical = {};
+    deferred_parity = 0;
+    direct_carry = false;
+    packed_current = false;
+    nzcv_matches = 0;
+    if (bits < 32) {
+        Narrow(1, reg, bits, true);
+        __ orr(v::w29, v::wzr, Operand(v::w1));
+        __ cmp(v::x1, Operand(0));
+    } else {
+        __ subs(R(1, bits), R(reg, bits), Operand(0));
+        __ orr(v::w29, v::wzr, Operand(v::w1));
+    }
+}
+
+bool Writer::FlagsDeadFrom(u32 start_node) const {
+    const auto& body = source.Blocks()[block.value];
+    const u32 end = body.first_node + body.node_count;
+    const u32 limit = std::min(end, start_node + 16u);
+    for (u32 idx = start_node; idx < limit; ++idx) {
+        const auto& op = source.Operations()[idx];
+        if ((op.opcode == OpCode::Nop || op.opcode == OpCode::FaultLocation) &&
+            op.Metadata() == OperationMetadata{})
+            continue;
+        const auto meta = op.Metadata();
+        const auto eff = EffectsFor(op.opcode, meta);
+        if (HasAnyEffect(eff,
+                         Effect::ReadFlags | Effect::MayFault | Effect::Unknown |
+                                 Effect::External | Effect::Control))
+            return false;
+        if ((op.opcode == OpCode::LoadUniform || op.opcode == OpCode::StoreUniform ||
+             op.opcode == OpCode::StoreUniformSelectImm) &&
+            OverlapsShadow(source.Operands(NodeId{idx}).front()))
+            return false;
+        if (op.opcode == OpCode::StoreUniform && Linked()) {
+            const auto uniform = source.Operands(NodeId{idx}).front();
+            if (uniform.TypeView() == Type::U64 && uniform.Payload() == options.pc_offset &&
+                idx + 1 == end && body.terminal.kind == TerminalKind::Dispatch)
+                return false;
+        }
+        if (meta == OperationMetadata{} && HasAnyEffect(eff, Effect::WriteFlags)) return false;
+        if (meta.flag_outputs && !LegacyMask(NodeId{idx}, NodeId{idx + 1}) &&
+            !LegacyMask(NodeId{idx}, NodeId{idx + 2}) &&
+            ((meta.flag_outputs & all_flags) == all_flags || meta.discard_omitted_flags))
+            return true;
+    }
+    return false;
 }
 
 void Writer::CompleteDeferredTest() {
@@ -142,6 +196,7 @@ void Writer::NativePhase(unsigned phase) {
 }
 
 void Writer::HelperFPEnvironment(bool guest) {
+    if (!guest) FlushDenormalBatch();
     if (!guest) NativePhase(SVM_NATIVE_PHASE_HELPER);
     if (!Linked() || !options.native_fp_environment) return;
     if (!guest) {
@@ -181,6 +236,7 @@ void Writer::UnpackRawFlags() {
     Extract(29, 1, 22, 5);  // Packed AF becomes bit4 before the PF xor.
     __ eor(v::w29, v::w29, Operand(v::w1));
     Extract(1, 1, 0, 8);
+    deferred_logical = {};
     deferred_parity = 0;
     packed_current = false;
 }
@@ -206,6 +262,7 @@ void Writer::RestoreHelperNZCV() {
     FlagsMemory(true, 17);
     __ eor(v::x17, v::x17, Operand(u64{1} << 29));
     __ msr(v::NZCV, v::x17);
+    deferred_logical = {};
     deferred_parity = 0;
     direct_carry = false;
     packed_current = false;
@@ -461,6 +518,15 @@ void Writer::LogicalFlags(unsigned result,
                           bool clear_af,
                           bool nzcv_ready,
                           bool invert_carry) {
+    if (RawAF() && clear_af && (width == 32 || width == 64) && mask == all_flags && !nzcv_ready) {
+        CompleteParity();
+        nzcv_matches = 0;
+        direct_carry = false;
+        packed_current = false;
+        __ subs(R(1, width), R(result, width), Operand(0));
+        __ orr(v::w29, v::wzr, Operand(v::w1));
+        return;
+    }
     if (RawAF() && clear_af && (width == 8 || width == 16) && mask == all_flags && !nzcv_ready) {
         const auto& home = allocation.homes[node.value];
         if (result != 1 || home.last_use == home.definition_position) {
@@ -631,6 +697,49 @@ void Writer::HandleTestFlagsFamily(OpContext& ctx) {
                                 : mask == negative ? 4u
                                                    : 9u) ^
                                static_cast<unsigned>(inverse);
+        if (!home.spilled && operation.Metadata() == OperationMetadata{} &&
+            node.value + 1 < source.Operations().size()) {
+            const NodeId consumer{node.value + 1};
+            const auto& next = source.Operations()[consumer.value];
+            const auto& next_home = allocation.homes[consumer.value];
+            if (next.opcode == OpCode::Select && next.block == operation.block &&
+                next.Metadata() == OperationMetadata{} && next.type != Type::Void &&
+                next.type != Type::V128 && !next_home.spilled &&
+                home.last_use == next_home.definition_position) {
+                const auto operands = source.Operands(consumer);
+                auto at = operands.begin();
+                if (at != operands.end()) {
+                    const auto check = *at++;
+                    if (at != operands.end()) {
+                        const auto yes = *at++;
+                        if (at != operands.end()) {
+                            const auto no = *at++;
+                            const bool uses_self =
+                                    (yes.Kind() == OperandKind::Value &&
+                                     yes.Payload() == node.value) ||
+                                    (no.Kind() == OperandKind::Value &&
+                                     no.Payload() == node.value);
+                            if (at == operands.end() && check.Kind() == OperandKind::Value &&
+                                check.Payload() == node.value && !uses_self) {
+                                const auto sel_width = Width(next.type);
+                                const auto sel_native = sel_width == 32 ? 32u : 64u;
+                                const auto yes_reg = Read(yes, 16, 64, false, sel_native),
+                                           no_reg = Read(no, 17, 64, false, sel_native);
+                                __ csel(R(next_home.reg, sel_native),
+                                        R(yes_reg, sel_native),
+                                        R(no_reg, sel_native),
+                                        static_cast<v::Condition>(condition));
+                                if (sel_width != 32)
+                                    Narrow(next_home.reg, next_home.reg, sel_width);
+                                elided_consumer = consumer;
+                                ctx.saved = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
         __ cset(X(destination), static_cast<v::Condition>(condition));
     } else
         Test(mask, destination, inverse);
