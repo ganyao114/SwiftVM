@@ -3506,3 +3506,129 @@ TEST_CASE("Stored U32 arithmetic results keep zero extension when evicted",
     if (Run(code, state, UINT64_C(20) * 0x80000000u + 190))
         for (unsigned i = 0; i < values.size(); ++i) CHECK(state.scalars[i] == 0x80000000u + i);
 }
+
+TEST_CASE("Fused base-displacement addressing, scalar-to-vector loads, and immediate uniform stores",
+          "[compile][x64-compile][native]") {
+    bool avx_available = false;
+#if defined(__x86_64__) && defined(__linux__)
+    avx_available = __builtin_cpu_supports("avx");
+#endif
+    alignas(16) std::array<u64, 8> buffer{UINT64_C(0x0102030405060708),
+                                          UINT64_C(0x1122334455667788),
+                                          UINT64_C(0x99aabbccddeeff00),
+                                          UINT64_C(0xfedcba9876543210),
+                                          0,
+                                          0,
+                                          0,
+                                          0};
+    for (bool use_avx : {false, true}) {
+        if (use_avx && NativeMode() && !avx_available) continue;
+        Builder builder{Scope::Block};
+        Begin(builder);
+        const auto base = Load(builder, 0);
+        // Positive disp32 fused with BitCast :v128 (U64 and U32) and VecDup64 :v128.
+        Emit(builder, OpCode::FaultLocation, Type::Void, {Imm(0x4100)});
+        const auto addr_d = Emit(builder, OpCode::Add, Type::U64, {Operand::ValueOf(base), Imm(8)});
+        const auto load_d = Emit(builder, OpCode::LoadMemory, Type::U64, {Operand::ValueOf(addr_d)});
+        const auto vec_d = Emit(builder, OpCode::BitCast, Type::V128, {Operand::ValueOf(load_d)});
+        StoreVector(builder, 0, vec_d);
+
+        Emit(builder, OpCode::FaultLocation, Type::Void, {Imm(0x4104)});
+        const auto addr_s =
+                Emit(builder, OpCode::Sub, Type::U64, {Operand::ValueOf(base), Imm(8)});
+        const auto load_s = Emit(builder, OpCode::LoadMemory, Type::U32, {Operand::ValueOf(addr_s)});
+        const auto vec_s = Emit(builder, OpCode::BitCast, Type::V128, {Operand::ValueOf(load_s)});
+        StoreVector(builder, 1, vec_s);
+
+        Emit(builder, OpCode::FaultLocation, Type::Void, {Imm(0x4108)});
+        const auto addr_dup =
+                Emit(builder, OpCode::Add, Type::U64, {Operand::ValueOf(base), Imm(16)});
+        const auto load_dup =
+                Emit(builder, OpCode::LoadMemory, Type::U64, {Operand::ValueOf(addr_dup)});
+        const auto vec_dup = Emit(builder, OpCode::VecDup64, Type::V128, {Operand::ValueOf(load_dup)});
+        StoreVector(builder, 2, vec_dup);
+
+        // StoreMemory with Sub displacement and immediate StoreUniform folding.
+        const auto addr_st =
+                Emit(builder, OpCode::Add, Type::U64, {Operand::ValueOf(base), Imm(24)});
+        const auto sum = Emit(builder,
+                              OpCode::Add,
+                              Type::U64,
+                              {Operand::ValueOf(base), Imm(0x1234)});
+        Emit(builder, OpCode::StoreMemory, Type::Void, {Operand::ValueOf(addr_st), Operand::ValueOf(sum)});
+        Store(builder, 2, Literal(builder, UINT64_C(0xffffffff87654321)));
+        Store(builder, 3, Literal(builder, UINT64_C(0x123456789abcdef0)));
+
+        auto options = Options();
+        options.avx = use_avx;
+        options.local_flags = true;
+        swift::runtime::backend::CompileResult code;
+        x64::Allocation allocation;
+        x64::Compile(Return(builder), options, code, allocation);
+        REQUIRE(bool(code));
+        CHECK(code.faults.size() >= 3);
+        CHECK(allocation.homes[addr_d.node.value].rematerialize);
+        CHECK(allocation.homes[addr_s.node.value].rematerialize);
+        CHECK(allocation.homes[load_d.node.value].rematerialize);
+        CHECK(allocation.homes[load_s.node.value].rematerialize);
+        if (use_avx) CHECK(allocation.homes[load_dup.node.value].rematerialize);
+
+        State state;
+        state.scalars[0] = reinterpret_cast<std::uintptr_t>(&buffer[1]);
+        state.vectors[0] = {UINT64_MAX, UINT64_MAX};
+        state.vectors[1] = {UINT64_MAX, UINT64_MAX};
+        state.vectors[2] = {UINT64_MAX, UINT64_MAX};
+        if (Run(code, state)) {
+            CHECK(state.vectors[0] == (Pair{buffer[2], 0}));
+            CHECK(state.vectors[1] == (Pair{static_cast<u32>(buffer[0]), 0}));
+            CHECK(state.vectors[2] == (Pair{buffer[3], buffer[3]}));
+            CHECK(buffer[4] == state.scalars[0] + 0x1234);
+            CHECK(state.scalars[2] == UINT64_C(0xffffffff87654321));
+            CHECK(state.scalars[3] == UINT64_C(0x123456789abcdef0));
+        }
+    }
+}
+
+TEST_CASE("Uniform backing crosses disjoint uniform stores while honoring early overwrite hazards",
+          "[compile][x64-compile][native]") {
+    Builder builder{Scope::Block};
+    Begin(builder);
+    const auto old_slot1 = LoadVector(builder, 1);
+    const auto v0 = Vector(builder, {0x1111, 0x2222});
+    const auto v1 = Vector(builder, {0x3333, 0x4444});
+    // StoreVector(0, v0) sits between v1's definition and StoreVector(1, v1), as in LDP.
+    StoreVector(builder, 0, v0);
+    StoreVector(builder, 1, v1);
+    std::array<Value, 14> extras;
+    for (unsigned i = 0; i < extras.size(); ++i) {
+        extras[i] = Vector(builder, {0x5000 + i, 0x6000 + i});
+        StoreVector(builder, 2 + i, extras[i]);
+    }
+    auto acc = Emit(
+            builder, OpCode::VecXor, Type::V128, {Operand::ValueOf(old_slot1), Operand::ValueOf(v1)});
+    acc = Emit(builder, OpCode::VecXor, Type::V128, {Operand::ValueOf(acc), Operand::ValueOf(v0)});
+    for (const auto ex : extras)
+        acc = Emit(builder, OpCode::VecXor, Type::V128, {Operand::ValueOf(acc), Operand::ValueOf(ex)});
+    StoreVector(builder, 15, acc);
+
+    auto options = Options();
+    options.avx = false;
+    options.local_flags = true;
+    swift::runtime::backend::CompileResult code;
+    x64::Allocation allocation;
+    x64::Compile(Return(builder), options, code, allocation);
+    REQUIRE(bool(code));
+    CHECK(allocation.homes[v1.node.value].uniform_store_bytes == 16);
+    CHECK(allocation.homes[old_slot1.node.value].uniform_offset == UINT32_MAX);
+
+    State state;
+    state.vectors[1] = {UINT64_C(0xdeadbeef00001111), UINT64_C(0xcafebabe00002222)};
+    Pair expected = state.vectors[1];
+    expected.low ^= 0x3333 ^ 0x1111;
+    expected.high ^= 0x4444 ^ 0x2222;
+    for (unsigned i = 0; i < extras.size(); ++i) {
+        expected.low ^= 0x5000 + i;
+        expected.high ^= 0x6000 + i;
+    }
+    if (Run(code, state)) CHECK(state.vectors[15] == expected);
+}

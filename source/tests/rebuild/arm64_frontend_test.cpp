@@ -624,3 +624,143 @@ TEST_CASE("ARM BRK returns an encoded exception at the faulting instruction",
     CHECK(front::InterpretOne(state, invalid_memory.Services()).kind ==
           front::StepKind::InvalidEncoding);
 }
+
+TEST_CASE("ARM NEON LD4/ST4 Q, LD1R, widening shifts, MOVI, and LDP fault atomicity",
+          "[compile][arm64-frontend]") {
+    const Code ld4_st4{[](auto& a) {
+        a.ld4(v0.V16B(), v1.V16B(), v2.V16B(), v3.V16B(), MemOperand(x1, 64, PostIndex));
+        a.st4(v0.V16B(), v1.V16B(), v2.V16B(), v3.V16B(), MemOperand(x2, 64, PostIndex));
+        a.ld4(v4.V8H(), v5.V8H(), v6.V8H(), v7.V8H(), MemOperand(x3));
+        a.st4(v4.V8H(), v5.V8H(), v6.V8H(), v7.V8H(), MemOperand(x4));
+        a.ld4(v8.V4S(), v9.V4S(), v10.V4S(), v11.V4S(), MemOperand(x3));
+        a.st4(v8.V4S(), v9.V4S(), v10.V4S(), v11.V4S(), MemOperand(x5));
+        a.ld4(v12.V2D(), v13.V2D(), v14.V2D(), v15.V2D(), MemOperand(x3));
+        a.st4(v12.V2D(), v13.V2D(), v14.V2D(), v15.V2D(), MemOperand(x6));
+        a.svc(0);
+    }};
+    Build(ld4_st4);
+    {
+        const std::array<front::BlockWindow, 1> windows{{{CodeBase, ld4_st4.View()}}};
+        const auto built_x64 =
+                front::BuildIR(windows, ir::Scope::Block, {}, {ir::TargetMode::Known, 0x8664, 0});
+        REQUIRE(bool(built_x64));
+        State state;
+        state.pc = CodeBase;
+        state.gprs[1] = DataBase;
+        state.gprs[2] = DataBase + 64;
+        state.gprs[3] = DataBase;
+        state.gprs[4] = DataBase + 128;
+        state.gprs[5] = DataBase + 192;
+        state.gprs[6] = DataBase + 64;
+        Memory memory{ld4_st4};
+        for (unsigned i = 0; i < 64; ++i) memory.data[i] = static_cast<std::uint8_t>(i * 3 + 5);
+        REQUIRE(Run(state, memory).kind == front::StepKind::Service);
+        CHECK(state.gprs[1] == DataBase + 64);
+        CHECK(state.gprs[2] == DataBase + 128);
+        for (unsigned lane = 0; lane < 16; ++lane)
+            for (unsigned reg = 0; reg < 4; ++reg)
+                CHECK(Lane<std::uint8_t>(state, reg, lane) == memory.data[lane * 4 + reg]);
+        for (unsigned lane = 0; lane < 8; ++lane)
+            for (unsigned reg = 0; reg < 4; ++reg) {
+                std::uint16_t expected{};
+                std::memcpy(&expected, &memory.data[(lane * 4 + reg) * 2], 2);
+                CHECK(Lane<std::uint16_t>(state, 4 + reg, lane) == expected);
+            }
+        for (unsigned lane = 0; lane < 4; ++lane)
+            for (unsigned reg = 0; reg < 4; ++reg) {
+                std::uint32_t expected{};
+                std::memcpy(&expected, &memory.data[(lane * 4 + reg) * 4], 4);
+                CHECK(Lane<std::uint32_t>(state, 8 + reg, lane) == expected);
+            }
+        for (unsigned lane = 0; lane < 2; ++lane)
+            for (unsigned reg = 0; reg < 4; ++reg) {
+                U64 expected{};
+                std::memcpy(&expected, &memory.data[(lane * 4 + reg) * 8], 8);
+                CHECK(Lane<U64>(state, 12 + reg, lane) == expected);
+            }
+        CHECK(std::memcmp(&memory.data[0], &memory.data[64], 64) == 0);
+        CHECK(std::memcmp(&memory.data[0], &memory.data[128], 64) == 0);
+        CHECK(std::memcmp(&memory.data[0], &memory.data[192], 64) == 0);
+
+        // Fault on the 4th 16B load leaves v0..v3 and post-index x1 untouched.
+        State fault_state;
+        fault_state.pc = CodeBase;
+        fault_state.gprs[1] = DataBase + 256 - 48;
+        for (unsigned r = 0; r < 4; ++r) Set(fault_state, r, UINT64_C(0xdeadbeefcafebabe) + r);
+        CHECK(front::InterpretOne(fault_state, memory.Services()).kind == front::StepKind::Fault);
+        CHECK(fault_state.gprs[1] == DataBase + 256 - 48);
+        for (unsigned r = 0; r < 4; ++r)
+            CHECK(Lane<U64>(fault_state, r) == UINT64_C(0xdeadbeefcafebabe) + r);
+    }
+
+    const Code misc_ops{[](auto& a) {
+        a.ld1r(v0.V2D(), MemOperand(x1));
+        a.ld1r(v1.V4S(), MemOperand(x1));
+        a.ushll(v2.V8H(), v1.V8B(), 0);
+        a.ushll2(v3.V4S(), v2.V8H(), 3);
+        a.sshll(v4.V2D(), v1.V2S(), 4);
+        a.movi(v5.V2D(), 0);
+        a.movi(v6.V1D(), 0);
+        a.movi(v7.V4S(), 0x42, LSL, 8);
+        a.mvni(v8.V4S(), 0x11);
+        a.ldp(d9, d10, MemOperand(x1, 16));
+        a.svc(0);
+    }};
+    Build(misc_ops);
+    {
+        const std::array<front::BlockWindow, 1> windows{{{CodeBase, misc_ops.View()}}};
+        const auto built_x64 =
+                front::BuildIR(windows, ir::Scope::Block, {}, {ir::TargetMode::Known, 0x8664, 0});
+        REQUIRE(bool(built_x64));
+        unsigned dup64{}, vec_extend{}, shared_zero{}, vec_const{};
+        for (const auto& op : built_x64.program.Operations()) {
+            dup64 += op.opcode == ir::OpCode::VecDup64;
+            vec_extend += op.opcode == ir::OpCode::VecExtend;
+            shared_zero += op.opcode == ir::OpCode::VecSharedZero;
+            vec_const += op.opcode == ir::OpCode::VecLoadConst;
+        }
+        CHECK(dup64 >= 2);
+        CHECK(vec_extend == 3);
+        CHECK(shared_zero >= 2);
+        CHECK(vec_const >= 2);
+
+        State state;
+        state.pc = CodeBase;
+        state.gprs[1] = DataBase;
+        for (unsigned r = 5; r <= 10; ++r) {
+            Set(state, r, UINT64_MAX, 0);
+            Set(state, r, UINT64_MAX, 1);
+        }
+        Memory memory{misc_ops};
+        const U64 d0 = UINT64_C(0x80000005fffe0003), p0 = UINT64_C(0x1122334455667788),
+                  p1 = UINT64_C(0x99aabbccddeeff00);
+        std::memcpy(&memory.data[0], &d0, 8);
+        std::memcpy(&memory.data[16], &p0, 8);
+        std::memcpy(&memory.data[24], &p1, 8);
+        REQUIRE(Run(state, memory).kind == front::StepKind::Service);
+        CHECK((Lane<U64>(state, 0, 0) == d0 && Lane<U64>(state, 0, 1) == d0));
+        const U64 s_rep = UINT64_C(0xfffe0003fffe0003);
+        CHECK((Lane<U64>(state, 1, 0) == s_rep && Lane<U64>(state, 1, 1) == s_rep));
+        CHECK((Lane<U64>(state, 5, 0) == 0 && Lane<U64>(state, 5, 1) == 0));
+        CHECK((Lane<U64>(state, 6, 0) == 0 && Lane<U64>(state, 6, 1) == 0));
+        CHECK((Lane<std::uint32_t>(state, 7, 0) == 0x4200 &&
+               Lane<std::uint32_t>(state, 7, 3) == 0x4200));
+        CHECK((Lane<std::uint32_t>(state, 8, 0) == ~0x11u &&
+               Lane<std::uint32_t>(state, 8, 3) == ~0x11u));
+        CHECK((Lane<U64>(state, 9, 0) == p0 && Lane<U64>(state, 9, 1) == 0));
+        CHECK((Lane<U64>(state, 10, 0) == p1 && Lane<U64>(state, 10, 1) == 0));
+        CHECK(Lane<U64>(state, 4, 0) == (U64(std::int64_t(std::int32_t(0xfffe0003u))) << 4));
+
+        // Fault on the second half of LDP d9, d10, [x1, #16] leaves d9 untouched.
+        const Code ldp_only{[](auto& a) { a.ldp(d9, d10, MemOperand(x1, 16)); }};
+        State fault_ldp;
+        fault_ldp.pc = CodeBase;
+        fault_ldp.gprs[1] = DataBase + 256 - 24;
+        Set(fault_ldp, 9, UINT64_C(0xfeedface12345678), 0);
+        Set(fault_ldp, 10, UINT64_C(0xabcd0123456789ef), 0);
+        Memory ldp_mem{ldp_only};
+        CHECK(front::InterpretOne(fault_ldp, ldp_mem.Services()).kind == front::StepKind::Fault);
+        CHECK(Lane<U64>(fault_ldp, 9, 0) == UINT64_C(0xfeedface12345678));
+        CHECK(Lane<U64>(fault_ldp, 10, 0) == UINT64_C(0xabcd0123456789ef));
+    }
+}

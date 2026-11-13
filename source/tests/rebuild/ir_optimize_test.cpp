@@ -1627,3 +1627,123 @@ TEST_CASE("Ordered store displacement folding and separated GetOperand reuse",
     CHECK(get_operands == 2);
     CHECK(folded_stores == 1);
 }
+
+TEST_CASE("Vector zero identities, V128 U64 lane forwarding, and VecLoadConst purity",
+          "[compile][ir-optimize]") {
+    Builder builder{Scope::Block};
+    const auto block = builder.CreateBlock();
+    REQUIRE((block && builder.BeginBlock(block.block) == Error::None));
+    const auto dead_const = Emit(builder,
+                                 OpCode::VecLoadConst,
+                                 Type::V128,
+                                 {Operand::Immediate(0x11, Type::U64),
+                                  Operand::Immediate(0x22, Type::U64)});
+    const auto zero = Emit(builder, OpCode::VecSharedZero, Type::V128, {});
+    const auto live_const = Emit(builder,
+                                 OpCode::VecLoadConst,
+                                 Type::V128,
+                                 {Operand::Immediate(0x0102030405060708ULL, Type::U64),
+                                  Operand::Immediate(0x1112131415161718ULL, Type::U64)});
+    Store(builder, 128, live_const, Type::V128);
+    // An intervening pure VecLoadConst neither prevents DSE nor blocks forwarding.
+    const auto other_const = Emit(builder,
+                                  OpCode::VecLoadConst,
+                                  Type::V128,
+                                  {Operand::Immediate(0xaa, Type::U64),
+                                   Operand::Immediate(0xbb, Type::U64)});
+    Store(builder, 160, other_const, Type::V128);
+    const auto lane0 =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(128, Type::U64)});
+    const auto lane1 =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(136, Type::U64)});
+    Store(builder, 0, lane0, Type::U64);
+    Store(builder, 8, lane1, Type::U64);
+    Store(builder, 128, zero, Type::V128);
+    const auto zlane =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(136, Type::U64)});
+    Store(builder, 16, zlane, Type::U64);
+
+    const auto input_vec =
+            Emit(builder, OpCode::LoadUniform, Type::V128, {Operand::Uniform(192, Type::V128)});
+    const auto or_zero = Emit(
+            builder, OpCode::VecOr, Type::V128, {Operand::ValueOf(input_vec), Operand::ValueOf(zero)});
+    const auto xor_zero = Emit(builder,
+                               OpCode::VecXor,
+                               Type::V128,
+                               {Operand::ValueOf(zero), Operand::ValueOf(or_zero)});
+    const auto and_zero = Emit(builder,
+                               OpCode::VecAnd,
+                               Type::V128,
+                               {Operand::ValueOf(input_vec), Operand::ValueOf(zero)});
+    const auto self_xor = Emit(builder,
+                               OpCode::VecXor,
+                               Type::V128,
+                               {Operand::ValueOf(input_vec), Operand::ValueOf(input_vec)});
+    const auto xor_store = NodeId{static_cast<std::uint32_t>(builder.Operations().size())};
+    Store(builder, 224, xor_zero, Type::V128);
+    Store(builder, 240, and_zero, Type::V128);
+    Store(builder, 256, self_xor, Type::V128);
+    REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+
+    const auto result = Optimize(Submit(builder), SIZE_MAX, {.guest_memory_disjoint = true});
+    REQUIRE(bool(result));
+    CHECK(result.program.Operations()[dead_const.node.value].opcode == OpCode::Nop);
+    CHECK(Immediate(result.program, lane0, Type::U64) == 0x0102030405060708ULL);
+    CHECK(Immediate(result.program, lane1, Type::U64) == 0x1112131415161718ULL);
+    CHECK(Immediate(result.program, zlane, Type::U64) == 0);
+    CHECK(result.program.Operations()[and_zero.node.value].opcode == OpCode::VecSharedZero);
+    CHECK(result.program.Operations()[self_xor.node.value].opcode == OpCode::VecSharedZero);
+    CHECK(result.program.Operations()[or_zero.node.value].opcode == OpCode::Nop);
+    CHECK(result.program.Operations()[xor_zero.node.value].opcode == OpCode::Nop);
+    auto stored_it = result.program.Operands(xor_store).begin();
+    ++stored_it;
+    CHECK((*stored_it).Payload() == input_vec.node.value);
+}
+
+TEST_CASE("Sandwiched LoadMemory eliminates vector dead stores while preserving scalar and boundary stores",
+          "[compile][ir-optimize]") {
+    const auto run_case = [&](bool fault_locs, bool disjoint, bool barrier_between) {
+        const std::uint64_t features =
+                fault_locs ? static_cast<std::uint64_t>(TargetFeature::FaultLocations) : 0;
+        Builder builder{Scope::Block, TargetInfo{TargetMode::Known, 0x8664, features}};
+        const auto block = builder.CreateBlock();
+        REQUIRE((block && builder.BeginBlock(block.block) == Error::None));
+        const auto base =
+                Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(0, Type::U64)});
+        const auto add_off = [&](std::uint64_t off) {
+            return Emit(builder,
+                        OpCode::Add,
+                        Type::U64,
+                        {Operand::ValueOf(base), Operand::Immediate(off, Type::U64)});
+        };
+        const auto m_lo = Emit(builder, OpCode::LoadMemory, Type::V128, {Operand::ValueOf(add_off(0x20))});
+        const auto m_hi = Emit(builder, OpCode::LoadMemory, Type::V128, {Operand::ValueOf(add_off(0xe0))});
+        const auto s1 = Literal(builder, 0x1234), s2 = Literal(builder, 0x5678);
+        const auto vec_store1 = NodeId{static_cast<std::uint32_t>(builder.Operations().size())};
+        Store(builder, 256, m_lo, Type::V128);
+        const auto scalar_store1 = NodeId{static_cast<std::uint32_t>(builder.Operations().size())};
+        Store(builder, 16, s1, Type::U64);
+        if (barrier_between) Emit(builder, OpCode::MemoryBarrierTSO, Type::Void, {});
+        const auto m_mid =
+                Emit(builder, OpCode::LoadMemory, Type::V128, {Operand::ValueOf(add_off(0x80))});
+        Store(builder, 256, m_mid, Type::V128);
+        Store(builder, 16, s2, Type::U64);
+        // A load outside [0x20, 0xf0) may fault and must commit prior vector stores.
+        const auto vec_store2 = NodeId{static_cast<std::uint32_t>(builder.Operations().size())};
+        Store(builder, 288, m_hi, Type::V128);
+        const auto m_out =
+                Emit(builder, OpCode::LoadMemory, Type::V128, {Operand::ValueOf(add_off(0x10))});
+        Store(builder, 288, m_out, Type::V128);
+        REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+        const auto opt = Optimize(Submit(builder), SIZE_MAX, {.guest_memory_disjoint = disjoint});
+        REQUIRE(bool(opt));
+        const bool expect_dse = fault_locs && disjoint && !barrier_between;
+        CHECK((opt.program.Operations()[vec_store1.value].opcode == OpCode::Nop) == expect_dse);
+        CHECK(opt.program.Operations()[scalar_store1.value].opcode == OpCode::StoreUniform);
+        CHECK(opt.program.Operations()[vec_store2.value].opcode == OpCode::StoreUniform);
+    };
+    run_case(true, true, false);
+    run_case(false, true, false);
+    run_case(true, false, false);
+    run_case(true, true, true);
+}
