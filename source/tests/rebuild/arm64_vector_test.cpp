@@ -639,3 +639,57 @@ TEST_CASE("PackedFloatingArithmetic", "[compile][native][arm64]") {
 }
 
 TEST_CASE("PackedFPStatus", "[compile][native][arm64]") { CHECK_NOTHROW(PackedFPStatus()); }
+
+TEST_CASE("VecScalar and compact VecLoadConst emission", "[compile][native][arm64]") {
+    Builder builder{Scope::Block, arm64::KnownTargetInfo()};
+    Need(builder.BeginBlock(Create(builder)));
+    const auto word = Load(builder, 0);
+    const auto quad = Load(builder, 8);
+    const auto v32 =
+            Need(builder.Emit<OpCode::VecScalar>(Type::V128, {Operand::ValueOf(word, Type::U32)}));
+    const auto v64 = Need(builder.Emit<OpCode::VecScalar>(Type::V128, {Operand::ValueOf(quad)}));
+    const auto all_zero = Need(builder.Emit<OpCode::VecLoadConst>(
+            Type::V128, {Operand::Immediate(0, Type::U64), Operand::Immediate(0, Type::U64)}));
+    const auto all_ones =
+            Need(builder.Emit<OpCode::VecLoadConst>(Type::V128,
+                                                    {Operand::Immediate(UINT64_MAX, Type::U64),
+                                                     Operand::Immediate(UINT64_MAX, Type::U64)}));
+    const auto low_only = Need(builder.Emit<OpCode::VecLoadConst>(
+            Type::V128,
+            {Operand::Immediate(0x3ff0000000000000ULL, Type::U64),
+             Operand::Immediate(0, Type::U64)}));
+    const auto sum = Need(builder.Emit<OpCode::VecFAdd>(Type::V128,
+                                                        {Operand::ValueOf(low_only),
+                                                         Operand::ValueOf(all_zero),
+                                                         Operand::Immediate(64, Type::U8)}));
+    Need(builder.Emit<OpCode::StoreUniform>(
+            Type::Void, {Operand::Uniform(16, Type::V128), Operand::ValueOf(v32)}));
+    Need(builder.Emit<OpCode::StoreUniform>(
+            Type::Void, {Operand::Uniform(32, Type::V128), Operand::ValueOf(v64)}));
+    Need(builder.Emit<OpCode::StoreUniform>(
+            Type::Void, {Operand::Uniform(48, Type::V128), Operand::ValueOf(all_ones)}));
+    Need(builder.Emit<OpCode::StoreUniform>(
+            Type::Void, {Operand::Uniform(64, Type::V128), Operand::ValueOf(sum)}));
+    Need(builder.EndBlock(Terminal::Return(Constant(builder, 7))));
+    auto program = Submit(builder);
+    arm64::CompileOptions options;
+    options.mxcsr_flush_offset = 80;
+    options.mxcsr_flush_mode = 0;
+    const auto code = ::Compile(program, options);
+    // Proven-normal constant inputs emit zero cold denormal branches.
+    CHECK(code.words.size() <= 24);
+    alignas(16) std::array<std::uint8_t, 96> state{};
+    Write64(state.data(), 0x7777777789abcdefULL);
+    Write64(state.data() + 8, 0x0123456789abcdefULL);
+    if (NativeMode()) {
+        Execute(code, state.data(), 7);
+        CHECK(Read64(state.data() + 16) == 0x89abcdefULL);
+        CHECK(Read64(state.data() + 24) == 0);
+        CHECK(Read64(state.data() + 32) == 0x0123456789abcdefULL);
+        CHECK(Read64(state.data() + 40) == 0);
+        CHECK(Read64(state.data() + 48) == UINT64_MAX);
+        CHECK(Read64(state.data() + 56) == UINT64_MAX);
+        CHECK(Read64(state.data() + 64) == 0x3ff0000000000000ULL);
+        CHECK(Read64(state.data() + 72) == 0);
+    }
+}
