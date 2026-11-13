@@ -1899,6 +1899,246 @@ void VectorPinBoundaries() {
 #endif
 }
 
+void DeferredLogicalFaultsAndAlignment() {
+    using swift::runtime::x86::GuestState;
+    const auto field = [](unsigned reg) {
+        return static_cast<std::uint32_t>(offsetof(GuestState, gprs) + reg * sizeof(u64));
+    };
+    const OperationMetadata full_logical{
+            FlagBits(Flag::All), FlagProfile::LogicalZeroCVA, false};
+    const OperationMetadata full_arith{
+            FlagBits(Flag::All), FlagProfile::ArithmeticCanonicalCarry, false};
+
+    // Dead logical flags overwritten across an overwriting scalar load + arithmetic producer
+    // must emit zero deferred-logical completion instructions.
+    {
+        Builder dead{Scope::Block};
+        Need(dead.BeginBlock(Create(dead)));
+        const auto a = Load(dead, field(swift::runtime::x86::RAX));
+        const auto b = Load(dead, field(swift::runtime::x86::RDX));
+        const auto ptr = Load(dead, field(swift::runtime::x86::R8));
+        const auto xored = Need(dead.Emit<OpCode::Xor>(
+                Type::U64, {Operand::ValueOf(a), Operand::ValueOf(b)}, full_logical));
+        Store(dead, field(swift::runtime::x86::RAX), xored);
+        Need(dead.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(0x5200, Type::U64)}));
+        const auto loaded =
+                Need(dead.Emit<OpCode::LoadMemoryTSO>(Type::U64, {Operand::ValueOf(ptr)}));
+        Store(dead, field(swift::runtime::x86::RAX), loaded);
+        const auto sum = Need(dead.Emit<OpCode::Add>(
+                Type::U64, {Operand::ValueOf(loaded), Operand::Immediate(1, Type::U64)}, full_arith));
+        Store(dead, field(swift::runtime::x86::RAX), sum);
+        Need(dead.EndBlock(Terminal::Return(Constant(dead, 9))));
+        auto dead_program = Submit(dead);
+        arm64::CompileOptions dead_options;
+        dead_options.flags_offset = offsetof(GuestState, packed_flags);
+        dead_options.pc_offset = offsetof(GuestState, pc);
+        dead_options.pinned_uniform_offset = offsetof(GuestState, gprs);
+        dead_options.pinned_uniform_slots = 16;
+        dead_options.private_uniforms = dead_options.native_nzcv = dead_options.fault_locations =
+                dead_options.local_flags = dead_options.deferred_pc =
+                        dead_options.recover_unaligned = true;
+        dead_options.dispatcher = 0x1000;
+        dead_options.exit_handler = 0x2000;
+        const auto dead_code = arm64::Compile(dead_program, dead_options);
+        Check(bool(dead_code) && dead_code.faults.size() == 1 &&
+                      arm64::DecodeFaultRecovery(dead_code.faults[0]).logical_bits == 64 &&
+                      arm64::DecodeFaultRecovery(dead_code.faults[0]).logical_register == 20,
+              "dead logical flags stay deferred across an overwriting load while recording fault "
+              "recovery");
+        Check(std::none_of(dead_code.words.begin(),
+                           dead_code.words.end(),
+                           [](std::uint32_t word) { return word == 0x2a0103fdu; }),
+              "overwritten logical flags emit zero PF carrier completion instructions");
+    }
+
+    constexpr u64 entry_pc = 0x5100, first_pc = 0x5110, second_pc = 0x5120, third_pc = 0x5130;
+    constexpr u64 initial = 0xa5a50000fd00003cULL;
+    arm64::CompileOptions options;
+    options.flags_offset = offsetof(GuestState, packed_flags);
+    options.pc_offset = offsetof(GuestState, pc);
+    options.pinned_uniform_offset = offsetof(GuestState, gprs);
+    options.pinned_uniform_slots = 16;
+    options.private_uniforms = options.native_nzcv = options.fault_locations =
+            options.local_flags = options.deferred_pc = options.recover_unaligned = true;
+    options.entry_pc = entry_pc;
+#if defined(__aarch64__) && defined(__ANDROID__)
+    if (NativeMode()) {
+        options.dispatcher = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeDispatchNZCV);
+        options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
+    } else
+#endif
+    {
+        options.dispatcher = 0x1000;
+        options.exit_handler = 0x2000;
+    }
+
+    Builder builder{Scope::Block};
+    Need(builder.BeginBlock(Create(builder)));
+    const auto rax_in = Load(builder, field(swift::runtime::x86::RAX));
+    const auto rdx_in = Load(builder, field(swift::runtime::x86::RDX));
+    const auto rcx_in = Load(builder, field(swift::runtime::x86::RCX));
+    const auto xor64 = Need(builder.Emit<OpCode::Xor>(
+            Type::U64, {Operand::ValueOf(rax_in), Operand::ValueOf(rdx_in)}, full_logical));
+    Store(builder, field(swift::runtime::x86::RAX), xor64);
+    Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(first_pc, Type::U64)}));
+    const auto mem0 = Need(builder.Emit<OpCode::LoadMemoryTSO>(
+            Type::U64, {Operand::ValueOf(Load(builder, field(swift::runtime::x86::R8)))}));
+    Store(builder, field(swift::runtime::x86::R10), mem0);
+
+    const auto and16 = Need(builder.Emit<OpCode::And>(
+            Type::U16,
+            {Operand::ValueOf(rdx_in, Type::U16), Operand::Immediate(0x8003, Type::U16)},
+            full_logical));
+    Need(builder.Emit<OpCode::StoreUniform>(
+            Type::Void,
+            {Operand::Uniform(field(swift::runtime::x86::RDX), Type::U16),
+             Operand::ValueOf(and16, Type::U16)}));
+    Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(second_pc, Type::U64)}));
+    const auto mem1 = Need(builder.Emit<OpCode::LoadMemoryTSO>(
+            Type::U64, {Operand::ValueOf(Load(builder, field(swift::runtime::x86::R9)))}));
+    Store(builder, field(swift::runtime::x86::R11), mem1);
+
+    const auto or8 = Need(builder.Emit<OpCode::Or>(
+            Type::U8,
+            {Operand::ValueOf(rcx_in, Type::U8), Operand::Immediate(0x80, Type::U8)},
+            full_logical));
+    Need(builder.Emit<OpCode::StoreUniform>(
+            Type::Void,
+            {Operand::Uniform(field(swift::runtime::x86::RCX), Type::U8),
+             Operand::ValueOf(or8, Type::U8)}));
+    const auto vec_ptr = Load(builder, field(swift::runtime::x86::R12));
+    Need(builder.Emit<OpCode::FaultLocation>(Type::Void, {Operand::Immediate(third_pc, Type::U64)}));
+    Need(builder.Emit<OpCode::CheckMemoryAlignment>(
+            Type::Void, {Operand::ValueOf(vec_ptr), Operand::Immediate(15, Type::U8)}));
+    const auto vec_ptr_plus = Need(builder.Emit<OpCode::Add>(
+            Type::U64, {Operand::ValueOf(vec_ptr), Operand::Immediate(32, Type::U64)}));
+    Need(builder.Emit<OpCode::CheckMemoryAlignment>(
+            Type::Void, {Operand::ValueOf(vec_ptr_plus), Operand::Immediate(15, Type::U8)}));
+    const auto vec_val =
+            Need(builder.Emit<OpCode::LoadMemoryTSO>(Type::V128, {Operand::ValueOf(vec_ptr)}));
+    Need(builder.Emit<OpCode::StoreUniform>(
+            Type::Void,
+            {Operand::Uniform(offsetof(GuestState, xmm), Type::V128), Operand::ValueOf(vec_val)}));
+    Need(builder.EndBlock(Terminal::Return(Constant(builder, 42))));
+    auto program = Submit(builder);
+    const auto compiled = arm64::Compile(program, options);
+    Check(bool(compiled) && compiled.faults.size() == 3,
+          "deferred logical and alignment block compiles with three guest fault sites");
+    Check(arm64::DecodeFaultRecovery(compiled.faults[0]).logical_bits == 64 &&
+                  arm64::DecodeFaultRecovery(compiled.faults[0]).logical_register != 0 &&
+                  arm64::DecodeFaultRecovery(compiled.faults[1]).logical_bits == 16 &&
+                  arm64::DecodeFaultRecovery(compiled.faults[1]).logical_register != 0 &&
+                  arm64::DecodeFaultRecovery(compiled.faults[2]).logical_bits == 8 &&
+                  arm64::DecodeFaultRecovery(compiled.faults[2]).logical_register != 0,
+          "64/16/8-bit deferred logical producers survive alignment checks into fault metadata");
+    // Two CheckMemoryAlignment(16) ops on [vec_ptr] and [vec_ptr + 32] emit only one AND x0, #15.
+    Check(std::count_if(compiled.words.begin(),
+                        compiled.words.end(),
+                        [](std::uint32_t word) { return (word & 0xfffffc1fu) == 0x92400c00u; }) == 1,
+          "aligned-displacement CheckMemoryAlignment reuses the checked base SSA value");
+
+#if defined(__aarch64__) && defined(__ANDROID__)
+    if (NativeMode()) {
+        if (!(getauxval(AT_HWCAP) & HWCAP_FLAGM)) return;
+        execution::CodeHeap arena{TestBackendOps(),
+                                  static_cast<std::size_t>(sysconf(_SC_PAGESIZE))};
+        const auto code = arena.Publish(compiled.words, compiled.faults, compiled.links);
+        const auto page = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
+        auto* memory = static_cast<std::uint8_t*>(mmap(
+                nullptr, page * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+        Check(memory != MAP_FAILED && mprotect(memory + page, page, PROT_NONE) == 0,
+              "deferred logical fault scene mapping");
+        const auto valid = reinterpret_cast<std::uintptr_t>(memory), missing = valid + page;
+        Write64(memory, 0x1122334455667788ULL);
+        Write64(memory + 8, 0x99aabbccddeeff00ULL);
+
+        struct Scene {
+            execution::FaultContext faults;
+            execution::NativeRunContext native;
+            const execution::NativeCode* code{};
+            execution::DispatchSlot slot;
+            unsigned resolves{};
+        };
+
+        auto scene = std::make_unique<Scene>();
+        scene->code = &code;
+        scene->faults.pinned_uniform_offset = options.pinned_uniform_offset;
+        scene->faults.pinned_uniform_slots = options.pinned_uniform_slots;
+        scene->faults.flags_offset = options.flags_offset;
+        scene->faults.native_nzcv = true;
+        scene->native.opaque = scene.get();
+        scene->native.resolve =
+                [](void* opaque, execution::NativeRunContext* context) noexcept -> std::uintptr_t {
+            auto& value = *static_cast<Scene*>(opaque);
+            ++value.resolves;
+            return value.resolves == 1 && context->state.pc == entry_pc
+                           ? reinterpret_cast<std::uintptr_t>(value.code->entry)
+                           : 0;
+        };
+        scene->native.slots = &scene->slot;
+        scene->native.mask = 0;
+        scene->native.active = &scene->faults.active;
+        scene->native.anchor = &code;
+        scene->native.pinned_uniform_offset = options.pinned_uniform_offset;
+        scene->native.pinned_uniform_slots = options.pinned_uniform_slots;
+        scene->native.flags_offset = options.flags_offset;
+        scene->native.pc_offset = options.pc_offset;
+        scene->native.native_nzcv = true;
+
+        const auto expected_logical = [](u64 value, unsigned bits) {
+            constexpr u64 written = (u64{15} << 28) | (u64{1} << 26) | 255;
+            const u64 mask = bits == 64 ? ~u64{} : (u64{1} << bits) - 1;
+            const u64 v = value & mask;
+            const u64 n = (v >> (bits - 1)) & 1;
+            const u64 z = v == 0 ? 1 : 0;
+            return (initial & ~written) | (n << 31) | (z << 30) | (v & 255);
+        };
+
+        {
+            BindFaultCallbacks(scene->faults, scene->native);
+            execution::FaultScope scope(scene->faults, scene->native.state);
+            const auto run = [&](u64 r8,
+                                 u64 r9,
+                                 u64 r12,
+                                 u64 expected_exit,
+                                 u64 expected_pc,
+                                 u64 expected_flags) {
+                scene->native.state = {};
+                scene->native.state.pc = entry_pc;
+                scene->native.state.packed_flags = initial;
+                scene->native.state.gprs[swift::runtime::x86::RAX] = 0x55aa55aa55aa55aaULL;
+                scene->native.state.gprs[swift::runtime::x86::RDX] = 0x55aa55aa55aa55aaULL;
+                scene->native.state.gprs[swift::runtime::x86::RCX] = 0x123456789abcdef5ULL;
+                scene->native.state.gprs[swift::runtime::x86::R8] = r8;
+                scene->native.state.gprs[swift::runtime::x86::R9] = r9;
+                scene->native.state.gprs[swift::runtime::x86::R12] = r12;
+                scene->resolves = 0;
+                scene->faults.signal_number = 0;
+                const auto returned = execution::SvmRunNative(&scene->native);
+                Check(returned == expected_exit && scene->native.state.pc == expected_pc &&
+                              scene->native.state.packed_flags == expected_flags,
+                      "deferred logical fault/alignment/return paths publish exact PC and flags");
+            };
+            const auto guest_exc =
+                    swift::runtime::ExitValue(swift::runtime::NativeExit::GuestException);
+            const auto align_exc =
+                    swift::runtime::ExitValue(swift::runtime::NativeExit::AlignmentFault);
+            // 1. Fault on Load0: Xor64(x, x) == 0 -> ZF=1, SF=0, PF_carrier=0, CF=OF=AF=0.
+            run(missing, valid, valid, guest_exc, first_pc, expected_logical(0, 64));
+            // 2. Fault on Load1: And16(0x55aa, 0x8003) == 0x0002 -> ZF=0, SF=0, PF_carrier=2.
+            run(valid, missing, valid, guest_exc, second_pc, expected_logical(0x0002, 16));
+            // 3. Unaligned CheckMemoryAlignment exit: Or8(0xf5, 0x80) == 0xf5 -> SF=1, PF=0xf5.
+            run(valid, valid, valid + 8, align_exc, third_pc, expected_logical(0xf5, 8));
+            // 4. Aligned CheckMemoryAlignment hot path followed by SIGSEGV on V128 load.
+            run(valid, valid, missing, guest_exc, third_pc, expected_logical(0xf5, 8));
+            // 5. Normal completion publishes exact Or8 flags on return.
+            run(valid, valid, valid, 42, entry_pc, expected_logical(0xf5, 8));
+        }
+        Check(munmap(memory, page * 2) == 0, "deferred logical fault scene release");
+    }
+#endif
+}
+
 }  // namespace
 
 TEST_CASE("FaultMetadataAndRecovery", "[compile][native][arm64]") {
@@ -1924,3 +2164,7 @@ TEST_CASE("BlockDeferredTestBoundaries", "[arm64][native]") {
 TEST_CASE("LocalFlagsFaults", "[arm64][native]") { CHECK_NOTHROW(LocalFlagsFaults()); }
 
 TEST_CASE("VectorPinBoundaries", "[arm64][native]") { CHECK_NOTHROW(VectorPinBoundaries()); }
+
+TEST_CASE("DeferredLogicalFaultsAndAlignment", "[compile][native][arm64]") {
+    CHECK_NOTHROW(DeferredLogicalFaultsAndAlignment());
+}

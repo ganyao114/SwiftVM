@@ -693,3 +693,275 @@ TEST_CASE("VecScalar and compact VecLoadConst emission", "[compile][native][arm6
         CHECK(Read64(state.data() + 72) == 0);
     }
 }
+
+TEST_CASE("Batched packed denormal status, scaled vector addressing, TSO store barrier, and uzp2 "
+          "widen multiply",
+          "[compile][native][arm64]") {
+    // 1. Coalesced packed F64/F32 denormal batching preserves per-lane IE/ZE/QNaN precedence.
+    {
+        struct alignas(16) BatchState {
+            std::array<u64, 2> a{}, b{}, c{}, d{}, e{}, f{};
+            std::array<u64, 2> r0{}, r1{}, r2{}, r3{}, kb{}, kd{}, ke{}, kf{};
+            std::uint32_t control{0x1f80u};
+            std::uint32_t status{};
+            u64 flags{};
+        };
+
+        const auto build_batch = [](unsigned bits) {
+            Builder builder{Scope::Block};
+            Need(builder.BeginBlock(Create(builder)));
+            const auto vload = [&](std::uint32_t off) {
+                return Need(
+                        builder.Emit<OpCode::LoadUniform>(Type::V128, {Operand::Uniform(off, Type::V128)}));
+            };
+            const auto vstore = [&](std::uint32_t off, Value v) {
+                Need(builder.Emit<OpCode::StoreUniform>(
+                        Type::Void, {Operand::Uniform(off, Type::V128), Operand::ValueOf(v)}));
+            };
+            const auto a = vload(offsetof(BatchState, a));
+            const auto b = vload(offsetof(BatchState, b));
+            const auto c = vload(offsetof(BatchState, c));
+            const auto d = vload(offsetof(BatchState, d));
+            const auto e = vload(offsetof(BatchState, e));
+            const auto f = vload(offsetof(BatchState, f));
+            const auto r0 = Need(builder.Emit<OpCode::VecFAdd>(
+                    Type::V128,
+                    {Operand::ValueOf(a), Operand::ValueOf(b), Operand::Immediate(bits, Type::U8)}));
+            const auto r1 = Need(builder.Emit<OpCode::VecFMul>(
+                    Type::V128,
+                    {Operand::ValueOf(c), Operand::ValueOf(d), Operand::Immediate(bits, Type::U8)}));
+            const auto r2 = Need(builder.Emit<OpCode::VecFDiv>(
+                    Type::V128,
+                    {Operand::ValueOf(e), Operand::ValueOf(f), Operand::Immediate(bits, Type::U8)}));
+            const auto r3 = Need(builder.Emit<OpCode::VecFCmpMask>(
+                    Type::V128,
+                    {Operand::ValueOf(a),
+                     Operand::ValueOf(c),
+                     Operand::Immediate(bits, Type::U8),
+                     Operand::Immediate(2, Type::U8),
+                     Operand::Immediate(0, Type::U8)}));
+            vstore(offsetof(BatchState, r0), r0);
+            vstore(offsetof(BatchState, r1), r1);
+            vstore(offsetof(BatchState, r2), r2);
+            vstore(offsetof(BatchState, r3), r3);
+            vstore(offsetof(BatchState, kb), b);
+            vstore(offsetof(BatchState, kd), d);
+            vstore(offsetof(BatchState, ke), e);
+            vstore(offsetof(BatchState, kf), f);
+            const auto shadow = Need(builder.Emit<OpCode::LoadUniform>(
+                    Type::U32, {Operand::Uniform(offsetof(BatchState, control), Type::U32)}));
+            const auto status =
+                    Need(builder.Emit<OpCode::ReadFPStatus>(Type::U32, {Operand::ValueOf(shadow)}));
+            Need(builder.Emit<OpCode::StoreUniform>(
+                    Type::Void,
+                    {Operand::Uniform(offsetof(BatchState, status), Type::U32),
+                     Operand::ValueOf(status)}));
+            Need(builder.EndBlock(Terminal::Return(Constant(builder, 55))));
+            return Submit(builder);
+        };
+
+        arm64::CompileOptions opts{offsetof(BatchState, flags)};
+        opts.mxcsr_flush_offset = offsetof(BatchState, control);
+        opts.mxcsr_flush_mode = 0;
+        const auto code64 = ::Compile(build_batch(64), opts);
+        const auto code32 = ::Compile(build_batch(32), opts);
+        // Four adjacent packed FP operations coalesce into a single UMINV .4S check.
+        CHECK(std::count_if(code64.words.begin(), code64.words.end(), [](std::uint32_t w) {
+                  return (w & 0xfffffc00u) == 0x6eb1a800u;
+              }) == 1);
+        CHECK(std::count_if(code32.words.begin(), code32.words.end(), [](std::uint32_t w) {
+                  return (w & 0xfffffc00u) == 0x6eb1a800u;
+              }) == 1);
+
+#if defined(__aarch64__) && defined(__ANDROID__)
+        if (NativeMode()) {
+            swift::tests::NativeCode native64{code64.words, swift::tests::NativeISA::Arm64Android};
+            struct RestoreFP {
+                u64 control, status;
+                RestoreFP() {
+                    asm volatile("mrs %0,fpcr\nmrs %1,fpsr" : "=r"(control), "=r"(status));
+                    const u64 zero = 0;
+                    asm volatile("msr fpcr,%0\nmsr fpsr,%0" ::"r"(zero) : "memory");
+                }
+                ~RestoreFP() {
+                    asm volatile("msr fpcr,%0\nmsr fpsr,%1" ::"r"(control), "r"(status) : "memory");
+                }
+            };
+
+            constexpr u64 one = 0x3ff0000000000000ULL;
+            constexpr u64 two = 0x4000000000000000ULL;
+            constexpr u64 sub = 1ULL;
+            constexpr u64 qnan = 0x7ff8000000000001ULL;
+            constexpr u64 snan = 0x7ff0000000000001ULL;
+
+            const auto eval = [&](BatchState st) {
+                RestoreFP guard;
+                CHECK(native64.Run(reinterpret_cast<std::uint8_t*>(&st)) == 55);
+                return st.status & 0x3fu;
+            };
+
+            const BatchState normal{{one, two}, {two, one}, {one, one}, {two, two}, {two, two}, {one, one}};
+            CHECK(eval(normal) == 0u);
+
+            // QNaN paired with subnormal in same lane suppresses DE; VecFCmpMask(EQ) on QNaN is
+            // unordered-quiet (no IE, no DE).
+            BatchState qnan_suppressed = normal;
+            qnan_suppressed.a = {qnan, one};
+            qnan_suppressed.b = {sub, two};
+            CHECK(eval(qnan_suppressed) == 0u);
+
+            // Op0 has QNaN-suppressed subnormal, Op1 has real subnormal * normal -> DE (2).
+            BatchState mixed_de = qnan_suppressed;
+            mixed_de.c = {one, sub};
+            mixed_de.d = {one, one};
+            CHECK((eval(mixed_de) & 0x07u) == 0x02u);
+
+            // Op2 has subnormal / 0.0 -> ZE (4) takes precedence over same-lane DE.
+            BatchState div_zero = normal;
+            div_zero.e = {sub, two};
+            div_zero.f = {0ULL, one};
+            CHECK((eval(div_zero) & 0x07u) == 0x04u);
+
+            // Op0 has SNaN + subnormal -> IE (1) takes precedence over same-lane DE.
+            BatchState snan_ie = normal;
+            snan_ie.a = {snan, one};
+            snan_ie.b = {sub, two};
+            CHECK((eval(snan_ie) & 0x07u) == 0x01u);
+        }
+#endif
+    }
+
+    // 2. Scaled LDR/STR Q, 16B-aligned large-offset anchor reuse, consecutive StoreMemoryTSO
+    //    dmb ishst downgrade, and uzp2 + umull/smull 32->64 widen-multiply fusion.
+    {
+        Builder builder{Scope::Block, arm64::KnownTargetInfo()};
+        Need(builder.BeginBlock(Create(builder)));
+        const auto base = Load(builder, 0);
+        const auto large_base = Load(builder, 8);
+        const auto tso_base = Load(builder, 16);
+
+        const auto v0 = Need(builder.Emit<OpCode::LoadMemory>(
+                Type::V128,
+                {Operand::Expression(OperandOp::Add, 2),
+                 Operand::ValueOf(base),
+                 Operand::Immediate(0x100, Type::U64)}));
+        const auto v1 = Need(builder.Emit<OpCode::LoadMemory>(
+                Type::V128,
+                {Operand::Expression(OperandOp::Add, 2),
+                 Operand::ValueOf(base),
+                 Operand::Immediate(0x110, Type::U64)}));
+
+        const auto v_large = Need(builder.Emit<OpCode::LoadMemory>(
+                Type::V128,
+                {Operand::Expression(OperandOp::Add, 2),
+                 Operand::ValueOf(large_base),
+                 Operand::Immediate(0x810000, Type::U64)}));
+        Need(builder.Emit<OpCode::StoreMemory>(
+                Type::Void,
+                {Operand::Expression(OperandOp::Add, 2),
+                 Operand::ValueOf(large_base),
+                 Operand::Immediate(0x810010, Type::U64),
+                 Operand::ValueOf(v_large)}));
+
+        Need(builder.Emit<OpCode::StoreMemoryTSO>(
+                Type::Void, {Operand::ValueOf(tso_base), Operand::ValueOf(v0)}));
+        Need(builder.Emit<OpCode::StoreMemoryTSO>(
+                Type::Void,
+                {Operand::Expression(OperandOp::Add, 2),
+                 Operand::ValueOf(tso_base),
+                 Operand::Immediate(16, Type::U64),
+                 Operand::ValueOf(v1)}));
+
+        const auto hi0 = Need(builder.Emit<OpCode::VecShiftRightImm>(
+                Type::V128,
+                {Operand::ValueOf(v0),
+                 Operand::Immediate(32, Type::U8),
+                 Operand::Immediate(64, Type::U8)}));
+        const auto prod_u = Need(builder.Emit<OpCode::VecMulWiden>(
+                Type::V128,
+                {Operand::ValueOf(hi0),
+                 Operand::ValueOf(v1),
+                 Operand::Immediate(32, Type::U8),
+                 Operand::Immediate(0, Type::U8)}));
+        const auto hi1 = Need(builder.Emit<OpCode::VecShiftRightImm>(
+                Type::V128,
+                {Operand::ValueOf(v_large),
+                 Operand::Immediate(32, Type::U8),
+                 Operand::Immediate(64, Type::U8)}));
+        const auto prod_s = Need(builder.Emit<OpCode::VecMulWiden>(
+                Type::V128,
+                {Operand::ValueOf(hi1),
+                 Operand::ValueOf(v1),
+                 Operand::Immediate(32, Type::U8),
+                 Operand::Immediate(1, Type::U8)}));
+
+        Need(builder.Emit<OpCode::StoreUniform>(
+                Type::Void, {Operand::Uniform(32, Type::V128), Operand::ValueOf(prod_u)}));
+        Need(builder.Emit<OpCode::StoreUniform>(
+                Type::Void, {Operand::Uniform(48, Type::V128), Operand::ValueOf(prod_s)}));
+        Need(builder.EndBlock(Terminal::Return(Constant(builder, 77))));
+
+        auto program = Submit(builder);
+        const auto code = ::Compile(program);
+
+        // Scaled LDR Q for +0x100 (imm12=16) and +0x110 (imm12=17).
+        CHECK(std::count_if(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+                  return (w & 0xffc00000u) == 0x3dc00000u &&
+                         (((w >> 10) & 4095u) == 16u || ((w >> 10) & 4095u) == 17u);
+              }) == 2);
+        // Single shifted ADD x16, xN, #0x810, LSL #12 reused across +0x810000 and +0x810010.
+        CHECK(std::count_if(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+                  return (w & 0xfffffc1fu) == (0x91400010u | (0x810u << 10));
+              }) == 1);
+        // First StoreMemoryTSO emits DMB ISH; consecutive StoreMemoryTSO downgrades to DMB ISHST.
+        CHECK(std::count(code.words.begin(), code.words.end(), 0xd5033bbfu) == 1);
+        CHECK(std::count(code.words.begin(), code.words.end(), 0xd5033abfu) == 1);
+        // Both VecShiftRightImm(#32, 64) + VecMulWiden(32) pairs fuse into UZP2 without USHR #32,
+        // and the shared right operand emits UZP1 only once.
+        CHECK(std::none_of(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+            return (w & 0xfffffc00u) == 0x6f600400u;
+        }));
+        CHECK(std::count_if(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+                  return (w & 0xffe0fc00u) == 0x4e805800u;
+              }) == 2);
+        CHECK(std::count_if(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+                  return (w & 0xffe0fc00u) == 0x4e801800u;
+              }) == 1);
+
+        if (NativeMode()) {
+            std::vector<std::uint8_t> small_buf(0x140, 0);
+            std::vector<std::uint8_t> large_buf(0x810040, 0);
+            alignas(16) std::array<std::uint8_t, 32> tso_buf{};
+            alignas(16) std::array<std::uint8_t, 64> state{};
+
+            // v0: low64 = (7ULL << 32) | 99ULL, high64 = (11ULL << 32) | 88ULL
+            Write64(small_buf.data() + 0x100, (7ULL << 32) | 99ULL);
+            Write64(small_buf.data() + 0x108, (11ULL << 32) | 88ULL);
+            // v1: low64 = (123ULL << 32) | 5ULL, high64 = (456ULL << 32) | 0xfffffffdULL (-3)
+            Write64(small_buf.data() + 0x110, (123ULL << 32) | 5ULL);
+            Write64(small_buf.data() + 0x118, (456ULL << 32) | 0xfffffffdULL);
+            // v_large: low64 = (0xfffffffeULL << 32) | 1ULL (-2), high64 = (9ULL << 32) | 2ULL
+            Write64(large_buf.data() + 0x810000, (0xfffffffeULL << 32) | 1ULL);
+            Write64(large_buf.data() + 0x810008, (9ULL << 32) | 2ULL);
+
+            Write64(state.data(), reinterpret_cast<std::uintptr_t>(small_buf.data()));
+            Write64(state.data() + 8, reinterpret_cast<std::uintptr_t>(large_buf.data()));
+            Write64(state.data() + 16, reinterpret_cast<std::uintptr_t>(tso_buf.data()));
+
+            Execute(code, state.data(), 77);
+
+            // Verify large-offset store at +0x810010 copied v_large.
+            CHECK(Read64(large_buf.data() + 0x810010) == ((0xfffffffeULL << 32) | 1ULL));
+            CHECK(Read64(large_buf.data() + 0x810018) == ((9ULL << 32) | 2ULL));
+            // Verify consecutive TSO stores wrote v0 and v1.
+            CHECK(Read64(tso_buf.data()) == ((7ULL << 32) | 99ULL));
+            CHECK(Read64(tso_buf.data() + 16) == ((123ULL << 32) | 5ULL));
+            // Verify prod_u: [7 * 5, 11 * 0xfffffffdULL]
+            CHECK(Read64(state.data() + 32) == 35ULL);
+            CHECK(Read64(state.data() + 40) == 11ULL * 0xfffffffdULL);
+            // Verify prod_s: [(-2) * 5 = -10, 9 * (-3) = -27]
+            CHECK(Read64(state.data() + 48) == static_cast<u64>(std::int64_t{-10}));
+            CHECK(Read64(state.data() + 56) == static_cast<u64>(std::int64_t{-27}));
+        }
+    }
+}

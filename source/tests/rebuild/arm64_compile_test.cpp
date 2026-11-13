@@ -1860,3 +1860,143 @@ TEST_CASE("Pinned constant spill recomputation and CMP zero flags-only TEST", "[
     CHECK(code.spill_slots == 0);
     CHECK(code.frame_bytes == 0);
 }
+
+TEST_CASE("Negative immediate arithmetic flags and fused TestFlags select",
+          "[compile][native][arm64]") {
+    // 1. Negative 12-bit immediate 32/64-bit Add/Sub with full live flags (including AF bit 4).
+    {
+        struct Case {
+            OpCode op;
+            unsigned width;
+            u64 imm;
+            FlagProfile profile;
+        };
+        const std::array cases{
+                Case{OpCode::Add, 64, static_cast<u64>(-1LL), FlagProfile::ArithmeticCanonicalCarry},
+                Case{OpCode::Add, 64, static_cast<u64>(-3LL), FlagProfile::ArithmeticCanonicalCarry},
+                Case{OpCode::Add, 64, static_cast<u64>(-4LL), FlagProfile::ArithmeticCanonicalCarry},
+                Case{OpCode::Sub, 64, static_cast<u64>(-4LL), FlagProfile::ArithmeticCanonicalCarry},
+                Case{OpCode::Add, 64, static_cast<u64>(-16LL), FlagProfile::ArithmeticRaw},
+                Case{OpCode::Sub, 64, static_cast<u64>(-4095LL), FlagProfile::ArithmeticCanonicalCarry},
+                Case{OpCode::Add, 32, 0xfffffffcu, FlagProfile::ArithmeticCanonicalCarry},
+                Case{OpCode::Sub, 32, 0xfffffffdu, FlagProfile::ArithmeticCanonicalCarry},
+                Case{OpCode::Add, 32, 0xffffff00u, FlagProfile::ArithmeticRaw},
+        };
+        Builder builder{Scope::Block};
+        Need(builder.BeginBlock(Create(builder)));
+        const auto in64 = Load(builder, 0);
+        const auto in32 = Load(builder, 8);
+        for (std::size_t i = 0; i < cases.size(); ++i) {
+            const auto& c = cases[i];
+            const auto type = c.width == 32 ? Type::U32 : Type::U64;
+            const auto left = c.width == 32 ? in32 : in64;
+            const OperationMetadata meta{FlagBits(Flag::All), c.profile, false};
+            const auto res = Need(builder.Append(
+                    c.op, type, {Operand::ValueOf(left, type), Operand::Immediate(c.imm, type)}, meta));
+            const auto flags = Need(builder.Emit<OpCode::GetFlags>(
+                    Type::U64, {Operand::ValueOf(res), Operand::Flags(Flag::All)}));
+            Store(builder, static_cast<std::uint32_t>(16 + i * 16), res);
+            Store(builder, static_cast<std::uint32_t>(24 + i * 16), flags);
+        }
+        Need(builder.EndBlock(Terminal::Return(Constant(builder, 11))));
+        auto program = Submit(builder);
+        arm64::CompileOptions options{8 + static_cast<std::uint32_t>((cases.size() + 1) * 16)};
+        const auto code = ::Compile(program, options);
+        // Sign-flipped ADDS/SUBS immediate avoids loading negative 12-bit literals via MOVN.
+        CHECK(std::none_of(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+            return (w & 0x7f800000u) == 0x12800000u;
+        }));
+        if (NativeMode()) {
+            constexpr u64 initial = 0xa5a50000bc00003cULL;
+            for (const u64 sample : {0ULL, 3ULL, 4ULL, 15ULL, 16ULL, 0x7fffffffULL, 0x80000000ULL, ~0ULL}) {
+                std::vector<std::uint8_t> state(32 + cases.size() * 16, 0);
+                Write64(state.data(), sample);
+                Write64(state.data() + 8, sample);
+                Write64(state.data() + options.flags_offset, initial);
+                Execute(code, state.data(), 11);
+                u64 running = initial;
+                for (std::size_t i = 0; i < cases.size(); ++i) {
+                    const auto& c = cases[i];
+                    const u64 mask = c.width == 32 ? 0xffffffffULL : ~u64{};
+                    const u64 expected_val =
+                            (c.op == OpCode::Sub ? (sample - c.imm) : (sample + c.imm)) & mask;
+                    running = ReferenceArithmetic(
+                            c.op, sample, c.imm, c.width, c.profile, FlagBits(Flag::All), running);
+                    CHECK(Read64(state.data() + 16 + i * 16) == expected_val);
+                    CHECK(Read64(state.data() + 24 + i * 16) == running);
+                }
+            }
+        }
+    }
+
+    // 2. Fused TestFlags / TestNotFlags (C|Z) + single-use adjacent Select emits CSEL without CSET.
+    {
+        Builder builder{Scope::Block};
+        Need(builder.BeginBlock(Create(builder)));
+        const auto a = Load(builder, 0);
+        const auto b = Load(builder, 8);
+        const auto t_val = Load(builder, 16);
+        const auto f_val = Load(builder, 24);
+        const OperationMetadata cmp_meta{
+                FlagBits(Flag::Carry | Flag::Zero), FlagProfile::ArithmeticCanonicalCarry, false};
+        (void)Need(builder.Emit<OpCode::Sub>(
+                Type::U64, {Operand::ValueOf(a), Operand::ValueOf(b)}, cmp_meta));
+        const auto above = Need(builder.Emit<OpCode::TestNotFlags>(
+                Type::Bool, {Operand::Flags(Flag::Carry | Flag::Zero)}));
+        const auto sel_above = Need(builder.Emit<OpCode::Select>(
+                Type::U64,
+                {Operand::ValueOf(above), Operand::ValueOf(t_val), Operand::ValueOf(f_val)}));
+        Store(builder, 32, sel_above);
+
+        (void)Need(builder.Emit<OpCode::Sub>(
+                Type::U64, {Operand::ValueOf(a), Operand::ValueOf(b)}, cmp_meta));
+        const auto below_eq = Need(builder.Emit<OpCode::TestFlags>(
+                Type::Bool, {Operand::Flags(Flag::Carry | Flag::Zero)}));
+        const auto sel_below_eq = Need(builder.Emit<OpCode::Select>(
+                Type::U64,
+                {Operand::ValueOf(below_eq), Operand::ValueOf(t_val), Operand::ValueOf(f_val)}));
+        Store(builder, 40, sel_below_eq);
+
+        const OperationMetadata test_meta{
+                FlagBits(Flag::Negate | Flag::Zero), FlagProfile::LogicalZeroCVA, false};
+        (void)Need(builder.Emit<OpCode::And>(
+                Type::U8, {Operand::ValueOf(a, Type::U8), Operand::ValueOf(a, Type::U8)}, test_meta));
+        const auto neg8 =
+                Need(builder.Emit<OpCode::LocalCondSet>(Type::Bool, {Operand::Condition(Condition::MI)}));
+        const auto sel_neg8 = Need(builder.Emit<OpCode::Select>(
+                Type::U64,
+                {Operand::ValueOf(neg8), Operand::ValueOf(t_val), Operand::ValueOf(f_val)}));
+        Store(builder, 48, sel_neg8);
+        Need(builder.EndBlock(Terminal::Return(Constant(builder, 13))));
+
+        auto program = Submit(builder);
+        arm64::CompileOptions options{56};
+        options.native_nzcv = options.local_flags = true;
+        const auto code = ::Compile(program, options);
+        // Zero CSET/CSINC instructions; all three selects emit CSEL directly.
+        CHECK(std::none_of(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+            return (w & 0x7fff0fe0u) == 0x1a9f07e0u;
+        }));
+        CHECK(std::count_if(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+                  return (w & 0x7fe00c00u) == 0x1a800000u;
+              }) == 3);
+        // Narrow 8-bit self-TEST uses SBFX into x1/w1 rather than CFINV.
+        CHECK(std::none_of(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+            return w == 0xd500401fu;
+        }));
+        if (NativeMode()) {
+            for (const auto [lhs, rhs] :
+                 {std::pair{10ULL, 5ULL}, std::pair{5ULL, 5ULL}, std::pair{0x85ULL, 200ULL}}) {
+                std::array<std::uint8_t, 64> state{};
+                Write64(state.data(), lhs);
+                Write64(state.data() + 8, rhs);
+                Write64(state.data() + 16, 0xaaaaULL);
+                Write64(state.data() + 24, 0xbbbbULL);
+                Execute(code, state.data(), 13);
+                CHECK(Read64(state.data() + 32) == (lhs > rhs ? 0xaaaaULL : 0xbbbbULL));
+                CHECK(Read64(state.data() + 40) == (lhs <= rhs ? 0xaaaaULL : 0xbbbbULL));
+                CHECK(Read64(state.data() + 48) == ((lhs & 0x80u) ? 0xaaaaULL : 0xbbbbULL));
+            }
+        }
+    }
+}
