@@ -19,6 +19,51 @@ bool Writer::Immediate32(CellView c, unsigned width, std::int32_t& immediate) co
     return width == 32 || value == u64(std::int64_t(immediate));
 }
 
+bool Writer::IsZeroScalarOperand(CellView c, unsigned width) const {
+    if (width != 32 && width != 64) return false;
+    if (c.Kind() == OperandKind::Immediate) {
+        u64 val = c.Payload();
+        const auto ibits = TypeBits(View(c));
+        if (ibits && ibits < 64) val &= (u64{1} << ibits) - 1;
+        return (width == 32 ? static_cast<u32>(val) : val) == 0;
+    }
+    if (c.Kind() != OperandKind::Value) return false;
+    const auto id = static_cast<u32>(c.Payload());
+    const auto& nop = source.Operations()[id];
+    const auto& nh = allocation.homes[id];
+    if (nop.Metadata() != OperationMetadata{} || nh.auxiliary_offset != UINT32_MAX ||
+        nop.type == ir::Type::V128)
+        return false;
+    if (nop.opcode == OpCode::Zero) return true;
+    if (nop.opcode != OpCode::LoadImm) return false;
+    u64 imm = source.Operands(NodeId{id}).front().Payload();
+    const auto nbits = TypeBits(nop.type);
+    if (nbits && nbits < 64) imm &= (u64{1} << nbits) - 1;
+    const auto vbits = TypeBits(View(c));
+    if (vbits && vbits < 64) imm &= (u64{1} << vbits) - 1;
+    return (width == 32 ? static_cast<u32>(imm) : imm) == 0;
+}
+
+bool Writer::IsZeroIdentityCopy(OpContext& c, CellView& other) const {
+    const auto op = c.operation.opcode;
+    if ((op != OpCode::Or && op != OpCode::Xor && op != OpCode::Add && op != OpCode::Sub) ||
+        c.count != 2 || (c.width != 32 && c.width != 64) || c.operation.flag_outputs ||
+        allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX)
+        return false;
+    if (op != OpCode::Sub && IsZeroScalarOperand(c.Arg(0), c.width)) {
+        other = c.Arg(1);
+    } else if (IsZeroScalarOperand(c.Arg(1), c.width)) {
+        other = c.Arg(0);
+    } else {
+        return false;
+    }
+    if (other.Kind() == OperandKind::Expression || TypeBits(View(other)) < 32) return false;
+    if (other.Kind() == OperandKind::Value &&
+        TypeBits(source.Operations()[other.Payload()].type) < 8)
+        return false;
+    return true;
+}
+
 bool Writer::ResidentScalar(CellView value, unsigned width, Reg64& result) const {
     if (width < 32 || in_call || value.Kind() != OperandKind::Value) return false;
     const auto natural = source.Operations()[value.Payload()].type;
@@ -27,6 +72,56 @@ bool Writer::ResidentScalar(CellView value, unsigned width, Reg64& result) const
         (TypeBits(View(value)) < width && natural != View(value)))
         return false;
     result = Reg64(home.reg);
+    return true;
+}
+
+bool Writer::MemoryScalarOperand(CellView c, unsigned width, Xbyak::Address& addr) const {
+    if ((width != 32 && width != 64) || in_call || stack_bias != 0 ||
+        c.Kind() != OperandKind::Value)
+        return false;
+    const auto id = static_cast<u32>(c.Payload());
+    const auto& op = source.Operations()[id];
+    const auto& h = allocation.homes[id];
+    if (!h.spilled || h.rematerialize) return false;
+    const auto view_bits = std::min(64u, TypeBits(View(c)));
+    if (view_bits < width) return false;
+    if (h.uniform_offset != UINT32_MAX) {
+        const auto natural_bits = std::min(64u, TypeBits(op.type));
+        if (op.type == ir::Type::V128 || natural_bits < width) return false;
+        addr = width == 32 ? dword[r12 + h.uniform_offset] : qword[r12 + h.uniform_offset];
+        return true;
+    }
+    addr = width == 32 ? dword[rsp + h.stack_offset] : qword[rsp + h.stack_offset];
+    return true;
+}
+
+bool Writer::ResidentVector(CellView c, Xmm& out) const {
+    if (in_call || c.Kind() != OperandKind::Value) return false;
+    const auto id = static_cast<u32>(c.Payload());
+    if (source.Operations()[id].type != ir::Type::V128) return false;
+    const auto& h = allocation.homes[id];
+    if (!h.spilled) {
+        out = Xmm(h.reg);
+        return true;
+    }
+    if (id == xmm0_node) {
+        out = xmm0;
+        return true;
+    }
+    return false;
+}
+
+bool Writer::MemoryVectorOperand(CellView c, Xbyak::Address& addr) const {
+    if (!options.avx || in_call || stack_bias != 0 || c.Kind() != OperandKind::Value) return false;
+    const auto id = static_cast<u32>(c.Payload());
+    if (source.Operations()[id].type != ir::Type::V128 || id == xmm0_node) return false;
+    const auto& h = allocation.homes[id];
+    if (!h.spilled || h.rematerialize) return false;
+    if (h.uniform_offset != UINT32_MAX) {
+        addr = ptr[r12 + h.uniform_offset];
+        return true;
+    }
+    addr = ptr[rsp + h.stack_offset];
     return true;
 }
 
@@ -44,30 +139,38 @@ void Writer::Sign(const Reg64& r, unsigned bits) {
     }
 }
 
-void Writer::Load(const Reg64& r, const Reg64& b, std::int32_t off, unsigned bits) {
+void Writer::Load(const Reg64& r, const Xbyak::RegExp& addr, unsigned bits) {
     if (bits <= 8)
-        movzx(r.cvt32(), byte[b + off]);
+        movzx(r.cvt32(), byte[addr]);
     else if (bits == 16)
-        movzx(r.cvt32(), word[b + off]);
+        movzx(r.cvt32(), word[addr]);
     else if (bits == 32)
-        mov(r.cvt32(), dword[b + off]);
+        mov(r.cvt32(), dword[addr]);
     else if (bits == 64)
-        mov(r, qword[b + off]);
+        mov(r, qword[addr]);
     else
         Reject(CompileError::UnsupportedType);
 }
 
-void Writer::Store(const Reg64& r, const Reg64& b, std::int32_t off, unsigned bits) {
+void Writer::Store(const Reg64& r, const Xbyak::RegExp& addr, unsigned bits) {
     if (bits <= 8)
-        mov(byte[b + off], r.cvt8());
+        mov(byte[addr], r.cvt8());
     else if (bits == 16)
-        mov(word[b + off], r.cvt16());
+        mov(word[addr], r.cvt16());
     else if (bits == 32)
-        mov(dword[b + off], r.cvt32());
+        mov(dword[addr], r.cvt32());
     else if (bits == 64)
-        mov(qword[b + off], r);
+        mov(qword[addr], r);
     else
         Reject(CompileError::UnsupportedType);
+}
+
+void Writer::Load(const Reg64& r, const Reg64& b, std::int32_t off, unsigned bits) {
+    Load(r, b + off, bits);
+}
+
+void Writer::Store(const Reg64& r, const Reg64& b, std::int32_t off, unsigned bits) {
+    Store(r, b + off, bits);
 }
 
 void Writer::Read(CellView c, const Reg64& r, bool raw) {
@@ -100,7 +203,7 @@ void Writer::Read(CellView c, const Reg64& r, bool raw) {
                     movq(r, Xmm(h.reg));
             }
         } else {
-            if (h.rematerialize) {
+            if (h.rematerialize && source.Operations()[c.Payload()].opcode == OpCode::LoadImm) {
                 u64 imm = source.Operands(NodeId{u32(c.Payload())}).front().Payload();
                 const auto nbits = TypeBits(source.Operations()[c.Payload()].type);
                 if (nbits && nbits < 64) imm &= (u64{1} << nbits) - 1;
@@ -322,22 +425,20 @@ void Writer::Handle(Op<OpCode::BitCast>, OpContext& c) {
                 (lop.opcode == OpCode::LoadMemory || lop.opcode == OpCode::LoadMemoryTSO)) {
                 const auto ops = source.Operands(NodeId{load_id});
                 auto at = ops.begin();
-                Reg64 base = r11;
-                std::int32_t disp = 0;
-                MemoryAddress(at, ops.end(), base, disp);
+                const auto addr = MemoryAddress(at, ops.end());
                 if (dst.getIdx() == 0) xmm0_node = NodeId::invalid;
                 const auto bits = TypeBits(lop.type);
                 const auto first = static_cast<u32>(getSize());
                 if (bits == 64) {
                     if (options.avx)
-                        vmovq(dst, qword[base + disp]);
+                        vmovq(dst, qword[addr]);
                     else
-                        movq(dst, qword[base + disp]);
+                        movq(dst, qword[addr]);
                 } else {
                     if (options.avx)
-                        vmovd(dst, dword[base + disp]);
+                        vmovd(dst, dword[addr]);
                     else
-                        movd(dst, dword[base + disp]);
+                        movd(dst, dword[addr]);
                 }
                 RecordGuestAccess(first, 1, bits / 8);
                 return;
@@ -356,6 +457,10 @@ void Writer::Handle(Op<OpCode::GetOperand>, OpContext& c) {
 }
 
 void Writer::Handle(Op<OpCode::ZeroExtend32>, OpContext& c) {
+    if (allocation.homes[c.node.value].rematerialize) {
+        c.saved = true;
+        return;
+    }
     const auto destination = ScalarDestination(c);
     Read(c.Arg(0), destination);
     if (TypeBits(View(c.Arg(0))) > 32) Mask(destination, 32);

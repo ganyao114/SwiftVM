@@ -12,7 +12,9 @@ enum Feature : std::uint64_t {
     Sha = 64,
     Cx16 = 128,
     Lahf = 256,
-    Avx = 512
+    Avx = 512,
+    Bmi1 = 1024,
+    Bmi2 = 2048
 };
 
 inline constexpr unsigned StateRegister = 12, FlagsRegister = 3;

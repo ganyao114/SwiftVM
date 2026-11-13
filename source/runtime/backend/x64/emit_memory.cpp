@@ -115,7 +115,9 @@ void Writer::Uniform(OpContext& c) {
         std::int32_t literal{};
         bool has_literal = Immediate32(value, width, literal);
         if (!has_literal && value.Kind() == OperandKind::Value &&
-            allocation.homes[value.Payload()].rematerialize && width >= 8 && width <= 64) {
+            allocation.homes[value.Payload()].rematerialize &&
+            source.Operations()[value.Payload()].opcode == OpCode::LoadImm && width >= 8 &&
+            width <= 64) {
             u64 imm = source.Operands(NodeId{u32(value.Payload())}).front().Payload();
             const auto nbits = TypeBits(source.Operations()[value.Payload()].type);
             if (nbits && nbits < 64) imm &= (u64{1} << nbits) - 1;
@@ -187,77 +189,209 @@ void Writer::Handle(Op<OpCode::GetUniformAddress>, OpContext& c) {
     lea(ScalarDestination(c), ptr[r12 + c.Arg(0).Payload()]);
 }
 
-void Writer::MemoryAddress(CellRange::Iterator& at,
-                           CellRange::Iterator end,
-                           Reg64& base,
-                           std::int32_t& disp) {
-    base = r11;
-    disp = 0;
+Xbyak::RegExp Writer::MemoryAddress(CellRange::Iterator& at, CellRange::Iterator end) {
     if (at == end) Reject(CompileError::UnsupportedOperand);
+    const auto const_disp32 = [&](CellView imm_cell, bool negate, std::int32_t& d_out) -> bool {
+        if (imm_cell.Kind() != OperandKind::Immediate) return false;
+        u64 val = imm_cell.Payload();
+        const auto ibits =
+                TypeBits(imm_cell.TypeView() != ir::Type::Void ? imm_cell.TypeView() : ir::Type::U64);
+        if (ibits && ibits < 64) val &= (u64{1} << ibits) - 1;
+        const u64 d64 = negate ? (u64{0} - val) : val;
+        const auto d32 = static_cast<std::int32_t>(d64);
+        if (d64 != u64(std::int64_t(d32))) return false;
+        d_out = d32;
+        return true;
+    };
+    const auto is_u64_val = [&](CellView c) -> bool {
+        return c.Kind() == OperandKind::Value && TypeBits(View(c)) == 64 &&
+               source.Operations()[c.Payload()].type != ir::Type::V128;
+    };
+    const auto load_base_reg = [&](CellView c) -> Reg64 {
+        const auto& bh = allocation.homes[c.Payload()];
+        if (!bh.spilled && !(in_call && bh.reg >= 6 && bh.reg <= 9)) return Reg64(bh.reg);
+        Read(c, r11);
+        return r11;
+    };
+    const auto load_index_reg = [&](CellView c, bool uxtw, CellView base_c, Reg64 base_reg) -> Reg64 {
+        const auto id = static_cast<u32>(c.Payload());
+        const auto& ih = allocation.homes[id];
+        const auto inat = source.Operations()[id].type;
+        if (!uxtw) {
+            if (id == base_c.Payload()) return base_reg;
+            if (!ih.spilled && !(in_call && ih.reg >= 6 && ih.reg <= 9)) return Reg64(ih.reg);
+            Read(c, r10);
+            return r10;
+        }
+        if (!ih.spilled && !(in_call && ih.reg >= 6 && ih.reg <= 9)) {
+            if (inat == ir::Type::U32) return Reg64(ih.reg);
+            mov(r10d, Reg32(ih.reg));
+            return r10;
+        }
+        if (ih.spilled && ih.uniform_offset != UINT32_MAX) {
+            mov(r10d, dword[r12 + ih.uniform_offset]);
+            return r10;
+        }
+        if (ih.rematerialize && source.Operations()[id].opcode == OpCode::LoadImm) {
+            mov(r10d, u32(source.Operands(NodeId{id}).front().Payload()));
+            return r10;
+        }
+        const auto off = ih.spilled ? ih.stack_offset : allocation.call_offset + 192 + (ih.reg - 6) * 8;
+        mov(r10d, dword[rsp + off]);
+        return r10;
+    };
+
     const auto first = *at;
-    if (first.Kind() == OperandKind::Value && TypeBits(View(first)) == 64 &&
-        source.Operations()[first.Payload()].type != ir::Type::V128) {
-        const auto addr_id = static_cast<u32>(first.Payload());
-        const auto& ah = allocation.homes[addr_id];
-        const auto& aop = source.Operations()[addr_id];
-        if (ah.rematerialize && (aop.opcode == OpCode::Add || aop.opcode == OpCode::Sub)) {
-            auto ait = source.Operands(NodeId{addr_id}).begin();
-            const auto base_cell = *ait++, imm_cell = *ait;
-            u64 val = imm_cell.Payload();
-            const auto ibits = TypeBits(imm_cell.TypeView() != ir::Type::Void
-                                                ? imm_cell.TypeView()
-                                                : ir::Type::U64);
-            if (ibits && ibits < 64) val &= (u64{1} << ibits) - 1;
-            const u64 d64 = aop.opcode == OpCode::Sub ? (u64{0} - val) : val;
-            disp = static_cast<std::int32_t>(d64);
-            const auto& bh = allocation.homes[base_cell.Payload()];
-            if (!bh.spilled && !(in_call && bh.reg >= 6 && bh.reg <= 9))
-                base = Reg64(bh.reg);
-            else
-                Read(base_cell, base);
-            ++at;
-            return;
+    if (is_u64_val(first)) {
+        CellView base_cell{}, index_cell{};
+        bool has_base = false, has_index = false, index_uxtw = false;
+        unsigned scale = 1;
+        std::int64_t disp64 = 0;
+        const auto is_fused = [&](u32 nid) -> bool {
+            const auto& nop = source.Operations()[nid];
+            return allocation.homes[nid].rematerialize && nop.opcode != OpCode::LoadImm &&
+                   nop.opcode != OpCode::LoadMemory && nop.opcode != OpCode::LoadMemoryTSO;
+        };
+        const auto walk = [&](auto& self, CellView c) -> void {
+            const u32 nid = static_cast<u32>(c.Payload());
+            if (!is_fused(nid)) {
+                if (!has_base) {
+                    has_base = true;
+                    base_cell = c;
+                } else {
+                    has_index = true;
+                    index_cell = c;
+                    index_uxtw = false;
+                    scale = 1;
+                }
+                return;
+            }
+            const auto& nop = source.Operations()[nid];
+            if (nop.opcode == OpCode::ZeroExtend32To64 || nop.opcode == OpCode::ZeroExtend32 ||
+                nop.opcode == OpCode::And) {
+                has_index = true;
+                index_cell = *source.Operands(NodeId{nid}).begin();
+                index_uxtw = true;
+                scale = 1;
+                return;
+            }
+            if (nop.opcode == OpCode::LslImm) {
+                auto it = source.Operands(NodeId{nid}).begin();
+                const auto idx = *it++, sh = *it;
+                has_index = true;
+                scale = 1u << (sh.Payload() & 63);
+                const u32 idx_id = static_cast<u32>(idx.Payload());
+                if (is_fused(idx_id)) {
+                    index_cell = *source.Operands(NodeId{idx_id}).begin();
+                    index_uxtw = true;
+                } else {
+                    index_cell = idx;
+                    index_uxtw = false;
+                }
+                return;
+            }
+            if (nop.opcode == OpCode::Add && nop.operand_count == 3) {
+                auto it = source.Operands(NodeId{nid}).begin();
+                const auto lhs = *it++, expr = *it++, idx = *it;
+                has_index = true;
+                index_cell = idx;
+                index_uxtw = false;
+                scale = 1u << expr.ShiftAmount();
+                self(self, lhs);
+                return;
+            }
+            auto it = source.Operands(NodeId{nid}).begin();
+            const auto lhs = *it++, rhs = *it;
+            std::int32_t d32 = 0;
+            if (const_disp32(rhs, nop.opcode == OpCode::Sub, d32)) {
+                disp64 += d32;
+                self(self, lhs);
+            } else {
+                self(self, lhs);
+                self(self, rhs);
+            }
+        };
+        walk(walk, first);
+        ++at;
+        const Reg64 base_reg = load_base_reg(base_cell);
+        Xbyak::RegExp exp = base_reg;
+        if (has_index) {
+            const Reg64 idx_reg = load_index_reg(index_cell, index_uxtw, base_cell, base_reg);
+            exp = exp + idx_reg * scale;
         }
-        if (!ah.spilled && !(in_call && ah.reg >= 6 && ah.reg <= 9)) {
-            base = Reg64(ah.reg);
-            ++at;
-            return;
-        }
-    } else if (first.Kind() == OperandKind::Expression && first.Count() == 2 &&
-               (first.ExpressionOp() == OperandOp::Add ||
-                first.ExpressionOp() == OperandOp::Sub)) {
+        if (disp64) exp = exp + static_cast<std::int32_t>(disp64);
+        return exp;
+    }
+
+    if (first.Kind() == OperandKind::Expression && first.Count() == 2) {
         auto probe = at;
         ++probe;
-        if (probe != end) {
-            const auto base_cell = *probe++;
-            if (probe != end) {
+        const auto parse_sib_pair = [&](CellView hdr,
+                                        CellRange::Iterator& p,
+                                        CellView& b_out,
+                                        CellView& i_out,
+                                        unsigned& sc_out) -> bool {
+            if (hdr.Kind() != OperandKind::Expression || hdr.Count() != 2) return false;
+            if (hdr.ExpressionOp() != OperandOp::Add &&
+                !(hdr.ExpressionOp() == OperandOp::AddShift && hdr.ShiftAmount() <= 3))
+                return false;
+            if (p == end) return false;
+            const auto b_cell = *p++;
+            if (p == end) return false;
+            const auto i_cell = *p++;
+            if (!is_u64_val(b_cell) || !is_u64_val(i_cell)) return false;
+            b_out = b_cell;
+            i_out = i_cell;
+            sc_out = hdr.ExpressionOp() == OperandOp::AddShift ? (1u << hdr.ShiftAmount()) : 1u;
+            return true;
+        };
+
+        CellView b_cell{}, i_cell{};
+        unsigned sc = 1;
+        if (parse_sib_pair(first, probe, b_cell, i_cell, sc)) {
+            at = probe;
+            const Reg64 b_reg = load_base_reg(b_cell);
+            const Reg64 i_reg = load_index_reg(i_cell, false, b_cell, b_reg);
+            return b_reg + i_reg * sc;
+        }
+        if ((first.ExpressionOp() == OperandOp::Add || first.ExpressionOp() == OperandOp::Sub) &&
+            probe != end) {
+            const auto sub_first = *probe++;
+            if (is_u64_val(sub_first) && probe != end) {
                 const auto imm_cell = *probe++;
-                if (base_cell.Kind() == OperandKind::Value && TypeBits(View(base_cell)) == 64 &&
-                    source.Operations()[base_cell.Payload()].type != ir::Type::V128 &&
-                    imm_cell.Kind() == OperandKind::Immediate) {
-                    u64 val = imm_cell.Payload();
-                    const auto ibits = TypeBits(imm_cell.TypeView() != ir::Type::Void
-                                                        ? imm_cell.TypeView()
-                                                        : ir::Type::U64);
-                    if (ibits && ibits < 64) val &= (u64{1} << ibits) - 1;
-                    const u64 d64 = first.ExpressionOp() == OperandOp::Sub ? (u64{0} - val) : val;
-                    const auto d32 = static_cast<std::int32_t>(d64);
-                    if (d64 == u64(std::int64_t(d32))) {
-                        disp = d32;
-                        const auto& bh = allocation.homes[base_cell.Payload()];
-                        if (!bh.spilled && !(in_call && bh.reg >= 6 && bh.reg <= 9))
-                            base = Reg64(bh.reg);
-                        else
-                            Read(base_cell, base);
-                        at = probe;
-                        return;
-                    }
+                std::int32_t d32 = 0;
+                if (const_disp32(imm_cell, first.ExpressionOp() == OperandOp::Sub, d32)) {
+                    at = probe;
+                    const Reg64 b_reg = load_base_reg(sub_first);
+                    return d32 ? (b_reg + d32) : Xbyak::RegExp(b_reg);
+                }
+            } else if (parse_sib_pair(sub_first, probe, b_cell, i_cell, sc) && probe != end) {
+                const auto imm_cell = *probe++;
+                std::int32_t d32 = 0;
+                if (const_disp32(imm_cell, first.ExpressionOp() == OperandOp::Sub, d32)) {
+                    at = probe;
+                    const Reg64 b_reg = load_base_reg(b_cell);
+                    const Reg64 i_reg = load_index_reg(i_cell, false, b_cell, b_reg);
+                    Xbyak::RegExp exp = b_reg + i_reg * sc;
+                    if (d32) exp = exp + d32;
+                    return exp;
                 }
             }
         }
     }
-    Expression(at, end, base);
+
+    Expression(at, end, r11);
+    return Xbyak::RegExp(r11);
 }
+
+namespace {
+void SkipAddressOperand(CellRange::Iterator& it, CellRange::Iterator end) {
+    if (it == end) return;
+    const auto cell = *it++;
+    if (cell.Kind() == OperandKind::Expression)
+        for (unsigned i = 0; i < cell.Count(); ++i) SkipAddressOperand(it, end);
+}
+}  // namespace
 
 void Writer::Memory(OpContext& c) {
     if (allocation.homes[c.node.value].rematerialize) {
@@ -267,25 +401,26 @@ void Writer::Memory(OpContext& c) {
     const bool load =
             c.operation.opcode == OpCode::LoadMemory || c.operation.opcode == OpCode::LoadMemoryTSO;
     auto at = c.operands.begin();
-    Reg64 address = r11;
-    std::int32_t disp = 0;
-    MemoryAddress(at, c.operands.end(), address, disp);
     if (load) {
+        const auto addr = MemoryAddress(at, c.operands.end());
         const auto first = static_cast<u32>(getSize());
         if (c.vector_result) {
             const auto& home = allocation.homes[c.node.value];
             if (!home.spilled) c.vector = Xmm(home.reg);
             if (options.avx)
-                vmovdqu(c.vector, ptr[address + disp]);
+                vmovdqu(c.vector, ptr[addr]);
             else
-                movdqu(c.vector, ptr[address + disp]);
+                movdqu(c.vector, ptr[addr]);
         } else {
-            Load(ScalarDestination(c), address, disp, c.width);
+            Load(ScalarDestination(c), addr, c.width);
             c.scalar_normalized = c.width >= 8;
         }
         RecordGuestAccess(first, 1, c.vector_result ? 16 : c.width / 8);
     } else {
-        const auto v = *at;
+        auto val_it = c.operands.begin();
+        SkipAddressOperand(val_it, c.operands.end());
+        if (val_it == c.operands.end()) Reject(CompileError::UnsupportedOperand);
+        const auto v = *val_it;
         if (View(v) == ir::Type::V128) {
             Xmm input = xmm0;
             if (v.Kind() == OperandKind::Value &&
@@ -294,24 +429,28 @@ void Writer::Memory(OpContext& c) {
                 input = Xmm(allocation.homes[v.Payload()].reg);
             else
                 ReadVector(v, input);
+            const auto addr = MemoryAddress(at, c.operands.end());
             const auto first = static_cast<u32>(getSize());
             if (options.avx)
-                vmovdqu(ptr[address + disp], input);
+                vmovdqu(ptr[addr], input);
             else
-                movdqu(ptr[address + disp], input);
+                movdqu(ptr[addr], input);
             RecordGuestAccess(first, 2, 16);
         } else {
             Reg64 input = rax;
             const auto bits = TypeBits(View(v));
             if (v.Kind() == OperandKind::Value && bits >= 8 &&
                 source.Operations()[v.Payload()].type != ir::Type::V128 &&
-                !allocation.homes[v.Payload()].spilled)
+                !allocation.homes[v.Payload()].spilled &&
+                !(in_call && allocation.homes[v.Payload()].reg >= 6 &&
+                  allocation.homes[v.Payload()].reg <= 9))
                 input = Reg64(allocation.homes[v.Payload()].reg);
             else
                 Read(v, input, true);
+            const auto addr = MemoryAddress(at, c.operands.end());
             const auto first = static_cast<u32>(getSize());
-            Store(input, address, disp, bits);
-            RecordGuestAccess(first, 2, TypeBits(View(v)) / 8);
+            Store(input, addr, bits);
+            RecordGuestAccess(first, 2, bits / 8);
         }
     }
 }

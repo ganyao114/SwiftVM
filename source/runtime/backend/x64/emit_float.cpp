@@ -639,7 +639,8 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
         cmp(dword[r12 + control], 0);
         jne(slow, T_NEAR);
     }
-    if (options.avx && post_check && (lanes * bits == 128 || (lanes == 1 && bits == 64))) {
+    if (options.avx && post_check &&
+        (lanes * bits == 128 || lanes == 1 || (lanes == 2 && bits == 32))) {
         const auto& h = allocation.homes[c.node.value];
         auto aliases = [&](unsigned reg) {
             for (unsigned idx : {0u, 1u}) {
@@ -725,6 +726,105 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
             } else {
                 ReadVector(arg1, xmm1);
                 emit_packed(xmm1);
+            }
+        } else if (lanes == 2 && bits == 32) {
+            const auto arg0 = c.Arg(0), arg1 = c.Arg(1);
+            if (arg0.Kind() == OperandKind::Value &&
+                source.Operations()[arg0.Payload()].type == ir::Type::V128) {
+                const auto& lh = allocation.homes[arg0.Payload()];
+                if (lh.spilled && lh.uniform_offset != UINT32_MAX)
+                    vmovq(xmm0, qword[r12 + lh.uniform_offset]);
+                else if (lh.spilled)
+                    vmovq(xmm0, qword[rsp + lh.stack_offset]);
+                else
+                    vmovq(xmm0, Xmm(lh.reg));
+            } else {
+                ReadVector(arg0, xmm0);
+                vmovq(xmm0, xmm0);
+            }
+            const bool v128_rhs = arg1.Kind() == OperandKind::Value &&
+                                  source.Operations()[arg1.Payload()].type == ir::Type::V128;
+            if (format & 64) {
+                const unsigned index = format >> 7;
+                if (v128_rhs) {
+                    const auto& rh = allocation.homes[arg1.Payload()];
+                    if (rh.spilled && rh.uniform_offset != UINT32_MAX)
+                        vpermilps(xmm1, ptr[r12 + rh.uniform_offset], index * 0x55);
+                    else if (rh.spilled)
+                        vpermilps(xmm1, ptr[rsp + rh.stack_offset], index * 0x55);
+                    else
+                        vpermilps(xmm1, Xmm(rh.reg), index * 0x55);
+                } else {
+                    ReadVector(arg1, xmm1);
+                    vpermilps(xmm1, xmm1, index * 0x55);
+                }
+                vmovq(xmm1, xmm1);
+            } else if (v128_rhs) {
+                const auto& rh = allocation.homes[arg1.Payload()];
+                if (rh.spilled && rh.uniform_offset != UINT32_MAX)
+                    vmovq(xmm1, qword[r12 + rh.uniform_offset]);
+                else if (rh.spilled)
+                    vmovq(xmm1, qword[rsp + rh.stack_offset]);
+                else
+                    vmovq(xmm1, Xmm(rh.reg));
+            } else {
+                ReadVector(arg1, xmm1);
+                vmovq(xmm1, xmm1);
+            }
+            if (kind == 0)
+                vaddps(dst, xmm0, xmm1);
+            else if (kind == 1) {
+                vsubps(dst, xmm0, xmm1);
+                vmovq(dst, dst);
+            } else {
+                vmulps(dst, xmm0, xmm1);
+            }
+        } else if (bits == 32) {
+            const auto arg0 = c.Arg(0), arg1 = c.Arg(1);
+            if (arg0.Kind() == OperandKind::Value &&
+                source.Operations()[arg0.Payload()].type == ir::Type::V128) {
+                const auto& lh = allocation.homes[arg0.Payload()];
+                if (lh.spilled && lh.uniform_offset != UINT32_MAX)
+                    vmovd(xmm0, dword[r12 + lh.uniform_offset]);
+                else if (lh.spilled)
+                    vmovd(xmm0, dword[rsp + lh.stack_offset]);
+                else
+                    vinsertps(xmm0, Xmm(lh.reg), Xmm(lh.reg), 0x0e);
+            } else {
+                ReadVector(arg0, xmm0);
+                vinsertps(xmm0, xmm0, xmm0, 0x0e);
+            }
+            auto emit_scalar32 = [&](const Xbyak::Operand& rhs) {
+                if (kind == 0)
+                    vaddss(dst, xmm0, rhs);
+                else if (kind == 1)
+                    vsubss(dst, xmm0, rhs);
+                else if (kind == 2)
+                    vmulss(dst, xmm0, rhs);
+                else
+                    vdivss(dst, xmm0, rhs);
+            };
+            const unsigned lane_idx = (format & 64) ? (format >> 7) : 0u;
+            if (arg1.Kind() == OperandKind::Value &&
+                source.Operations()[arg1.Payload()].type == ir::Type::V128) {
+                const auto& rh = allocation.homes[arg1.Payload()];
+                if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
+                    emit_scalar32(dword[r12 + rh.uniform_offset + lane_idx * 4]);
+                    preserved_bcast = true;
+                } else if (rh.spilled) {
+                    emit_scalar32(dword[rsp + rh.stack_offset + lane_idx * 4]);
+                    preserved_bcast = true;
+                } else if (lane_idx) {
+                    vpermilps(xmm1, Xmm(rh.reg), lane_idx);
+                    emit_scalar32(xmm1);
+                } else {
+                    emit_scalar32(Xmm(rh.reg));
+                    preserved_bcast = true;
+                }
+            } else {
+                ReadVector(arg1, xmm1);
+                if (lane_idx) vpermilps(xmm1, xmm1, lane_idx);
+                emit_scalar32(xmm1);
             }
         } else {
             const auto arg0 = c.Arg(0), arg1 = c.Arg(1);

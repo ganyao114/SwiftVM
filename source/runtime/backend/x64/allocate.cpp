@@ -449,16 +449,10 @@ private:
                     (op.type == Type::U32 || op.type == Type::U64) &&
                     (code == OpCode::Add || code == OpCode::Sub || code == OpCode::Neg ||
                      code == OpCode::Adc || code == OpCode::Sbb || code == OpCode::And ||
-                     code == OpCode::Or || code == OpCode::Xor))
+                     code == OpCode::Or || code == OpCode::Xor ||
+                     (code == OpCode::AndNot && options && options->bmi1)))
                     native = true;
-                else if (!(code == OpCode::Nop || code == OpCode::InvertCarry ||
-                           code == OpCode::FaultLocation || code == OpCode::GuestSafepoint ||
-                           code == OpCode::GuestDispatchSafepoint ||
-                           (code == OpCode::LoadUniform && TypeBits(op.type) >= 8) ||
-                           (code == OpCode::StoreUniform &&
-                            TypeBits(program.Operands(NodeId{at}).front().TypeView()) >= 32) ||
-                           (code == OpCode::LoadImm && TypeBits(op.type) >= 32) ||
-                           result.homes[at].terminal_only))
+                else if (!InstructionPreservesNativeFlags(at))
                     native = false;
             }
             native_output[b] = native;
@@ -473,6 +467,176 @@ private:
             }
             result.native_entry[b] = backedge && all_native && result.flags_input[b];
         }
+    }
+
+    bool Immediate32Cell(CellView c, unsigned width, std::int32_t& immediate) const {
+        if (c.Kind() != OperandKind::Immediate || (width != 32 && width != 64)) return false;
+        auto value = c.Payload();
+        const auto bits = TypeBits(ViewOf(c));
+        if (bits && bits < 64) value &= (std::uint64_t{1} << bits) - 1;
+        immediate = static_cast<std::int32_t>(value);
+        return width == 32 || value == std::uint64_t(std::int64_t(immediate));
+    }
+
+    bool ExpressionPreservesNativeFlags(CellRange::Iterator& at, CellRange::Iterator end) const {
+        if (at == end) return false;
+        const auto cell = *at++;
+        if (cell.Kind() != OperandKind::Expression)
+            return TypeBits(ViewOf(cell)) >= 32 &&
+                   (cell.Kind() != OperandKind::Value ||
+                    TypeBits(operations[cell.Payload()].type) >= 8);
+        if (cell.ExpressionOp() != OperandOp::Add &&
+            !(cell.ExpressionOp() == OperandOp::AddShift && cell.ShiftAmount() <= 3))
+            return false;
+        for (unsigned i = 0; i < cell.Count(); ++i)
+            if (!ExpressionPreservesNativeFlags(at, end)) return false;
+        return true;
+    }
+
+    bool InstructionPreservesNativeFlags(u32 at) const {
+        const auto& op = operations[at];
+        const auto code = op.opcode;
+        const auto& home = result.homes[at];
+        if (home.rematerialize || home.terminal_only) return true;
+        if (code == OpCode::Nop || code == OpCode::EntryPoint || code == OpCode::InvertCarry ||
+            code == OpCode::FaultLocation || code == OpCode::GuestSafepoint ||
+            code == OpCode::GuestDispatchSafepoint || code == OpCode::CondSet ||
+            code == OpCode::LocalCondSet)
+            return true;
+        const auto ops = program.Operands(NodeId{at});
+        if (code == OpCode::LoadUniform) return TypeBits(op.type) >= 8;
+        if (code == OpCode::StoreUniform) return TypeBits(ops.front().TypeView()) >= 32;
+        if (code == OpCode::LoadImm) return TypeBits(op.type) >= 32;
+        if (code == OpCode::LoadMemory || code == OpCode::LoadMemoryTSO ||
+            code == OpCode::StoreMemory || code == OpCode::StoreMemoryTSO) {
+            if ((code == OpCode::LoadMemory || code == OpCode::LoadMemoryTSO) &&
+                TypeBits(op.type) < 8)
+                return false;
+            auto it = ops.begin();
+            return ExpressionPreservesNativeFlags(it, ops.end());
+        }
+        const unsigned width = TypeBits(op.type);
+        if (op.flag_outputs || home.auxiliary_offset != UINT32_MAX || (width != 32 && width != 64))
+            return false;
+        if (IsZeroIdentityCopyNode(at)) return true;
+        auto it = ops.begin();
+        if (it == ops.end()) return false;
+        const auto first = *it++;
+        const bool first_ok = TypeBits(ViewOf(first)) >= 32 &&
+                              (first.Kind() != OperandKind::Value ||
+                               TypeBits(operations[first.Payload()].type) >= 8);
+        if (!first_ok) return false;
+        if (code == OpCode::ZeroExtend32 || code == OpCode::ZeroExtend32To64 ||
+            code == OpCode::ZeroExtend64)
+            return true;
+        if (code == OpCode::RorImm)
+            return options && options->bmi2 && TypeBits(ViewOf(first)) >= width;
+        if (code == OpCode::LslImm && it != ops.end())
+            return ((*it).Payload() & (width - 1)) <= 3;
+        std::int32_t imm{};
+        if (code == OpCode::Add && it != ops.end()) {
+            const auto second = *it;
+            auto next_it = it;
+            ++next_it;
+            if (next_it == ops.end() && Immediate32Cell(second, width, imm)) return true;
+            return ExpressionPreservesNativeFlags(it, ops.end());
+        }
+        if (code == OpCode::Sub && it != ops.end()) {
+            const auto second = *it++;
+            return it == ops.end() && Immediate32Cell(second, width, imm) && imm != INT32_MIN;
+        }
+        if (code == OpCode::And && width == 64 && it != ops.end()) {
+            const auto second = *it++;
+            if (it == ops.end() && second.Kind() == OperandKind::Immediate) {
+                std::uint64_t raw = second.Payload();
+                const auto ibits = TypeBits(ViewOf(second));
+                if (ibits && ibits < 64) raw &= (std::uint64_t{1} << ibits) - 1;
+                return raw == UINT32_MAX;
+            }
+        }
+        return false;
+    }
+
+    Type ViewOf(CellView c) const {
+        return c.TypeView() != Type::Void       ? c.TypeView()
+               : c.Kind() == OperandKind::Value ? operations[c.Payload()].type
+                                                : Type::U64;
+    }
+
+    bool IsZeroScalarCell(CellView c, unsigned width) const {
+        if (width != 32 && width != 64) return false;
+        if (c.Kind() == OperandKind::Immediate) {
+            std::uint64_t val = c.Payload();
+            const auto ibits = TypeBits(ViewOf(c));
+            if (ibits && ibits < 64) val &= (std::uint64_t{1} << ibits) - 1;
+            return (width == 32 ? static_cast<u32>(val) : val) == 0;
+        }
+        if (c.Kind() != OperandKind::Value) return false;
+        const auto id = static_cast<u32>(c.Payload());
+        const auto& nop = operations[id];
+        const auto& nh = result.homes[id];
+        if (nop.Metadata() != OperationMetadata{} || nh.auxiliary_offset != UINT32_MAX ||
+            nop.type == Type::V128)
+            return false;
+        if (nop.opcode == OpCode::Zero) return true;
+        if (nop.opcode != OpCode::LoadImm) return false;
+        std::uint64_t imm = program.Operands(NodeId{id}).front().Payload();
+        const auto nbits = TypeBits(nop.type);
+        if (nbits && nbits < 64) imm &= (std::uint64_t{1} << nbits) - 1;
+        const auto vbits = TypeBits(ViewOf(c));
+        if (vbits && vbits < 64) imm &= (std::uint64_t{1} << vbits) - 1;
+        return (width == 32 ? static_cast<u32>(imm) : imm) == 0;
+    }
+
+    bool IsZeroIdentityCopyNode(u32 node) const {
+        const auto& op = operations[node];
+        const auto code = op.opcode;
+        const unsigned width = TypeBits(op.type);
+        if ((code != OpCode::Or && code != OpCode::Xor && code != OpCode::Add &&
+             code != OpCode::Sub) ||
+            op.operand_count != 2 || (width != 32 && width != 64) || op.flag_outputs ||
+            result.homes[node].auxiliary_offset != UINT32_MAX)
+            return false;
+        const auto ops = program.Operands(NodeId{node});
+        auto it = ops.begin();
+        if (it == ops.end()) return false;
+        const auto a0 = *it++;
+        if (it == ops.end()) return false;
+        const auto a1 = *it++;
+        if (it != ops.end()) return false;
+        CellView other{};
+        if (code != OpCode::Sub && IsZeroScalarCell(a0, width))
+            other = a1;
+        else if (IsZeroScalarCell(a1, width))
+            other = a0;
+        else
+            return false;
+        if (other.Kind() == OperandKind::Expression || TypeBits(ViewOf(other)) < 32) return false;
+        if (other.Kind() == OperandKind::Value && TypeBits(operations[other.Payload()].type) < 8)
+            return false;
+        return true;
+    }
+
+    bool IsImmediateUniformStoreNode(u32 node) const {
+        const auto& op = operations[node];
+        if (op.opcode != OpCode::StoreUniform || op.Metadata() != OperationMetadata{} ||
+            pinned_slots != 0)
+            return false;
+        const auto ops = program.Operands(NodeId{node});
+        auto it = ops.begin();
+        if (it == ops.end()) return false;
+        const auto field = *it++;
+        if (it == ops.end() || field.Kind() != OperandKind::Uniform) return false;
+        const auto width = TypeBits(field.TypeView());
+        if (width < 8 || width > 64) return false;
+        const auto off = field.Payload();
+        if (off > INT32_MAX) return false;
+        const auto bytes = (width + 7) / 8;
+        if (options && options->flags_offset != UINT32_MAX &&
+            off < std::uint64_t{options->flags_offset} + 8 &&
+            std::uint64_t{options->flags_offset} < off + bytes)
+            return false;
+        return true;
     }
 
     bool RecordUse(u32 definition, u32 at, u32 block = BlockId::invalid) {
@@ -515,6 +679,53 @@ private:
                     if (saved_flags) result.homes[definition].auxiliary_offset = 0;
                 }
             }
+        }
+
+        bool any_zero_imm = false;
+        for (const auto b : result.block_order) {
+            const auto& body = blocks[b];
+            for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
+                const auto& op = operations[i];
+                auto& h = result.homes[i];
+                if (op.opcode == OpCode::LoadImm && (op.type == Type::U32 || op.type == Type::U64) &&
+                    op.Metadata() == OperationMetadata{} && h.use_count > 0 && !h.terminal_only &&
+                    h.auxiliary_offset == UINT32_MAX) {
+                    std::uint64_t imm = program.Operands(NodeId{i}).front().Payload();
+                    if (op.type == Type::U32) imm &= UINT32_MAX;
+                    if (imm == 0) {
+                        h.rematerialize = true;
+                        h.spilled = true;
+                        any_zero_imm = true;
+                    }
+                }
+            }
+        }
+        if (any_zero_imm) {
+            for (const auto b : result.block_order) {
+                const auto& body = blocks[b];
+                if (body.terminal.HasValue()) {
+                    auto& th = result.homes[body.terminal.value.value];
+                    if (th.rematerialize) {
+                        th.rematerialize = false;
+                        th.spilled = false;
+                    }
+                }
+                for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
+                    if (IsZeroIdentityCopyNode(i) || IsImmediateUniformStoreNode(i)) continue;
+                    for (const auto input : program.Operands(NodeId{i})) {
+                        if (input.Kind() != OperandKind::Value) continue;
+                        auto& dh = result.homes[input.Payload()];
+                        if (dh.rematerialize) {
+                            dh.rematerialize = false;
+                            dh.spilled = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        for (const auto b : result.block_order) {
+            const auto& body = blocks[b];
             for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
                 const auto& op = operations[i];
                 auto& mh = result.homes[i];
@@ -588,39 +799,220 @@ private:
                     op.opcode == OpCode::StoreMemory || op.opcode == OpCode::StoreMemoryTSO) {
                     const auto first = *program.Operands(NodeId{i}).begin();
                     const u32 target_pos = mh.rematerialize ? mh.last_use : mh.definition_position;
-                    if (first.Kind() == OperandKind::Value &&
-                        (first.TypeView() == Type::Void || first.TypeView() == Type::U64)) {
-                        const u32 addr_id = static_cast<u32>(first.Payload());
-                        const auto& addr_op = operations[addr_id];
-                        auto& ah = result.homes[addr_id];
-                        if ((addr_op.opcode == OpCode::Add || addr_op.opcode == OpCode::Sub) &&
-                            addr_op.type == Type::U64 &&
-                            addr_op.Metadata() == OperationMetadata{} &&
-                            addr_op.operand_count == 2 && addr_op.block == op.block &&
-                            !ah.terminal_only && ah.use_count == 1 && ah.last_use == target_pos &&
-                            ah.auxiliary_offset == UINT32_MAX && !ah.rematerialize) {
-                            auto ait = program.Operands(NodeId{addr_id}).begin();
-                            const auto base_cell = *ait++, imm_cell = *ait;
-                            if (base_cell.Kind() == OperandKind::Value &&
-                                operations[base_cell.Payload()].type == Type::U64 &&
-                                (base_cell.TypeView() == Type::Void ||
-                                 base_cell.TypeView() == Type::U64) &&
-                                imm_cell.Kind() == OperandKind::Immediate) {
-                                std::uint64_t val = imm_cell.Payload();
-                                const auto ibits = TypeBits(imm_cell.TypeView() != Type::Void
-                                                                    ? imm_cell.TypeView()
-                                                                    : Type::U64);
-                                if (ibits && ibits < 64) val &= (std::uint64_t{1} << ibits) - 1;
-                                const std::uint64_t d64 = addr_op.opcode == OpCode::Sub
-                                                                  ? (std::uint64_t{0} - val)
-                                                                  : val;
-                                const auto d32 = static_cast<std::int32_t>(d64);
-                                if (d64 == std::uint64_t(std::int64_t(d32))) {
-                                    ah.rematerialize = true;
-                                    ah.spilled = true;
-                                    auto& bh = result.homes[base_cell.Payload()];
-                                    bh.last_use = std::max(bh.last_use, target_pos);
+                    const auto is_u64_val = [&](CellView c) {
+                        return c.Kind() == OperandKind::Value &&
+                               operations[c.Payload()].type == Type::U64 &&
+                               (c.TypeView() == Type::Void || c.TypeView() == Type::U64);
+                    };
+                    if (is_u64_val(first)) {
+                        const auto is_uxtw_src = [&](CellView c) {
+                            if (c.Kind() != OperandKind::Value) return false;
+                            const auto& src_op = operations[c.Payload()];
+                            const auto view =
+                                    c.TypeView() != Type::Void ? c.TypeView() : src_op.type;
+                            return (src_op.type == Type::U32 || src_op.type == Type::U64) &&
+                                   (view == Type::U32 || view == Type::U64);
+                        };
+                        const auto const_disp = [&](CellView c, bool negate, std::int64_t& out) {
+                            if (c.Kind() != OperandKind::Immediate) return false;
+                            std::uint64_t val = c.Payload();
+                            const auto ibits = TypeBits(
+                                    c.TypeView() != Type::Void ? c.TypeView() : Type::U64);
+                            if (ibits && ibits < 64) val &= (std::uint64_t{1} << ibits) - 1;
+                            const std::uint64_t d64 = negate ? (std::uint64_t{0} - val) : val;
+                            const auto d32 = static_cast<std::int32_t>(d64);
+                            if (d64 != std::uint64_t(std::int64_t(d32))) return false;
+                            out = d32;
+                            return true;
+                        };
+                        const auto can_fuse_node = [&](u32 nid, u32 expected_pos) {
+                            const auto& nop = operations[nid];
+                            const auto& nh = result.homes[nid];
+                            return nop.type == Type::U64 &&
+                                   nop.Metadata() == OperationMetadata{} &&
+                                   nop.block.value == b && !nh.terminal_only &&
+                                   nh.use_count == 1 && nh.last_use == expected_pos &&
+                                   nh.auxiliary_offset == UINT32_MAX && !nh.rematerialize;
+                        };
+                        const auto match_uxtw_node = [&](u32 nid, u32 expected_pos, CellView& src) {
+                            if (!can_fuse_node(nid, expected_pos)) return false;
+                            const auto& nop = operations[nid];
+                            if ((nop.opcode == OpCode::ZeroExtend32To64 ||
+                                 nop.opcode == OpCode::ZeroExtend32) &&
+                                nop.operand_count == 1) {
+                                const auto arg = *program.Operands(NodeId{nid}).begin();
+                                if (is_uxtw_src(arg)) {
+                                    src = arg;
+                                    return true;
                                 }
+                            } else if (nop.opcode == OpCode::And && nop.operand_count == 2) {
+                                auto it = program.Operands(NodeId{nid}).begin();
+                                const auto arg0 = *it++, arg1 = *it;
+                                if (is_uxtw_src(arg0) && arg1.Kind() == OperandKind::Immediate) {
+                                    std::uint64_t m = arg1.Payload();
+                                    const auto mbits = TypeBits(arg1.TypeView() != Type::Void
+                                                                        ? arg1.TypeView()
+                                                                        : Type::U64);
+                                    if (mbits && mbits < 64) m &= (std::uint64_t{1} << mbits) - 1;
+                                    if (m == UINT32_MAX) {
+                                        src = arg0;
+                                        return true;
+                                    }
+                                }
+                            }
+                            return false;
+                        };
+                        struct AddrState {
+                            CellView base{}, index{};
+                            bool has_base{}, has_index{}, index_uxtw{};
+                            unsigned scale{1}, fused_count{};
+                            std::int64_t disp{};
+                            std::array<u32, 5> fused{};
+                        };
+                        const auto add_leaf = [&](AddrState& st, CellView c) {
+                            if (!is_u64_val(c)) return false;
+                            if (!st.has_base) {
+                                st.has_base = true;
+                                st.base = c;
+                                return true;
+                            }
+                            if (!st.has_index) {
+                                st.has_index = true;
+                                st.index = c;
+                                st.index_uxtw = false;
+                                st.scale = 1;
+                                return true;
+                            }
+                            return false;
+                        };
+                        const auto add_term = [&](auto& self,
+                                                  AddrState& st,
+                                                  CellView c,
+                                                  u32 expected_pos,
+                                                  unsigned depth) -> bool {
+                            if (!is_u64_val(c)) return false;
+                            const u32 nid = static_cast<u32>(c.Payload());
+                            const u32 npos = result.homes[nid].definition_position;
+                            if (depth < 4 && st.fused_count < st.fused.size() &&
+                                can_fuse_node(nid, expected_pos)) {
+                                const auto& nop = operations[nid];
+                                if ((nop.opcode == OpCode::Add || nop.opcode == OpCode::Sub) &&
+                                    nop.operand_count == 2) {
+                                    auto it = program.Operands(NodeId{nid}).begin();
+                                    const auto lhs = *it++, rhs = *it;
+                                    std::int64_t d = 0;
+                                    if (const_disp(rhs, nop.opcode == OpCode::Sub, d) &&
+                                        st.disp + d >= INT32_MIN && st.disp + d <= INT32_MAX) {
+                                        auto next = st;
+                                        next.disp += d;
+                                        next.fused[next.fused_count++] = nid;
+                                        if (self(self, next, lhs, npos, depth + 1)) {
+                                            st = next;
+                                            return true;
+                                        }
+                                    } else if (nop.opcode == OpCode::Add && is_u64_val(lhs) &&
+                                               is_u64_val(rhs)) {
+                                        {
+                                            auto next = st;
+                                            next.fused[next.fused_count++] = nid;
+                                            if (self(self, next, lhs, npos, depth + 1) &&
+                                                self(self, next, rhs, npos, depth + 1)) {
+                                                st = next;
+                                                return true;
+                                            }
+                                        }
+                                        {
+                                            auto next = st;
+                                            next.fused[next.fused_count++] = nid;
+                                            if (add_leaf(next, lhs) &&
+                                                self(self, next, rhs, npos, depth + 1)) {
+                                                st = next;
+                                                return true;
+                                            }
+                                        }
+                                        {
+                                            auto next = st;
+                                            next.fused[next.fused_count++] = nid;
+                                            if (self(self, next, lhs, npos, depth + 1) &&
+                                                add_leaf(next, rhs)) {
+                                                st = next;
+                                                return true;
+                                            }
+                                        }
+                                    }
+                                } else if (nop.opcode == OpCode::Add && nop.operand_count == 3 &&
+                                           !st.has_index) {
+                                    auto it = program.Operands(NodeId{nid}).begin();
+                                    const auto lhs = *it++, expr = *it++, idx = *it;
+                                    if (is_u64_val(lhs) && expr.Kind() == OperandKind::Expression &&
+                                        expr.Count() == 1 &&
+                                        expr.ExpressionOp() == OperandOp::AddShift &&
+                                        expr.ShiftAmount() <= 3 && is_u64_val(idx)) {
+                                        auto next = st;
+                                        next.fused[next.fused_count++] = nid;
+                                        next.has_index = true;
+                                        next.index = idx;
+                                        next.index_uxtw = false;
+                                        next.scale = 1u << expr.ShiftAmount();
+                                        if (self(self, next, lhs, npos, depth + 1)) {
+                                            st = next;
+                                            return true;
+                                        }
+                                    }
+                                } else if (nop.opcode == OpCode::LslImm && nop.operand_count == 2 &&
+                                           !st.has_index) {
+                                    auto it = program.Operands(NodeId{nid}).begin();
+                                    const auto idx = *it++, sh = *it;
+                                    if (is_u64_val(idx) && sh.Kind() == OperandKind::Immediate &&
+                                        (sh.Payload() & 63) <= 3) {
+                                        auto next = st;
+                                        next.fused[next.fused_count++] = nid;
+                                        next.has_index = true;
+                                        next.scale = 1u << (sh.Payload() & 63);
+                                        CellView uxtw_src{};
+                                        if (next.fused_count < next.fused.size() &&
+                                            match_uxtw_node(
+                                                    static_cast<u32>(idx.Payload()), npos, uxtw_src)) {
+                                            next.fused[next.fused_count++] =
+                                                    static_cast<u32>(idx.Payload());
+                                            next.index = uxtw_src;
+                                            next.index_uxtw = true;
+                                        } else {
+                                            next.index = idx;
+                                            next.index_uxtw = false;
+                                        }
+                                        st = next;
+                                        return true;
+                                    }
+                                } else if (!st.has_index) {
+                                    CellView uxtw_src{};
+                                    if (match_uxtw_node(nid, expected_pos, uxtw_src)) {
+                                        st.fused[st.fused_count++] = nid;
+                                        st.has_index = true;
+                                        st.index = uxtw_src;
+                                        st.index_uxtw = true;
+                                        st.scale = 1;
+                                        return true;
+                                    }
+                                }
+                            }
+                            return add_leaf(st, c);
+                        };
+                        const bool is_store = op.opcode == OpCode::StoreMemory ||
+                                              op.opcode == OpCode::StoreMemoryTSO;
+                        AddrState st;
+                        if (add_term(add_term, st, first, target_pos, 0) && st.has_base &&
+                            st.fused_count > 0 && (!is_store || !st.has_index)) {
+                            for (unsigned k = 0; k < st.fused_count; ++k) {
+                                auto& fh = result.homes[st.fused[k]];
+                                fh.rematerialize = true;
+                                fh.spilled = true;
+                            }
+                            auto& bh = result.homes[st.base.Payload()];
+                            bh.last_use = std::max(bh.last_use, target_pos);
+                            if (st.has_index) {
+                                auto& ih = result.homes[st.index.Payload()];
+                                ih.last_use = std::max(ih.last_use, target_pos);
                             }
                         }
                     }
@@ -876,11 +1268,14 @@ private:
                 if (DestructiveInput(operations[i])) {
                     auto inputs = program.Operands(NodeId{i}).begin();
                     chosen = reuse(*inputs++);
-                    if (chosen == count && !vector && operations[i].operand_count == 2 &&
-                        (opcode == OpCode::Add || opcode == OpCode::And ||
-                         opcode == OpCode::Or || opcode == OpCode::Xor)) {
-                        chosen = reuse(*inputs);
-                        h.reuse_rhs = chosen != count;
+                    if (chosen == count && !vector && operations[i].operand_count == 2) {
+                        if (opcode == OpCode::Add || opcode == OpCode::And ||
+                            opcode == OpCode::Or || opcode == OpCode::Xor) {
+                            chosen = reuse(*inputs);
+                            h.reuse_rhs = chosen != count;
+                        } else if (opcode == OpCode::AndNot && options && options->bmi1) {
+                            chosen = reuse(*inputs);
+                        }
                     }
                     reused = chosen != count;
                 }

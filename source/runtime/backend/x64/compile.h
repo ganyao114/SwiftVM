@@ -28,6 +28,7 @@ struct CompileOptions {
     bool native_fp_environment{}, fault_locations{}, relocatable{}, local_flags{}, linked_flags{};
     bool private_state{};
     bool cx16{true}, ssse3{}, sse41{}, sse42{}, fma{}, aes{}, pclmul{}, sha{}, lahf{}, avx{};
+    bool bmi1{}, bmi2{};
 };
 
 backend::CompileResult Compile(const ir::Program&, CompileOptions = {});

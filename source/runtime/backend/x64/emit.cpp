@@ -178,7 +178,7 @@ void Writer::StaticExit(u64 pc) {
 void Writer::Terminal(const StoredTerminal& t) {
     EndArmFPRegion();
     if (t.kind == TerminalKind::Jump) {
-        BranchTo(t.first);
+        BranchTo(t.first, true);
         return;
     }
     if (t.kind == TerminalKind::Branch) {
@@ -200,20 +200,29 @@ void Writer::Terminal(const StoredTerminal& t) {
                     BranchTo(op == OpCode::TestZero ? t.second : t.first);
                     L(is_zero);
                     flags = previous;
-                    BranchTo(op == OpCode::TestZero ? t.first : t.second);
+                    BranchTo(op == OpCode::TestZero ? t.first : t.second, true);
                     return;
                 }
                 if (needs_flags) SaveNativeFlags(true);
                 flags.native = false;
-                Read(first, rax);
                 if (zero) {
-                    test(rax, rax);
+                    const auto bits = std::min(64u, TypeBits(View(first)));
+                    Reg64 src = rax;
+                    if ((bits == 32 || bits == 64) && ResidentScalar(first, bits, src)) {
+                        PadFor32ByteBoundary(9u);
+                        test(R(src, bits), R(src, bits));
+                    } else {
+                        Read(first, rax);
+                        PadFor32ByteBoundary(9u);
+                        test(rax, rax);
+                    }
                     ConditionalBranch(op == OpCode::TestZero ? 4 : 5, t.first, t.second);
                 } else {
                     const auto bit = (*input).Payload();
                     if (bit >= TypeBits(View(first)))
-                        BranchTo(t.second);
+                        BranchTo(t.second, true);
                     else {
+                        Read(first, rax);
                         bt(rax, bit);
                         ConditionalBranch(2, t.first, t.second);
                     }
@@ -229,12 +238,13 @@ void Writer::Terminal(const StoredTerminal& t) {
                 if (condition_saved) {
                     if (needs_flags) SaveNativeFlags(true);
                     flags.native = false;
+                    PadFor32ByteBoundary((allocation.condition_slot < 128 ? 5u : 8u) + 6u);
                     cmp(byte[rsp + allocation.condition_slot], 0);
                     ConditionalBranch(5, t.first, t.second);
                 } else if (options.local_flags && flags.dirty) {
                     const auto cc = NativeCondition(*condition);
                     if (cc == 16)
-                        BranchTo(t.first);
+                        BranchTo(t.first, true);
                     else
                         ConditionalBranch(cc, t.first, t.second);
                 } else {
@@ -426,7 +436,11 @@ void Writer::Run() {
     };
     enter(source.EntryBlock().value, options.entry_pc);
     std::vector<std::pair<unsigned, unsigned>> extra;
-    for (auto b : allocation.block_order) {
+    for (std::size_t order_idx = 0; order_idx < allocation.block_order.size(); ++order_idx) {
+        const auto b = allocation.block_order[order_idx];
+        fallthrough_block = order_idx + 1 < allocation.block_order.size()
+                                    ? allocation.block_order[order_idx + 1]
+                                    : BlockId::invalid;
         block = BlockId{b};
         L(blocks[b]);
         static_pc_known = false;
@@ -491,6 +505,7 @@ void Writer::Run() {
                     op.opcode == OpCode::Add || op.opcode == OpCode::Sub ||
                     op.opcode == OpCode::Mul || op.opcode == OpCode::And ||
                     op.opcode == OpCode::Or || op.opcode == OpCode::Xor ||
+                    op.opcode == OpCode::AndNot ||
                     op.opcode == OpCode::LslImm || op.opcode == OpCode::LsrImm ||
                     op.opcode == OpCode::AsrImm || op.opcode == OpCode::RorImm ||
                     op.opcode == OpCode::ZeroExtend32 || op.opcode == OpCode::ZeroExtend32To64 ||
@@ -506,6 +521,7 @@ void Writer::Run() {
                           op.opcode == OpCode::Add || op.opcode == OpCode::Sub ||
                           op.opcode == OpCode::Mul || op.opcode == OpCode::And ||
                           op.opcode == OpCode::Or || op.opcode == OpCode::Xor ||
+                          op.opcode == OpCode::AndNot ||
                           op.opcode == OpCode::LslImm || op.opcode == OpCode::LsrImm ||
                           op.opcode == OpCode::AsrImm || op.opcode == OpCode::RorImm ||
                           op.opcode == OpCode::ZeroExtend32 ||
@@ -534,6 +550,7 @@ void Writer::Run() {
         }
         if (!terminated) Terminal(body.terminal);
     }
+    fallthrough_block = BlockId::invalid;
     xmm15_fp_const = -1;
     xmm0_node = NodeId::invalid;
     xmm1_bcast_node = NodeId::invalid;

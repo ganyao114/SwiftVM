@@ -34,6 +34,8 @@ Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
     }
     if (__get_cpuid_max(0, nullptr) >= 7) {
         __cpuid_count(7, 0, a, b, c, d);
+        options.bmi1 = b & (1u << 3);
+        options.bmi2 = b & (1u << 8);
         options.sha = b & (1u << 29);
     }
     if (__get_cpuid(0x80000001, &a, &b, &c, &d)) options.lahf = c & 1;
@@ -42,7 +44,8 @@ Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
                (options.sse42 ? abi::Sse42 : 0) | (options.fma ? abi::Fma : 0) |
                (options.aes ? abi::Aes : 0) | (options.pclmul ? abi::Pclmul : 0) |
                (options.sha ? abi::Sha : 0) | (options.cx16 ? abi::Cx16 : 0) |
-               (options.lahf ? abi::Lahf : 0) | (options.avx ? abi::Avx : 0);
+               (options.lahf ? abi::Lahf : 0) | (options.avx ? abi::Avx : 0) |
+               (options.bmi1 ? abi::Bmi1 : 0) | (options.bmi2 ? abi::Bmi2 : 0);
 }
 
 execution::HostBackendOps Runtime::Bind() noexcept {

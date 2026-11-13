@@ -46,8 +46,14 @@ public:
     void Run();
     ir::Type View(CellView) const;
     bool Immediate32(CellView, unsigned width, std::int32_t&) const;
+    bool IsZeroScalarOperand(CellView, unsigned width) const;
+    bool IsZeroIdentityCopy(OpContext&, CellView& other) const;
+    bool TryEmitZeroIdentityCopy(OpContext&);
     void Read(CellView, const Reg64&, bool raw = false);
     bool ResidentScalar(CellView, unsigned width, Reg64&) const;
+    bool MemoryScalarOperand(CellView, unsigned width, Xbyak::Address&) const;
+    bool ResidentVector(CellView, Xmm&) const;
+    bool MemoryVectorOperand(CellView, Xbyak::Address&) const;
 
     Reg64 ScalarDestination(OpContext& c) const {
         // Only leaf emitters that do not call helpers borrow the assigned home.
@@ -62,6 +68,8 @@ public:
     void Mask(const Reg64&, unsigned);
     void Sign(const Reg64&, unsigned);
     void Expression(CellRange::Iterator&, CellRange::Iterator, const Reg64&, unsigned depth = 0);
+    void Load(const Reg64&, const Xbyak::RegExp&, unsigned);
+    void Store(const Reg64&, const Xbyak::RegExp&, unsigned);
     void Load(const Reg64&, const Reg64&, std::int32_t, unsigned);
     void Store(const Reg64&, const Reg64&, std::int32_t, unsigned);
     void HostAddress(const Reg64&, std::uintptr_t, HostSymbol);
@@ -96,8 +104,9 @@ public:
     bool PreservesFlags(OpContext&) const;
     bool ExpressionPreservesFlags(CellRange::Iterator&, CellRange::Iterator) const;
     unsigned NativeCondition(ir::Condition);
+    void PadFor32ByteBoundary(unsigned bytes);
     void NativeJump(unsigned, Label&);
-    void BranchTo(BlockId);
+    void BranchTo(BlockId, bool at_block_end = false);
     void PrepareEdge(BlockId);
     void ConditionalBranch(unsigned, BlockId, BlockId);
 
@@ -139,7 +148,7 @@ public:
         }
     }
 
-    void MemoryAddress(CellRange::Iterator&, CellRange::Iterator, Reg64&, std::int32_t&);
+    Xbyak::RegExp MemoryAddress(CellRange::Iterator&, CellRange::Iterator);
     void Memory(OpContext&);
     void Arithmetic(OpContext&);
     void Logical(OpContext&);
@@ -183,6 +192,7 @@ public:
     CompileOptions options;
     NodeId current;
     BlockId block;
+    u32 fallthrough_block{BlockId::invalid};
     u64 guest_pc{};
     bool has_fault_location{};
     bool static_pc_known{}, terminated{};

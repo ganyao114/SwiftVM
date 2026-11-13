@@ -372,6 +372,8 @@ bool Writer::PreservesFlags(OpContext& c) const {
     if ((op == O::ZeroExtend32 || op == O::ZeroExtend32To64 || op == O::ZeroExtend64) &&
         TypeBits(View(c.Arg(0))) >= 32)
         return true;
+    CellView copy_src{};
+    if (IsZeroIdentityCopy(c, copy_src)) return true;
     std::int32_t immediate;
     if (op == O::Add && c.count >= 2 && TypeBits(View(c.Arg(0))) >= 32) {
         if (c.count == 2 && Immediate32(c.Arg(1), c.width, immediate)) return true;
@@ -379,11 +381,19 @@ bool Writer::PreservesFlags(OpContext& c) const {
         ++at;
         return ExpressionPreservesFlags(at, c.operands.end());
     }
+    if (op == O::And && c.width == 64 && c.count == 2 && TypeBits(View(c.Arg(0))) >= 32 &&
+        c.Arg(1).Kind() == OperandKind::Immediate) {
+        u64 raw_imm = c.Arg(1).Payload();
+        const auto ibits = TypeBits(View(c.Arg(1)));
+        if (ibits && ibits < 64) raw_imm &= (u64{1} << ibits) - 1;
+        if (raw_imm == UINT32_MAX) return true;
+    }
     return (op == O::Sub && c.count == 2 && TypeBits(View(c.Arg(0))) >= 32 &&
             Immediate32(c.Arg(1), c.width, immediate) && immediate != INT32_MIN) ||
            (op == O::Or && c.count == 2 && TypeBits(View(c.Arg(0))) >= 32 &&
             Immediate32(c.Arg(1), c.width, immediate) && immediate == 0) ||
-           (op == O::LslImm && (c.Arg(1).Payload() & (c.width - 1)) <= 3);
+           (op == O::LslImm && (c.Arg(1).Payload() & (c.width - 1)) <= 3) ||
+           (options.bmi2 && op == O::RorImm && TypeBits(View(c.Arg(0))) >= c.width);
 }
 
 unsigned Writer::NativeCondition(ir::Condition condition) {
@@ -469,7 +479,13 @@ unsigned Writer::NativeCondition(ir::Condition condition) {
     }
 }
 
+void Writer::PadFor32ByteBoundary(unsigned bytes) {
+    const auto rem = 32u - static_cast<unsigned>(getSize() & 31u);
+    if (bytes <= 31u && rem < bytes) nop(rem);
+}
+
 void Writer::NativeJump(unsigned condition, Label& target) {
+    PadFor32ByteBoundary(condition < 16 ? 6u : 5u);
     switch (condition) {
         case 0:
             jo(target, T_NEAR);
@@ -537,31 +553,51 @@ void Writer::PrepareEdge(BlockId target) {
         SaveNativeFlags(true);
 }
 
-void Writer::BranchTo(BlockId target) {
+void Writer::BranchTo(BlockId target, bool at_block_end) {
     PrepareEdge(target);
-    jmp(blocks[target.value], T_NEAR);
+    if (!at_block_end || target.value != fallthrough_block) jmp(blocks[target.value], T_NEAR);
 }
 
 void Writer::ConditionalBranch(unsigned cc, BlockId yes, BlockId no) {
+    if (yes.value == no.value) {
+        BranchTo(yes, true);
+        return;
+    }
     const auto ready = [&](BlockId target) {
         return !options.local_flags || !allocation.flags_input[target.value] ||
                (allocation.native_entry[target.value] ? flags.native == 15 && flags.carry
                                                       : flags.saved == 15 && flags.saved_carry);
     };
-    if (ready(yes)) {
+    if (!ready(yes) && !ready(no) && !allocation.native_entry[yes.value] &&
+        !allocation.native_entry[no.value] && flags.dirty && !flags.floating &&
+        flags.native == 15 && flags.carry) {
+        SaveNativeFlags(true);
+    }
+    if (ready(yes) && ready(no)) {
+        if (yes.value == fallthrough_block) {
+            NativeJump(cc ^ 1, blocks[no.value]);
+        } else {
+            NativeJump(cc, blocks[yes.value]);
+            BranchTo(no, true);
+        }
+    } else if (ready(yes)) {
         NativeJump(cc, blocks[yes.value]);
-        BranchTo(no);
+        BranchTo(no, true);
     } else if (ready(no)) {
         NativeJump(cc ^ 1, blocks[no.value]);
-        BranchTo(yes);
+        BranchTo(yes, true);
     } else {
+        if (yes.value == fallthrough_block) {
+            cc ^= 1;
+            std::swap(yes, no);
+        }
         Label taken;
         const auto previous = flags;
         NativeJump(cc, taken);
         BranchTo(no);
         L(taken);
         flags = previous;
-        BranchTo(yes);
+        BranchTo(yes, true);
     }
 }
 

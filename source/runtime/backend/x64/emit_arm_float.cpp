@@ -134,7 +134,8 @@ bool Writer::TryArmNumeric(OpContext& c) {
     }
     const bool flush = options.arm_fpcr & (1u << 24);
     if (options.avx && typed && operation == Operation::Fused && !flush &&
-        (lanes * bits == 128 || (lanes == 1 && bits == 64)) && control == 0) {
+        (bits == 32 || bits == 64) &&
+        (lanes * bits == 128 || lanes == 1 || (lanes == 2 && bits == 32)) && control <= 3) {
         const auto& h = allocation.homes[c.node.value];
         auto aliases = [&](unsigned reg) {
             for (unsigned idx : {0u, 1u, 2u}) {
@@ -151,15 +152,43 @@ bool Writer::TryArmNumeric(OpContext& c) {
         c.vector = dst;
         path.dest_reg = static_cast<std::uint8_t>(dst.getIdx());
         Xmm lhs = xmm14;
-        if (c.Arg(0).Kind() == OperandKind::Value &&
-            source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128 &&
-            !allocation.homes[c.Arg(0).Payload()].spilled) {
+        if (lanes == 2 && bits == 32) {
+            if (c.Arg(0).Kind() == OperandKind::Value &&
+                source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128) {
+                const auto& lh = allocation.homes[c.Arg(0).Payload()];
+                if (lh.spilled && lh.uniform_offset != UINT32_MAX)
+                    vmovq(xmm14, qword[r12 + lh.uniform_offset]);
+                else if (lh.spilled)
+                    vmovq(xmm14, qword[rsp + lh.stack_offset]);
+                else
+                    vmovq(xmm14, Xmm(lh.reg));
+            } else {
+                ReadVector(c.Arg(0), xmm14);
+                vmovq(xmm14, xmm14);
+            }
+        } else if (c.Arg(0).Kind() == OperandKind::Value &&
+                   source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128 &&
+                   !allocation.homes[c.Arg(0).Payload()].spilled) {
             lhs = Xmm(allocation.homes[c.Arg(0).Payload()].reg);
         } else {
             ReadVector(c.Arg(0), xmm14);
         }
-        if (lanes == 1) {
-            const auto arg2 = c.Arg(2);
+        const auto arg2 = c.Arg(2);
+        if (lanes == 1 && bits == 32) {
+            if (arg2.Kind() == OperandKind::Value &&
+                source.Operations()[arg2.Payload()].type == ir::Type::V128) {
+                const auto& h2 = allocation.homes[arg2.Payload()];
+                if (h2.spilled && h2.uniform_offset != UINT32_MAX)
+                    vmovd(dst, dword[r12 + h2.uniform_offset]);
+                else if (h2.spilled)
+                    vmovd(dst, dword[rsp + h2.stack_offset]);
+                else
+                    vinsertps(dst, Xmm(h2.reg), Xmm(h2.reg), 0x0e);
+            } else {
+                ReadVector(arg2, dst);
+                vinsertps(dst, dst, dst, 0x0e);
+            }
+        } else if (lanes * bits == 64) {
             if (arg2.Kind() == OperandKind::Value &&
                 source.Operations()[arg2.Payload()].type == ir::Type::V128) {
                 const auto& h2 = allocation.homes[arg2.Payload()];
@@ -174,34 +203,121 @@ bool Writer::TryArmNumeric(OpContext& c) {
                 vmovq(dst, dst);
             }
         } else {
-            ReadVector(c.Arg(2), dst);
+            ReadVector(arg2, dst);
         }
+        auto emit_fma = [&](const Xbyak::Operand& rhs) {
+            if (lanes == 1) {
+                if (bits == 32) {
+                    if (control == 0)
+                        vfmadd231ss(dst, lhs, rhs);
+                    else if (control == 1)
+                        vfnmadd231ss(dst, lhs, rhs);
+                    else if (control == 2)
+                        vfmsub231ss(dst, lhs, rhs);
+                    else
+                        vfnmsub231ss(dst, lhs, rhs);
+                } else {
+                    if (control == 0)
+                        vfmadd231sd(dst, lhs, rhs);
+                    else if (control == 1)
+                        vfnmadd231sd(dst, lhs, rhs);
+                    else if (control == 2)
+                        vfmsub231sd(dst, lhs, rhs);
+                    else
+                        vfnmsub231sd(dst, lhs, rhs);
+                }
+            } else if (bits == 32) {
+                if (control == 0)
+                    vfmadd231ps(dst, lhs, rhs);
+                else if (control == 1)
+                    vfnmadd231ps(dst, lhs, rhs);
+                else if (control == 2)
+                    vfmsub231ps(dst, lhs, rhs);
+                else
+                    vfnmsub231ps(dst, lhs, rhs);
+            } else {
+                if (control == 0)
+                    vfmadd231pd(dst, lhs, rhs);
+                else if (control == 1)
+                    vfnmadd231pd(dst, lhs, rhs);
+                else if (control == 2)
+                    vfmsub231pd(dst, lhs, rhs);
+                else
+                    vfnmsub231pd(dst, lhs, rhs);
+            }
+        };
         const auto arg1 = c.Arg(1);
         const bool v128_rhs = arg1.Kind() == OperandKind::Value &&
                               source.Operations()[arg1.Payload()].type == ir::Type::V128;
         bool preserved_bcast = false;
         if (lanes == 1) {
-            const unsigned index = indexed ? ((word >> 11) & 1) : 0u;
+            const unsigned index = indexed ? (bits == 32 ? (((word >> 11) & 1) << 1) | ((word >> 21) & 1)
+                                                         : ((word >> 11) & 1))
+                                           : 0u;
             if (v128_rhs) {
                 const auto& rh = allocation.homes[arg1.Payload()];
                 if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
-                    vfmadd231sd(dst, lhs, qword[r12 + rh.uniform_offset + index * 8]);
+                    if (bits == 32)
+                        emit_fma(dword[r12 + rh.uniform_offset + index * 4]);
+                    else
+                        emit_fma(qword[r12 + rh.uniform_offset + index * 8]);
                     preserved_bcast = true;
                 } else if (rh.spilled) {
-                    vfmadd231sd(dst, lhs, qword[rsp + rh.stack_offset + index * 8]);
+                    if (bits == 32)
+                        emit_fma(dword[rsp + rh.stack_offset + index * 4]);
+                    else
+                        emit_fma(qword[rsp + rh.stack_offset + index * 8]);
                     preserved_bcast = true;
                 } else if (index) {
-                    vpermilpd(xmm1, Xmm(rh.reg), 3);
-                    vfmadd231sd(dst, lhs, xmm1);
+                    if (bits == 32)
+                        vpermilps(xmm1, Xmm(rh.reg), index);
+                    else
+                        vpermilpd(xmm1, Xmm(rh.reg), 3);
+                    emit_fma(xmm1);
                 } else {
-                    vfmadd231sd(dst, lhs, Xmm(rh.reg));
+                    emit_fma(Xmm(rh.reg));
                     preserved_bcast = true;
                 }
             } else {
                 ReadVector(arg1, xmm1);
-                if (index) vpermilpd(xmm1, xmm1, 3);
-                vfmadd231sd(dst, lhs, xmm1);
+                if (index) {
+                    if (bits == 32)
+                        vpermilps(xmm1, xmm1, index);
+                    else
+                        vpermilpd(xmm1, xmm1, 3);
+                }
+                emit_fma(xmm1);
             }
+        } else if (lanes == 2 && bits == 32) {
+            if (indexed) {
+                const unsigned index = (((word >> 11) & 1) << 1) | ((word >> 21) & 1);
+                if (v128_rhs) {
+                    const auto& rh = allocation.homes[arg1.Payload()];
+                    if (rh.spilled && rh.uniform_offset != UINT32_MAX)
+                        vpermilps(xmm1, ptr[r12 + rh.uniform_offset], index * 0x55);
+                    else if (rh.spilled)
+                        vpermilps(xmm1, ptr[rsp + rh.stack_offset], index * 0x55);
+                    else
+                        vpermilps(xmm1, Xmm(rh.reg), index * 0x55);
+                } else {
+                    ReadVector(arg1, xmm1);
+                    vpermilps(xmm1, xmm1, index * 0x55);
+                }
+                vmovq(xmm1, xmm1);
+            } else if (v128_rhs) {
+                const auto& rh = allocation.homes[arg1.Payload()];
+                if (rh.spilled && rh.uniform_offset != UINT32_MAX)
+                    vmovq(xmm1, qword[r12 + rh.uniform_offset]);
+                else if (rh.spilled)
+                    vmovq(xmm1, qword[rsp + rh.stack_offset]);
+                else
+                    vmovq(xmm1, Xmm(rh.reg));
+            } else {
+                ReadVector(arg1, xmm1);
+                vmovq(xmm1, xmm1);
+            }
+            emit_fma(xmm1);
+            if (control != 0) vmovq(dst, dst);
         } else if (indexed) {
             const auto index =
                     bits == 32 ? (((word >> 11) & 1) << 1) | ((word >> 21) & 1) : (word >> 11) & 1;
@@ -226,35 +342,19 @@ bool Writer::TryArmNumeric(OpContext& c) {
                     vpermilps(xmm1, xmm1, index * 0x55);
                 }
             }
-            if (bits == 32)
-                vfmadd231ps(dst, lhs, xmm1);
-            else
-                vfmadd231pd(dst, lhs, xmm1);
+            emit_fma(xmm1);
         } else if (v128_rhs) {
             const auto& rh = allocation.homes[arg1.Payload()];
-            if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
-                if (bits == 32)
-                    vfmadd231ps(dst, lhs, ptr[r12 + rh.uniform_offset]);
-                else
-                    vfmadd231pd(dst, lhs, ptr[r12 + rh.uniform_offset]);
-            } else if (rh.spilled) {
-                if (bits == 32)
-                    vfmadd231ps(dst, lhs, ptr[rsp + rh.stack_offset]);
-                else
-                    vfmadd231pd(dst, lhs, ptr[rsp + rh.stack_offset]);
-            } else {
-                if (bits == 32)
-                    vfmadd231ps(dst, lhs, Xmm(rh.reg));
-                else
-                    vfmadd231pd(dst, lhs, Xmm(rh.reg));
-            }
+            if (rh.spilled && rh.uniform_offset != UINT32_MAX)
+                emit_fma(ptr[r12 + rh.uniform_offset]);
+            else if (rh.spilled)
+                emit_fma(ptr[rsp + rh.stack_offset]);
+            else
+                emit_fma(Xmm(rh.reg));
             preserved_bcast = true;
         } else {
             ReadVector(arg1, xmm1);
-            if (bits == 32)
-                vfmadd231ps(dst, lhs, xmm1);
-            else
-                vfmadd231pd(dst, lhs, xmm1);
+            emit_fma(xmm1);
         }
         CheckArmFPResult(c, output_bits, lanes, slow);
         if (!preserved_bcast) xmm1_bcast_node = NodeId::invalid;

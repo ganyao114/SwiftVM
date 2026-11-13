@@ -139,10 +139,100 @@ void Writer::Vector(OpContext& c) {
     const auto& home = allocation.homes[c.node.value];
     const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
     c.vector = dst;
-    ReadVector(c.Arg(0), dst);
-    ReadVector(c.Arg(1), xmm1);
     const unsigned n =
             (op == O::Vec4Add || op == O::Vec4Sub || op == O::Vec4Mul) ? 32 : c.Arg(2).Payload();
+    if (options.avx &&
+        (op == O::VecAnd || op == O::Vec4And || op == O::VecOr || op == O::Vec4Or ||
+         op == O::VecXor || op == O::VecAndNot || op == O::VecAdd || op == O::Vec4Add ||
+         op == O::VecSub || op == O::Vec4Sub)) {
+        const auto emit_vex_bin = [&](const Xmm& s1, const Xbyak::Operand& s2) {
+            if (op == O::VecAnd || op == O::Vec4And) {
+                vpand(dst, s1, s2);
+            } else if (op == O::VecOr || op == O::Vec4Or) {
+                vpor(dst, s1, s2);
+            } else if (op == O::VecXor) {
+                vpxor(dst, s1, s2);
+            } else if (op == O::VecAndNot) {
+                vpandn(dst, s1, s2);
+            } else if (op == O::VecAdd || op == O::Vec4Add) {
+                if (n == 8)
+                    vpaddb(dst, s1, s2);
+                else if (n == 16)
+                    vpaddw(dst, s1, s2);
+                else if (n == 32)
+                    vpaddd(dst, s1, s2);
+                else if (n == 64)
+                    vpaddq(dst, s1, s2);
+                else
+                    Reject(CompileError::UnsupportedOperand);
+            } else {
+                if (n == 8)
+                    vpsubb(dst, s1, s2);
+                else if (n == 16)
+                    vpsubw(dst, s1, s2);
+                else if (n == 32)
+                    vpsubd(dst, s1, s2);
+                else if (n == 64)
+                    vpsubq(dst, s1, s2);
+                else
+                    Reject(CompileError::UnsupportedOperand);
+            }
+        };
+        if (op == O::VecAndNot) {
+            Xmm b_xmm = xmm1;
+            if (!ResidentVector(c.Arg(1), b_xmm)) {
+                ReadVector(c.Arg(1), xmm1);
+                b_xmm = xmm1;
+            }
+            Xbyak::Address mem;
+            Xmm a_xmm = dst;
+            if (MemoryVectorOperand(c.Arg(0), mem)) {
+                emit_vex_bin(b_xmm, mem);
+            } else if (ResidentVector(c.Arg(0), a_xmm)) {
+                emit_vex_bin(b_xmm, a_xmm);
+            } else {
+                const Xmm tmp = b_xmm.getIdx() == 0 ? xmm1 : xmm0;
+                ReadVector(c.Arg(0), tmp);
+                emit_vex_bin(b_xmm, tmp);
+            }
+            return;
+        }
+        const bool comm = op != O::VecSub && op != O::Vec4Sub;
+        Xbyak::Address mem;
+        if (MemoryVectorOperand(c.Arg(1), mem)) {
+            Xmm s1 = dst;
+            if (!ResidentVector(c.Arg(0), s1)) {
+                ReadVector(c.Arg(0), dst);
+                s1 = dst;
+            }
+            emit_vex_bin(s1, mem);
+            return;
+        }
+        if (comm && MemoryVectorOperand(c.Arg(0), mem)) {
+            Xmm s1 = dst;
+            if (!ResidentVector(c.Arg(1), s1)) {
+                ReadVector(c.Arg(1), dst);
+                s1 = dst;
+            }
+            emit_vex_bin(s1, mem);
+            return;
+        }
+        Xmm s1 = xmm1, s2 = xmm0;
+        const bool r0 = ResidentVector(c.Arg(0), s1);
+        const bool r1 = ResidentVector(c.Arg(1), s2);
+        if (!r0) {
+            s1 = (r1 && s2.getIdx() == 0) ? xmm1 : dst;
+            ReadVector(c.Arg(0), s1);
+        }
+        if (!r1) {
+            s2 = s1.getIdx() == 1 ? xmm0 : xmm1;
+            ReadVector(c.Arg(1), s2);
+        }
+        emit_vex_bin(s1, s2);
+        return;
+    }
+    ReadVector(c.Arg(0), dst);
+    ReadVector(c.Arg(1), xmm1);
     if (op == O::VecAnd || op == O::Vec4And) {
         if (options.avx)
             vpand(dst, dst, xmm1);
@@ -463,12 +553,10 @@ void Writer::Handle(Op<O::VecDup64>, OpContext& c) {
                 (lop.opcode == OpCode::LoadMemory || lop.opcode == OpCode::LoadMemoryTSO)) {
                 const auto ops = source.Operands(NodeId{load_id});
                 auto at = ops.begin();
-                Reg64 base = r11;
-                std::int32_t disp = 0;
-                MemoryAddress(at, ops.end(), base, disp);
+                const auto addr = MemoryAddress(at, ops.end());
                 if (dst.getIdx() == 0) xmm0_node = NodeId::invalid;
                 const auto first = static_cast<u32>(getSize());
-                vmovddup(dst, qword[base + disp]);
+                vmovddup(dst, qword[addr]);
                 RecordGuestAccess(first, 1, 8);
                 return;
             }

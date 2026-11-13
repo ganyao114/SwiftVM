@@ -1,16 +1,55 @@
 #include "emit.h"
 
 namespace swift::runtime::backend::x64::detail {
+bool Writer::TryEmitZeroIdentityCopy(OpContext& c) {
+    CellView other{};
+    if (!IsZeroIdentityCopy(c, other)) return false;
+    const auto destination = ScalarDestination(c);
+    if (IsZeroScalarOperand(other, c.width)) {
+        mov(destination.cvt32(), 0);
+        c.scalar_normalized = true;
+        return true;
+    }
+    const unsigned copy_bits = (c.width == 32 || TypeBits(View(other)) == 32) ? 32u : 64u;
+    Xbyak::Address mem;
+    Reg64 src = destination;
+    if (MemoryScalarOperand(other, copy_bits, mem)) {
+        mov(R(destination, copy_bits), mem);
+    } else if (ResidentScalar(other, copy_bits, src)) {
+        if (copy_bits == 32) {
+            if (src != destination || source.Operations()[other.Payload()].type != ir::Type::U32)
+                mov(destination.cvt32(), src.cvt32());
+        } else if (src != destination) {
+            mov(destination, src);
+        }
+    } else {
+        Read(other, destination);
+        if (copy_bits == 32 && TypeBits(View(other)) > 32)
+            mov(destination.cvt32(), destination.cvt32());
+    }
+    c.scalar_normalized = true;
+    return true;
+}
+
 void Writer::Arithmetic(OpContext& c) {
     if (allocation.homes[c.node.value].rematerialize) {
         c.saved = true;
         return;
     }
+    if (TryEmitZeroIdentityCopy(c)) return;
     const auto destination = ScalarDestination(c);
     const bool can_lea = !c.operation.flag_outputs && (c.width == 32 || c.width == 64) &&
                          allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX;
     const bool preserve_flags = options.local_flags && flags.native && can_lea;
     if (allocation.homes[c.node.value].reuse_rhs) {
+        Xbyak::Address mem;
+        if (!preserve_flags && MemoryScalarOperand(c.Arg(0), c.width, mem)) {
+            Read(c.Arg(1), destination);
+            add(R(destination, c.width), mem);
+            c.scalar_normalized = true;
+            CaptureFlags(c);
+            return;
+        }
         Reg64 left = rcx;
         if (!ResidentScalar(c.Arg(0), c.width, left)) Read(c.Arg(0), rcx);
         Read(c.Arg(1), destination);
@@ -61,6 +100,49 @@ void Writer::Arithmetic(OpContext& c) {
             (preserve_flags || (lhs != destination && rhs != destination))) {
             lea(R(destination, c.width), ptr[lhs + rhs]);
             c.scalar_normalized = true;
+            return;
+        }
+    }
+    const auto load_carry_in = [&]() {
+        if (options.local_flags && defer_flags) {
+            if (options.lahf)
+                bt(word[rsp + allocation.flags_slot], 8);
+            else
+                bt(qword[rsp + allocation.flags_slot], 0);
+            if (flags.saved_carry) cmc();
+        } else
+            bt(rbx, 29);
+    };
+    if (!negop && !preserve_flags && c.count == 2 && (c.width == 32 || c.width == 64)) {
+        Xbyak::Address mem;
+        const bool rhs_mem = MemoryScalarOperand(c.Arg(1), c.width, mem);
+        const bool lhs_mem = !rhs_mem &&
+                             (c.operation.opcode == OpCode::Add ||
+                              c.operation.opcode == OpCode::Adc) &&
+                             MemoryScalarOperand(c.Arg(0), c.width, mem);
+        if (rhs_mem || lhs_mem) {
+            Read(rhs_mem ? c.Arg(0) : c.Arg(1), destination);
+            const auto a = R(destination, c.width);
+            switch (c.operation.opcode) {
+                case OpCode::Add:
+                    add(a, mem);
+                    break;
+                case OpCode::Sub:
+                    sub(a, mem);
+                    break;
+                case OpCode::Adc:
+                    load_carry_in();
+                    adc(a, mem);
+                    break;
+                case OpCode::Sbb:
+                    load_carry_in();
+                    sbb(a, mem);
+                    break;
+                default:
+                    Reject(CompileError::UnsupportedOpcode);
+            }
+            c.scalar_normalized = true;
+            CaptureFlags(c);
             return;
         }
     }
@@ -131,12 +213,51 @@ AR(Neg)
 #undef AR
 
 void Writer::Logical(OpContext& c) {
+    if (allocation.homes[c.node.value].rematerialize) {
+        c.saved = true;
+        return;
+    }
+    if (TryEmitZeroIdentityCopy(c)) return;
     const auto destination = ScalarDestination(c);
     auto at = c.operands.begin();
     const auto left = *at++;
     const bool unary = at == c.operands.end();
     Reg64 right = rcx;
     std::int32_t immediate;
+    if (!unary && c.count == 2 && c.operation.opcode == OpCode::And && c.width == 64 &&
+        c.Arg(1).Kind() == OperandKind::Immediate) {
+        u64 raw_imm = c.Arg(1).Payload();
+        const auto ibits = TypeBits(View(c.Arg(1)));
+        if (ibits && ibits < 64) raw_imm &= (u64{1} << ibits) - 1;
+        if (raw_imm == UINT32_MAX && !c.operation.flag_outputs &&
+            allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX &&
+            TypeBits(View(left)) >= 32) {
+            Xbyak::Address mem;
+            Reg64 src = destination;
+            if (ResidentScalar(left, 32, src)) {
+                if (src != destination ||
+                    source.Operations()[left.Payload()].type != ir::Type::U32)
+                    mov(destination.cvt32(), src.cvt32());
+            } else if (MemoryScalarOperand(left, 32, mem)) {
+                mov(destination.cvt32(), mem);
+            } else {
+                Read(left, destination);
+                mov(destination.cvt32(), destination.cvt32());
+            }
+            c.scalar_normalized = true;
+            return;
+        }
+        if (raw_imm <= UINT32_MAX) {
+            Read(left, destination);
+            and_(destination.cvt32(), static_cast<std::int32_t>(static_cast<u32>(raw_imm)));
+            if (c.operation.flag_outputs ||
+                allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX)
+                test(destination, destination);
+            c.scalar_normalized = true;
+            CaptureFlags(c);
+            return;
+        }
+    }
     if (!unary && c.count == 2 &&
         (c.operation.opcode == OpCode::And || c.operation.opcode == OpCode::Or ||
          c.operation.opcode == OpCode::Xor) &&
@@ -154,12 +275,59 @@ void Writer::Logical(OpContext& c) {
             or_(R(destination, c.width), immediate);
         else
             xor_(R(destination, c.width), immediate);
-        if (c.operation.flag_outputs ||
+        c.scalar_normalized = true;
+        CaptureFlags(c);
+        return;
+    }
+    if (options.bmi1 && !unary && c.operation.opcode == OpCode::AndNot &&
+        (c.width == 32 || c.width == 64)) {
+        const auto r32e = [&](const Reg64& r) {
+            return Xbyak::Reg32e(r.getIdx(), c.width);
+        };
+        Reg64 inv_reg = rcx;
+        if (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, inv_reg)) {
+            Expression(at, c.operands.end(), rcx, 1);
+            inv_reg = rcx;
+        }
+        Xbyak::Address mem;
+        Reg64 src_reg = rax;
+        if (MemoryScalarOperand(left, c.width, mem)) {
+            andn(r32e(destination), r32e(inv_reg), mem);
+        } else if (ResidentScalar(left, c.width, src_reg)) {
+            andn(r32e(destination), r32e(inv_reg), r32e(src_reg));
+        } else {
+            const Reg64 tmp = inv_reg == destination ? rax : destination;
+            Read(left, tmp);
+            andn(r32e(destination), r32e(inv_reg), r32e(tmp));
+        }
+        if ((c.operation.flag_outputs & 16) ||
             allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX)
             test(R(destination, c.width), R(destination, c.width));
         c.scalar_normalized = true;
         CaptureFlags(c);
         return;
+    }
+    if (!unary && c.count == 2 && (c.width == 32 || c.width == 64) &&
+        (c.operation.opcode == OpCode::And || c.operation.opcode == OpCode::Or ||
+         c.operation.opcode == OpCode::Xor)) {
+        Xbyak::Address mem;
+        const bool reuse_mem =
+                allocation.homes[c.node.value].reuse_rhs && MemoryScalarOperand(left, c.width, mem);
+        const bool rhs_mem = !reuse_mem && MemoryScalarOperand(c.Arg(1), c.width, mem);
+        const bool lhs_mem = !reuse_mem && !rhs_mem && MemoryScalarOperand(left, c.width, mem);
+        if (reuse_mem || rhs_mem || lhs_mem) {
+            Read(rhs_mem ? left : c.Arg(1), destination);
+            const auto a = R(destination, c.width);
+            if (c.operation.opcode == OpCode::And)
+                and_(a, mem);
+            else if (c.operation.opcode == OpCode::Or)
+                or_(a, mem);
+            else
+                xor_(a, mem);
+            c.scalar_normalized = true;
+            CaptureFlags(c);
+            return;
+        }
     }
     if (allocation.homes[c.node.value].reuse_rhs) {
         if (!ResidentScalar(c.Arg(0), c.width, right)) Read(c.Arg(0), rcx);
@@ -200,7 +368,8 @@ void Writer::Logical(OpContext& c) {
             Reject(CompileError::UnsupportedOpcode);
     }
     if (c.width != 32) Mask(destination, c.width);
-    if (c.operation.flag_outputs || allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX)
+    if ((c.width < 32 || c.operation.opcode == OpCode::Not) &&
+        (c.operation.flag_outputs || allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX))
         test(R(destination, c.width), R(destination, c.width));
     c.scalar_normalized = true;
     CaptureFlags(c);
@@ -221,6 +390,15 @@ void Writer::Handle(Op<OpCode::Mul>, OpContext& c) {
     const auto destination = ScalarDestination(c);
     std::int32_t immediate;
     if (c.count == 2 && Immediate32(c.Arg(1), c.width, immediate)) {
+        Xbyak::Address mem;
+        if (MemoryScalarOperand(c.Arg(0), c.width, mem)) {
+            if (c.width == 32)
+                imul(destination.cvt32(), mem, immediate);
+            else
+                imul(destination, mem, immediate);
+            c.scalar_normalized = true;
+            return;
+        }
         Reg64 source = destination;
         if (!ResidentScalar(c.Arg(0), c.width, source)) Read(c.Arg(0), destination);
         if (c.width == 32)
@@ -229,6 +407,17 @@ void Writer::Handle(Op<OpCode::Mul>, OpContext& c) {
             imul(destination, source, immediate);
         c.scalar_normalized = true;
         return;
+    }
+    if (c.count == 2 && (c.width == 32 || c.width == 64)) {
+        Xbyak::Address mem;
+        const bool rhs_mem = MemoryScalarOperand(c.Arg(1), c.width, mem);
+        const bool lhs_mem = !rhs_mem && MemoryScalarOperand(c.Arg(0), c.width, mem);
+        if (rhs_mem || lhs_mem) {
+            Read(rhs_mem ? c.Arg(0) : c.Arg(1), destination);
+            imul(R(destination, c.width), mem);
+            c.scalar_normalized = true;
+            return;
+        }
     }
     Reg64 right = rcx;
     auto at = c.operands.begin();
@@ -293,9 +482,35 @@ void Writer::Handle(Op<OpCode::SignedDiv64>, OpContext& c) {
 }
 
 void Writer::Shift(OpContext& c) {
+    if (allocation.homes[c.node.value].rematerialize) {
+        c.saved = true;
+        return;
+    }
     const auto destination = ScalarDestination(c);
-    Read(c.Arg(0), destination);
     const auto op = c.operation.opcode;
+    if (options.bmi2 && op == OpCode::RorImm && (c.width == 32 || c.width == 64) &&
+        c.Arg(1).Kind() == OperandKind::Immediate && TypeBits(View(c.Arg(0))) >= c.width) {
+        const auto r32e = [&](const Reg64& r) {
+            return Xbyak::Reg32e(r.getIdx(), c.width);
+        };
+        const auto amount = static_cast<std::uint8_t>(c.Arg(1).Payload() & (c.width - 1));
+        Xbyak::Address mem;
+        Reg64 src = destination;
+        if (MemoryScalarOperand(c.Arg(0), c.width, mem)) {
+            rorx(r32e(destination), mem, amount);
+        } else if (ResidentScalar(c.Arg(0), c.width, src)) {
+            if (amount != 0 || src != destination ||
+                (c.width == 32 &&
+                 source.Operations()[c.Arg(0).Payload()].type != ir::Type::U32))
+                rorx(r32e(destination), r32e(src), amount);
+        } else {
+            Read(c.Arg(0), destination);
+            rorx(r32e(destination), r32e(destination), amount);
+        }
+        c.scalar_normalized = true;
+        return;
+    }
+    Read(c.Arg(0), destination);
     if (options.local_flags && flags.native && op == OpCode::LslImm &&
         (c.width == 32 || c.width == 64) && !c.operation.flag_outputs &&
         (c.Arg(1).Payload() & (c.width - 1)) <= 3) {
