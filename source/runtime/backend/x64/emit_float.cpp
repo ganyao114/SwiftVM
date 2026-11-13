@@ -6,6 +6,48 @@
 namespace swift::runtime::backend::x64::detail {
 using O = OpCode;
 
+namespace {
+struct FloatCompareEncoding {
+    unsigned predicate{3};
+    bool swap{};
+};
+
+constexpr FloatCompareEncoding EncodeFloatCompare(unsigned relations) noexcept {
+    switch (relations) {
+        case 1:
+            return {1, false};
+        case 2:
+            return {0, false};
+        case 3:
+            return {2, false};
+        case 4:
+            return {1, true};
+        case 5:
+            return {4, false};
+        case 6:
+            return {2, true};
+        case 7:
+            return {7, false};
+        case 8:
+            return {3, false};
+        case 9:
+            return {6, true};
+        case 10:
+            return {0, false};
+        case 11:
+            return {5, true};
+        case 12:
+            return {6, false};
+        case 13:
+            return {4, false};
+        case 14:
+            return {5, false};
+        default:
+            return {3, false};
+    }
+}
+}  // namespace
+
 void Writer::HarvestArmFPStatus(bool saved, bool restore) {
     if (!ArmNativeFP()) return;
     SaveNativeFlags();
@@ -45,6 +87,23 @@ void Writer::EmitIndexedFPBroadcast(u32 rhs_node, unsigned bits, unsigned index)
     } else {
         vpermilps(xmm1, Xmm(rh.reg), index * 0x55);
     }
+}
+
+void Writer::LoadAvxBroadcast2S(CellView rhs, unsigned index, const Xmm& dst) {
+    if (rhs.Kind() == OperandKind::Value &&
+        source.Operations()[rhs.Payload()].type == ir::Type::V128) {
+        const auto& rh = allocation.homes[rhs.Payload()];
+        if (rh.spilled && rh.uniform_offset != UINT32_MAX)
+            vpermilps(dst, ptr[r12 + rh.uniform_offset], index * 0x55);
+        else if (rh.spilled)
+            vpermilps(dst, ptr[rsp + rh.stack_offset], index * 0x55);
+        else
+            vpermilps(dst, Xmm(rh.reg), index * 0x55);
+    } else {
+        ReadVector(rhs, dst);
+        vpermilps(dst, dst, index * 0x55);
+    }
+    vmovq(dst, dst);
 }
 
 void Writer::CheckArmFPResult(
@@ -136,20 +195,6 @@ void Writer::CheckArmFPResult(
     }
 }
 
-void Writer::EmitFPConstants() {
-    constexpr u64 values[]{UINT64_C(0x7fffffff7fffffff),
-                           UINT64_C(0x0080000000800000),
-                           UINT64_C(0x7fffffffffffffff),
-                           UINT64_C(0x0010000000000000)};
-    for (unsigned index = 0; index < fp_constants.size(); ++index) {
-        if (!fp_constants_used[index]) continue;
-        align(16);
-        L(fp_constants[index]);
-        dq(values[index]);
-        dq(values[index]);
-    }
-}
-
 void Writer::BeginArmFPRegion(u32 control, u32 status) {
     if (arm_fp_region) return;
     // Exact numerical leaves preserve FPCR. A shared stub reuses the
@@ -195,8 +240,9 @@ void Writer::PrepareArmFPRegion(OpContext& c) {
         const auto bytes = (TypeBits(field.TypeView()) + 7) / 8;
         for (auto offset : {arm_fp_control, arm_fp_status})
             boundary |= field.Payload() < u64{offset} + 4 && offset < field.Payload() + bytes;
-    } else if (HasAnyEffect(effects, Effect::ReadGuestState | Effect::WriteGuestState))
+    } else if (HasAnyEffect(effects, Effect::ReadGuestState | Effect::WriteGuestState)) {
         boundary = true;
+    }
     if (boundary) EndArmFPRegion();
 }
 
@@ -209,6 +255,298 @@ void Writer::AccumulateFloating(const Reg32& raised) {
     } else {
         or_(dword[rsp + mxcsr_slot + 4], raised);
         ldmxcsr(dword[rsp + mxcsr_slot + 4]);
+    }
+}
+
+void Writer::EmitFloatHelperLoop(
+        OpContext& c, unsigned bits, unsigned flags, bool fused, bool scalar) {
+    const unsigned tmp = allocation.call_offset + 224;
+    movdqu(ptr[rsp + tmp], xmm0);
+    movdqu(ptr[rsp + tmp + 16], xmm1);
+    if (fused) {
+        ReadVector(c.Arg(2), xmm14);
+        movdqu(ptr[rsp + tmp + 32], xmm14);
+    }
+    if (scalar) {
+        movdqu(ptr[rsp + tmp + 48], xmm0);
+    } else {
+        pxor(xmm14, xmm14);
+        movdqu(ptr[rsp + tmp + 48], xmm14);
+    }
+    for (unsigned i = 0; i < (scalar ? 1 : 128 / bits); ++i) {
+        PrepareCall();
+        if (fused) {
+            Load(rdi, rsp, tmp + i * bits / 8, bits);
+            Load(rsi, rsp, tmp + 16 + i * bits / 8, bits);
+            Load(rdx, rsp, tmp + 32 + i * bits / 8, bits);
+            mov(ecx, bits);
+            unsigned f = flags & 3;
+            if ((flags & 8) && ((i & 1) == ((flags >> 4) & 1))) f ^= 2;
+            mov(r8d, f);
+            if (options.mxcsr_offset != UINT32_MAX)
+                mov(r9d, dword[r12 + options.mxcsr_offset]);
+            else
+                mov(r9d, 0x1f80);
+            Call(reinterpret_cast<std::uintptr_t>(&FusedMultiplyAddStatus),
+                 HostSymbol::X64FusedMultiplyAdd);
+        } else {
+            Load(rdi, rsp, tmp + 16 + i * bits / 8, bits);
+            mov(esi, bits);
+            mov(edx, c.Arg(3).Payload());
+            if (options.mxcsr_offset != UINT32_MAX)
+                mov(ecx, dword[r12 + options.mxcsr_offset]);
+            else
+                mov(ecx, 0x1f80);
+            Call(reinterpret_cast<std::uintptr_t>(&RoundIntegralStatus),
+                 HostSymbol::X64RoundIntegral);
+        }
+        AccumulateFloating(edx);
+        Store(rax, rsp, tmp + 48 + i * bits / 8, bits);
+    }
+    movdqu(xmm0, ptr[rsp + tmp + 48]);
+}
+
+void Writer::EmitFloatRound(OpContext& c, unsigned bits, bool scalar) {
+    const unsigned mode = c.Arg(3).Payload();
+    if (mode & ~11u) Reject(CompileError::UnsupportedOperand);
+    if (bits == 32) {
+        if (scalar)
+            roundss(xmm0, xmm1, mode);
+        else
+            roundps(xmm0, xmm1, mode);
+    } else {
+        if (scalar)
+            roundsd(xmm0, xmm1, mode);
+        else
+            roundpd(xmm0, xmm1, mode);
+    }
+}
+
+void Writer::EmitFloatCompareMask(OpContext& c, unsigned bits, bool scalar) {
+    const unsigned relations = c.Arg(3).Payload() & 15;
+    const bool signaling = c.Arg(3).Payload() & 16;
+    const bool quiet_ordered = FloatingCompareNeedsCall(relations);
+    if (FloatingCompareNeedsCall(c.Arg(3).Payload())) {
+        // SSE2 has no quiet ordered LT/LE predicate. Use the shared pure
+        // numerical leaf only for those shapes instead of introducing IE.
+        const auto tmp = allocation.call_offset + 224;
+        movdqu(ptr[rsp + tmp], xmm0);
+        movdqu(ptr[rsp + tmp + 16], xmm1);
+        mov(dword[rsp + tmp + 64],
+            static_cast<unsigned>(runtime::x86::FloatingOperation::CompareMask));
+        mov(dword[rsp + tmp + 68], bits);
+        if (options.mxcsr_offset != UINT32_MAX)
+            mov(eax, dword[r12 + options.mxcsr_offset]);
+        else
+            mov(eax, 0x1f80);
+        mov(dword[rsp + tmp + 76], eax);
+        mov(dword[rsp + tmp + 80],
+            scalar ? static_cast<unsigned>(runtime::x86::FloatingFlag::Scalar) : 0);
+        mov(dword[rsp + tmp + 84], relations);
+        PrepareCall();
+        lea(rdi, ptr[rsp + tmp]);
+        Call(reinterpret_cast<std::uintptr_t>(&runtime::x86::ExecuteFloating),
+             HostSymbol::X64FloatingCompare);
+        mov(edx, dword[rsp + tmp + 88]);
+        AccumulateFloating(edx);
+        movdqu(xmm0, ptr[rsp + tmp + 48]);
+        return;
+    }
+    const auto compare = [&](const Xmm& dst, const Xmm& rhs, unsigned predicate) {
+        if (bits == 32) {
+            if (scalar)
+                cmpss(dst, rhs, predicate);
+            else
+                cmpps(dst, rhs, predicate);
+        } else {
+            if (scalar)
+                cmpsd(dst, rhs, predicate);
+            else
+                cmppd(dst, rhs, predicate);
+        }
+    };
+    movdqa(xmm15, xmm0);
+    // Quiet predicates still report SNaN; signaling predicates also
+    // report QNaN. Do not infer this dimension from the result mask.
+    if (signaling && !quiet_ordered) {
+        movdqa(xmm14, xmm0);
+        compare(xmm14, xmm1, 1);
+    }
+    const auto [predicate, swap] = EncodeFloatCompare(relations);
+    movdqa(xmm14, swap ? xmm1 : xmm0);
+    compare(xmm14, swap ? xmm0 : xmm1, predicate);
+    if (relations == 5 || relations == 10) {
+        compare(xmm0, xmm1, relations == 5 ? 7 : 3);
+        if (relations == 5)
+            pand(xmm14, xmm0);
+        else
+            por(xmm14, xmm0);
+    } else if (relations == 0) {
+        pxor(xmm14, xmm14);
+    } else if (relations == 15) {
+        pcmpeqd(xmm14, xmm14);
+    }
+    movdqa(xmm0, xmm14);
+    if (scalar) {
+        if (bits == 32)
+            movss(xmm15, xmm0);
+        else
+            movsd(xmm15, xmm0);
+        movdqa(xmm0, xmm15);
+    }
+}
+
+void Writer::EmitFloatUnary(OpContext& c, unsigned bits, bool scalar) {
+    const auto kind = c.Arg(3).Payload();
+    if (kind > 2) Reject(CompileError::UnsupportedOperand);
+    if (bits == 32) {
+        if (kind == 0) {
+            if (scalar)
+                sqrtss(xmm0, xmm1);
+            else
+                sqrtps(xmm0, xmm1);
+            return;
+        }
+        movdqa(xmm14, xmm0);
+        if (kind == 1) {
+            if (scalar)
+                rcpss(xmm0, xmm1);
+            else
+                rcpps(xmm0, xmm1);
+        } else {
+            if (scalar)
+                rsqrtss(xmm0, xmm1);
+            else
+                rsqrtps(xmm0, xmm1);
+        }
+        if (scalar) {
+            movss(xmm14, xmm0);
+            movdqa(xmm0, xmm14);
+        }
+        return;
+    }
+    if (kind == 0) {
+        if (scalar)
+            sqrtsd(xmm0, xmm1);
+        else
+            sqrtpd(xmm0, xmm1);
+        return;
+    }
+    movdqa(xmm14, xmm0);
+    if (kind == 2) sqrtpd(xmm1, xmm1);
+    mov(rax, UINT64_C(0x3ff0000000000000));
+    movq(xmm0, rax);
+    punpcklqdq(xmm0, xmm0);
+    divpd(xmm0, xmm1);
+    if (scalar) {
+        movsd(xmm14, xmm0);
+        movdqa(xmm0, xmm14);
+    }
+}
+
+void Writer::EmitFloatMinMax(OpContext& c, unsigned bits, bool scalar) {
+    // Select the original operand bits: MIN/MAX may flush a selected
+    // subnormal under FTZ, while this IR operation only applies DAZ.
+    movdqa(xmm15, xmm0);
+    movdqa(xmm14, c.Arg(3).Payload() ? xmm1 : xmm0);
+    const auto& rhs = c.Arg(3).Payload() ? xmm0 : xmm1;
+    if (bits == 32) {
+        if (scalar)
+            cmpss(xmm14, rhs, 1);
+        else
+            cmpps(xmm14, rhs, 1);
+    } else {
+        if (scalar)
+            cmpsd(xmm14, rhs, 1);
+        else
+            cmppd(xmm14, rhs, 1);
+    }
+    pand(xmm0, xmm14);
+    pandn(xmm14, xmm1);
+    por(xmm0, xmm14);
+    if (scalar) {
+        if (bits == 32)
+            movss(xmm15, xmm0);
+        else
+            movsd(xmm15, xmm0);
+        movdqa(xmm0, xmm15);
+    }
+    if (options.mxcsr_offset == UINT32_MAX) return;
+    Label done;
+    test(dword[r12 + options.mxcsr_offset], 64);
+    jz(done, T_NEAR);
+    mov(rax, bits == 32 ? UINT64_C(0x7f8000007f800000) : UINT64_C(0x7ff0000000000000));
+    movq(xmm1, rax);
+    punpcklqdq(xmm1, xmm1);
+    movdqa(xmm14, xmm0);
+    pand(xmm14, xmm1);
+    pxor(xmm1, xmm1);
+    pcmpeqd(xmm14, xmm1);
+    if (bits == 64) {
+        pshufd(xmm1, xmm14, 0xb1);
+        pand(xmm14, xmm1);
+    }
+    if (scalar) {
+        mov(rax, bits == 32 ? UINT64_C(0xffffffff) : UINT64_MAX);
+        movq(xmm1, rax);
+        pand(xmm14, xmm1);
+    }
+    mov(rax, bits == 32 ? UINT64_C(0x8000000080000000) : UINT64_C(0x8000000000000000));
+    movq(xmm1, rax);
+    punpcklqdq(xmm1, xmm1);
+    movdqa(xmm15, xmm0);
+    pand(xmm15, xmm1);
+    pand(xmm15, xmm14);
+    pandn(xmm14, xmm0);
+    por(xmm14, xmm15);
+    movdqa(xmm0, xmm14);
+    L(done);
+}
+
+void Writer::EmitFloatArithmetic(OpCode op, unsigned bits, bool scalar) {
+    const bool addop = op == O::VecFAdd || op == O::VecFAddScalar32 || op == O::VecFAddScalar64;
+    const bool subop = op == O::VecFSub || op == O::VecFSubScalar32 || op == O::VecFSubScalar64;
+    const bool mulop = op == O::VecFMul || op == O::VecFMulScalar32 || op == O::VecFMulScalar64;
+    if (bits == 32) {
+        if (scalar) {
+            if (addop)
+                addss(xmm0, xmm1);
+            else if (subop)
+                subss(xmm0, xmm1);
+            else if (mulop)
+                mulss(xmm0, xmm1);
+            else
+                divss(xmm0, xmm1);
+        } else {
+            if (addop)
+                addps(xmm0, xmm1);
+            else if (subop)
+                subps(xmm0, xmm1);
+            else if (mulop)
+                mulps(xmm0, xmm1);
+            else
+                divps(xmm0, xmm1);
+        }
+        return;
+    }
+    if (scalar) {
+        if (addop)
+            addsd(xmm0, xmm1);
+        else if (subop)
+            subsd(xmm0, xmm1);
+        else if (mulop)
+            mulsd(xmm0, xmm1);
+        else
+            divsd(xmm0, xmm1);
+    } else {
+        if (addop)
+            addpd(xmm0, xmm1);
+        else if (subop)
+            subpd(xmm0, xmm1);
+        else if (mulop)
+            mulpd(xmm0, xmm1);
+        else
+            divpd(xmm0, xmm1);
     }
 }
 
@@ -228,335 +566,18 @@ void Writer::Float(OpContext& c) {
                         (fused && (flags & 4));
     ReadVector(c.Arg(0), xmm0);
     ReadVector(c.Arg(1), xmm1);
-    if (fused || (round && !options.sse41)) {
-        const unsigned tmp = allocation.call_offset + 224;
-        movdqu(ptr[rsp + tmp], xmm0);
-        movdqu(ptr[rsp + tmp + 16], xmm1);
-        if (fused) {
-            ReadVector(c.Arg(2), xmm14);
-            movdqu(ptr[rsp + tmp + 32], xmm14);
-        }
-        if (scalar)
-            movdqu(ptr[rsp + tmp + 48], xmm0);
-        else {
-            pxor(xmm14, xmm14);
-            movdqu(ptr[rsp + tmp + 48], xmm14);
-        }
-        for (unsigned i = 0; i < (scalar ? 1 : 128 / bits); ++i) {
-            PrepareCall();
-            if (fused) {
-                Load(rdi, rsp, tmp + i * bits / 8, bits);
-                Load(rsi, rsp, tmp + 16 + i * bits / 8, bits);
-                Load(rdx, rsp, tmp + 32 + i * bits / 8, bits);
-                mov(ecx, bits);
-                unsigned f = flags & 3;
-                if ((flags & 8) && ((i & 1) == ((flags >> 4) & 1))) f ^= 2;
-                mov(r8d, f);
-                if (options.mxcsr_offset != UINT32_MAX)
-                    mov(r9d, dword[r12 + options.mxcsr_offset]);
-                else
-                    mov(r9d, 0x1f80);
-                Call(reinterpret_cast<std::uintptr_t>(&FusedMultiplyAddStatus),
-                     HostSymbol::X64FusedMultiplyAdd);
-            } else {
-                Load(rdi, rsp, tmp + 16 + i * bits / 8, bits);
-                mov(esi, bits);
-                mov(edx, c.Arg(3).Payload());
-                if (options.mxcsr_offset != UINT32_MAX)
-                    mov(ecx, dword[r12 + options.mxcsr_offset]);
-                else
-                    mov(ecx, 0x1f80);
-                Call(reinterpret_cast<std::uintptr_t>(&RoundIntegralStatus),
-                     HostSymbol::X64RoundIntegral);
-            }
-            AccumulateFloating(edx);
-            Store(rax, rsp, tmp + 48 + i * bits / 8, bits);
-        }
-        movdqu(xmm0, ptr[rsp + tmp + 48]);
-    } else if (round) {
-        const unsigned mode = c.Arg(3).Payload();
-        if (mode & ~11u) Reject(CompileError::UnsupportedOperand);
-        if (bits == 32) {
-            if (scalar)
-                roundss(xmm0, xmm1, mode);
-            else
-                roundps(xmm0, xmm1, mode);
-        } else {
-            if (scalar)
-                roundsd(xmm0, xmm1, mode);
-            else
-                roundpd(xmm0, xmm1, mode);
-        }
-    } else if (mask) {
-        const unsigned relations = c.Arg(3).Payload() & 15;
-        const bool signaling = c.Arg(3).Payload() & 16;
-        const bool quiet_ordered = FloatingCompareNeedsCall(relations);
-        if (FloatingCompareNeedsCall(c.Arg(3).Payload())) {
-            // SSE2 has no quiet ordered LT/LE predicate. Use the shared pure
-            // numerical leaf only for those shapes instead of introducing IE.
-            const auto tmp = allocation.call_offset + 224;
-            movdqu(ptr[rsp + tmp], xmm0);
-            movdqu(ptr[rsp + tmp + 16], xmm1);
-            mov(dword[rsp + tmp + 64],
-                static_cast<unsigned>(runtime::x86::FloatingOperation::CompareMask));
-            mov(dword[rsp + tmp + 68], bits);
-            if (options.mxcsr_offset != UINT32_MAX)
-                mov(eax, dword[r12 + options.mxcsr_offset]);
-            else
-                mov(eax, 0x1f80);
-            mov(dword[rsp + tmp + 76], eax);
-            mov(dword[rsp + tmp + 80],
-                scalar ? static_cast<unsigned>(runtime::x86::FloatingFlag::Scalar) : 0);
-            mov(dword[rsp + tmp + 84], relations);
-            PrepareCall();
-            lea(rdi, ptr[rsp + tmp]);
-            Call(reinterpret_cast<std::uintptr_t>(&runtime::x86::ExecuteFloating),
-                 HostSymbol::X64FloatingCompare);
-            mov(edx, dword[rsp + tmp + 88]);
-            AccumulateFloating(edx);
-            movdqu(xmm0, ptr[rsp + tmp + 48]);
-        } else {
-            const auto compare = [&](const Xmm& dst, const Xmm& rhs, unsigned predicate) {
-                if (bits == 32) {
-                    if (scalar)
-                        cmpss(dst, rhs, predicate);
-                    else
-                        cmpps(dst, rhs, predicate);
-                } else {
-                    if (scalar)
-                        cmpsd(dst, rhs, predicate);
-                    else
-                        cmppd(dst, rhs, predicate);
-                }
-            };
-            movdqa(xmm15, xmm0);
-            // Quiet predicates still report SNaN; signaling predicates also
-            // report QNaN. Do not infer this dimension from the result mask.
-            if (signaling && !quiet_ordered) {
-                movdqa(xmm14, xmm0);
-                compare(xmm14, xmm1, 1);
-            }
-            unsigned predicate = 3;
-            bool swap{};
-            switch (relations) {
-                case 1:
-                    predicate = 1;
-                    break;
-                case 2:
-                    predicate = 0;
-                    break;
-                case 3:
-                    predicate = 2;
-                    break;
-                case 4:
-                    predicate = 1;
-                    swap = true;
-                    break;
-                case 5:
-                    predicate = 4;
-                    break;
-                case 6:
-                    predicate = 2;
-                    swap = true;
-                    break;
-                case 7:
-                    predicate = 7;
-                    break;
-                case 8:
-                    predicate = 3;
-                    break;
-                case 9:
-                    predicate = 6;
-                    swap = true;
-                    break;
-                case 10:
-                    predicate = 0;
-                    break;
-                case 11:
-                    predicate = 5;
-                    swap = true;
-                    break;
-                case 12:
-                    predicate = 6;
-                    break;
-                case 13:
-                    predicate = 4;
-                    break;
-                case 14:
-                    predicate = 5;
-                    break;
-                default:
-                    break;
-            }
-            movdqa(xmm14, swap ? xmm1 : xmm0);
-            compare(xmm14, swap ? xmm0 : xmm1, predicate);
-            if (relations == 5 || relations == 10) {
-                compare(xmm0, xmm1, relations == 5 ? 7 : 3);
-                if (relations == 5)
-                    pand(xmm14, xmm0);
-                else
-                    por(xmm14, xmm0);
-            } else if (relations == 0)
-                pxor(xmm14, xmm14);
-            else if (relations == 15)
-                pcmpeqd(xmm14, xmm14);
-            movdqa(xmm0, xmm14);
-            if (scalar) {
-                if (bits == 32)
-                    movss(xmm15, xmm0);
-                else
-                    movsd(xmm15, xmm0);
-                movdqa(xmm0, xmm15);
-            }
-        }
-    } else if (unary) {
-        const auto kind = c.Arg(3).Payload();
-        if (kind > 2) Reject(CompileError::UnsupportedOperand);
-        if (bits == 32) {
-            if (kind == 0) {
-                if (scalar)
-                    sqrtss(xmm0, xmm1);
-                else
-                    sqrtps(xmm0, xmm1);
-            } else {
-                movdqa(xmm14, xmm0);
-                if (kind == 1) {
-                    if (scalar)
-                        rcpss(xmm0, xmm1);
-                    else
-                        rcpps(xmm0, xmm1);
-                } else {
-                    if (scalar)
-                        rsqrtss(xmm0, xmm1);
-                    else
-                        rsqrtps(xmm0, xmm1);
-                }
-                if (scalar) {
-                    movss(xmm14, xmm0);
-                    movdqa(xmm0, xmm14);
-                }
-            }
-        } else if (kind == 0) {
-            if (scalar)
-                sqrtsd(xmm0, xmm1);
-            else
-                sqrtpd(xmm0, xmm1);
-        } else {
-            movdqa(xmm14, xmm0);
-            if (kind == 2) sqrtpd(xmm1, xmm1);
-            mov(rax, UINT64_C(0x3ff0000000000000));
-            movq(xmm0, rax);
-            punpcklqdq(xmm0, xmm0);
-            divpd(xmm0, xmm1);
-            if (scalar) {
-                movsd(xmm14, xmm0);
-                movdqa(xmm0, xmm14);
-            }
-        }
-    } else if (minmax) {
-        // Select the original operand bits: MIN/MAX may flush a selected
-        // subnormal under FTZ, while this IR operation only applies DAZ.
-        movdqa(xmm15, xmm0);
-        movdqa(xmm14, c.Arg(3).Payload() ? xmm1 : xmm0);
-        const auto& rhs = c.Arg(3).Payload() ? xmm0 : xmm1;
-        if (bits == 32) {
-            if (scalar)
-                cmpss(xmm14, rhs, 1);
-            else
-                cmpps(xmm14, rhs, 1);
-        } else {
-            if (scalar)
-                cmpsd(xmm14, rhs, 1);
-            else
-                cmppd(xmm14, rhs, 1);
-        }
-        pand(xmm0, xmm14);
-        pandn(xmm14, xmm1);
-        por(xmm0, xmm14);
-        if (scalar) {
-            if (bits == 32)
-                movss(xmm15, xmm0);
-            else
-                movsd(xmm15, xmm0);
-            movdqa(xmm0, xmm15);
-        }
-        if (options.mxcsr_offset != UINT32_MAX) {
-            Label done;
-            test(dword[r12 + options.mxcsr_offset], 64);
-            jz(done, T_NEAR);
-            mov(rax, bits == 32 ? UINT64_C(0x7f8000007f800000) : UINT64_C(0x7ff0000000000000));
-            movq(xmm1, rax);
-            punpcklqdq(xmm1, xmm1);
-            movdqa(xmm14, xmm0);
-            pand(xmm14, xmm1);
-            pxor(xmm1, xmm1);
-            pcmpeqd(xmm14, xmm1);
-            if (bits == 64) {
-                pshufd(xmm1, xmm14, 0xb1);
-                pand(xmm14, xmm1);
-            }
-            if (scalar) {
-                mov(rax, bits == 32 ? UINT64_C(0xffffffff) : UINT64_MAX);
-                movq(xmm1, rax);
-                pand(xmm14, xmm1);
-            }
-            mov(rax, bits == 32 ? UINT64_C(0x8000000080000000) : UINT64_C(0x8000000000000000));
-            movq(xmm1, rax);
-            punpcklqdq(xmm1, xmm1);
-            movdqa(xmm15, xmm0);
-            pand(xmm15, xmm1);
-            pand(xmm15, xmm14);
-            pandn(xmm14, xmm0);
-            por(xmm14, xmm15);
-            movdqa(xmm0, xmm14);
-            L(done);
-        }
-    } else {
-        const bool addop = op == O::VecFAdd || op == O::VecFAddScalar32 || op == O::VecFAddScalar64,
-                   subop = op == O::VecFSub || op == O::VecFSubScalar32 || op == O::VecFSubScalar64,
-                   mulop = op == O::VecFMul || op == O::VecFMulScalar32 || op == O::VecFMulScalar64;
-        if (bits == 32) {
-            if (scalar) {
-                if (addop)
-                    addss(xmm0, xmm1);
-                else if (subop)
-                    subss(xmm0, xmm1);
-                else if (mulop)
-                    mulss(xmm0, xmm1);
-                else
-                    divss(xmm0, xmm1);
-            } else {
-                if (addop)
-                    addps(xmm0, xmm1);
-                else if (subop)
-                    subps(xmm0, xmm1);
-                else if (mulop)
-                    mulps(xmm0, xmm1);
-                else
-                    divps(xmm0, xmm1);
-            }
-        } else {
-            if (scalar) {
-                if (addop)
-                    addsd(xmm0, xmm1);
-                else if (subop)
-                    subsd(xmm0, xmm1);
-                else if (mulop)
-                    mulsd(xmm0, xmm1);
-                else
-                    divsd(xmm0, xmm1);
-            } else {
-                if (addop)
-                    addpd(xmm0, xmm1);
-                else if (subop)
-                    subpd(xmm0, xmm1);
-                else if (mulop)
-                    mulpd(xmm0, xmm1);
-                else
-                    divpd(xmm0, xmm1);
-            }
-        }
-    }
+    if (fused || (round && !options.sse41))
+        EmitFloatHelperLoop(c, bits, flags, fused, scalar);
+    else if (round)
+        EmitFloatRound(c, bits, scalar);
+    else if (mask)
+        EmitFloatCompareMask(c, bits, scalar);
+    else if (unary)
+        EmitFloatUnary(c, bits, scalar);
+    else if (minmax)
+        EmitFloatMinMax(c, bits, scalar);
+    else
+        EmitFloatArithmetic(op, bits, scalar);
     if (!c.vector_result) {
         movq(rax, xmm0);
         Mask(rax, bits);
@@ -590,304 +611,234 @@ void Writer::Handle(Op<O::ArmScalarFP>, OpContext&) { Reject(CompileError::Unsup
 
 void Writer::Handle(Op<O::ArmScalarFMA>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
 
-void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
-    const auto control = c.Arg(2).Payload(), status = c.Arg(3).Payload(),
-               format = c.Arg(4).Payload();
-    const bool post_check =
-            ArmNativeFP() && options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24));
-    if (options.local_flags && flags.dirty && (flags.native || flags.floating)) {
-        SaveNativeFlags(true);
-        flags.native = false;
+bool Writer::EmitAvxArmFPBinary128(
+        OpContext& c, const Xmm& dst, u64 format, unsigned bits, unsigned kind) {
+    Xmm lhs = xmm0;
+    if (c.Arg(0).Kind() == OperandKind::Value &&
+        source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128 &&
+        !allocation.homes[c.Arg(0).Payload()].spilled) {
+        lhs = Xmm(allocation.homes[c.Arg(0).Payload()].reg);
+    } else {
+        ReadVector(c.Arg(0), xmm0);
     }
-    const auto preserved_flags = flags;
-    if (!c.vector_result || View(c.Arg(0)) != ir::Type::V128 || View(c.Arg(1)) != ir::Type::V128 ||
-        control > INT32_MAX - 4 || status > INT32_MAX - 4 || format > UINT32_MAX ||
-        !runtime::arm64::ValidArmFPBinaryMode(format))
-        Reject(CompileError::UnsupportedOperand);
-    if (ArmNativeFP() && (control != options.arm_fpcr_offset || status != options.arm_fpsr_offset))
-        Reject(CompileError::UnsupportedOperand);
-    const unsigned bits = format & 4 ? 64 : 32, lanes = (format >> 3) & 7, kind = format & 3;
-    const unsigned tmp = allocation.call_offset + 224;
-    const bool regional =
-            options.arm_fpcr != UINT32_MAX && !ArmNativeFP() && !allocation.fpcr_may_change;
-    if (regional) BeginArmFPRegion(control, status);
-    const auto masks = LiveCallMasks();
-    const FPCallKey key{u32(control),
-                        u32(status),
-                        u32(format),
-                        masks.scalars,
-                        masks.vectors,
-                        regional,
-                        flags.dirty};
-    auto [stub, inserted] = fp_stub_index.try_emplace(key, fp_stubs.size());
-    if (inserted) fp_stubs.push_back({key, {}});
-    cold_fp.push_back({c.node, {}, {}, stub->second, preserved_flags});
-    auto& path = cold_fp.back();
-    auto& slow = path.entry;
-    if (allocation.fpcr_may_change) {
-        jmp(slow, T_NEAR);
-        L(path.resume);
-        return;
-    }
-    if (kind == 3 && !ArmNativeFP()) {
-        jmp(slow, T_NEAR);
-        L(path.resume);
-        flags = preserved_flags;
-        return;
-    }
-    if (options.arm_fpcr == UINT32_MAX) {
-        cmp(dword[r12 + control], 0);
-        jne(slow, T_NEAR);
-    }
-    if (options.avx && post_check &&
-        (lanes * bits == 128 || lanes == 1 || (lanes == 2 && bits == 32))) {
-        const auto& h = allocation.homes[c.node.value];
-        auto aliases = [&](unsigned reg) {
-            for (unsigned idx : {0u, 1u}) {
-                const auto arg = c.Arg(idx);
-                if (arg.Kind() == OperandKind::Value &&
-                    source.Operations()[arg.Payload()].type == ir::Type::V128 &&
-                    !allocation.homes[arg.Payload()].spilled &&
-                    allocation.homes[arg.Payload()].reg == reg)
-                    return true;
-            }
-            return false;
-        };
-        const Xmm dst = (!h.spilled && !h.terminal_only && !aliases(h.reg)) ? Xmm(h.reg) : xmm0;
-        c.vector = dst;
-        path.dest_reg = static_cast<std::uint8_t>(dst.getIdx());
-        bool preserved_bcast = false;
-        if (lanes * bits == 128) {
-            Xmm lhs = xmm0;
-            if (c.Arg(0).Kind() == OperandKind::Value &&
-                source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128 &&
-                !allocation.homes[c.Arg(0).Payload()].spilled) {
-                lhs = Xmm(allocation.homes[c.Arg(0).Payload()].reg);
-            } else {
-                ReadVector(c.Arg(0), xmm0);
-            }
-            auto emit_packed = [&](const Xbyak::Operand& rhs) {
-                if (bits == 32) {
-                    if (kind == 0)
-                        vaddps(dst, lhs, rhs);
-                    else if (kind == 1)
-                        vsubps(dst, lhs, rhs);
-                    else if (kind == 2)
-                        vmulps(dst, lhs, rhs);
-                    else
-                        vdivps(dst, lhs, rhs);
-                } else {
-                    if (kind == 0)
-                        vaddpd(dst, lhs, rhs);
-                    else if (kind == 1)
-                        vsubpd(dst, lhs, rhs);
-                    else if (kind == 2)
-                        vmulpd(dst, lhs, rhs);
-                    else
-                        vdivpd(dst, lhs, rhs);
-                }
-            };
-            const auto arg1 = c.Arg(1);
-            const bool v128_rhs = arg1.Kind() == OperandKind::Value &&
-                                  source.Operations()[arg1.Payload()].type == ir::Type::V128;
-            if (format & 64) {
-                const unsigned index = format >> 7;
-                if (v128_rhs) {
-                    const u32 rhs_id = static_cast<u32>(arg1.Payload());
-                    const std::uint8_t bkey =
-                            static_cast<std::uint8_t>((bits == 64 ? 0x10u : 0x20u) | index);
-                    if (xmm1_bcast_node != rhs_id || xmm1_bcast_key != bkey) {
-                        EmitIndexedFPBroadcast(rhs_id, bits, index);
-                        xmm1_bcast_node = rhs_id;
-                        xmm1_bcast_key = bkey;
-                    }
-                    preserved_bcast = true;
-                } else {
-                    ReadVector(arg1, xmm1);
-                    if (bits == 64) {
-                        if (index == 0)
-                            vmovddup(xmm1, xmm1);
-                        else
-                            vpermilpd(xmm1, xmm1, 3);
-                    } else {
-                        vpermilps(xmm1, xmm1, index * 0x55);
-                    }
-                }
-                emit_packed(xmm1);
-            } else if (v128_rhs) {
-                const auto& rh = allocation.homes[arg1.Payload()];
-                if (rh.spilled && rh.uniform_offset != UINT32_MAX)
-                    emit_packed(ptr[r12 + rh.uniform_offset]);
-                else if (rh.spilled)
-                    emit_packed(ptr[rsp + rh.stack_offset]);
-                else
-                    emit_packed(Xmm(rh.reg));
-                preserved_bcast = true;
-            } else {
-                ReadVector(arg1, xmm1);
-                emit_packed(xmm1);
-            }
-        } else if (lanes == 2 && bits == 32) {
-            const auto arg0 = c.Arg(0), arg1 = c.Arg(1);
-            if (arg0.Kind() == OperandKind::Value &&
-                source.Operations()[arg0.Payload()].type == ir::Type::V128) {
-                const auto& lh = allocation.homes[arg0.Payload()];
-                if (lh.spilled && lh.uniform_offset != UINT32_MAX)
-                    vmovq(xmm0, qword[r12 + lh.uniform_offset]);
-                else if (lh.spilled)
-                    vmovq(xmm0, qword[rsp + lh.stack_offset]);
-                else
-                    vmovq(xmm0, Xmm(lh.reg));
-            } else {
-                ReadVector(arg0, xmm0);
-                vmovq(xmm0, xmm0);
-            }
-            const bool v128_rhs = arg1.Kind() == OperandKind::Value &&
-                                  source.Operations()[arg1.Payload()].type == ir::Type::V128;
-            if (format & 64) {
-                const unsigned index = format >> 7;
-                if (v128_rhs) {
-                    const auto& rh = allocation.homes[arg1.Payload()];
-                    if (rh.spilled && rh.uniform_offset != UINT32_MAX)
-                        vpermilps(xmm1, ptr[r12 + rh.uniform_offset], index * 0x55);
-                    else if (rh.spilled)
-                        vpermilps(xmm1, ptr[rsp + rh.stack_offset], index * 0x55);
-                    else
-                        vpermilps(xmm1, Xmm(rh.reg), index * 0x55);
-                } else {
-                    ReadVector(arg1, xmm1);
-                    vpermilps(xmm1, xmm1, index * 0x55);
-                }
-                vmovq(xmm1, xmm1);
-            } else if (v128_rhs) {
-                const auto& rh = allocation.homes[arg1.Payload()];
-                if (rh.spilled && rh.uniform_offset != UINT32_MAX)
-                    vmovq(xmm1, qword[r12 + rh.uniform_offset]);
-                else if (rh.spilled)
-                    vmovq(xmm1, qword[rsp + rh.stack_offset]);
-                else
-                    vmovq(xmm1, Xmm(rh.reg));
-            } else {
-                ReadVector(arg1, xmm1);
-                vmovq(xmm1, xmm1);
-            }
+    const auto emit_packed = [&](const Xbyak::Operand& rhs) {
+        if (bits == 32) {
             if (kind == 0)
-                vaddps(dst, xmm0, xmm1);
-            else if (kind == 1) {
-                vsubps(dst, xmm0, xmm1);
-                vmovq(dst, dst);
-            } else {
-                vmulps(dst, xmm0, xmm1);
-            }
-        } else if (bits == 32) {
-            const auto arg0 = c.Arg(0), arg1 = c.Arg(1);
-            if (arg0.Kind() == OperandKind::Value &&
-                source.Operations()[arg0.Payload()].type == ir::Type::V128) {
-                const auto& lh = allocation.homes[arg0.Payload()];
-                if (lh.spilled && lh.uniform_offset != UINT32_MAX)
-                    vmovd(xmm0, dword[r12 + lh.uniform_offset]);
-                else if (lh.spilled)
-                    vmovd(xmm0, dword[rsp + lh.stack_offset]);
-                else
-                    vinsertps(xmm0, Xmm(lh.reg), Xmm(lh.reg), 0x0e);
-            } else {
-                ReadVector(arg0, xmm0);
-                vinsertps(xmm0, xmm0, xmm0, 0x0e);
-            }
-            auto emit_scalar32 = [&](const Xbyak::Operand& rhs) {
-                if (kind == 0)
-                    vaddss(dst, xmm0, rhs);
-                else if (kind == 1)
-                    vsubss(dst, xmm0, rhs);
-                else if (kind == 2)
-                    vmulss(dst, xmm0, rhs);
-                else
-                    vdivss(dst, xmm0, rhs);
-            };
-            const unsigned lane_idx = (format & 64) ? (format >> 7) : 0u;
-            if (arg1.Kind() == OperandKind::Value &&
-                source.Operations()[arg1.Payload()].type == ir::Type::V128) {
-                const auto& rh = allocation.homes[arg1.Payload()];
-                if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
-                    emit_scalar32(dword[r12 + rh.uniform_offset + lane_idx * 4]);
-                    preserved_bcast = true;
-                } else if (rh.spilled) {
-                    emit_scalar32(dword[rsp + rh.stack_offset + lane_idx * 4]);
-                    preserved_bcast = true;
-                } else if (lane_idx) {
-                    vpermilps(xmm1, Xmm(rh.reg), lane_idx);
-                    emit_scalar32(xmm1);
-                } else {
-                    emit_scalar32(Xmm(rh.reg));
-                    preserved_bcast = true;
-                }
-            } else {
-                ReadVector(arg1, xmm1);
-                if (lane_idx) vpermilps(xmm1, xmm1, lane_idx);
-                emit_scalar32(xmm1);
-            }
+                vaddps(dst, lhs, rhs);
+            else if (kind == 1)
+                vsubps(dst, lhs, rhs);
+            else if (kind == 2)
+                vmulps(dst, lhs, rhs);
+            else
+                vdivps(dst, lhs, rhs);
         } else {
-            const auto arg0 = c.Arg(0), arg1 = c.Arg(1);
-            if (arg0.Kind() == OperandKind::Value &&
-                source.Operations()[arg0.Payload()].type == ir::Type::V128) {
-                const auto& lh = allocation.homes[arg0.Payload()];
-                if (lh.spilled && lh.uniform_offset != UINT32_MAX)
-                    vmovq(xmm0, qword[r12 + lh.uniform_offset]);
-                else if (lh.spilled)
-                    vmovq(xmm0, qword[rsp + lh.stack_offset]);
-                else
-                    vmovq(xmm0, Xmm(lh.reg));
-            } else {
-                ReadVector(arg0, xmm0);
-                vmovq(xmm0, xmm0);
+            if (kind == 0)
+                vaddpd(dst, lhs, rhs);
+            else if (kind == 1)
+                vsubpd(dst, lhs, rhs);
+            else if (kind == 2)
+                vmulpd(dst, lhs, rhs);
+            else
+                vdivpd(dst, lhs, rhs);
+        }
+    };
+    const auto arg1 = c.Arg(1);
+    const bool v128_rhs = arg1.Kind() == OperandKind::Value &&
+                          source.Operations()[arg1.Payload()].type == ir::Type::V128;
+    bool preserved_bcast = false;
+    if (format & 64) {
+        const unsigned index = format >> 7;
+        if (v128_rhs) {
+            const u32 rhs_id = static_cast<u32>(arg1.Payload());
+            const std::uint8_t bkey =
+                    static_cast<std::uint8_t>((bits == 64 ? 0x10u : 0x20u) | index);
+            if (xmm1_bcast_node != rhs_id || xmm1_bcast_key != bkey) {
+                EmitIndexedFPBroadcast(rhs_id, bits, index);
+                xmm1_bcast_node = rhs_id;
+                xmm1_bcast_key = bkey;
             }
-            auto emit_scalar64 = [&](const Xbyak::Operand& rhs) {
-                if (kind == 0)
-                    vaddsd(dst, xmm0, rhs);
-                else if (kind == 1)
-                    vsubsd(dst, xmm0, rhs);
-                else if (kind == 2)
-                    vmulsd(dst, xmm0, rhs);
+            preserved_bcast = true;
+        } else {
+            ReadVector(arg1, xmm1);
+            if (bits == 64) {
+                if (index == 0)
+                    vmovddup(xmm1, xmm1);
                 else
-                    vdivsd(dst, xmm0, rhs);
-            };
-            const unsigned hi_lane = (format & 64) ? (format >> 7) : 0u;
-            if (arg1.Kind() == OperandKind::Value &&
-                source.Operations()[arg1.Payload()].type == ir::Type::V128) {
-                const auto& rh = allocation.homes[arg1.Payload()];
-                if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
-                    emit_scalar64(qword[r12 + rh.uniform_offset + hi_lane * 8]);
-                    preserved_bcast = true;
-                } else if (rh.spilled) {
-                    emit_scalar64(qword[rsp + rh.stack_offset + hi_lane * 8]);
-                    preserved_bcast = true;
-                } else if (hi_lane) {
-                    vpshufd(xmm1, Xmm(rh.reg), 0xee);
-                    emit_scalar64(xmm1);
-                } else {
-                    emit_scalar64(Xmm(rh.reg));
-                    preserved_bcast = true;
-                }
+                    vpermilpd(xmm1, xmm1, 3);
             } else {
-                ReadVector(arg1, xmm1);
-                if (hi_lane) vpshufd(xmm1, xmm1, 0xee);
-                emit_scalar64(xmm1);
+                vpermilps(xmm1, xmm1, index * 0x55);
             }
         }
-        CheckArmFPResult(c, bits, lanes, slow, kind == 0 || kind == 1);
-        if (!preserved_bcast) xmm1_bcast_node = NodeId::invalid;
-        if (xmm1_bcast_node != NodeId::invalid &&
-            allocation.homes[xmm1_bcast_node].last_use <= h.definition_position)
-            xmm1_bcast_node = NodeId::invalid;
-        path.fp_const = xmm15_fp_const;
-        path.bcast_node = xmm1_bcast_node;
-        path.bcast_key = xmm1_bcast_key;
-        kept_xmm15_fp_const = true;
-        kept_xmm1_bcast = xmm1_bcast_node != NodeId::invalid;
-        L(path.resume);
-        flags = preserved_flags;
-        return;
+        emit_packed(xmm1);
+        return preserved_bcast;
     }
+    if (v128_rhs) {
+        const auto& rh = allocation.homes[arg1.Payload()];
+        if (rh.spilled && rh.uniform_offset != UINT32_MAX)
+            emit_packed(ptr[r12 + rh.uniform_offset]);
+        else if (rh.spilled)
+            emit_packed(ptr[rsp + rh.stack_offset]);
+        else
+            emit_packed(Xmm(rh.reg));
+        return true;
+    }
+    ReadVector(arg1, xmm1);
+    emit_packed(xmm1);
+    return false;
+}
+
+void Writer::EmitAvxArmFPBinary2S(OpContext& c, const Xmm& dst, u64 format, unsigned kind) {
+    LoadAvxVectorLow64(c.Arg(0), xmm0);
+    if (format & 64)
+        LoadAvxBroadcast2S(c.Arg(1), format >> 7, xmm1);
+    else
+        LoadAvxVectorLow64(c.Arg(1), xmm1);
+    if (kind == 0) {
+        vaddps(dst, xmm0, xmm1);
+    } else if (kind == 1) {
+        vsubps(dst, xmm0, xmm1);
+        vmovq(dst, dst);
+    } else {
+        vmulps(dst, xmm0, xmm1);
+    }
+}
+
+bool Writer::EmitAvxArmFPBinaryScalar32(OpContext& c, const Xmm& dst, u64 format, unsigned kind) {
+    LoadAvxVectorLow32(c.Arg(0), xmm0);
+    const auto emit_scalar32 = [&](const Xbyak::Operand& rhs) {
+        if (kind == 0)
+            vaddss(dst, xmm0, rhs);
+        else if (kind == 1)
+            vsubss(dst, xmm0, rhs);
+        else if (kind == 2)
+            vmulss(dst, xmm0, rhs);
+        else
+            vdivss(dst, xmm0, rhs);
+    };
+    const auto arg1 = c.Arg(1);
+    const unsigned lane_idx = (format & 64) ? (format >> 7) : 0u;
+    if (arg1.Kind() == OperandKind::Value &&
+        source.Operations()[arg1.Payload()].type == ir::Type::V128) {
+        const auto& rh = allocation.homes[arg1.Payload()];
+        if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
+            emit_scalar32(dword[r12 + rh.uniform_offset + lane_idx * 4]);
+            return true;
+        }
+        if (rh.spilled) {
+            emit_scalar32(dword[rsp + rh.stack_offset + lane_idx * 4]);
+            return true;
+        }
+        if (lane_idx) {
+            vpermilps(xmm1, Xmm(rh.reg), lane_idx);
+            emit_scalar32(xmm1);
+            return false;
+        }
+        emit_scalar32(Xmm(rh.reg));
+        return true;
+    }
+    ReadVector(arg1, xmm1);
+    if (lane_idx) vpermilps(xmm1, xmm1, lane_idx);
+    emit_scalar32(xmm1);
+    return false;
+}
+
+bool Writer::EmitAvxArmFPBinaryScalar64(OpContext& c, const Xmm& dst, u64 format, unsigned kind) {
+    LoadAvxVectorLow64(c.Arg(0), xmm0);
+    const auto emit_scalar64 = [&](const Xbyak::Operand& rhs) {
+        if (kind == 0)
+            vaddsd(dst, xmm0, rhs);
+        else if (kind == 1)
+            vsubsd(dst, xmm0, rhs);
+        else if (kind == 2)
+            vmulsd(dst, xmm0, rhs);
+        else
+            vdivsd(dst, xmm0, rhs);
+    };
+    const auto arg1 = c.Arg(1);
+    const unsigned hi_lane = (format & 64) ? (format >> 7) : 0u;
+    if (arg1.Kind() == OperandKind::Value &&
+        source.Operations()[arg1.Payload()].type == ir::Type::V128) {
+        const auto& rh = allocation.homes[arg1.Payload()];
+        if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
+            emit_scalar64(qword[r12 + rh.uniform_offset + hi_lane * 8]);
+            return true;
+        }
+        if (rh.spilled) {
+            emit_scalar64(qword[rsp + rh.stack_offset + hi_lane * 8]);
+            return true;
+        }
+        if (hi_lane) {
+            vpshufd(xmm1, Xmm(rh.reg), 0xee);
+            emit_scalar64(xmm1);
+            return false;
+        }
+        emit_scalar64(Xmm(rh.reg));
+        return true;
+    }
+    ReadVector(arg1, xmm1);
+    if (hi_lane) vpshufd(xmm1, xmm1, 0xee);
+    emit_scalar64(xmm1);
+    return false;
+}
+
+bool Writer::TryEmitAvxArmFPBinary(OpContext& c,
+                                   FPColdPath& path,
+                                   u64 format,
+                                   unsigned bits,
+                                   unsigned lanes,
+                                   unsigned kind) {
+    if (!options.avx || !(lanes * bits == 128 || lanes == 1 || (lanes == 2 && bits == 32)))
+        return false;
+    const auto& h = allocation.homes[c.node.value];
+    const auto aliases = [&](unsigned reg) {
+        for (unsigned idx : {0u, 1u}) {
+            const auto arg = c.Arg(idx);
+            if (arg.Kind() == OperandKind::Value &&
+                source.Operations()[arg.Payload()].type == ir::Type::V128 &&
+                !allocation.homes[arg.Payload()].spilled &&
+                allocation.homes[arg.Payload()].reg == reg)
+                return true;
+        }
+        return false;
+    };
+    const Xmm dst = (!h.spilled && !h.terminal_only && !aliases(h.reg)) ? Xmm(h.reg) : xmm0;
+    c.vector = dst;
+    path.dest_reg = static_cast<std::uint8_t>(dst.getIdx());
+    bool preserved_bcast = false;
+    if (lanes * bits == 128)
+        preserved_bcast = EmitAvxArmFPBinary128(c, dst, format, bits, kind);
+    else if (lanes == 2 && bits == 32)
+        EmitAvxArmFPBinary2S(c, dst, format, kind);
+    else if (bits == 32)
+        preserved_bcast = EmitAvxArmFPBinaryScalar32(c, dst, format, kind);
+    else
+        preserved_bcast = EmitAvxArmFPBinaryScalar64(c, dst, format, kind);
+
+    CheckArmFPResult(c, bits, lanes, path.entry, kind == 0 || kind == 1);
+    if (!preserved_bcast) xmm1_bcast_node = NodeId::invalid;
+    if (xmm1_bcast_node != NodeId::invalid &&
+        allocation.homes[xmm1_bcast_node].last_use <= h.definition_position)
+        xmm1_bcast_node = NodeId::invalid;
+    path.fp_const = xmm15_fp_const;
+    path.bcast_node = xmm1_bcast_node;
+    path.bcast_key = xmm1_bcast_key;
+    kept_xmm15_fp_const = true;
+    kept_xmm1_bcast = xmm1_bcast_node != NodeId::invalid;
+    L(path.resume);
+    return true;
+}
+
+void Writer::EmitSseArmFPBinary(OpContext& c,
+                                FPColdPath& path,
+                                u64 status,
+                                u64 format,
+                                unsigned bits,
+                                unsigned lanes,
+                                unsigned kind,
+                                bool regional,
+                                bool post_check) {
+    const unsigned tmp = allocation.call_offset + 224;
+    auto& slow = path.entry;
     ReadVector(c.Arg(0), xmm0);
     ReadVector(c.Arg(1), xmm1);
     if (format & 64) {
@@ -902,7 +853,7 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
     // nonzero sum/difference is normal. Add/sub/mul can only raise IXC here.
     // Division also admits zero divisors through native FPSR accumulation
     // and checks its result for NaN before committing the destination.
-    if (!post_check)
+    if (!post_check) {
         for (const auto input : {xmm0, xmm1}) {
             for (unsigned lane = 0; lane < lanes; ++lane) {
                 Label zero;
@@ -910,8 +861,9 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
                     movdqa(xmm14, input);
                     psrldq(xmm14, lane * bits / 8);
                     movq(rax, xmm14);
-                } else
+                } else {
                     movq(rax, input);
+                }
                 if (bits == 32) {
                     add(eax, eax);
                     jz(zero, T_SHORT);
@@ -929,6 +881,7 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
                 L(zero);
             }
         }
+    }
     // Clear inactive inputs before packed execution: they must not create
     // exceptions. Scalar instructions also explicitly zero their upper result.
     if (lanes * bits <= 64) {
@@ -957,8 +910,9 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
                 mulss(xmm0, xmm1);
             else
                 mulps(xmm0, xmm1);
-        } else
+        } else {
             divss(xmm0, xmm1);
+        }
     } else {
         if (kind == 0) {
             if (scalar)
@@ -975,8 +929,9 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
                 mulsd(xmm0, xmm1);
             else
                 mulpd(xmm0, xmm1);
-        } else
+        } else {
             divsd(xmm0, xmm1);
+        }
     }
     if (!regional && !ArmNativeFP()) {
         stmxcsr(dword[rsp + tmp + 52]);
@@ -989,212 +944,66 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
     if (lanes * bits == 32) {
         movd(eax, xmm0);
         movd(xmm0, eax);
-    } else if (!scalar && lanes * bits == 64)
+    } else if (!scalar && lanes * bits == 64) {
         movq(xmm0, xmm0);
+    }
     if (post_check || kind == 3) CheckArmFPResult(c, bits, lanes, slow);
     L(path.resume);
-    flags = preserved_flags;
 }
 
-void Writer::EmitColdPaths() {
-    const auto tmp = allocation.call_offset + 224;
-    for (auto& path : cold_fp) {
-        current = path.node;
-        L(path.entry);
-        xmm0_node = NodeId::invalid;
-        flags = path.flags;
-        if (flags.dirty) SaveNativeFlags(true);
-        auto input = source.Operands(path.node).begin();
-        ReadVector(*input++, xmm0);
-        ReadVector(*input, xmm1);
-        if (options.avx) {
-            vmovdqu(ptr[rsp + tmp], xmm0);
-            vmovdqu(ptr[rsp + tmp + 16], xmm1);
-        } else {
-            movdqu(ptr[rsp + tmp], xmm0);
-            movdqu(ptr[rsp + tmp + 16], xmm1);
-        }
-        call(fp_stubs[path.stub].entry);
-        if (path.dest_reg != 0) {
-            if (options.avx)
-                vmovdqa(Xmm(path.dest_reg), xmm0);
-            else
-                movdqa(Xmm(path.dest_reg), xmm0);
-        }
-        if (path.flags.dirty) {
-            flags = {true, false, true, false, true};
-            if (path.flags.saved && !path.flags.saved_carry) {
-                if (options.lahf)
-                    xor_(word[rsp + allocation.flags_slot], 0x100);
-                else
-                    xor_(qword[rsp + allocation.flags_slot], 1);
-                flags.saved_carry = false;
-            }
-            if (path.flags.native) {
-                EnsureNativeFlags();
-                if (flags.carry != path.flags.carry) cmc();
-            }
-        }
-        if (path.fp_const >= 0) vmovdqu(xmm15, ptr[rip + fp_constants[path.fp_const]]);
-        if (path.bcast_node != NodeId::invalid)
-            EmitIndexedFPBroadcast(
-                    path.bcast_node, (path.bcast_key & 0x10) ? 64 : 32, path.bcast_key & 0xf);
-        jmp(path.resume, T_NEAR);
+void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
+    const auto control = c.Arg(2).Payload(), status = c.Arg(3).Payload(),
+               format = c.Arg(4).Payload();
+    const bool post_check =
+            ArmNativeFP() && options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24));
+    if (options.local_flags && flags.dirty && (flags.native || flags.floating)) {
+        SaveNativeFlags(true);
+        flags.native = false;
     }
-    for (auto& stub : fp_stubs) {
-        align(16);
-        L(stub.entry);
-        sub(rsp, 8);
-        stack_bias = 16;
-        flags = {stub.key.flags_saved, false, stub.key.flags_saved, false, true};
-        arm_fp_region = stub.key.region;
-        arm_fp_control = stub.key.control;
-        arm_fp_status = stub.key.status;
-        PrepareCall({stub.key.scalars, stub.key.vectors});
-        lea(rdi, ptr[rsp + tmp + stack_bias + 32]);
-        lea(rsi, ptr[rsp + tmp + stack_bias]);
-        lea(rdx, ptr[rsp + tmp + stack_bias + 16]);
-        mov(ecx, stub.key.format);
-        if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change)
-            mov(r8d, dword[r12 + stub.key.control]);
-        else
-            mov(r8d, options.arm_fpcr);
-        lea(r9, ptr[r12 + stub.key.status]);
-        Call(reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateVectorBinaryFP),
-             HostSymbol::ArmFPBinary);
-        if (options.avx)
-            vmovdqu(xmm0, ptr[rsp + tmp + stack_bias + 32]);
-        else
-            movdqu(xmm0, ptr[rsp + tmp + stack_bias + 32]);
-        if (stub.key.flags_saved) ImportPackedFlags();
-        if (stub.key.region) BeginArmFPRegion(stub.key.control, stub.key.status);
-        add(rsp, 8);
-        ret();
-        stack_bias = 0;
+    const auto preserved_flags = flags;
+    if (!c.vector_result || View(c.Arg(0)) != ir::Type::V128 || View(c.Arg(1)) != ir::Type::V128 ||
+        control > INT32_MAX - 4 || status > INT32_MAX - 4 || format > UINT32_MAX ||
+        !runtime::arm64::ValidArmFPBinaryMode(format))
+        Reject(CompileError::UnsupportedOperand);
+    if (ArmNativeFP() && (control != options.arm_fpcr_offset || status != options.arm_fpsr_offset))
+        Reject(CompileError::UnsupportedOperand);
+    const unsigned bits = format & 4 ? 64 : 32, lanes = (format >> 3) & 7, kind = format & 3;
+    const bool regional =
+            options.arm_fpcr != UINT32_MAX && !ArmNativeFP() && !allocation.fpcr_may_change;
+    if (regional) BeginArmFPRegion(control, status);
+    const auto masks = LiveCallMasks();
+    const FPCallKey key{u32(control),
+                        u32(status),
+                        u32(format),
+                        masks.scalars,
+                        masks.vectors,
+                        regional,
+                        flags.dirty};
+    auto [stub, inserted] = fp_stub_index.try_emplace(key, fp_stubs.size());
+    if (inserted) fp_stubs.push_back({key, {}});
+    cold_fp.push_back({c.node, {}, {}, stub->second, preserved_flags});
+    auto& path = cold_fp.back();
+    if (allocation.fpcr_may_change) {
+        jmp(path.entry, T_NEAR);
+        L(path.resume);
+        return;
     }
-    arm_fp_region = false;
-    for (auto& path : cold_numeric) {
-        current = path.node;
-        L(path.entry);
-        xmm0_node = NodeId::invalid;
-        OpContext context{source.Operations()[current.value], current, source.Operands(current)};
-        for (const auto input : context.operands) context.args[context.count++] = input;
-        context.width = TypeBits(context.operation.type);
-        if (context.operation.opcode != OpCode::CallLambda) {
-            flags = path.flags;
-            if (flags.dirty && (flags.native || flags.floating || flags.saved != 15))
-                SaveNativeFlags();
-            flags.native = 0;
-            const auto encoded = context.Arg(context.count - 1).Payload();
-            const auto info = runtime::arm64::DescribeFPValues(encoded);
-            const auto offsets = context.Arg(context.count - 2).Payload();
-            const unsigned inputs = context.count - 2;
-            for (unsigned i = 0; i < inputs; ++i) {
-                if (info.kind == runtime::arm64::FPValueKind::FromInt) {
-                    Read(context.Arg(i), rax);
-                    if (options.avx)
-                        vmovq(xmm0, rax);
-                    else
-                        movq(xmm0, rax);
-                } else
-                    ReadVector(context.Arg(i), xmm0);
-                if (options.avx)
-                    vmovdqu(ptr[rsp + tmp + i * 16], xmm0);
-                else
-                    movdqu(ptr[rsp + tmp + i * 16], xmm0);
-            }
-            const NumericCallKey key{runtime::arm64::CanonicalFPValues(encoded, info),
-                                     u32(offsets),
-                                     u32(offsets >> 32),
-                                     path.masks.scalars,
-                                     path.masks.vectors,
-                                     flags.dirty,
-                                     flags.saved_carry};
-            const auto [stub, inserted] = numeric_stub_index.try_emplace(key, numeric_stubs.size());
-            if (inserted) numeric_stubs.push_back({key, {}});
-            call(numeric_stubs[stub->second].entry);
-            flags = {};
-            if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
-                key.control != options.arm_fpcr_offset) {
-                Label ready;
-                test(eax, eax);
-                jz(ready, T_NEAR);
-                guest_pc = path.pc;
-                Exit(runtime::ExitValue(runtime::NativeExit::FPEnvironment));
-                L(ready);
-            }
-            if (info.kind == runtime::arm64::FPValueKind::Compare) {
-                mov(rdx, qword[rsp + tmp + 48]);
-                if (options.local_flags) {
-                    mov(eax, 0x202);
-                    mov(ecx, 0x203);
-                    cmp(edx, 8);
-                    cmove(eax, ecx);
-                    mov(ecx, 0x242);
-                    cmp(edx, 6);
-                    cmove(eax, ecx);
-                    mov(ecx, 0x247);
-                    cmp(edx, 3);
-                    cmove(eax, ecx);
-                    if (options.lahf) {
-                        shl(eax, 8);
-                        sahf();
-                    } else {
-                        push(rax);
-                        popfq();
-                    }
-                } else {
-                    shl(rdx, 28);
-                    MergeFlags(rdx, 15);
-                }
-            } else if (info.kind == runtime::arm64::FPValueKind::ToInt)
-                mov(rax, qword[rsp + tmp + 48]);
-            else if (options.avx)
-                vmovdqu(Xmm(path.dest_reg), ptr[rsp + tmp + 48]);
-            else
-                movdqu(Xmm(path.dest_reg), ptr[rsp + tmp + 48]);
-            if (path.fp_const >= 0) vmovdqu(xmm15, ptr[rip + fp_constants[path.fp_const]]);
-            if (path.bcast_node != NodeId::invalid)
-                EmitIndexedFPBroadcast(
-                        path.bcast_node, (path.bcast_key & 0x10) ? 64 : 32, path.bcast_key & 0xf);
-            jmp(path.resume, T_NEAR);
-            continue;
-        }
-        flags = {};
-        PrepareCall(path.masks);
-        LambdaCall(context);
-        jmp(path.resume, T_NEAR);
+    if (kind == 3 && !ArmNativeFP()) {
+        jmp(path.entry, T_NEAR);
+        L(path.resume);
+        flags = preserved_flags;
+        return;
     }
-    for (auto& stub : numeric_stubs) {
-        align(16);
-        L(stub.entry);
-        sub(rsp, 8);
-        stack_bias = 16;
-        flags = {stub.key.flags_saved, false, stub.key.flags_saved, false, stub.key.saved_carry};
-        PrepareCall({stub.key.scalars, stub.key.vectors});
-        lea(rdi, ptr[rsp + tmp + stack_bias + 48]);
-        lea(rsi, ptr[rsp + tmp + stack_bias]);
-        mov(rdx, stub.key.encoded);
-        if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
-            stub.key.control != options.arm_fpcr_offset)
-            mov(ecx, dword[r12 + stub.key.control]);
-        else
-            mov(ecx, options.arm_fpcr);
-        lea(r8, ptr[r12 + stub.key.status]);
-        Call(reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateFPValues),
-             HostSymbol::ArmFPValues);
-        add(rsp, 8);
-        ret();
-        stack_bias = 0;
+    if (options.arm_fpcr == UINT32_MAX) {
+        cmp(dword[r12 + control], 0);
+        jne(path.entry, T_NEAR);
     }
-    for (auto& path : cold_events) {
-        L(path.entry);
-        flags = path.flags;
-        guest_pc = path.pc;
-        mov(rax, path.pc);
-        mov(qword[r12 + options.pc_offset], rax);
-        Exit(runtime::ExitValue(runtime::NativeExit::GuestEvents));
+    if (post_check && TryEmitAvxArmFPBinary(c, path, format, bits, lanes, kind)) {
+        flags = preserved_flags;
+        return;
     }
+    EmitSseArmFPBinary(c, path, status, format, bits, lanes, kind, regional, post_check);
+    flags = preserved_flags;
 }
 
 void Writer::Handle(Op<O::VecFCmp>, OpContext& c) {
@@ -1211,8 +1020,9 @@ void Writer::Handle(Op<O::VecFCmp>, OpContext& c) {
             comisd(xmm0, xmm1);
         else
             ucomisd(xmm0, xmm1);
-    } else
+    } else {
         Reject(CompileError::UnsupportedOperand);
+    }
     setb(al);
     setp(dl);
     sete(cl);
@@ -1226,7 +1036,7 @@ void Writer::Handle(Op<O::VecFCmp>, OpContext& c) {
 }
 
 void Writer::Handle(Op<O::VecFCvtIntToFloat>, OpContext& c) {
-    unsigned from = c.Arg(1).Payload(), to = c.Arg(2).Payload();
+    const unsigned from = c.Arg(1).Payload(), to = c.Arg(2).Payload();
     if ((from != 32 && from != 64) || (to != 32 && to != 64))
         Reject(CompileError::UnsupportedOperand);
     Read(c.Arg(0), rax, true);
@@ -1241,7 +1051,7 @@ void Writer::Handle(Op<O::VecFCvtIntToFloat>, OpContext& c) {
 }
 
 void Writer::Handle(Op<O::VecFCvtFloatToInt>, OpContext& c) {
-    unsigned from = c.Arg(1).Payload(), to = c.Arg(2).Payload();
+    const unsigned from = c.Arg(1).Payload(), to = c.Arg(2).Payload();
     const bool trunc = c.Arg(3).Payload();
     if ((from != 32 && from != 64) || (to != 32 && to != 64))
         Reject(CompileError::UnsupportedOperand);
@@ -1269,8 +1079,9 @@ void Writer::Handle(Op<O::VecFCvtScalar>, OpContext& c) {
         cvtsd2ss(xmm0, xmm1);
         movq(rax, xmm0);
         Mask(rax, 32);
-    } else
+    } else {
         Reject(CompileError::UnsupportedOperand);
+    }
 }
 
 void Writer::Handle(Op<O::VecFCvtPacked>, OpContext& c) {

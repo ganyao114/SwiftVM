@@ -1,8 +1,11 @@
-#include <algorithm>
-#include <cstring>
 #include "emit.h"
+
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/ir/flag_effects.h"
+
+#include <algorithm>
+#include <cstring>
+#include <optional>
 
 namespace swift::runtime::backend::x64::detail {
 Writer::Writer(const Program& s, const Allocation& a, CompileResult& o, CompileOptions c)
@@ -105,9 +108,9 @@ void Writer::Prologue() {
 
 void Writer::Restore() {
     if (!Linked()) {
-        if (ArmNativeFP())
+        if (ArmNativeFP()) {
             HarvestArmFPStatus(false, false);
-        else if (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX) {
+        } else if (options.native_fp_environment && options.mxcsr_offset != UINT32_MAX) {
             stmxcsr(dword[rsp + mxcsr_slot + 4]);
             mov(r11d, dword[rsp + mxcsr_slot + 4]);
             and_(r11d, 63);
@@ -140,8 +143,9 @@ void Writer::Exit(u64 reason) {
     if (Linked()) {
         HostAddress(r11, options.exit_handler, HostSymbol::Exit);
         jmp(r11);
-    } else
+    } else {
         ret();
+    }
     flags = previous_flags;
 }
 
@@ -175,149 +179,161 @@ void Writer::StaticExit(u64 pc) {
     flags = previous_flags;
 }
 
-void Writer::Terminal(const StoredTerminal& t) {
-    EndArmFPRegion();
-    if (t.kind == TerminalKind::Jump) {
-        BranchTo(t.first, true);
+void Writer::LoadTerminalValue(const StoredTerminal& t, bool mask_rematerialized) {
+    const auto& operation = source.Operations()[t.value.value];
+    const auto& home = allocation.homes[t.value.value];
+    if (home.spilled && home.uniform_offset != UINT32_MAX) {
+        Load(rax, r12, home.uniform_offset, TypeBits(operation.type));
+    } else if (home.rematerialize) {
+        mov(rax, source.Operands(t.value).front().Payload());
+        if (mask_rematerialized) Mask(rax, TypeBits(operation.type));
+    } else if (home.spilled) {
+        mov(rax, qword[rsp + home.stack_offset]);
+    } else {
+        mov(rax, Reg64(home.reg));
+    }
+    const auto type = t.value_type == ir::Type::Void ? operation.type : t.value_type;
+    Mask(rax, TypeBits(type));
+}
+
+void Writer::EmitTerminalZeroOrBitBranch(const StoredTerminal& t,
+                                         OpCode op,
+                                         CellView first,
+                                         CellRange::Iterator input,
+                                         bool needs_flags) {
+    const bool zero = op != OpCode::TestBit;
+    if (zero && flags.native && TypeBits(View(first)) >= 32) {
+        Read(first, rcx);
+        Label is_zero;
+        jrcxz(is_zero);
+        const auto previous = flags;
+        BranchTo(op == OpCode::TestZero ? t.second : t.first);
+        L(is_zero);
+        flags = previous;
+        BranchTo(op == OpCode::TestZero ? t.first : t.second, true);
         return;
     }
-    if (t.kind == TerminalKind::Branch) {
-        const auto& home = allocation.homes[t.value.value];
-        const auto& operation = source.Operations()[t.value.value];
-        const bool needs_flags = options.local_flags && (allocation.flags_input[t.first.value] ||
-                                                         allocation.flags_input[t.second.value]);
-        if (home.terminal_only) {
-            auto input = source.Operands(t.value).begin();
-            const auto first = *input++;
-            const auto op = operation.opcode;
-            if (op == OpCode::TestZero || op == OpCode::TestNotZero || op == OpCode::TestBit) {
-                const bool zero = op != OpCode::TestBit;
-                if (zero && flags.native && TypeBits(View(first)) >= 32) {
-                    Read(first, rcx);
-                    Label is_zero;
-                    jrcxz(is_zero);
-                    const auto previous = flags;
-                    BranchTo(op == OpCode::TestZero ? t.second : t.first);
-                    L(is_zero);
-                    flags = previous;
-                    BranchTo(op == OpCode::TestZero ? t.first : t.second, true);
-                    return;
-                }
-                if (needs_flags) SaveNativeFlags(true);
-                flags.native = false;
-                if (zero) {
-                    const auto bits = std::min(64u, TypeBits(View(first)));
-                    Reg64 src = rax;
-                    if ((bits == 32 || bits == 64) && ResidentScalar(first, bits, src)) {
-                        PadFor32ByteBoundary(9u);
-                        test(R(src, bits), R(src, bits));
-                    } else {
-                        Read(first, rax);
-                        PadFor32ByteBoundary(9u);
-                        test(rax, rax);
-                    }
-                    ConditionalBranch(op == OpCode::TestZero ? 4 : 5, t.first, t.second);
-                } else {
-                    const auto bit = (*input).Payload();
-                    if (bit >= TypeBits(View(first)))
-                        BranchTo(t.second, true);
-                    else {
-                        Read(first, rax);
-                        bt(rax, bit);
-                        ConditionalBranch(2, t.first, t.second);
-                    }
-                }
-                return;
-            }
-            std::optional<ir::Condition> condition;
-            if (op == OpCode::CondSet || op == OpCode::LocalCondSet)
-                condition = static_cast<ir::Condition>(first.Payload());
-            else
-                condition = ir::FlagCondition(first.Payload(), op == OpCode::TestNotFlags);
-            if (condition) {
-                if (condition_saved) {
-                    if (needs_flags) SaveNativeFlags(true);
-                    flags.native = false;
-                    PadFor32ByteBoundary((allocation.condition_slot < 128 ? 5u : 8u) + 6u);
-                    cmp(byte[rsp + allocation.condition_slot], 0);
-                    ConditionalBranch(5, t.first, t.second);
-                } else if (options.local_flags && flags.dirty) {
-                    const auto cc = NativeCondition(*condition);
-                    if (cc == 16)
-                        BranchTo(t.first, true);
-                    else
-                        ConditionalBranch(cc, t.first, t.second);
-                } else {
-                    if (needs_flags) SaveNativeFlags(true);
-                    flags.native = false;
-                    PackedCondition(rax, *condition);
-                    test(rax, rax);
-                    ConditionalBranch(5, t.first, t.second);
-                }
-                return;
-            }
-            MaterializeFlags();
-            if (needs_flags) SaveNativeFlags(true);
-            flags.native = false;
-            const auto mask = PackedFlagMask(first.Payload());
-            if (mask <= UINT32_MAX)
-                test(ebx, static_cast<u32>(mask));
-            else {
-                mov(rax, mask);
-                test(rbx, rax);
-            }
-            ConditionalBranch(op == OpCode::TestNotFlags ? 4 : 5, t.first, t.second);
-            return;
+    if (needs_flags) SaveNativeFlags(true);
+    flags.native = false;
+    if (zero) {
+        const auto bits = std::min(64u, TypeBits(View(first)));
+        Reg64 src = rax;
+        if ((bits == 32 || bits == 64) && ResidentScalar(first, bits, src)) {
+            PadFor32ByteBoundary(9u);
+            test(R(src, bits), R(src, bits));
+        } else {
+            Read(first, rax);
+            PadFor32ByteBoundary(9u);
+            test(rax, rax);
         }
+        ConditionalBranch(op == OpCode::TestZero ? 4 : 5, t.first, t.second);
+        return;
+    }
+    const auto bit = (*input).Payload();
+    if (bit >= TypeBits(View(first))) {
+        BranchTo(t.second, true);
+    } else {
+        Read(first, rax);
+        bt(rax, bit);
+        ConditionalBranch(2, t.first, t.second);
+    }
+}
+
+void Writer::EmitTerminalConditionBranch(const StoredTerminal& t,
+                                         ir::Condition condition,
+                                         bool needs_flags) {
+    if (condition_saved) {
         if (needs_flags) SaveNativeFlags(true);
         flags.native = false;
-        if (home.spilled && home.uniform_offset != UINT32_MAX)
-            Load(rax, r12, home.uniform_offset, TypeBits(operation.type));
-        else if (home.rematerialize)
-            mov(rax, source.Operands(t.value).front().Payload());
-        else if (home.spilled)
-            mov(rax, qword[rsp + home.stack_offset]);
-        else
-            mov(rax, Reg64(home.reg));
-        const auto type = t.value_type == ir::Type::Void ? operation.type : t.value_type;
-        Mask(rax, TypeBits(type));
-        test(rax, rax);
+        PadFor32ByteBoundary((allocation.condition_slot < 128 ? 5u : 8u) + 6u);
+        cmp(byte[rsp + allocation.condition_slot], 0);
         ConditionalBranch(5, t.first, t.second);
         return;
     }
-    if (t.kind == TerminalKind::Return) {
-        MaterializeFlags();
-        if (t.HasValue()) {
-            if (source.Operations()[t.value.value].type == ir::Type::V128)
-                Reject(CompileError::UnsupportedType);
-            const auto& h = allocation.homes[t.value.value];
-            if (h.spilled && h.uniform_offset != UINT32_MAX)
-                Load(rax, r12, h.uniform_offset, TypeBits(source.Operations()[t.value.value].type));
-            else if (h.rematerialize) {
-                mov(rax, source.Operands(t.value).front().Payload());
-                Mask(rax, TypeBits(source.Operations()[t.value.value].type));
-            } else if (h.spilled)
-                mov(rax, qword[rsp + h.stack_offset]);
-            else
-                mov(rax, Reg64(h.reg));
-            Mask(rax,
-                 TypeBits(t.value_type == ir::Type::Void ? source.Operations()[t.value.value].type
-                                                         : t.value_type));
-        } else
-            xor_(eax, eax);
-        if (Linked()) {
-            PublishFlags();
-            Restore();
-            HostAddress(r11, options.exit_handler, HostSymbol::Exit);
-            jmp(r11);
-        } else {
-            PublishFlags();
-            Restore();
-            ret();
-        }
+    if (options.local_flags && flags.dirty) {
+        const auto cc = NativeCondition(condition);
+        if (cc == 16)
+            BranchTo(t.first, true);
+        else
+            ConditionalBranch(cc, t.first, t.second);
         return;
     }
-    if (t.kind != TerminalKind::Dispatch) Reject(CompileError::UnsupportedControlFlow);
+    if (needs_flags) SaveNativeFlags(true);
+    flags.native = false;
+    PackedCondition(rax, condition);
+    test(rax, rax);
+    ConditionalBranch(5, t.first, t.second);
+}
+
+void Writer::EmitTerminalFlagMaskBranch(const StoredTerminal& t,
+                                        OpCode op,
+                                        u64 mask_payload,
+                                        bool needs_flags) {
+    MaterializeFlags();
+    if (needs_flags) SaveNativeFlags(true);
+    flags.native = false;
+    const auto mask = PackedFlagMask(mask_payload);
+    if (mask <= UINT32_MAX) {
+        test(ebx, static_cast<u32>(mask));
+    } else {
+        mov(rax, mask);
+        test(rbx, rax);
+    }
+    ConditionalBranch(op == OpCode::TestNotFlags ? 4 : 5, t.first, t.second);
+}
+
+void Writer::EmitBranchTerminal(const StoredTerminal& t) {
+    const auto& home = allocation.homes[t.value.value];
+    const auto& operation = source.Operations()[t.value.value];
+    const bool needs_flags = options.local_flags && (allocation.flags_input[t.first.value] ||
+                                                     allocation.flags_input[t.second.value]);
+    if (home.terminal_only) {
+        auto input = source.Operands(t.value).begin();
+        const auto first = *input++;
+        const auto op = operation.opcode;
+        if (op == OpCode::TestZero || op == OpCode::TestNotZero || op == OpCode::TestBit) {
+            EmitTerminalZeroOrBitBranch(t, op, first, input, needs_flags);
+            return;
+        }
+        std::optional<ir::Condition> condition;
+        if (op == OpCode::CondSet || op == OpCode::LocalCondSet)
+            condition = static_cast<ir::Condition>(first.Payload());
+        else
+            condition = ir::FlagCondition(first.Payload(), op == OpCode::TestNotFlags);
+        if (condition) {
+            EmitTerminalConditionBranch(t, *condition, needs_flags);
+            return;
+        }
+        EmitTerminalFlagMaskBranch(t, op, first.Payload(), needs_flags);
+        return;
+    }
+    if (needs_flags) SaveNativeFlags(true);
+    flags.native = false;
+    LoadTerminalValue(t, false);
+    test(rax, rax);
+    ConditionalBranch(5, t.first, t.second);
+}
+
+void Writer::EmitReturnTerminal(const StoredTerminal& t) {
+    MaterializeFlags();
+    if (t.HasValue()) {
+        if (source.Operations()[t.value.value].type == ir::Type::V128)
+            Reject(CompileError::UnsupportedType);
+        LoadTerminalValue(t, true);
+    } else {
+        xor_(eax, eax);
+    }
+    PublishFlags();
+    Restore();
+    if (Linked()) {
+        HostAddress(r11, options.exit_handler, HostSymbol::Exit);
+        jmp(r11);
+    } else {
+        ret();
+    }
+}
+
+void Writer::EmitDispatchTerminal() {
     if (static_pc_known) {
         StaticExit(static_pc);
         return;
@@ -338,6 +354,39 @@ void Writer::Terminal(const StoredTerminal& t) {
     }
 }
 
+void Writer::Terminal(const StoredTerminal& t) {
+    EndArmFPRegion();
+    switch (t.kind) {
+        case TerminalKind::Jump:
+            BranchTo(t.first, true);
+            return;
+        case TerminalKind::Branch:
+            EmitBranchTerminal(t);
+            return;
+        case TerminalKind::Return:
+            EmitReturnTerminal(t);
+            return;
+        case TerminalKind::Dispatch:
+            EmitDispatchTerminal();
+            return;
+        default:
+            Reject(CompileError::UnsupportedControlFlow);
+    }
+}
+
+void Writer::WriteUniformBackedResult(OpContext& c, const Home& h) {
+    if (!h.uniform_store_bytes) return;
+    if (c.vector_result) {
+        if (options.avx)
+            vmovdqu(ptr[r12 + h.uniform_offset], c.vector);
+        else
+            movdqu(ptr[r12 + h.uniform_offset], c.vector);
+        return;
+    }
+    if (!c.scalar_normalized) Mask(c.destination, std::min(64u, c.width));
+    Store(c.destination, r12, h.uniform_offset, h.uniform_store_bytes * 8);
+}
+
 void Writer::WriteResult(OpContext& c) {
     if (c.saved || c.operation.type == ir::Type::Void) return;
     const auto& h = allocation.homes[c.node.value];
@@ -347,17 +396,7 @@ void Writer::WriteResult(OpContext& c) {
         kept_xmm0 = true;
     }
     if (h.spilled && h.uniform_offset != UINT32_MAX) {
-        if (h.uniform_store_bytes) {
-            if (c.vector_result) {
-                if (options.avx)
-                    vmovdqu(ptr[r12 + h.uniform_offset], c.vector);
-                else
-                    movdqu(ptr[r12 + h.uniform_offset], c.vector);
-            } else {
-                if (!c.scalar_normalized) Mask(c.destination, std::min(64u, c.width));
-                Store(c.destination, r12, h.uniform_offset, h.uniform_store_bytes * 8);
-            }
-        }
+        WriteUniformBackedResult(c, h);
         return;
     }
     if (c.vector_result) {
@@ -373,18 +412,18 @@ void Writer::WriteResult(OpContext& c) {
                 movdqa(Xmm(h.reg), c.vector);
         }
         if (!h.spilled) vector_residents[h.reg] = c.node.value;
-    } else {
-        if (!c.scalar_normalized && c.width == 32 && !h.spilled)
-            mov(Reg32(h.reg), c.destination.cvt32());
-        else {
-            if (!c.scalar_normalized) Mask(c.destination, std::min(64u, c.width));
-            if (h.spilled)
-                mov(qword[rsp + h.stack_offset], c.destination);
-            else if (c.destination.getIdx() != h.reg)
-                mov(Reg64(h.reg), c.destination);
-        }
-        if (!h.spilled) scalar_residents[h.reg] = c.node.value;
+        return;
     }
+    if (!c.scalar_normalized && c.width == 32 && !h.spilled) {
+        mov(Reg32(h.reg), c.destination.cvt32());
+    } else {
+        if (!c.scalar_normalized) Mask(c.destination, std::min(64u, c.width));
+        if (h.spilled)
+            mov(qword[rsp + h.stack_offset], c.destination);
+        else if (c.destination.getIdx() != h.reg)
+            mov(Reg64(h.reg), c.destination);
+    }
+    if (!h.spilled) scalar_residents[h.reg] = c.node.value;
 }
 
 void Writer::Dispatch(OpContext& c) {
@@ -400,165 +439,172 @@ void Writer::Dispatch(OpContext& c) {
     }
 }
 
-void Writer::Run() {
+bool Writer::PreservesScratchFpCaches(OpCode opcode) const {
+    if (IsPureScalarAluOrImmOp(opcode)) return true;
+    switch (opcode) {
+        case OpCode::Nop:
+        case OpCode::SetLocation:
+        case OpCode::AdvancePC:
+        case OpCode::InvertCarry:
+        case OpCode::SetCarry:
+        case OpCode::ClearFlags:
+        case OpCode::LoadUniform:
+        case OpCode::StoreUniform:
+        case OpCode::LoadMemory:
+        case OpCode::LoadMemoryTSO:
+        case OpCode::StoreMemory:
+        case OpCode::StoreMemoryTSO:
+        case OpCode::VecSharedZero:
+        case OpCode::VecLoadConst:
+        case OpCode::BitCast:
+        case OpCode::GetResult:
+        case OpCode::VecDup64:
+        case OpCode::GuestSafepoint:
+        case OpCode::GuestDispatchSafepoint:
+            return true;
+        case OpCode::VecExtract64:
+            return options.avx || options.sse41;
+        default:
+            return false;
+    }
+}
+
+void Writer::ValidateCompileOptions() {
     if (options.arm_fpcr != UINT32_MAX && !runtime::arm64::IsSupportedFPCR(options.arm_fpcr))
         Reject(CompileError::UnsupportedOperand);
-    if (Pinned()) {
-        if (!Linked() || options.pinned_uniform_slots != 2 ||
-            options.pinned_uniform_offset == UINT32_MAX ||
-            options.pinned_uniform_offset > UINT32_MAX - (options.pinned_uniform_slots * 8u - 1))
-            Reject(CompileError::UnsupportedOperand);
-        const auto bytes = options.pinned_uniform_slots * 8u;
-        const auto overlaps = [&](std::uint32_t field) {
-            return field != UINT32_MAX &&
-                   std::uint64_t{field} < std::uint64_t{options.pinned_uniform_offset} + bytes &&
-                   options.pinned_uniform_offset < std::uint64_t{field} + 8;
-        };
-        if (overlaps(options.pc_offset) || overlaps(options.flags_offset) ||
-            overlaps(options.mxcsr_offset))
-            Reject(CompileError::UnsupportedOperand);
+    if (!Pinned()) return;
+    if (!Linked() || options.pinned_uniform_slots != 2 ||
+        options.pinned_uniform_offset == UINT32_MAX ||
+        options.pinned_uniform_offset > UINT32_MAX - (options.pinned_uniform_slots * 8u - 1))
+        Reject(CompileError::UnsupportedOperand);
+    const auto bytes = options.pinned_uniform_slots * 8u;
+    const auto overlaps = [&](std::uint32_t field) {
+        return field != UINT32_MAX &&
+               std::uint64_t{field} < std::uint64_t{options.pinned_uniform_offset} + bytes &&
+               options.pinned_uniform_offset < std::uint64_t{field} + 8;
+    };
+    if (overlaps(options.pc_offset) || overlaps(options.flags_offset) ||
+        overlaps(options.mxcsr_offset))
+        Reject(CompileError::UnsupportedOperand);
+}
+
+void Writer::EmitUnitEntry(u32 block_id, u64 pc, bool fp_guard) {
+    flags = {};
+    Prologue();
+    if (options.local_flags && (allocation.flags_input[block_id] || fp_guard)) ImportLinkedFlags();
+    if (fp_guard) {
+        Label ready;
+        cmp(dword[r12 + options.arm_fpcr_offset], options.arm_fpcr);
+        je(ready, T_NEAR);
+        guest_pc = pc;
+        Exit(runtime::ExitValue(runtime::NativeExit::FPEnvironment));
+        L(ready);
     }
+    PrepareEdge(BlockId{block_id});
+}
+
+void Writer::ResetBlockState(u32 b) {
+    block = BlockId{b};
+    L(blocks[b]);
+    static_pc_known = false;
+    has_fault_location = false;
+    terminated = false;
+    condition_saved = false;
+    xmm15_fp_const = -1;
+    xmm0_node = NodeId::invalid;
+    xmm1_bcast_node = NodeId::invalid;
+    flags = {options.local_flags && allocation.flags_input[b] != 0,
+             options.local_flags && allocation.native_entry[b],
+             options.local_flags && allocation.flags_input[b] != 0 && !allocation.native_entry[b],
+             options.local_flags && allocation.native_entry[b],
+             true};
+}
+
+void Writer::UpdateScratchCaches(const OpContext& c, bool preserve_fp_caches) {
+    const auto def_pos = allocation.homes[c.node.value].definition_position;
+    if (!kept_xmm15_fp_const && !preserve_fp_caches) xmm15_fp_const = -1;
+    if (!kept_xmm1_bcast && !preserve_fp_caches) xmm1_bcast_node = NodeId::invalid;
+    if (xmm1_bcast_node != NodeId::invalid &&
+        allocation.homes[xmm1_bcast_node].last_use <= def_pos)
+        xmm1_bcast_node = NodeId::invalid;
+    if (!kept_xmm0 || (xmm0_node != NodeId::invalid &&
+                       allocation.homes[xmm0_node].last_use <= def_pos))
+        xmm0_node = NodeId::invalid;
+}
+
+void Writer::EmitNode(u32 i, u32 b, ExtraEntryList& extra_entries) {
+    current = NodeId{i};
+    const auto& op = source.Operations()[i];
+    if (op.opcode == OpCode::FaultLocation) {
+        guest_pc = source.Operands(current).front().Payload();
+        has_fault_location = true;
+        return;
+    }
+    if (op.opcode == OpCode::EntryPoint) {
+        if (!Linked()) Reject(CompileError::UnsupportedControlFlow);
+        const auto entry_pc = source.Operands(current).front().Payload();
+        if (entry_pc == options.entry_pc) return;
+        xmm15_fp_const = -1;
+        xmm0_node = NodeId::invalid;
+        xmm1_bcast_node = NodeId::invalid;
+        output.entries.push_back({entry_pc, 0});
+        extra_entries.push_back({unsigned(output.entries.size() - 1), b});
+        return;
+    }
+    OpContext c{op, current, source.Operands(current)};
+    for (auto cell : c.operands) {
+        if (c.count < c.args.size()) c.args[c.count] = cell;
+        ++c.count;
+    }
+    c.width = TypeBits(op.type);
+    c.vector_result = op.type == ir::Type::V128;
+    c.destination = rax;
+    c.vector = xmm0;
+    fault_committed_flags = false;
+    kept_xmm15_fp_const = false;
+    kept_xmm1_bcast = false;
+    kept_xmm0 = PreservesCachedXmm0(op.opcode, c.vector_result);
+    if (allocation.homes[i].terminal_only) return;
+    const bool preserve_fp_caches = PreservesScratchFpCaches(op.opcode);
+    PrepareArmFPRegion(c);
+    PrepareFlags(c);
+    Dispatch(c);
+    WriteResult(c);
+    UpdateScratchCaches(c, preserve_fp_caches);
+    if (op.flag_outputs && !SupportsFlagOutputs(op.opcode))
+        Reject(CompileError::UnsupportedFlags);
+}
+
+void Writer::EmitBlock(u32 b, ExtraEntryList& extra_entries) {
+    ResetBlockState(b);
+    const auto& body = source.Blocks()[b];
+    for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i)
+        EmitNode(i, b, extra_entries);
+    if (!terminated) Terminal(body.terminal);
+}
+
+void Writer::Run() {
+    ValidateCompileOptions();
     const bool fp_guard = allocation.uses_fpcr && options.arm_fpcr != UINT32_MAX &&
                           options.arm_fpcr_offset != UINT32_MAX;
-    const auto enter = [&](u32 b, u64 pc) {
-        flags = {};
-        Prologue();
-        if (options.local_flags && (allocation.flags_input[b] || fp_guard)) ImportLinkedFlags();
-        if (fp_guard) {
-            Label ready;
-            cmp(dword[r12 + options.arm_fpcr_offset], options.arm_fpcr);
-            je(ready, T_NEAR);
-            guest_pc = pc;
-            Exit(runtime::ExitValue(runtime::NativeExit::FPEnvironment));
-            L(ready);
-        }
-        PrepareEdge(BlockId{b});
-    };
-    enter(source.EntryBlock().value, options.entry_pc);
-    std::vector<std::pair<unsigned, unsigned>> extra;
+    EmitUnitEntry(source.EntryBlock().value, options.entry_pc, fp_guard);
+    ExtraEntryList extra_entries;
     for (std::size_t order_idx = 0; order_idx < allocation.block_order.size(); ++order_idx) {
         const auto b = allocation.block_order[order_idx];
         fallthrough_block = order_idx + 1 < allocation.block_order.size()
                                     ? allocation.block_order[order_idx + 1]
                                     : BlockId::invalid;
-        block = BlockId{b};
-        L(blocks[b]);
-        static_pc_known = false;
-        has_fault_location = false;
-        terminated = false;
-        const auto& body = source.Blocks()[b];
-        condition_saved = false;
-        xmm15_fp_const = -1;
-        xmm0_node = NodeId::invalid;
-        xmm1_bcast_node = NodeId::invalid;
-        flags = {options.local_flags && allocation.flags_input[b] != 0,
-                 options.local_flags && allocation.native_entry[b],
-                 options.local_flags && allocation.flags_input[b] != 0 &&
-                         !allocation.native_entry[b],
-                 options.local_flags && allocation.native_entry[b],
-                 true};
-        for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
-            current = NodeId{i};
-            const auto& op = source.Operations()[i];
-            if (op.opcode == OpCode::FaultLocation) {
-                guest_pc = source.Operands(current).front().Payload();
-                has_fault_location = true;
-                continue;
-            }
-            if (op.opcode == OpCode::EntryPoint) {
-                if (!Linked()) Reject(CompileError::UnsupportedControlFlow);
-                const auto entry_pc = source.Operands(current).front().Payload();
-                if (entry_pc == options.entry_pc) continue;
-                xmm15_fp_const = -1;
-                xmm0_node = NodeId::invalid;
-                xmm1_bcast_node = NodeId::invalid;
-                output.entries.push_back({entry_pc, 0});
-                extra.push_back({unsigned(output.entries.size() - 1), b});
-                continue;
-            }
-            OpContext c{op, current, source.Operands(current)};
-            for (auto cell : c.operands) {
-                if (c.count < c.args.size()) c.args[c.count] = cell;
-                ++c.count;
-            }
-            c.width = TypeBits(op.type);
-            c.vector_result = op.type == ir::Type::V128;
-            c.destination = rax;
-            c.vector = xmm0;
-            fault_committed_flags = false;
-            kept_xmm15_fp_const = false;
-            kept_xmm1_bcast = false;
-            const bool scalar_or_mem_safe =
-                    op.opcode == OpCode::Nop || op.opcode == OpCode::SetLocation ||
-                    op.opcode == OpCode::AdvancePC || op.opcode == OpCode::InvertCarry ||
-                    op.opcode == OpCode::SetCarry || op.opcode == OpCode::ClearFlags ||
-                    op.opcode == OpCode::LoadUniform || op.opcode == OpCode::StoreUniform ||
-                    op.opcode == OpCode::LoadMemory || op.opcode == OpCode::LoadMemoryTSO ||
-                    op.opcode == OpCode::StoreMemory || op.opcode == OpCode::StoreMemoryTSO ||
-                    op.opcode == OpCode::LoadImm || op.opcode == OpCode::Zero ||
-                    op.opcode == OpCode::VecSharedZero || op.opcode == OpCode::VecLoadConst ||
-                    op.opcode == OpCode::BitCast || op.opcode == OpCode::GetResult ||
-                    op.opcode == OpCode::VecDup64 ||
-                    (op.opcode == OpCode::VecExtract64 && (options.avx || options.sse41)) ||
-                    op.opcode == OpCode::GuestSafepoint ||
-                    op.opcode == OpCode::GuestDispatchSafepoint ||
-                    op.opcode == OpCode::Add || op.opcode == OpCode::Sub ||
-                    op.opcode == OpCode::Mul || op.opcode == OpCode::And ||
-                    op.opcode == OpCode::Or || op.opcode == OpCode::Xor ||
-                    op.opcode == OpCode::AndNot ||
-                    op.opcode == OpCode::LslImm || op.opcode == OpCode::LsrImm ||
-                    op.opcode == OpCode::AsrImm || op.opcode == OpCode::RorImm ||
-                    op.opcode == OpCode::ZeroExtend32 || op.opcode == OpCode::ZeroExtend32To64 ||
-                    op.opcode == OpCode::ZeroExtend64 || op.opcode == OpCode::SignExtend ||
-                    op.opcode == OpCode::CondSet || op.opcode == OpCode::LocalCondSet;
-            kept_xmm0 = op.opcode == OpCode::Nop || op.opcode == OpCode::SetLocation ||
-                        op.opcode == OpCode::AdvancePC || op.opcode == OpCode::InvertCarry ||
-                        op.opcode == OpCode::SetCarry || op.opcode == OpCode::ClearFlags ||
-                        op.opcode == OpCode::StoreUniform || op.opcode == OpCode::StoreMemory ||
-                        op.opcode == OpCode::StoreMemoryTSO ||
-                        (!c.vector_result &&
-                         (op.opcode == OpCode::LoadImm || op.opcode == OpCode::Zero ||
-                          op.opcode == OpCode::Add || op.opcode == OpCode::Sub ||
-                          op.opcode == OpCode::Mul || op.opcode == OpCode::And ||
-                          op.opcode == OpCode::Or || op.opcode == OpCode::Xor ||
-                          op.opcode == OpCode::AndNot ||
-                          op.opcode == OpCode::LslImm || op.opcode == OpCode::LsrImm ||
-                          op.opcode == OpCode::AsrImm || op.opcode == OpCode::RorImm ||
-                          op.opcode == OpCode::ZeroExtend32 ||
-                          op.opcode == OpCode::ZeroExtend32To64 ||
-                          op.opcode == OpCode::ZeroExtend64 || op.opcode == OpCode::SignExtend ||
-                          op.opcode == OpCode::CondSet || op.opcode == OpCode::LocalCondSet));
-            if (allocation.homes[i].terminal_only) continue;
-            PrepareArmFPRegion(c);
-            PrepareFlags(c);
-            Dispatch(c);
-            WriteResult(c);
-            if (!kept_xmm15_fp_const && !scalar_or_mem_safe) xmm15_fp_const = -1;
-            if (!kept_xmm1_bcast && !scalar_or_mem_safe) xmm1_bcast_node = NodeId::invalid;
-            if (xmm1_bcast_node != NodeId::invalid &&
-                allocation.homes[xmm1_bcast_node].last_use <= allocation.homes[i].definition_position)
-                xmm1_bcast_node = NodeId::invalid;
-            if (!kept_xmm0 ||
-                (xmm0_node != NodeId::invalid &&
-                 allocation.homes[xmm0_node].last_use <= allocation.homes[i].definition_position))
-                xmm0_node = NodeId::invalid;
-            if (op.flag_outputs && op.opcode != OpCode::Add && op.opcode != OpCode::Sub &&
-                op.opcode != OpCode::Adc && op.opcode != OpCode::Sbb && op.opcode != OpCode::Neg &&
-                op.opcode != OpCode::And && op.opcode != OpCode::Or && op.opcode != OpCode::Xor &&
-                op.opcode != OpCode::AndNot && op.opcode != OpCode::Not)
-                Reject(CompileError::UnsupportedFlags);
-        }
-        if (!terminated) Terminal(body.terminal);
+        EmitBlock(b, extra_entries);
     }
     fallthrough_block = BlockId::invalid;
     xmm15_fp_const = -1;
     xmm0_node = NodeId::invalid;
     xmm1_bcast_node = NodeId::invalid;
     EmitColdPaths();
-    for (auto [index, b] : extra) {
+    for (auto [index, b] : extra_entries) {
         align(16);
         output.entries[index].offset = getSize();
-        enter(b, output.entries[index].pc);
+        EmitUnitEntry(b, output.entries[index].pc, fp_guard);
         jmp(blocks[b], T_NEAR);
     }
     EmitFPConstants();

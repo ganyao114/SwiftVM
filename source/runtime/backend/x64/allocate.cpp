@@ -1,1361 +1,392 @@
-#include "allocate.h"
-#include "compile.h"
-#include "helpers.h"
+#include "allocation_detail.h"
 #include "runtime/arch/arm64/numeric.h"
-#include "runtime/backend/allocation_cfg.h"
-#include "runtime/ir/flag_effects.h"
 
 #include <algorithm>
-#include <array>
 #include <limits>
 
-namespace swift::runtime::backend::x64 {
-namespace {
-using namespace ir;
-using u32 = std::uint32_t;
+namespace swift::runtime::backend::x64::detail {
 
-constexpr std::array<unsigned, 6> pin_registers{13, 14, 15, 5};
-constexpr unsigned register_count = 12;
+void Allocator::Run() {
+    ResetResult(CompileError::None);
+    const auto entry = program.EntryBlock();
+    if (!program || program.ScopeKind() != scope || blocks.empty() ||
+        entry.value >= blocks.size() || operations.size() >= NodeId::invalid ||
+        (scope == Scope::Block && (blocks.size() != 1 || entry.value != 0))) {
+        ResetResult(CompileError::InvalidProgram);
+        return;
+    }
+    if (pinned_slots && pinned_slots != 2) {
+        ResetResult(CompileError::UnsupportedOperand);
+        return;
+    }
+    scalar_register_count = 0;
+    for (unsigned reg : {13u, 14u, 15u, 5u, 8u, 9u, 6u, 7u}) {
+        bool reserved = false;
+        for (unsigned i = 0; i < pinned_slots; ++i) reserved |= kPinRegisters[i] == reg;
+        if (!reserved) scalar_registers[scalar_register_count++] = reg;
+    }
 
-bool SupportedType(Type type) {
-    return type == ir::Type::Void || IntegerType(type) || type == ir::Type::F32 ||
-           type == ir::Type::F64 || type == ir::Type::V128;
+    graph = scope == Scope::Function &&
+            (blocks.size() != 1 || blocks.front().terminal.kind == TerminalKind::Jump ||
+             blocks.front().terminal.kind == TerminalKind::Branch);
+
+    if (graph)
+        cfg.BuildOrder(program, result.block_order);
+    else
+        result.block_order.push_back(0);
+    if (!InitializeHomes()) return;
+    if (graph) cfg.CloseLoops(program, result.block_order);
+    if (!ObserveUses() || !AllocatePayloads()) return;
+    if (options && options->local_flags) AnalyzeFlags();
+    AnalyzeUniformBacking();
+    AssignRegisters();
 }
 
-bool UnsupportedStorage(OpCode opcode) {
-    return opcode == OpCode::AddPhi || opcode == OpCode::DefineLocal ||
-           opcode == OpCode::LoadLocal || opcode == OpCode::StoreLocal;
+void Allocator::ResetResult(CompileError error, NodeId node, BlockId block) {
+    result.error = error;
+    result.node = node;
+    result.block = block;
+    result.spill_bytes = result.call_offset = 0;
+    result.has_calls = false;
+    result.uses_fpcr = false;
+    result.fpcr_may_change = false;
+    result.flags_slot = result.condition_slot = UINT32_MAX;
+    result.native_entry.clear();
+    result.terminal_conditions.clear();
+    result.flags_input.clear();
+    result.cold_fp_count = result.cold_event_count = 0;
+    result.homes.clear();
+    result.block_order.clear();
 }
 
-bool DestructiveInput(const Operation& operation) {
-    switch (operation.opcode) {
-        case OpCode::Add:
-        case OpCode::Sub:
-        case OpCode::Adc:
-        case OpCode::Sbb:
-        case OpCode::Neg:
-        case OpCode::Mul:
-        case OpCode::And:
-        case OpCode::Or:
-        case OpCode::Xor:
-        case OpCode::AndNot:
-        case OpCode::LslImm:
-        case OpCode::LslValue:
-        case OpCode::LsrImm:
-        case OpCode::LsrValue:
-        case OpCode::AsrImm:
-        case OpCode::AsrValue:
-        case OpCode::RorImm:
-        case OpCode::RorValue:
-        case OpCode::ZeroExtend32:
-        case OpCode::ZeroExtend32To64:
-        case OpCode::ZeroExtend64:
-        case OpCode::SignExtend:
-            return operation.type == Type::U32 || operation.type == Type::U64;
-        case OpCode::VecAnd:
-        case OpCode::Vec4And:
-        case OpCode::VecOr:
-        case OpCode::Vec4Or:
-        case OpCode::VecXor:
-        case OpCode::VecAdd:
-        case OpCode::Vec4Add:
-        case OpCode::VecSub:
-        case OpCode::Vec4Sub:
-        case OpCode::VecShuffle32:
-        case OpCode::VecZip:
-        case OpCode::VecUnzip:
-        case OpCode::VecExtend:
-        case OpCode::VecShiftLeftImm:
-        case OpCode::VecShiftRightImm:
-        case OpCode::VecShiftRightArithmeticImm:
-        case OpCode::BitCast:
-            return operation.type == Type::V128;
+bool Allocator::OperationNeedsCall(const Operation& operation, NodeId id) const {
+    if (AlwaysNeedsCall(operation.opcode)) return true;
+    if (operation.opcode != OpCode::VecFCmpMask) return false;
+    unsigned argument{};
+    for (const auto operand : program.Operands(id)) {
+        if (argument++ == 3) return FloatingCompareNeedsCall(operand.Payload());
+    }
+    return false;
+}
+
+bool Allocator::CanFoldTerminalCondition(const BlockRecord& body, u32 node) const {
+    if (body.terminal.kind != TerminalKind::Branch || body.terminal.value.value != node ||
+        node + 1 != body.first_node + body.node_count)
+        return false;
+    const auto& operation = operations[node];
+    if (operation.Metadata() != OperationMetadata{}) return false;
+    const auto code = operation.opcode;
+    if (code == OpCode::TestFlags || code == OpCode::TestNotFlags) {
+        const auto mask = program.Operands(NodeId{node}).front().Payload();
+        return !(mask & 16);
+    }
+    if (!options || !options->local_flags) return false;
+    switch (code) {
+        case OpCode::CondSet:
+        case OpCode::LocalCondSet:
+        case OpCode::TestZero:
+        case OpCode::TestNotZero:
+        case OpCode::TestBit:
+            return true;
         default:
             return false;
     }
 }
 
-// The private owner only borrows the original request and its actual result.
-// Control flow is shared; register and auxiliary-slot policy stays here.
-class Allocator {
-public:
-    Allocator(const Program& program,
-              Scope scope,
-              Allocation& result,
-              unsigned pinned_slots,
-              const CompileOptions* options)
-            : program(program)
-            , scope(scope)
-            , result(result)
-            , operations(program.Operations())
-            , blocks(program.Blocks())
-            , pinned_slots(pinned_slots)
-            , options(options) {}
-
-    void Run() {
-        ResetResult(CompileError::None);
-        const auto entry = program.EntryBlock();
-        if (!program || program.ScopeKind() != scope || blocks.empty() ||
-            entry.value >= blocks.size() || operations.size() >= NodeId::invalid ||
-            (scope == Scope::Block && (blocks.size() != 1 || entry.value != 0))) {
-            ResetResult(CompileError::InvalidProgram);
-            return;
-        }
-
-        if (pinned_slots && pinned_slots != 2) {
-            ResetResult(CompileError::UnsupportedOperand);
-            return;
-        }
-        scalar_register_count = 0;
-        for (unsigned reg : {13u, 14u, 15u, 5u, 8u, 9u, 6u, 7u}) {
-            bool reserved = false;
-            for (unsigned i = 0; i < pinned_slots; ++i) reserved |= pin_registers[i] == reg;
-            if (!reserved) scalar_registers[scalar_register_count++] = reg;
-        }
-
-        graph = scope == Scope::Function &&
-                (blocks.size() != 1 || blocks.front().terminal.kind == TerminalKind::Jump ||
-                 blocks.front().terminal.kind == TerminalKind::Branch);
-
-        if (graph)
-            cfg.BuildOrder(program, result.block_order);
-        else
-            result.block_order.push_back(0);
-        if (!InitializeHomes()) return;
-        if (graph) cfg.CloseLoops(program, result.block_order);
-        if (!ObserveUses() || !AllocatePayloads()) return;
-        if (options && options->local_flags) AnalyzeFlags();
-        AnalyzeUniformBacking();
-        AssignRegisters();
-    }
-
-private:
-    const Program& program;
-    Scope scope;
-    Allocation& result;
-    std::span<const Operation> operations;
-    std::span<const BlockRecord> blocks;
-    backend::detail::AllocationCFG cfg;
-    std::array<unsigned, 8> scalar_registers{};
-    unsigned scalar_register_count{};
-    unsigned pinned_slots{};
-    const CompileOptions* options{};
-    bool graph{};
-
-    void ResetResult(CompileError error, NodeId node = {}, BlockId block = {}) {
-        result.error = error;
-        result.node = node;
-        result.block = block;
-        result.spill_bytes = result.call_offset = 0;
-        result.has_calls = false;
-        result.uses_fpcr = false;
-        result.fpcr_may_change = false;
-        result.flags_slot = result.condition_slot = UINT32_MAX;
-        result.native_entry.clear();
-        result.terminal_conditions.clear();
-        result.flags_input.clear();
-        result.cold_fp_count = result.cold_event_count = 0;
-        result.homes.clear();
-        result.block_order.clear();
-    }
-
-    bool InitializeHomes() {
-        result.homes.resize(operations.size());
-        u32 position{};
-        for (const auto b : result.block_order) {
-            const auto& body = blocks[b];
-            if (graph) cfg.RecordBlock(b, position, body.terminal);
-            for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i, ++position) {
-                const auto& operation = operations[i];
-                if (options && options->arm_fpcr != UINT32_MAX) ObserveFPCR(operation, NodeId{i});
-                const bool fp_values = operation.opcode == OpCode::ArmFPTernary ||
-                                       operation.opcode == OpCode::ArmFPUnary ||
-                                       operation.opcode == OpCode::ArmFPConvert ||
-                                       operation.opcode == OpCode::ArmFPCompare;
-                result.cold_fp_count += operation.opcode == OpCode::ArmFPBinary ||
-                                        operation.opcode == OpCode::CallLambda || fp_values;
-                result.uses_fpcr |= operation.opcode == OpCode::ArmFPBinary ||
-                                    operation.opcode == OpCode::CallLambda || fp_values ||
-                                    operation.opcode == OpCode::ArmFPBitUnary;
-                result.cold_event_count += operation.opcode == OpCode::GuestSafepoint ||
-                                           operation.opcode == OpCode::GuestDispatchSafepoint;
-                if (!SupportedType(operation.type)) {
-                    ResetResult(CompileError::UnsupportedType, NodeId{i}, BlockId{b});
-                    return false;
-                }
-                if (UnsupportedStorage(operation.opcode)) {
-                    ResetResult(operation.opcode == OpCode::AddPhi
-                                        ? CompileError::UnsupportedControlFlow
-                                        : CompileError::UnsupportedOpcode,
-                                NodeId{i},
-                                BlockId{b});
-                    return false;
-                }
-                if (operation.opcode == OpCode::CompareAndSwap128 ||
-                    operation.opcode == OpCode::CallLambda ||
-                    operation.opcode == OpCode::ArmFPBinary || fp_values ||
-                    operation.opcode == OpCode::Cpuid || operation.opcode == OpCode::ReadSystem ||
-                    operation.opcode == OpCode::ReadSystemPair ||
-                    operation.opcode == OpCode::X87Op || operation.opcode == OpCode::X87Execute ||
-                    operation.opcode == OpCode::Div128 ||
-                    operation.opcode == OpCode::VecFRoundInt ||
-                    operation.opcode == OpCode::VecFMulAdd ||
-                    operation.opcode == OpCode::Sse42Str ||
-                    operation.opcode == OpCode::Sse42StrExplicit ||
-                    operation.opcode == OpCode::VecAesEncFast ||
-                    operation.opcode == OpCode::VecAesDecFast ||
-                    operation.opcode == OpCode::VecAesEncLastFast ||
-                    operation.opcode == OpCode::VecAesDecLastFast ||
-                    operation.opcode == OpCode::VecAesImc ||
-                    operation.opcode == OpCode::VecAesEnc ||
-                    operation.opcode == OpCode::VecAesDec ||
-                    operation.opcode == OpCode::VecAesEncLast ||
-                    operation.opcode == OpCode::VecAesDecLast ||
-                    operation.opcode == OpCode::VecAesKeygenAssist ||
-                    operation.opcode == OpCode::VecPclMul ||
-                    operation.opcode == OpCode::VecSha256Msg1 ||
-                    operation.opcode == OpCode::VecSha256Msg2 ||
-                    operation.opcode == OpCode::VecSha256Rnds2)
-                    result.has_calls = true;
-                if (operation.opcode == OpCode::VecFCmpMask) {
-                    unsigned argument{};
-                    for (const auto operand : program.Operands(NodeId{i})) {
-                        if (argument++ == 3) {
-                            result.has_calls |= FloatingCompareNeedsCall(operand.Payload());
-                            break;
-                        }
-                    }
-                }
-                auto& home = result.homes[i];
-                home.definition_position = home.last_use = position;
-                if (body.terminal.kind == TerminalKind::Branch && body.terminal.value.value == i &&
-                    i + 1 == body.first_node + body.node_count &&
-                    operation.Metadata() == OperationMetadata{} &&
-                    (operation.opcode == OpCode::TestFlags ||
-                     operation.opcode == OpCode::TestNotFlags ||
-                     (options && options->local_flags &&
-                      (operation.opcode == OpCode::CondSet ||
-                       operation.opcode == OpCode::LocalCondSet ||
-                       operation.opcode == OpCode::TestZero ||
-                       operation.opcode == OpCode::TestNotZero ||
-                       operation.opcode == OpCode::TestBit)))) {
-                    const auto mask = program.Operands(NodeId{i}).front().Payload();
-                    home.terminal_only = operation.opcode == OpCode::CondSet ||
-                                         operation.opcode == OpCode::LocalCondSet ||
-                                         operation.opcode == OpCode::TestZero ||
-                                         operation.opcode == OpCode::TestNotZero ||
-                                         operation.opcode == OpCode::TestBit || !(mask & 16);
-                }
-                // Ordinary flag metadata updates the live RBX word. Only an
-                // actual named snapshot consumer below needs a saved payload.
-                if (operation.opcode == OpCode::Div128 || operation.opcode == OpCode::Cpuid)
-                    home.auxiliary_offset = 0;  // Allocate only after the actual use walk.
-            }
-        }
-        return true;
-    }
-
-    void ObserveFPCR(const Operation& operation, NodeId id) {
-        const auto opcode = operation.opcode;
-        if (opcode == OpCode::ArmFPBinary || opcode == OpCode::ArmFPTernary ||
-            opcode == OpCode::ArmFPUnary || opcode == OpCode::ArmFPConvert ||
-            opcode == OpCode::ArmFPCompare) {
-            const bool binary = opcode == OpCode::ArmFPBinary;
-            const unsigned argument = binary || opcode == OpCode::ArmFPCompare ? 2
-                                      : opcode == OpCode::ArmFPTernary         ? 3
-                                                                               : 1;
-            auto at = program.Operands(id).begin();
-            for (unsigned i = 0; i < argument; ++i) ++at;
-            const auto offsets = (*at++).Payload();
-            const auto control = static_cast<u32>(offsets);
-            const auto status = static_cast<u32>(binary ? (*at).Payload() : offsets >> 32);
-            result.fpcr_may_change |= Overlaps({control, 4}, {status, 4});
-        } else if (opcode == OpCode::CallLambda) {
-            auto at = program.Operands(id).begin();
-            ++at;
-            const bool exact_numeric =
-                    at != program.Operands(id).end() && (*at).Kind() == OperandKind::Immediate &&
-                    (*at).Payload() ==
-                            reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric);
-            result.fpcr_may_change |= !exact_numeric;
-        } else if (opcode == OpCode::Cpuid || opcode == OpCode::ReadSystem ||
-                   opcode == OpCode::ReadSystemPair || opcode == OpCode::X87Op ||
-                   opcode == OpCode::X87Execute) {
-            result.fpcr_may_change = true;
-        } else if (opcode == OpCode::StoreUniform || opcode == OpCode::StoreUniformSelectImm) {
-            const auto field = program.Operands(id).front();
-            const auto bytes = opcode == OpCode::StoreUniformSelectImm
-                                       ? 8u
-                                       : (TypeBits(field.TypeView()) + 7) / 8;
-            result.fpcr_may_change |=
-                    options->arm_fpcr_offset == UINT32_MAX ||
-                    (field.Payload() < std::uint64_t{options->arm_fpcr_offset} + 4 &&
-                     options->arm_fpcr_offset < field.Payload() + bytes);
-        } else if (!options->private_state &&
-                   HasAnyEffect(EffectsFor(opcode, operation.Metadata()), Effect::WriteMemory)) {
-            result.fpcr_may_change = true;
-        }
-    }
-
-    void AnalyzeFlags() {
-        struct Summary {
-            unsigned char gen{}, kill{};
-            bool queued{true};
-        };
-
-        std::array<Summary, 8> local_facts;
-        std::array<u32, 9> local_offsets{};
-        std::array<u32, 16> local_predecessors;
-        std::array<u32, 8> local_queue;
-        std::vector<Summary> large_facts;
-        std::vector<u32> large_offsets, large_predecessors, large_queue;
-        const auto size = blocks.size();
-        std::span<Summary> facts = local_facts;
-        std::span<u32> offsets = local_offsets, predecessors = local_predecessors,
-                       queue = local_queue;
-        if (size > local_facts.size()) {
-            large_facts.resize(size);
-            large_offsets.resize(size + 1);
-            large_predecessors.resize(size * 2);
-            large_queue.resize(size);
-            facts = large_facts;
-            offsets = large_offsets;
-            predecessors = large_predecessors;
-            queue = large_queue;
-        }
-        result.flags_input.assign(size, 15);
-        ir::UniformPolicy uniforms;
-        uniforms.flags = ir::UniformRange{options->flags_offset, 8};
-        uniforms.pc = ir::UniformRange{options->pc_offset, 8};
-        for (u32 b = 0; b < size; ++b) {
-            const auto& body = blocks[b];
-            unsigned needed{}, killed{};
-            for (u32 at = body.first_node + body.node_count; at-- > body.first_node;) {
-                const auto& op = operations[at];
-                auto& home = result.homes[at];
-                const auto inputs = program.Operands(NodeId{at});
-                unsigned outputs = op.flag_outputs & 15;
-                if (op.opcode == OpCode::ArmFPCompare) outputs |= 15;
-                if (op.opcode == OpCode::SetCarry || op.opcode == OpCode::InvertCarry) outputs |= 1;
-                if (op.opcode == OpCode::SetOverflow) outputs |= 2;
-                if (op.opcode == OpCode::ClearFlags) outputs |= inputs.front().Payload() & 15;
-                if (op.opcode == OpCode::RestoreFlags || op.opcode == OpCode::SaveFlags ||
-                    op.opcode == OpCode::BranchOnlyFlags) {
-                    auto input = inputs.begin();
-                    ++input;
-                    outputs |= (*input).Payload() & 15;
-                }
-                const auto reads =
-                        ir::FlagReads(
-                                op.opcode, EffectsFor(op.opcode, op.Metadata()), inputs, uniforms) &
-                        15;
-                home.flag_reads = reads;
-                home.flag_writes = outputs;
-                needed &= ~outputs;
-                killed |= outputs;
-                needed |= reads;
-            }
-            facts[b].gen = needed;
-            facts[b].kill = killed;
-            const auto edge = [&](BlockId target) { ++offsets[target.value + 1]; };
-            if (body.terminal.kind == TerminalKind::Jump) edge(body.terminal.first);
-            if (body.terminal.kind == TerminalKind::Branch) {
-                edge(body.terminal.first);
-                edge(body.terminal.second);
-            }
-        }
-        for (u32 b = 0; b < size; ++b) {
-            offsets[b + 1] += offsets[b];
-            queue[b] = offsets[b];
-        }
-        for (u32 b = 0; b < size; ++b) {
-            const auto& terminal = blocks[b].terminal;
-            const auto edge = [&](BlockId target) { predecessors[queue[target.value]++] = b; };
-            if (terminal.kind == TerminalKind::Jump) edge(terminal.first);
-            if (terminal.kind == TerminalKind::Branch) {
-                edge(terminal.first);
-                edge(terminal.second);
-            }
-        }
-        for (u32 b = 0; b < size; ++b) queue[b] = b;
-        std::size_t head{}, tail{}, pending = size;
-        while (pending) {
-            const auto b = queue[head];
-            if (++head == size) head = 0;
-            --pending;
-            facts[b].queued = false;
-            const auto& terminal = blocks[b].terminal;
-            unsigned output = 15;
-            if (terminal.kind == TerminalKind::Jump)
-                output = result.flags_input[terminal.first.value];
-            if (terminal.kind == TerminalKind::Branch)
-                output = result.flags_input[terminal.first.value] |
-                         result.flags_input[terminal.second.value];
-            const auto input = facts[b].gen | (output & ~facts[b].kill);
-            if (input == result.flags_input[b]) continue;
-            result.flags_input[b] = input;
-            for (auto at = offsets[b]; at < offsets[b + 1]; ++at) {
-                const auto previous = predecessors[at];
-                if (facts[previous].queued) continue;
-                facts[previous].queued = true;
-                queue[tail] = previous;
-                if (++tail == size) tail = 0;
-                ++pending;
-            }
-        }
-        result.terminal_conditions.assign(size, 255);
-        result.native_entry.assign(size, false);
-        std::vector<bool> native_output(size);
-        std::vector<u32> rank(size);
-        for (u32 i = 0; i < result.block_order.size(); ++i) rank[result.block_order[i]] = i;
-        for (u32 b = 0; b < size; ++b) {
-            const auto& body = blocks[b];
-            const auto& terminal = body.terminal;
-            unsigned other = 15, term = 0;
-            if (terminal.kind == TerminalKind::Jump)
-                other = result.flags_input[terminal.first.value];
-            if (terminal.kind == TerminalKind::Branch) {
-                other = result.flags_input[terminal.first.value] |
-                        result.flags_input[terminal.second.value];
-                const auto& op = operations[terminal.value.value];
-                if (result.homes[terminal.value.value].terminal_only) {
-                    std::optional<Condition> condition;
-                    if (op.opcode == OpCode::CondSet || op.opcode == OpCode::LocalCondSet)
-                        condition = static_cast<Condition>(
-                                program.Operands(terminal.value).front().Payload());
-                    else if (op.opcode == OpCode::TestFlags || op.opcode == OpCode::TestNotFlags)
-                        condition = ir::FlagCondition(
-                                program.Operands(terminal.value).front().Payload(),
-                                op.opcode == OpCode::TestNotFlags);
-                    if (condition) result.terminal_conditions[b] = unsigned(*condition);
-                }
-            }
-            for (u32 at = body.first_node + body.node_count; at-- > body.first_node;) {
-                auto& home = result.homes[at];
-                other &= ~home.flag_writes;
-                term &= ~home.flag_writes;
-                if (terminal.kind == TerminalKind::Branch && terminal.value.value == at &&
-                    result.terminal_conditions[b] != 255)
-                    term |= home.flag_reads;
-                else
-                    other |= home.flag_reads;
-                home.flags_need = other | (term << 4);
-            }
-            bool native = false;
-            for (u32 at = body.first_node; at < body.first_node + body.node_count; ++at) {
-                const auto& op = operations[at];
-                const auto code = op.opcode;
-                if (op.flag_outputs == 15 && result.homes[at].auxiliary_offset == UINT32_MAX &&
-                    (op.type == Type::U32 || op.type == Type::U64) &&
-                    (code == OpCode::Add || code == OpCode::Sub || code == OpCode::Neg ||
-                     code == OpCode::Adc || code == OpCode::Sbb || code == OpCode::And ||
-                     code == OpCode::Or || code == OpCode::Xor ||
-                     (code == OpCode::AndNot && options && options->bmi1)))
-                    native = true;
-                else if (!InstructionPreservesNativeFlags(at))
-                    native = false;
-            }
-            native_output[b] = native;
-        }
-        for (u32 b = 0; b < size; ++b) {
-            bool backedge = false, all_native = true;
-            for (auto at = offsets[b]; at < offsets[b + 1]; ++at) {
-                const auto previous = predecessors[at];
-                if (rank[previous] < rank[b]) continue;
-                backedge = true;
-                all_native &= native_output[previous];
-            }
-            result.native_entry[b] = backedge && all_native && result.flags_input[b];
-        }
-    }
-
-    bool Immediate32Cell(CellView c, unsigned width, std::int32_t& immediate) const {
-        if (c.Kind() != OperandKind::Immediate || (width != 32 && width != 64)) return false;
-        auto value = c.Payload();
-        const auto bits = TypeBits(ViewOf(c));
-        if (bits && bits < 64) value &= (std::uint64_t{1} << bits) - 1;
-        immediate = static_cast<std::int32_t>(value);
-        return width == 32 || value == std::uint64_t(std::int64_t(immediate));
-    }
-
-    bool ExpressionPreservesNativeFlags(CellRange::Iterator& at, CellRange::Iterator end) const {
-        if (at == end) return false;
-        const auto cell = *at++;
-        if (cell.Kind() != OperandKind::Expression)
-            return TypeBits(ViewOf(cell)) >= 32 &&
-                   (cell.Kind() != OperandKind::Value ||
-                    TypeBits(operations[cell.Payload()].type) >= 8);
-        if (cell.ExpressionOp() != OperandOp::Add &&
-            !(cell.ExpressionOp() == OperandOp::AddShift && cell.ShiftAmount() <= 3))
-            return false;
-        for (unsigned i = 0; i < cell.Count(); ++i)
-            if (!ExpressionPreservesNativeFlags(at, end)) return false;
-        return true;
-    }
-
-    bool InstructionPreservesNativeFlags(u32 at) const {
-        const auto& op = operations[at];
-        const auto code = op.opcode;
-        const auto& home = result.homes[at];
-        if (home.rematerialize || home.terminal_only) return true;
-        if (code == OpCode::Nop || code == OpCode::EntryPoint || code == OpCode::InvertCarry ||
-            code == OpCode::FaultLocation || code == OpCode::GuestSafepoint ||
-            code == OpCode::GuestDispatchSafepoint || code == OpCode::CondSet ||
-            code == OpCode::LocalCondSet)
-            return true;
-        const auto ops = program.Operands(NodeId{at});
-        if (code == OpCode::LoadUniform) return TypeBits(op.type) >= 8;
-        if (code == OpCode::StoreUniform) return TypeBits(ops.front().TypeView()) >= 32;
-        if (code == OpCode::LoadImm) return TypeBits(op.type) >= 32;
-        if (code == OpCode::LoadMemory || code == OpCode::LoadMemoryTSO ||
-            code == OpCode::StoreMemory || code == OpCode::StoreMemoryTSO) {
-            if ((code == OpCode::LoadMemory || code == OpCode::LoadMemoryTSO) &&
-                TypeBits(op.type) < 8)
+bool Allocator::InitializeHomes() {
+    result.homes.resize(operations.size());
+    u32 position{};
+    for (const auto b : result.block_order) {
+        const auto& body = blocks[b];
+        if (graph) cfg.RecordBlock(b, position, body.terminal);
+        for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i, ++position) {
+            const auto& operation = operations[i];
+            if (options && options->arm_fpcr != UINT32_MAX) ObserveFPCR(operation, NodeId{i});
+            result.cold_fp_count += UsesColdFPStub(operation.opcode);
+            result.uses_fpcr |= UsesArmFPCR(operation.opcode);
+            result.cold_event_count += IsGuestSafepointOp(operation.opcode);
+            if (!SupportedType(operation.type)) {
+                ResetResult(CompileError::UnsupportedType, NodeId{i}, BlockId{b});
                 return false;
-            auto it = ops.begin();
-            return ExpressionPreservesNativeFlags(it, ops.end());
-        }
-        const unsigned width = TypeBits(op.type);
-        if (op.flag_outputs || home.auxiliary_offset != UINT32_MAX || (width != 32 && width != 64))
-            return false;
-        if (IsZeroIdentityCopyNode(at)) return true;
-        auto it = ops.begin();
-        if (it == ops.end()) return false;
-        const auto first = *it++;
-        const bool first_ok = TypeBits(ViewOf(first)) >= 32 &&
-                              (first.Kind() != OperandKind::Value ||
-                               TypeBits(operations[first.Payload()].type) >= 8);
-        if (!first_ok) return false;
-        if (code == OpCode::ZeroExtend32 || code == OpCode::ZeroExtend32To64 ||
-            code == OpCode::ZeroExtend64)
-            return true;
-        if (code == OpCode::RorImm)
-            return options && options->bmi2 && TypeBits(ViewOf(first)) >= width;
-        if (code == OpCode::LslImm && it != ops.end())
-            return ((*it).Payload() & (width - 1)) <= 3;
-        std::int32_t imm{};
-        if (code == OpCode::Add && it != ops.end()) {
-            const auto second = *it;
-            auto next_it = it;
-            ++next_it;
-            if (next_it == ops.end() && Immediate32Cell(second, width, imm)) return true;
-            return ExpressionPreservesNativeFlags(it, ops.end());
-        }
-        if (code == OpCode::Sub && it != ops.end()) {
-            const auto second = *it++;
-            return it == ops.end() && Immediate32Cell(second, width, imm) && imm != INT32_MIN;
-        }
-        if (code == OpCode::And && width == 64 && it != ops.end()) {
-            const auto second = *it++;
-            if (it == ops.end() && second.Kind() == OperandKind::Immediate) {
-                std::uint64_t raw = second.Payload();
-                const auto ibits = TypeBits(ViewOf(second));
-                if (ibits && ibits < 64) raw &= (std::uint64_t{1} << ibits) - 1;
-                return raw == UINT32_MAX;
             }
+            if (UnsupportedStorage(operation.opcode)) {
+                const auto error = operation.opcode == OpCode::AddPhi
+                                           ? CompileError::UnsupportedControlFlow
+                                           : CompileError::UnsupportedOpcode;
+                ResetResult(error, NodeId{i}, BlockId{b});
+                return false;
+            }
+            result.has_calls |= OperationNeedsCall(operation, NodeId{i});
+            auto& home = result.homes[i];
+            home.definition_position = home.last_use = position;
+            home.terminal_only = CanFoldTerminalCondition(body, i);
+            // Ordinary flag metadata updates the live RBX word. Only an actual
+            // named snapshot consumer below needs a saved payload.
+            if (operation.opcode == OpCode::Div128 || operation.opcode == OpCode::Cpuid)
+                home.auxiliary_offset = 0;  // Allocate only after the actual use walk.
         }
+    }
+    return true;
+}
+
+void Allocator::ObserveFPCR(const Operation& operation, NodeId id) {
+    const auto opcode = operation.opcode;
+    if (opcode == OpCode::ArmFPBinary || IsArmFPValueOp(opcode)) {
+        const bool binary = opcode == OpCode::ArmFPBinary;
+        const unsigned argument = binary || opcode == OpCode::ArmFPCompare ? 2
+                                  : opcode == OpCode::ArmFPTernary         ? 3
+                                                                           : 1;
+        auto at = program.Operands(id).begin();
+        for (unsigned i = 0; i < argument; ++i) ++at;
+        const auto offsets = (*at++).Payload();
+        const auto control = static_cast<u32>(offsets);
+        const auto status = static_cast<u32>(binary ? (*at).Payload() : offsets >> 32);
+        result.fpcr_may_change |= Overlaps({control, 4}, {status, 4});
+        return;
+    }
+    if (opcode == OpCode::CallLambda) {
+        auto at = program.Operands(id).begin();
+        ++at;
+        const auto helper = reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric);
+        const bool exact_numeric = at != program.Operands(id).end() &&
+                                   (*at).Kind() == OperandKind::Immediate &&
+                                   (*at).Payload() == helper;
+        result.fpcr_may_change |= !exact_numeric;
+        return;
+    }
+    if (opcode == OpCode::Cpuid || opcode == OpCode::ReadSystem ||
+        opcode == OpCode::ReadSystemPair || opcode == OpCode::X87Op ||
+        opcode == OpCode::X87Execute) {
+        result.fpcr_may_change = true;
+        return;
+    }
+    if (opcode == OpCode::StoreUniform || opcode == OpCode::StoreUniformSelectImm) {
+        const auto field = program.Operands(id).front();
+        const auto bytes = opcode == OpCode::StoreUniformSelectImm
+                                   ? 8u
+                                   : (TypeBits(field.TypeView()) + 7) / 8;
+        result.fpcr_may_change |= options->arm_fpcr_offset == UINT32_MAX ||
+                                  (field.Payload() < std::uint64_t{options->arm_fpcr_offset} + 4 &&
+                                   options->arm_fpcr_offset < field.Payload() + bytes);
+        return;
+    }
+    if (!options->private_state &&
+        HasAnyEffect(EffectsFor(opcode, operation.Metadata()), Effect::WriteMemory)) {
+        result.fpcr_may_change = true;
+    }
+}
+
+bool Allocator::Reserve(u32 bytes, u32 alignment, u32 node, u32& offset) {
+    constexpr auto limit = static_cast<u32>(std::numeric_limits<std::int32_t>::max()) - 16;
+    if (result.spill_bytes > limit - bytes - alignment) {
+        ResetResult(CompileError::FrameTooLarge, NodeId{node}, operations[node].block);
         return false;
     }
+    offset = (result.spill_bytes + alignment - 1) & ~(alignment - 1);
+    result.spill_bytes = offset + bytes;
+    return true;
+}
 
-    Type ViewOf(CellView c) const {
-        return c.TypeView() != Type::Void       ? c.TypeView()
-               : c.Kind() == OperandKind::Value ? operations[c.Payload()].type
-                                                : Type::U64;
+bool Allocator::AllocatePayloads() {
+    for (u32 i = 0; i < operations.size(); ++i) {
+        if (result.homes[i].auxiliary_offset != UINT32_MAX &&
+            !Reserve(16, 16, i, result.homes[i].auxiliary_offset))
+            return false;
     }
+    return true;
+}
 
-    bool IsZeroScalarCell(CellView c, unsigned width) const {
-        if (width != 32 && width != 64) return false;
-        if (c.Kind() == OperandKind::Immediate) {
-            std::uint64_t val = c.Payload();
-            const auto ibits = TypeBits(ViewOf(c));
-            if (ibits && ibits < 64) val &= (std::uint64_t{1} << ibits) - 1;
-            return (width == 32 ? static_cast<u32>(val) : val) == 0;
+void Allocator::ExpireDeadResidents(std::span<u32> bank, u32 position) const {
+    for (auto& resident : bank) {
+        if (resident != NodeId::invalid && result.homes[resident].last_use < position)
+            resident = NodeId::invalid;
+    }
+}
+
+bool Allocator::TryRematerializeStoreUniformImm(u32 node, const BlockRecord& body) {
+    auto& home = result.homes[node];
+    if (operations[node].opcode != OpCode::LoadImm || home.uniform_offset != UINT32_MAX ||
+        home.auxiliary_offset != UINT32_MAX || node + 1 >= body.first_node + body.node_count ||
+        operations[node + 1].opcode != OpCode::StoreUniform ||
+        home.last_use != result.homes[node + 1].definition_position)
+        return false;
+    const auto store_uniform = *program.Operands(NodeId{node + 1}).begin();
+    const auto store_bits = TypeBits(store_uniform.TypeView());
+    std::uint64_t imm = (*program.Operands(NodeId{node}).begin()).Payload();
+    const auto nbits = TypeBits(operations[node].type);
+    if (nbits && nbits < 64) imm &= (std::uint64_t{1} << nbits) - 1;
+    if (store_uniform.Kind() != OperandKind::Uniform || store_bits < 8 || store_bits > 64 ||
+        (store_bits > 32 && imm != std::uint64_t(std::int64_t(static_cast<std::int32_t>(imm)))))
+        return false;
+    home.rematerialize = true;
+    home.spilled = true;
+    return true;
+}
+
+unsigned Allocator::FindReusableInputSlot(CellView input,
+                                          bool vector,
+                                          u32 definition_position,
+                                          std::span<const u32> bank) const {
+    const auto count = static_cast<unsigned>(bank.size());
+    if (input.Kind() != OperandKind::Value ||
+        (operations[input.Payload()].type == Type::V128) != vector ||
+        result.homes[input.Payload()].spilled ||
+        result.homes[input.Payload()].last_use != definition_position)
+        return count;
+    for (unsigned j = 0; j < count; ++j)
+        if (bank[j] == input.Payload()) return j;
+    return count;
+}
+
+unsigned Allocator::TryReuseOperandRegister(u32 node,
+                                            bool vector,
+                                            std::span<const u32> bank,
+                                            bool& reused) {
+    const auto count = static_cast<unsigned>(bank.size());
+    if (!DestructiveInput(operations[node])) return count;
+    const auto def_pos = result.homes[node].definition_position;
+    auto inputs = program.Operands(NodeId{node}).begin();
+    unsigned chosen = FindReusableInputSlot(*inputs++, vector, def_pos, bank);
+    if (chosen == count && !vector && operations[node].operand_count == 2) {
+        const auto opcode = operations[node].opcode;
+        if (opcode == OpCode::Add || opcode == OpCode::And || opcode == OpCode::Or ||
+            opcode == OpCode::Xor) {
+            chosen = FindReusableInputSlot(*inputs, vector, def_pos, bank);
+            result.homes[node].reuse_rhs = chosen != count;
+        } else if (opcode == OpCode::AndNot && options && options->bmi1) {
+            chosen = FindReusableInputSlot(*inputs, vector, def_pos, bank);
         }
-        if (c.Kind() != OperandKind::Value) return false;
-        const auto id = static_cast<u32>(c.Payload());
-        const auto& nop = operations[id];
-        const auto& nh = result.homes[id];
-        if (nop.Metadata() != OperationMetadata{} || nh.auxiliary_offset != UINT32_MAX ||
-            nop.type == Type::V128)
-            return false;
-        if (nop.opcode == OpCode::Zero) return true;
-        if (nop.opcode != OpCode::LoadImm) return false;
-        std::uint64_t imm = program.Operands(NodeId{id}).front().Payload();
-        const auto nbits = TypeBits(nop.type);
-        if (nbits && nbits < 64) imm &= (std::uint64_t{1} << nbits) - 1;
-        const auto vbits = TypeBits(ViewOf(c));
-        if (vbits && vbits < 64) imm &= (std::uint64_t{1} << vbits) - 1;
-        return (width == 32 ? static_cast<u32>(imm) : imm) == 0;
     }
+    reused = chosen != count;
+    return chosen;
+}
 
-    bool IsZeroIdentityCopyNode(u32 node) const {
-        const auto& op = operations[node];
-        const auto code = op.opcode;
-        const unsigned width = TypeBits(op.type);
-        if ((code != OpCode::Or && code != OpCode::Xor && code != OpCode::Add &&
-             code != OpCode::Sub) ||
-            op.operand_count != 2 || (width != 32 && width != 64) || op.flag_outputs ||
-            result.homes[node].auxiliary_offset != UINT32_MAX)
-            return false;
-        const auto ops = program.Operands(NodeId{node});
-        auto it = ops.begin();
-        if (it == ops.end()) return false;
-        const auto a0 = *it++;
-        if (it == ops.end()) return false;
-        const auto a1 = *it++;
-        if (it != ops.end()) return false;
-        CellView other{};
-        if (code != OpCode::Sub && IsZeroScalarCell(a0, width))
-            other = a1;
-        else if (IsZeroScalarCell(a1, width))
-            other = a0;
-        else
-            return false;
-        if (other.Kind() == OperandKind::Expression || TypeBits(ViewOf(other)) < 32) return false;
-        if (other.Kind() == OperandKind::Value && TypeBits(operations[other.Payload()].type) < 8)
-            return false;
+unsigned Allocator::TryReuseArmFPVectorInput(u32 node,
+                                             std::span<const u32> bank,
+                                             bool& reused) const {
+    const auto count = static_cast<unsigned>(bank.size());
+    const auto opcode = operations[node].opcode;
+    if (opcode != OpCode::ArmFPBinary && opcode != OpCode::ArmFPTernary) return count;
+    const auto def_pos = result.homes[node].definition_position;
+    auto inputs = program.Operands(NodeId{node}).begin();
+    unsigned chosen = count;
+    if (opcode == OpCode::ArmFPTernary && operations[node].operand_count >= 3) {
+        const auto arg0 = *inputs++;
+        const auto arg1 = *inputs++;
+        const auto arg2 = *inputs;
+        chosen = FindReusableInputSlot(arg2, true, def_pos, bank);
+        if (chosen == count) chosen = FindReusableInputSlot(arg0, true, def_pos, bank);
+        if (chosen == count) chosen = FindReusableInputSlot(arg1, true, def_pos, bank);
+    } else if (opcode == OpCode::ArmFPBinary && operations[node].operand_count >= 2) {
+        chosen = FindReusableInputSlot(*inputs++, true, def_pos, bank);
+        if (chosen == count) chosen = FindReusableInputSlot(*inputs, true, def_pos, bank);
+    }
+    reused = chosen != count;
+    return chosen;
+}
+
+bool Allocator::HasZeroSpillCost(u32 id) const {
+    const auto& home = result.homes[id];
+    if (home.use_count > 1) return false;
+    if (operations[id].opcode == OpCode::LoadImm && operations[id].type != Type::V128 &&
+        home.uniform_offset == UINT32_MAX && home.auxiliary_offset == UINT32_MAX)
         return true;
-    }
+    return home.uniform_offset != UINT32_MAX;
+}
 
-    bool IsImmediateUniformStoreNode(u32 node) const {
-        const auto& op = operations[node];
-        if (op.opcode != OpCode::StoreUniform || op.Metadata() != OperationMetadata{} ||
-            pinned_slots != 0)
-            return false;
-        const auto ops = program.Operands(NodeId{node});
-        auto it = ops.begin();
-        if (it == ops.end()) return false;
-        const auto field = *it++;
-        if (it == ops.end() || field.Kind() != OperandKind::Uniform) return false;
-        const auto width = TypeBits(field.TypeView());
-        if (width < 8 || width > 64) return false;
-        const auto off = field.Payload();
-        if (off > INT32_MAX) return false;
-        const auto bytes = (width + 7) / 8;
-        if (options && options->flags_offset != UINT32_MAX &&
-            off < std::uint64_t{options->flags_offset} + 8 &&
-            std::uint64_t{options->flags_offset} < off + bytes)
-            return false;
-        return true;
-    }
-
-    bool RecordUse(u32 definition, u32 at, u32 block = BlockId::invalid) {
-        if (definition >= operations.size() || operations[definition].type == ir::Type::Void ||
-            result.homes[definition].definition_position >= at)
-            return false;
-        auto& home = result.homes[definition];
-        const auto end = operations[definition].block.value == block
-                                 ? at
-                                 : cfg.UseEnd(home.definition_position, at);
-        home.last_use = std::max(home.last_use, end);
-        const u32 weight = end > at ? 16u : 1u;
-        home.use_count =
-                static_cast<std::uint16_t>(std::min<u32>(UINT16_MAX, u32{home.use_count} + weight));
-        return true;
-    }
-
-    bool ObserveUses() {
-        for (const auto b : result.block_order) {
-            const auto& body = blocks[b];
-            if (body.terminal.HasValue() &&
-                !RecordUse(body.terminal.value.value, cfg.Start(b) + body.node_count)) {
-                ResetResult(CompileError::InvalidProgram, {}, BlockId{b});
-                return false;
-            }
-            if (body.terminal.HasValue() && operations[body.terminal.value.value].block.value != b)
-                result.homes[body.terminal.value.value].terminal_only = false;
-            for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
-                const auto& operation = operations[i];
-                const bool saved_flags = operation.opcode == OpCode::SaveFlags ||
-                                         operation.opcode == OpCode::BranchOnlyFlags;
-                for (const auto input : program.Operands(NodeId{i})) {
-                    if (input.Kind() != OperandKind::Value) continue;
-                    const auto definition = static_cast<u32>(input.Payload());
-                    if (!RecordUse(definition, result.homes[i].definition_position, b)) {
-                        ResetResult(CompileError::InvalidProgram, NodeId{i}, BlockId{b});
-                        return false;
-                    }
-                    result.homes[definition].terminal_only = false;
-                    if (saved_flags) result.homes[definition].auxiliary_offset = 0;
-                }
-            }
-        }
-
-        bool any_zero_imm = false;
-        for (const auto b : result.block_order) {
-            const auto& body = blocks[b];
-            for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
-                const auto& op = operations[i];
-                auto& h = result.homes[i];
-                if (op.opcode == OpCode::LoadImm && (op.type == Type::U32 || op.type == Type::U64) &&
-                    op.Metadata() == OperationMetadata{} && h.use_count > 0 && !h.terminal_only &&
-                    h.auxiliary_offset == UINT32_MAX) {
-                    std::uint64_t imm = program.Operands(NodeId{i}).front().Payload();
-                    if (op.type == Type::U32) imm &= UINT32_MAX;
-                    if (imm == 0) {
-                        h.rematerialize = true;
-                        h.spilled = true;
-                        any_zero_imm = true;
-                    }
-                }
-            }
-        }
-        if (any_zero_imm) {
-            for (const auto b : result.block_order) {
-                const auto& body = blocks[b];
-                if (body.terminal.HasValue()) {
-                    auto& th = result.homes[body.terminal.value.value];
-                    if (th.rematerialize) {
-                        th.rematerialize = false;
-                        th.spilled = false;
-                    }
-                }
-                for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
-                    if (IsZeroIdentityCopyNode(i) || IsImmediateUniformStoreNode(i)) continue;
-                    for (const auto input : program.Operands(NodeId{i})) {
-                        if (input.Kind() != OperandKind::Value) continue;
-                        auto& dh = result.homes[input.Payload()];
-                        if (dh.rematerialize) {
-                            dh.rematerialize = false;
-                            dh.spilled = false;
-                        }
-                    }
-                }
-            }
-        }
-
-        for (const auto b : result.block_order) {
-            const auto& body = blocks[b];
-            for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
-                const auto& op = operations[i];
-                auto& mh = result.homes[i];
-                if ((op.opcode == OpCode::LoadMemory || op.opcode == OpCode::LoadMemoryTSO) &&
-                    (op.type == Type::U32 || op.type == Type::U64) &&
-                    op.Metadata() == OperationMetadata{} && !mh.terminal_only &&
-                    mh.use_count == 1 && mh.auxiliary_offset == UINT32_MAX) {
-                    bool addr_ok = false;
-                    if (op.operand_count == 1) {
-                        const auto mfirst = *program.Operands(NodeId{i}).begin();
-                        addr_ok = mfirst.Kind() == OperandKind::Value &&
-                                  operations[mfirst.Payload()].type == Type::U64 &&
-                                  (mfirst.TypeView() == Type::Void ||
-                                   mfirst.TypeView() == Type::U64);
-                    } else if (op.operand_count == 3) {
-                        auto mit = program.Operands(NodeId{i}).begin();
-                        const auto mfirst = *mit++, mbase = *mit++, mimm = *mit;
-                        if (mfirst.Kind() == OperandKind::Expression && mfirst.Count() == 2 &&
-                            (mfirst.ExpressionOp() == OperandOp::Add ||
-                             mfirst.ExpressionOp() == OperandOp::Sub) &&
-                            mbase.Kind() == OperandKind::Value &&
-                            operations[mbase.Payload()].type == Type::U64 &&
-                            (mbase.TypeView() == Type::Void || mbase.TypeView() == Type::U64) &&
-                            mimm.Kind() == OperandKind::Immediate) {
-                            std::uint64_t val = mimm.Payload();
-                            const auto ibits = TypeBits(mimm.TypeView() != Type::Void
-                                                                ? mimm.TypeView()
-                                                                : Type::U64);
-                            if (ibits && ibits < 64) val &= (std::uint64_t{1} << ibits) - 1;
-                            const std::uint64_t d64 = mfirst.ExpressionOp() == OperandOp::Sub
-                                                              ? (std::uint64_t{0} - val)
-                                                              : val;
-                            const auto d32 = static_cast<std::int32_t>(d64);
-                            addr_ok = d64 == std::uint64_t(std::int64_t(d32));
-                        }
-                    }
-                    u32 next = i + 1;
-                    while (addr_ok && next < body.first_node + body.node_count &&
-                           operations[next].opcode == OpCode::Nop &&
-                           operations[next].Metadata() == OperationMetadata{})
-                        ++next;
-                    if (addr_ok && next < body.first_node + body.node_count &&
-                        mh.last_use == result.homes[next].definition_position) {
-                        const auto& cop = operations[next];
-                        const auto carg = *program.Operands(NodeId{next}).begin();
-                        const auto vbits = TypeBits(carg.TypeView() != Type::Void ? carg.TypeView()
-                                                                                  : op.type);
-                        const bool fuse_bitcast = cop.opcode == OpCode::BitCast &&
-                                                  cop.type == Type::V128 &&
-                                                  cop.Metadata() == OperationMetadata{} &&
-                                                  vbits == TypeBits(op.type);
-                        const bool fuse_dup64 = options && options->avx && op.type == Type::U64 &&
-                                                cop.opcode == OpCode::VecDup64 &&
-                                                cop.type == Type::V128 &&
-                                                cop.Metadata() == OperationMetadata{} &&
-                                                vbits == 64;
-                        if (fuse_bitcast || fuse_dup64) {
-                            mh.rematerialize = true;
-                            mh.spilled = true;
-                            for (const auto in : program.Operands(NodeId{i})) {
-                                if (in.Kind() == OperandKind::Value) {
-                                    auto& dh = result.homes[in.Payload()];
-                                    dh.last_use =
-                                            std::max(dh.last_use, result.homes[next].definition_position);
-                                }
-                            }
-                        }
-                    }
-                }
-                if (op.opcode == OpCode::LoadMemory || op.opcode == OpCode::LoadMemoryTSO ||
-                    op.opcode == OpCode::StoreMemory || op.opcode == OpCode::StoreMemoryTSO) {
-                    const auto first = *program.Operands(NodeId{i}).begin();
-                    const u32 target_pos = mh.rematerialize ? mh.last_use : mh.definition_position;
-                    const auto is_u64_val = [&](CellView c) {
-                        return c.Kind() == OperandKind::Value &&
-                               operations[c.Payload()].type == Type::U64 &&
-                               (c.TypeView() == Type::Void || c.TypeView() == Type::U64);
-                    };
-                    if (is_u64_val(first)) {
-                        const auto is_uxtw_src = [&](CellView c) {
-                            if (c.Kind() != OperandKind::Value) return false;
-                            const auto& src_op = operations[c.Payload()];
-                            const auto view =
-                                    c.TypeView() != Type::Void ? c.TypeView() : src_op.type;
-                            return (src_op.type == Type::U32 || src_op.type == Type::U64) &&
-                                   (view == Type::U32 || view == Type::U64);
-                        };
-                        const auto const_disp = [&](CellView c, bool negate, std::int64_t& out) {
-                            if (c.Kind() != OperandKind::Immediate) return false;
-                            std::uint64_t val = c.Payload();
-                            const auto ibits = TypeBits(
-                                    c.TypeView() != Type::Void ? c.TypeView() : Type::U64);
-                            if (ibits && ibits < 64) val &= (std::uint64_t{1} << ibits) - 1;
-                            const std::uint64_t d64 = negate ? (std::uint64_t{0} - val) : val;
-                            const auto d32 = static_cast<std::int32_t>(d64);
-                            if (d64 != std::uint64_t(std::int64_t(d32))) return false;
-                            out = d32;
-                            return true;
-                        };
-                        const auto can_fuse_node = [&](u32 nid, u32 expected_pos) {
-                            const auto& nop = operations[nid];
-                            const auto& nh = result.homes[nid];
-                            return nop.type == Type::U64 &&
-                                   nop.Metadata() == OperationMetadata{} &&
-                                   nop.block.value == b && !nh.terminal_only &&
-                                   nh.use_count == 1 && nh.last_use == expected_pos &&
-                                   nh.auxiliary_offset == UINT32_MAX && !nh.rematerialize;
-                        };
-                        const auto match_uxtw_node = [&](u32 nid, u32 expected_pos, CellView& src) {
-                            if (!can_fuse_node(nid, expected_pos)) return false;
-                            const auto& nop = operations[nid];
-                            if ((nop.opcode == OpCode::ZeroExtend32To64 ||
-                                 nop.opcode == OpCode::ZeroExtend32) &&
-                                nop.operand_count == 1) {
-                                const auto arg = *program.Operands(NodeId{nid}).begin();
-                                if (is_uxtw_src(arg)) {
-                                    src = arg;
-                                    return true;
-                                }
-                            } else if (nop.opcode == OpCode::And && nop.operand_count == 2) {
-                                auto it = program.Operands(NodeId{nid}).begin();
-                                const auto arg0 = *it++, arg1 = *it;
-                                if (is_uxtw_src(arg0) && arg1.Kind() == OperandKind::Immediate) {
-                                    std::uint64_t m = arg1.Payload();
-                                    const auto mbits = TypeBits(arg1.TypeView() != Type::Void
-                                                                        ? arg1.TypeView()
-                                                                        : Type::U64);
-                                    if (mbits && mbits < 64) m &= (std::uint64_t{1} << mbits) - 1;
-                                    if (m == UINT32_MAX) {
-                                        src = arg0;
-                                        return true;
-                                    }
-                                }
-                            }
-                            return false;
-                        };
-                        struct AddrState {
-                            CellView base{}, index{};
-                            bool has_base{}, has_index{}, index_uxtw{};
-                            unsigned scale{1}, fused_count{};
-                            std::int64_t disp{};
-                            std::array<u32, 5> fused{};
-                        };
-                        const auto add_leaf = [&](AddrState& st, CellView c) {
-                            if (!is_u64_val(c)) return false;
-                            if (!st.has_base) {
-                                st.has_base = true;
-                                st.base = c;
-                                return true;
-                            }
-                            if (!st.has_index) {
-                                st.has_index = true;
-                                st.index = c;
-                                st.index_uxtw = false;
-                                st.scale = 1;
-                                return true;
-                            }
-                            return false;
-                        };
-                        const auto add_term = [&](auto& self,
-                                                  AddrState& st,
-                                                  CellView c,
-                                                  u32 expected_pos,
-                                                  unsigned depth) -> bool {
-                            if (!is_u64_val(c)) return false;
-                            const u32 nid = static_cast<u32>(c.Payload());
-                            const u32 npos = result.homes[nid].definition_position;
-                            if (depth < 4 && st.fused_count < st.fused.size() &&
-                                can_fuse_node(nid, expected_pos)) {
-                                const auto& nop = operations[nid];
-                                if ((nop.opcode == OpCode::Add || nop.opcode == OpCode::Sub) &&
-                                    nop.operand_count == 2) {
-                                    auto it = program.Operands(NodeId{nid}).begin();
-                                    const auto lhs = *it++, rhs = *it;
-                                    std::int64_t d = 0;
-                                    if (const_disp(rhs, nop.opcode == OpCode::Sub, d) &&
-                                        st.disp + d >= INT32_MIN && st.disp + d <= INT32_MAX) {
-                                        auto next = st;
-                                        next.disp += d;
-                                        next.fused[next.fused_count++] = nid;
-                                        if (self(self, next, lhs, npos, depth + 1)) {
-                                            st = next;
-                                            return true;
-                                        }
-                                    } else if (nop.opcode == OpCode::Add && is_u64_val(lhs) &&
-                                               is_u64_val(rhs)) {
-                                        {
-                                            auto next = st;
-                                            next.fused[next.fused_count++] = nid;
-                                            if (self(self, next, lhs, npos, depth + 1) &&
-                                                self(self, next, rhs, npos, depth + 1)) {
-                                                st = next;
-                                                return true;
-                                            }
-                                        }
-                                        {
-                                            auto next = st;
-                                            next.fused[next.fused_count++] = nid;
-                                            if (add_leaf(next, lhs) &&
-                                                self(self, next, rhs, npos, depth + 1)) {
-                                                st = next;
-                                                return true;
-                                            }
-                                        }
-                                        {
-                                            auto next = st;
-                                            next.fused[next.fused_count++] = nid;
-                                            if (self(self, next, lhs, npos, depth + 1) &&
-                                                add_leaf(next, rhs)) {
-                                                st = next;
-                                                return true;
-                                            }
-                                        }
-                                    }
-                                } else if (nop.opcode == OpCode::Add && nop.operand_count == 3 &&
-                                           !st.has_index) {
-                                    auto it = program.Operands(NodeId{nid}).begin();
-                                    const auto lhs = *it++, expr = *it++, idx = *it;
-                                    if (is_u64_val(lhs) && expr.Kind() == OperandKind::Expression &&
-                                        expr.Count() == 1 &&
-                                        expr.ExpressionOp() == OperandOp::AddShift &&
-                                        expr.ShiftAmount() <= 3 && is_u64_val(idx)) {
-                                        auto next = st;
-                                        next.fused[next.fused_count++] = nid;
-                                        next.has_index = true;
-                                        next.index = idx;
-                                        next.index_uxtw = false;
-                                        next.scale = 1u << expr.ShiftAmount();
-                                        if (self(self, next, lhs, npos, depth + 1)) {
-                                            st = next;
-                                            return true;
-                                        }
-                                    }
-                                } else if (nop.opcode == OpCode::LslImm && nop.operand_count == 2 &&
-                                           !st.has_index) {
-                                    auto it = program.Operands(NodeId{nid}).begin();
-                                    const auto idx = *it++, sh = *it;
-                                    if (is_u64_val(idx) && sh.Kind() == OperandKind::Immediate &&
-                                        (sh.Payload() & 63) <= 3) {
-                                        auto next = st;
-                                        next.fused[next.fused_count++] = nid;
-                                        next.has_index = true;
-                                        next.scale = 1u << (sh.Payload() & 63);
-                                        CellView uxtw_src{};
-                                        if (next.fused_count < next.fused.size() &&
-                                            match_uxtw_node(
-                                                    static_cast<u32>(idx.Payload()), npos, uxtw_src)) {
-                                            next.fused[next.fused_count++] =
-                                                    static_cast<u32>(idx.Payload());
-                                            next.index = uxtw_src;
-                                            next.index_uxtw = true;
-                                        } else {
-                                            next.index = idx;
-                                            next.index_uxtw = false;
-                                        }
-                                        st = next;
-                                        return true;
-                                    }
-                                } else if (!st.has_index) {
-                                    CellView uxtw_src{};
-                                    if (match_uxtw_node(nid, expected_pos, uxtw_src)) {
-                                        st.fused[st.fused_count++] = nid;
-                                        st.has_index = true;
-                                        st.index = uxtw_src;
-                                        st.index_uxtw = true;
-                                        st.scale = 1;
-                                        return true;
-                                    }
-                                }
-                            }
-                            return add_leaf(st, c);
-                        };
-                        const bool is_store = op.opcode == OpCode::StoreMemory ||
-                                              op.opcode == OpCode::StoreMemoryTSO;
-                        AddrState st;
-                        if (add_term(add_term, st, first, target_pos, 0) && st.has_base &&
-                            st.fused_count > 0 && (!is_store || !st.has_index)) {
-                            for (unsigned k = 0; k < st.fused_count; ++k) {
-                                auto& fh = result.homes[st.fused[k]];
-                                fh.rematerialize = true;
-                                fh.spilled = true;
-                            }
-                            auto& bh = result.homes[st.base.Payload()];
-                            bh.last_use = std::max(bh.last_use, target_pos);
-                            if (st.has_index) {
-                                auto& ih = result.homes[st.index.Payload()];
-                                ih.last_use = std::max(ih.last_use, target_pos);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        return true;
-    }
-
-    void AnalyzeUniformBacking() {
-        if (!options) return;
-        UniformPolicy policy;
-        policy.flags = UniformRange{options->flags_offset, 8};
-        policy.pc = UniformRange{options->pc_offset, 8};
-        policy.numeric_control = UniformRange{options->mxcsr_offset, 4};
-        for (const auto b : result.block_order) {
-            const auto& body = blocks[b];
-            if (!body.node_count) continue;
-            std::array<u32, 128> next_write;
-            next_write.fill(UINT32_MAX);
-            u32 barrier = UINT32_MAX;
-            const auto end = result.homes[body.first_node].definition_position + body.node_count;
-            for (u32 at = body.first_node + body.node_count; at-- > body.first_node;) {
-                const auto& op = operations[at];
-                auto& home = result.homes[at];
-                const auto inputs = program.Operands(NodeId{at});
-                if (op.opcode == OpCode::StoreUniform && op.Metadata() == OperationMetadata{}) {
-                    auto input = inputs.begin();
-                    const auto field = *input++, value = *input;
-                    if (value.Kind() == OperandKind::Value && value.Payload() < at &&
-                        at - value.Payload() <= 6 &&
-                        operations[value.Payload()].block == op.block &&
-                        !result.homes[value.Payload()].rematerialize) {
-                        const auto& producer = operations[value.Payload()];
-                        auto& backing = result.homes[value.Payload()];
-                        const auto bits = TypeBits(producer.type),
-                                   bytes = TypeBits(field.TypeView()) / 8;
-                        const auto view =
-                                value.TypeView() == Type::Void ? producer.type : value.TypeView();
-                        const bool matching =
-                                producer.type == Type::V128
-                                        ? view == Type::V128 && field.TypeView() == Type::V128
-                                        : (producer.type == Type::U32 ||
-                                           producer.type == Type::U64) &&
-                                                  view != Type::V128 &&
-                                                  (field.TypeView() == Type::U32 ||
-                                                   field.TypeView() == Type::U64);
-                        const UniformRange range{u32(field.Payload()), bytes};
-                        const auto is_ordinary_range = [&](UniformRange r) {
-                            const bool pin = pinned_slots &&
-                                             (options->pinned_uniform_offset == UINT32_MAX ||
-                                              Overlaps(r,
-                                                       {options->pinned_uniform_offset,
-                                                        pinned_slots * 8}));
-                            bool ord = !pin;
-                            for (auto offset : {options->flags_offset,
-                                                options->pc_offset,
-                                                options->mxcsr_offset,
-                                                options->arm_fpcr_offset,
-                                                options->arm_fpsr_offset})
-                                ord &= offset == UINT32_MAX || !Overlaps(r, {offset, 8});
-                            return ord;
-                        };
-                        bool adjacent =
-                                producer.opcode == OpCode::VecLoadConst ||
-                                !HasAnyEffect(EffectsFor(producer.opcode, producer.Metadata()),
-                                              Effect::Control);
-                        for (auto between = value.Payload() + 1; adjacent && between < at;
-                             ++between) {
-                            const auto& bop = operations[between];
-                            if (bop.Metadata() != OperationMetadata{}) {
-                                adjacent = false;
-                                break;
-                            }
-                            if (bop.opcode == OpCode::Nop || bop.opcode == OpCode::VecLoadConst ||
-                                bop.opcode == OpCode::VecSharedZero)
-                                continue;
-                            if (bop.opcode == OpCode::BitCast) {
-                                const auto barg = *program.Operands(NodeId{u32(between)}).begin();
-                                if (!(barg.Kind() == OperandKind::Value &&
-                                      result.homes[barg.Payload()].rematerialize &&
-                                      (operations[barg.Payload()].opcode == OpCode::LoadMemory ||
-                                       operations[barg.Payload()].opcode == OpCode::LoadMemoryTSO)))
-                                    continue;
-                            }
-                            if (bop.opcode == OpCode::StoreUniform) {
-                                const auto bfield = *program.Operands(NodeId{u32(between)}).begin();
-                                const auto bbytes = (TypeBits(bfield.TypeView()) + 7) / 8;
-                                const UniformRange brange{u32(bfield.Payload()), bbytes};
-                                if (bfield.Kind() == OperandKind::Uniform && bbytes &&
-                                    bfield.Payload() < 1024 && brange.offset + bbytes <= 1024 &&
-                                    is_ordinary_range(brange) && !Overlaps(range, brange))
-                                    continue;
-                            }
-                            adjacent = false;
-                        }
-                        const bool ordinary = is_ordinary_range(range);
-                        if (adjacent && ordinary && field.Payload() < 1024 && bytes &&
-                            range.offset + bytes <= 1024 && bits <= bytes * 8 &&
-                            TypeBits(view) >= bits && matching && backing.last_use <= end) {
-                            auto limit = barrier;
-                            for (auto slot = range.offset / 8;
-                                 slot <= (range.offset + bytes - 1) / 8;
-                                 ++slot)
-                                limit = std::min(limit, next_write[slot]);
-                            if (backing.last_use < limit) {
-                                backing.uniform_offset = range.offset;
-                                backing.uniform_store_bytes = bytes;
-                            }
-                        }
-                    }
-                }
-                if (op.opcode == OpCode::LoadUniform && !home.uniform_store_bytes &&
-                    home.last_use <= end &&
-                    (op.type == Type::U32 || op.type == Type::U64 || op.type == Type::V128)) {
-                    const auto field = inputs.front();
-                    const UniformRange range{u32(field.Payload()), TypeBits(op.type) / 8};
-                    const bool pinned =
-                            pinned_slots &&
-                            (options->pinned_uniform_offset == UINT32_MAX ||
-                             Overlaps(range, {options->pinned_uniform_offset, pinned_slots * 8}));
-                    bool ordinary = !pinned;
-                    for (auto offset : {options->flags_offset,
-                                        options->pc_offset,
-                                        options->mxcsr_offset,
-                                        options->arm_fpcr_offset,
-                                        options->arm_fpsr_offset})
-                        ordinary &= offset == UINT32_MAX || !Overlaps(range, {offset, 8});
-                    if (field.Payload() < 1024 && range.offset + range.bytes <= 1024 && ordinary) {
-                        auto limit = barrier;
-                        for (auto slot = range.offset / 8;
-                             slot <= (range.offset + range.bytes - 1) / 8;
-                             ++slot)
-                            limit = std::min(limit, next_write[slot]);
-                        if (home.last_use < limit) home.uniform_offset = range.offset;
-                    }
-                }
-                const auto effects = EffectsFor(op.opcode, op.Metadata());
-                if (op.opcode == OpCode::VecLoadConst || op.opcode == OpCode::VecSharedZero)
-                    continue;
-                if (HasAnyEffect(effects, Effect::Unknown | Effect::External | Effect::Control) ||
-                    (!options->private_state && HasAnyEffect(effects, Effect::WriteMemory))) {
-                    barrier = home.definition_position;
-                    continue;
-                }
-                const auto accesses = UniformEffectsFor(op, inputs, policy);
-                if (accesses.all_write) barrier = home.definition_position;
-                for (unsigned i = 0; i < accesses.count; ++i) {
-                    const auto& access = accesses.fields[i];
-                    if (!access.write || !access.range.bytes || access.range.offset >= 1024)
-                        continue;
-                    const auto last = std::min<std::uint64_t>(
-                            1024, std::uint64_t{access.range.offset} + access.range.bytes);
-                    u32 write_pos = home.definition_position;
-                    if (op.opcode == OpCode::StoreUniform && op.Metadata() == OperationMetadata{}) {
-                        auto sit = inputs.begin();
-                        ++sit;
-                        if (sit != inputs.end() && (*sit).Kind() == OperandKind::Value) {
-                            const auto& bh = result.homes[(*sit).Payload()];
-                            if (bh.uniform_store_bytes && bh.uniform_offset == access.range.offset)
-                                write_pos = std::min(write_pos, bh.definition_position);
-                        }
-                    }
-                    for (auto slot = access.range.offset / 8; slot <= (last - 1) / 8; ++slot)
-                        next_write[slot] = std::min(next_write[slot], write_pos);
-                }
-            }
+unsigned Allocator::SelectEvictionVictim(u32 node, std::span<const u32> bank) const {
+    const auto count = static_cast<unsigned>(bank.size());
+    unsigned chosen = count;
+    u32 victim = node;
+    for (unsigned j = 0; j < count; ++j) {
+        const u32 candidate = bank[j];
+        const bool za = HasZeroSpillCost(candidate);
+        const bool zb = HasZeroSpillCost(victim);
+        const bool cheaper =
+                za != zb ? za : result.homes[candidate].last_use > result.homes[victim].last_use;
+        if (cheaper) {
+            victim = candidate;
+            chosen = j;
         }
     }
+    return chosen;
+}
 
-    bool Reserve(u32 bytes, u32 alignment, u32 node, u32& offset) {
-        constexpr auto limit = static_cast<u32>(std::numeric_limits<std::int32_t>::max()) - 16;
-        if (result.spill_bytes > limit - bytes - alignment) {
-            ResetResult(CompileError::FrameTooLarge, NodeId{node}, operations[node].block);
-            return false;
-        }
-        offset = (result.spill_bytes + alignment - 1) & ~(alignment - 1);
-        result.spill_bytes = offset + bytes;
-        return true;
+bool Allocator::SpillNode(u32 id, std::span<u32> residents) {
+    auto& home = result.homes[id];
+    const unsigned bytes = operations[id].type == Type::V128 ? 16 : 8;
+    if (operations[id].opcode == OpCode::LoadImm && operations[id].type != Type::V128 &&
+        home.uniform_offset == UINT32_MAX && home.auxiliary_offset == UINT32_MAX) {
+        home.rematerialize = true;
+    } else if (home.uniform_offset == UINT32_MAX && !Reserve(bytes, bytes, id, home.stack_offset)) {
+        return false;
     }
+    home.spilled = true;
+    for (auto& resident : residents)
+        if (resident == id) resident = NodeId::invalid;
+    return true;
+}
 
-    bool AllocatePayloads() {
-        for (u32 i = 0; i < operations.size(); ++i)
-            if (result.homes[i].auxiliary_offset != UINT32_MAX &&
-                !Reserve(16, 16, i, result.homes[i].auxiliary_offset))
-                return false;
+void Allocator::AssignRegisters() {
+    std::array<std::array<u32, kRegisterBankSize>, 2> banks;
+    for (auto& bank : banks) bank.fill(NodeId::invalid);
+    for (auto b : result.block_order) {
+        const auto& body = blocks[b];
+        for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
+            if (operations[i].type == Type::Void || result.homes[i].terminal_only) continue;
+            const bool vector = operations[i].type == Type::V128;
+            const unsigned count = vector ? kRegisterBankSize : scalar_register_count;
+            auto bank = std::span<u32>{banks[vector]}.first(count);
+            auto& home = result.homes[i];
+            ExpireDeadResidents(bank, home.definition_position);
+            if (home.rematerialize) continue;
+            if (!vector && TryRematerializeStoreUniformImm(i, body)) continue;
 
-        return true;
-    }
-
-    void AssignRegisters() {
-        std::array<std::array<u32, register_count>, 2> banks;
-        for (auto& bank : banks) bank.fill(NodeId::invalid);
-        const auto spill = [&](u32 id, auto& residents) {
-            auto& h = result.homes[id];
-            unsigned bytes = operations[id].type == ir::Type::V128 ? 16 : 8;
-            if (operations[id].opcode == OpCode::LoadImm && operations[id].type != ir::Type::V128 &&
-                h.uniform_offset == UINT32_MAX && h.auxiliary_offset == UINT32_MAX) {
-                h.rematerialize = true;
-            } else if (h.uniform_offset == UINT32_MAX && !Reserve(bytes, bytes, id, h.stack_offset)) {
-                return false;
+            bool reused = false;
+            unsigned chosen = TryReuseOperandRegister(i, vector, bank, reused);
+            for (unsigned j = 0; !reused && j < count; ++j) {
+                if (bank[j] == NodeId::invalid) {
+                    chosen = j;
+                    break;
+                }
             }
-            h.spilled = true;
-            for (auto& r : residents)
-                if (r == id) r = NodeId::invalid;
-            return true;
-        };
-        for (auto b : result.block_order) {
-            const auto& body = blocks[b];
-            for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
-                if (operations[i].type == ir::Type::Void || result.homes[i].terminal_only) continue;
-                const bool vector = operations[i].type == ir::Type::V128;
-                auto& bank = banks[vector];
-                const unsigned count = vector ? 12 : scalar_register_count;
-                auto& h = result.homes[i];
-                for (unsigned j = 0; j < count; ++j)
-                    if (bank[j] != NodeId::invalid &&
-                        result.homes[bank[j]].last_use < h.definition_position)
-                        bank[j] = NodeId::invalid;
-                if (h.rematerialize) continue;
-                const auto reuse = [&](CellView input) {
-                    if (input.Kind() != OperandKind::Value ||
-                        (operations[input.Payload()].type == ir::Type::V128) != vector ||
-                        result.homes[input.Payload()].spilled ||
-                        result.homes[input.Payload()].last_use != h.definition_position)
-                        return count;
-                    for (unsigned j = 0; j < count; ++j)
-                        if (bank[j] == input.Payload()) return j;
-                    return count;
-                };
-                unsigned chosen = count;
-                bool reused{};
-                const auto opcode = operations[i].opcode;
-                if (!vector && opcode == OpCode::LoadImm && h.uniform_offset == UINT32_MAX &&
-                    h.auxiliary_offset == UINT32_MAX && i + 1 < body.first_node + body.node_count &&
-                    operations[i + 1].opcode == OpCode::StoreUniform &&
-                    h.last_use == result.homes[i + 1].definition_position) {
-                    const auto store_uniform = *program.Operands(NodeId{i + 1}).begin();
-                    const auto store_bits = TypeBits(store_uniform.TypeView());
-                    std::uint64_t imm = (*program.Operands(NodeId{i}).begin()).Payload();
-                    const auto nbits = TypeBits(operations[i].type);
-                    if (nbits && nbits < 64) imm &= (std::uint64_t{1} << nbits) - 1;
-                    if (store_uniform.Kind() == OperandKind::Uniform && store_bits >= 8 &&
-                        store_bits <= 64 &&
-                        (store_bits <= 32 ||
-                         imm == std::uint64_t(std::int64_t(static_cast<std::int32_t>(imm))))) {
-                        h.rematerialize = true;
-                        h.spilled = true;
-                        continue;
-                    }
-                }
-                if (DestructiveInput(operations[i])) {
-                    auto inputs = program.Operands(NodeId{i}).begin();
-                    chosen = reuse(*inputs++);
-                    if (chosen == count && !vector && operations[i].operand_count == 2) {
-                        if (opcode == OpCode::Add || opcode == OpCode::And ||
-                            opcode == OpCode::Or || opcode == OpCode::Xor) {
-                            chosen = reuse(*inputs);
-                            h.reuse_rhs = chosen != count;
-                        } else if (opcode == OpCode::AndNot && options && options->bmi1) {
-                            chosen = reuse(*inputs);
-                        }
-                    }
-                    reused = chosen != count;
-                }
-                for (unsigned j = 0; !reused && j < count; ++j) {
-                    if (bank[j] == NodeId::invalid) {
-                        chosen = j;
-                        break;
-                    }
-                }
-                if (!reused && chosen == count && vector &&
-                    (opcode == OpCode::ArmFPBinary || opcode == OpCode::ArmFPTernary)) {
-                    auto inputs = program.Operands(NodeId{i}).begin();
-                    if (opcode == OpCode::ArmFPTernary && operations[i].operand_count >= 3) {
-                        const auto arg0 = *inputs++;
-                        const auto arg1 = *inputs++;
-                        const auto arg2 = *inputs;
-                        chosen = reuse(arg2);
-                        if (chosen == count) chosen = reuse(arg0);
-                        if (chosen == count) chosen = reuse(arg1);
-                    } else if (opcode == OpCode::ArmFPBinary && operations[i].operand_count >= 2) {
-                        chosen = reuse(*inputs++);
-                        if (chosen == count) chosen = reuse(*inputs);
-                    }
-                    reused = chosen != count;
-                }
-                if (!reused && chosen == count) {
-                    const auto zero_spill_cost = [&](u32 id) -> bool {
-                        const auto& sh = result.homes[id];
-                        if (sh.use_count > 1) return false;
-                        if (operations[id].opcode == OpCode::LoadImm &&
-                            operations[id].type != ir::Type::V128 &&
-                            sh.uniform_offset == UINT32_MAX && sh.auxiliary_offset == UINT32_MAX)
-                            return true;
-                        return sh.uniform_offset != UINT32_MAX;
-                    };
-                    const auto cheaper_to_spill = [&](u32 candidate, u32 best) -> bool {
-                        const bool za = zero_spill_cost(candidate), zb = zero_spill_cost(best);
-                        if (za != zb) return za;
-                        return result.homes[candidate].last_use > result.homes[best].last_use;
-                    };
-                    u32 victim = i;
-                    for (unsigned j = 0; j < count; ++j) {
-                        if (cheaper_to_spill(bank[j], victim)) {
-                            victim = bank[j];
-                            chosen = j;
-                        }
-                    }
-                }
-                if (chosen == count) {
-                    if (!spill(i, bank)) return;
-                    continue;
-                }
-                if (!reused && bank[chosen] != NodeId::invalid && !spill(bank[chosen], bank))
-                    return;
-                h.reg = vector ? 2 + chosen : scalar_registers[chosen];
-                bank[chosen] = i;
+            if (!reused && chosen == count && vector)
+                chosen = TryReuseArmFPVectorInput(i, bank, reused);
+            if (!reused && chosen == count) chosen = SelectEvictionVictim(i, bank);
+            if (chosen == count) {
+                if (!SpillNode(i, bank)) return;
+                continue;
             }
+            if (!reused && bank[chosen] != NodeId::invalid && !SpillNode(bank[chosen], bank))
+                return;
+            home.reg = static_cast<std::uint8_t>(vector ? 2 + chosen : scalar_registers[chosen]);
+            bank[chosen] = i;
         }
-        if (options && options->local_flags &&
-            (!Reserve(8, 8, 0, result.flags_slot) || !Reserve(1, 1, 0, result.condition_slot)))
-            return;
-        result.spill_bytes = (result.spill_bytes + 15) & ~15u;
-        result.call_offset = result.spill_bytes;
-        if (result.has_calls) result.spill_bytes += 336;
     }
-};
-}  // namespace
+    if (options && options->local_flags &&
+        (!Reserve(8, 8, 0, result.flags_slot) || !Reserve(1, 1, 0, result.condition_slot)))
+        return;
+    result.spill_bytes = (result.spill_bytes + 15) & ~15u;
+    result.call_offset = result.spill_bytes;
+    if (result.has_calls) result.spill_bytes += 336;
+}
+
+}  // namespace swift::runtime::backend::x64::detail
+
+namespace swift::runtime::backend::x64 {
 
 void AllocateBlock(const ir::Program& program,
                    Allocation& allocation,
                    unsigned pinned_slots,
                    const CompileOptions* options) {
-    Allocator(program, ir::Scope::Block, allocation, pinned_slots, options).Run();
+    detail::Allocator(program, ir::Scope::Block, allocation, pinned_slots, options).Run();
 }
 
 void AllocateFunction(const ir::Program& program,
                       Allocation& allocation,
                       unsigned pinned_slots,
                       const CompileOptions* options) {
-    Allocator(program, ir::Scope::Function, allocation, pinned_slots, options).Run();
+    detail::Allocator(program, ir::Scope::Function, allocation, pinned_slots, options).Run();
 }
 
 Allocation AllocateBlock(const ir::Program& program, unsigned pinned_slots) {

@@ -2,14 +2,18 @@
 #ifndef XBYAK64
 #define XBYAK64
 #endif
-#include <array>
-#include <type_traits>
-#include <unordered_map>
-#include <xbyak/xbyak.h>
+
 #include "allocate.h"
 #include "compile.h"
 #include "runtime/backend/relocation.h"
 #include "runtime/exit.h"
+
+#include <array>
+#include <type_traits>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+#include <xbyak/xbyak.h>
 
 namespace swift::runtime::backend::x64::detail {
 using namespace ir;
@@ -17,6 +21,70 @@ using namespace Xbyak;
 using u32 = std::uint32_t;
 using u64 = std::uint64_t;
 template <OpCode Code> using Op = std::integral_constant<OpCode, Code>;
+
+struct ArmNumericRequest;
+
+constexpr bool SupportsFlagOutputs(OpCode opcode) noexcept {
+    switch (opcode) {
+        case OpCode::Add:
+        case OpCode::Sub:
+        case OpCode::Adc:
+        case OpCode::Sbb:
+        case OpCode::Neg:
+        case OpCode::And:
+        case OpCode::Or:
+        case OpCode::Xor:
+        case OpCode::AndNot:
+        case OpCode::Not:
+            return true;
+        default:
+            return false;
+    }
+}
+
+constexpr bool IsPureScalarAluOrImmOp(OpCode opcode) noexcept {
+    switch (opcode) {
+        case OpCode::LoadImm:
+        case OpCode::Zero:
+        case OpCode::Add:
+        case OpCode::Sub:
+        case OpCode::Mul:
+        case OpCode::And:
+        case OpCode::Or:
+        case OpCode::Xor:
+        case OpCode::AndNot:
+        case OpCode::LslImm:
+        case OpCode::LsrImm:
+        case OpCode::AsrImm:
+        case OpCode::RorImm:
+        case OpCode::ZeroExtend32:
+        case OpCode::ZeroExtend32To64:
+        case OpCode::ZeroExtend64:
+        case OpCode::SignExtend:
+        case OpCode::CondSet:
+        case OpCode::LocalCondSet:
+            return true;
+        default:
+            return false;
+    }
+}
+
+constexpr bool PreservesCachedXmm0(OpCode opcode, bool vector_result) noexcept {
+    switch (opcode) {
+        case OpCode::Nop:
+        case OpCode::SetLocation:
+        case OpCode::AdvancePC:
+        case OpCode::InvertCarry:
+        case OpCode::SetCarry:
+        case OpCode::ClearFlags:
+        case OpCode::StoreUniform:
+        case OpCode::StoreMemory:
+        case OpCode::StoreMemoryTSO:
+            return true;
+        default:
+            return !vector_result && IsPureScalarAluOrImmOp(opcode);
+    }
+}
 
 struct Rejected {
     CompileError error;
@@ -64,6 +132,8 @@ public:
     }
 
     void ReadVector(CellView, const Xmm&);
+    void LoadAvxVectorLow32(CellView, const Xmm&);
+    void LoadAvxVectorLow64(CellView, const Xmm&);
     void WriteResult(OpContext&);
     void Mask(const Reg64&, unsigned);
     void Sign(const Reg64&, unsigned);
@@ -166,7 +236,8 @@ public:
     bool ArmNativeFP() const { return options.arm_fpsr_offset != UINT32_MAX; }
 
     void HarvestArmFPStatus(bool saved = false, bool restore = true);
-    void CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& slow, bool only_nan = false);
+    void CheckArmFPResult(
+            OpContext&, unsigned bits, unsigned lanes, Label& slow, bool only_nan = false);
     void EmitIndexedFPBroadcast(u32 rhs_node, unsigned bits, unsigned index);
     void EmitFPConstants();
     void EmitColdPaths();
@@ -186,6 +257,7 @@ public:
 #define X64_OP(name) void Handle(Op<OpCode::name>, OpContext&);
 #include "ops.inc"
 #undef X64_OP
+
     const Program& source;
     const Allocation& allocation;
     CompileResult& output;
@@ -327,10 +399,171 @@ public:
     bool Linked() const { return options.dispatcher && options.exit_handler; }
 
 private:
+    using ExtraEntryList = std::vector<std::pair<unsigned, unsigned>>;
+
     void Prologue();
     void Terminal(const StoredTerminal&);
     void Dispatch(OpContext&);
     void PackFlags(const Reg64&, const Reg64&, u64 selected);
+
+    // Core orchestration & terminal helpers (emit.cpp)
+    bool PreservesScratchFpCaches(OpCode opcode) const;
+    void ValidateCompileOptions();
+    void EmitUnitEntry(u32 block_id, u64 pc, bool fp_guard);
+    void ResetBlockState(u32 block_id);
+    void EmitBlock(u32 block_id, ExtraEntryList& extra_entries);
+    void EmitNode(u32 node_index, u32 block_id, ExtraEntryList& extra_entries);
+    void UpdateScratchCaches(const OpContext& c, bool preserve_fp_caches);
+    void WriteUniformBackedResult(OpContext& c, const Home& home);
+    void LoadTerminalValue(const StoredTerminal& t, bool mask_rematerialized);
+    void EmitBranchTerminal(const StoredTerminal& t);
+    void EmitTerminalZeroOrBitBranch(const StoredTerminal& t,
+                                     OpCode op,
+                                     CellView first,
+                                     CellRange::Iterator input,
+                                     bool needs_flags);
+    void EmitTerminalConditionBranch(const StoredTerminal& t,
+                                     ir::Condition condition,
+                                     bool needs_flags);
+    void EmitTerminalFlagMaskBranch(const StoredTerminal& t,
+                                    OpCode op,
+                                    u64 mask_payload,
+                                    bool needs_flags);
+    void EmitReturnTerminal(const StoredTerminal& t);
+    void EmitDispatchTerminal();
+
+    // Operand & home read helpers (emit_operand.cpp)
+    void ReadValueOperand(CellView c, const Reg64& r, bool raw, bool narrow);
+    void ReadVectorHomeAsScalar(const Home& h, const Reg64& r, bool narrow);
+    void ReadScalarHome(u32 id, const Home& h, const Reg64& r, bool narrow);
+    void ReadV128ValueToVector(u32 id, const Home& h, const Xmm& r);
+    bool TryReadScalarHomeToVector(ir::Type natural, const Home& h, const Xmm& r);
+
+    // Uniform & memory addressing helpers (emit_memory.cpp)
+    void EmitLoadUniform(OpContext& c,
+                         u64 off,
+                         unsigned width,
+                         unsigned bytes,
+                         bool flags_access,
+                         int pinned,
+                         std::int64_t relative);
+    void EmitStoreUniform(CellView u,
+                          CellView value,
+                          u64 off,
+                          unsigned width,
+                          bool flags_access,
+                          int pinned,
+                          std::int64_t relative);
+    void UpdateUniformStoreState(CellView value, u64 off, unsigned width, bool flags_access);
+    bool ConstantAddressDisp32(CellView imm_cell, bool negate, std::int32_t& out) const;
+    bool IsPlainAddressValue(CellView c) const;
+    Reg64 LoadAddressBaseReg(CellView c);
+    Reg64 LoadAddressIndexReg(CellView c, bool uxtw, CellView base_cell, Reg64 base_reg);
+    Xbyak::RegExp EmitFusedValueAddress(CellView root);
+    bool TryEmitExpressionAddress(CellView first,
+                                  CellRange::Iterator& at,
+                                  CellRange::Iterator end,
+                                  Xbyak::RegExp& out);
+    void EmitMemoryLoad(OpContext& c);
+    void EmitMemoryStore(OpContext& c);
+
+    // Scalar arithmetic, logical & shift helpers (emit_scalar.cpp)
+    void EmitCarryInput();
+    bool TryEmitReusedRhsArithmetic(OpContext& c, const Reg64& destination, bool preserve_flags);
+    bool TryEmitImmediateOrLeaArithmetic(OpContext& c,
+                                         const Reg64& destination,
+                                         bool can_lea,
+                                         bool preserve_flags);
+    bool TryEmitMemoryArithmetic(OpContext& c, const Reg64& destination);
+    bool TryEmitImm64AndMask(OpContext& c, CellView left, const Reg64& destination);
+    bool TryEmitImmediateLogical(OpContext& c, CellView left, const Reg64& destination);
+    bool TryEmitBmiAndNot(OpContext& c,
+                          CellView left,
+                          CellRange::Iterator& at,
+                          const Reg64& destination);
+    bool TryEmitMemoryLogical(OpContext& c, CellView left, const Reg64& destination);
+    bool TryEmitBmi2Rorx(OpContext& c, const Reg64& destination);
+
+    // Flag state helpers (emit_flags.cpp)
+    void SavePartialNativeFlags();
+    void SaveFullNativeFlags(bool canonical);
+    bool IsFlagNeutralOp(OpContext& c) const;
+    void EmitConditionSlotSetcc(unsigned cc);
+
+    // Vector helpers (emit_vector.cpp)
+    void EmitVectorLaneOp(OpCode op, unsigned bits, bool uns);
+    bool TryEmitAvxVectorBinary(OpContext& c, const Xmm& dst, unsigned lane_bits);
+    bool TryEmitSseVectorBitwiseOrAddSub(OpCode op, const Xmm& dst, unsigned lane_bits);
+    bool TryEmitSseVectorCompareOrMinMax(OpContext& c, const Xmm& dst, unsigned lane_bits);
+    void EmitVectorShift(OpContext& c, bool left, bool arithmetic, bool imm);
+    void EmitByteImmVectorShift(OpContext& c, bool left);
+    void EmitHardwareVectorShift(
+            OpContext& c, unsigned lane_bits, bool left, bool arithmetic, bool imm);
+    void EmitLaneLoopVectorShift(
+            OpContext& c, unsigned lane_bits, bool left, bool arithmetic, bool imm);
+
+    // Floating-point & ARM FP binary helpers (emit_float.cpp)
+    void LoadAvxBroadcast2S(CellView rhs, unsigned index, const Xmm& dst);
+    void EmitFloatHelperLoop(OpContext& c, unsigned bits, unsigned flags, bool fused, bool scalar);
+    void EmitFloatRound(OpContext& c, unsigned bits, bool scalar);
+    void EmitFloatCompareMask(OpContext& c, unsigned bits, bool scalar);
+    void EmitFloatUnary(OpContext& c, unsigned bits, bool scalar);
+    void EmitFloatMinMax(OpContext& c, unsigned bits, bool scalar);
+    void EmitFloatArithmetic(OpCode op, unsigned bits, bool scalar);
+    bool TryEmitAvxArmFPBinary(OpContext& c,
+                               FPColdPath& path,
+                               u64 format,
+                               unsigned bits,
+                               unsigned lanes,
+                               unsigned kind);
+    bool EmitAvxArmFPBinary128(
+            OpContext& c, const Xmm& dst, u64 format, unsigned bits, unsigned kind);
+    void EmitAvxArmFPBinary2S(OpContext& c, const Xmm& dst, u64 format, unsigned kind);
+    bool EmitAvxArmFPBinaryScalar32(OpContext& c, const Xmm& dst, u64 format, unsigned kind);
+    bool EmitAvxArmFPBinaryScalar64(OpContext& c, const Xmm& dst, u64 format, unsigned kind);
+    void EmitSseArmFPBinary(OpContext& c,
+                            FPColdPath& path,
+                            u64 status,
+                            u64 format,
+                            unsigned bits,
+                            unsigned lanes,
+                            unsigned kind,
+                            bool regional,
+                            bool post_check);
+
+    // Out-of-line cold paths & helper stubs (emit_cold.cpp)
+    void EmitFPColdPaths(u32 tmp);
+    void EmitFPCallStubs(u32 tmp);
+    void EmitNumericColdPaths(u32 tmp);
+    void EmitNumericCallStubs(u32 tmp);
+    void EmitEventColdPaths();
+
+    // ARM64 scalar/vector numeric fast paths (emit_arm_float.cpp)
+    bool DecodeArmNumericRequest(OpContext& c, ArmNumericRequest& req);
+    void ValidateTypedArmNumeric(OpContext& c, const ArmNumericRequest& req);
+    void EmitAvxFmaInsn(const Xmm& dst,
+                        const Xmm& lhs,
+                        const Xbyak::Operand& rhs,
+                        const ArmNumericRequest& req);
+    bool EmitAvxArmFusedScalarRhs(CellView arg1,
+                                  const Xmm& dst,
+                                  const Xmm& lhs,
+                                  const ArmNumericRequest& req);
+    bool EmitAvxArmFusedVectorRhs(CellView arg1,
+                                  const Xmm& dst,
+                                  const Xmm& lhs,
+                                  const ArmNumericRequest& req);
+    bool TryEmitAvxArmFusedFP(OpContext& c,
+                              NumericColdPath& path,
+                              const ArmNumericRequest& req);
+    void LoadSseArmNumericInputs(OpContext& c, Label& slow, const ArmNumericRequest& req);
+    void EmitSseArmNumericCompare(const ArmNumericRequest& req);
+    void EmitSseArmNumericToInt(Label& slow, const ArmNumericRequest& req);
+    void EmitSseArmNumericValueOp(OpContext& c, Label& slow, const ArmNumericRequest& req);
+    void EmitSseArmNumericFastPath(OpContext& c,
+                                   NumericColdPath& path,
+                                   const ArmNumericRequest& req);
+    void EmitSseArmNumericBody(OpContext& c, Label& slow, const ArmNumericRequest& req);
 };
 
 inline Reg R(const Reg64& r, unsigned bits) {

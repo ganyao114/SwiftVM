@@ -244,6 +244,7 @@ endif()
 
 add_library(svm_x64 STATIC
     source/runtime/backend/x64/allocate.cpp
+    source/runtime/backend/x64/allocation_selection.cpp
     source/runtime/backend/x64/recovery.cpp
     source/runtime/backend/x64/compile.cpp
     source/runtime/backend/x64/emit.cpp
@@ -253,6 +254,7 @@ add_library(svm_x64 STATIC
     source/runtime/backend/x64/emit_flags.cpp
     source/runtime/backend/x64/emit_vector.cpp
     source/runtime/backend/x64/emit_float.cpp
+    source/runtime/backend/x64/emit_cold.cpp
     source/runtime/backend/x64/emit_arm_float.cpp
     source/runtime/backend/x64/emit_crypto.cpp
     source/runtime/backend/x64/emit_atomic.cpp
