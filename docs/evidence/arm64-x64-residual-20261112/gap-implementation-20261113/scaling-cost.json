@@ -1,0 +1,1115 @@
+{
+  "samples": 11,
+  "scope": "bare x64 Compile with the existing probe and legacy FP region contract",
+  "baseline_code_build_id": "045cbc5e2551348c2c212350f19a834302969b0afbf7c7cbb58613e281d50d42",
+  "runners": {
+    "baseline": {
+      "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/scaling",
+      "sha256": "9a6301029022c507b9b8cc4a19974a6a79baed2aa4203252904ded32ffd04ddd"
+    },
+    "candidate": {
+      "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/delivery_scaling",
+      "sha256": "b3f7f350e2bec4937c028dfe7af5ad725a1a557c86f5e9cad4dcb476273b4acc"
+    }
+  },
+  "rows": {
+    "uniform/256": {
+      "medians_ns": {
+        "baseline": 75699.625,
+        "candidate": 76905.0
+      },
+      "paired": {
+        "median": 1.002873909438188,
+        "q1": 0.9795019494643439,
+        "q3": 1.0459712148415823,
+        "min": 0.815212384621125,
+        "max": 1.4331623354402807
+      },
+      "baseline": {
+        "kind": "uniform",
+        "count": 256,
+        "nodes": 514,
+        "blocks": 1,
+        "native_bytes": 1280,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 256,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          577342,
+          546741,
+          544136,
+          581924,
+          603635,
+          563435,
+          543568,
+          547866,
+          559106
+        ]
+      },
+      "candidate": {
+        "kind": "uniform",
+        "count": 256,
+        "nodes": 514,
+        "blocks": 1,
+        "native_bytes": 1280,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 256,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          652531,
+          564073,
+          599468,
+          562229,
+          558103,
+          577119,
+          554850,
+          568847,
+          562006
+        ]
+      }
+    },
+    "uniform/512": {
+      "medians_ns": {
+        "baseline": 160385.875,
+        "candidate": 176882.375
+      },
+      "paired": {
+        "median": 1.0338241237190993,
+        "q1": 1.0041754901891953,
+        "q3": 1.1242897785198558,
+        "min": 0.926092399879842,
+        "max": 1.7043754632382684
+      },
+      "baseline": {
+        "kind": "uniform",
+        "count": 512,
+        "nodes": 1026,
+        "blocks": 1,
+        "native_bytes": 2304,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 512,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          1341157,
+          1205576,
+          1213959,
+          1245898,
+          1199606,
+          1208333,
+          1217557,
+          1212702,
+          1170597
+        ]
+      },
+      "candidate": {
+        "kind": "uniform",
+        "count": 512,
+        "nodes": 1026,
+        "blocks": 1,
+        "native_bytes": 2304,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 512,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          1218369,
+          1242442,
+          1341826,
+          1217486,
+          1248767,
+          1227460,
+          1210006,
+          1206925,
+          1220567
+        ]
+      }
+    },
+    "uniform/1024": {
+      "medians_ns": {
+        "baseline": 341530.5,
+        "candidate": 345404.125
+      },
+      "paired": {
+        "median": 1.0252831052248244,
+        "q1": 0.9912938088030654,
+        "q3": 1.0655599707423522,
+        "min": 0.9351538632213139,
+        "max": 1.1042223252086296
+      },
+      "baseline": {
+        "kind": "uniform",
+        "count": 1024,
+        "nodes": 2050,
+        "blocks": 1,
+        "native_bytes": 4352,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 1024,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          2462371,
+          2433442,
+          2450482,
+          2521920,
+          2421948,
+          2434811,
+          2432459,
+          2399842,
+          2439899
+        ]
+      },
+      "candidate": {
+        "kind": "uniform",
+        "count": 1024,
+        "nodes": 2050,
+        "blocks": 1,
+        "native_bytes": 4352,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 1024,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          2475416,
+          2663532,
+          2776033,
+          2716877,
+          2558704,
+          2499074,
+          2494482,
+          2629829,
+          2572905
+        ]
+      }
+    },
+    "pressure/256": {
+      "medians_ns": {
+        "baseline": 47785.375,
+        "candidate": 51053.25
+      },
+      "paired": {
+        "median": 1.0261637106315027,
+        "q1": 0.9992896102336124,
+        "q3": 1.082392380128041,
+        "min": 0.9646282989303736,
+        "max": 1.8731045666304782
+      },
+      "baseline": {
+        "kind": "pressure",
+        "count": 256,
+        "nodes": 296,
+        "blocks": 1,
+        "native_bytes": 1528,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          376485,
+          347293,
+          350445,
+          342863,
+          365173,
+          348347,
+          364332,
+          346107,
+          390007
+        ]
+      },
+      "candidate": {
+        "kind": "pressure",
+        "count": 256,
+        "nodes": 296,
+        "blocks": 1,
+        "native_bytes": 1528,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          380864,
+          376900,
+          400568,
+          408900,
+          381320,
+          387452,
+          430307,
+          419462,
+          385354
+        ]
+      }
+    },
+    "pressure/512": {
+      "medians_ns": {
+        "baseline": 85595.5,
+        "candidate": 93936.625
+      },
+      "paired": {
+        "median": 1.0502880803265533,
+        "q1": 1.0052541762449443,
+        "q3": 1.1526833310132059,
+        "min": 0.6637054742835223,
+        "max": 1.7262919552477358
+      },
+      "baseline": {
+        "kind": "pressure",
+        "count": 512,
+        "nodes": 552,
+        "blocks": 1,
+        "native_bytes": 2552,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          617896,
+          646835,
+          623876,
+          623734,
+          640997,
+          693228,
+          615027,
+          639152,
+          627222
+        ]
+      },
+      "candidate": {
+        "kind": "pressure",
+        "count": 512,
+        "nodes": 552,
+        "blocks": 1,
+        "native_bytes": 2552,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          714006,
+          696036,
+          674750,
+          672895,
+          689457,
+          674071,
+          719541,
+          688666,
+          671253
+        ]
+      }
+    },
+    "pressure/1024": {
+      "medians_ns": {
+        "baseline": 193716.5,
+        "candidate": 195763.375
+      },
+      "paired": {
+        "median": 1.0460402185668232,
+        "q1": 1.0172174330563228,
+        "q3": 1.0773816849844884,
+        "min": 0.617307477414752,
+        "max": 1.160726161117238
+      },
+      "baseline": {
+        "kind": "pressure",
+        "count": 1024,
+        "nodes": 1064,
+        "blocks": 1,
+        "native_bytes": 4600,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          1315107,
+          1350208,
+          1305833,
+          1312553,
+          1324128,
+          1305761,
+          1278455,
+          1374363,
+          1309694
+        ]
+      },
+      "candidate": {
+        "kind": "pressure",
+        "count": 1024,
+        "nodes": 1064,
+        "blocks": 1,
+        "native_bytes": 4600,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          1409718,
+          1396044,
+          1405552,
+          1569665,
+          1400940,
+          1397666,
+          1453039,
+          1380819,
+          1372123
+        ]
+      }
+    },
+    "flags/256": {
+      "medians_ns": {
+        "baseline": 148502.625,
+        "candidate": 151097.25
+      },
+      "paired": {
+        "median": 1.042781192328211,
+        "q1": 0.983383009254919,
+        "q3": 1.146022624569469,
+        "min": 0.5982253645545916,
+        "max": 1.5252571825190253
+      },
+      "baseline": {
+        "kind": "flags",
+        "count": 256,
+        "nodes": 770,
+        "blocks": 1,
+        "native_bytes": 8060,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          1015343,
+          1083447,
+          1036577,
+          1032483,
+          1011288,
+          4188638,
+          1081633,
+          1028043,
+          1041129
+        ]
+      },
+      "candidate": {
+        "kind": "flags",
+        "count": 256,
+        "nodes": 770,
+        "blocks": 1,
+        "native_bytes": 7836,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          1108939,
+          1080923,
+          1073352,
+          1108726,
+          1080660,
+          1087349,
+          1062637,
+          1120910,
+          1061887
+        ]
+      }
+    },
+    "flags/512": {
+      "medians_ns": {
+        "baseline": 313862.75,
+        "candidate": 335913.875
+      },
+      "paired": {
+        "median": 1.0232738528259078,
+        "q1": 0.9717331537015386,
+        "q3": 1.067186158012671,
+        "min": 0.8204571526926903,
+        "max": 1.5168198519894445
+      },
+      "baseline": {
+        "kind": "flags",
+        "count": 512,
+        "nodes": 1538,
+        "blocks": 1,
+        "native_bytes": 15900,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          2304248,
+          2264352,
+          2286641,
+          2433878,
+          2334960,
+          2304207,
+          2282598,
+          2286358,
+          2331463
+        ]
+      },
+      "candidate": {
+        "kind": "flags",
+        "count": 512,
+        "nodes": 1538,
+        "blocks": 1,
+        "native_bytes": 15452,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          2468746,
+          2568435,
+          2422344,
+          2396557,
+          2449609,
+          2458296,
+          2424532,
+          2887529,
+          2407798
+        ]
+      }
+    },
+    "flags/1024": {
+      "medians_ns": {
+        "baseline": 636395.75,
+        "candidate": 697003.75
+      },
+      "paired": {
+        "median": 1.0307607217208732,
+        "q1": 1.012876984666018,
+        "q3": 1.0416393930346928,
+        "min": 0.989542917804161,
+        "max": 1.2813582872109603
+      },
+      "baseline": {
+        "kind": "flags",
+        "count": 1024,
+        "nodes": 3074,
+        "blocks": 1,
+        "native_bytes": 31580,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          4813032,
+          4730828,
+          4772315,
+          4875449,
+          4824881,
+          4771292,
+          4709562,
+          4838747,
+          4857185
+        ]
+      },
+      "candidate": {
+        "kind": "flags",
+        "count": 1024,
+        "nodes": 3074,
+        "blocks": 1,
+        "native_bytes": 30684,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          4933175,
+          4999536,
+          4922927,
+          4968733,
+          4981696,
+          4892650,
+          4875206,
+          5295277,
+          5032823
+        ]
+      }
+    },
+    "fp/256": {
+      "medians_ns": {
+        "baseline": 302833.625,
+        "candidate": 296417.5
+      },
+      "paired": {
+        "median": 0.9892282827553204,
+        "q1": 0.9595631419753754,
+        "q3": 1.0253928839260147,
+        "min": 0.7675092079815801,
+        "max": 1.105331578603204
+      },
+      "baseline": {
+        "kind": "fp",
+        "count": 256,
+        "nodes": 260,
+        "blocks": 1,
+        "native_bytes": 32004,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          2197008,
+          2244708,
+          2259812,
+          2226240,
+          2123623,
+          2215060,
+          2101212,
+          2232779,
+          2138837
+        ]
+      },
+      "candidate": {
+        "kind": "fp",
+        "count": 256,
+        "nodes": 260,
+        "blocks": 1,
+        "native_bytes": 32004,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          2191200,
+          2245388,
+          2306751,
+          2296179,
+          2195944,
+          2184105,
+          2182108,
+          2121443,
+          2173502
+        ]
+      }
+    },
+    "fp/512": {
+      "medians_ns": {
+        "baseline": 613068.75,
+        "candidate": 630283.875
+      },
+      "paired": {
+        "median": 0.9912165496426261,
+        "q1": 0.9863615047017729,
+        "q3": 1.0390268356995054,
+        "min": 0.9265994499160897,
+        "max": 1.147446390852591
+      },
+      "baseline": {
+        "kind": "fp",
+        "count": 512,
+        "nodes": 516,
+        "blocks": 1,
+        "native_bytes": 62724,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          4563177,
+          4483608,
+          4556244,
+          4552666,
+          4610360,
+          4688530,
+          4710577,
+          4594245,
+          4571702
+        ]
+      },
+      "candidate": {
+        "kind": "fp",
+        "count": 512,
+        "nodes": 516,
+        "blocks": 1,
+        "native_bytes": 62724,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          4600579,
+          4768423,
+          4514027,
+          4436749,
+          4498235,
+          4537097,
+          4422529,
+          4501560,
+          4610432
+        ]
+      }
+    },
+    "fp/1024": {
+      "medians_ns": {
+        "baseline": 1227009.375,
+        "candidate": 1211864.125
+      },
+      "paired": {
+        "median": 1.0066590052998226,
+        "q1": 0.9809993094095898,
+        "q3": 1.046388261282421,
+        "min": 0.8345896964913946,
+        "max": 1.2576526775196168
+      },
+      "baseline": {
+        "kind": "fp",
+        "count": 1024,
+        "nodes": 1028,
+        "blocks": 1,
+        "native_bytes": 124164,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          8825789,
+          8766392,
+          8601640,
+          8943519,
+          8700943,
+          9306168,
+          8676910,
+          8830603,
+          8823924
+        ]
+      },
+      "candidate": {
+        "kind": "fp",
+        "count": 1024,
+        "nodes": 1028,
+        "blocks": 1,
+        "native_bytes": 124164,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          8701986,
+          8716390,
+          8903533,
+          8504688,
+          8629301,
+          8667190,
+          8546144,
+          8400337,
+          8416574
+        ]
+      }
+    },
+    "cold/256": {
+      "medians_ns": {
+        "baseline": 287629.375,
+        "candidate": 296931.75
+      },
+      "paired": {
+        "median": 0.9957980419484861,
+        "q1": 0.9840758773822373,
+        "q3": 1.0141788302992043,
+        "min": 0.9531215300940664,
+        "max": 1.0971413096906917
+      },
+      "baseline": {
+        "kind": "cold",
+        "count": 256,
+        "nodes": 260,
+        "blocks": 1,
+        "native_bytes": 32004,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          2231775,
+          2166133,
+          2150747,
+          2139141,
+          2181824,
+          2179168,
+          2160964,
+          2232504,
+          2149308
+        ]
+      },
+      "candidate": {
+        "kind": "cold",
+        "count": 256,
+        "nodes": 260,
+        "blocks": 1,
+        "native_bytes": 32004,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          2255878,
+          2058093,
+          2183821,
+          2168201,
+          2234117,
+          2144777,
+          2145993,
+          2157031,
+          2115119
+        ]
+      }
+    },
+    "cold/512": {
+      "medians_ns": {
+        "baseline": 594743.0,
+        "candidate": 568543.375
+      },
+      "paired": {
+        "median": 0.989967010146823,
+        "q1": 0.9584103303280636,
+        "q3": 1.0292221568309583,
+        "min": 0.8930725803118835,
+        "max": 1.3647754004809705
+      },
+      "baseline": {
+        "kind": "cold",
+        "count": 512,
+        "nodes": 516,
+        "blocks": 1,
+        "native_bytes": 62724,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          4370713,
+          4265105,
+          4296264,
+          4289472,
+          4144870,
+          4145722,
+          4153730,
+          4149493,
+          4173211
+        ]
+      },
+      "candidate": {
+        "kind": "cold",
+        "count": 512,
+        "nodes": 516,
+        "blocks": 1,
+        "native_bytes": 62724,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          4228555,
+          4137441,
+          4205982,
+          4147932,
+          4054842,
+          4037519,
+          4133275,
+          4046256,
+          4136650
+        ]
+      }
+    },
+    "cold/1024": {
+      "medians_ns": {
+        "baseline": 1310326.75,
+        "candidate": 1224728.75
+      },
+      "paired": {
+        "median": 0.9968520393105543,
+        "q1": 0.9353633718776209,
+        "q3": 1.037162703349301,
+        "min": 0.7761445991227888,
+        "max": 1.3514455363006659
+      },
+      "baseline": {
+        "kind": "cold",
+        "count": 1024,
+        "nodes": 1028,
+        "blocks": 1,
+        "native_bytes": 124164,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          9004286,
+          8876601,
+          8856735,
+          8918564,
+          8976807,
+          9112073,
+          8804929,
+          9330120,
+          8984774
+        ]
+      },
+      "candidate": {
+        "kind": "cold",
+        "count": 1024,
+        "nodes": 1028,
+        "blocks": 1,
+        "native_bytes": 124164,
+        "frame_bytes": 408,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 2,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          8608886,
+          8697080,
+          8814984,
+          9755836,
+          8281684,
+          8648823,
+          8668882,
+          8511793,
+          8624972
+        ]
+      }
+    },
+    "cfg/256": {
+      "medians_ns": {
+        "baseline": 54368.375,
+        "candidate": 52555.625
+      },
+      "paired": {
+        "median": 1.0495406906517366,
+        "q1": 0.9248276347155207,
+        "q3": 1.0766643149742476,
+        "min": 0.6076237724005265,
+        "max": 1.547620744596468
+      },
+      "baseline": {
+        "kind": "cfg",
+        "count": 256,
+        "nodes": 280,
+        "blocks": 4,
+        "native_bytes": 1472,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          358473,
+          358828,
+          380803,
+          357784,
+          355280,
+          354652,
+          354956,
+          374093,
+          419188
+        ]
+      },
+      "candidate": {
+        "kind": "cfg",
+        "count": 256,
+        "nodes": 280,
+        "blocks": 4,
+        "native_bytes": 1500,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          404034,
+          399443,
+          366035,
+          364504,
+          364321,
+          386327,
+          390159,
+          365173,
+          376232
+        ]
+      }
+    },
+    "cfg/512": {
+      "medians_ns": {
+        "baseline": 98238.875,
+        "candidate": 100864.625
+      },
+      "paired": {
+        "median": 1.037960859576592,
+        "q1": 0.8535333011695058,
+        "q3": 1.060132473198335,
+        "min": 0.6679617529296492,
+        "max": 1.3717469280872772
+      },
+      "baseline": {
+        "kind": "cfg",
+        "count": 512,
+        "nodes": 560,
+        "blocks": 8,
+        "native_bytes": 2724,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          693227,
+          744039,
+          717615,
+          686173,
+          684582,
+          743483,
+          683770,
+          696755,
+          716560
+        ]
+      },
+      "candidate": {
+        "kind": "cfg",
+        "count": 512,
+        "nodes": 560,
+        "blocks": 8,
+        "native_bytes": 2820,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          770789,
+          719571,
+          719693,
+          741983,
+          739722,
+          761170,
+          740513,
+          714077,
+          713925
+        ]
+      }
+    },
+    "cfg/1024": {
+      "medians_ns": {
+        "baseline": 200969.625,
+        "candidate": 203514.125
+      },
+      "paired": {
+        "median": 1.0126611173205902,
+        "q1": 0.8150623545296941,
+        "q3": 1.0346862951102263,
+        "min": 0.645207342314677,
+        "max": 1.263592271368053
+      },
+      "baseline": {
+        "kind": "cfg",
+        "count": 1024,
+        "nodes": 1120,
+        "blocks": 16,
+        "native_bytes": 5236,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          1464158,
+          1379775,
+          1394747,
+          1423756,
+          1391888,
+          1401152,
+          1529060,
+          1425631,
+          1360962
+        ]
+      },
+      "candidate": {
+        "kind": "cfg",
+        "count": 1024,
+        "nodes": 1120,
+        "blocks": 16,
+        "native_bytes": 5468,
+        "frame_bytes": 88,
+        "actual_spills": 0,
+        "stores_erased": 0,
+        "shared_stubs": 0,
+        "output_verified": true,
+        "requests_per_sample": 8,
+        "sequence_ns": [
+          1445498,
+          1490786,
+          1435017,
+          1415891,
+          1475643,
+          1452056,
+          1432503,
+          1425702,
+          1461016
+        ]
+      }
+    }
+  }
+}

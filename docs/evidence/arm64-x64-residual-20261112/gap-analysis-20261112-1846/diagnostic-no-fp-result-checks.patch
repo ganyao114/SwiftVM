@@ -1,0 +1,56 @@
+--- a/source/runtime/backend/x64/emit_float.cpp
++++ b/source/runtime/backend/x64/emit_float.cpp
+@@ -27,52 +27,7 @@
+     L(clean);
+ }
+ 
+-void Writer::CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& slow) {
+-    if (options.sse41) {
+-        const auto index = bits == 32 ? 0u : 2u;
+-        fp_constants_used[index] = fp_constants_used[index + 1] = true;
+-        movdqa(xmm14, xmm0);
+-        movdqu(xmm15, ptr[rip + fp_constants[index]]);
+-        pand(xmm14, xmm15);
+-        movdqu(xmm15, ptr[rip + fp_constants[index + 1]]);
+-        if (bits == 32)
+-            pcmpeqd(xmm14, xmm15);
+-        else
+-            pcmpeqq(xmm14, xmm15);
+-        movdqa(xmm15, xmm0);
+-        if (bits == 32)
+-            cmpps(xmm15, xmm0, 3);
+-        else
+-            cmppd(xmm15, xmm0, 3);
+-        por(xmm14, xmm15);
+-        pmovmskb(ecx, xmm14);
+-        Label ready;
+-        jrcxz(ready);
+-        jmp(slow, T_NEAR);
+-        L(ready);
+-        return;
+-    }
+-    for (unsigned lane = 0; lane < lanes; ++lane) {
+-        movdqa(xmm14, xmm0);
+-        if (lane) psrldq(xmm14, lane * bits / 8);
+-        movq(rax, xmm14);
+-        if (bits == 32) {
+-            and_(eax, 0x7fffffff);
+-            cmp(eax, 0x7f800000);
+-            ja(slow, T_NEAR);
+-            cmp(eax, 0x00800000);
+-        } else {
+-            mov(rdx, UINT64_C(0x7fffffffffffffff));
+-            and_(rax, rdx);
+-            mov(rdx, UINT64_C(0x7ff0000000000000));
+-            cmp(rax, rdx);
+-            ja(slow, T_NEAR);
+-            mov(rdx, UINT64_C(0x0010000000000000));
+-            cmp(rax, rdx);
+-        }
+-        je(slow, T_NEAR);
+-    }
+-}
++void Writer::CheckArmFPResult(OpContext&, unsigned, unsigned, Label&) {}
+ 
+ void Writer::EmitFPConstants() {
+     constexpr u64 values[]{UINT64_C(0x7fffffff7fffffff),

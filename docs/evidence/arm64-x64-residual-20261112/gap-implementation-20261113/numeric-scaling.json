@@ -1,0 +1,444 @@
+{
+  "samples": 11,
+  "sequence_samples": 7,
+  "requests_per_sequence": 4,
+  "cpu": 2,
+  "baseline_code_build_id": "045cbc5e2551348c2c212350f19a834302969b0afbf7c7cbb58613e281d50d42",
+  "scope": "legacy CallLambda numerical IR versus exact SSA numerical IR; bare Compile with stable FPCR=0 and scalar FMA",
+  "input_verification": "normal finite exact results and forced sNaN cold results, FPSR, zero upper lanes and preserved NZCV",
+  "builds": {
+    "baseline": {
+      "cwd": "/mnt/d/Dev/SwiftVM/build/host",
+      "argv": [
+        "/usr/bin/c++",
+        "-I/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/memory-metadata/baseline-headers/source",
+        "-std=gnu++20",
+        "-O3",
+        "-DNDEBUG",
+        "-flto=auto",
+        "-fno-fat-lto-objects",
+        "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/numeric-scaling.cpp",
+        "-o",
+        "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/numeric-scaling/baseline",
+        "libsvm_execution.a",
+        "libsvm_base.a",
+        "libsvm_x86_ir.a",
+        "source/runtime/externals/distorm/libdistorm.a",
+        "libsvm_arm64_ir.a",
+        "libsvm_aarch64_decode.a",
+        "libsvm_arm32_ir.a",
+        "libsvm_ir_direct.a",
+        "libsvm_ir_optimize.a",
+        "libsvm_disk_cache.a",
+        "libsvm_aot_artifact.a",
+        "libsvm_code_image.a",
+        "libsvm_artifact_file.a",
+        "libsvm_base.a",
+        "source/runtime/externals/fmt/libfmt.a",
+        "libsvm_x64.a",
+        "libsvm_x87.a",
+        "libsvm_cephes.a",
+        "libsvm_system_query.a",
+        "libsvm_arm32_numeric.a",
+        "libsvm_arm64_numeric.a",
+        "libsvm_vixl_exact.a",
+        "libsvm_allocation.a",
+        "libsvm_ir.a",
+        "source/runtime/externals/SoftFloat-3e/libsvm_softfloat_ext80.a",
+        "-latomic",
+        "-latomic"
+      ],
+      "sha256": "248c7ae1ac95aeaa6f208aeb29a89715584fc27ccf78c687b9a85f05bb6e49f8"
+    },
+    "candidate": {
+      "cwd": "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/build",
+      "argv": [
+        "/usr/bin/c++",
+        "-DSVM_EXACT_VALUES=1",
+        "-I/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/source/source",
+        "-std=gnu++20",
+        "-O3",
+        "-DNDEBUG",
+        "-flto=auto",
+        "-fno-fat-lto-objects",
+        "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/numeric-scaling.cpp",
+        "-o",
+        "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/numeric-scaling/candidate",
+        "libsvm_execution.a",
+        "libsvm_base.a",
+        "libsvm_x86_ir.a",
+        "source/runtime/externals/distorm/libdistorm.a",
+        "libsvm_arm64_ir.a",
+        "libsvm_aarch64_decode.a",
+        "libsvm_arm32_ir.a",
+        "libsvm_ir_direct.a",
+        "libsvm_ir_optimize.a",
+        "libsvm_disk_cache.a",
+        "libsvm_aot_artifact.a",
+        "libsvm_code_image.a",
+        "libsvm_artifact_file.a",
+        "libsvm_base.a",
+        "source/runtime/externals/fmt/libfmt.a",
+        "libsvm_x64.a",
+        "libsvm_x87.a",
+        "libsvm_cephes.a",
+        "libsvm_system_query.a",
+        "libsvm_arm32_numeric.a",
+        "libsvm_arm64_numeric.a",
+        "libsvm_vixl_exact.a",
+        "libsvm_allocation.a",
+        "libsvm_ir.a",
+        "source/runtime/externals/SoftFloat-3e/libsvm_softfloat_ext80.a",
+        "-latomic",
+        "-latomic"
+      ],
+      "sha256": "111cef0e828006bae519e7fb7bc579a575334e5113baa49ecb3d8e2e778561a7"
+    }
+  },
+  "rows": {
+    "numeric-fp/256": {
+      "paired": {
+        "median": 0.7309205754123331,
+        "q1": 0.7027674791987388,
+        "q3": 0.7366664269007861,
+        "min": 0.6964727855490204,
+        "max": 0.7523909247328355
+      },
+      "medians_ns": {
+        "baseline": 478683.25,
+        "candidate": 341953.5
+      },
+      "baseline": {
+        "kind": "numeric-fp",
+        "count": 256,
+        "nodes_before": 770,
+        "nodes_after": 770,
+        "operand_words": 2050,
+        "ir_reserved_bytes": 49288,
+        "home_capacity_bytes": 21560,
+        "native_bytes": 75296,
+        "recorded_math_stubs": 256,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          1856352,
+          1821121,
+          1853882,
+          1862212,
+          1826282,
+          1862402,
+          1828201
+        ]
+      },
+      "candidate": {
+        "kind": "numeric-fp",
+        "count": 256,
+        "nodes_before": 516,
+        "nodes_after": 516,
+        "operand_words": 2052,
+        "ir_reserved_bytes": 49288,
+        "home_capacity_bytes": 14448,
+        "native_bytes": 37760,
+        "recorded_math_stubs": 2,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          1427024,
+          1361764,
+          1347223,
+          1401154,
+          1361814,
+          1398054,
+          1359473
+        ]
+      }
+    },
+    "numeric-fp/512": {
+      "paired": {
+        "median": 0.7113379242682684,
+        "q1": 0.6938212006877694,
+        "q3": 0.7185548068784425,
+        "min": 0.6521857766814136,
+        "max": 0.7338929168670214
+      },
+      "medians_ns": {
+        "baseline": 999614.5,
+        "candidate": 698427.0
+      },
+      "baseline": {
+        "kind": "numeric-fp",
+        "count": 512,
+        "nodes_before": 1538,
+        "nodes_after": 1538,
+        "operand_words": 4098,
+        "ir_reserved_bytes": 98440,
+        "home_capacity_bytes": 43064,
+        "native_bytes": 150048,
+        "recorded_math_stubs": 512,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          3921968,
+          3923597,
+          3724714,
+          3830706,
+          3946088,
+          3794946,
+          3787895
+        ]
+      },
+      "candidate": {
+        "kind": "numeric-fp",
+        "count": 512,
+        "nodes_before": 1028,
+        "nodes_after": 1028,
+        "operand_words": 4100,
+        "ir_reserved_bytes": 98440,
+        "home_capacity_bytes": 28784,
+        "native_bytes": 74368,
+        "recorded_math_stubs": 2,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          2811328,
+          2784598,
+          2851579,
+          2889150,
+          2864999,
+          2773488,
+          2809949
+        ]
+      }
+    },
+    "numeric-fp/1024": {
+      "paired": {
+        "median": 0.6894464224178085,
+        "q1": 0.6815489888043942,
+        "q3": 0.706113866042453,
+        "min": 0.6744709306515183,
+        "max": 0.7223788191660756
+      },
+      "medians_ns": {
+        "baseline": 2027539.75,
+        "candidate": 1406356.75
+      },
+      "baseline": {
+        "kind": "numeric-fp",
+        "count": 1024,
+        "nodes_before": 3074,
+        "nodes_after": 3074,
+        "operand_words": 8194,
+        "ir_reserved_bytes": 196744,
+        "home_capacity_bytes": 86072,
+        "native_bytes": 299552,
+        "recorded_math_stubs": 1024,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          8003038,
+          7839465,
+          8199371,
+          8098139,
+          8029718,
+          8035398,
+          7982597
+        ]
+      },
+      "candidate": {
+        "kind": "numeric-fp",
+        "count": 1024,
+        "nodes_before": 2052,
+        "nodes_after": 2052,
+        "operand_words": 8196,
+        "ir_reserved_bytes": 196744,
+        "home_capacity_bytes": 57456,
+        "native_bytes": 147584,
+        "recorded_math_stubs": 2,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          5889741,
+          5558796,
+          5575626,
+          5643787,
+          5480254,
+          5650368,
+          5695838
+        ]
+      }
+    },
+    "numeric-cold/256": {
+      "paired": {
+        "median": 0.7330019083419083,
+        "q1": 0.7215153116667514,
+        "q3": 0.7464101090815833,
+        "min": 0.716992833368833,
+        "max": 0.797501639773663
+      },
+      "medians_ns": {
+        "baseline": 464793.0,
+        "candidate": 341450.75
+      },
+      "baseline": {
+        "kind": "numeric-cold",
+        "count": 256,
+        "nodes_before": 770,
+        "nodes_after": 770,
+        "operand_words": 2050,
+        "ir_reserved_bytes": 49288,
+        "home_capacity_bytes": 21560,
+        "native_bytes": 75296,
+        "recorded_math_stubs": 256,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          1935093,
+          1812271,
+          1850622,
+          1807861,
+          1806771,
+          1830062,
+          1818841
+        ]
+      },
+      "candidate": {
+        "kind": "numeric-cold",
+        "count": 256,
+        "nodes_before": 516,
+        "nodes_after": 516,
+        "operand_words": 2052,
+        "ir_reserved_bytes": 49288,
+        "home_capacity_bytes": 14448,
+        "native_bytes": 37760,
+        "recorded_math_stubs": 2,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          1419474,
+          1351844,
+          1360953,
+          1369164,
+          1404974,
+          1348753,
+          1373294
+        ]
+      }
+    },
+    "numeric-cold/512": {
+      "paired": {
+        "median": 0.7289037359889827,
+        "q1": 0.7216150667956323,
+        "q3": 0.7336191401347658,
+        "min": 0.7056265822883253,
+        "max": 0.7665501339479943
+      },
+      "medians_ns": {
+        "baseline": 910950.75,
+        "candidate": 660796.5
+      },
+      "baseline": {
+        "kind": "numeric-cold",
+        "count": 512,
+        "nodes_before": 1538,
+        "nodes_after": 1538,
+        "operand_words": 4098,
+        "ir_reserved_bytes": 98440,
+        "home_capacity_bytes": 43064,
+        "native_bytes": 150048,
+        "recorded_math_stubs": 512,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          3570371,
+          3595012,
+          3644143,
+          3623942,
+          3582092,
+          3598782,
+          3660913
+        ]
+      },
+      "candidate": {
+        "kind": "numeric-cold",
+        "count": 512,
+        "nodes_before": 1028,
+        "nodes_after": 1028,
+        "operand_words": 4100,
+        "ir_reserved_bytes": 98440,
+        "home_capacity_bytes": 28784,
+        "native_bytes": 74368,
+        "recorded_math_stubs": 2,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          2743108,
+          2604205,
+          2688896,
+          2636095,
+          2613955,
+          2838829,
+          2643186
+        ]
+      }
+    },
+    "numeric-cold/1024": {
+      "paired": {
+        "median": 0.70251019618365,
+        "q1": 0.6896175931520749,
+        "q3": 0.7067031908089726,
+        "min": 0.658287243505797,
+        "max": 0.7358745683019586
+      },
+      "medians_ns": {
+        "baseline": 2017077.0,
+        "candidate": 1408646.75
+      },
+      "baseline": {
+        "kind": "numeric-cold",
+        "count": 1024,
+        "nodes_before": 3074,
+        "nodes_after": 3074,
+        "operand_words": 8194,
+        "ir_reserved_bytes": 196744,
+        "home_capacity_bytes": 86072,
+        "native_bytes": 299552,
+        "recorded_math_stubs": 1024,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          7936097,
+          8076129,
+          8150230,
+          8020648,
+          7624042,
+          8027078,
+          7897206
+        ]
+      },
+      "candidate": {
+        "kind": "numeric-cold",
+        "count": 1024,
+        "nodes_before": 2052,
+        "nodes_after": 2052,
+        "operand_words": 8196,
+        "ir_reserved_bytes": 196744,
+        "home_capacity_bytes": 57456,
+        "native_bytes": 147584,
+        "recorded_math_stubs": 2,
+        "output_verified": true,
+        "requests": 4,
+        "sequence_ns": [
+          5609887,
+          5629037,
+          5813860,
+          6314059,
+          5663957,
+          5634587,
+          5616087
+        ]
+      }
+    }
+  },
+  "candidate_code_build_id": "81131f17ec78743d92c1f4d2b284ace59476545517f65d101f9aef894ceae3e0",
+  "source_sha256": "018ab6ab53ce9a0530bb06fef250905fda53d46787f10ec3a2d92084565d8f83"
+}

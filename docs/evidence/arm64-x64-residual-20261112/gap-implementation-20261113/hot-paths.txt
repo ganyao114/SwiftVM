@@ -1,0 +1,78 @@
+cond
+  95:	shr    rax,0x1c
+  99:	and    eax,0x1
+  9c:	or     edx,eax
+  9e:	mov    WORD PTR [rsp],dx
+  a2:	sub    r13,0x7
+  a6:	ja     0xc4
+  ac:	jmp    0xb1
+  b1:	mov    r13,QWORD PTR [r12+0x10]
+  b6:	add    r13,0x3
+  ba:	mov    QWORD PTR [r12+0x10],r13
+  bf:	jmp    0xc4
+  c4:	mov    r13,QWORD PTR [r12]
+  c8:	mov    rdx,rbx
+  cb:	shr    rdx,0x10
+  cf:	and    edx,0xc000
+  d5:	mov    rax,rbx
+  d8:	shr    rax,0x15
+  dc:	and    eax,0x100
+  e1:	xor    eax,0x100
+  e6:	or     edx,eax
+  e8:	mov    rax,rbx
+  eb:	shr    rax,0x1c
+  ef:	and    eax,0x1
+  f2:	or     edx,eax
+  f4:	mov    WORD PTR [rsp],dx
+  f8:	sub    r13,0x5
+  fc:	jl     0x11a
+ 102:	jmp    0x107
+
+fpmix
+ 2a7:	movdqa xmm4,xmm0
+ 2ab:	movdqu XMMWORD PTR [r12+0x170],xmm4
+ 2b5:	movdqa xmm0,xmm4
+ 2b9:	movq   xmm0,xmm0
+ 2bd:	movdqa xmm1,xmm2
+ 2c1:	movq   xmm1,xmm1
+ 2c5:	ucomisd xmm0,xmm1
+ 2c9:	ja     0x2e5
+ 2cf:	jmp    0x2d4
+ 2d4:	mov    r13,QWORD PTR [r12]
+ 2d8:	add    r13,0x7
+ 2dc:	mov    QWORD PTR [r12],r13
+ 2e0:	jmp    0x2e5
+ 2e5:	mov    r13,QWORD PTR [r12+0x8]
+ 2ea:	sub    r13,0x1
+ 2ee:	mov    QWORD PTR [r12+0x8],r13
+ 2f3:	mov    rcx,QWORD PTR [r12+0x380]
+ 2fb:	jrcxz  0x302
+ 2fd:	jmp    0x9bb
+ 302:	jne    0x15f
+ 308:	mov    r11,rax
+ 30b:	lahf
+ 30c:	seto   al
+ 30f:	mov    WORD PTR [rsp],ax
+
+compute-matrix
+     541:	movdqa xmm1,xmm3
+     545:	mulpd  xmm0,xmm1
+     549:	vandpd xmm14,xmm0,XMMWORD PTR [rip+0x9e4f]        # 0xa3a0
+     551:	vcmpeq_uqpd xmm14,xmm14,XMMWORD PTR [rip+0x9e56]        # 0xa3b0
+     55a:	vpmovmskb ecx,xmm14
+     55f:	jrcxz  0x566
+     561:	jmp    0x2359
+     566:	movdqa xmm4,xmm0
+     56a:	movdqu XMMWORD PTR [r12+0x220],xmm4
+     574:	mov    r13,QWORD PTR [r12+0x48]
+
+compute-matrix-scalar IR
+  %94:u64 = Add %90:u64, #0x8:u64
+  %95:u64 = LoadMemory %90:u64
+  %96:u64 = LoadMemory %94:u64
+  %97:v128 = BitCast %95:u64
+  %98:void = StoreUniform uniform[0x120]:v128, %97:v128
+  %99:v128 = BitCast %96:u64
+  %100:void = StoreUniform uniform[0x130]:v128, %99:v128
+  %101:void = FaultLocation #0x410094:u64
+  %102:void = Nop

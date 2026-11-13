@@ -1,0 +1,27 @@
+[
+  {
+    "name": "arm",
+    "argv": [
+      "python3",
+      "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/delivery-validation/validate-final.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "x86",
+    "argv": [
+      "python3",
+      "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/delivery-validation/validate-x86-final.py"
+    ],
+    "exit_code": 0
+  },
+  {
+    "name": "programs",
+    "argv": [
+      "python3",
+      "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/delivery-validation/verify-final.py",
+      "programs"
+    ],
+    "exit_code": 0
+  }
+]

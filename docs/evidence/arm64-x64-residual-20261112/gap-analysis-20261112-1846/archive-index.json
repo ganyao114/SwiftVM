@@ -1,0 +1,332 @@
+[
+  {
+    "path": "pmu",
+    "files": 1263,
+    "bytes": 20927506
+  },
+  {
+    "path": "samples",
+    "files": 2797,
+    "bytes": 110696278
+  },
+  {
+    "path": "controls",
+    "files": 2655,
+    "bytes": 27521953
+  },
+  {
+    "path": "fpmix-breakdown",
+    "files": 1260,
+    "bytes": 2768867
+  },
+  {
+    "path": "symbolized",
+    "files": 3,
+    "bytes": 66592
+  },
+  {
+    "path": "scripts/analyze-profiles.py",
+    "files": 1,
+    "bytes": 3268
+  },
+  {
+    "path": "scripts/build-controls.py",
+    "files": 1,
+    "bytes": 2535
+  },
+  {
+    "path": "scripts/build-extra-controls.py",
+    "files": 1,
+    "bytes": 4420
+  },
+  {
+    "path": "scripts/build-fabs-controls.py",
+    "files": 1,
+    "bytes": 1652
+  },
+  {
+    "path": "scripts/measure-controls.py",
+    "files": 1,
+    "bytes": 2980
+  },
+  {
+    "path": "scripts/measure-fpmix-breakdown.py",
+    "files": 1,
+    "bytes": 2721
+  },
+  {
+    "path": "scripts/profile.py",
+    "files": 1,
+    "bytes": 2882
+  },
+  {
+    "path": "scripts/publish.py",
+    "files": 1,
+    "bytes": 7529
+  },
+  {
+    "path": "logs/all-scalar-vector-home-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/all-scalar-vector-home-object.log",
+    "files": 1,
+    "bytes": 76804
+  },
+  {
+    "path": "logs/all-scalar-vector-home-word-flags-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/all-scalar-vector-home-word-flags-no-checks-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/analysis.log",
+    "files": 1,
+    "bytes": 4217
+  },
+  {
+    "path": "logs/build-controls.log",
+    "files": 1,
+    "bytes": 37
+  },
+  {
+    "path": "logs/build-extra-controls.log",
+    "files": 1,
+    "bytes": 215
+  },
+  {
+    "path": "logs/build-fabs-controls.log",
+    "files": 1,
+    "bytes": 119
+  },
+  {
+    "path": "logs/control-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/control-object.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/full-native-flags-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/full-native-flags-object.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/measure-controls.log",
+    "files": 1,
+    "bytes": 1269
+  },
+  {
+    "path": "logs/measure-fpmix-breakdown.log",
+    "files": 1,
+    "bytes": 525
+  },
+  {
+    "path": "logs/no-result-checks-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/no-result-checks-object.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/profile.log",
+    "files": 1,
+    "bytes": 2129
+  },
+  {
+    "path": "logs/publish.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/scalar-vector-home-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/scalar-vector-home-no-checks-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/scalar-vector-home-object.log",
+    "files": 1,
+    "bytes": 76804
+  },
+  {
+    "path": "logs/word-flags-load-link.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "logs/word-flags-load-object.log",
+    "files": 1,
+    "bytes": 0
+  },
+  {
+    "path": "results/profile-summary.json",
+    "files": 1,
+    "bytes": 1109518
+  },
+  {
+    "path": "results/analysis.json",
+    "files": 1,
+    "bytes": 145441
+  },
+  {
+    "path": "results/controls-summary.json",
+    "files": 1,
+    "bytes": 962701
+  },
+  {
+    "path": "results/fpmix-breakdown-summary.json",
+    "files": 1,
+    "bytes": 442973
+  },
+  {
+    "path": "results/controls-build.json",
+    "files": 1,
+    "bytes": 6212
+  },
+  {
+    "path": "results/extra-controls-build.json",
+    "files": 1,
+    "bytes": 10627
+  },
+  {
+    "path": "results/fabs-controls-build.json",
+    "files": 1,
+    "bytes": 6798
+  },
+  {
+    "path": "results/fpmix-control-guests.json",
+    "files": 1,
+    "bytes": 3994
+  },
+  {
+    "path": "sources/control-emit-float.cpp",
+    "files": 1,
+    "bytes": 30205
+  },
+  {
+    "path": "sources/no-result-checks-emit-float.cpp",
+    "files": 1,
+    "bytes": 28818
+  },
+  {
+    "path": "sources/word-flags-load-emit-flags.cpp",
+    "files": 1,
+    "bytes": 25840
+  },
+  {
+    "path": "sources/full-native-flags-emit-flags.cpp",
+    "files": 1,
+    "bytes": 25684
+  },
+  {
+    "path": "sources/scalar-vector-write/semantics_registers.inc",
+    "files": 1,
+    "bytes": 10813
+  },
+  {
+    "path": "sources/scalar-vector-write/semantics_float.inc",
+    "files": 1,
+    "bytes": 16333
+  },
+  {
+    "path": "sources/diagnostic-full-nzcv.patch",
+    "files": 1,
+    "bytes": 590
+  },
+  {
+    "path": "sources/diagnostic-no-fp-result-checks.patch",
+    "files": 1,
+    "bytes": 1809
+  },
+  {
+    "path": "sources/flags-slot-width-prototype.patch",
+    "files": 1,
+    "bytes": 601
+  },
+  {
+    "path": "sources/scalar-vector-write-prototype.patch",
+    "files": 1,
+    "bytes": 1992
+  },
+  {
+    "path": "guests/compute-matrix-scalar",
+    "files": 1,
+    "bytes": 66928
+  },
+  {
+    "path": "guests/fpmix",
+    "files": 1,
+    "bytes": 66392
+  },
+  {
+    "path": "guests/cond",
+    "files": 1,
+    "bytes": 66408
+  },
+  {
+    "path": "guests/compute-matrix",
+    "files": 1,
+    "bytes": 67912
+  },
+  {
+    "path": "guests/matrix-fma",
+    "files": 1,
+    "bytes": 67832
+  },
+  {
+    "path": "guests/compute-fma",
+    "files": 1,
+    "bytes": 69944
+  },
+  {
+    "path": "guests/compute-sha",
+    "files": 1,
+    "bytes": 68848
+  },
+  {
+    "path": "guests/compute",
+    "files": 1,
+    "bytes": 70056
+  },
+  {
+    "path": "guests/fpmix-no-fabs",
+    "files": 1,
+    "bytes": 66392
+  },
+  {
+    "path": "guests/fpmix-no-compare",
+    "files": 1,
+    "bytes": 66392
+  },
+  {
+    "path": "guests/fpmix-no-fabs-no-compare",
+    "files": 1,
+    "bytes": 66392
+  },
+  {
+    "path": "results/summary.json",
+    "files": 1,
+    "bytes": 65806
+  }
+]

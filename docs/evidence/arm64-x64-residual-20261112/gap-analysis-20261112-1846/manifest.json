@@ -1,0 +1,115 @@
+{
+  "source_git_head": "af7671f6b5563e94a30ded7b3992163e8f9558bc",
+  "base_code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"045cbc5e2551348c2c212350f19a834302969b0afbf7c7cbb58613e281d50d42\"\n",
+  "archive": {
+    "path": "raw-evidence.tar.gz",
+    "sha256": "9badf911171559de0a6873440cedcb3a8d988fb58964be6a08408a88dce7ad27",
+    "bytes": 24622348,
+    "files": 8039
+  },
+  "files": {
+    "archive-index.json": {
+      "sha256": "bdd3328c43bb187afd98b4fff819e24fe7b256e66020b340b33e40e5d926e9b5",
+      "bytes": 5740
+    },
+    "diagnostic-full-nzcv.patch": {
+      "sha256": "f7eb082ff0a96711c245be4fb900a4ba48e643ac1aadffa8c78f3177a3401adf",
+      "bytes": 590
+    },
+    "diagnostic-no-fp-result-checks.patch": {
+      "sha256": "93a3fa16189130b2995f077dd00a5c249251b1075db9724fab0352f842839ae8",
+      "bytes": 1809
+    },
+    "flags-slot-width-prototype.patch": {
+      "sha256": "83402d87d2d71c3645384c252488f67efca749e633d3d6d944efc9e0f24341b9",
+      "bytes": 601
+    },
+    "raw-evidence.tar.gz": {
+      "sha256": "9badf911171559de0a6873440cedcb3a8d988fb58964be6a08408a88dce7ad27",
+      "bytes": 24622348
+    },
+    "scalar-vector-write-prototype.patch": {
+      "sha256": "543aa6599127a1b430b5860d6e8826e02b11db8e924b745020523422863068b4",
+      "bytes": 1992
+    },
+    "summary.json": {
+      "sha256": "ddeddf9dfcd8f3af94ce508a5d4a079e7e56834f5f34424ed74f5d510ff58e84",
+      "bytes": 65806
+    }
+  },
+  "runners": {
+    "profiling": {
+      "swiftvm": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final-pmu/swiftvm_gap_probe",
+        "sha256": "4934b9ddbdf51f7aabbc6962f164baaba52ab71c75f990322a8b3f74a1fffbed"
+      },
+      "dynarmic": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final-pmu/dynarmic_gap_probe",
+        "sha256": "e985cb0000332cf4d7d6e7d3505b060bc1178b1ec7614247722ea7d72401b390"
+      }
+    },
+    "diagnostic_controls": {
+      "control": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/control_probe",
+        "sha256": "c86f31dbf0651303bf90d804f0d7963b2f6471450867ee8a54ee3e3537042556"
+      },
+      "no-result-checks": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/no-result-checks_probe",
+        "sha256": "19e5ff00d1c9b4ee556df8abf345b4b485ac63f0f976e09c63b8cb1592b20541"
+      },
+      "full-native-flags": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/full-native-flags_probe",
+        "sha256": "7ebf297acc4a1a1dff507aaf12578d7364f97f701d347e6ada2892e460b9090f"
+      },
+      "word-flags-load": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/word-flags-load_probe",
+        "sha256": "9fd9db5da4b13c571efe3928b95fe8519b4e58b526a368aaab339b12207d3d9d"
+      },
+      "scalar-vector-home": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/scalar-vector-home_probe",
+        "sha256": "9614874ffd1073a4309d5597696cf647a57f9e7459198af3147499a307d9b9a8"
+      },
+      "scalar-vector-home-no-checks": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/scalar-vector-home-no-checks_probe",
+        "sha256": "d8b867cabe733fed485bd10486bfc8e58e562e13bdcb8cbfd6d2c86b60a4a005"
+      },
+      "dynarmic": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final-pmu/dynarmic_gap_probe",
+        "sha256": "e985cb0000332cf4d7d6e7d3505b060bc1178b1ec7614247722ea7d72401b390"
+      }
+    },
+    "fpmix_breakdown": {
+      "control": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/control_probe",
+        "sha256": "c86f31dbf0651303bf90d804f0d7963b2f6471450867ee8a54ee3e3537042556"
+      },
+      "word-flags-load": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/word-flags-load_probe",
+        "sha256": "9fd9db5da4b13c571efe3928b95fe8519b4e58b526a368aaab339b12207d3d9d"
+      },
+      "all-scalar-vector-home": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/all-scalar-vector-home_probe",
+        "sha256": "ed60f013f18c9210eff5d3283b14866b379a7e05a226152d29c3869d0e6a000a"
+      },
+      "all-scalar-vector-home-word-flags": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/all-scalar-vector-home-word-flags_probe",
+        "sha256": "37f2df960d6d1ff2ac5289bf4b1651248dc2004287767bea0349abc3bb63130c"
+      },
+      "all-scalar-vector-home-word-flags-no-checks": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-gap-analysis-20261112-1846/all-scalar-vector-home-word-flags-no-checks_probe",
+        "sha256": "7838dc3748335aa797f36beec348f4fd79758f673dccc1514db6412476558dc1"
+      },
+      "dynarmic": {
+        "path": "/home/proton/.cache/SwiftVM/arm64-x64-residual-impl-20261112/final-pmu/dynarmic_gap_probe",
+        "sha256": "e985cb0000332cf4d7d6e7d3505b060bc1178b1ec7614247722ea7d72401b390"
+      }
+    }
+  },
+  "semantic_scope": {
+    "scalar_vector_write": "isolated scalar write prototype, benchmark outputs checked",
+    "flags_slot_width": "isolated 16-bit image load prototype, benchmark outputs checked",
+    "no_result_checks": "NaN and MinNormal fallback checks removed, floating-point boundary semantics relaxed",
+    "full_native_flags": "partial NZCV preservation contract relaxed",
+    "guest_elisions": "fixed-input FABS and comparison/branch elisions, benchmark outputs checked with QEMU"
+  }
+}

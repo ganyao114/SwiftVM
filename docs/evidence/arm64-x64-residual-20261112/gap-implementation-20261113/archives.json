@@ -1,0 +1,30 @@
+[
+  {
+    "name": "validation-raw.tar.gz",
+    "bytes": 26392574,
+    "sha256": "fda7faf20c933581e608a31dd86ca39ac372ef2943f46beaa2dc819e05b24347",
+    "files": 97737,
+    "uncompressed_bytes": 1280042462
+  },
+  {
+    "name": "benchmark-raw.tar.gz",
+    "bytes": 33003543,
+    "sha256": "1aacbdfeb8bb36d05e15de46280fa8318d58b0a36194fd65c560fc7e570c696a",
+    "files": 25354,
+    "uncompressed_bytes": 201073158
+  },
+  {
+    "name": "tools-build-and-checkpoints.tar.gz",
+    "bytes": 38249164,
+    "sha256": "50ce7539b61e06c5df54add2aea027a64892a55b3a275b6dc4340445ff188609",
+    "files": 798,
+    "uncompressed_bytes": 121248283
+  },
+  {
+    "name": "numeric-scaling-raw.tar.gz",
+    "bytes": 625686,
+    "sha256": "bfbbd0278d352eaca5a9d62bf113d15187a15cab887b957fad6fcf4b6ab0082e",
+    "files": 30,
+    "uncompressed_bytes": 1461339
+  }
+]

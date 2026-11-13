@@ -1,0 +1,2112 @@
+{
+  "reference_benchmark": {
+    "local_date": "2026-11-12",
+    "started_local": "2026-11-12T18:02:01.410251-08:00",
+    "scope": "SwiftVM Function/pin0, Dynarmic normal block linking",
+    "cpu": 2,
+    "samples_per_engine": 31,
+    "build_reused_after_filesystem_error": true,
+    "code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"045cbc5e2551348c2c212350f19a834302969b0afbf7c7cbb58613e281d50d42\"\n",
+    "dynarmic_commit": "9d4582339990d4eae53f1dc7160686920fc2075c",
+    "rows": [
+      {
+        "workload": "integer",
+        "swiftvm_ms": 7.811136,
+        "dynarmic_ms": 13.390382,
+        "ratio_of_medians": 0.5833392953240617,
+        "paired_ratio": {
+          "median": 0.5999504675935107,
+          "q1": 0.5896279909882364,
+          "q3": 0.6073890824408394,
+          "min": 0.464407674704111,
+          "max": 0.6700134740903385
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "memory",
+        "swiftvm_ms": 12.726803,
+        "dynarmic_ms": 15.429882,
+        "ratio_of_medians": 0.8248153161508299,
+        "paired_ratio": {
+          "median": 0.8356388517206564,
+          "q1": 0.8260066664710142,
+          "q3": 0.8450317362961188,
+          "min": 0.791241722912456,
+          "max": 0.8728059611413302
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "shift",
+        "swiftvm_ms": 10.715454,
+        "dynarmic_ms": 16.046829,
+        "ratio_of_medians": 0.6677614624048153,
+        "paired_ratio": {
+          "median": 0.66933658175959,
+          "q1": 0.6634352547548507,
+          "q3": 0.6749627321743474,
+          "min": 0.6019722834659684,
+          "max": 0.7208422036953643
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "fp",
+        "swiftvm_ms": 2.694716,
+        "dynarmic_ms": 4.115316,
+        "ratio_of_medians": 0.6548017211800989,
+        "paired_ratio": {
+          "median": 0.6546571918355669,
+          "q1": 0.6480040803288016,
+          "q3": 0.662326375868806,
+          "min": 0.6372476911739492,
+          "max": 0.6866348667298332
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "compute",
+        "swiftvm_ms": 4.740186,
+        "dynarmic_ms": 4.113941,
+        "ratio_of_medians": 1.1522250805249759,
+        "paired_ratio": {
+          "median": 1.1557473300954009,
+          "q1": 1.1428182623282768,
+          "q3": 1.1725641926249917,
+          "min": 0.9372426019692295,
+          "max": 1.2025634283437512
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "fp-u8",
+        "swiftvm_ms": 1.193786,
+        "dynarmic_ms": 2.415103,
+        "ratio_of_medians": 0.494300243095222,
+        "paired_ratio": {
+          "median": 0.49661681933607316,
+          "q1": 0.49283527424043805,
+          "q3": 0.5016362689296467,
+          "min": 0.4715175463490735,
+          "max": 0.5260846170313535
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "compute-matrix",
+        "swiftvm_ms": 0.197564,
+        "dynarmic_ms": 0.115372,
+        "ratio_of_medians": 1.7124085566688625,
+        "paired_ratio": {
+          "median": 1.7267271041840149,
+          "q1": 1.7053053304906425,
+          "q3": 1.7499746283846678,
+          "min": 1.0262253754839807,
+          "max": 1.8649764732980159
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "compute-matrix-scalar",
+        "swiftvm_ms": 1.619889,
+        "dynarmic_ms": 0.426247,
+        "ratio_of_medians": 3.800352847058161,
+        "paired_ratio": {
+          "median": 3.799597034820264,
+          "q1": 3.7105392430712762,
+          "q3": 3.840928263578748,
+          "min": 3.510469536224421,
+          "max": 4.014993309105084
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "compute-sha",
+        "swiftvm_ms": 3.243051,
+        "dynarmic_ms": 2.881083,
+        "ratio_of_medians": 1.1256360889290589,
+        "paired_ratio": {
+          "median": 1.1248145039237225,
+          "q1": 1.103716198948411,
+          "q3": 1.1500300655849505,
+          "min": 1.0815758732096628,
+          "max": 1.167748997122662
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "compute-sort",
+        "swiftvm_ms": 0.419216,
+        "dynarmic_ms": 0.587819,
+        "ratio_of_medians": 0.7131719117619539,
+        "paired_ratio": {
+          "median": 0.7133662807836059,
+          "q1": 0.6985513368594284,
+          "q3": 0.7268347284061436,
+          "min": 0.6528797176268458,
+          "max": 0.7553629918321655
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "cond",
+        "swiftvm_ms": 64.969231,
+        "dynarmic_ms": 35.845116,
+        "ratio_of_medians": 1.8124988352667069,
+        "paired_ratio": {
+          "median": 1.819779593822363,
+          "q1": 1.8107172353488694,
+          "q3": 1.8331057601358192,
+          "min": 1.7598153536497922,
+          "max": 1.9335714593790703
+        },
+        "warm_repeats_per_process": 9
+      },
+      {
+        "workload": "cmpsep",
+        "swiftvm_ms": 21.823246,
+        "dynarmic_ms": 25.054435,
+        "ratio_of_medians": 0.8710332521966669,
+        "paired_ratio": {
+          "median": 0.8706206866605234,
+          "q1": 0.8560180680198461,
+          "q3": 0.8869015821861936,
+          "min": 0.7893285026014766,
+          "max": 0.9157502373241555
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "fpmix",
+        "swiftvm_ms": 21.317632,
+        "dynarmic_ms": 6.928814,
+        "ratio_of_medians": 3.076663913910808,
+        "paired_ratio": {
+          "median": 2.972666387628458,
+          "q1": 2.937695161741088,
+          "q3": 3.004618463239933,
+          "min": 2.8710189500398773,
+          "max": 3.2478097777593633
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "compute-fma",
+        "swiftvm_ms": 4.444108,
+        "dynarmic_ms": 3.837374,
+        "ratio_of_medians": 1.1581117712268858,
+        "paired_ratio": {
+          "median": 1.1622768860725294,
+          "q1": 1.145332668012239,
+          "q3": 1.17422902639283,
+          "min": 1.0637488173147296,
+          "max": 1.248422310169748
+        },
+        "warm_repeats_per_process": 3
+      },
+      {
+        "workload": "matrix-fma",
+        "swiftvm_ms": 0.192664,
+        "dynarmic_ms": 0.116418,
+        "ratio_of_medians": 1.6549330859489082,
+        "paired_ratio": {
+          "median": 1.6511562040327812,
+          "q1": 1.639836170548809,
+          "q3": 1.665912362044779,
+          "min": 0.8927597378136066,
+          "max": 1.8301660038042538
+        },
+        "warm_repeats_per_process": 3
+      }
+    ],
+    "swiftvm_faster_workloads": [
+      "integer",
+      "memory",
+      "shift",
+      "fp",
+      "fp-u8",
+      "compute-sort",
+      "cmpsep"
+    ],
+    "confirmation_note": "cond uses the additional 31-process run with 9 warm calls per process. The initial 31-process run with 3 warm calls is retained in summary.json."
+  },
+  "base_git_head": "af7671f6b5563e94a30ded7b3992163e8f9558bc",
+  "base_code_build_id": "#pragma once\n#define SVM_CODE_BUILD_ID \"045cbc5e2551348c2c212350f19a834302969b0afbf7c7cbb58613e281d50d42\"\n",
+  "protocol": {
+    "affinity": [
+      2
+    ],
+    "pmu_processes_per_engine": 7,
+    "pmu_warm_repeats": 3,
+    "sample_period_ns": 250000,
+    "sampler_lost": 0,
+    "small_matrix_sampling_processes_per_engine": 64,
+    "other_sampling_processes_per_engine": 3,
+    "sampling_warm_repeats": 100,
+    "diagnostic_pairs_per_case": 15,
+    "diagnostic_warm_repeats": 5,
+    "attribution": "CPU-clock samples attributed to preceding decoded instruction as an approximation, checker shares overlap instruction classes",
+    "build": "validated libraries plus isolated Git header snapshots for inaccessible dependency paths"
+  },
+  "pmu": {
+    "compute-matrix-scalar": {
+      "medians": {
+        "swiftvm": {
+          "instructions": 11600152,
+          "cycles": 7272930,
+          "branches": 602902,
+          "branch_misses": 1456
+        },
+        "dynarmic": {
+          "instructions": 6765378,
+          "cycles": 1934595,
+          "branches": 585439,
+          "branch_misses": 56
+        }
+      },
+      "ratios": {
+        "instructions": 1.714634718119224,
+        "cycles": 3.7594070076682717,
+        "branches": 1.0298288976306669
+      },
+      "cpi": {
+        "swiftvm": 0.6269685086885068,
+        "dynarmic": 0.28595519718188694
+      }
+    },
+    "fpmix": {
+      "medians": {
+        "swiftvm": {
+          "instructions": 210005683,
+          "cycles": 95891748,
+          "branches": 8001504,
+          "branch_misses": 307
+        },
+        "dynarmic": {
+          "instructions": 82000591,
+          "cycles": 32442891,
+          "branches": 8000125,
+          "branch_misses": 81
+        }
+      },
+      "ratios": {
+        "instructions": 2.5610264565044414,
+        "cycles": 2.9557090950988307,
+        "branches": 1.0001723723066827
+      },
+      "cpi": {
+        "swiftvm": 0.45661501455653464,
+        "dynarmic": 0.39564216067662245
+      }
+    },
+    "cond": {
+      "medians": {
+        "swiftvm": {
+          "instructions": 1176005697,
+          "cycles": 305956642,
+          "branches": 120001545,
+          "branch_misses": 836
+        },
+        "dynarmic": {
+          "instructions": 888000624,
+          "cycles": 167876426,
+          "branches": 120000154,
+          "branch_misses": 1067
+        }
+      },
+      "ratios": {
+        "instructions": 1.3243298092547287,
+        "cycles": 1.8225110534578572,
+        "branches": 1.0000115916517907
+      },
+      "cpi": {
+        "swiftvm": 0.26016595224028066,
+        "dynarmic": 0.1890498964334061
+      }
+    },
+    "compute-matrix": {
+      "medians": {
+        "swiftvm": {
+          "instructions": 5023581,
+          "cycles": 947291,
+          "branches": 274421,
+          "branch_misses": 577
+        },
+        "dynarmic": {
+          "instructions": 2639152,
+          "cycles": 551574,
+          "branches": 265374,
+          "branch_misses": 28
+        }
+      },
+      "ratios": {
+        "instructions": 1.9034830127252997,
+        "cycles": 1.7174322937629403,
+        "branches": 1.0340915085878797
+      },
+      "cpi": {
+        "swiftvm": 0.18856887148828694,
+        "dynarmic": 0.20899667772072242
+      }
+    },
+    "matrix-fma": {
+      "medians": {
+        "swiftvm": {
+          "instructions": 4275567,
+          "cycles": 885969,
+          "branches": 146421,
+          "branch_misses": 131
+        },
+        "dynarmic": {
+          "instructions": 2183105,
+          "cycles": 537132,
+          "branches": 137374,
+          "branch_misses": 16
+        }
+      },
+      "ratios": {
+        "instructions": 1.9584797799464524,
+        "cycles": 1.6494437121601393,
+        "branches": 1.0658567123327558
+      },
+      "cpi": {
+        "swiftvm": 0.20721672704462354,
+        "dynarmic": 0.24604038742983045
+      }
+    },
+    "compute-fma": {
+      "medians": {
+        "swiftvm": {
+          "instructions": 107370514,
+          "cycles": 21325970,
+          "branches": 4786024,
+          "branch_misses": 2866
+        },
+        "dynarmic": {
+          "instructions": 81223799,
+          "cycles": 18583395,
+          "branches": 3854442,
+          "branch_misses": 3246
+        }
+      },
+      "ratios": {
+        "instructions": 1.3219095304813309,
+        "cycles": 1.1475820214767,
+        "branches": 1.2416904963156794
+      },
+      "cpi": {
+        "swiftvm": 0.19862035865824393,
+        "dynarmic": 0.2287924872856538
+      }
+    },
+    "compute-sha": {
+      "medians": {
+        "swiftvm": {
+          "instructions": 84843722,
+          "cycles": 15841160,
+          "branches": 2593241,
+          "branch_misses": 2330
+        },
+        "dynarmic": {
+          "instructions": 61231003,
+          "cycles": 13919187,
+          "branches": 2264272,
+          "branch_misses": 1956
+        }
+      },
+      "ratios": {
+        "instructions": 1.3856333857539456,
+        "cycles": 1.1380808376236342,
+        "branches": 1.1452868736618216
+      },
+      "cpi": {
+        "swiftvm": 0.18670986640590803,
+        "dynarmic": 0.22732253789799917
+      }
+    },
+    "compute": {
+      "medians": {
+        "swiftvm": {
+          "instructions": 108150522,
+          "cycles": 21202325,
+          "branches": 4914025,
+          "branch_misses": 3293
+        },
+        "dynarmic": {
+          "instructions": 81727830,
+          "cycles": 18287802,
+          "branches": 3982442,
+          "branch_misses": 3083
+        }
+      },
+      "ratios": {
+        "instructions": 1.3233010346659149,
+        "cycles": 1.159369781015783,
+        "branches": 1.233922553046598
+      },
+      "cpi": {
+        "swiftvm": 0.1960445923691427,
+        "dynarmic": 0.22376468333981214
+      }
+    }
+  },
+  "instruction_classes": {
+    "compute-matrix-scalar": {
+      "swiftvm": {
+        "samples": 1841,
+        "counts": {
+          "outside generated code": 10,
+          "guest state memory": 787,
+          "other register op": 218,
+          "gpr move": 26,
+          "xmm move": 207,
+          "fp arithmetic": 200,
+          "branch": 356,
+          "other memory": 37
+        },
+        "percent": {
+          "outside generated code": 0.5431830526887561,
+          "guest state memory": 42.7485062466051,
+          "other register op": 11.841390548614884,
+          "gpr move": 1.4122759369907658,
+          "xmm move": 11.243889190657251,
+          "fp arithmetic": 10.863661053775122,
+          "branch": 19.337316675719716,
+          "other memory": 2.0097772949483974
+        },
+        "swiftvm_result_check_percent": 33.840304182509506
+      },
+      "dynarmic": {
+        "samples": 479,
+        "counts": {
+          "guest state memory": 29,
+          "xmm move": 114,
+          "fp arithmetic": 95,
+          "other register op": 106,
+          "branch": 122,
+          "other memory": 5,
+          "gpr move": 3,
+          "flags transfer": 3,
+          "outside generated code": 2
+        },
+        "percent": {
+          "guest state memory": 6.054279749478079,
+          "xmm move": 23.799582463465555,
+          "fp arithmetic": 19.832985386221296,
+          "other register op": 22.129436325678498,
+          "branch": 25.46972860125261,
+          "other memory": 1.0438413361169103,
+          "gpr move": 0.6263048016701461,
+          "flags transfer": 0.6263048016701461,
+          "outside generated code": 0.4175365344467641
+        },
+        "swiftvm_result_check_percent": 0.0
+      }
+    },
+    "fpmix": {
+      "swiftvm": {
+        "samples": 22970,
+        "counts": {
+          "outside generated code": 17,
+          "gpr move": 2462,
+          "frame memory": 4417,
+          "other register op": 7930,
+          "xmm move": 1977,
+          "guest state memory": 5141,
+          "branch": 961,
+          "fp arithmetic": 35,
+          "other memory": 29,
+          "flags transfer": 1
+        },
+        "percent": {
+          "outside generated code": 0.07400957771005659,
+          "gpr move": 10.718328254244668,
+          "frame memory": 19.229429690901174,
+          "other register op": 34.52329124945581,
+          "xmm move": 8.606878537222464,
+          "guest state memory": 22.38136700043535,
+          "branch": 4.183717892903788,
+          "fp arithmetic": 0.15237265999129299,
+          "other memory": 0.1262516325642142,
+          "flags transfer": 0.0043535045711798
+        },
+        "swiftvm_result_check_percent": 13.565520243796255
+      },
+      "dynarmic": {
+        "samples": 8065,
+        "counts": {
+          "other memory": 692,
+          "guest state memory": 496,
+          "other register op": 1985,
+          "gpr move": 196,
+          "flags transfer": 209,
+          "branch": 2367,
+          "xmm move": 1166,
+          "fp arithmetic": 946,
+          "outside generated code": 2,
+          "frame memory": 6
+        },
+        "percent": {
+          "other memory": 8.580285182889027,
+          "guest state memory": 6.150030998140112,
+          "other register op": 24.612523248605083,
+          "gpr move": 2.430254184748915,
+          "flags transfer": 2.5914445133292,
+          "branch": 29.34903905765654,
+          "xmm move": 14.457532548047118,
+          "fp arithmetic": 11.729696218226906,
+          "outside generated code": 0.024798512089274645,
+          "frame memory": 0.07439553626782393
+        },
+        "swiftvm_result_check_percent": 0.0
+      }
+    },
+    "cond": {
+      "swiftvm": {
+        "samples": 88533,
+        "counts": {
+          "outside generated code": 17,
+          "branch": 3401,
+          "guest state memory": 5119,
+          "other register op": 22148,
+          "gpr move": 12679,
+          "frame memory": 26448,
+          "flags transfer": 18721
+        },
+        "percent": {
+          "outside generated code": 0.019201879525148815,
+          "branch": 3.8415054273547717,
+          "guest state memory": 5.7820247817198105,
+          "other register op": 25.01666045429388,
+          "gpr move": 14.32121355878599,
+          "frame memory": 29.87360645183152,
+          "flags transfer": 21.145787446488878
+        },
+        "swiftvm_result_check_percent": 0.0
+      },
+      "dynarmic": {
+        "samples": 58776,
+        "counts": {
+          "outside generated code": 16,
+          "other memory": 860,
+          "guest state memory": 19761,
+          "gpr move": 1073,
+          "other register op": 5452,
+          "frame memory": 20947,
+          "branch": 7948,
+          "flags transfer": 2719
+        },
+        "percent": {
+          "outside generated code": 0.027221995372260787,
+          "other memory": 1.4631822512590174,
+          "guest state memory": 33.62086565945284,
+          "gpr move": 1.825575064652239,
+          "other register op": 9.275894923097862,
+          "frame memory": 35.638696066421666,
+          "branch": 13.522526201170546,
+          "flags transfer": 4.626037838573567
+        },
+        "swiftvm_result_check_percent": 0.0
+      }
+    },
+    "compute-matrix": {
+      "swiftvm": {
+        "samples": 5098,
+        "counts": {
+          "guest state memory": 1085,
+          "mxcsr": 10,
+          "branch": 894,
+          "xmm move": 724,
+          "gpr move": 72,
+          "other memory": 613,
+          "fp arithmetic": 384,
+          "other register op": 1144,
+          "outside generated code": 167,
+          "flags transfer": 5
+        },
+        "percent": {
+          "guest state memory": 21.2828560219694,
+          "mxcsr": 0.19615535504119264,
+          "branch": 17.536288740682622,
+          "xmm move": 14.201647704982346,
+          "gpr move": 1.412318556296587,
+          "other memory": 12.024323264025108,
+          "fp arithmetic": 7.532365633581797,
+          "other register op": 22.440172616712438,
+          "outside generated code": 3.2757944291879166,
+          "flags transfer": 0.09807767752059632
+        },
+        "swiftvm_result_check_percent": 50.627697136131815
+      },
+      "dynarmic": {
+        "samples": 3138,
+        "counts": {
+          "guest state memory": 196,
+          "frame memory": 454,
+          "other memory": 148,
+          "other register op": 976,
+          "branch": 854,
+          "xmm move": 233,
+          "fp arithmetic": 245,
+          "outside generated code": 28,
+          "flags transfer": 2,
+          "gpr move": 2
+        },
+        "percent": {
+          "guest state memory": 6.246016571064372,
+          "frame memory": 14.467813894200127,
+          "other memory": 4.716379859783301,
+          "other register op": 31.102613129381773,
+          "branch": 27.21478648820905,
+          "xmm move": 7.425111536010197,
+          "fp arithmetic": 7.807520713830465,
+          "outside generated code": 0.8922880815806246,
+          "flags transfer": 0.06373486297004462,
+          "gpr move": 0.06373486297004462
+        },
+        "swiftvm_result_check_percent": 0.0
+      }
+    },
+    "matrix-fma": {
+      "swiftvm": {
+        "samples": 4340,
+        "counts": {
+          "guest state memory": 1142,
+          "gpr move": 398,
+          "other memory": 304,
+          "other register op": 1184,
+          "branch": 549,
+          "frame memory": 383,
+          "xmm move": 219,
+          "outside generated code": 156,
+          "flags transfer": 3,
+          "mxcsr": 1,
+          "fp arithmetic": 1
+        },
+        "percent": {
+          "guest state memory": 26.31336405529954,
+          "gpr move": 9.170506912442397,
+          "other memory": 7.0046082949308754,
+          "other register op": 27.28110599078341,
+          "branch": 12.649769585253456,
+          "frame memory": 8.824884792626728,
+          "xmm move": 5.046082949308755,
+          "outside generated code": 3.5944700460829493,
+          "flags transfer": 0.06912442396313365,
+          "mxcsr": 0.02304147465437788,
+          "fp arithmetic": 0.02304147465437788
+        },
+        "swiftvm_result_check_percent": 33.824884792626726
+      },
+      "dynarmic": {
+        "samples": 3065,
+        "counts": {
+          "other register op": 1308,
+          "xmm move": 165,
+          "frame memory": 669,
+          "branch": 656,
+          "guest state memory": 128,
+          "other memory": 93,
+          "outside generated code": 31,
+          "flags transfer": 9,
+          "gpr move": 4,
+          "fp arithmetic": 2
+        },
+        "percent": {
+          "other register op": 42.67536704730832,
+          "xmm move": 5.383360522022839,
+          "frame memory": 21.827079934747147,
+          "branch": 21.402936378466556,
+          "guest state memory": 4.176182707993474,
+          "other memory": 3.034257748776509,
+          "outside generated code": 1.0114192495921697,
+          "flags transfer": 0.2936378466557912,
+          "gpr move": 0.13050570962479607,
+          "fp arithmetic": 0.06525285481239804
+        },
+        "swiftvm_result_check_percent": 0.0
+      }
+    },
+    "compute-fma": {
+      "swiftvm": {
+        "samples": 5502,
+        "counts": {
+          "outside generated code": 33,
+          "guest state memory": 2196,
+          "gpr move": 615,
+          "other memory": 764,
+          "other register op": 681,
+          "frame memory": 885,
+          "branch": 180,
+          "flags transfer": 130,
+          "xmm move": 18
+        },
+        "percent": {
+          "outside generated code": 0.5997818974918212,
+          "guest state memory": 39.91275899672846,
+          "gpr move": 11.177753544165759,
+          "other memory": 13.885859687386406,
+          "other register op": 12.3773173391494,
+          "frame memory": 16.08505997818975,
+          "branch": 3.271537622682661,
+          "flags transfer": 2.3627771719374775,
+          "xmm move": 0.3271537622682661
+        },
+        "swiftvm_result_check_percent": 1.272264631043257
+      },
+      "dynarmic": {
+        "samples": 4845,
+        "counts": {
+          "outside generated code": 67,
+          "guest state memory": 855,
+          "other register op": 806,
+          "frame memory": 1214,
+          "other memory": 1157,
+          "gpr move": 200,
+          "flags transfer": 335,
+          "branch": 193,
+          "xmm move": 18
+        },
+        "percent": {
+          "outside generated code": 1.3828689370485037,
+          "guest state memory": 17.647058823529413,
+          "other register op": 16.635706914344684,
+          "frame memory": 25.056759545923633,
+          "other memory": 23.88028895768834,
+          "gpr move": 4.12796697626419,
+          "flags transfer": 6.914344685242518,
+          "branch": 3.9834881320949433,
+          "xmm move": 0.3715170278637771
+        },
+        "swiftvm_result_check_percent": 0.0
+      }
+    },
+    "compute-sha": {
+      "swiftvm": {
+        "samples": 4085,
+        "counts": {
+          "guest state memory": 1694,
+          "branch": 96,
+          "gpr move": 784,
+          "other memory": 645,
+          "other register op": 579,
+          "flags transfer": 65,
+          "frame memory": 214,
+          "outside generated code": 7,
+          "xmm move": 1
+        },
+        "percent": {
+          "guest state memory": 41.468788249694,
+          "branch": 2.350061199510404,
+          "gpr move": 19.1921664626683,
+          "other memory": 15.789473684210526,
+          "other register op": 14.173806609547123,
+          "flags transfer": 1.591187270501836,
+          "frame memory": 5.2386780905752754,
+          "outside generated code": 0.17135862913096694,
+          "xmm move": 0.02447980416156671
+        },
+        "swiftvm_result_check_percent": 0.0
+      },
+      "dynarmic": {
+        "samples": 3669,
+        "counts": {
+          "outside generated code": 10,
+          "frame memory": 985,
+          "guest state memory": 669,
+          "other memory": 908,
+          "other register op": 703,
+          "gpr move": 111,
+          "flags transfer": 134,
+          "branch": 138,
+          "xmm move": 11
+        },
+        "percent": {
+          "outside generated code": 0.2725538293813028,
+          "frame memory": 26.846552194058326,
+          "guest state memory": 18.233851185609158,
+          "other memory": 24.747887707822294,
+          "other register op": 19.160534205505588,
+          "gpr move": 3.0253475061324613,
+          "flags transfer": 3.6522213137094575,
+          "branch": 3.761242845461979,
+          "xmm move": 0.2998092123194331
+        },
+        "swiftvm_result_check_percent": 0.0
+      }
+    },
+    "compute": {
+      "swiftvm": {
+        "samples": 5590,
+        "counts": {
+          "outside generated code": 33,
+          "gpr move": 687,
+          "guest state memory": 2113,
+          "other memory": 873,
+          "other register op": 737,
+          "branch": 181,
+          "flags transfer": 147,
+          "frame memory": 756,
+          "xmm move": 52,
+          "fp arithmetic": 11
+        },
+        "percent": {
+          "outside generated code": 0.590339892665474,
+          "gpr move": 12.289803220035779,
+          "guest state memory": 37.799642218246866,
+          "other memory": 15.61717352415027,
+          "other register op": 13.184257602862255,
+          "branch": 3.2379248658318427,
+          "flags transfer": 2.629695885509839,
+          "frame memory": 13.524150268336316,
+          "xmm move": 0.9302325581395349,
+          "fp arithmetic": 0.1967799642218247
+        },
+        "swiftvm_result_check_percent": 2.2540250447227193
+      },
+      "dynarmic": {
+        "samples": 4731,
+        "counts": {
+          "outside generated code": 64,
+          "guest state memory": 799,
+          "other memory": 1160,
+          "other register op": 819,
+          "frame memory": 1167,
+          "flags transfer": 314,
+          "branch": 177,
+          "xmm move": 31,
+          "gpr move": 187,
+          "fp arithmetic": 13
+        },
+        "percent": {
+          "outside generated code": 1.3527795392094695,
+          "guest state memory": 16.88860705981822,
+          "other memory": 24.519129148171633,
+          "other register op": 17.31135066582118,
+          "frame memory": 24.66708941027267,
+          "flags transfer": 6.637074614246459,
+          "branch": 3.741280913126189,
+          "xmm move": 0.6552525893045867,
+          "gpr move": 3.9526527161276688,
+          "fp arithmetic": 0.2747833439019235
+        },
+        "swiftvm_result_check_percent": 0.0
+      }
+    }
+  },
+  "symbolized": {
+    "compute-matrix-scalar": {
+      "swiftvm": {
+        "samples": 1841,
+        "lost": 0,
+        "category_counts": {
+          "numeric_helper_and_softfloat": 2,
+          "generated_guest_code": 1831,
+          "shared_library_or_kernel_helper": 7,
+          "native_dispatch_and_entry": 1
+        },
+        "category_percent": {
+          "numeric_helper_and_softfloat": 0.10863661053775123,
+          "generated_guest_code": 99.45681694731124,
+          "shared_library_or_kernel_helper": 0.38022813688212925,
+          "native_dispatch_and_entry": 0.054318305268875614
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.45681694731124
+        },
+        "top_functions": [
+          {
+            "symbol": "swift::runtime::arm64::ExecuteScalarFP(unsigned long, unsigned long, unsigned long)",
+            "samples": 1,
+            "percent": 0.054318305268875614
+          },
+          {
+            "symbol": "f128_to_f64",
+            "samples": 1,
+            "percent": 0.054318305268875614
+          },
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 1,
+            "percent": 0.054318305268875614
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 479,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 477,
+          "shared_library_or_kernel_helper": 2
+        },
+        "category_percent": {
+          "generated_guest_code": 99.58246346555323,
+          "shared_library_or_kernel_helper": 0.4175365344467641
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": []
+      }
+    },
+    "fpmix": {
+      "swiftvm": {
+        "samples": 22970,
+        "lost": 0,
+        "category_counts": {
+          "native_dispatch_and_entry": 3,
+          "generated_guest_code": 22953,
+          "shared_library_or_kernel_helper": 10,
+          "other_executable_code": 4
+        },
+        "category_percent": {
+          "native_dispatch_and_entry": 0.013060513713539399,
+          "generated_guest_code": 99.92599042228994,
+          "shared_library_or_kernel_helper": 0.043535045711798,
+          "other_executable_code": 0.0174140182847192
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.92599042228994
+        },
+        "top_functions": [
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 3,
+            "percent": 0.013060513713539399
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::DeliverPending()",
+            "samples": 2,
+            "percent": 0.0087070091423596
+          },
+          {
+            "symbol": "main",
+            "samples": 1,
+            "percent": 0.0043535045711798
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::ResolveBridge(void*, swift::runtime::execution::NativeRunContext*)",
+            "samples": 1,
+            "percent": 0.0043535045711798
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 8065,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 8063,
+          "shared_library_or_kernel_helper": 1,
+          "jit_prelude_or_trampoline": 1
+        },
+        "category_percent": {
+          "generated_guest_code": 99.97520148791072,
+          "shared_library_or_kernel_helper": 0.012399256044637322,
+          "jit_prelude_or_trampoline": 0.012399256044637322
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": []
+      }
+    },
+    "cond": {
+      "swiftvm": {
+        "samples": 88533,
+        "lost": 0,
+        "category_counts": {
+          "other_executable_code": 7,
+          "native_dispatch_and_entry": 2,
+          "generated_guest_code": 88516,
+          "shared_library_or_kernel_helper": 8
+        },
+        "category_percent": {
+          "other_executable_code": 0.007906656275061277,
+          "native_dispatch_and_entry": 0.0022590446500175077,
+          "generated_guest_code": 99.98079812047484,
+          "shared_library_or_kernel_helper": 0.00903617860007003
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.98079812047484
+        },
+        "top_functions": [
+          {
+            "symbol": "swift::runtime::execution::VM::DeliverPending()",
+            "samples": 2,
+            "percent": 0.0022590446500175077
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::ResolveBridge(void*, swift::runtime::execution::NativeRunContext*)",
+            "samples": 2,
+            "percent": 0.0022590446500175077
+          },
+          {
+            "symbol": "swift::runtime::execution::FaultScope::~FaultScope()",
+            "samples": 2,
+            "percent": 0.0022590446500175077
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::RefreshNative(swift::runtime::execution::NativeRunContext&)",
+            "samples": 1,
+            "percent": 0.0011295223250087538
+          },
+          {
+            "symbol": "SvmRunNative",
+            "samples": 1,
+            "percent": 0.0011295223250087538
+          },
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 1,
+            "percent": 0.0011295223250087538
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 58776,
+        "lost": 0,
+        "category_counts": {
+          "other_executable_code": 3,
+          "jit_prelude_or_trampoline": 1,
+          "generated_guest_code": 58760,
+          "shared_library_or_kernel_helper": 12
+        },
+        "category_percent": {
+          "other_executable_code": 0.005104124132298897,
+          "jit_prelude_or_trampoline": 0.0017013747107662992,
+          "generated_guest_code": 99.97277800462774,
+          "shared_library_or_kernel_helper": 0.02041649652919559
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": [
+          {
+            "symbol": "(anonymous namespace)::Engine::ExceptionRaised(unsigned long, Dynarmic::A64::Exception)",
+            "samples": 3,
+            "percent": 0.005104124132298897
+          }
+        ]
+      }
+    },
+    "compute-matrix": {
+      "swiftvm": {
+        "samples": 5098,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 4931,
+          "shared_library_or_kernel_helper": 102,
+          "numeric_helper_and_softfloat": 41,
+          "other_executable_code": 23,
+          "native_dispatch_and_entry": 1
+        },
+        "category_percent": {
+          "generated_guest_code": 96.72420557081209,
+          "shared_library_or_kernel_helper": 2.0007846214201646,
+          "numeric_helper_and_softfloat": 0.8042369556688898,
+          "other_executable_code": 0.45115731659474306,
+          "native_dispatch_and_entry": 0.019615535504119264
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 96.48881914476266,
+          "helper_call_boundary": 0.23538642604943116
+        },
+        "top_functions": [
+          {
+            "symbol": "unsigned long swift::runtime::arm64::family_fp_integer::(anonymous namespace)::ExecuteFPInteger<false>(unsigned long, unsigned long, unsigned long) [clone .lto_priv.0]",
+            "samples": 18,
+            "percent": 0.35307963907414674
+          },
+          {
+            "symbol": "swift::runtime::arm64::EvaluateIntegerFP(unsigned long, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "samples": 13,
+            "percent": 0.2550019615535504
+          },
+          {
+            "symbol": "softfloat_roundPackToF64",
+            "samples": 7,
+            "percent": 0.13730874852883485
+          },
+          {
+            "symbol": "main",
+            "samples": 7,
+            "percent": 0.13730874852883485
+          },
+          {
+            "symbol": "ui64_to_extF80",
+            "samples": 4,
+            "percent": 0.07846214201647705
+          },
+          {
+            "symbol": "extF80_to_f128",
+            "samples": 4,
+            "percent": 0.07846214201647705
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::DeliverPending()",
+            "samples": 4,
+            "percent": 0.07846214201647705
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::ResolveBridge(void*, swift::runtime::execution::NativeRunContext*)",
+            "samples": 2,
+            "percent": 0.03923107100823853
+          },
+          {
+            "symbol": "f128_to_f64",
+            "samples": 2,
+            "percent": 0.03923107100823853
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::RefreshNative(swift::runtime::execution::NativeRunContext&)",
+            "samples": 1,
+            "percent": 0.019615535504119264
+          },
+          {
+            "symbol": "swift::runtime::execution::FaultScope::~FaultScope()",
+            "samples": 1,
+            "percent": 0.019615535504119264
+          },
+          {
+            "symbol": "swift::runtime::arm64::family_fp_integer::(anonymous namespace)::DecodeFPInteger(unsigned int, bool, unsigned int&)",
+            "samples": 1,
+            "percent": 0.019615535504119264
+          },
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 1,
+            "percent": 0.019615535504119264
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 3138,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 3110,
+          "shared_library_or_kernel_helper": 24,
+          "other_executable_code": 3,
+          "jit_prelude_or_trampoline": 1
+        },
+        "category_percent": {
+          "generated_guest_code": 99.10771191841937,
+          "shared_library_or_kernel_helper": 0.7648183556405354,
+          "other_executable_code": 0.09560229445506692,
+          "jit_prelude_or_trampoline": 0.03186743148502231
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": [
+          {
+            "symbol": "main",
+            "samples": 3,
+            "percent": 0.09560229445506692
+          }
+        ]
+      }
+    },
+    "matrix-fma": {
+      "swiftvm": {
+        "samples": 4340,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 4184,
+          "shared_library_or_kernel_helper": 103,
+          "native_dispatch_and_entry": 5,
+          "other_executable_code": 18,
+          "numeric_helper_and_softfloat": 30
+        },
+        "category_percent": {
+          "generated_guest_code": 96.40552995391705,
+          "shared_library_or_kernel_helper": 2.3732718894009217,
+          "native_dispatch_and_entry": 0.1152073732718894,
+          "other_executable_code": 0.4147465437788018,
+          "numeric_helper_and_softfloat": 0.6912442396313364
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 96.22119815668202,
+          "helper_call_boundary": 0.18433179723502305
+        },
+        "top_functions": [
+          {
+            "symbol": "unsigned long swift::runtime::arm64::family_fp_integer::(anonymous namespace)::ExecuteFPInteger<false>(unsigned long, unsigned long, unsigned long) [clone .lto_priv.0]",
+            "samples": 11,
+            "percent": 0.2534562211981567
+          },
+          {
+            "symbol": "main",
+            "samples": 9,
+            "percent": 0.2073732718894009
+          },
+          {
+            "symbol": "swift::runtime::arm64::EvaluateIntegerFP(unsigned long, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "samples": 9,
+            "percent": 0.2073732718894009
+          },
+          {
+            "symbol": "f128_to_f64",
+            "samples": 5,
+            "percent": 0.1152073732718894
+          },
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 4,
+            "percent": 0.09216589861751152
+          },
+          {
+            "symbol": "softfloat_roundPackToF64",
+            "samples": 4,
+            "percent": 0.09216589861751152
+          },
+          {
+            "symbol": "extF80_to_f128",
+            "samples": 4,
+            "percent": 0.09216589861751152
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::DeliverPending()",
+            "samples": 2,
+            "percent": 0.04608294930875576
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::RefreshNative(swift::runtime::execution::NativeRunContext&)",
+            "samples": 1,
+            "percent": 0.02304147465437788
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::RefreshDispatchView()",
+            "samples": 1,
+            "percent": 0.02304147465437788
+          },
+          {
+            "symbol": "SvmRunNative",
+            "samples": 1,
+            "percent": 0.02304147465437788
+          },
+          {
+            "symbol": "swift::runtime::arm64::NumericInteger(unsigned long, unsigned long, unsigned long)",
+            "samples": 1,
+            "percent": 0.02304147465437788
+          },
+          {
+            "symbol": "swift::runtime::platform::EnsureManagedSignal(int) [clone .part.0]",
+            "samples": 1,
+            "percent": 0.02304147465437788
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 3065,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 3034,
+          "shared_library_or_kernel_helper": 24,
+          "other_executable_code": 6,
+          "jit_prelude_or_trampoline": 1
+        },
+        "category_percent": {
+          "generated_guest_code": 98.98858075040783,
+          "shared_library_or_kernel_helper": 0.7830342577487766,
+          "other_executable_code": 0.19575856443719414,
+          "jit_prelude_or_trampoline": 0.03262642740619902
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": [
+          {
+            "symbol": "main",
+            "samples": 6,
+            "percent": 0.19575856443719414
+          }
+        ]
+      }
+    },
+    "compute-fma": {
+      "swiftvm": {
+        "samples": 5502,
+        "lost": 0,
+        "category_counts": {
+          "numeric_helper_and_softfloat": 5,
+          "native_dispatch_and_entry": 19,
+          "generated_guest_code": 5469,
+          "shared_library_or_kernel_helper": 7,
+          "other_executable_code": 2
+        },
+        "category_percent": {
+          "numeric_helper_and_softfloat": 0.09087604507451835,
+          "native_dispatch_and_entry": 0.34532897128316975,
+          "generated_guest_code": 99.40021810250818,
+          "shared_library_or_kernel_helper": 0.1272264631043257,
+          "other_executable_code": 0.03635041802980734
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.40021810250818
+        },
+        "top_functions": [
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 19,
+            "percent": 0.34532897128316975
+          },
+          {
+            "symbol": "swift::runtime::arm64::EvaluateIntegerFP(unsigned long, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "samples": 2,
+            "percent": 0.03635041802980734
+          },
+          {
+            "symbol": "swift::runtime::arm64::NumericInteger(unsigned long, unsigned long, unsigned long)",
+            "samples": 1,
+            "percent": 0.01817520901490367
+          },
+          {
+            "symbol": "swift::runtime::execution::VM::DeliverPending()",
+            "samples": 1,
+            "percent": 0.01817520901490367
+          },
+          {
+            "symbol": "swift::runtime::arm64::ExecuteNumeric(unsigned long, unsigned long, unsigned long)",
+            "samples": 1,
+            "percent": 0.01817520901490367
+          },
+          {
+            "symbol": "main",
+            "samples": 1,
+            "percent": 0.01817520901490367
+          },
+          {
+            "symbol": "softfloat_roundPackToF64",
+            "samples": 1,
+            "percent": 0.01817520901490367
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 4845,
+        "lost": 0,
+        "category_counts": {
+          "jit_prelude_or_trampoline": 63,
+          "generated_guest_code": 4778,
+          "shared_library_or_kernel_helper": 4
+        },
+        "category_percent": {
+          "jit_prelude_or_trampoline": 1.3003095975232197,
+          "generated_guest_code": 98.6171310629515,
+          "shared_library_or_kernel_helper": 0.0825593395252838
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": []
+      }
+    },
+    "compute-sha": {
+      "swiftvm": {
+        "samples": 4085,
+        "lost": 0,
+        "category_counts": {
+          "generated_guest_code": 4078,
+          "shared_library_or_kernel_helper": 5,
+          "other_executable_code": 2
+        },
+        "category_percent": {
+          "generated_guest_code": 99.82864137086904,
+          "shared_library_or_kernel_helper": 0.12239902080783353,
+          "other_executable_code": 0.04895960832313342
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.82864137086904
+        },
+        "top_functions": [
+          {
+            "symbol": "main",
+            "samples": 1,
+            "percent": 0.02447980416156671
+          },
+          {
+            "symbol": "swift::runtime::backend::x64::Runtime::Bind()::{lambda(void*, swift::runtime::execution::NativeRunContext&, unsigned int)#1}::_FUN(void*, swift::runtime::execution::NativeRunContext&, unsigned int) [clone .lto_priv.0]",
+            "samples": 1,
+            "percent": 0.02447980416156671
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 3669,
+        "lost": 0,
+        "category_counts": {
+          "jit_prelude_or_trampoline": 6,
+          "generated_guest_code": 3659,
+          "shared_library_or_kernel_helper": 4
+        },
+        "category_percent": {
+          "jit_prelude_or_trampoline": 0.1635322976287817,
+          "generated_guest_code": 99.72744617061869,
+          "shared_library_or_kernel_helper": 0.10902153175252112
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": []
+      }
+    },
+    "compute": {
+      "swiftvm": {
+        "samples": 5590,
+        "lost": 0,
+        "category_counts": {
+          "numeric_helper_and_softfloat": 3,
+          "native_dispatch_and_entry": 22,
+          "generated_guest_code": 5557,
+          "shared_library_or_kernel_helper": 5,
+          "other_executable_code": 3
+        },
+        "category_percent": {
+          "numeric_helper_and_softfloat": 0.05366726296958855,
+          "native_dispatch_and_entry": 0.3935599284436494,
+          "generated_guest_code": 99.40966010733453,
+          "shared_library_or_kernel_helper": 0.08944543828264759,
+          "other_executable_code": 0.05366726296958855
+        },
+        "generated_detail_percent_of_all_samples": {
+          "other_generated_code": 99.40966010733453
+        },
+        "top_functions": [
+          {
+            "symbol": "SvmNativeDispatchNZCV",
+            "samples": 22,
+            "percent": 0.3935599284436494
+          },
+          {
+            "symbol": "main",
+            "samples": 3,
+            "percent": 0.05366726296958855
+          },
+          {
+            "symbol": "swift::runtime::arm64::EvaluateIntegerFP(unsigned long, unsigned int, unsigned int, unsigned int, unsigned int)",
+            "samples": 1,
+            "percent": 0.017889087656529516
+          },
+          {
+            "symbol": "unsigned long swift::runtime::arm64::family_fp_integer::(anonymous namespace)::ExecuteFPInteger<false>(unsigned long, unsigned long, unsigned long) [clone .lto_priv.0]",
+            "samples": 1,
+            "percent": 0.017889087656529516
+          },
+          {
+            "symbol": "f128_to_f64",
+            "samples": 1,
+            "percent": 0.017889087656529516
+          }
+        ]
+      },
+      "dynarmic": {
+        "samples": 4731,
+        "lost": 0,
+        "category_counts": {
+          "jit_prelude_or_trampoline": 61,
+          "generated_guest_code": 4667,
+          "shared_library_or_kernel_helper": 3
+        },
+        "category_percent": {
+          "jit_prelude_or_trampoline": 1.2893679983090256,
+          "generated_guest_code": 98.64722046079054,
+          "shared_library_or_kernel_helper": 0.06341154090044387
+        },
+        "generated_detail_percent_of_all_samples": {},
+        "top_functions": []
+      }
+    }
+  },
+  "controls": {
+    "compute-matrix-scalar": {
+      "medians_ns": {
+        "control": 1576731,
+        "no-result-checks": 1277908,
+        "scalar-vector-home": 436379,
+        "scalar-vector-home-no-checks": 252561,
+        "dynarmic": 420194
+      },
+      "over_control": {
+        "control": {
+          "median": 1.0,
+          "q1": 1.0,
+          "q3": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "no-result-checks": {
+          "median": 0.8094867923493249,
+          "q1": 0.7962408973359922,
+          "q3": 0.8152781203444206,
+          "min": 0.7167649251240827,
+          "max": 0.8233403582377944
+        },
+        "scalar-vector-home": {
+          "median": 0.2769507753097072,
+          "q1": 0.27557239934464495,
+          "q3": 0.2783096740166769,
+          "min": 0.24644073671687936,
+          "max": 0.28258933796688185
+        },
+        "scalar-vector-home-no-checks": {
+          "median": 0.15920983719278856,
+          "q1": 0.1574738531712796,
+          "q3": 0.16085463110843828,
+          "min": 0.14798671589779028,
+          "max": 0.16532937791490923
+        },
+        "dynarmic": {
+          "median": 0.2654558874316926,
+          "q1": 0.26095314079992765,
+          "q3": 0.2702643312409381,
+          "min": 0.24009421953599766,
+          "max": 0.2947609360728116
+        }
+      },
+      "counters": {
+        "control": {
+          "cycles": 7271756,
+          "instructions": 11600023,
+          "branches": 602901,
+          "branch_misses": 1357
+        },
+        "no-result-checks": {
+          "cycles": 5904503,
+          "instructions": 6479510,
+          "branches": 90837,
+          "branch_misses": 171
+        },
+        "scalar-vector-home": {
+          "cycles": 2032609,
+          "instructions": 11632150,
+          "branches": 602900,
+          "branch_misses": 1308
+        },
+        "scalar-vector-home-no-checks": {
+          "cycles": 1170115,
+          "instructions": 6511510,
+          "branches": 90836,
+          "branch_misses": 103
+        },
+        "dynarmic": {
+          "cycles": 1934137,
+          "instructions": 6765376,
+          "branches": 585438,
+          "branch_misses": 53
+        }
+      }
+    },
+    "compute-matrix": {
+      "medians_ns": {
+        "control": 202528,
+        "no-result-checks": 127218,
+        "scalar-vector-home": 201239,
+        "scalar-vector-home-no-checks": 122231,
+        "dynarmic": 117245
+      },
+      "over_control": {
+        "control": {
+          "median": 1.0,
+          "q1": 1.0,
+          "q3": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "no-result-checks": {
+          "median": 0.6247329206843235,
+          "q1": 0.6200567711273941,
+          "q3": 0.6277061830053328,
+          "min": 0.6116492597825718,
+          "max": 0.6750472344126438
+        },
+        "scalar-vector-home": {
+          "median": 0.9871590052750565,
+          "q1": 0.9760777843827885,
+          "q3": 1.0075060688238149,
+          "min": 0.9604812748539715,
+          "max": 1.0360098934699205
+        },
+        "scalar-vector-home-no-checks": {
+          "median": 0.6048703965795386,
+          "q1": 0.5963727894637758,
+          "q3": 0.6109880315261629,
+          "min": 0.587618710237833,
+          "max": 0.6253035143769968
+        },
+        "dynarmic": {
+          "median": 0.5771590071270583,
+          "q1": 0.5688159261902636,
+          "q3": 0.5856836208444776,
+          "min": 0.5614866864982118,
+          "max": 0.6011666150170444
+        }
+      },
+      "counters": {
+        "control": {
+          "cycles": 948422,
+          "instructions": 5023579,
+          "branches": 274420,
+          "branch_misses": 563
+        },
+        "no-result-checks": {
+          "cycles": 588880,
+          "instructions": 2462299,
+          "branches": 18292,
+          "branch_misses": 89
+        },
+        "scalar-vector-home": {
+          "cycles": 932651,
+          "instructions": 4995813,
+          "branches": 274420,
+          "branch_misses": 642
+        },
+        "scalar-vector-home-no-checks": {
+          "cycles": 564315,
+          "instructions": 2434533,
+          "branches": 18292,
+          "branch_misses": 42
+        },
+        "dynarmic": {
+          "cycles": 554983,
+          "instructions": 2639150,
+          "branches": 265373,
+          "branch_misses": 14
+        }
+      }
+    },
+    "fpmix": {
+      "medians_ns": {
+        "control": 21119289,
+        "no-result-checks": 20658455,
+        "word-flags-load": 18500010,
+        "scalar-vector-home": 20991083,
+        "dynarmic": 7075725
+      },
+      "over_control": {
+        "control": {
+          "median": 1.0,
+          "q1": 1.0,
+          "q3": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "no-result-checks": {
+          "median": 0.9689352730108395,
+          "q1": 0.9650983273295126,
+          "q3": 0.9794929085267254,
+          "min": 0.9393550152322568,
+          "max": 1.0151885795018951
+        },
+        "word-flags-load": {
+          "median": 0.8669081928802179,
+          "q1": 0.8626153019228531,
+          "q3": 0.8914708311454935,
+          "min": 0.854854387950779,
+          "max": 0.9342048404246489
+        },
+        "scalar-vector-home": {
+          "median": 1.001652228901309,
+          "q1": 0.9959119851851042,
+          "q3": 1.0132324428812973,
+          "min": 0.9893357872352045,
+          "max": 1.0345132624272733
+        },
+        "dynarmic": {
+          "median": 0.34005244632216575,
+          "q1": 0.33274839083430774,
+          "q3": 0.34949995473204143,
+          "min": 0.3209531008331769,
+          "max": 0.4091891244671919
+        }
+      },
+      "counters": {
+        "control": {
+          "cycles": 96118480,
+          "instructions": 210005681,
+          "branches": 8001503,
+          "branch_misses": 395
+        },
+        "no-result-checks": {
+          "cycles": 93133341,
+          "instructions": 180005681,
+          "branches": 5001502,
+          "branch_misses": 328
+        },
+        "word-flags-load": {
+          "cycles": 83126956,
+          "instructions": 210005680,
+          "branches": 8001502,
+          "branch_misses": 429
+        },
+        "scalar-vector-home": {
+          "cycles": 96243352,
+          "instructions": 210005681,
+          "branches": 8001503,
+          "branch_misses": 350
+        },
+        "dynarmic": {
+          "cycles": 32526873,
+          "instructions": 82000590,
+          "branches": 8000124,
+          "branch_misses": 99
+        }
+      }
+    },
+    "matrix-fma": {
+      "medians_ns": {
+        "control": 191239,
+        "no-result-checks": 156153,
+        "scalar-vector-home": 190188,
+        "dynarmic": 115118
+      },
+      "over_control": {
+        "control": {
+          "median": 1.0,
+          "q1": 1.0,
+          "q3": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "no-result-checks": {
+          "median": 0.8109464234356383,
+          "q1": 0.8076687180989706,
+          "q3": 0.8226417201617404,
+          "min": 0.7686436841084018,
+          "max": 0.8340190593038384
+        },
+        "scalar-vector-home": {
+          "median": 1.0056099869399926,
+          "q1": 0.9900059933049996,
+          "q3": 1.0135149681873827,
+          "min": 0.9426149169374057,
+          "max": 1.0322572304701034
+        },
+        "dynarmic": {
+          "median": 0.6029616326869576,
+          "q1": 0.5958415155739112,
+          "q3": 0.6105053520776877,
+          "min": 0.57247764847532,
+          "max": 0.6696280514682731
+        }
+      },
+      "counters": {
+        "control": {
+          "cycles": 871580,
+          "instructions": 4275565,
+          "branches": 146420,
+          "branch_misses": 128
+        },
+        "no-result-checks": {
+          "cycles": 705775,
+          "instructions": 2994285,
+          "branches": 18292,
+          "branch_misses": 88
+        },
+        "scalar-vector-home": {
+          "cycles": 872147,
+          "instructions": 4303799,
+          "branches": 146420,
+          "branch_misses": 68
+        },
+        "dynarmic": {
+          "cycles": 536056,
+          "instructions": 2183103,
+          "branches": 137373,
+          "branch_misses": 15
+        }
+      }
+    },
+    "cond": {
+      "medians_ns": {
+        "control": 66724742,
+        "full-native-flags": 25009006,
+        "word-flags-load": 66708953,
+        "dynarmic": 36747101
+      },
+      "over_control": {
+        "control": {
+          "median": 1.0,
+          "q1": 1.0,
+          "q3": 1.0,
+          "min": 1.0,
+          "max": 1.0
+        },
+        "full-native-flags": {
+          "median": 0.3754255885739678,
+          "q1": 0.3726855029557695,
+          "q3": 0.37673922338003935,
+          "min": 0.3647136014327672,
+          "max": 0.3892366308533094
+        },
+        "word-flags-load": {
+          "median": 1.007340949958723,
+          "q1": 0.9949158998025354,
+          "q3": 1.019689434649036,
+          "min": 0.9815582050480287,
+          "max": 1.0396749800770528
+        },
+        "dynarmic": {
+          "median": 0.5488915798947114,
+          "q1": 0.5467699890056069,
+          "q3": 0.5533725796912041,
+          "min": 0.5417089757205735,
+          "max": 0.5685939592859007
+        }
+      },
+      "counters": {
+        "control": {
+          "cycles": 306475551,
+          "instructions": 1176005695,
+          "branches": 120001544,
+          "branch_misses": 1060
+        },
+        "full-native-flags": {
+          "cycles": 114679340,
+          "instructions": 408005654,
+          "branches": 120001503,
+          "branch_misses": 707
+        },
+        "word-flags-load": {
+          "cycles": 306339348,
+          "instructions": 1176005696,
+          "branches": 120001545,
+          "branch_misses": 1238
+        },
+        "dynarmic": {
+          "cycles": 167875012,
+          "instructions": 888000624,
+          "branches": 120000154,
+          "branch_misses": 1665
+        }
+      }
+    }
+  },
+  "fpmix_breakdown": {
+    "medians_ns": {
+      "original-control": 20812261,
+      "original-dynarmic": 7002539,
+      "word-flags": 17969901,
+      "scalar-home": 10700139,
+      "scalar-home-word-flags": 10071457,
+      "scalar-home-word-flags-no-checks": 8904475,
+      "fpmix-no-fabs-control": 9696962,
+      "fpmix-no-fabs-dynarmic": 6940223,
+      "fpmix-no-compare-control": 16901736,
+      "fpmix-no-compare-dynarmic": 7003714,
+      "fpmix-no-fabs-no-compare-control": 8860499,
+      "fpmix-no-fabs-no-compare-dynarmic": 7074248
+    },
+    "over_original": {
+      "original-control": {
+        "median": 1.0,
+        "q1": 1.0,
+        "q3": 1.0,
+        "min": 1.0,
+        "max": 1.0
+      },
+      "original-dynarmic": {
+        "median": 0.33725223427590934,
+        "q1": 0.332832592714867,
+        "q3": 0.34113587121968014,
+        "min": 0.32199901478123466,
+        "max": 0.3530943242631509
+      },
+      "word-flags": {
+        "median": 0.8671045641219396,
+        "q1": 0.8515497407014604,
+        "q3": 0.8688764778959364,
+        "min": 0.8385105157531066,
+        "max": 0.8819267119155794
+      },
+      "scalar-home": {
+        "median": 0.5119283720323047,
+        "q1": 0.5098405837265263,
+        "q3": 0.5169634558813785,
+        "min": 0.4909885951194816,
+        "max": 0.5237530849832229
+      },
+      "scalar-home-word-flags": {
+        "median": 0.48338585894383806,
+        "q1": 0.47848353612500016,
+        "q3": 0.4864229127055885,
+        "min": 0.46430383760757493,
+        "max": 0.5084212714575337
+      },
+      "scalar-home-word-flags-no-checks": {
+        "median": 0.4285784711233441,
+        "q1": 0.42180796885209126,
+        "q3": 0.43238092816985707,
+        "min": 0.41080350775248714,
+        "max": 0.4336712430433925
+      },
+      "fpmix-no-fabs-control": {
+        "median": 0.46790908911056395,
+        "q1": 0.46517266288900794,
+        "q3": 0.4712409352968071,
+        "min": 0.4447677378721851,
+        "max": 0.4750821295140905
+      },
+      "fpmix-no-fabs-dynarmic": {
+        "median": 0.3327715330881157,
+        "q1": 0.3298493152831595,
+        "q3": 0.33695744269992833,
+        "min": 0.32612332601083116,
+        "max": 0.3510639757419529
+      },
+      "fpmix-no-compare-control": {
+        "median": 0.8124823596830663,
+        "q1": 0.8072990639523865,
+        "q3": 0.8168195539446266,
+        "min": 0.8025987449799706,
+        "max": 0.8319139335934564
+      },
+      "fpmix-no-compare-dynarmic": {
+        "median": 0.33704905968649923,
+        "q1": 0.3337961402623929,
+        "q3": 0.3429834555280707,
+        "min": 0.3299137406962384,
+        "max": 0.34566181768158044
+      },
+      "fpmix-no-fabs-no-compare-control": {
+        "median": 0.4247499331543725,
+        "q1": 0.4175443384705284,
+        "q3": 0.4270871124596143,
+        "min": 0.40348518773362707,
+        "max": 0.4305625268959264
+      },
+      "fpmix-no-fabs-no-compare-dynarmic": {
+        "median": 0.34069035279974785,
+        "q1": 0.3391059961988128,
+        "q3": 0.3435411614563326,
+        "min": 0.3322568440647358,
+        "max": 0.3521831288972302
+      }
+    },
+    "counters": {
+      "original-control": {
+        "instructions": 210005681,
+        "cycles": 96199954,
+        "branches": 8001503,
+        "branch_misses": 371
+      },
+      "original-dynarmic": {
+        "instructions": 82000590,
+        "cycles": 32399921,
+        "branches": 8000124,
+        "branch_misses": 106
+      },
+      "word-flags": {
+        "instructions": 210005679,
+        "cycles": 83068683,
+        "branches": 8001501,
+        "branch_misses": 344
+      },
+      "scalar-home": {
+        "instructions": 211005672,
+        "cycles": 49319022,
+        "branches": 8001493,
+        "branch_misses": 248
+      },
+      "scalar-home-word-flags": {
+        "instructions": 211005670,
+        "cycles": 46371258,
+        "branches": 8001492,
+        "branch_misses": 242
+      },
+      "scalar-home-word-flags-no-checks": {
+        "instructions": 181005669,
+        "cycles": 41221613,
+        "branches": 5001491,
+        "branch_misses": 194
+      },
+      "fpmix-no-fabs-control": {
+        "instructions": 159005669,
+        "cycles": 44909412,
+        "branches": 7001491,
+        "branch_misses": 246
+      },
+      "fpmix-no-fabs-dynarmic": {
+        "instructions": 78000589,
+        "cycles": 32407298,
+        "branches": 8000124,
+        "branch_misses": 91
+      },
+      "fpmix-no-compare-control": {
+        "instructions": 173005668,
+        "cycles": 78519603,
+        "branches": 8001496,
+        "branch_misses": 324
+      },
+      "fpmix-no-compare-dynarmic": {
+        "instructions": 68000590,
+        "cycles": 32544969,
+        "branches": 7000125,
+        "branch_misses": 77
+      },
+      "fpmix-no-fabs-no-compare-control": {
+        "instructions": 122005658,
+        "cycles": 40559751,
+        "branches": 7001487,
+        "branch_misses": 224
+      },
+      "fpmix-no-fabs-no-compare-dynarmic": {
+        "instructions": 64000591,
+        "cycles": 32834595,
+        "branches": 7000125,
+        "branch_misses": 86
+      }
+    },
+    "jobs": {
+      "original-control": [
+        "original",
+        "control"
+      ],
+      "original-dynarmic": [
+        "original",
+        "dynarmic"
+      ],
+      "word-flags": [
+        "original",
+        "word-flags-load"
+      ],
+      "scalar-home": [
+        "original",
+        "all-scalar-vector-home"
+      ],
+      "scalar-home-word-flags": [
+        "original",
+        "all-scalar-vector-home-word-flags"
+      ],
+      "scalar-home-word-flags-no-checks": [
+        "original",
+        "all-scalar-vector-home-word-flags-no-checks"
+      ],
+      "fpmix-no-fabs-control": [
+        "fpmix-no-fabs",
+        "control"
+      ],
+      "fpmix-no-fabs-dynarmic": [
+        "fpmix-no-fabs",
+        "dynarmic"
+      ],
+      "fpmix-no-compare-control": [
+        "fpmix-no-compare",
+        "control"
+      ],
+      "fpmix-no-compare-dynarmic": [
+        "fpmix-no-compare",
+        "dynarmic"
+      ],
+      "fpmix-no-fabs-no-compare-control": [
+        "fpmix-no-fabs-no-compare",
+        "control"
+      ],
+      "fpmix-no-fabs-no-compare-dynarmic": [
+        "fpmix-no-fabs-no-compare",
+        "dynarmic"
+      ]
+    }
+  },
+  "semantic_scope": {
+    "scalar_vector_write": "isolated scalar write prototype, benchmark outputs checked",
+    "flags_slot_width": "isolated 16-bit image load prototype, benchmark outputs checked",
+    "no_result_checks": "NaN and MinNormal fallback checks removed, floating-point boundary semantics relaxed",
+    "full_native_flags": "partial NZCV preservation contract relaxed",
+    "guest_elisions": "fixed-input FABS and comparison/branch elisions, benchmark outputs checked with QEMU"
+  },
+  "findings": {
+    "scalar_matrix": "split U64 low/high-zero state stores followed by V128 reads, whole-vector write prototype avoids the round trips",
+    "fpmix": "same split scalar writes in FABS, 16-bit LAHF snapshot followed by 64-bit load, packed FCMP publication and late opaque numeric lowering overhead",
+    "conditions": "partial CZ and NV writers take PUSHFQ plus saved-slot merge and SAHF before the branch",
+    "vector_matrix": "10 executed result-check instructions per FP operation plus operand moves, exact check removal measured only as a diagnostic",
+    "matrix_fma": "result-check cost plus direct state loads/stores and retained numeric helper argument setup",
+    "sha_compute": "extra retired instructions with guest-state traffic, GPR moves and limited scalar homes"
+  }
+}

@@ -1,0 +1,14 @@
+--- a/source/runtime/backend/x64/emit_flags.cpp
++++ b/source/runtime/backend/x64/emit_flags.cpp
+@@ -100,7 +100,10 @@
+ void Writer::MaterializeFlags() {
+     if (!options.local_flags || !flags.dirty) return;
+     SaveNativeFlags();
+-    mov(rdx, qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
++    if (options.lahf)
++        movzx(edx, word[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
++    else
++        mov(rdx, qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
+     if (options.lahf) {
+         mov(r10d, edx);
+         and_(r10d, 0xc000);

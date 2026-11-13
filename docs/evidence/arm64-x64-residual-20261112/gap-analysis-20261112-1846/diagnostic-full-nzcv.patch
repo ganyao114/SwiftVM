@@ -1,0 +1,11 @@
+--- a/source/runtime/backend/x64/emit_flags.cpp
++++ b/source/runtime/backend/x64/emit_flags.cpp
+@@ -151,7 +151,7 @@
+                                (c.width == 32 || c.width == 64) &&
+                                allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX &&
+                                (arithmetic || logical);
+-    defer_flags = native_output && c.operation.flag_outputs == 15;
++    defer_flags = native_output;
+     merge_native_flags = native_output && !defer_flags;
+     if (native_output) {
+         if (merge_native_flags || op == O::Adc || op == O::Sbb) {

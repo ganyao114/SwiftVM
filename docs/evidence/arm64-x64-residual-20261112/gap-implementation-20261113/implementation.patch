@@ -1,0 +1,2915 @@
+diff --git a/source/runtime/arch/arm64/fp_scalar.cpp b/source/runtime/arch/arm64/fp_scalar.cpp
+index 1da110e5..c7fcddf9 100644
+--- a/source/runtime/arch/arm64/fp_scalar.cpp
++++ b/source/runtime/arch/arm64/fp_scalar.cpp
+@@ -693,13 +693,145 @@ u64 ExecuteScalarFP(u64 context_address, u64 instruction, u64 guest_pc) {
+     return 0;
+ }
+ 
++FPValueInfo DescribeFPValues(u64 encoded) noexcept {
++    FPValueInfo info;
++    if (encoded >> 40) return info;
++    const auto family = static_cast<Numeric>((encoded >> 32) & 255);
++    const u32 word = encoded, type = (word >> 22) & 3;
++    info.bits = type == 1 ? 64 : 32;
++    info.output_bits = info.bits;
++    info.integer_bits = word >> 31 ? 64 : 32;
++    if (family == Numeric::Scalar && type != 3) {
++        if ((word & FPCompareFMask) == FPCompareFixed ||
++            (word & FPConditionalCompareFMask) == FPConditionalCompareFixed)
++            info.kind = FPValueKind::Compare;
++        else if ((word & FPDataProcessing3SourceFMask) == FPDataProcessing3SourceFixed) {
++            info.kind = FPValueKind::Fused;
++            info.control = ((bool(word & (1u << 15)) != bool(word & (1u << 21))) ? 1u : 0u) |
++                           ((word & (1u << 21)) ? 2u : 0u);
++        } else if ((word & FPDataProcessing2SourceMask) == FDIV_s ||
++                   (word & FPDataProcessing2SourceMask) == FDIV_d)
++            info.kind = FPValueKind::Divide;
++        else if ((word & FPDataProcessing1SourceMask) == FSQRT_s ||
++                 (word & FPDataProcessing1SourceMask) == FSQRT_d)
++            info.kind = FPValueKind::Sqrt;
++        else if ((word & FPDataProcessing1SourceMask) == FCVT_ds ||
++                 (word & FPDataProcessing1SourceMask) == FCVT_sd) {
++            info.kind = FPValueKind::Precision;
++            info.output_bits = info.bits == 32 ? 64 : 32;
++        } else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
++                   (((word >> 16) & 31) == 2 || ((word >> 16) & 31) == 3))
++            info.kind = FPValueKind::FromInt;
++        else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
++                 (((word >> 16) & 31) == 24 || ((word >> 16) & 31) == 25))
++            info.kind = FPValueKind::ToInt;
++    } else if (family == Numeric::Fused &&
++               ((word & NEON3SameFPMask) == NEON_FMLA || (word & NEON3SameFPMask) == NEON_FMLS)) {
++        info.kind = FPValueKind::Fused;
++        info.bits = word & (1u << 22) ? 64 : 32;
++        info.lanes = (word & NEON_Q ? 128 : 64) / info.bits;
++        info.control = (word & NEON3SameFPMask) == NEON_FMLS ? 1 : 0;
++        info.output_bits = info.bits;
++    } else if (family == Numeric::Indexed && ((word >> 22) & 3) >= 2) {
++        const bool scalar = word & NEONScalar;
++        const auto mask =
++                scalar ? u32(NEONScalarByIndexedElementMask) : u32(NEONByIndexedElementMask);
++        const auto flags = scalar ? (u32(NEON_Q) | u32(NEONScalar)) : 0;
++        const auto op = word & mask;
++        if (op == (u32(NEON_FMLA_H_byelement) | flags) ||
++            op == (u32(NEON_FMLS_H_byelement) | flags)) {
++            info.kind = FPValueKind::Fused;
++            info.bits = ((word >> 22) & 3) == 2 ? 32 : 64;
++            info.lanes = scalar ? 1 : (word & NEON_Q ? 128 : 64) / info.bits;
++            info.control = op == (u32(NEON_FMLS_H_byelement) | flags) ? 1 : 0;
++            info.output_bits = info.bits;
++            info.indexed = true;
++        }
++    }
++    if (info.kind != FPValueKind::Invalid && !SupportsNumeric(family, word)) return {};
++    return info;
++}
++
++u64 CanonicalFPValues(u64 encoded, const FPValueInfo& info) noexcept {
++    // SSA inputs are independent of the descriptor's architectural register
++    // numbers. Use distinct temporary registers, including a real integer Rd.
++    u32 word = encoded;
++    word = (word & ~(31u << 5)) | (1u << 5);
++    if (info.kind != FPValueKind::Compare) word &= ~31u;
++    const bool zero = info.kind == FPValueKind::Compare &&
++                      (word & FPCompareFMask) == FPCompareFixed && (word & 8);
++    if (!zero && (info.kind == FPValueKind::Compare || info.kind == FPValueKind::Divide ||
++                  info.kind == FPValueKind::Fused))
++        word = (word & ~(31u << 16)) | (2u << 16);
++    const auto family = static_cast<Numeric>((encoded >> 32) & 255);
++    if (info.kind == FPValueKind::Fused && family == Numeric::Scalar)
++        word = (word & ~(31u << 10)) | (3u << 10);
++    return (encoded & ~u64{UINT32_MAX}) | word;
++}
++
++u64 EvaluateFPValues(void* output, const void* inputs, u64 encoded, u32 fpcr, void* fpsr) {
++    const auto info = DescribeFPValues(encoded);
++    if (info.kind == FPValueKind::Invalid || !IsSupportedFPCR(fpcr)) return 1;
++    GuestState state;
++    state.fpcr = fpcr;
++    std::memcpy(&state.fpsr, fpsr, 4);
++    const auto* values = static_cast<const u8*>(inputs);
++    encoded = CanonicalFPValues(encoded, info);
++    const u32 word = encoded;
++    const auto family = static_cast<Numeric>((encoded >> 32) & 255);
++    const u32 rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
++    const bool zero = info.kind == FPValueKind::Compare &&
++                      (word & FPCompareFMask) == FPCompareFixed && (word & 8);
++    if (info.kind == FPValueKind::FromInt)
++        std::memcpy(&state.gprs[rn], values, 8);
++    else
++        std::memcpy(state.q[rn], values, 16);
++    if ((info.kind == FPValueKind::Compare && !zero) || info.kind == FPValueKind::Divide ||
++        info.kind == FPValueKind::Fused)
++        std::memcpy(state.q[rm], values + 16, 16);
++    if (info.kind == FPValueKind::Fused) {
++        const auto addend = family == Numeric::Scalar ? (word >> 10) & 31 : rd;
++        std::memcpy(state.q[addend], values + 32, 16);
++    }
++    const auto result = ExecuteNumeric(reinterpret_cast<u64>(&state), encoded, 0);
++    if (state.helper_status) return 1;
++    u8 value[16]{};
++    if (info.kind == FPValueKind::Compare)
++        std::memcpy(value, &result, 8);
++    else if (info.kind == FPValueKind::ToInt)
++        std::memcpy(value, &state.gprs[rd], 8);
++    else
++        std::memcpy(value, state.q[rd], 16);
++    std::memcpy(output, value, 16);
++    std::memcpy(fpsr, &state.fpsr, 4);
++    return 0;
++}
++
++bool IsFPBitUnary(u32 word) noexcept {
++    const auto op = (word & FPDataProcessing1SourceMask) & ~(3u << 22);
++    return ((word >> 22) & 3) != 2 && (op == FMOV_s || op == FABS_s || op == FNEG_s);
++}
++
++u64 EvaluateFPBitUnary(u64 value, u32 word, u32 fpcr) noexcept {
++    const auto type = (word >> 22) & 3;
++    const auto bits = type == 3 ? 16u : type == 1 ? 64u : 32u;
++    const auto op = (word & FPDataProcessing1SourceMask) & ~(3u << 22);
++    const u64 mask = UINT64_MAX >> (64 - bits), sign = u64{1} << (bits - 1);
++    value &= mask;
++    const u64 exponent = bits == 16 ? 0x7c00 : bits == 32 ? 0x7f800000 : 0x7ff0000000000000;
++    const bool preserve =
++            (fpcr & 2) && (value & exponent) == exponent && (value & (mask & ~(sign | exponent)));
++    if (preserve || op == FMOV_s) return value;
++    return op == FABS_s ? value & ~sign : value ^ sign;
++}
++
+ void EvaluateVectorBinaryFP(
+         void* output, const void* lhs, const void* rhs, u32 mode, u32 fpcr, void* fpsr) noexcept {
+     u8 left[16], right[16], result[16]{};
+     std::memcpy(left, lhs, 16);
+     std::memcpy(right, rhs, 16);
+     const auto bytes = mode & 4 ? 8u : 4u, lanes = (mode >> 3) & 7;
+-    constexpr u32 operations[]{2, 3, 0};
++    constexpr u32 operations[]{2, 3, 0, 1};
+     u32 exceptions{};
+     for (u32 lane = 0; lane < lanes; ++lane) {
+         u64 a{}, b{};
+diff --git a/source/runtime/arch/arm64/numeric.h b/source/runtime/arch/arm64/numeric.h
+index ce2e4a8a..b5fb1a75 100644
+--- a/source/runtime/arch/arm64/numeric.h
++++ b/source/runtime/arch/arm64/numeric.h
+@@ -46,7 +46,7 @@ FPBinaryResult EvaluatePrecisionFP(
+         u64 value, u32 source_bits, u32 destination_bits, bool odd, u32 fpcr);
+ FPBinaryResult EvaluateBinaryFP(u64 lhs, u64 rhs, u32 bits, u32 operation, u32 fpcr);
+ 
+-// kind: 0=add, 1=sub, 2=mul; bits: 32/64; lanes: 1/2/4.
++// kind: 0=add, 1=sub, 2=mul, 3=div; bits: 32/64; lanes: 1/2/4.
+ // An indexed RHS broadcasts one of its original 128-bit input's lanes.
+ constexpr u32 ArmFPBinaryMode(u32 kind, u32 bits, u32 lanes, bool indexed = false, u32 index = 0) {
+     return kind | (bits == 64 ? 4u : 0u) | (lanes << 3) | (indexed ? 64u : 0u) | (index << 7);
+@@ -54,8 +54,9 @@ constexpr u32 ArmFPBinaryMode(u32 kind, u32 bits, u32 lanes, bool indexed = fals
+ 
+ constexpr bool ValidArmFPBinaryMode(u32 mode) {
+     const auto bits = mode & 4 ? 64u : 32u, lanes = (mode >> 3) & 7;
+-    return !(mode & ~511u) && (mode & 3) < 3 && (lanes == 1 || lanes == 2 || lanes == 4) &&
+-           lanes * bits <= 128 && ((mode & 64) ? (mode >> 7) < 128 / bits : !(mode >> 7));
++    return !(mode & ~511u) && (lanes == 1 || lanes == 2 || lanes == 4) && lanes * bits <= 128 &&
++           ((mode & 3) != 3 || lanes == 1) &&
++           ((mode & 64) ? (mode >> 7) < 128 / bits : !(mode >> 7));
+ }
+ 
+ // Inputs are snapshotted before any output; inactive destination lanes are
+@@ -119,4 +120,24 @@ u64 ExecuteNumeric(u64 state, u64 family_and_instruction, u64 pc);
+ constexpr u64 NumericCall(Numeric family, u32 word, u32 extra = 0) {
+     return (u64(extra) << 40) | (u64(family) << 32) | word;
+ }
++
++enum class FPValueKind { Invalid, Compare, Fused, Divide, Sqrt, Precision, FromInt, ToInt };
++
++struct FPValueInfo {
++    FPValueKind kind{FPValueKind::Invalid};
++    u32 bits{32}, lanes{1}, output_bits{32}, integer_bits{32}, control{};
++    bool indexed{};
++};
++
++FPValueInfo DescribeFPValues(u64 encoded) noexcept;
++u64 CanonicalFPValues(u64 encoded, const FPValueInfo&) noexcept;
++
++// Packed offsets keep exact ternary operations within the IR's five arguments.
++constexpr u64 FPStateOffsets(u32 control, u32 status) { return u64{control} | (u64{status} << 32); }
++
++// Inputs are three raw 128-bit SSA values. The temporary architectural state
++// belongs to this call and observes only these values and the explicit controls.
++u64 EvaluateFPValues(void* output, const void* inputs, u64 encoded, u32 fpcr, void* fpsr);
++bool IsFPBitUnary(u32 word) noexcept;
++u64 EvaluateFPBitUnary(u64 value, u32 word, u32 fpcr) noexcept;
+ }  // namespace swift::runtime::arm64
+diff --git a/source/runtime/backend/loongarch64/emit_float.cpp b/source/runtime/backend/loongarch64/emit_float.cpp
+index a65acf3a..74c29a93 100644
+--- a/source/runtime/backend/loongarch64/emit_float.cpp
++++ b/source/runtime/backend/loongarch64/emit_float.cpp
+@@ -453,6 +453,16 @@ void Writer::Handle(Op<O::ArmScalarFP>, OpContext&) { Reject(CompileError::Unsup
+ 
+ void Writer::Handle(Op<O::ArmFPBinary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+ 
++void Writer::Handle(Op<O::ArmFPTernary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
++void Writer::Handle(Op<O::ArmFPUnary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
++void Writer::Handle(Op<O::ArmFPConvert>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
++void Writer::Handle(Op<O::ArmFPCompare>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
++void Writer::Handle(Op<O::ArmFPBitUnary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
+ void Writer::Handle(Op<O::ArmScalarFMA>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+ 
+ void Writer::Handle(Op<O::VecFCmp>, OpContext& ctx) {
+diff --git a/source/runtime/backend/loongarch64/vector_ops.inc b/source/runtime/backend/loongarch64/vector_ops.inc
+index 8b94fbc3..7b074ede 100644
+--- a/source/runtime/backend/loongarch64/vector_ops.inc
++++ b/source/runtime/backend/loongarch64/vector_ops.inc
+@@ -64,6 +64,11 @@ LA_VECTOR_OP(VecFMulScalar32)
+ LA_VECTOR_OP(VecFDivScalar32)
+ LA_VECTOR_OP(ArmScalarFP)
+ LA_VECTOR_OP(ArmFPBinary)
++LA_VECTOR_OP(ArmFPTernary)
++LA_VECTOR_OP(ArmFPUnary)
++LA_VECTOR_OP(ArmFPConvert)
++LA_VECTOR_OP(ArmFPCompare)
++LA_VECTOR_OP(ArmFPBitUnary)
+ LA_VECTOR_OP(ArmScalarFMA)
+ LA_VECTOR_OP(VecFAddScalar64)
+ LA_VECTOR_OP(VecFSubScalar64)
+diff --git a/source/runtime/backend/relocation.h b/source/runtime/backend/relocation.h
+index 3aaa17ae..d8012481 100644
+--- a/source/runtime/backend/relocation.h
++++ b/source/runtime/backend/relocation.h
+@@ -50,6 +50,7 @@ enum class HostSymbol : std::uint16_t {
+     X64FusedMultiplyAdd = 68,
+     X64FloatingCompare = 69,
+     ArmFPBinary = 70,
++    ArmFPValues = 71,
+     LoongWideDivide = 80,
+     LoongCheckedX87 = 81,
+     LoongCompareExchange128 = 82,
+diff --git a/source/runtime/backend/riscv64/emit_float.cpp b/source/runtime/backend/riscv64/emit_float.cpp
+index 0312d442..910b6d49 100644
+--- a/source/runtime/backend/riscv64/emit_float.cpp
++++ b/source/runtime/backend/riscv64/emit_float.cpp
+@@ -449,6 +449,16 @@ void Writer::Handle(Op<O::ArmScalarFP>, OpContext&) { Reject(CompileError::Unsup
+ 
+ void Writer::Handle(Op<O::ArmFPBinary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+ 
++void Writer::Handle(Op<O::ArmFPTernary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
++void Writer::Handle(Op<O::ArmFPUnary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
++void Writer::Handle(Op<O::ArmFPConvert>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
++void Writer::Handle(Op<O::ArmFPCompare>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
++void Writer::Handle(Op<O::ArmFPBitUnary>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
++
+ void Writer::Handle(Op<O::ArmScalarFMA>, OpContext&) { Reject(CompileError::UnsupportedOpcode); }
+ 
+ void Writer::Handle(Op<O::VecFCmp>, OpContext& ctx) {
+diff --git a/source/runtime/backend/riscv64/vector_ops.inc b/source/runtime/backend/riscv64/vector_ops.inc
+index 5a548109..3c64c175 100644
+--- a/source/runtime/backend/riscv64/vector_ops.inc
++++ b/source/runtime/backend/riscv64/vector_ops.inc
+@@ -64,6 +64,11 @@ RV_VECTOR_OP(VecFMulScalar32)
+ RV_VECTOR_OP(VecFDivScalar32)
+ RV_VECTOR_OP(ArmScalarFP)
+ RV_VECTOR_OP(ArmFPBinary)
++RV_VECTOR_OP(ArmFPTernary)
++RV_VECTOR_OP(ArmFPUnary)
++RV_VECTOR_OP(ArmFPConvert)
++RV_VECTOR_OP(ArmFPCompare)
++RV_VECTOR_OP(ArmFPBitUnary)
+ RV_VECTOR_OP(ArmScalarFMA)
+ RV_VECTOR_OP(VecFAddScalar64)
+ RV_VECTOR_OP(VecFSubScalar64)
+diff --git a/source/runtime/backend/x64/abi.h b/source/runtime/backend/x64/abi.h
+index ff192df5..51cef36e 100644
+--- a/source/runtime/backend/x64/abi.h
++++ b/source/runtime/backend/x64/abi.h
+@@ -11,7 +11,8 @@ enum Feature : std::uint64_t {
+     Pclmul = 32,
+     Sha = 64,
+     Cx16 = 128,
+-    Lahf = 256
++    Lahf = 256,
++    Avx = 512
+ };
+ 
+ inline constexpr unsigned StateRegister = 12, FlagsRegister = 3;
+diff --git a/source/runtime/backend/x64/allocate.cpp b/source/runtime/backend/x64/allocate.cpp
+index 867f64c8..b52a64b9 100644
+--- a/source/runtime/backend/x64/allocate.cpp
++++ b/source/runtime/backend/x64/allocate.cpp
+@@ -136,6 +136,7 @@ private:
+         result.block = block;
+         result.spill_bytes = result.call_offset = 0;
+         result.has_calls = false;
++        result.uses_fpcr = false;
+         result.fpcr_may_change = false;
+         result.flags_slot = result.condition_slot = UINT32_MAX;
+         result.native_entry.clear();
+@@ -155,8 +156,15 @@ private:
+             for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i, ++position) {
+                 const auto& operation = operations[i];
+                 if (options && options->arm_fpcr != UINT32_MAX) ObserveFPCR(operation, NodeId{i});
++                const bool fp_values = operation.opcode == OpCode::ArmFPTernary ||
++                                       operation.opcode == OpCode::ArmFPUnary ||
++                                       operation.opcode == OpCode::ArmFPConvert ||
++                                       operation.opcode == OpCode::ArmFPCompare;
+                 result.cold_fp_count += operation.opcode == OpCode::ArmFPBinary ||
+-                                        operation.opcode == OpCode::CallLambda;
++                                        operation.opcode == OpCode::CallLambda || fp_values;
++                result.uses_fpcr |= operation.opcode == OpCode::ArmFPBinary ||
++                                    operation.opcode == OpCode::CallLambda || fp_values ||
++                                    operation.opcode == OpCode::ArmFPBitUnary;
+                 result.cold_event_count += operation.opcode == OpCode::GuestSafepoint ||
+                                            operation.opcode == OpCode::GuestDispatchSafepoint;
+                 if (!SupportedType(operation.type)) {
+@@ -173,8 +181,8 @@ private:
+                 }
+                 if (operation.opcode == OpCode::CompareAndSwap128 ||
+                     operation.opcode == OpCode::CallLambda ||
+-                    operation.opcode == OpCode::ArmFPBinary || operation.opcode == OpCode::Cpuid ||
+-                    operation.opcode == OpCode::ReadSystem ||
++                    operation.opcode == OpCode::ArmFPBinary || fp_values ||
++                    operation.opcode == OpCode::Cpuid || operation.opcode == OpCode::ReadSystem ||
+                     operation.opcode == OpCode::ReadSystemPair ||
+                     operation.opcode == OpCode::X87Op || operation.opcode == OpCode::X87Execute ||
+                     operation.opcode == OpCode::Div128 ||
+@@ -237,7 +245,20 @@ private:
+ 
+     void ObserveFPCR(const Operation& operation, NodeId id) {
+         const auto opcode = operation.opcode;
+-        if (opcode == OpCode::CallLambda) {
++        if (opcode == OpCode::ArmFPBinary || opcode == OpCode::ArmFPTernary ||
++            opcode == OpCode::ArmFPUnary || opcode == OpCode::ArmFPConvert ||
++            opcode == OpCode::ArmFPCompare) {
++            const bool binary = opcode == OpCode::ArmFPBinary;
++            const unsigned argument = binary || opcode == OpCode::ArmFPCompare ? 2
++                                      : opcode == OpCode::ArmFPTernary         ? 3
++                                                                               : 1;
++            auto at = program.Operands(id).begin();
++            for (unsigned i = 0; i < argument; ++i) ++at;
++            const auto offsets = (*at++).Payload();
++            const auto control = static_cast<u32>(offsets);
++            const auto status = static_cast<u32>(binary ? (*at).Payload() : offsets >> 32);
++            result.fpcr_may_change |= Overlaps({control, 4}, {status, 4});
++        } else if (opcode == OpCode::CallLambda) {
+             auto at = program.Operands(id).begin();
+             ++at;
+             const bool exact_numeric =
+@@ -302,6 +323,7 @@ private:
+                 auto& home = result.homes[at];
+                 const auto inputs = program.Operands(NodeId{at});
+                 unsigned outputs = op.flag_outputs & 15;
++                if (op.opcode == OpCode::ArmFPCompare) outputs |= 15;
+                 if (op.opcode == OpCode::SetCarry || op.opcode == OpCode::InvertCarry) outputs |= 1;
+                 if (op.opcode == OpCode::SetOverflow) outputs |= 2;
+                 if (op.opcode == OpCode::ClearFlags) outputs |= inputs.front().Payload() & 15;
+@@ -641,18 +663,26 @@ private:
+                 unsigned chosen = count;
+                 bool reused{};
+                 if (DestructiveInput(operations[i])) {
+-                    const auto input = program.Operands(NodeId{i}).front();
+-                    if (input.Kind() == OperandKind::Value &&
+-                        operations[input.Payload()].type == operations[i].type &&
+-                        !result.homes[input.Payload()].spilled &&
+-                        result.homes[input.Payload()].last_use == h.definition_position) {
++                    const auto reuse = [&](CellView input) {
++                        if (input.Kind() != OperandKind::Value ||
++                            operations[input.Payload()].type != operations[i].type ||
++                            result.homes[input.Payload()].spilled ||
++                            result.homes[input.Payload()].last_use != h.definition_position)
++                            return count;
+                         for (unsigned j = 0; j < count; ++j)
+-                            if (bank[j] == input.Payload()) {
+-                                chosen = j;
+-                                reused = true;
+-                                break;
+-                            }
++                            if (bank[j] == input.Payload()) return j;
++                        return count;
++                    };
++                    auto inputs = program.Operands(NodeId{i}).begin();
++                    chosen = reuse(*inputs++);
++                    const auto opcode = operations[i].opcode;
++                    if (chosen == count && !vector && operations[i].operand_count == 2 &&
++                        (opcode == OpCode::Add || opcode == OpCode::And || opcode == OpCode::Or ||
++                         opcode == OpCode::Xor)) {
++                        chosen = reuse(*inputs);
++                        h.reuse_rhs = chosen != count;
+                     }
++                    reused = chosen != count;
+                 }
+                 u32 far = h.last_use;
+                 for (unsigned j = 0; !reused && j < count; ++j) {
+diff --git a/source/runtime/backend/x64/allocate.h b/source/runtime/backend/x64/allocate.h
+index 56aa9da6..af25f370 100644
+--- a/source/runtime/backend/x64/allocate.h
++++ b/source/runtime/backend/x64/allocate.h
+@@ -12,6 +12,7 @@ struct Home {
+     bool spilled{}, terminal_only{};
+     // A stored value can use its adjacent architectural write as backing.
+     std::uint8_t uniform_store_bytes{};
++    bool reuse_rhs{};
+ };
+ 
+ struct Allocation {
+@@ -27,7 +28,7 @@ struct Allocation {
+     std::uint32_t flags_slot{UINT32_MAX};
+     std::uint32_t condition_slot{UINT32_MAX};
+     std::uint32_t cold_fp_count{}, cold_event_count{};
+-    bool has_calls{}, fpcr_may_change{};
++    bool has_calls{}, fpcr_may_change{}, uses_fpcr{};
+ 
+     explicit operator bool() const noexcept { return error == backend::CompileError::None; }
+ };
+diff --git a/source/runtime/backend/x64/compile.h b/source/runtime/backend/x64/compile.h
+index 50bd2d77..ceab12e5 100644
+--- a/source/runtime/backend/x64/compile.h
++++ b/source/runtime/backend/x64/compile.h
+@@ -27,7 +27,7 @@ struct CompileOptions {
+     std::uint32_t arm_fpsr_offset{UINT32_MAX};
+     bool native_fp_environment{}, fault_locations{}, relocatable{}, local_flags{}, linked_flags{};
+     bool private_state{};
+-    bool cx16{true}, ssse3{}, sse41{}, sse42{}, fma{}, aes{}, pclmul{}, sha{}, lahf{};
++    bool cx16{true}, ssse3{}, sse41{}, sse42{}, fma{}, aes{}, pclmul{}, sha{}, lahf{}, avx{};
+ };
+ 
+ backend::CompileResult Compile(const ir::Program&, CompileOptions = {});
+diff --git a/source/runtime/backend/x64/emit.cpp b/source/runtime/backend/x64/emit.cpp
+index 11fe4de0..768473d2 100644
+--- a/source/runtime/backend/x64/emit.cpp
++++ b/source/runtime/backend/x64/emit.cpp
+@@ -389,7 +389,7 @@ void Writer::Run() {
+             overlaps(options.mxcsr_offset))
+             Reject(CompileError::UnsupportedOperand);
+     }
+-    const bool fp_guard = allocation.cold_fp_count && options.arm_fpcr != UINT32_MAX &&
++    const bool fp_guard = allocation.uses_fpcr && options.arm_fpcr != UINT32_MAX &&
+                           options.arm_fpcr_offset != UINT32_MAX;
+     const auto enter = [&](u32 b, u64 pc) {
+         flags = {};
+diff --git a/source/runtime/backend/x64/emit.h b/source/runtime/backend/x64/emit.h
+index f2c32a4f..c4e609af 100644
+--- a/source/runtime/backend/x64/emit.h
++++ b/source/runtime/backend/x64/emit.h
+@@ -69,6 +69,8 @@ public:
+     void CallRegister(const Reg64&);
+     void LambdaCall(OpContext&);
+     bool TryArmNumeric(OpContext&);
++    void ArmFPValues(OpContext&);
++    void MaterializeFPFlags();
+     void CheckArmFPInput(const Xmm&, unsigned bits, unsigned lanes, bool central, Label&);
+     void PrepareCall();
+ 
+@@ -88,7 +90,7 @@ public:
+     void ImportPackedFlags();
+     void ImportLinkedFlags();
+     void ExportLinkedFlags();
+-    void EnsureNativeFlags();
++    void EnsureNativeFlags(unsigned needed = 15);
+     void PrepareFlags(OpContext&);
+     void ClobberFlags(OpContext&);
+     bool PreservesFlags(OpContext&) const;
+@@ -125,12 +127,11 @@ public:
+         site.recovery[4] = static_cast<std::uint8_t>(access);
+         site.recovery[5] = static_cast<std::uint8_t>(bytes);
+         if (options.local_flags && flags.dirty && !fault_committed_flags) {
+-            if (flags.native) {
+-                site.recovery[0] = 2 | (flags.carry << 2);
+-                site.recovery[1] = 0x0f;
+-            } else {
+-                site.recovery[0] = 2 | (flags.saved_carry << 3) | (options.lahf << 4);
+-                site.recovery[1] = 0xf0;
++            const auto saved = 15 & ~flags.native;
++            site.recovery[0] =
++                    2 | (flags.carry << 2) | (flags.saved_carry << 3) | (options.lahf << 4);
++            site.recovery[1] = flags.native | (saved << 4);
++            if (saved) {
+                 site.recovery[2] = allocation.flags_slot;
+                 site.recovery[3] = allocation.flags_slot >> 8;
+                 site.recovery[7] = allocation.flags_slot >> 16;
+@@ -191,10 +192,21 @@ public:
+     bool in_call{}, fault_committed_flags{};
+ 
+     struct FlagsState {
+-        bool dirty{}, native{}, saved{}, carry{}, saved_carry{};
++        bool dirty{};
++        std::uint8_t native{}, saved{};
++        bool carry{}, saved_carry{}, floating{};
++
++        FlagsState() = default;
++
++        FlagsState(bool dirty, bool native, bool saved, bool carry, bool saved_carry)
++                : dirty(dirty)
++                , native(native ? 15 : 0)
++                , saved(saved ? 15 : 0)
++                , carry(carry)
++                , saved_carry(saved_carry) {}
+     } flags;
+ 
+-    bool defer_flags{}, merge_native_flags{};
++    bool defer_flags{};
+     bool condition_saved{};
+     unsigned flags_stack_bias{};
+     unsigned stack_bias{};
+@@ -248,9 +260,40 @@ public:
+         NodeId node;
+         Label entry, resume;
+         CallMasks masks;
++        FlagsState flags;
++        u64 pc{};
+     };
+ 
+     std::vector<NumericColdPath> cold_numeric;
++
++    struct NumericCallKey {
++        u64 encoded{};
++        u32 control{}, status{}, scalars{}, vectors{};
++        bool flags_saved{}, saved_carry{};
++        friend bool operator==(const NumericCallKey&, const NumericCallKey&) = default;
++    };
++
++    struct NumericCallHash {
++        std::size_t operator()(const NumericCallKey& key) const noexcept {
++            std::size_t hash = key.encoded ^ (key.encoded >> 32);
++            for (auto value : {key.control,
++                               key.status,
++                               key.scalars,
++                               key.vectors,
++                               u32(key.flags_saved),
++                               u32(key.saved_carry)})
++                hash ^= value + std::size_t{0x9e3779b9} + (hash << 6) + (hash >> 2);
++            return hash;
++        }
++    };
++
++    struct NumericCallStub {
++        NumericCallKey key;
++        Label entry;
++    };
++
++    std::vector<NumericCallStub> numeric_stubs;
++    std::unordered_map<NumericCallKey, u32, NumericCallHash> numeric_stub_index;
+     std::array<Label, 4> fp_constants;
+     std::array<bool, 4> fp_constants_used{};
+ 
+diff --git a/source/runtime/backend/x64/emit_arm_float.cpp b/source/runtime/backend/x64/emit_arm_float.cpp
+index 46898f56..00c72f08 100644
+--- a/source/runtime/backend/x64/emit_arm_float.cpp
++++ b/source/runtime/backend/x64/emit_arm_float.cpp
+@@ -50,96 +50,88 @@ void Writer::CheckArmFPInput(
+ bool Writer::TryArmNumeric(OpContext& c) {
+     using namespace vixl::aarch64;
+     using runtime::arm64::Numeric;
++    using Operation = runtime::arm64::FPValueKind;
+     using State = runtime::arm64::GuestState;
+-    if (!ArmNativeFP() || options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
+-        c.count != 5 || c.Arg(1).Kind() != OperandKind::Immediate ||
+-        c.Arg(1).Payload() != reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric) ||
+-        c.Arg(2).Kind() != OperandKind::Value)
+-        return false;
+-    const auto pointer = NodeId{u32(c.Arg(2).Payload())};
+-    if (source.Operations()[pointer.value].opcode != OpCode::GetUniformAddress) return false;
+-    const auto base = source.Operands(pointer).front().Payload();
+-    if (base > INT32_MAX - sizeof(State) ||
+-        options.arm_fpcr_offset != base + offsetof(State, fpcr) ||
+-        options.arm_fpsr_offset != base + offsetof(State, fpsr))
+-        return false;
+-    const auto constant = [&](CellView cell, u64& value) {
+-        if (cell.Kind() == OperandKind::Immediate) {
+-            value = cell.Payload();
+-            return true;
+-        }
+-        if (cell.Kind() != OperandKind::Value ||
+-            source.Operations()[cell.Payload()].opcode != OpCode::LoadImm)
++    const bool typed = c.operation.opcode != OpCode::CallLambda;
++    u64 base{}, encoded{};
++    if (typed) {
++        if (c.count < 3 || c.count > c.args.size() ||
++            c.Arg(c.count - 1).Kind() != OperandKind::Immediate ||
++            c.Arg(c.count - 2).Kind() != OperandKind::Immediate)
++            Reject(CompileError::UnsupportedOperand);
++        encoded = c.Arg(c.count - 1).Payload();
++    } else {
++        if (!ArmNativeFP() || options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
++            c.count != 5 || c.Arg(1).Kind() != OperandKind::Immediate ||
++            c.Arg(1).Payload() !=
++                    reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric) ||
++            c.Arg(2).Kind() != OperandKind::Value)
+             return false;
+-        value = source.Operands(NodeId{u32(cell.Payload())}).front().Payload();
+-        return true;
+-    };
+-    u64 encoded;
+-    if (!constant(c.Arg(3), encoded)) return false;
++        const auto pointer = NodeId{u32(c.Arg(2).Payload())};
++        if (source.Operations()[pointer.value].opcode != OpCode::GetUniformAddress) return false;
++        base = source.Operands(pointer).front().Payload();
++        if (base > INT32_MAX - sizeof(State) ||
++            options.arm_fpcr_offset != base + offsetof(State, fpcr) ||
++            options.arm_fpsr_offset != base + offsetof(State, fpsr))
++            return false;
++        auto instruction = c.Arg(3);
++        if (instruction.Kind() == OperandKind::Value &&
++            source.Operations()[instruction.Payload()].opcode == OpCode::LoadImm)
++            instruction = source.Operands(NodeId{u32(instruction.Payload())}).front();
++        if (instruction.Kind() != OperandKind::Immediate) return false;
++        encoded = instruction.Payload();
++    }
++    const auto info = runtime::arm64::DescribeFPValues(encoded);
++    const auto operation = info.kind;
++    if (operation == Operation::Invalid) return false;
+     const auto family = static_cast<Numeric>((encoded >> 32) & 255);
+-    const u32 word = encoded, type = (word >> 22) & 3;
+-    unsigned bits = type == 1 ? 64 : 32, lanes = 1;
++    const u32 word = encoded, bits = info.bits, lanes = info.lanes, control = info.control,
++              output_bits = info.output_bits, integer_bits = info.integer_bits;
+     const unsigned rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
+-    enum class Operation { Compare, Fused, Divide, Sqrt, Precision, FromInt, ToInt };
+-    Operation operation;
+-    unsigned control = 0, output_bits = bits, integer_bits = word >> 31 ? 64 : 32;
+-    bool indexed = false;
+-    if (family == Numeric::Scalar && type != 3) {
+-        if ((word & FPCompareFMask) == FPCompareFixed ||
+-            (word & FPConditionalCompareFMask) == FPConditionalCompareFixed)
+-            operation = Operation::Compare;
+-        else if ((word & FPDataProcessing3SourceFMask) == FPDataProcessing3SourceFixed) {
+-            operation = Operation::Fused;
+-            control = ((bool(word & (1u << 15)) != bool(word & (1u << 21))) ? 1u : 0u) |
+-                      ((word & (1u << 21)) ? 2u : 0u);
+-        } else if ((word & FPDataProcessing2SourceMask) == FDIV_s ||
+-                   (word & FPDataProcessing2SourceMask) == FDIV_d)
+-            operation = Operation::Divide;
+-        else if ((word & FPDataProcessing1SourceMask) == FSQRT_s ||
+-                 (word & FPDataProcessing1SourceMask) == FSQRT_d)
+-            operation = Operation::Sqrt;
+-        else if ((word & FPDataProcessing1SourceMask) == FCVT_ds ||
+-                 (word & FPDataProcessing1SourceMask) == FCVT_sd) {
+-            operation = Operation::Precision;
+-            output_bits = bits == 32 ? 64 : 32;
+-        } else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
+-                   (((word >> 16) & 31) == 2 || ((word >> 16) & 31) == 3))
+-            operation = Operation::FromInt;
+-        else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
+-                 (((word >> 16) & 31) == 24 || ((word >> 16) & 31) == 25))
+-            operation = Operation::ToInt;
+-        else
+-            return false;
+-    } else if (family == Numeric::Fused &&
+-               ((word & NEON3SameFPMask) == NEON_FMLA || (word & NEON3SameFPMask) == NEON_FMLS)) {
+-        operation = Operation::Fused;
+-        bits = word & (1u << 22) ? 64 : 32;
+-        lanes = (word & NEON_Q ? 128 : 64) / bits;
+-        control = (word & NEON3SameFPMask) == NEON_FMLS ? 1 : 0;
+-        output_bits = bits;
+-    } else if (family == Numeric::Indexed && ((word >> 22) & 3) >= 2) {
+-        const bool scalar = word & NEONScalar;
+-        const auto mask =
+-                scalar ? u32(NEONScalarByIndexedElementMask) : u32(NEONByIndexedElementMask);
+-        const auto flags = scalar ? (u32(NEON_Q) | u32(NEONScalar)) : 0;
+-        const auto op = word & mask;
+-        if (op != (u32(NEON_FMLA_H_byelement) | flags) &&
+-            op != (u32(NEON_FMLS_H_byelement) | flags))
+-            return false;
+-        operation = Operation::Fused;
+-        bits = ((word >> 22) & 3) == 2 ? 32 : 64;
+-        lanes = scalar ? 1 : (word & NEON_Q ? 128 : 64) / bits;
+-        control = op == (u32(NEON_FMLS_H_byelement) | flags) ? 1 : 0;
+-        output_bits = bits;
+-        indexed = true;
+-    } else
+-        return false;
+-    if (operation == Operation::Fused && !options.fma) return false;
+-    if (!runtime::arm64::SupportsNumeric(family, word)) return false;
+-
+-    cold_numeric.push_back({c.node, {}, {}, LiveCallMasks()});
++    const bool indexed = info.indexed;
++    if (typed) {
++        const unsigned inputs = operation == Operation::Fused     ? 3
++                                : operation == Operation::Compare ? 2
++                                                                  : 1;
++        const auto op = c.operation.opcode;
++        const bool valid =
++                op == OpCode::ArmFPTernary   ? operation == Operation::Fused
++                : op == OpCode::ArmFPCompare ? operation == Operation::Compare
++                : op == OpCode::ArmFPConvert
++                        ? operation == Operation::FromInt || operation == Operation::ToInt
++                        : op == OpCode::ArmFPUnary && (operation == Operation::Sqrt ||
++                                                       operation == Operation::Precision);
++        const auto offsets = c.Arg(c.count - 2).Payload();
++        if (!valid || c.count != inputs + 2 || u32(offsets) > INT32_MAX - 4 ||
++            (offsets >> 32) > INT32_MAX - 4 ||
++            (operation == Operation::Compare ? c.operation.type != ir::Type::Void
++             : operation == Operation::ToInt ? c.operation.type != ir::Type::U64
++                                             : c.operation.type != ir::Type::V128))
++            Reject(CompileError::UnsupportedOperand);
++        for (unsigned i = 0; i < inputs; ++i)
++            if (View(c.Arg(i)) !=
++                (operation == Operation::FromInt ? ir::Type::U64 : ir::Type::V128))
++                Reject(CompileError::UnsupportedOperand);
++        if (ArmNativeFP() &&
++            (u32(offsets) != options.arm_fpcr_offset || (offsets >> 32) != options.arm_fpsr_offset))
++            Reject(CompileError::UnsupportedOperand);
++    }
++    const bool native = ArmNativeFP() && options.arm_fpcr != UINT32_MAX &&
++                        !allocation.fpcr_may_change &&
++                        (operation != Operation::Fused || options.fma);
++    if (!typed && !native) return false;
++    cold_numeric.push_back({c.node, {}, {}, LiveCallMasks(), flags, guest_pc});
+     auto& path = cold_numeric.back();
+     auto& slow = path.entry;
++    if (!native) {
++        jmp(slow, T_NEAR);
++        L(path.resume);
++        if (operation == Operation::Compare && options.local_flags) {
++            flags = {true, true, false, false, false};
++            flags.floating = true;
++        }
++        return true;
++    }
+     const bool flush = options.arm_fpcr & (1u << 24);
+     const auto vector_offset = [&](unsigned reg) { return base + offsetof(State, q) + reg * 16; };
+     const auto clear_inactive = [&](const Xmm& value) {
+@@ -150,7 +142,9 @@ bool Writer::TryArmNumeric(OpContext& c) {
+             movq(value, value);
+     };
+     const auto read_gpr = [&](unsigned reg) {
+-        if (reg == 31)
++        if (typed)
++            Read(c.Arg(0), rax);
++        else if (reg == 31)
+             mov(eax, 0);
+         else {
+             const auto offset = base + reg * 8;
+@@ -162,7 +156,7 @@ bool Writer::TryArmNumeric(OpContext& c) {
+         }
+     };
+     const auto write_gpr = [&](unsigned reg) {
+-        if (reg == 31) return;
++        if (typed || reg == 31) return;
+         const auto offset = base + reg * 8;
+         const auto pin = PinnedSlot(offset, 8);
+         if (pin >= 0)
+@@ -188,13 +182,18 @@ bool Writer::TryArmNumeric(OpContext& c) {
+         else
+             cvtsi2sd(xmm0, rax);
+     } else {
+-        movdqu(xmm0, ptr[r12 + vector_offset(rn)]);
++        if (typed)
++            ReadVector(c.Arg(0), xmm0);
++        else
++            movdqu(xmm0, ptr[r12 + vector_offset(rn)]);
+         clear_inactive(xmm0);
+         if (operation == Operation::Compare || operation == Operation::Divide ||
+             operation == Operation::Fused) {
+             if (operation == Operation::Compare && (word & FPCompareFMask) == FPCompareFixed &&
+                 (word & 8))
+                 pxor(xmm1, xmm1);
++            else if (typed)
++                ReadVector(c.Arg(1), xmm1);
+             else
+                 movdqu(xmm1, ptr[r12 + vector_offset(rm)]);
+             if (indexed) {
+@@ -206,7 +205,10 @@ bool Writer::TryArmNumeric(OpContext& c) {
+         }
+         if (operation == Operation::Fused) {
+             const auto addend = family == Numeric::Scalar ? (word >> 10) & 31 : rd;
+-            movdqu(xmm14, ptr[r12 + vector_offset(addend)]);
++            if (typed)
++                ReadVector(c.Arg(2), xmm14);
++            else
++                movdqu(xmm14, ptr[r12 + vector_offset(addend)]);
+             clear_inactive(xmm14);
+         }
+         if (flush) {
+@@ -235,13 +237,22 @@ bool Writer::TryArmNumeric(OpContext& c) {
+                 else
+                     ucomisd(xmm0, xmm1);
+             }
+-            mov(eax, 2);
+-            mov(edx, 8);
+-            cmovb(eax, edx);
+-            mov(edx, 6);
+-            cmove(eax, edx);
+-            mov(edx, 3);
+-            cmovp(eax, edx);
++            if (typed && options.local_flags) {
++                flags = {true, true, false, false, false};
++                flags.floating = true;
++            } else {
++                mov(eax, 2);
++                mov(edx, 8);
++                cmovb(eax, edx);
++                mov(edx, 6);
++                cmove(eax, edx);
++                mov(edx, 3);
++                cmovp(eax, edx);
++                if (typed) {
++                    shl(rax, 28);
++                    MergeFlags(rax, 15);
++                }
++            }
+         } else if (operation == Operation::ToInt) {
+             const bool is_unsigned = word & (1u << 16);
+             movq(rax, xmm0);
+@@ -265,7 +276,7 @@ bool Writer::TryArmNumeric(OpContext& c) {
+                 cvttsd2si(rax, xmm0);
+             if (integer_bits == 32) mov(eax, eax);
+             write_gpr(rd);
+-            mov(eax, 0);
++            if (!typed) mov(eax, 0);
+         } else {
+             if (operation == Operation::Fused) {
+                 // Negate only the active lanes before ARM NaN source selection.
+@@ -313,13 +324,68 @@ bool Writer::TryArmNumeric(OpContext& c) {
+             CheckArmFPResult(c, output_bits, lanes, slow);
+         }
+     }
+-    if (operation != Operation::Compare && operation != Operation::ToInt) {
+-        movdqu(ptr[r12 + vector_offset(rd)], xmm0);
+-        mov(eax, 0);
++    if (!typed) {
++        if (operation != Operation::Compare && operation != Operation::ToInt) {
++            movdqu(ptr[r12 + vector_offset(rd)], xmm0);
++            mov(eax, 0);
++        }
++        mov(dword[r12 + base + offsetof(State, helper_status)], 0);
+     }
+-    mov(dword[r12 + base + offsetof(State, helper_status)], 0);
+     L(path.resume);
+     c.scalar_normalized = true;
+     return true;
+ }
++
++void Writer::ArmFPValues(OpContext& c) {
++    if (!TryArmNumeric(c)) Reject(CompileError::UnsupportedOperand);
++}
++
++void Writer::Handle(Op<OpCode::ArmFPTernary>, OpContext& c) { ArmFPValues(c); }
++
++void Writer::Handle(Op<OpCode::ArmFPUnary>, OpContext& c) { ArmFPValues(c); }
++
++void Writer::Handle(Op<OpCode::ArmFPConvert>, OpContext& c) { ArmFPValues(c); }
++
++void Writer::Handle(Op<OpCode::ArmFPCompare>, OpContext& c) { ArmFPValues(c); }
++
++void Writer::Handle(Op<OpCode::ArmFPBitUnary>, OpContext& c) {
++    const auto control = c.Arg(1).Payload(), word = c.Arg(2).Payload();
++    if (!c.vector_result || View(c.Arg(0)) != ir::Type::V128 || control > INT32_MAX - 4 ||
++        word > UINT32_MAX || !runtime::arm64::IsFPBitUnary(word))
++        Reject(CompileError::UnsupportedOperand);
++    const auto type = (word >> 22) & 3;
++    const auto bits = type == 3 ? 16u : type == 1 ? 64u : 32u;
++    const auto op = (word & vixl::aarch64::FPDataProcessing1SourceMask) & ~(3u << 22);
++    const u64 mask = UINT64_MAX >> (64 - bits), sign = u64{1} << (bits - 1);
++    ReadVector(c.Arg(0), xmm0);
++    movq(rax, xmm0);
++    if (bits < 64) and_(eax, static_cast<u32>(mask));
++    if (op != vixl::aarch64::FMOV_s) {
++        const bool dynamic = options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
++                             control != options.arm_fpcr_offset;
++        if (dynamic) mov(rdx, rax);
++        mov(r10, op == vixl::aarch64::FABS_s ? mask & ~sign : sign);
++        if (op == vixl::aarch64::FABS_s)
++            and_(rax, r10);
++        else
++            xor_(rax, r10);
++        if (dynamic) {
++            Label done;
++            const u64 exponent = bits == 16 ? 0x7c00 : bits == 32 ? 0x7f800000 : 0x7ff0000000000000;
++            mov(r10, exponent);
++            mov(r11, rdx);
++            and_(r11, r10);
++            cmp(r11, r10);
++            jne(done, T_NEAR);
++            mov(r10, mask & ~(sign | exponent));
++            test(rdx, r10);
++            jz(done, T_NEAR);
++            test(dword[r12 + control], 2);
++            jz(done, T_NEAR);
++            mov(rax, rdx);
++            L(done);
++        }
++    }
++    movq(xmm0, rax);
++}
+ }  // namespace swift::runtime::backend::x64::detail
+diff --git a/source/runtime/backend/x64/emit_flags.cpp b/source/runtime/backend/x64/emit_flags.cpp
+index d4962d96..9723d721 100644
+--- a/source/runtime/backend/x64/emit_flags.cpp
++++ b/source/runtime/backend/x64/emit_flags.cpp
+@@ -13,7 +13,10 @@ void Writer::ImportLinkedFlags() {
+         return;
+     }
+     mov(r11, qword[r12 + SVM_X64_CTX_EFLAGS - SVM_X64_CTX_STATE]);
+-    mov(qword[rsp + allocation.flags_slot + stack_bias], r11);
++    if (options.lahf)
++        mov(word[rsp + allocation.flags_slot + stack_bias], r11w);
++    else
++        mov(qword[rsp + allocation.flags_slot + stack_bias], r11);
+     flags = {true, false, true, false, true};
+ }
+ 
+@@ -23,7 +26,10 @@ void Writer::ExportLinkedFlags() {
+         return;
+     }
+     SaveNativeFlags(true);
+-    mov(r11, qword[rsp + allocation.flags_slot + stack_bias]);
++    if (options.lahf)
++        movzx(r11d, word[rsp + allocation.flags_slot + stack_bias]);
++    else
++        mov(r11, qword[rsp + allocation.flags_slot + stack_bias]);
+     mov(qword[r12 + SVM_X64_CTX_EFLAGS - SVM_X64_CTX_STATE], r11);
+ }
+ 
+@@ -41,7 +47,7 @@ void Writer::ImportPackedFlags() {
+         shr(rax, 28);
+         and_(eax, 1);
+         or_(edx, eax);
+-        mov(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], rdx);
++        mov(word[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], dx);
+         flags = {true, false, true, false, true};
+         return;
+     }
+@@ -65,13 +71,69 @@ void Writer::ImportPackedFlags() {
+     flags = {true, false, true, false, true};
+ }
+ 
++void Writer::MaterializeFPFlags() {
++    mov(edx, 2);
++    mov(r10d, 8);
++    cmovb(edx, r10d);
++    mov(r10d, 6);
++    cmove(edx, r10d);
++    mov(r10d, 3);
++    cmovp(edx, r10d);
++    shl(rdx, 28);
++    MergeFlags(rdx, 15);
++    flags = {};
++}
++
+ void Writer::SaveNativeFlags(bool canonical) {
+     if (!options.local_flags) return;
++    if (flags.floating) {
++        push(rax);
++        push(rdx);
++        push(r10);
++        push(rsi);
++        flags_stack_bias += 32;
++        MaterializeFPFlags();
++        ImportPackedFlags();
++        flags_stack_bias -= 32;
++        pop(rsi);
++        pop(r10);
++        pop(rdx);
++        pop(rax);
++        return;
++    }
+     if (!flags.dirty) {
+         if (canonical) ImportPackedFlags();
+         return;
+     }
+-    if (flags.saved && (!canonical || flags.saved_carry)) return;
++    if (flags.saved == 15 && (!canonical || flags.saved_carry)) return;
++    if (flags.native && flags.native != 15) {
++        const auto selected = flags.native;
++        const unsigned mask =
++                options.lahf
++                        ? ((selected & 1) ? 0x100u : 0u) | ((selected & 2) ? 1u : 0u) |
++                                  ((selected & 4) ? 0x4000u : 0u) | ((selected & 8) ? 0x8000u : 0u)
++                        : ((selected & 1) ? 1u : 0u) | ((selected & 2) ? 0x800u : 0u) |
++                                  ((selected & 4) ? 0x40u : 0u) | ((selected & 8) ? 0x80u : 0u);
++        const auto slot = rsp + allocation.flags_slot + stack_bias + flags_stack_bias + 8;
++        push(rax);
++        if (options.lahf) {
++            lahf();
++            seto(al);
++            and_(eax, mask);
++            and_(word[slot], static_cast<std::uint16_t>(~mask));
++            or_(word[slot], ax);
++        } else {
++            pushfq();
++            pop(rax);
++            and_(eax, mask);
++            and_(qword[slot], static_cast<std::int32_t>(~mask));
++            or_(qword[slot], rax);
++        }
++        pop(rax);
++        if (selected & 1) flags.saved_carry = flags.carry;
++        flags.native = 0;
++        flags.saved = 15;
++    }
+     if (flags.native) {
+         if (canonical && !flags.carry) {
+             cmc();
+@@ -88,19 +150,28 @@ void Writer::SaveNativeFlags(bool canonical) {
+             pop(r11);
+             mov(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], r11);
+         }
+-        flags.saved = true;
++        flags.saved = 15;
+         flags.saved_carry = flags.carry;
+     } else if (canonical && !flags.saved_carry) {
+-        xor_(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias],
+-             options.lahf ? 0x100 : 1);
++        if (options.lahf)
++            xor_(word[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], 0x100);
++        else
++            xor_(qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias], 1);
+         flags.saved_carry = true;
+     }
+ }
+ 
+ void Writer::MaterializeFlags() {
+     if (!options.local_flags || !flags.dirty) return;
++    if (flags.floating) {
++        MaterializeFPFlags();
++        return;
++    }
+     SaveNativeFlags();
+-    mov(rdx, qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
++    if (options.lahf)
++        movzx(edx, word[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
++    else
++        mov(rdx, qword[rsp + allocation.flags_slot + stack_bias + flags_stack_bias]);
+     if (options.lahf) {
+         mov(r10d, edx);
+         and_(r10d, 0xc000);
+@@ -119,9 +190,11 @@ void Writer::MaterializeFlags() {
+     flags = {};
+ }
+ 
+-void Writer::EnsureNativeFlags() {
++void Writer::EnsureNativeFlags(unsigned needed) {
++    if (flags.floating) SaveNativeFlags();
+     if (!flags.dirty) ImportPackedFlags();
+-    if (!flags.native) {
++    if ((flags.native & needed) != needed) {
++        SaveNativeFlags();
+         if (options.lahf) {
+             mov(r11, rax);
+             movzx(eax, word[rsp + allocation.flags_slot + stack_bias]);
+@@ -132,7 +205,7 @@ void Writer::EnsureNativeFlags() {
+             push(qword[rsp + allocation.flags_slot + stack_bias]);
+             popfq();
+         }
+-        flags.native = true;
++        flags.native = 15;
+         flags.carry = flags.saved_carry;
+     }
+ }
+@@ -140,8 +213,15 @@ void Writer::EnsureNativeFlags() {
+ void Writer::PrepareFlags(OpContext& c) {
+     if (!options.local_flags) return;
+     const auto op = c.operation.opcode;
+-    if (op == O::ArmFPBinary && ArmNativeFP() && options.sse41 && options.arm_fpcr != UINT32_MAX &&
+-        !(options.arm_fpcr & (1u << 24)) && !allocation.fpcr_may_change)
++    if (op == O::ArmFPCompare) {
++        flags = {};
++        return;
++    }
++    if (flags.floating && HasAnyEffect(EffectsFor(op, c.operation.Metadata()), Effect::MayFault))
++        MaterializeFlags();
++    if (op == O::ArmFPBinary && ArmNativeFP() && (options.sse41 || options.avx) &&
++        options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24)) &&
++        !allocation.fpcr_may_change)
+         return;
+     const bool arithmetic =
+             op == O::Add || op == O::Sub || op == O::Neg || op == O::Adc || op == O::Sbb;
+@@ -151,10 +231,9 @@ void Writer::PrepareFlags(OpContext& c) {
+                                (c.width == 32 || c.width == 64) &&
+                                allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX &&
+                                (arithmetic || logical);
+-    defer_flags = native_output && c.operation.flag_outputs == 15;
+-    merge_native_flags = native_output && !defer_flags;
++    defer_flags = native_output;
+     if (native_output) {
+-        if (merge_native_flags || op == O::Adc || op == O::Sbb) {
++        if (c.operation.flag_outputs != 15 || op == O::Adc || op == O::Sbb) {
+             SaveNativeFlags(true);
+             flags.native = false;
+         } else
+@@ -203,7 +282,7 @@ void Writer::ClobberFlags(OpContext& c) {
+     const auto condition = allocation.terminal_conditions[block.value];
+     const bool complete =
+             condition < 16 && term == ir::ConditionFlags(static_cast<ir::Condition>(condition));
+-    if (term && complete && !condition_saved && flags.native) {
++    if (term && complete && !condition_saved && (flags.native & term) == term) {
+         const auto cc = NativeCondition(static_cast<ir::Condition>(condition));
+         if (cc == 16)
+             mov(byte[rsp + allocation.condition_slot], 1);
+@@ -240,6 +319,12 @@ void Writer::ClobberFlags(OpContext& c) {
+                 case 9:
+                     setns(target);
+                     break;
++                case 10:
++                    setp(target);
++                    break;
++                case 11:
++                    setnp(target);
++                    break;
+                 case 12:
+                     setl(target);
+                     break;
+@@ -294,7 +379,50 @@ bool Writer::PreservesFlags(OpContext& c) const {
+ }
+ 
+ unsigned Writer::NativeCondition(ir::Condition condition) {
+-    EnsureNativeFlags();
++    if (flags.floating) {
++        switch (condition) {
++            case ir::Condition::VS:
++                return 10;
++            case ir::Condition::VC:
++                return 11;
++            case ir::Condition::GE:
++                return 3;
++            case ir::Condition::LT:
++                return 2;
++            case ir::Condition::GT:
++                return 7;
++            case ir::Condition::LE:
++                return 6;
++            case ir::Condition::AL:
++            case ir::Condition::NV:
++                return 16;
++            default:
++                break;
++        }
++        const bool equal = condition == ir::Condition::EQ || condition == ir::Condition::NE;
++        const bool high = condition == ir::Condition::HI || condition == ir::Condition::LS;
++        if (equal) {
++            sete(al);
++            setnp(dl);
++        } else {
++            if (high)
++                seta(al);
++            else
++                setnc(al);
++            setp(dl);
++        }
++        movzx(eax, al);
++        movzx(edx, dl);
++        SaveNativeFlags();
++        if (equal)
++            and_(eax, edx);
++        else
++            or_(eax, edx);
++        const bool inverse = condition == ir::Condition::NE || condition == ir::Condition::CC ||
++                             condition == ir::Condition::MI || condition == ir::Condition::LS;
++        return inverse ? 4 : 5;
++    }
++    EnsureNativeFlags(ir::ConditionFlags(condition));
+     if ((condition == ir::Condition::HI || condition == ir::Condition::LS) && !flags.carry) {
+         cmc();
+         flags.carry = true;
+@@ -365,6 +493,12 @@ void Writer::NativeJump(unsigned condition, Label& target) {
+         case 9:
+             jns(target, T_NEAR);
+             break;
++        case 10:
++            jp(target, T_NEAR);
++            break;
++        case 11:
++            jnp(target, T_NEAR);
++            break;
+         case 12:
+             jl(target, T_NEAR);
+             break;
+@@ -403,8 +537,8 @@ void Writer::BranchTo(BlockId target) {
+ void Writer::ConditionalBranch(unsigned cc, BlockId yes, BlockId no) {
+     const auto ready = [&](BlockId target) {
+         return !options.local_flags || !allocation.flags_input[target.value] ||
+-               (allocation.native_entry[target.value] ? flags.native && flags.carry
+-                                                      : flags.saved && flags.saved_carry);
++               (allocation.native_entry[target.value] ? flags.native == 15 && flags.carry
++                                                      : flags.saved == 15 && flags.saved_carry);
+     };
+     if (ready(yes)) {
+         NativeJump(cc, blocks[yes.value]);
+@@ -491,36 +625,9 @@ void Writer::CaptureFlags(OpContext& c) {
+                  false,
+                  subtract && c.operation.Metadata().profile == FlagProfile::ArithmeticRaw,
+                  false};
+-        return;
+-    }
+-    if (options.local_flags && merge_native_flags) {
+-        const auto selected = c.operation.flag_outputs;
+-        const unsigned mask =
+-                options.lahf
+-                        ? ((selected & 1) ? 0x100u : 0u) | ((selected & 2) ? 1u : 0u) |
+-                                  ((selected & 4) ? 0x4000u : 0u) | ((selected & 8) ? 0x8000u : 0u)
+-                        : ((selected & 1) ? 1u : 0u) | ((selected & 2) ? 0x800u : 0u) |
+-                                  ((selected & 4) ? 0x40u : 0u) | ((selected & 8) ? 0x80u : 0u);
+-        const auto op = c.operation.opcode;
+-        const bool raw_subtract = (op == O::Sub || op == O::Sbb || op == O::Neg) &&
+-                                  c.operation.Metadata().profile == FlagProfile::ArithmeticRaw;
+-        pushfq();
+-        pop(rdx);
+-        if ((selected & 1) && !raw_subtract) xor_(edx, 1);
+-        if (options.lahf) {
+-            mov(r11d, edx);
+-            shl(edx, 8);
+-            and_(edx, 0xc100);
+-            shr(r11d, 11);
+-            and_(r11d, 1);
+-            or_(edx, r11d);
+-        }
+-        and_(edx, mask);
+-        mov(r11, qword[rsp + allocation.flags_slot]);
+-        and_(r11, static_cast<std::int32_t>(~mask));
+-        or_(r11, rdx);
+-        mov(qword[rsp + allocation.flags_slot], r11);
+-        flags = {true, false, true, false, true};
++        flags.native = c.operation.flag_outputs;
++        flags.saved = 15 & ~flags.native;
++        flags.saved_carry = true;
+         return;
+     }
+     pushfq();
+diff --git a/source/runtime/backend/x64/emit_float.cpp b/source/runtime/backend/x64/emit_float.cpp
+index 20b7eba0..9e4f2377 100644
+--- a/source/runtime/backend/x64/emit_float.cpp
++++ b/source/runtime/backend/x64/emit_float.cpp
+@@ -28,6 +28,23 @@ void Writer::HarvestArmFPStatus(bool saved, bool restore) {
+ }
+ 
+ void Writer::CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& slow) {
++    if (options.avx) {
++        const auto index = bits == 32 ? 0u : 2u;
++        fp_constants_used[index] = fp_constants_used[index + 1] = true;
++        if (bits == 32) {
++            vandps(xmm14, xmm0, ptr[rip + fp_constants[index]]);
++            vcmpps(xmm14, xmm14, ptr[rip + fp_constants[index + 1]], 8);
++        } else {
++            vandpd(xmm14, xmm0, ptr[rip + fp_constants[index]]);
++            vcmppd(xmm14, xmm14, ptr[rip + fp_constants[index + 1]], 8);
++        }
++        vpmovmskb(ecx, xmm14);
++        Label ready;
++        jrcxz(ready);
++        jmp(slow, T_NEAR);
++        L(ready);
++        return;
++    }
+     if (options.sse41) {
+         const auto index = bits == 32 ? 0u : 2u;
+         fp_constants_used[index] = fp_constants_used[index + 1] = true;
+@@ -533,7 +550,8 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
+                format = c.Arg(4).Payload();
+     const bool post_check =
+             ArmNativeFP() && options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24));
+-    if (options.local_flags && flags.dirty && !(post_check && options.sse41)) {
++    if (options.local_flags && flags.dirty &&
++        (flags.floating || !(post_check && (options.sse41 || options.avx)))) {
+         SaveNativeFlags(true);
+         flags.native = false;
+     }
+@@ -567,6 +585,12 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
+         L(path.resume);
+         return;
+     }
++    if (kind == 3 && !ArmNativeFP()) {
++        jmp(slow, T_NEAR);
++        L(path.resume);
++        flags = preserved_flags;
++        return;
++    }
+     if (options.arm_fpcr == UINT32_MAX) {
+         cmp(dword[r12 + control], 0);
+         jne(slow, T_NEAR);
+@@ -582,9 +606,9 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
+     }
+     // Zero or central finite exponents only. For F32 e in [65,189],
+     // F64 e in [513,1533]: even a product remains normal, and the smallest
+-    // nonzero sum/difference is normal. Only IXC can arise; cancellation and
+-    // signed zeros have identical round-to-nearest semantics. No speculative
+-    // result or exception needs rollback, including the MinNorm boundary.
++    // nonzero sum/difference is normal. Add/sub/mul can only raise IXC here.
++    // Division also admits zero divisors through native FPSR accumulation
++    // and checks its result for NaN before committing the destination.
+     if (!post_check)
+         for (const auto input : {xmm0, xmm1}) {
+             for (unsigned lane = 0; lane < lanes; ++lane) {
+@@ -635,12 +659,13 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
+                 subss(xmm0, xmm1);
+             else
+                 subps(xmm0, xmm1);
+-        } else {
++        } else if (kind == 2) {
+             if (scalar)
+                 mulss(xmm0, xmm1);
+             else
+                 mulps(xmm0, xmm1);
+-        }
++        } else
++            divss(xmm0, xmm1);
+     } else {
+         if (kind == 0) {
+             if (scalar)
+@@ -652,12 +677,13 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
+                 subsd(xmm0, xmm1);
+             else
+                 subpd(xmm0, xmm1);
+-        } else {
++        } else if (kind == 2) {
+             if (scalar)
+                 mulsd(xmm0, xmm1);
+             else
+                 mulpd(xmm0, xmm1);
+-        }
++        } else
++            divsd(xmm0, xmm1);
+     }
+     if (!regional && !ArmNativeFP()) {
+         stmxcsr(dword[rsp + tmp + 52]);
+@@ -672,7 +698,7 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
+         movd(xmm0, eax);
+     } else if (!scalar && lanes * bits == 64)
+         movq(xmm0, xmm0);
+-    if (post_check) CheckArmFPResult(c, bits, lanes, slow);
++    if (post_check || kind == 3) CheckArmFPResult(c, bits, lanes, slow);
+     L(path.resume);
+     flags = preserved_flags;
+ }
+@@ -693,7 +719,10 @@ void Writer::EmitColdPaths() {
+         if (path.flags.dirty) {
+             flags = {true, false, true, false, true};
+             if (path.flags.saved && !path.flags.saved_carry) {
+-                xor_(qword[rsp + allocation.flags_slot], options.lahf ? 0x100 : 1);
++                if (options.lahf)
++                    xor_(word[rsp + allocation.flags_slot], 0x100);
++                else
++                    xor_(qword[rsp + allocation.flags_slot], 1);
+                 flags.saved_carry = false;
+             }
+             if (path.flags.native) {
+@@ -735,14 +764,104 @@ void Writer::EmitColdPaths() {
+     for (auto& path : cold_numeric) {
+         current = path.node;
+         L(path.entry);
+-        flags = {};
+         OpContext context{source.Operations()[current.value], current, source.Operands(current)};
+         for (const auto input : context.operands) context.args[context.count++] = input;
+         context.width = TypeBits(context.operation.type);
++        if (context.operation.opcode != OpCode::CallLambda) {
++            flags = path.flags;
++            if (flags.dirty && (flags.native || flags.floating || flags.saved != 15))
++                SaveNativeFlags();
++            flags.native = 0;
++            const auto encoded = context.Arg(context.count - 1).Payload();
++            const auto info = runtime::arm64::DescribeFPValues(encoded);
++            const auto offsets = context.Arg(context.count - 2).Payload();
++            const unsigned inputs = context.count - 2;
++            for (unsigned i = 0; i < inputs; ++i) {
++                if (info.kind == runtime::arm64::FPValueKind::FromInt) {
++                    Read(context.Arg(i), rax);
++                    movq(xmm0, rax);
++                } else
++                    ReadVector(context.Arg(i), xmm0);
++                movdqu(ptr[rsp + tmp + i * 16], xmm0);
++            }
++            const NumericCallKey key{runtime::arm64::CanonicalFPValues(encoded, info),
++                                     u32(offsets),
++                                     u32(offsets >> 32),
++                                     path.masks.scalars,
++                                     path.masks.vectors,
++                                     flags.dirty,
++                                     flags.saved_carry};
++            const auto [stub, inserted] = numeric_stub_index.try_emplace(key, numeric_stubs.size());
++            if (inserted) numeric_stubs.push_back({key, {}});
++            call(numeric_stubs[stub->second].entry);
++            flags = {};
++            if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
++                key.control != options.arm_fpcr_offset) {
++                Label ready;
++                test(eax, eax);
++                jz(ready, T_NEAR);
++                guest_pc = path.pc;
++                Exit(runtime::ExitValue(runtime::NativeExit::FPEnvironment));
++                L(ready);
++            }
++            if (info.kind == runtime::arm64::FPValueKind::Compare) {
++                mov(rdx, qword[rsp + tmp + 48]);
++                if (options.local_flags) {
++                    mov(eax, 0x202);
++                    mov(ecx, 0x203);
++                    cmp(edx, 8);
++                    cmove(eax, ecx);
++                    mov(ecx, 0x242);
++                    cmp(edx, 6);
++                    cmove(eax, ecx);
++                    mov(ecx, 0x247);
++                    cmp(edx, 3);
++                    cmove(eax, ecx);
++                    if (options.lahf) {
++                        shl(eax, 8);
++                        sahf();
++                    } else {
++                        push(rax);
++                        popfq();
++                    }
++                } else {
++                    shl(rdx, 28);
++                    MergeFlags(rdx, 15);
++                }
++            } else if (info.kind == runtime::arm64::FPValueKind::ToInt)
++                mov(rax, qword[rsp + tmp + 48]);
++            else
++                movdqu(xmm0, ptr[rsp + tmp + 48]);
++            jmp(path.resume, T_NEAR);
++            continue;
++        }
++        flags = {};
+         PrepareCall(path.masks);
+         LambdaCall(context);
+         jmp(path.resume, T_NEAR);
+     }
++    for (auto& stub : numeric_stubs) {
++        align(16);
++        L(stub.entry);
++        sub(rsp, 8);
++        stack_bias = 16;
++        flags = {stub.key.flags_saved, false, stub.key.flags_saved, false, stub.key.saved_carry};
++        PrepareCall({stub.key.scalars, stub.key.vectors});
++        lea(rdi, ptr[rsp + tmp + stack_bias + 48]);
++        lea(rsi, ptr[rsp + tmp + stack_bias]);
++        mov(rdx, stub.key.encoded);
++        if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
++            stub.key.control != options.arm_fpcr_offset)
++            mov(ecx, dword[r12 + stub.key.control]);
++        else
++            mov(ecx, options.arm_fpcr);
++        lea(r8, ptr[r12 + stub.key.status]);
++        Call(reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateFPValues),
++             HostSymbol::ArmFPValues);
++        add(rsp, 8);
++        ret();
++        stack_bias = 0;
++    }
+     for (auto& path : cold_events) {
+         L(path.entry);
+         flags = path.flags;
+diff --git a/source/runtime/backend/x64/emit_scalar.cpp b/source/runtime/backend/x64/emit_scalar.cpp
+index 2a70b024..3e681ad6 100644
+--- a/source/runtime/backend/x64/emit_scalar.cpp
++++ b/source/runtime/backend/x64/emit_scalar.cpp
+@@ -3,6 +3,15 @@
+ namespace swift::runtime::backend::x64::detail {
+ void Writer::Arithmetic(OpContext& c) {
+     const auto destination = ScalarDestination(c);
++    if (allocation.homes[c.node.value].reuse_rhs) {
++        Reg64 left = rcx;
++        if (!ResidentScalar(c.Arg(0), c.width, left)) Read(c.Arg(0), rcx);
++        Read(c.Arg(1), destination);
++        add(R(destination, c.width), R(left, c.width));
++        c.scalar_normalized = true;
++        CaptureFlags(c);
++        return;
++    }
+     auto at = c.operands.begin();
+     const bool negop = c.operation.opcode == OpCode::Neg;
+     Reg64 right = rcx;
+@@ -46,16 +55,22 @@ void Writer::Arithmetic(OpContext& c) {
+             sub(a, b);
+             break;
+         case OpCode::Adc:
+-            if (options.local_flags && (defer_flags || merge_native_flags)) {
+-                bt(qword[rsp + allocation.flags_slot], options.lahf ? 8 : 0);
++            if (options.local_flags && defer_flags) {
++                if (options.lahf)
++                    bt(word[rsp + allocation.flags_slot], 8);
++                else
++                    bt(qword[rsp + allocation.flags_slot], 0);
+                 if (flags.saved_carry) cmc();
+             } else
+                 bt(rbx, 29);
+             adc(a, b);
+             break;
+         case OpCode::Sbb:
+-            if (options.local_flags && (defer_flags || merge_native_flags)) {
+-                bt(qword[rsp + allocation.flags_slot], options.lahf ? 8 : 0);
++            if (options.local_flags && defer_flags) {
++                if (options.lahf)
++                    bt(word[rsp + allocation.flags_slot], 8);
++                else
++                    bt(qword[rsp + allocation.flags_slot], 0);
+                 if (flags.saved_carry) cmc();
+             } else
+                 bt(rbx, 29);
+@@ -107,9 +122,14 @@ void Writer::Logical(OpContext& c) {
+         CaptureFlags(c);
+         return;
+     }
+-    if (!unary && (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right)))
+-        Expression(at, c.operands.end(), rcx, 1);
+-    Read(left, destination);
++    if (allocation.homes[c.node.value].reuse_rhs) {
++        if (!ResidentScalar(c.Arg(0), c.width, right)) Read(c.Arg(0), rcx);
++        Read(c.Arg(1), destination);
++    } else {
++        if (!unary && (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right)))
++            Expression(at, c.operands.end(), rcx, 1);
++        Read(left, destination);
++    }
+     const auto a = R(destination, c.width == 32 ? 32 : 64);
+     const auto b = R(right, c.width == 32 ? 32 : 64);
+     switch (c.operation.opcode) {
+diff --git a/source/runtime/backend/x64/ops.inc b/source/runtime/backend/x64/ops.inc
+index aa46684e..d8236fa3 100644
+--- a/source/runtime/backend/x64/ops.inc
++++ b/source/runtime/backend/x64/ops.inc
+@@ -192,6 +192,11 @@ X64_OP(VecFMulScalar64)
+ X64_OP(VecFDivScalar64)
+ X64_OP(ArmScalarFP)
+ X64_OP(ArmFPBinary)
++X64_OP(ArmFPTernary)
++X64_OP(ArmFPUnary)
++X64_OP(ArmFPConvert)
++X64_OP(ArmFPCompare)
++X64_OP(ArmFPBitUnary)
+ X64_OP(ArmScalarFMA)
+ X64_OP(VecFAdd)
+ X64_OP(VecFSub)
+diff --git a/source/runtime/backend/x64/recovery.cpp b/source/runtime/backend/x64/recovery.cpp
+index 02560226..626d2d69 100644
+--- a/source/runtime/backend/x64/recovery.cpp
++++ b/source/runtime/backend/x64/recovery.cpp
+@@ -19,7 +19,9 @@ bool RestoreGuestState(execution::FaultContext& c,
+                                 (std::uint32_t{s.recovery[7]} << 16);
+             std::memcpy(&stack, regs.data() + 4 * 8, 8);
+             if (!stack || (offset & 7) || stack > UINT64_MAX - offset - 8) return false;
+-            std::memcpy(&saved, reinterpret_cast<const void*>(stack + offset), 8);
++            std::memcpy(&saved,
++                        reinterpret_cast<const void*>(stack + offset),
++                        s.recovery[0] & 16 ? 2 : 8);
+         }
+         constexpr unsigned source_bits[]{0, 11, 6, 7}, image_bits[]{8, 0, 14, 15},
+                 destination_bits[]{29, 28, 30, 31};
+diff --git a/source/runtime/backend/x64/relocate.cpp b/source/runtime/backend/x64/relocate.cpp
+index 3bf5671b..2986a7db 100644
+--- a/source/runtime/backend/x64/relocate.cpp
++++ b/source/runtime/backend/x64/relocate.cpp
+@@ -38,6 +38,8 @@ std::uintptr_t ResolveSymbol(HostSymbol s, const CompileOptions& o) noexcept {
+             return reinterpret_cast<std::uintptr_t>(&runtime::arm64::ExecuteNumeric);
+         case HostSymbol::ArmFPBinary:
+             return reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateVectorBinaryFP);
++        case HostSymbol::ArmFPValues:
++            return reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateFPValues);
+         case HostSymbol::X64WideDivide:
+             return reinterpret_cast<std::uintptr_t>(&WideDivide);
+         case HostSymbol::X64CheckedX87:
+diff --git a/source/runtime/backend/x64/runtime.cpp b/source/runtime/backend/x64/runtime.cpp
+index 139ef965..b3201689 100644
+--- a/source/runtime/backend/x64/runtime.cpp
++++ b/source/runtime/backend/x64/runtime.cpp
+@@ -25,10 +25,11 @@ Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
+         options.aes = c & (1u << 25);
+         options.pclmul = c & 2;
+         options.cx16 = c & (1u << 13);
+-        if ((c & (1u << 12)) && (c & (1u << 27)) && (c & (1u << 28))) {
++        if ((c & (1u << 27)) && (c & (1u << 28))) {
+             unsigned lo, hi;
+             asm volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+-            options.fma = (lo & 6) == 6;
++            options.avx = (lo & 6) == 6;
++            options.fma = options.avx && (c & (1u << 12));
+         }
+     }
+     if (__get_cpuid_max(0, nullptr) >= 7) {
+@@ -41,7 +42,7 @@ Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
+                (options.sse42 ? abi::Sse42 : 0) | (options.fma ? abi::Fma : 0) |
+                (options.aes ? abi::Aes : 0) | (options.pclmul ? abi::Pclmul : 0) |
+                (options.sha ? abi::Sha : 0) | (options.cx16 ? abi::Cx16 : 0) |
+-               (options.lahf ? abi::Lahf : 0);
++               (options.lahf ? abi::Lahf : 0) | (options.avx ? abi::Avx : 0);
+ }
+ 
+ execution::HostBackendOps Runtime::Bind() noexcept {
+diff --git a/source/runtime/frontend/arm64/semantics.h b/source/runtime/frontend/arm64/semantics.h
+index 680544cc..bb4f0249 100644
+--- a/source/runtime/frontend/arm64/semantics.h
++++ b/source/runtime/frontend/arm64/semantics.h
+@@ -539,6 +539,7 @@ private:
+ 
+     bool TryNumeric(const vixl::aarch64::Instruction* instr, Numeric family) {
+         if (!runtime::arm64::SupportsNumeric(family, instr->GetInstructionBits())) return false;
++        if (EmitX64Numeric(instr, family)) return true;
+         Helper(family);
+         return true;
+     }
+diff --git a/source/runtime/frontend/arm64/semantics_crypto.inc b/source/runtime/frontend/arm64/semantics_crypto.inc
+index c0215743..eeab7655 100644
+--- a/source/runtime/frontend/arm64/semantics_crypto.inc
++++ b/source/runtime/frontend/arm64/semantics_crypto.inc
+@@ -58,7 +58,7 @@ void VisitCrypto2RegSHA(const vixl::aarch64::Instruction* instr) override {
+         return this->template RorImm<Type::U32>(word, Imm{right}).WithView(Type::U32);
+     };
+     if (op == 0x5E280800) {
+-        WriteVHalves(instr->GetRd(), Widen(rotate(source[0], 2)), ImmValue(0, Type::U64));
++        WriteVRegister(instr->GetRd(), rotate(source[0], 2));
+         return;
+     }
+     const auto old = words(instr->GetRd());
+diff --git a/source/runtime/frontend/arm64/semantics_float.inc b/source/runtime/frontend/arm64/semantics_float.inc
+index baa3a946..03dc552b 100644
+--- a/source/runtime/frontend/arm64/semantics_float.inc
++++ b/source/runtime/frontend/arm64/semantics_float.inc
+@@ -30,7 +30,6 @@ bool TryNativeScalarFP(const vixl::aarch64::Instruction* instr) {
+                              ? 64
+                              : 32;
+     if (X64FP()) {
+-        if (kind == 3) return false;
+         EmitX64FP(instr->GetRd(),
+                   instr->GetRn(),
+                   instr->GetRm(),
+@@ -44,6 +43,36 @@ bool TryNativeScalarFP(const vixl::aarch64::Instruction* instr) {
+     return true;
+ }
+ 
++bool EmitX64Numeric(const vixl::aarch64::Instruction* instr, Numeric family) {
++    if (!X64FP()) return false;
++    using runtime::arm64::FPValueKind;
++    const u32 word = instr->GetInstructionBits();
++    const auto encoded = runtime::arm64::NumericCall(family, word);
++    const auto info = runtime::arm64::DescribeFPValues(encoded);
++    if (info.kind == FPValueKind::Invalid || info.kind == FPValueKind::Divide) return false;
++    const Imm offsets{runtime::arm64::FPStateOffsets(layout.fpcr_offset, layout.fpsr_offset)};
++    const Imm mode{encoded};
++    const u32 rn = instr->GetRn(), rm = (word >> 16) & 31, rd = instr->GetRd();
++    const auto lhs =
++            info.kind == FPValueKind::FromInt ? ReadXRegister(rn) : ReadVRegister(rn, Type::V128);
++    if (info.kind == FPValueKind::Compare) {
++        const auto rhs = ReadVRegister(rm, Type::V128);
++        Emit<OpCode::ArmFPCompare>(lhs, rhs, offsets, mode);
++    } else if (info.kind == FPValueKind::Fused) {
++        const auto rhs = ReadVRegister(rm, Type::V128);
++        const auto addend =
++                ReadVRegister(family == Numeric::Scalar ? instr->GetRa() : rd, Type::V128);
++        const auto result = Emit<OpCode::ArmFPTernary, Type::V128>(lhs, rhs, addend, offsets, mode);
++        WriteVRegister(rd, result);
++    } else if (info.kind == FPValueKind::FromInt) {
++        WriteVRegister(rd, Emit<OpCode::ArmFPConvert, Type::V128>(lhs, offsets, mode));
++    } else if (info.kind == FPValueKind::ToInt) {
++        WriteXRegister(rd, Emit<OpCode::ArmFPConvert, Type::U64>(lhs, offsets, mode));
++    } else
++        WriteVRegister(rd, Emit<OpCode::ArmFPUnary, Type::V128>(lhs, offsets, mode));
++    return true;
++}
++
+ bool TryNativeScalarFMA(const vixl::aarch64::Instruction* instr) {
+     if (target.mode != TargetMode::Known || target.target != 0xa64) return false;
+     const u32 word = instr->GetInstructionBits();
+@@ -79,6 +108,7 @@ bool TryNativeScalarFMA(const vixl::aarch64::Instruction* instr) {
+ void ScalarFPHelper(const vixl::aarch64::Instruction* instr, bool comparison = false) {
+     if (!runtime::arm64::IsSupportedScalarFP(instr->GetInstructionBits()))
+         throw Rejected{BuildError::Unsupported};
++    if (EmitX64Numeric(instr, Numeric::Scalar)) return;
+     auto value = Helper(Numeric::Scalar);
+     if (comparison) WriteNZCV(value);
+ }
+@@ -210,12 +240,11 @@ void VisitFPIntegerConvert(const vixl::aarch64::Instruction* instr) override {
+             auto value = this->template And<Type::U64>(ReadXRegister(instr->GetRn()),
+                                                        SingleOperand(Imm{u64{0xFFFF}}))
+                                  .WithView(Type::U64);
+-            WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
++            WriteVRegister(instr->GetRd(), value);
+             return;
+         }
+         case FMOV_sw:
+-            WriteVHalves(
+-                    instr->GetRd(), Widen(ReadWRegister(instr->GetRn())), ImmValue(0, Type::U64));
++            WriteVRegister(instr->GetRd(), ReadWRegister(instr->GetRn()));
+             return;
+         case FMOV_xd:
+             WriteXRegister(instr->GetRd(), ReadVHalf(instr->GetRn(), false));
+@@ -230,7 +259,7 @@ void VisitFPIntegerConvert(const vixl::aarch64::Instruction* instr) override {
+             return;
+         }
+         case FMOV_dx:
+-            WriteVHalves(instr->GetRd(), ReadXRegister(instr->GetRn()), ImmValue(0, Type::U64));
++            WriteVRegister(instr->GetRd(), ReadXRegister(instr->GetRn()));
+             return;
+         default:
+             ScalarFPHelper(instr);
+@@ -263,7 +292,7 @@ void VisitFPImmediate(const vixl::aarch64::Instruction* instr) override {
+             Interrupt(InterruptReason::FALLBACK, current_pc);
+             return;
+     }
+-    WriteVHalves(instr->GetRd(), ImmValue(bits, Type::U64), ImmValue(0, Type::U64));
++    WriteVRegister(instr->GetRd(), ImmValue(bits, Type::U64));
+ }
+ 
+ void VisitFPDataProcessing1Source(const vixl::aarch64::Instruction* instr) override {
+@@ -294,6 +323,14 @@ void VisitFPDataProcessing1Source(const vixl::aarch64::Instruction* instr) overr
+     const u64 sign = u64{1} << (bits - 1);
+     const bool is_abs = op == FABS_h || op == FABS_s || op == FABS_d;
+     const bool is_neg = op == FNEG_h || op == FNEG_s || op == FNEG_d;
++    if (X64FP()) {
++        const auto value =
++                Emit<OpCode::ArmFPBitUnary, Type::V128>(ReadVRegister(instr->GetRn(), Type::V128),
++                                                        Imm{layout.fpcr_offset},
++                                                        Imm{instr->GetInstructionBits()});
++        WriteVRegister(instr->GetRd(), value);
++        return;
++    }
+     auto value = this->template And<Type::U64>(
+                              ReadVHalf(instr->GetRn(), false),
+                              SingleOperand(Imm{is_abs ? lane_mask & ~sign : lane_mask}))
+@@ -329,7 +366,7 @@ void VisitFPDataProcessing1Source(const vixl::aarch64::Instruction* instr) overr
+                 this->template And<Type::U8>(alternate, SingleOperand(nan)).WithView(Type::U8);
+         value = this->Select(preserve, original, value).WithView(Type::U64);
+     }
+-    WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
++    WriteVRegister(instr->GetRd(), value);
+ }
+ 
+ void WriteNZCV(Value source) {
+@@ -398,5 +435,5 @@ void VisitFPConditionalSelect(const vixl::aarch64::Instruction* instr) override
+         value = this->template And<Type::U64>(value, SingleOperand(Imm{(u64{1} << bits) - 1}))
+                         .WithView(Type::U64);
+     }
+-    WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
++    WriteVRegister(instr->GetRd(), value);
+ }
+diff --git a/source/runtime/frontend/arm64/semantics_lanes.inc b/source/runtime/frontend/arm64/semantics_lanes.inc
+index 9494d2e7..4384c726 100644
+--- a/source/runtime/frontend/arm64/semantics_lanes.inc
++++ b/source/runtime/frontend/arm64/semantics_lanes.inc
+@@ -109,7 +109,7 @@ void VisitNEONScalar3Same(const vixl::aarch64::Instruction* instr) override {
+         }
+         result = this->Select(right, right_result, left_result).WithView(Type::U64);
+     }
+-    WriteVHalves(instr->GetRd(), result, zero);
++    WriteVRegister(instr->GetRd(), result);
+ }
+ 
+ void VisitNEONScalar2RegMisc(const vixl::aarch64::Instruction* instr) override {
+@@ -207,7 +207,7 @@ void VisitNEONScalar2RegMisc(const vixl::aarch64::Instruction* instr) override {
+                 status, this->template Or<Type::U32>(old, SingleOperand(qc)).WithView(Type::U32));
+     }
+     result = this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
+-    WriteVHalves(instr->GetRd(), result, zero);
++    WriteVRegister(instr->GetRd(), result);
+ }
+ 
+ void VisitNEONScalarPairwise(const vixl::aarch64::Instruction* instr) override {
+@@ -227,7 +227,7 @@ void VisitNEONScalarPairwise(const vixl::aarch64::Instruction* instr) override {
+     }
+     auto low = ReadVHalf(instr->GetRn(), false), high = ReadVHalf(instr->GetRn(), true);
+     auto result = this->template Add<Type::U64>(low, SingleOperand(high)).WithView(Type::U64);
+-    WriteVHalves(instr->GetRd(), result, ImmValue(0, Type::U64));
++    WriteVRegister(instr->GetRd(), result);
+ }
+ 
+ Value ScalarDoublingMultiply(
+@@ -313,7 +313,7 @@ void VisitNEONScalar3Diff(const vixl::aarch64::Instruction* instr) override {
+     auto old = accumulate ? ReadVHalf(instr->GetRd(), false) : zero;
+     auto result =
+             ScalarDoublingMultiply(lhs, rhs, old, bits, accumulate, op == NEON_SQDMLSL_scalar);
+-    WriteVHalves(instr->GetRd(), result, zero);
++    WriteVRegister(instr->GetRd(), result);
+ }
+ 
+ void VisitNEONScalarByIndexedElement(const vixl::aarch64::Instruction* instr) override {
+@@ -342,7 +342,7 @@ void VisitNEONScalarByIndexedElement(const vixl::aarch64::Instruction* instr) ov
+     auto old = accumulate ? ReadVHalf(instr->GetRd(), false) : zero;
+     auto result = ScalarDoublingMultiply(
+             lhs, rhs, old, bits, accumulate, op == NEON_SQDMLSL_byelement_scalar);
+-    WriteVHalves(instr->GetRd(), result, zero);
++    WriteVRegister(instr->GetRd(), result);
+ }
+ 
+ void VisitNEONByIndexedElement(const vixl::aarch64::Instruction* instr) override {
+diff --git a/source/runtime/frontend/arm64/semantics_permutation.inc b/source/runtime/frontend/arm64/semantics_permutation.inc
+index 8e06f102..c910c915 100644
+--- a/source/runtime/frontend/arm64/semantics_permutation.inc
++++ b/source/runtime/frontend/arm64/semantics_permutation.inc
+@@ -94,7 +94,7 @@ void VisitNEONExtract(const vixl::aarch64::Instruction* instr) override {
+                                                        rm_low, Imm{64 - shift})))
+                           .WithView(Type::U64);
+         }
+-        WriteVHalves(instr->GetRd(), low, ImmValue(0, Type::U64));
++        WriteVRegister(instr->GetRd(), low);
+         return;
+     }
+     auto rn_high = ReadVHalf(instr->GetRn(), true);
+@@ -144,7 +144,7 @@ void VisitNEONScalarCopy(const vixl::aarch64::Instruction* instr) override {
+         value = this->template And<Type::U64>(value, SingleOperand(Imm{(u64{1} << bits) - 1}))
+                         .WithView(Type::U64);
+     }
+-    WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
++    WriteVRegister(instr->GetRd(), value);
+ }
+ 
+ void VisitNEONPerm(const vixl::aarch64::Instruction* instr) override {
+diff --git a/source/runtime/frontend/arm64/semantics_registers.inc b/source/runtime/frontend/arm64/semantics_registers.inc
+index fac5f81d..f723f8ce 100644
+--- a/source/runtime/frontend/arm64/semantics_registers.inc
++++ b/source/runtime/frontend/arm64/semantics_registers.inc
+@@ -76,7 +76,12 @@ void WriteVRegister(u8 code, Value value) {
+     value = Reinterpret(value, value.ViewType());
+     if (TypeBits(value.ViewType()) <= 64) {
+         // Scalar SIMD writes clear the complete remainder of the Q register.
+-        WriteVHalves(code, Widen(value), ImmValue(0, Type::U64));
++        if (X64FP()) {
++            auto vector = Emit<OpCode::BitCast, Type::V128>(Widen(value));
++            auto offset = u32(offsetof(GuestState, q) + code * sizeof(u128));
++            this->StoreUniform(Uniform{offset, Type::V128}, vector);
++        } else
++            WriteVHalves(code, Widen(value), ImmValue(0, Type::U64));
+         return;
+     }
+     auto offset = u32(offsetof(GuestState, q) + code * sizeof(u128));
+diff --git a/source/runtime/frontend/arm64/semantics_shift.inc b/source/runtime/frontend/arm64/semantics_shift.inc
+index dafb1372..631b5793 100644
+--- a/source/runtime/frontend/arm64/semantics_shift.inc
++++ b/source/runtime/frontend/arm64/semantics_shift.inc
+@@ -35,7 +35,7 @@ void VisitNEONShiftImmediate(const vixl::aarch64::Instruction* instr) override {
+     if (instr->GetNEONQ()) {
+         WriteVHalves(instr->GetRd(), ReadVHalf(instr->GetRd(), false), packed);
+     } else {
+-        WriteVHalves(instr->GetRd(), packed, ImmValue(0, Type::U64));
++        WriteVRegister(instr->GetRd(), packed);
+     }
+ }
+ 
+@@ -365,7 +365,7 @@ void VisitNEONScalarShiftImmediate(const vixl::aarch64::Instruction* instr) over
+                 this->template Or<Type::U32>(previous, SingleOperand(qc)).WithView(Type::U32));
+     }
+     result = this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
+-    WriteVHalves(instr->GetRd(), result, zero);
++    WriteVRegister(instr->GetRd(), result);
+ }
+ 
+ bool TryNEONVectorSaturatingShift(const vixl::aarch64::Instruction* instr) {
+diff --git a/source/runtime/ir/direct/float.inc b/source/runtime/ir/direct/float.inc
+index c72c5611..2de58fa7 100644
+--- a/source/runtime/ir/direct/float.inc
++++ b/source/runtime/ir/direct/float.inc
+@@ -2,6 +2,58 @@
+ // and exception flags share one leaf with the checked architectural consumer.
+ template <OpCode op>
+ Interpreter::Value Interpreter::HandleFloating(Type type, std::span<const Operand> a) {
++    if constexpr (op == OpCode::ArmFPBitUnary) {
++        const auto control = a[1].payload, word = a[2].payload;
++        if (type != Type::V128 || word > UINT32_MAX || !arm64::IsFPBitUnary(word) ||
++            control > environment.uniforms.size() || environment.uniforms.size() - control < 4)
++            throw Exit{ExitKind::Unsupported};
++        u32 fpcr;
++        std::memcpy(&fpcr, environment.uniforms.data() + control, 4);
++        return Number(arm64::EvaluateFPBitUnary(static_cast<u64>(Raw(a[0])), word, fpcr), type);
++    }
++    if constexpr (op == OpCode::ArmFPTernary || op == OpCode::ArmFPUnary ||
++                  op == OpCode::ArmFPConvert || op == OpCode::ArmFPCompare) {
++        constexpr unsigned values = op == OpCode::ArmFPTernary   ? 3
++                                    : op == OpCode::ArmFPCompare ? 2
++                                                                 : 1;
++        const auto offsets = a[values].payload, encoded = a[values + 1].payload;
++        const auto control = static_cast<u32>(offsets), status = static_cast<u32>(offsets >> 32);
++        const auto info = arm64::DescribeFPValues(encoded);
++        const bool compare = op == OpCode::ArmFPCompare;
++        const bool valid = op == OpCode::ArmFPTernary ? info.kind == arm64::FPValueKind::Fused
++                           : compare                  ? info.kind == arm64::FPValueKind::Compare
++                           : op == OpCode::ArmFPConvert
++                                   ? info.kind == arm64::FPValueKind::FromInt ||
++                                             info.kind == arm64::FPValueKind::ToInt
++                                   : info.kind == arm64::FPValueKind::Sqrt ||
++                                             info.kind == arm64::FPValueKind::Precision;
++        const auto expected = compare                                  ? Type::Void
++                              : info.kind == arm64::FPValueKind::ToInt ? Type::U64
++                                                                       : Type::V128;
++        if (!valid || (!compare && type != expected) || control > environment.uniforms.size() ||
++            environment.uniforms.size() - control < 4 || status > environment.uniforms.size() ||
++            environment.uniforms.size() - status < 4)
++            throw Exit{ExitKind::Unsupported};
++        u128 inputs[3]{}, output{};
++        for (unsigned i = 0; i < values; ++i) {
++            if (View(a[i]) != (info.kind == arm64::FPValueKind::FromInt ? Type::U64 : Type::V128))
++                throw Exit{ExitKind::Unsupported};
++            inputs[i] = Raw(a[i]);
++        }
++        u32 fpcr;
++        std::memcpy(&fpcr, environment.uniforms.data() + control, 4);
++        if (arm64::EvaluateFPValues(
++                    &output, inputs, encoded, fpcr, environment.uniforms.data() + status))
++            throw Exit{ExitKind::Unsupported};
++        observed_effects = true;
++        auto result = Number(output, compare ? Type::Void : type);
++        if (compare) {
++            const auto nzcv = static_cast<u64>(output);
++            result.number.flags = nzcv << 28;
++            MergeFlags(result.number.flags, FlagBits(Flag::NZCV));
++        }
++        return result;
++    }
+     if constexpr (op == OpCode::ArmFPBinary) {
+         const auto mode = a[4].payload, control = a[2].payload, status = a[3].payload;
+         if (type != Type::V128 || mode > UINT32_MAX || !arm64::ValidArmFPBinaryMode(mode) ||
+diff --git a/source/runtime/ir/flag_effects.h b/source/runtime/ir/flag_effects.h
+index 22ea28c8..55e29a6f 100644
+--- a/source/runtime/ir/flag_effects.h
++++ b/source/runtime/ir/flag_effects.h
+@@ -36,6 +36,16 @@ inline std::uint64_t FlagReads(OpCode opcode,
+                                const UniformPolicy& policy) {
+     constexpr auto all = FlagBits(Flag::All);
+     if (opcode == OpCode::VecLoadConst || opcode == OpCode::VecSharedZero) return 0;
++    if (opcode == OpCode::ArmFPCompare && policy.flags) {
++        auto at = inputs.begin();
++        ++at;
++        ++at;
++        const auto offsets = *at;
++        if (offsets.Kind() == OperandKind::Immediate &&
++            !Overlaps({static_cast<std::uint32_t>(offsets.Payload()), 4}, *policy.flags) &&
++            !Overlaps({static_cast<std::uint32_t>(offsets.Payload() >> 32), 4}, *policy.flags))
++            return 0;
++    }
+     if (HasAnyEffect(effects,
+                      Effect::MayFault | Effect::Unknown | Effect::External | Effect::Control))
+         return all;
+diff --git a/source/runtime/ir/opcodes.inc b/source/runtime/ir/opcodes.inc
+index 75481825..97b0edfe 100644
+--- a/source/runtime/ir/opcodes.inc
++++ b/source/runtime/ir/opcodes.inc
+@@ -759,3 +759,43 @@ INST(ArmFPBinary,
+      Imm,
+      Imm,
+      Imm)
++
++// Exact ARM numerical operations. The final two immediates hold packed
++// FPCR/FPSR offsets and NumericCall's validated operation descriptor.
++INST(ArmFPTernary,
++     Value,
++     Arg0,
++     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
++      Effect::WriteHostState),
++     Value,
++     Value,
++     Value,
++     Imm,
++     Imm)
++INST(ArmFPUnary,
++     Value,
++     Arg0,
++     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
++      Effect::WriteHostState),
++     Value,
++     Imm,
++     Imm)
++INST(ArmFPConvert,
++     Value,
++     Explicit,
++     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
++      Effect::WriteHostState),
++     Value,
++     Imm,
++     Imm)
++INST(ArmFPCompare,
++     Void,
++     Void,
++     (Effect::ReadGuestState | Effect::WriteGuestState | Effect::ReadHostState |
++      Effect::WriteHostState | Effect::WriteFlags),
++     Value,
++     Value,
++     Imm,
++     Imm)
++// Scalar FMOV/FABS/FNEG observe AH where applicable and leave FPSR alone.
++INST(ArmFPBitUnary, Value, Arg0, (Effect::ReadGuestState), Value, Imm, Imm)
+diff --git a/source/runtime/ir/passes/liveness.cpp b/source/runtime/ir/passes/liveness.cpp
+index 1195fecb..ff228572 100644
+--- a/source/runtime/ir/passes/liveness.cpp
++++ b/source/runtime/ir/passes/liveness.cpp
+@@ -22,6 +22,7 @@ FlagWrite FlagWrites(const Builder& editor,
+                      NodeId id,
+                      const Operation& op,
+                      OperationMetadata meta) {
++    if (op.opcode == OpCode::ArmFPCompare) return {FlagBits(Flag::NZCV), FlagWriteKind::Fixed};
+     if (meta != OperationMetadata{}) {
+         const bool integer = op.type == Type::U8 || op.type == Type::U16 || op.type == Type::U32 ||
+                              op.type == Type::U64;
+diff --git a/source/runtime/ir/uniform_effects.h b/source/runtime/ir/uniform_effects.h
+index 5dbf272a..2bfbc38c 100644
+--- a/source/runtime/ir/uniform_effects.h
++++ b/source/runtime/ir/uniform_effects.h
+@@ -42,15 +42,24 @@ inline UniformEffects UniformEffectsFor(const Operation& op,
+                 op.opcode != OpCode::LoadUniform);
+             result.all_read = result.all_write = false;
+         }
+-    } else if (op.opcode == OpCode::ArmFPBinary) {
++    } else if (op.opcode == OpCode::ArmFPBinary || op.opcode == OpCode::ArmFPTernary ||
++               op.opcode == OpCode::ArmFPUnary || op.opcode == OpCode::ArmFPConvert ||
++               op.opcode == OpCode::ArmFPCompare || op.opcode == OpCode::ArmFPBitUnary) {
+         auto at = inputs.begin();
+-        ++at;
+-        ++at;
+-        const auto control = *at++, status = *at;
+-        if (control.Kind() == OperandKind::Immediate && status.Kind() == OperandKind::Immediate &&
+-            control.Payload() <= UINT32_MAX - 4 && status.Payload() <= UINT32_MAX - 4) {
+-            add({static_cast<std::uint32_t>(control.Payload()), 4}, true, false);
+-            add({static_cast<std::uint32_t>(status.Payload()), 4}, true, true);
++        const unsigned values =
++                op.opcode == OpCode::ArmFPTernary                                       ? 3
++                : op.opcode == OpCode::ArmFPBinary || op.opcode == OpCode::ArmFPCompare ? 2
++                                                                                        : 1;
++        for (unsigned i = 0; i < values; ++i) ++at;
++        const auto field = *at++;
++        const bool binary = op.opcode == OpCode::ArmFPBinary;
++        const bool bits = op.opcode == OpCode::ArmFPBitUnary;
++        const auto control = binary || bits ? field.Payload() : std::uint32_t(field.Payload());
++        const auto status = binary ? (*at).Payload() : field.Payload() >> 32;
++        if (field.Kind() == OperandKind::Immediate && control <= UINT32_MAX - 4 &&
++            (bits || status <= UINT32_MAX - 4)) {
++            add({static_cast<std::uint32_t>(control), 4}, true, false);
++            if (!bits) add({static_cast<std::uint32_t>(status), 4}, true, true);
+             result.all_read = result.all_write = false;
+         }
+     } else if (policy.pc && (op.opcode == OpCode::AdvancePC || op.opcode == OpCode::SetLocation ||
+@@ -67,8 +76,10 @@ inline UniformEffects UniformEffectsFor(const Operation& op,
+             result.all_write |= write;
+         }
+     }
+-    if (op.opcode != OpCode::ArmFPBinary &&
+-        HasAnyEffect(effects, Effect::ReadHostState | Effect::WriteHostState)) {
++    const bool arm_fp = op.opcode == OpCode::ArmFPBinary || op.opcode == OpCode::ArmFPTernary ||
++                        op.opcode == OpCode::ArmFPUnary || op.opcode == OpCode::ArmFPConvert ||
++                        op.opcode == OpCode::ArmFPCompare;
++    if (!arm_fp && HasAnyEffect(effects, Effect::ReadHostState | Effect::WriteHostState)) {
+         const bool write = HasAnyEffect(effects, Effect::WriteHostState);
+         if (policy.numeric_control)
+             add(*policy.numeric_control, true, write);
+diff --git a/source/tests/rebuild/arm64_frontend_test.cpp b/source/tests/rebuild/arm64_frontend_test.cpp
+index c83c12c9..8b787812 100644
+--- a/source/tests/rebuild/arm64_frontend_test.cpp
++++ b/source/tests/rebuild/arm64_frontend_test.cpp
+@@ -52,6 +52,68 @@ void Build(const Code& code, ir::Scope scope = ir::Scope::Block) {
+     }
+ }
+ 
++TEST_CASE("ARM scalar SIMD stores use complete zero-extended Q values on x64",
++          "[compile][arm64-frontend]") {
++    // LDR B/H/S/D0,[X1]; FMOV S0,W1; FMOV D0,X1; FABS D0,D1.
++    for (const std::uint32_t word : {0x3d400020u,
++                                     0x7d400020u,
++                                     0xbd400020u,
++                                     0xfd400020u,
++                                     0x1e270020u,
++                                     0x9e670020u,
++                                     0x1e60c020u}) {
++        const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(&word),
++                                                  sizeof(word)};
++        const std::array<front::BlockWindow, 1> windows{{{CodeBase, bytes}}};
++        for (const auto mode : {ir::TargetMode::Known, ir::TargetMode::Unknown}) {
++            front::StateLayout layout;
++            layout.fprs_offset += 64;
++            const auto built = front::BuildIR(windows, ir::Scope::Block, layout, {mode, 0x8664, 0});
++            REQUIRE(built);
++            unsigned stores{};
++            for (unsigned node = 0; node < built.program.Operations().size(); ++node) {
++                const auto& op = built.program.Operations()[node];
++                if (op.opcode != ir::OpCode::StoreUniform) continue;
++                const auto field = built.program.Operands(ir::NodeId{node}).front();
++                if (field.Payload() < layout.fprs_offset ||
++                    field.Payload() >= layout.fprs_offset + 16)
++                    continue;
++                ++stores;
++                CHECK(field.TypeView() ==
++                      (mode == ir::TargetMode::Known ? ir::Type::V128 : ir::Type::U64));
++            }
++            CHECK(stores == (mode == ir::TargetMode::Known ? 1u : 2u));
++        }
++    }
++}
++
++TEST_CASE("ARM x64 numerical IR declares comparison flags without a data producer",
++          "[compile][arm64-frontend]") {
++    // FCMP D1,D2; FMADD D0,D1,D2,D3; FSQRT D4,D1.
++    constexpr std::uint32_t words[]{0x1e622020, 0x1f420c20, 0x1e61c024};
++    const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(words),
++                                              sizeof(words)};
++    const std::array<front::BlockWindow, 1> windows{{{CodeBase, bytes}}};
++    const auto built =
++            front::BuildIR(windows, ir::Scope::Block, {}, {ir::TargetMode::Known, 0x8664, 0});
++    REQUIRE(built);
++    unsigned comparisons{}, fused{}, unary{};
++    for (const auto& op : built.program.Operations()) {
++        comparisons += op.opcode == ir::OpCode::ArmFPCompare;
++        fused += op.opcode == ir::OpCode::ArmFPTernary;
++        unary += op.opcode == ir::OpCode::ArmFPUnary;
++        if (op.opcode == ir::OpCode::ArmFPCompare) {
++            CHECK(op.type == ir::Type::Void);
++            CHECK(op.Metadata() == ir::OperationMetadata{});
++            CHECK(ir::HasAnyEffect(ir::EffectsFor(op.opcode), ir::Effect::WriteFlags));
++        }
++        CHECK(op.opcode != ir::OpCode::CallLambda);
++    }
++    CHECK(comparisons == 1);
++    CHECK(fused == 1);
++    CHECK(unary == 1);
++}
++
+ template <class T> T Lane(const State& s, unsigned r, unsigned lane = 0) {
+     T out;
+     std::memcpy(&out, s.q[r] + lane * sizeof(T), sizeof(T));
+diff --git a/source/tests/rebuild/ir_direct_test.cpp b/source/tests/rebuild/ir_direct_test.cpp
+index af8081c1..413c784b 100644
+--- a/source/tests/rebuild/ir_direct_test.cpp
++++ b/source/tests/rebuild/ir_direct_test.cpp
+@@ -1,3 +1,4 @@
++#include "runtime/arch/arm64/numeric.h"
+ #include "runtime/exit.h"
+ #include "runtime/ir/direct/interpreter.h"
+ #include "tests/support/check.h"
+@@ -270,6 +271,54 @@ void FaultKeepsCompletedEffects() {
+ }
+ }  // namespace
+ 
++TEST_CASE("Exact ARM FP values execute through the direct IR entry", "[compile][ir-direct]") {
++    namespace arm = swift::runtime::arm64;
++    Machine machine;
++    direct::Interpreter interpreter({machine.uniforms, machine.flags, machine.pc, machine.mxcsr});
++    const auto vector = [&](u64 bits) {
++        return Need(interpreter.Emit<OpCode::VecLoadConst>(
++                Type::V128, {Operand::Immediate(bits), Operand::Immediate(UINT64_MAX)}));
++    };
++    const auto one = vector(0x3ff0000000000000), two = vector(0x4000000000000000),
++               three = vector(0x4008000000000000);
++    const auto offsets = Operand::Immediate(arm::FPStateOffsets(0, 4));
++    const auto fused = Need(interpreter.Emit<OpCode::ArmFPTernary>(
++            Type::V128,
++            {Operand::ValueOf(one),
++             Operand::ValueOf(two),
++             Operand::ValueOf(three),
++             offsets,
++             Operand::Immediate(arm::NumericCall(arm::Numeric::Scalar, 0x1f410421))}));
++    CHECK(fused.number.bits == static_cast<unsigned __int128>(0x4014000000000000));
++    Need(interpreter.Emit<OpCode::ArmFPCompare>(
++            Type::Void,
++            {Operand::ValueOf(one),
++             Operand::ValueOf(two),
++             offsets,
++             Operand::Immediate(arm::NumericCall(arm::Numeric::Scalar, 0x1e612020))}));
++    CHECK((machine.flags & 0xf0000000) == 0x80000000);
++    const auto integer = Need(interpreter.Emit<OpCode::ArmFPConvert>(
++            Type::U64,
++            {Operand::ValueOf(one),
++             offsets,
++             Operand::Immediate(arm::NumericCall(arm::Numeric::Scalar, 0x9e78003f))}));
++    CHECK(integer.number.bits == 1);
++    const auto input = Need(interpreter.Emit<OpCode::LoadImm>(Type::U64, {Operand::Immediate(3)}));
++    const auto converted = Need(interpreter.Emit<OpCode::ArmFPConvert>(
++            Type::V128,
++            {Operand::ValueOf(input),
++             offsets,
++             Operand::Immediate(arm::NumericCall(arm::Numeric::Scalar, 0x9e6203e0))}));
++    CHECK(converted.number.bits == static_cast<unsigned __int128>(0x4008000000000000));
++    const std::uint32_t alternate = 2;
++    std::memcpy(machine.uniforms.data(), &alternate, 4);
++    const auto nan = vector(0xfff0000000000042);
++    const auto absolute = Need(interpreter.Emit<OpCode::ArmFPBitUnary>(
++            Type::V128,
++            {Operand::ValueOf(nan), Operand::Immediate(0), Operand::Immediate(0x1e60c020)}));
++    CHECK(absolute.number.bits == static_cast<unsigned __int128>(0xfff0000000000042));
++}
++
+ TEST_CASE("NumericAndUniform", "[compile][ir-direct]") { CHECK_NOTHROW(NumericAndUniform()); }
+ 
+ TEST_CASE("MetadataAndRawViews", "[compile][ir-direct]") { CHECK_NOTHROW(MetadataAndRawViews()); }
+diff --git a/source/tests/rebuild/runtime_engine_test.cpp b/source/tests/rebuild/runtime_engine_test.cpp
+index 9c90807c..e99abcbe 100644
+--- a/source/tests/rebuild/runtime_engine_test.cpp
++++ b/source/tests/rebuild/runtime_engine_test.cpp
+@@ -1431,6 +1431,101 @@ TEST_CASE("ARM64 AOT selects all legacy flush domains", "[compile]") {
+ }
+ 
+ #if defined(__x86_64__)
++TEST_CASE("ARM64 faults observe canonical FP comparison flags", "[native][arm64-guest]") {
++    namespace arm = swift::runtime::arm64;
++    // FCMP D0,D1; LDR X3,[X0]; RET.
++    constexpr std::uint32_t instructions[]{0x1e612000, 0xf9400003, 0xd65f03c0};
++    const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(instructions),
++                                              sizeof(instructions)};
++    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
++    for (const unsigned domain : {0u, 8u, 31u})
++        for (const std::uint64_t input : {UINT64_C(0x3ff0000000000000),
++                                          UINT64_C(0x7ff8000000000042),
++                                          UINT64_C(0x7ff0000000000042),
++                                          UINT64_C(1)}) {
++            execution::RuntimeOptions options;
++            options.scope = swift::runtime::ir::Scope::Function;
++            execution::RuntimeStats stats;
++            swift::runtime::platform::HostRuntime host{false};
++            execution::VM vm{options, stats, host.Bind()};
++            vm.PrepareGuest(guest.Path());
++            auto& state = vm.ArmState();
++            const auto fault_pc = state.pc + 4;
++            state.gprs[0] = 0;
++            state.fpcr = arm::FPCRForDomain(domain);
++            state.fpsr = 0x08000000;
++            state.packed_flags = (std::uint64_t{1} << 55) | 0x900000a5;
++            std::memcpy(state.q[0], &input, 8);
++            const auto zero = std::uint64_t{0};
++            std::memcpy(state.q[1], &zero, 8);
++            auto expected = state;
++            const auto nzcv =
++                    arm::ExecuteNumeric(reinterpret_cast<std::uint64_t>(&expected),
++                                        arm::NumericCall(arm::Numeric::Scalar, instructions[0]),
++                                        state.pc);
++            (void)vm.RunPrepared();
++            const auto fault = vm.CaptureException();
++            REQUIRE(fault);
++            CHECK(fault->info.instruction_pc == fault_pc);
++            CHECK(state.packed_flags == ((std::uint64_t{1} << 55) | 0xa5 | (nzcv << 28)));
++            CHECK(state.fpsr == expected.fpsr);
++            CHECK(stats.fallbacks == 0 && stats.interpreted_steps == 0);
++            CHECK(vm.Close().Complete());
++        }
++}
++
++TEST_CASE("ARM64 scalar SIMD writes clear every inactive bit", "[native][arm64-guest]") {
++    REQUIRE(NativeMode());
++    // LDR B0/H1/S2/D3,[X0]; FMOV S4,W1; FMOV D5,X1; FABS D6,D3; RET.
++    std::array<std::uint32_t, 10> instructions{0x3d400000,
++                                               0x7d400001,
++                                               0xbd400002,
++                                               0xfd400003,
++                                               0x1e270024,
++                                               0x9e670025,
++                                               0x1e60c066,
++                                               0xd65f03c0};
++    for (const std::uint64_t input : {UINT64_C(0xbff123456789abcd), UINT64_C(0xfff0000000000042)}) {
++        std::memcpy(instructions.data() + 8, &input, 8);
++        const std::span<const std::uint8_t> bytes{
++                reinterpret_cast<const std::uint8_t*>(instructions.data()), sizeof(instructions)};
++        GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
++        for (const auto scope :
++             {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function})
++            for (const bool optimize : {false, true}) {
++                execution::RuntimeOptions options;
++                options.scope = scope;
++                options.optimize = optimize;
++                execution::RuntimeStats stats;
++                swift::runtime::platform::HostRuntime host{false};
++                execution::VM vm{options, stats, host.Bind()};
++                vm.PrepareGuest(guest.Path());
++                auto& state = vm.ArmState();
++                const auto entry = state.pc, stack = state.gprs[31];
++                state.gprs[0] = entry + 32;
++                state.gprs[1] = UINT64_C(0xfedcba9876543210);
++                state.fpsr = 0x08000000;
++                std::memset(state.q, 0xa5, sizeof(state.q));
++                vm.CallGuest(entry, stack, 0);
++                const std::array<std::uint64_t, 7> expected{input & 0xff,
++                                                            input & 0xffff,
++                                                            input & 0xffffffff,
++                                                            input,
++                                                            state.gprs[1] & 0xffffffff,
++                                                            state.gprs[1],
++                                                            input & UINT64_C(0x7fffffffffffffff)};
++                for (unsigned reg = 0; reg < expected.size(); ++reg) {
++                    std::array<std::uint64_t, 2> value;
++                    std::memcpy(value.data(), state.q[reg], sizeof(value));
++                    CHECK(value == (std::array{expected[reg], std::uint64_t{0}}));
++                }
++                CHECK(state.fpsr == 0x08000000);
++                CHECK(stats.fallbacks == 0 && stats.interpreted_steps == 0);
++                CHECK(vm.Close().Complete());
++            }
++    }
++}
++
+ TEST_CASE("ARM64 faults harvest pending FP status and native NZCV", "[native]") {
+     REQUIRE(NativeMode());
+     // FADD S2,S0,S1; SUBS X4,X4,1; LDR X3,[X0]; FADD S5,S0,S6.
+diff --git a/source/tests/rebuild/x64_compile_test.cpp b/source/tests/rebuild/x64_compile_test.cpp
+index 6f8df1a3..79634353 100644
+--- a/source/tests/rebuild/x64_compile_test.cpp
++++ b/source/tests/rebuild/x64_compile_test.cpp
+@@ -2253,7 +2253,8 @@ TEST_CASE("X64 fault recipes merge native and saved NZCV", "[compile][x64-compil
+                     context.flags_offset = offsetof(State, flags);
+                     context.pinned_uniform_offset = UINT32_MAX;
+                     const unsigned image_bits[]{8, 0, 14, 15};
+-                    std::uint64_t saved = image ? 0 : 0x202, native = 0x202;
++                    std::uint64_t saved = image ? UINT64_C(0xdeadbeefcafe0000) : 0x202,
++                                  native = 0x202;
+                     for (unsigned bit = 0; bit < 4; ++bit) {
+                         native |= std::uint64_t{(pattern >> bit) & 1} << source_bits[bit];
+                         saved |= std::uint64_t{((pattern ^ 9) >> bit) & 1}
+@@ -2284,6 +2285,124 @@ TEST_CASE("X64 fault recipes merge native and saved NZCV", "[compile][x64-compil
+                 }
+ }
+ 
++TEST_CASE("Partial native NZCV preserves every omitted bit and condition",
++          "[compile][x64-compile][native]") {
++    for (const bool image : {false, true})
++        for (unsigned selected = 1; selected < 15; ++selected)
++            for (unsigned condition = 0; condition < 14; ++condition) {
++                INFO("image=" << image << " selected=" << selected << " condition=" << condition);
++                Builder builder{Scope::Block};
++                Begin(builder);
++                Emit(builder, OpCode::FaultLocation, Type::Void, {Imm(0x1000)});
++                const auto lhs = Load(builder, 0), rhs = Load(builder, 1);
++                Emit(builder,
++                     OpCode::Sub,
++                     Type::U64,
++                     {Operand::ValueOf(lhs), Operand::ValueOf(rhs)},
++                     {selected, FlagProfile::ArithmeticRaw});
++                const auto address = Load(builder, 3);
++                Emit(builder, OpCode::LoadMemory, Type::U64, {Operand::ValueOf(address)});
++                const auto predicate =
++                        Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(condition)});
++                auto options = Options();
++                options.local_flags = true;
++                options.lahf = image;
++                const auto code = x64::Compile(Return(builder, predicate), options);
++                REQUIRE(code);
++                REQUIRE(code.faults.size() == 1);
++                CHECK((code.faults.front().recovery[1] & 15) == selected);
++                CHECK((code.faults.front().recovery[1] >> 4) == (15 ^ selected));
++                if (!NativeMode()) continue;
++                swift::tests::NativeCode native{code.words, swift::tests::NativeISA::X64};
++                for (unsigned pattern = 0; pattern < 16; ++pattern)
++                    for (const auto pair :
++                         {Pair{0, 1}, Pair{1, 0}, Pair{7, 7}, Pair{u64{1} << 63, 1}}) {
++                        State state;
++                        state.scalars[0] = pair.low;
++                        state.scalars[1] = pair.high;
++                        state.scalars[3] = reinterpret_cast<std::uintptr_t>(&state.scalars[4]);
++                        state.flags = (u64{1} << 55) | flags::Direction | flags::Auxiliary | 0xa5 |
++                                      (u64{pattern} << 28);
++                        const auto result = pair.low - pair.high;
++                        const bool carry = pair.low >= pair.high;
++                        const bool overflow = ((pair.low ^ pair.high) & (pair.low ^ result)) >> 63;
++                        const u64 produced =
++                                (carry ? flags::Carry : 0) | (overflow ? flags::Overflow : 0) |
++                                (!result ? flags::Zero : 0) | ((result >> 63) ? flags::Sign : 0);
++                        const u64 mask = ((selected & 1) ? flags::Carry : 0) |
++                                         ((selected & 2) ? flags::Overflow : 0) |
++                                         ((selected & 4) ? flags::Zero : 0) |
++                                         ((selected & 8) ? flags::Sign : 0);
++                        const auto expected = (state.flags & ~mask) | (produced & mask);
++                        const bool n = flags::GetSF(expected), z = flags::GetZF(expected),
++                                   c = flags::GetCF(expected), v = flags::GetOF(expected);
++                        const bool predicates[]{z,
++                                                !z,
++                                                c,
++                                                !c,
++                                                n,
++                                                !n,
++                                                v,
++                                                !v,
++                                                c && !z,
++                                                !c || z,
++                                                n == v,
++                                                n != v,
++                                                !z && n == v,
++                                                z || n != v};
++                        CHECK(native.Run(reinterpret_cast<std::uint8_t*>(&state)) ==
++                              predicates[condition]);
++                        CHECK(state.flags == expected);
++                    }
++            }
++}
++
++TEST_CASE("Commutative integer results reuse a last-use right operand",
++          "[compile][x64-compile][native]") {
++    for (const auto type : {Type::U32, Type::U64})
++        for (const auto opcode : {OpCode::Add, OpCode::And, OpCode::Or, OpCode::Xor}) {
++            Builder builder{Scope::Block};
++            Begin(builder);
++            const auto load = [&](unsigned slot) {
++                return Emit(builder,
++                            OpCode::LoadUniform,
++                            type,
++                            {Operand::Uniform(offsetof(State, scalars) + slot * 8, type)});
++            };
++            const auto left = load(0), right = load(1);
++            const auto result =
++                    Emit(builder, opcode, type, {Operand::ValueOf(left), Operand::ValueOf(right)});
++            Store(builder, 2, result);
++            Store(builder, 3, left);
++            const auto program = Return(builder, result);
++            swift::runtime::backend::CompileResult code;
++            x64::Allocation allocation;
++            x64::Compile(program, Options(), code, allocation);
++            REQUIRE(code);
++            CHECK(allocation.homes[result.node.value].reuse_rhs);
++            CHECK(allocation.homes[result.node.value].reg ==
++                  allocation.homes[right.node.value].reg);
++            for (const auto pair :
++                 {Pair{7, 9}, Pair{UINT64_MAX, 1}, Pair{0x12345678ffffffff, 0xfedcba9800000001}}) {
++                State state;
++                state.scalars[0] = pair.low;
++                state.scalars[1] = pair.high;
++                state.flags = (u64{1} << 55) | 0x900000a5;
++                const u64 mask = type == Type::U32 ? 0xffffffff : UINT64_MAX;
++                const auto expected = (opcode == OpCode::Add   ? pair.low + pair.high
++                                       : opcode == OpCode::And ? pair.low & pair.high
++                                       : opcode == OpCode::Or  ? pair.low | pair.high
++                                                               : pair.low ^ pair.high) &
++                                      mask;
++                if (Run(code, state, expected)) {
++                    CHECK(state.scalars[2] == expected);
++                    CHECK(state.scalars[3] == (pair.low & mask));
++                    CHECK(state.flags == ((u64{1} << 55) | 0x900000a5));
++                }
++            }
++        }
++}
++
+ TEST_CASE("Regional FP slow calls preserve a loop with dead incoming flags",
+           "[compile][x64-compile][native]") {
+     Builder builder{Scope::Function};
+@@ -2562,6 +2681,10 @@ TEST_CASE("Full flags ADC consumes the current native carry", "[compile][x64-com
+ TEST_CASE("Native ARM MXCSR status and result checks preserve exact state",
+           "[compile][x64-compile][native]") {
+     namespace arm = swift::runtime::arm64;
++    bool avx_available = false;
++#if defined(__x86_64__) && defined(__linux__)
++    avx_available = __builtin_cpu_supports("avx");
++#endif
+     constexpr std::array<std::array<u64, 2>, 8> single{{{0x3f800000, 0x40000000},
+                                                         {0x00800000, 0x3f7fffff},
+                                                         {0x007fffff, 0x3f800000},
+@@ -2579,12 +2702,14 @@ TEST_CASE("Native ARM MXCSR status and result checks preserve exact state",
+              {0x7ff0000000000000, 0},
+              {0x8000000000000000, 0},
+              {0x7fefffffffffffff, 0x3ff0000000000001}}};
+-    for (bool sse41 : {false, true}) {
++    for (unsigned feature = 0; feature < 3; ++feature) {
++        if (feature == 2 && NativeMode() && !avx_available) continue;
+         for (unsigned domain = 0; domain < 32; ++domain) {
+             for (unsigned bits : {32u, 64u}) {
+                 for (unsigned lanes : {1u, 2u, 4u}) {
+                     if (bits * lanes > 128) continue;
+-                    for (unsigned kind = 0; kind < 3; ++kind) {
++                    for (unsigned kind = 0; kind < 4; ++kind) {
++                        if (kind == 3 && lanes != 1) continue;
+                         Builder builder{Scope::Block};
+                         Begin(builder);
+                         const auto a = Literal(builder, UINT64_MAX), b = Literal(builder, 1);
+@@ -2592,7 +2717,7 @@ TEST_CASE("Native ARM MXCSR status and result checks preserve exact state",
+                              OpCode::Add,
+                              Type::U64,
+                              {Operand::ValueOf(a), Operand::ValueOf(b)},
+-                             {15, FlagProfile::ArithmeticCanonicalCarry, false});
++                             {5, FlagProfile::ArithmeticCanonicalCarry, false});
+                         const auto left = LoadVector(builder, 0), right = LoadVector(builder, 1);
+                         const auto result = Emit(builder,
+                                                  OpCode::ArmFPBinary,
+@@ -2615,12 +2740,21 @@ TEST_CASE("Native ARM MXCSR status and result checks preserve exact state",
+                                                     {Operand::Condition(Condition::EQ)});
+                         auto options = Options();
+                         options.local_flags = true;
+-                        options.sse41 = sse41;
++                        options.sse41 = feature == 1;
++                        options.avx = feature == 2;
+                         options.arm_fpcr = arm::FPCRForDomain(domain);
+                         options.arm_fpcr_offset = offsetof(State, fpcr);
+                         options.arm_fpsr_offset = offsetof(State, fpsr);
+-                        const auto code = x64::Compile(Return(builder, condition), options);
++                        auto code = x64::Compile(Return(builder, condition), options);
+                         REQUIRE(bool(code));
++                        if (feature == 2) {
++                            // Exercise RIP-relative AVX constants at an unaligned code base.
++                            std::vector<u32> shifted(code.words.size() + 1, 0x90909090);
++                            std::memcpy(reinterpret_cast<std::uint8_t*>(shifted.data()) + 1,
++                                        code.words.data(),
++                                        code.words.size() * sizeof(u32));
++                            code.words = std::move(shifted);
++                        }
+                         const auto& inputs = bits == 32 ? single : double_precision;
+                         for (const auto& pair : inputs) {
+                             State state;
+@@ -2639,7 +2773,7 @@ TEST_CASE("Native ARM MXCSR status and result checks preserve exact state",
+                                             &pair[1],
+                                             bits / 8);
+                             }
+-                            constexpr unsigned operations[]{2, 3, 0};
++                            constexpr unsigned operations[]{2, 3, 0, 1};
+                             const auto expected = arm::EvaluateBinaryFP(
+                                     pair[0], pair[1], bits, operations[kind], state.fpcr);
+                             Pair expected_vector{};
+@@ -2662,6 +2796,144 @@ TEST_CASE("Native ARM MXCSR status and result checks preserve exact state",
+     }
+ }
+ 
++TEST_CASE("Exact FP comparison conditions retain unordered and exception semantics",
++          "[compile][x64-compile][native]") {
++    namespace arm = swift::runtime::arm64;
++    using namespace vixl::aarch64;
++    for (const bool image : {false, true})
++        for (const unsigned domain : {0u, 8u, 16u, 31u})
++            for (const unsigned bits : {32u, 64u})
++                for (const bool signaling : {false, true})
++                    for (unsigned condition = 0; condition < 14; ++condition) {
++                        const u32 word = (bits == 32 ? u32(FCMP_s) : u32(FCMP_d)) | (1u << 5) |
++                                         (2u << 16) | (signaling ? 16u : 0u);
++                        Builder builder{Scope::Block};
++                        Begin(builder);
++                        const auto lhs = LoadVector(builder, 0), rhs = LoadVector(builder, 1);
++                        Emit(builder,
++                             OpCode::ArmFPCompare,
++                             Type::Void,
++                             {Operand::ValueOf(lhs),
++                              Operand::ValueOf(rhs),
++                              Imm(arm::FPStateOffsets(offsetof(State, fpcr),
++                                                      offsetof(State, fpsr))),
++                              Imm(arm::NumericCall(arm::Numeric::Scalar, word))});
++                        const auto predicate = Emit(builder,
++                                                    OpCode::CondSet,
++                                                    Type::Bool,
++                                                    {Operand::Condition(condition)});
++                        auto options = Options();
++                        options.local_flags = true;
++                        options.lahf = image;
++                        options.arm_fpcr = arm::FPCRForDomain(domain);
++                        options.arm_fpcr_offset = offsetof(State, fpcr);
++                        options.arm_fpsr_offset = offsetof(State, fpsr);
++                        const auto code = x64::Compile(Return(builder, predicate), options);
++                        REQUIRE(code);
++                        if (!NativeMode()) continue;
++                        swift::tests::NativeCode native{code.words, swift::tests::NativeISA::X64};
++                        const u64 one = bits == 32 ? 0x3f800000 : 0x3ff0000000000000,
++                                  nan = bits == 32 ? 0x7fc00042 : 0x7ff8000000000042,
++                                  snan = bits == 32 ? 0x7f800042 : 0x7ff0000000000042,
++                                  negative = u64{1} << (bits - 1);
++                        for (const auto pair : {Pair{0, 0},
++                                                Pair{one, 0},
++                                                Pair{0, one},
++                                                Pair{nan, one},
++                                                Pair{one, snan},
++                                                Pair{1, 0},
++                                                Pair{negative, 0},
++                                                Pair{one | negative, one}}) {
++                            State state;
++                            state.fpcr = options.arm_fpcr;
++                            state.fpsr = 0x08000000;
++                            state.flags = (u64{1} << 55) | 0x900000a5;
++                            state.vectors[0] = {pair.low, UINT64_MAX};
++                            state.vectors[1] = {pair.high, UINT64_MAX};
++                            arm::GuestState expected;
++                            expected.fpcr = state.fpcr;
++                            expected.fpsr = state.fpsr;
++                            std::memcpy(expected.q[1], &pair.low, bits / 8);
++                            std::memcpy(expected.q[2], &pair.high, bits / 8);
++                            const auto nzcv = arm::ExecuteNumeric(
++                                    reinterpret_cast<u64>(&expected),
++                                    arm::NumericCall(arm::Numeric::Scalar, word),
++                                    0);
++                            const bool n = nzcv & 8, z = nzcv & 4, c = nzcv & 2, v = nzcv & 1;
++                            const bool predicates[]{z,
++                                                    !z,
++                                                    c,
++                                                    !c,
++                                                    n,
++                                                    !n,
++                                                    v,
++                                                    !v,
++                                                    c && !z,
++                                                    !c || z,
++                                                    n == v,
++                                                    n != v,
++                                                    !z && n == v,
++                                                    z || n != v};
++                            CHECK(native.Run(reinterpret_cast<std::uint8_t*>(&state)) ==
++                                  predicates[condition]);
++                            CHECK(state.fpsr == expected.fpsr);
++                            CHECK(state.flags == ((u64{1} << 55) | 0xa5 | (nzcv << 28)));
++                        }
++                    }
++}
++
++TEST_CASE("FP bit operations specialize controls and guard a bit-only unit",
++          "[compile][x64-compile][native]") {
++    namespace arm = swift::runtime::arm64;
++    using namespace vixl::aarch64;
++    for (const unsigned precision : {0u, 1u, 3u})
++        for (const u32 operation : {u32(FMOV_s), u32(FABS_s), u32(FNEG_s)})
++            for (const bool specialized : {false, true}) {
++                const u32 word = operation | (precision << 22) | (1u << 5);
++                Builder builder{Scope::Block};
++                Begin(builder);
++                const auto input = LoadVector(builder, 0);
++                const auto result =
++                        Emit(builder,
++                             OpCode::ArmFPBitUnary,
++                             Type::V128,
++                             {Operand::ValueOf(input), Imm(offsetof(State, fpcr)), Imm(word)});
++                StoreVector(builder, 1, result);
++                auto options = Options();
++                options.local_flags = true;
++                options.arm_fpcr_offset = offsetof(State, fpcr);
++                if (specialized) options.arm_fpcr = 0;
++                const auto code = x64::Compile(Return(builder), options);
++                REQUIRE(code);
++                if (!NativeMode()) continue;
++                swift::tests::NativeCode native{code.words, swift::tests::NativeISA::X64};
++                for (const u32 fpcr : {0u, 2u})
++                    for (const u64 bits : {UINT64_C(0xfff0000000000042),
++                                           UINT64_C(0x7ff8000000000042),
++                                           UINT64_MAX,
++                                           UINT64_C(0x8000000080008000)}) {
++                        State state;
++                        state.fpcr = fpcr;
++                        state.fpsr = 0x08000010;
++                        state.flags = (u64{1} << 55) | 0x900000a5;
++                        state.vectors[0] = {bits, UINT64_MAX};
++                        state.vectors[1] = {UINT64_MAX, UINT64_MAX};
++                        const auto answer = native.Run(reinterpret_cast<std::uint8_t*>(&state));
++                        if (specialized && fpcr) {
++                            CHECK(answer == swift::runtime::ExitValue(
++                                                    swift::runtime::NativeExit::FPEnvironment));
++                            CHECK(state.vectors[1] == (Pair{UINT64_MAX, UINT64_MAX}));
++                        } else {
++                            CHECK(answer == 0);
++                            CHECK(state.vectors[1] ==
++                                  (Pair{arm::EvaluateFPBitUnary(bits, word, fpcr), 0}));
++                        }
++                        CHECK(state.fpsr == 0x08000010);
++                        CHECK(state.flags == ((u64{1} << 55) | 0x900000a5));
++                    }
++            }
++}
++
+ TEST_CASE("ARM numerical lowering matches exact leaves in every FPCR domain",
+           "[compile][x64-compile][native]") {
+     namespace arm = swift::runtime::arm64;
+@@ -2746,71 +3018,212 @@ TEST_CASE("ARM numerical lowering matches exact leaves in every FPCR domain",
+     }
+ #endif
+     for (unsigned domain = 0; domain < 32; ++domain) {
+-        for (const auto [family, word] : instructions) {
+-            INFO("domain=" << domain << " family=" << unsigned(family) << " word=" << std::hex
+-                           << word);
+-            REQUIRE(arm::SupportsNumeric(family, word));
+-            Builder builder{Scope::Block};
+-            Begin(builder);
+-            const auto pointer = Emit(builder, OpCode::GetUniformAddress, Type::U64, {Imm(0)});
+-            const auto instruction = Literal(builder, arm::NumericCall(family, word));
+-            const auto location = Literal(builder, 0x1000);
+-            const auto result = Emit(builder,
+-                                     OpCode::CallLambda,
+-                                     Type::U64,
+-                                     {Operand::Lambda(),
+-                                      Imm(reinterpret_cast<std::uintptr_t>(&arm::ExecuteNumeric)),
+-                                      Operand::ValueOf(pointer),
+-                                      Operand::ValueOf(instruction),
+-                                      Operand::ValueOf(location)});
+-            x64::CompileOptions options;
+-            options.flags_offset = offsetof(arm::GuestState, packed_flags);
+-            options.pc_offset = offsetof(arm::GuestState, pc);
+-            options.arm_fpcr_offset = offsetof(arm::GuestState, fpcr);
+-            options.arm_fpsr_offset = offsetof(arm::GuestState, fpsr);
+-            options.arm_fpcr = arm::FPCRForDomain(domain);
+-            options.local_flags = true;
+-            options.sse41 = sse41 && (domain & 1);
+-            options.fma = fma;
+-            const auto code = x64::Compile(Return(builder, result), options);
+-            REQUIRE(bool(code));
+-            if (!NativeMode()) continue;
+-            swift::tests::NativeCode native{code.words, swift::tests::NativeISA::X64};
+-            const unsigned bits = ((word >> 22) & 3) == 1 || (family != arm::Numeric::Scalar &&
+-                                                              (word & (1u << 22)))
+-                                          ? 64
+-                                          : 32;
+-            const auto& values = bits == 32 ? singles : doubles;
+-            for (unsigned sample = 0; sample < values.size(); ++sample) {
+-                arm::GuestState state;
+-                state.fpcr = options.arm_fpcr;
+-                state.fpsr = 0x08000000;
+-                state.packed_flags = (u64{1} << 55) | 0x91234567;
+-                state.gprs[1] = sample < 9    ? values[sample]
+-                                : sample == 9 ? UINT64_MAX
+-                                              : (u64{1} << 63) + sample - 10;
+-                for (unsigned reg = 0; reg < 4; ++reg)
+-                    for (unsigned lane = 0; lane < 128 / bits; ++lane) {
+-                        const u64 value = values[(sample +
+-                                                  (reg == 1   ? 0
+-                                                   : reg == 2 ? 5
+-                                                              : 9) +
+-                                                  lane) %
+-                                                 values.size()];
+-                        std::memcpy(state.q[reg] + lane * bits / 8, &value, bits / 8);
++        for (const bool typed : {false, true})
++            for (const auto [family, word] : instructions) {
++                INFO("domain=" << domain << " family=" << unsigned(family) << " word=" << std::hex
++                               << word);
++                REQUIRE(arm::SupportsNumeric(family, word));
++                Builder builder{Scope::Block};
++                Begin(builder);
++                const auto encoded = arm::NumericCall(family, word);
++                Value result;
++                if (!typed) {
++                    const auto pointer =
++                            Emit(builder, OpCode::GetUniformAddress, Type::U64, {Imm(0)});
++                    const auto instruction = Literal(builder, encoded);
++                    const auto location = Literal(builder, 0x1000);
++                    result = Emit(builder,
++                                  OpCode::CallLambda,
++                                  Type::U64,
++                                  {Operand::Lambda(),
++                                   Imm(reinterpret_cast<std::uintptr_t>(&arm::ExecuteNumeric)),
++                                   Operand::ValueOf(pointer),
++                                   Operand::ValueOf(instruction),
++                                   Operand::ValueOf(location)});
++                } else {
++                    const auto info = arm::DescribeFPValues(encoded);
++                    const u32 rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
++                    const auto vector = [&](unsigned reg) {
++                        return Emit(builder,
++                                    OpCode::LoadUniform,
++                                    Type::V128,
++                                    {Operand::Uniform(offsetof(arm::GuestState, q) + reg * 16,
++                                                      Type::V128)});
++                    };
++                    const auto offsets = Imm(arm::FPStateOffsets(offsetof(arm::GuestState, fpcr),
++                                                                 offsetof(arm::GuestState, fpsr)));
++                    const auto mode = Imm(encoded);
++                    const auto lhs = info.kind == arm::FPValueKind::FromInt
++                                             ? Emit(builder,
++                                                    OpCode::LoadUniform,
++                                                    Type::U64,
++                                                    {Operand::Uniform(rn * 8, Type::U64)})
++                                             : vector(rn);
++                    Value value;
++                    if (info.kind == arm::FPValueKind::Compare) {
++                        Emit(builder,
++                             OpCode::ArmFPCompare,
++                             Type::Void,
++                             {Operand::ValueOf(lhs), Operand::ValueOf(vector(rm)), offsets, mode});
++                    } else if (info.kind == arm::FPValueKind::Fused) {
++                        const auto addend = family == arm::Numeric::Scalar ? (word >> 10) & 31 : rd;
++                        value = Emit(builder,
++                                     OpCode::ArmFPTernary,
++                                     Type::V128,
++                                     {Operand::ValueOf(lhs),
++                                      Operand::ValueOf(vector(rm)),
++                                      Operand::ValueOf(vector(addend)),
++                                      offsets,
++                                      mode});
++                    } else if (info.kind == arm::FPValueKind::Divide) {
++                        value = Emit(builder,
++                                     OpCode::ArmFPBinary,
++                                     Type::V128,
++                                     {Operand::ValueOf(lhs),
++                                      Operand::ValueOf(vector(rm)),
++                                      Imm(offsetof(arm::GuestState, fpcr)),
++                                      Imm(offsetof(arm::GuestState, fpsr)),
++                                      Imm(arm::ArmFPBinaryMode(3, info.bits, 1))});
++                    } else {
++                        const bool integer = info.kind == arm::FPValueKind::ToInt;
++                        const bool convert = integer || info.kind == arm::FPValueKind::FromInt;
++                        value = Emit(builder,
++                                     convert ? OpCode::ArmFPConvert : OpCode::ArmFPUnary,
++                                     integer ? Type::U64 : Type::V128,
++                                     {Operand::ValueOf(lhs), offsets, mode});
++                    }
++                    if (value) {
++                        const bool integer = info.kind == arm::FPValueKind::ToInt;
++                        Emit(builder,
++                             OpCode::StoreUniform,
++                             Type::Void,
++                             {Operand::Uniform(
++                                      integer ? rd * 8 : offsetof(arm::GuestState, q) + rd * 16,
++                                      integer ? Type::U64 : Type::V128),
++                              Operand::ValueOf(value)});
+                     }
++                    result = Literal(builder, 0);
++                }
++                x64::CompileOptions options;
++                options.flags_offset = offsetof(arm::GuestState, packed_flags);
++                options.pc_offset = offsetof(arm::GuestState, pc);
++                options.arm_fpcr_offset = offsetof(arm::GuestState, fpcr);
++                options.arm_fpsr_offset = offsetof(arm::GuestState, fpsr);
++                options.arm_fpcr = arm::FPCRForDomain(domain);
++                options.local_flags = true;
++                options.sse41 = sse41 && (domain & 1);
++                options.fma = fma && (!typed || (domain & 1));
++                options.avx = fma && (domain & 4);
++                options.lahf = domain & 2;
++                const auto code = x64::Compile(Return(builder, result), options);
++                REQUIRE(bool(code));
++                if (!NativeMode()) continue;
++                swift::tests::NativeCode native{code.words, swift::tests::NativeISA::X64};
++                const unsigned bits = ((word >> 22) & 3) == 1 || (family != arm::Numeric::Scalar &&
++                                                                  (word & (1u << 22)))
++                                              ? 64
++                                              : 32;
++                const auto& values = bits == 32 ? singles : doubles;
++                for (unsigned sample = 0; sample < values.size(); ++sample) {
++                    arm::GuestState state;
++                    state.fpcr = options.arm_fpcr;
++                    state.fpsr = 0x08000000;
++                    state.packed_flags = (u64{1} << 55) | 0x91234567;
++                    state.gprs[1] = sample < 9    ? values[sample]
++                                    : sample == 9 ? UINT64_MAX
++                                                  : (u64{1} << 63) + sample - 10;
++                    for (unsigned reg = 0; reg < 4; ++reg)
++                        for (unsigned lane = 0; lane < 128 / bits; ++lane) {
++                            const u64 value = values[(sample +
++                                                      (reg == 1   ? 0
++                                                       : reg == 2 ? 5
++                                                                  : 9) +
++                                                      lane) %
++                                                     values.size()];
++                            std::memcpy(state.q[reg] + lane * bits / 8, &value, bits / 8);
++                        }
++                    auto expected = state;
++                    const auto answer =
++                            arm::ExecuteNumeric(reinterpret_cast<std::uintptr_t>(&expected),
++                                                arm::NumericCall(family, word),
++                                                0x1000);
++                    if (typed && arm::DescribeFPValues(encoded).kind == arm::FPValueKind::Compare)
++                        expected.packed_flags =
++                                (expected.packed_flags & ~u64{0xf0000000}) | (answer << 28);
++                    CHECK(native.Run(reinterpret_cast<std::uint8_t*>(&state)) ==
++                          (typed ? 0 : answer));
++                    CHECK(std::memcmp(state.q, expected.q, sizeof(state.q)) == 0);
++                    CHECK(std::memcmp(state.gprs, expected.gprs, sizeof(state.gprs)) == 0);
++                    CHECK(state.fpsr == expected.fpsr);
++                    CHECK(state.packed_flags == expected.packed_flags);
++                    CHECK(state.helper_status == expected.helper_status);
++                }
++            }
++    }
++}
++
++TEST_CASE("Exact floating cold calls share register-independent descriptors",
++          "[compile][x64-compile][native]") {
++    namespace arm = swift::runtime::arm64;
++    for (const bool image : {false, true}) {
++        Builder builder{Scope::Block};
++        Begin(builder);
++        const std::array inputs{
++                LoadVector(builder, 0), LoadVector(builder, 1), LoadVector(builder, 2)};
++        std::array<u64, 3> modes;
++        for (unsigned i = 0; i < modes.size(); ++i) {
++            const u32 word = u32(vixl::aarch64::FMADD_s) | ((i + 4) << 5) | ((i + 8) << 16) |
++                             ((i + 12) << 10) | (i + 16);
++            modes[i] = arm::NumericCall(arm::Numeric::Scalar, word);
++            const auto result =
++                    Emit(builder,
++                         OpCode::ArmFPTernary,
++                         Type::V128,
++                         {Operand::ValueOf(inputs[i]),
++                          Operand::ValueOf(inputs[(i + 1) % inputs.size()]),
++                          Operand::ValueOf(inputs[(i + 2) % inputs.size()]),
++                          Imm(arm::FPStateOffsets(offsetof(State, fpcr), offsetof(State, fpsr))),
++                          Imm(modes[i])});
++            StoreVector(builder, i + 3, result);
++        }
++        auto options = Options();
++        options.relocatable = true;
++        options.local_flags = true;
++        options.lahf = image;
++        options.arm_fpcr_offset = offsetof(State, fpcr);
++        options.arm_fpsr_offset = offsetof(State, fpsr);
++        const auto code = x64::Compile(Return(builder, Literal(builder, 0)), options);
++        REQUIRE(bool(code));
++        CHECK(std::count_if(code.relocations.begin(), code.relocations.end(), [](const auto& r) {
++                  return r.symbol == swift::runtime::backend::HostSymbol::ArmFPValues;
++              }) == 1);
++        if (!NativeMode()) continue;
++        swift::tests::NativeCode native{code.words, swift::tests::NativeISA::X64};
++        for (const u32 fpcr : {0u, 1u << 24})
++            for (const u32 first : {0x3fc00000u, 0x7f800001u, 1u}) {
++                State state;
++                state.fpcr = fpcr;
++                state.fpsr = 0x08000000;
++                state.flags = 0xf1234567;
++                state.vectors[0] = Lanes32(first, UINT32_MAX, UINT32_MAX, UINT32_MAX);
++                state.vectors[1] = Lanes32(0x40000000, UINT32_MAX, UINT32_MAX, UINT32_MAX);
++                state.vectors[2] = Lanes32(0xc0400000, UINT32_MAX, UINT32_MAX, UINT32_MAX);
+                 auto expected = state;
+-                const auto answer = arm::ExecuteNumeric(reinterpret_cast<std::uintptr_t>(&expected),
+-                                                        arm::NumericCall(family, word),
+-                                                        0x1000);
+-                CHECK(native.Run(reinterpret_cast<std::uint8_t*>(&state)) == answer);
+-                CHECK(std::memcmp(state.q, expected.q, sizeof(state.q)) == 0);
+-                CHECK(std::memcmp(state.gprs, expected.gprs, sizeof(state.gprs)) == 0);
++                for (unsigned i = 0; i < modes.size(); ++i) {
++                    const std::array values{state.vectors[i],
++                                            state.vectors[(i + 1) % inputs.size()],
++                                            state.vectors[(i + 2) % inputs.size()]};
++                    REQUIRE(arm::EvaluateFPValues(&expected.vectors[i + 3],
++                                                  values.data(),
++                                                  modes[i],
++                                                  fpcr,
++                                                  &expected.fpsr) == 0);
++                }
++                CHECK(native.Run(reinterpret_cast<std::uint8_t*>(&state)) == 0);
++                CHECK(state.vectors == expected.vectors);
+                 CHECK(state.fpsr == expected.fpsr);
+-                CHECK(state.packed_flags == expected.packed_flags);
+-                CHECK(state.helper_status == expected.helper_status);
++                CHECK(state.flags == expected.flags);
+             }
+-        }
+     }
+ }
+ 

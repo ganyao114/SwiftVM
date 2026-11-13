@@ -1,0 +1,52 @@
+{
+  "cmake_cache": {
+    "CMAKE_BUILD_TYPE": "Release",
+    "CMAKE_CXX_COMPILER": "/usr/bin/c++",
+    "CMAKE_CXX_FLAGS": "",
+    "CMAKE_CXX_FLAGS_RELEASE": "-O3 -DNDEBUG",
+    "CMAKE_CXX_STANDARD_LIBRARIES": "-latomic",
+    "CMAKE_C_COMPILER": "/usr/bin/cc",
+    "CMAKE_EXE_LINKER_FLAGS": "",
+    "SVM_BUILD_ARM64_COMPARE_BENCHMARK": "ON",
+    "SVM_BUILD_CORRECTNESS": "ON",
+    "SVM_BUILD_FUZZERS": "OFF",
+    "SVM_BUILD_IR_BENCHMARK": "ON",
+    "SVM_BUILD_IR_FORMAT": "ON",
+    "SVM_ENABLE_IPO": "ON",
+    "CMAKE_GENERATOR": "Ninja"
+  },
+  "configure_reproduction_argv": [
+    "cmake",
+    "-S",
+    "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/source",
+    "-B",
+    "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/build",
+    "-G",
+    "Ninja",
+    "-DCMAKE_BUILD_TYPE=Release",
+    "-DSVM_ENABLE_IPO=ON",
+    "-DSVM_BUILD_CORRECTNESS=ON",
+    "-DSVM_BUILD_IR_BENCHMARK=ON",
+    "-DSVM_BUILD_ARM64_COMPARE_BENCHMARK=ON",
+    "-DCMAKE_CXX_STANDARD_LIBRARIES=-latomic"
+  ],
+  "build_argv": [
+    "cmake",
+    "--build",
+    "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/build",
+    "-j",
+    "8"
+  ],
+  "ctest_argv": [
+    "ctest",
+    "--test-dir",
+    "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/build",
+    "--output-on-failure",
+    "--output-junit",
+    "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/delivery-ctest.xml",
+    "-j",
+    "4"
+  ],
+  "python": "Python 3.12.3",
+  "unicorn": "2.1.4"
+}

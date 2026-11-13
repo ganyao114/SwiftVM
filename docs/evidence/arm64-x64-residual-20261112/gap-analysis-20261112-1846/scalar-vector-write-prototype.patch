@@ -1,0 +1,44 @@
+--- a/source/runtime/frontend/arm64/semantics_registers.inc
++++ b/source/runtime/frontend/arm64/semantics_registers.inc
+@@ -76,7 +76,12 @@
+     value = Reinterpret(value, value.ViewType());
+     if (TypeBits(value.ViewType()) <= 64) {
+         // Scalar SIMD writes clear the complete remainder of the Q register.
+-        WriteVHalves(code, Widen(value), ImmValue(0, Type::U64));
++        if (X64FP()) {
++            auto vector = Emit<OpCode::BitCast, Type::V128>(Widen(value));
++            auto offset = u32(offsetof(GuestState, q) + code * sizeof(u128));
++            this->StoreUniform(Uniform{offset, Type::V128}, vector);
++        } else
++            WriteVHalves(code, Widen(value), ImmValue(0, Type::U64));
+         return;
+     }
+     auto offset = u32(offsetof(GuestState, q) + code * sizeof(u128));
+--- a/source/runtime/frontend/arm64/semantics_float.inc
++++ b/source/runtime/frontend/arm64/semantics_float.inc
+@@ -210,7 +210,7 @@
+             auto value = this->template And<Type::U64>(ReadXRegister(instr->GetRn()),
+                                                        SingleOperand(Imm{u64{0xFFFF}}))
+                                  .WithView(Type::U64);
+-            WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
++            WriteVRegister(instr->GetRd(), value);
+             return;
+         }
+         case FMOV_sw:
+@@ -329,7 +329,7 @@
+                 this->template And<Type::U8>(alternate, SingleOperand(nan)).WithView(Type::U8);
+         value = this->Select(preserve, original, value).WithView(Type::U64);
+     }
+-    WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
++    WriteVRegister(instr->GetRd(), value);
+ }
+ 
+ void WriteNZCV(Value source) {
+@@ -398,5 +398,5 @@
+         value = this->template And<Type::U64>(value, SingleOperand(Imm{(u64{1} << bits) - 1}))
+                         .WithView(Type::U64);
+     }
+-    WriteVHalves(instr->GetRd(), value, ImmValue(0, Type::U64));
+-}
++    WriteVRegister(instr->GetRd(), value);
++}

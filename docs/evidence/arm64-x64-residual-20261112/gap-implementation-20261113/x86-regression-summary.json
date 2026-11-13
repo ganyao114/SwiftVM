@@ -1,0 +1,206 @@
+{
+  "block": {
+    "total": 624,
+    "native_executed": 624,
+    "failures": 506,
+    "counts": {
+      "agreement": 118,
+      "oracle_alignment_gap": 100,
+      "x87_gap": 406
+    },
+    "unchanged_non_native": [
+      {
+        "case": "x86-x87-mmx-00470.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffd scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-00505.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffe scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-00518.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00519.svmcase",
+        "outcome": "fault",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00520.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00521.svmcase",
+        "outcome": "fault",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00522.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00523.svmcase",
+        "outcome": "fault",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00524.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00525.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00851.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffa scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-01115.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffd scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-01116.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffc scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-01117.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffc scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-01119.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffd scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      }
+    ]
+  },
+  "function": {
+    "total": 624,
+    "native_executed": 624,
+    "failures": 506,
+    "counts": {
+      "agreement": 118,
+      "oracle_alignment_gap": 100,
+      "x87_gap": 406
+    },
+    "unchanged_non_native": [
+      {
+        "case": "x86-x87-mmx-00470.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffd scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-00505.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffe scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-00518.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00519.svmcase",
+        "outcome": "fault",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00520.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00521.svmcase",
+        "outcome": "fault",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00522.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00523.svmcase",
+        "outcome": "fault",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00524.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00525.svmcase",
+        "outcome": "terminal",
+        "stage": "execute",
+        "error": ""
+      },
+      {
+        "case": "x86-x87-mmx-00851.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffa scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-01115.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffd scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-01116.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffc scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-01117.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffc scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      },
+      {
+        "case": "x86-x87-mmx-01119.svmcase",
+        "outcome": "rejected",
+        "stage": "execute",
+        "error": "guest frontend rejected pc=0x400fffd scope=block error=4 ir_error=0 emitted=0 bytes=0"
+      }
+    ]
+  }
+}

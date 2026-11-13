@@ -1,0 +1,98 @@
+Internal ctest changing into directory: /home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/build
+Test project /home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/build
+      Start 20: x64_native_contract
+      Start 36: aot_call_native
+      Start 37: runtime_persistence_native
+      Start 28: runtime_engine_contract
+ 1/38 Test #37: runtime_persistence_native ........   Passed    0.02 sec
+      Start 29: runtime_engine_native_contract
+ 2/38 Test #36: aot_call_native ...................   Passed    0.04 sec
+      Start 32: code_image_contract
+ 3/38 Test #32: code_image_contract ...............   Passed    0.01 sec
+      Start 27: arm32_runtime_native_contract
+ 4/38 Test #29: runtime_engine_native_contract ....   Passed    0.12 sec
+      Start 19: x64_compile_contract
+ 5/38 Test #27: arm32_runtime_native_contract .....   Passed    0.11 sec
+      Start 14: arm64_compile_contract
+ 6/38 Test #14: arm64_compile_contract ............   Passed    0.03 sec
+      Start 38: correctness_protocol
+ 7/38 Test #38: correctness_protocol ..............   Passed    0.02 sec
+      Start 15: compile_pipeline_contract
+ 8/38 Test #19: x64_compile_contract ..............   Passed    0.07 sec
+      Start 31: base_contract
+ 9/38 Test #31: base_contract .....................   Passed    0.00 sec
+      Start  9: x86_construction_contract
+10/38 Test  #9: x86_construction_contract .........   Passed    0.00 sec
+      Start 35: aot_artifact_contract
+11/38 Test #35: aot_artifact_contract .............   Passed    0.01 sec
+      Start 10: arm64_frontend_contract
+12/38 Test #15: compile_pipeline_contract .........   Passed    0.01 sec
+      Start 33: persistence_relocation_contract
+13/38 Test #28: runtime_engine_contract ...........   Passed    0.23 sec
+      Start  6: x87_coverage
+14/38 Test #10: arm64_frontend_contract ...........   Passed    0.00 sec
+      Start 12: arm32_frontend_native_contract
+15/38 Test #33: persistence_relocation_contract ...   Passed    0.00 sec
+      Start  2: instruction_coverage
+16/38 Test  #6: x87_coverage ......................   Passed    0.00 sec
+      Start 11: arm32_frontend_contract
+17/38 Test #12: arm32_frontend_native_contract ....   Passed    0.00 sec
+      Start  4: avx_coverage
+18/38 Test  #2: instruction_coverage ..............   Passed    0.00 sec
+      Start  1: x86_floating_contract
+19/38 Test #11: arm32_frontend_contract ...........   Passed    0.00 sec
+      Start 17: ir_direct_contract
+20/38 Test  #4: avx_coverage ......................   Passed    0.00 sec
+      Start 18: riscv64_compile_contract
+21/38 Test  #1: x86_floating_contract .............   Passed    0.00 sec
+      Start 21: loongarch64_compile_contract
+22/38 Test #17: ir_direct_contract ................   Passed    0.00 sec
+      Start  8: ir_construction_contract
+23/38 Test #18: riscv64_compile_contract ..........   Passed    0.00 sec
+      Start 16: x86_interpreter_contract
+24/38 Test #21: loongarch64_compile_contract ......   Passed    0.00 sec
+      Start 26: arm32_runtime_contract
+25/38 Test  #8: ir_construction_contract ..........   Passed    0.00 sec
+      Start 13: ir_optimize_contract
+26/38 Test #16: x86_interpreter_contract ..........   Passed    0.00 sec
+      Start 34: persistence_relocation_native
+27/38 Test #26: arm32_runtime_contract ............   Passed    0.00 sec
+      Start 30: ir_format_contract
+28/38 Test #13: ir_optimize_contract ..............   Passed    0.00 sec
+      Start  3: instruction_coverage_native
+29/38 Test #34: persistence_relocation_native .....   Passed    0.00 sec
+      Start  5: avx_coverage_native
+30/38 Test #30: ir_format_contract ................   Passed    0.00 sec
+      Start  7: x87_coverage_native
+31/38 Test  #3: instruction_coverage_native .......***Skipped   0.00 sec
+      Start 22: loongarch64_native_contract
+32/38 Test  #5: avx_coverage_native ...............***Skipped   0.00 sec
+      Start 23: arm64_native_contract
+33/38 Test  #7: x87_coverage_native ...............***Skipped   0.00 sec
+      Start 24: pipeline_native_contract
+34/38 Test #22: loongarch64_native_contract .......***Skipped   0.00 sec
+      Start 25: riscv64_native_contract
+35/38 Test #23: arm64_native_contract .............***Skipped   0.00 sec
+36/38 Test #24: pipeline_native_contract ..........***Skipped   0.00 sec
+37/38 Test #25: riscv64_native_contract ...........***Skipped   0.00 sec
+38/38 Test #20: x64_native_contract ...............   Passed    4.78 sec
+
+100% tests passed, 0 tests failed out of 38
+
+Label Time Summary:
+compile        =   0.41 sec*proc (23 tests)
+correctness    =   0.02 sec*proc (1 test)
+native         =   5.10 sec*proc (14 tests)
+portable       =   0.42 sec*proc (24 tests)
+unit           =   5.51 sec*proc (37 tests)
+
+Total Test time (real) =   4.78 sec
+
+The following tests did not run:
+	  3 - instruction_coverage_native (Skipped)
+	  5 - avx_coverage_native (Skipped)
+	  7 - x87_coverage_native (Skipped)
+	 22 - loongarch64_native_contract (Skipped)
+	 23 - arm64_native_contract (Skipped)
+	 24 - pipeline_native_contract (Skipped)
+	 25 - riscv64_native_contract (Skipped)

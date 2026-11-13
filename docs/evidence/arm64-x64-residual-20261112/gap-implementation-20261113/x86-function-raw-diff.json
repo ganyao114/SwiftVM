@@ -1,0 +1,16 @@
+{
+  "total": 639,
+  "native": 624,
+  "compared_fields": [
+    "outcome",
+    "state",
+    "memory",
+    "service",
+    "fault_pc",
+    "fault_address",
+    "fault_access",
+    "fault_kind",
+    "fault_width"
+  ],
+  "mismatches": []
+}

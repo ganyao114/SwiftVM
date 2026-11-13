@@ -1,0 +1,20 @@
+{
+  "checked_utc": "2026-11-13T09:44:33.821424+00:00",
+  "source_patch_matches_current_workspace": true,
+  "exact_patch_replay_files": 37,
+  "ctest": {
+    "ctest_passed": 31,
+    "ctest_skipped": 7,
+    "ctest_failed": 0,
+    "arm_oracle_executions": 57168,
+    "arm_failures": 0,
+    "x86_full_outcomes_equal": 1278,
+    "x86_mismatches": 0,
+    "program_configurations": 24,
+    "disk_cache_and_aot_guests": 3
+  },
+  "documentation_links_valid": true,
+  "archives_crc_checked": true,
+  "all_6_numerical_scaling_rows_verified": true,
+  "archive_bytes": 98270967
+}

@@ -1,0 +1,30 @@
+{
+  "base": "af7671f6b5563e94a30ded7b3992163e8f9558bc",
+  "files": 37,
+  "exact_snapshot_matches": 37,
+  "commands": [
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/patch-check",
+        "apply",
+        "--check",
+        "/mnt/d/Dev/SwiftVM/docs/evidence/arm64-x64-residual-20261112/gap-implementation-20261113/implementation.patch"
+      ],
+      "exit_code": 0,
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "git",
+        "-C",
+        "/home/proton/.cache/SwiftVM/arm64-x64-gap-impl-20261112/patch-check",
+        "apply",
+        "/mnt/d/Dev/SwiftVM/docs/evidence/arm64-x64-residual-20261112/gap-implementation-20261113/implementation.patch"
+      ],
+      "exit_code": 0,
+      "stderr": ""
+    }
+  ]
+}
