@@ -1,3 +1,4 @@
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/exit.h"
 #include "runtime/ir/direct/interpreter.h"
 #include "tests/support/check.h"
@@ -269,6 +270,54 @@ void FaultKeepsCompletedEffects() {
           "unsupported before the first access leaves the concrete consumer safe to replace");
 }
 }  // namespace
+
+TEST_CASE("Exact ARM FP values execute through the direct IR entry", "[compile][ir-direct]") {
+    namespace arm = swift::runtime::arm64;
+    Machine machine;
+    direct::Interpreter interpreter({machine.uniforms, machine.flags, machine.pc, machine.mxcsr});
+    const auto vector = [&](u64 bits) {
+        return Need(interpreter.Emit<OpCode::VecLoadConst>(
+                Type::V128, {Operand::Immediate(bits), Operand::Immediate(UINT64_MAX)}));
+    };
+    const auto one = vector(0x3ff0000000000000), two = vector(0x4000000000000000),
+               three = vector(0x4008000000000000);
+    const auto offsets = Operand::Immediate(arm::FPStateOffsets(0, 4));
+    const auto fused = Need(interpreter.Emit<OpCode::ArmFPTernary>(
+            Type::V128,
+            {Operand::ValueOf(one),
+             Operand::ValueOf(two),
+             Operand::ValueOf(three),
+             offsets,
+             Operand::Immediate(arm::NumericCall(arm::Numeric::Scalar, 0x1f410421))}));
+    CHECK(fused.number.bits == static_cast<unsigned __int128>(0x4014000000000000));
+    Need(interpreter.Emit<OpCode::ArmFPCompare>(
+            Type::Void,
+            {Operand::ValueOf(one),
+             Operand::ValueOf(two),
+             offsets,
+             Operand::Immediate(arm::NumericCall(arm::Numeric::Scalar, 0x1e612020))}));
+    CHECK((machine.flags & 0xf0000000) == 0x80000000);
+    const auto integer = Need(interpreter.Emit<OpCode::ArmFPConvert>(
+            Type::U64,
+            {Operand::ValueOf(one),
+             offsets,
+             Operand::Immediate(arm::NumericCall(arm::Numeric::Scalar, 0x9e78003f))}));
+    CHECK(integer.number.bits == 1);
+    const auto input = Need(interpreter.Emit<OpCode::LoadImm>(Type::U64, {Operand::Immediate(3)}));
+    const auto converted = Need(interpreter.Emit<OpCode::ArmFPConvert>(
+            Type::V128,
+            {Operand::ValueOf(input),
+             offsets,
+             Operand::Immediate(arm::NumericCall(arm::Numeric::Scalar, 0x9e6203e0))}));
+    CHECK(converted.number.bits == static_cast<unsigned __int128>(0x4008000000000000));
+    const std::uint32_t alternate = 2;
+    std::memcpy(machine.uniforms.data(), &alternate, 4);
+    const auto nan = vector(0xfff0000000000042);
+    const auto absolute = Need(interpreter.Emit<OpCode::ArmFPBitUnary>(
+            Type::V128,
+            {Operand::ValueOf(nan), Operand::Immediate(0), Operand::Immediate(0x1e60c020)}));
+    CHECK(absolute.number.bits == static_cast<unsigned __int128>(0xfff0000000000042));
+}
 
 TEST_CASE("NumericAndUniform", "[compile][ir-direct]") { CHECK_NOTHROW(NumericAndUniform()); }
 

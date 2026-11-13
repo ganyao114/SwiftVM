@@ -52,6 +52,68 @@ void Build(const Code& code, ir::Scope scope = ir::Scope::Block) {
     }
 }
 
+TEST_CASE("ARM scalar SIMD stores use complete zero-extended Q values on x64",
+          "[compile][arm64-frontend]") {
+    // LDR B/H/S/D0,[X1]; FMOV S0,W1; FMOV D0,X1; FABS D0,D1.
+    for (const std::uint32_t word : {0x3d400020u,
+                                     0x7d400020u,
+                                     0xbd400020u,
+                                     0xfd400020u,
+                                     0x1e270020u,
+                                     0x9e670020u,
+                                     0x1e60c020u}) {
+        const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(&word),
+                                                  sizeof(word)};
+        const std::array<front::BlockWindow, 1> windows{{{CodeBase, bytes}}};
+        for (const auto mode : {ir::TargetMode::Known, ir::TargetMode::Unknown}) {
+            front::StateLayout layout;
+            layout.fprs_offset += 64;
+            const auto built = front::BuildIR(windows, ir::Scope::Block, layout, {mode, 0x8664, 0});
+            REQUIRE(built);
+            unsigned stores{};
+            for (unsigned node = 0; node < built.program.Operations().size(); ++node) {
+                const auto& op = built.program.Operations()[node];
+                if (op.opcode != ir::OpCode::StoreUniform) continue;
+                const auto field = built.program.Operands(ir::NodeId{node}).front();
+                if (field.Payload() < layout.fprs_offset ||
+                    field.Payload() >= layout.fprs_offset + 16)
+                    continue;
+                ++stores;
+                CHECK(field.TypeView() ==
+                      (mode == ir::TargetMode::Known ? ir::Type::V128 : ir::Type::U64));
+            }
+            CHECK(stores == (mode == ir::TargetMode::Known ? 1u : 2u));
+        }
+    }
+}
+
+TEST_CASE("ARM x64 numerical IR declares comparison flags without a data producer",
+          "[compile][arm64-frontend]") {
+    // FCMP D1,D2; FMADD D0,D1,D2,D3; FSQRT D4,D1.
+    constexpr std::uint32_t words[]{0x1e622020, 0x1f420c20, 0x1e61c024};
+    const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(words),
+                                              sizeof(words)};
+    const std::array<front::BlockWindow, 1> windows{{{CodeBase, bytes}}};
+    const auto built =
+            front::BuildIR(windows, ir::Scope::Block, {}, {ir::TargetMode::Known, 0x8664, 0});
+    REQUIRE(built);
+    unsigned comparisons{}, fused{}, unary{};
+    for (const auto& op : built.program.Operations()) {
+        comparisons += op.opcode == ir::OpCode::ArmFPCompare;
+        fused += op.opcode == ir::OpCode::ArmFPTernary;
+        unary += op.opcode == ir::OpCode::ArmFPUnary;
+        if (op.opcode == ir::OpCode::ArmFPCompare) {
+            CHECK(op.type == ir::Type::Void);
+            CHECK(op.Metadata() == ir::OperationMetadata{});
+            CHECK(ir::HasAnyEffect(ir::EffectsFor(op.opcode), ir::Effect::WriteFlags));
+        }
+        CHECK(op.opcode != ir::OpCode::CallLambda);
+    }
+    CHECK(comparisons == 1);
+    CHECK(fused == 1);
+    CHECK(unary == 1);
+}
+
 template <class T> T Lane(const State& s, unsigned r, unsigned lane = 0) {
     T out;
     std::memcpy(&out, s.q[r] + lane * sizeof(T), sizeof(T));

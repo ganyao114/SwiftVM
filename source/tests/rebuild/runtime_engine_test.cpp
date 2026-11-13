@@ -1431,6 +1431,101 @@ TEST_CASE("ARM64 AOT selects all legacy flush domains", "[compile]") {
 }
 
 #if defined(__x86_64__)
+TEST_CASE("ARM64 faults observe canonical FP comparison flags", "[native][arm64-guest]") {
+    namespace arm = swift::runtime::arm64;
+    // FCMP D0,D1; LDR X3,[X0]; RET.
+    constexpr std::uint32_t instructions[]{0x1e612000, 0xf9400003, 0xd65f03c0};
+    const std::span<const std::uint8_t> bytes{reinterpret_cast<const std::uint8_t*>(instructions),
+                                              sizeof(instructions)};
+    GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+    for (const unsigned domain : {0u, 8u, 31u})
+        for (const std::uint64_t input : {UINT64_C(0x3ff0000000000000),
+                                          UINT64_C(0x7ff8000000000042),
+                                          UINT64_C(0x7ff0000000000042),
+                                          UINT64_C(1)}) {
+            execution::RuntimeOptions options;
+            options.scope = swift::runtime::ir::Scope::Function;
+            execution::RuntimeStats stats;
+            swift::runtime::platform::HostRuntime host{false};
+            execution::VM vm{options, stats, host.Bind()};
+            vm.PrepareGuest(guest.Path());
+            auto& state = vm.ArmState();
+            const auto fault_pc = state.pc + 4;
+            state.gprs[0] = 0;
+            state.fpcr = arm::FPCRForDomain(domain);
+            state.fpsr = 0x08000000;
+            state.packed_flags = (std::uint64_t{1} << 55) | 0x900000a5;
+            std::memcpy(state.q[0], &input, 8);
+            const auto zero = std::uint64_t{0};
+            std::memcpy(state.q[1], &zero, 8);
+            auto expected = state;
+            const auto nzcv =
+                    arm::ExecuteNumeric(reinterpret_cast<std::uint64_t>(&expected),
+                                        arm::NumericCall(arm::Numeric::Scalar, instructions[0]),
+                                        state.pc);
+            (void)vm.RunPrepared();
+            const auto fault = vm.CaptureException();
+            REQUIRE(fault);
+            CHECK(fault->info.instruction_pc == fault_pc);
+            CHECK(state.packed_flags == ((std::uint64_t{1} << 55) | 0xa5 | (nzcv << 28)));
+            CHECK(state.fpsr == expected.fpsr);
+            CHECK(stats.fallbacks == 0 && stats.interpreted_steps == 0);
+            CHECK(vm.Close().Complete());
+        }
+}
+
+TEST_CASE("ARM64 scalar SIMD writes clear every inactive bit", "[native][arm64-guest]") {
+    REQUIRE(NativeMode());
+    // LDR B0/H1/S2/D3,[X0]; FMOV S4,W1; FMOV D5,X1; FABS D6,D3; RET.
+    std::array<std::uint32_t, 10> instructions{0x3d400000,
+                                               0x7d400001,
+                                               0xbd400002,
+                                               0xfd400003,
+                                               0x1e270024,
+                                               0x9e670025,
+                                               0x1e60c066,
+                                               0xd65f03c0};
+    for (const std::uint64_t input : {UINT64_C(0xbff123456789abcd), UINT64_C(0xfff0000000000042)}) {
+        std::memcpy(instructions.data() + 8, &input, 8);
+        const std::span<const std::uint8_t> bytes{
+                reinterpret_cast<const std::uint8_t*>(instructions.data()), sizeof(instructions)};
+        GuestFile guest{bytes, PF_R | PF_X, EM_AARCH64};
+        for (const auto scope :
+             {swift::runtime::ir::Scope::Block, swift::runtime::ir::Scope::Function})
+            for (const bool optimize : {false, true}) {
+                execution::RuntimeOptions options;
+                options.scope = scope;
+                options.optimize = optimize;
+                execution::RuntimeStats stats;
+                swift::runtime::platform::HostRuntime host{false};
+                execution::VM vm{options, stats, host.Bind()};
+                vm.PrepareGuest(guest.Path());
+                auto& state = vm.ArmState();
+                const auto entry = state.pc, stack = state.gprs[31];
+                state.gprs[0] = entry + 32;
+                state.gprs[1] = UINT64_C(0xfedcba9876543210);
+                state.fpsr = 0x08000000;
+                std::memset(state.q, 0xa5, sizeof(state.q));
+                vm.CallGuest(entry, stack, 0);
+                const std::array<std::uint64_t, 7> expected{input & 0xff,
+                                                            input & 0xffff,
+                                                            input & 0xffffffff,
+                                                            input,
+                                                            state.gprs[1] & 0xffffffff,
+                                                            state.gprs[1],
+                                                            input & UINT64_C(0x7fffffffffffffff)};
+                for (unsigned reg = 0; reg < expected.size(); ++reg) {
+                    std::array<std::uint64_t, 2> value;
+                    std::memcpy(value.data(), state.q[reg], sizeof(value));
+                    CHECK(value == (std::array{expected[reg], std::uint64_t{0}}));
+                }
+                CHECK(state.fpsr == 0x08000000);
+                CHECK(stats.fallbacks == 0 && stats.interpreted_steps == 0);
+                CHECK(vm.Close().Complete());
+            }
+    }
+}
+
 TEST_CASE("ARM64 faults harvest pending FP status and native NZCV", "[native]") {
     REQUIRE(NativeMode());
     // FADD S2,S0,S1; SUBS X4,X4,1; LDR X3,[X0]; FADD S5,S0,S6.
