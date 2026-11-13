@@ -1747,3 +1747,99 @@ TEST_CASE("Sandwiched LoadMemory eliminates vector dead stores while preserving 
     run_case(true, false, false);
     run_case(true, true, true);
 }
+
+TEST_CASE("Exclusive shift-right and contiguous mask fold to BitExtract or LsrImm",
+          "[compile][ir-optimize]") {
+    Builder builder{Scope::Block};
+    const auto entry = builder.CreateBlock();
+    REQUIRE(bool(entry));
+    REQUIRE(builder.BeginBlock(entry.block) == Error::None);
+    const auto x = Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(0, Type::U32)});
+    const auto s1 = Emit(
+            builder, OpCode::LsrImm, Type::U32, {Operand::ValueOf(x), Operand::Immediate(4, Type::U8)});
+    const auto e1 = Emit(
+            builder, OpCode::And, Type::U32, {Operand::ValueOf(s1), Operand::Immediate(0xf, Type::U32)});
+    Store(builder, 8, e1, Type::U32);
+
+    const auto s2 = Emit(builder,
+                         OpCode::LsrImm,
+                         Type::U32,
+                         {Operand::ValueOf(x), Operand::Immediate(28, Type::U8)});
+    const auto e2 = Emit(
+            builder, OpCode::And, Type::U32, {Operand::ValueOf(s2), Operand::Immediate(0x1f, Type::U32)});
+    Store(builder, 12, e2, Type::U32);
+
+    // Narrow U32 view over a U64 carrier must NOT fold into raw-carrier BitExtract.
+    const auto wide =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
+    const auto s3 = Emit(builder,
+                         OpCode::LsrImm,
+                         Type::U32,
+                         {Operand::ValueOf(wide, Type::U32), Operand::Immediate(28, Type::U8)});
+    const auto e3 = Emit(
+            builder, OpCode::And, Type::U32, {Operand::ValueOf(s3), Operand::Immediate(0x7, Type::U32)});
+    Store(builder, 24, e3, Type::U32);
+
+    REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+    const auto optimized = Optimize(Submit(builder));
+    REQUIRE(bool(optimized));
+    const auto& ops = optimized.program.Operations();
+    CHECK(ops[s1.node.value].opcode == OpCode::Nop);
+    CHECK(ops[e1.node.value].opcode == OpCode::BitExtract);
+    {
+        const auto args = optimized.program.Operands(e1.node);
+        auto it = args.begin();
+        CHECK((*it++).Payload() == x.node.value);
+        CHECK((*it++).Payload() == 4);
+        CHECK((*it++).Payload() == 4);
+        CHECK(it == args.end());
+    }
+    CHECK(ops[s2.node.value].opcode == OpCode::Nop);
+    CHECK(ops[e2.node.value].opcode == OpCode::LsrImm);
+    CHECK(ops[s3.node.value].opcode == OpCode::LsrImm);
+    CHECK(ops[e3.node.value].opcode == OpCode::And);
+}
+
+TEST_CASE("ArmScalarFP clobbers fp_status without blocking unrelated uniform forwarding",
+          "[compile][ir-optimize]") {
+    Builder builder{Scope::Block};
+    const auto entry = builder.CreateBlock();
+    REQUIRE(bool(entry));
+    REQUIRE(builder.BeginBlock(entry.block) == Error::None);
+    const auto gpr_in =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(8, Type::U64)});
+    Store(builder, 16, gpr_in, Type::U64);
+    const auto fpsr_in =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(24, Type::U32)});
+    Store(builder, 788, fpsr_in, Type::U32);
+    const auto v0 =
+            Emit(builder, OpCode::LoadUniform, Type::V128, {Operand::Uniform(256, Type::V128)});
+    const auto v1 =
+            Emit(builder, OpCode::LoadUniform, Type::V128, {Operand::Uniform(272, Type::V128)});
+    const auto fp = Emit(builder,
+                         OpCode::ArmScalarFP,
+                         Type::V128,
+                         {Operand::ValueOf(v0),
+                          Operand::ValueOf(v1),
+                          Operand::Immediate(0, Type::U8),
+                          Operand::Immediate(32, Type::U8)});
+    Store(builder, 288, fp, Type::V128);
+    const auto fpsr_out =
+            Emit(builder, OpCode::LoadUniform, Type::U32, {Operand::Uniform(788, Type::U32)});
+    Store(builder, 32, fpsr_out, Type::U32);
+    const auto gpr_out =
+            Emit(builder, OpCode::LoadUniform, Type::U64, {Operand::Uniform(16, Type::U64)});
+    Store(builder, 40, gpr_out, Type::U64);
+    REQUIRE(builder.EndBlock(Terminal::Return()) == Error::None);
+
+    std::vector<std::uint64_t> rows;
+    const auto optimized = Optimize(Submit(builder),
+                                    rows,
+                                    std::numeric_limits<std::size_t>::max(),
+                                    UniformPolicy{.numeric_control = UniformRange{796, 4},
+                                                  .fp_status = UniformRange{788, 4}});
+    REQUIRE(bool(optimized));
+    const auto& ops = optimized.program.Operations();
+    CHECK(ops[fpsr_out.node.value].opcode == OpCode::LoadUniform);
+    CHECK(ops[gpr_out.node.value].opcode == OpCode::Nop);
+}

@@ -964,4 +964,148 @@ TEST_CASE("Batched packed denormal status, scaled vector addressing, TSO store b
             CHECK(Read64(state.data() + 56) == static_cast<u64>(std::int64_t{-27}));
         }
     }
+
+    SECTION("Wave 3 mixed F64/F32 batching, signed zero, blend fusion, shuffles, and float-to-int") {
+        Builder builder{Scope::Block, arm64::KnownTargetInfo()};
+        Need(builder.BeginBlock(Create(builder)));
+        const auto vload = [&](std::uint32_t off) {
+            return Need(builder.Emit<OpCode::LoadUniform>(Type::V128,
+                                                          {Operand::Uniform(off, Type::V128)}));
+        };
+        const auto v_a = vload(0);
+        const auto v_b = vload(16);
+        const auto v_c = vload(32);
+        const auto v_d = vload(48);
+        const auto f64_sum = Need(builder.Emit<OpCode::VecFAdd>(
+                Type::V128,
+                {Operand::ValueOf(v_a), Operand::ValueOf(v_b), Operand::Immediate(64, Type::U8)}));
+        const auto f64_cmp = Need(builder.Emit<OpCode::VecFCmpMask>(
+                Type::V128,
+                {Operand::ValueOf(f64_sum),
+                 Operand::ValueOf(v_b),
+                 Operand::Immediate(64, Type::U8),
+                 Operand::Immediate(22, Type::U8),
+                 Operand::Immediate(0, Type::U8)}));
+        // 3-node blend (v_a & f64_cmp) | (f64_sum & ~f64_cmp) -> NEON BSL/BIT/BIF.
+        const auto blend_t = Need(builder.Emit<OpCode::VecAnd>(
+                Type::V128, {Operand::ValueOf(v_a), Operand::ValueOf(f64_cmp)}));
+        const auto blend_f = Need(builder.Emit<OpCode::VecAndNot>(
+                Type::V128, {Operand::ValueOf(f64_sum), Operand::ValueOf(f64_cmp)}));
+        const auto blended = Need(builder.Emit<OpCode::VecOr>(
+                Type::V128, {Operand::ValueOf(blend_t), Operand::ValueOf(blend_f)}));
+        // Mixed F32 op in the same denormal batch.
+        const auto f32_prod = Need(builder.Emit<OpCode::VecFMul>(
+                Type::V128,
+                {Operand::ValueOf(v_c), Operand::ValueOf(v_d), Operand::Immediate(32, Type::U8)}));
+        const auto shuf_4e = Need(builder.Emit<OpCode::VecShuffle32>(
+                Type::V128, {Operand::ValueOf(f32_prod), Operand::Immediate(0x4e, Type::U8)}));
+        const auto shuf_b1 = Need(builder.Emit<OpCode::VecShuffle32>(
+                Type::V128, {Operand::ValueOf(shuf_4e), Operand::Immediate(0xb1, Type::U8)}));
+        Need(builder.Emit<OpCode::StoreUniform>(
+                Type::Void, {Operand::Uniform(64, Type::V128), Operand::ValueOf(blended)}));
+        Need(builder.Emit<OpCode::StoreUniform>(
+                Type::Void, {Operand::Uniform(80, Type::V128), Operand::ValueOf(shuf_b1)}));
+
+        const auto f64_in = Need(
+                builder.Emit<OpCode::LoadUniform>(Type::U64, {Operand::Uniform(96, Type::U64)}));
+        const auto cvt_round = Need(builder.Emit<OpCode::VecFCvtFloatToInt>(
+                Type::U32,
+                {Operand::ValueOf(f64_in),
+                 Operand::Immediate(64, Type::U8),
+                 Operand::Immediate(32, Type::U8),
+                 Operand::Immediate(0, Type::U8)}));
+        Need(builder.Emit<OpCode::StoreUniform>(
+                Type::Void, {Operand::Uniform(104, Type::U32), Operand::ValueOf(cvt_round)}));
+        const auto status_seed = Need(
+                builder.Emit<OpCode::LoadUniform>(Type::U32, {Operand::Uniform(112, Type::U32)}));
+        const auto status = Need(builder.Emit<OpCode::ReadFPStatus>(
+                Type::U32, {Operand::ValueOf(status_seed)}));
+        Need(builder.Emit<OpCode::StoreUniform>(
+                Type::Void, {Operand::Uniform(116, Type::U32), Operand::ValueOf(status)}));
+        Need(builder.EndBlock(Terminal::Return(Constant(builder, 88))));
+
+        auto program = Submit(builder);
+        arm64::CompileOptions opts{120};
+        opts.mxcsr_flush_offset = 112;
+        opts.mxcsr_flush_mode = 0;
+        const auto code = ::Compile(program, opts);
+
+        // Mixed F64 + F32 batch emits a single fast-path CBZ W16 guard.
+        CHECK(std::count_if(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+                  return (w & 0xff00001fu) == 0x34000010u;
+              }) == 1);
+        // 3-node blend fuses to BSL/BIT/BIF with zero vector BIC.16B instructions.
+        CHECK(std::none_of(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+            return (w & 0xffe0fc00u) == 0x4e601c00u;
+        }));
+        // Shuffle 0x4e -> EXT #8, 0xb1 -> REV64.4S.
+        CHECK(std::any_of(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+            return (w & 0xffe0fc00u) == 0x6e004000u;
+        }));
+        CHECK(std::any_of(code.words.begin(), code.words.end(), [](std::uint32_t w) {
+            return (w & 0xfffffc00u) == 0x4ea00800u;
+        }));
+
+#if defined(__aarch64__) && defined(__ANDROID__)
+        if (NativeMode()) {
+            struct RestoreFP {
+                u64 control, status;
+                RestoreFP() {
+                    asm volatile("mrs %0,fpcr\nmrs %1,fpsr" : "=r"(control), "=r"(status));
+                    const u64 zero = 0;
+                    asm volatile("msr fpcr,%0\nmsr fpsr,%0" ::"r"(zero) : "memory");
+                }
+                ~RestoreFP() {
+                    asm volatile("msr fpcr,%0\nmsr fpsr,%1" ::"r"(control), "r"(status) : "memory");
+                }
+            } guard;
+            const auto rd32 = [](const void* p) {
+                std::uint32_t v{};
+                std::memcpy(&v, p, sizeof(v));
+                return v;
+            };
+            const auto wr32 = [](void* p, std::uint32_t v) { std::memcpy(p, &v, sizeof(v)); };
+
+            alignas(16) std::array<std::uint8_t, 128> state{};
+            // v_a = [+2.0, -3.0], v_b = [+0.0, -0.0] -> signed zeros do not set DE!
+            Write64(state.data() + 0, 0x4000000000000000ULL);
+            Write64(state.data() + 8, 0xc008000000000000ULL);
+            Write64(state.data() + 16, 0x0000000000000000ULL);
+            Write64(state.data() + 24, 0x8000000000000000ULL);
+            // v_c = [1.0f, 2.0f, 3.0f, 4.0f], v_d = [+0.0f, -0.0f, 2.0f, 3.0f]
+            wr32(state.data() + 32, 0x3f800000u);
+            wr32(state.data() + 36, 0x40000000u);
+            wr32(state.data() + 40, 0x40400000u);
+            wr32(state.data() + 44, 0x40800000u);
+            wr32(state.data() + 48, 0x00000000u);
+            wr32(state.data() + 52, 0x80000000u);
+            wr32(state.data() + 56, 0x40000000u);
+            wr32(state.data() + 60, 0x40400000u);
+            // f64_in = +2147483647.9 (0x41dffffffff9999a) -> rounds to +2^31 -> overflow 0x80000000 + IE!
+            Write64(state.data() + 96, 0x41dffffffff9999aULL);
+            asm volatile("msr fpsr, xzr" ::: "memory");
+            Execute(code, state.data(), 88);
+            // Blended: lane0 (2.0 > 0.0 -> true -> v_a[0]=2.0), lane1 (-3.0 > -0.0 -> false -> f64_sum[1]=-3.0)
+            CHECK(Read64(state.data() + 64) == 0x4000000000000000ULL);
+            CHECK(Read64(state.data() + 72) == 0xc008000000000000ULL);
+            // f32_prod = [+0.0f, -0.0f, 6.0f, 12.0f]; 0x4e -> [6.0f, 12.0f, +0.0f, -0.0f];
+            // 0xb1 -> [12.0f, 6.0f, -0.0f, +0.0f].
+            CHECK(rd32(state.data() + 80) == 0x41400000u);
+            CHECK(rd32(state.data() + 84) == 0x40c00000u);
+            CHECK(rd32(state.data() + 88) == 0x80000000u);
+            CHECK(rd32(state.data() + 92) == 0x00000000u);
+            // Overflow produces 0x80000000 with IE=1 (bit 0) and DE=0 (bit 1), PE=0 (bit 5)!
+            CHECK(rd32(state.data() + 104) == 0x80000000u);
+            CHECK((rd32(state.data() + 116) & 0x23u) == 0x01u);
+
+            // Subnormal F64 with high32 == 0 (2^-1074 = 0x1) MUST trigger DE (bit 1)!
+            Write64(state.data() + 16, 0x0000000000000001ULL);
+            Write64(state.data() + 96, 0xc010000000000000ULL);  // -4.0 -> -4 exact
+            asm volatile("msr fpsr, xzr" ::: "memory");
+            Execute(code, state.data(), 88);
+            CHECK(rd32(state.data() + 104) == 0xfffffffcu);
+            CHECK((rd32(state.data() + 116) & 0x02u) == 0x02u);
+        }
+#endif
+    }
 }
