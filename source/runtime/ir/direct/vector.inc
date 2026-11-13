@@ -17,6 +17,8 @@ Interpreter::Value Interpreter::HandleVector(Type type, std::span<const Operand>
         return Number(0, Type::V128);
     else if constexpr (op == OpCode::VecDup64)
         return Number(u128{static_cast<u64>(value(0))} * ((u128{1} << 64) | 1), Type::V128);
+    else if constexpr (op == OpCode::VecScalar)
+        return Number(u128{static_cast<u64>(Read(a[0]))}, Type::V128);
     else if constexpr (op == OpCode::VecExtract64)
         return Number(value(0) >> (imm(1) * 64), type);
     else if constexpr (op == OpCode::VecExtract16)

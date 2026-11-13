@@ -222,10 +222,10 @@ static bool SseFloating(Emitter& builder,
     Value input;
     if (scalar && !VRegister(source)) {
         if (!Memory(source) || source.size != bits) Unsupported();
-        input = Require(builder.VecDup64(
-                Type::V128,
-                {Operand::ValueOf(VScalarRead(
-                        builder, layout, instruction, source, bits, pc, next_pc, target))}));
+        input = VLowScalar(
+                builder,
+                VScalarRead(builder, layout, instruction, source, bits, pc, next_pc, target),
+                bits);
     } else if (group == 4 && kind == 6 && Memory(source)) {
         if (source.size != 64) Unsupported();
         input = Require(builder.VecDup64(

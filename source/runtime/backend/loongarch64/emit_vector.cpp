@@ -536,6 +536,12 @@ void Writer::Handle(Op<O::VecDup64>, OpContext& ctx) {
     as.MV(ctx.high, a0);
 }
 
+void Writer::Handle(Op<O::VecScalar>, OpContext& ctx) {
+    Read(ctx.Arg(0), a0);
+    as.MV(ctx.destination, a0);
+    as.MV(ctx.high, x0);
+}
+
 void Writer::Handle(Op<O::VecExtract64>, OpContext& ctx) {
     ReadPair(ctx.Arg(0), a0, a1);
     const auto index = VectorImmediate(ctx, 1);

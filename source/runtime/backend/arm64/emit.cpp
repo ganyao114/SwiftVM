@@ -179,6 +179,59 @@ bool Writer::Run() try {
         }
         masm.exact.b(inbound);
     }
+    for (u32 i = 0; i < cold_denormal_count; ++i) {
+        const auto& stub = cold_denormal_stubs[i];
+        const auto target = masm.Here();
+        for (unsigned b = 0; b < stub.branch_count; ++b) {
+            const auto distance = static_cast<std::int64_t>(target) -
+                                  static_cast<std::int64_t>(stub.branch_words[b]);
+            if (distance < -(INT64_C(1) << 18) || distance >= (INT64_C(1) << 18)) {
+                if (!long_forward_branches) return false;
+                Reject(CompileError::CodeTooLarge);
+            }
+            masm.Patch(stub.branch_words[b], target);
+        }
+        const auto disabled = DenormalControlGuard();
+        RecordDenormalLanes(std::span<const std::uint8_t>{stub.inputs.data(), stub.input_count},
+                            stub.bits,
+                            stub.count,
+                            std::span<const std::uint8_t>{stub.peers.data(), stub.peer_count},
+                            stub.denominator,
+                            stub.fma_flags,
+                            stub.negative_invalid);
+        if (disabled != UINT32_MAX) masm.Patch(disabled, masm.Here());
+        const auto back = static_cast<std::int64_t>(stub.return_word) -
+                          static_cast<std::int64_t>(masm.Here());
+        if (back < -(INT64_C(1) << 25) || back >= (INT64_C(1) << 25))
+            Reject(CompileError::CodeTooLarge);
+        masm.exact.b(back);
+    }
+    for (u32 i = 0; i < cold_exit_count; ++i) {
+        const auto& stub = cold_exit_stubs[i];
+        const auto target = masm.Here();
+        const auto distance =
+                static_cast<std::int64_t>(target) - static_cast<std::int64_t>(stub.branch_word);
+        if (distance < -(INT64_C(1) << 18) || distance >= (INT64_C(1) << 18)) {
+            if (!long_forward_branches) return false;
+            Reject(CompileError::CodeTooLarge);
+        }
+        masm.Patch(stub.branch_word, target);
+        shadow_dirty = stub.dirty;
+        packed_current = stub.packed;
+        nzcv_matches = stub.matching;
+        deferred_parity = stub.parity_source;
+        direct_carry = stub.carry_source;
+        deferred_test.bits = stub.deferred_bits;
+        deferred_test.value_register = stub.deferred_value_reg;
+        if (deferred_test.bits) CompleteDeferredTest();
+        Shadow(false);
+        if (stub.has_pc) {
+            Immediate(0, stub.pc);
+            PCMemory(false);
+        }
+        Immediate(0, stub.exit_value);
+        Epilogue();
+    }
     return true;
 } catch (const vixl::CodeBufferOverflow&) {
     Reject(CompileError::CodeTooLarge);

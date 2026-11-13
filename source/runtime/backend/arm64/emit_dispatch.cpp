@@ -11,12 +11,17 @@ void Writer::TailJump(HostSymbol symbol,
                       u32 conditional_head) {
     const bool is_dispatcher = options.relocatable ? symbol == HostSymbol::Dispatcher
                                                    : destination == options.dispatcher;
-    if (!link && is_dispatcher && dispatcher_literal != UINT32_MAX) {
-        const auto distance = static_cast<std::int64_t>(dispatcher_literal) -
+    const bool is_exit =
+            options.relocatable ? symbol == HostSymbol::Exit : destination == options.exit_handler;
+    const u32 shared_literal = is_dispatcher ? dispatcher_literal
+                               : is_exit     ? exit_literal
+                                             : UINT32_MAX;
+    if (!link && shared_literal != UINT32_MAX) {
+        const auto distance = static_cast<std::int64_t>(shared_literal) -
                               static_cast<std::int64_t>(output.words.size());
         if (distance >= -(INT64_C(1) << 18) && distance < (INT64_C(1) << 18)) {
             __ ldr(v::x16, distance);
-            __ br(v::x16);  // LDR x16,immutable dispatcher DATA; BR x16.
+            __ br(v::x16);  // LDR x16,immutable dispatcher/exit DATA; BR x16.
             return;
         }
     }
@@ -35,6 +40,7 @@ void Writer::TailJump(HostSymbol symbol,
     if (options.relocatable && !link)
         RecordAddress(pointer * 4, RelocationKind::Absolute64, symbol);
     if (!link && is_dispatcher) dispatcher_literal = pointer;
+    if (!link && is_exit) exit_literal = pointer;
     if (link) {
         output.links.push_back({LinkKind::Static,
                                 pointer * 4,

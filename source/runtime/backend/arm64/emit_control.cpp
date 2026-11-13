@@ -19,6 +19,21 @@ void Writer::HandleGuestSafepointFamily(OpContext& ctx) {
     if (!Linked() || options.pc_offset == UINT32_MAX) Reject(CompileError::UnsupportedOperand);
     const auto resume_pc = IntegerImmediate(ctx.cursor.Take());
     ContextMemory(true, 16, abi::ContextOffset(SVM_A64_CTX_PENDING_EVENTS));
+    if (!long_forward_branches && cold_exit_count < cold_exit_stubs.size()) {
+        cold_exit_stubs[cold_exit_count++] = {masm.Here(),
+                                              resume_pc,
+                                              runtime::ExitValue(runtime::NativeExit::GuestEvents),
+                                              nzcv_matches,
+                                              static_cast<std::uint8_t>(deferred_parity),
+                                              deferred_test.bits,
+                                              deferred_test.value_register,
+                                              true,
+                                              shadow_dirty,
+                                              packed_current,
+                                              direct_carry};
+        __ cbnz(v::x16, std::int64_t{0});
+        return;
+    }
     const auto skip = masm.Here();
     __ cbz(v::x16, std::int64_t{0});
     // This exit has no native successor. Its state publication must not change
@@ -29,6 +44,7 @@ void Writer::HandleGuestSafepointFamily(OpContext& ctx) {
     const auto carry_source = direct_carry;
     // Only delivery observes flags. The zero-pending path keeps the existing
     // raw carriers; allocation still preserves every architectural flag.
+    if (deferred_test.bits) CompleteDeferredTest();
     Shadow(false);
     Immediate(0, resume_pc);
     PCMemory(false);

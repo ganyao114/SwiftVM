@@ -203,15 +203,45 @@ void Writer::HandleStoreMemoryFamily(OpContext& ctx) {
 
 void Writer::HandleCheckMemoryAlignmentFamily(OpContext& ctx) {
     auto& cursor = ctx.cursor;
-    if (!options.private_uniforms) Shadow(false);
-    const auto address = Read(cursor.Take(), 16);
+    const auto address_cell = cursor.Take();
     const auto bits = IntegerImmediate(cursor.Take());
+    if (address_cell.Kind() == OperandKind::Immediate && (address_cell.Payload() & bits) == 0)
+        return;
+    if (address_cell.Kind() == OperandKind::Value &&
+        address_cell.Payload() < source.Operations().size()) {
+        const auto id = static_cast<u32>(address_cell.Payload());
+        const auto& def = source.Operations()[id];
+        if (def.opcode == OpCode::Zero) return;
+        if (def.opcode == OpCode::LoadImm) {
+            const auto args = source.Operands(NodeId{id});
+            if (args.begin() != args.end() && args.front().Kind() == OperandKind::Immediate &&
+                (args.front().Payload() & bits) == 0)
+                return;
+        }
+    }
+    if (!options.private_uniforms) Shadow(false);
+    const auto address = Read(address_cell, 16);
     LogicalMask mask;
     if (mask.Encode(bits, 64))
         mask.Emit(masm.exact, v::x0, X(address), v::AND);
     else {
         Immediate(17, bits);
         __ and_(v::x0, X(address), Operand(v::x17));
+    }
+    if (!long_forward_branches && cold_exit_count < cold_exit_stubs.size()) {
+        cold_exit_stubs[cold_exit_count++] = {masm.Here(),
+                                              fault_location,
+                                              ExitValue(NativeExit::AlignmentFault),
+                                              nzcv_matches,
+                                              0,
+                                              0,
+                                              0,
+                                              has_fault_location && options.pc_offset != UINT32_MAX,
+                                              shadow_dirty,
+                                              packed_current,
+                                              false};
+        __ cbnz(v::x0, std::int64_t{0});
+        return;
     }
     const auto aligned = masm.Here();
     __ cbz(v::x0, std::int64_t{0});

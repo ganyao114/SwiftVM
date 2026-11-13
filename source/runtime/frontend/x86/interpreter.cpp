@@ -102,6 +102,8 @@ public:
         return GetOperand(type, operands).GetValue();
     }
 
+    Value AddressLiteral(TargetInfo, Type, u64) { return {}; }
+
     Value ShiftedAddress(TargetInfo, Type, Value, Value, std::uint8_t) { return {}; }
 
     void PrepareFault(StateLayout, u64 pc, TargetInfo, bool) { state.pc = pc; }

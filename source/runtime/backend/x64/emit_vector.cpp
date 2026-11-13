@@ -375,6 +375,11 @@ void Writer::Handle(Op<O::VecDup64>, OpContext& c) {
     punpcklqdq(xmm0, xmm0);
 }
 
+void Writer::Handle(Op<O::VecScalar>, OpContext& c) {
+    Read(c.Arg(0), rax);
+    movq(xmm0, rax);
+}
+
 void Writer::Handle(Op<O::VecExtract64>, OpContext& c) {
     if (c.Arg(1).Payload() > 1) Reject(CompileError::UnsupportedOperand);
     ReadVector(c.Arg(0), xmm14);

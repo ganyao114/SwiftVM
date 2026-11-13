@@ -43,9 +43,16 @@ static void Push(Emitter& builder,
                     ? Constant(builder, ImmediateBits(instruction, bits), ScalarType(bits))
                     : ReadData(builder, layout, instruction, source, next_pc, target, true);
     const auto stack = ReadRegister(builder, layout, Register::RSP, 64);
-    const auto changed = Add(builder, stack, Operand::Immediate(u64{} - bits / 8, Type::U64));
-    StoreMemory(builder, changed, value, bits);
-    WriteStack(builder, layout, changed);
+    if (target.Has(TargetFeature::FaultLocations)) {
+        StoreMemory(builder, stack, value, bits, u64{} - bits / 8);
+        WriteStack(builder,
+                   layout,
+                   Add(builder, stack, Operand::Immediate(u64{} - bits / 8, Type::U64)));
+    } else {
+        const auto changed = Add(builder, stack, Operand::Immediate(u64{} - bits / 8, Type::U64));
+        StoreMemory(builder, changed, value, bits);
+        WriteStack(builder, layout, changed);
+    }
 }
 
 static void Pop(Emitter& builder,
@@ -323,9 +330,14 @@ static void Call(Emitter& builder,
     // Resolve CALL RSP/[RSP] before pushing the return PC.
     const auto destination = TransferTarget(builder, layout, instruction, next_pc, target);
     const auto stack = ReadRegister(builder, layout, Register::RSP, 64);
-    const auto changed = Add(builder, stack, Operand::Immediate(u64{} - 8, Type::U64));
-    StoreMemory(builder, changed, Constant(builder, next_pc), 64);
-    WriteStack(builder, layout, changed);
+    if (target.Has(TargetFeature::FaultLocations)) {
+        StoreMemory(builder, stack, Constant(builder, next_pc), 64, u64{} - 8);
+        WriteStack(builder, layout, Add(builder, stack, Operand::Immediate(u64{} - 8, Type::U64)));
+    } else {
+        const auto changed = Add(builder, stack, Operand::Immediate(u64{} - 8, Type::U64));
+        StoreMemory(builder, changed, Constant(builder, next_pc), 64);
+        WriteStack(builder, layout, changed);
+    }
     StorePC(builder, layout, destination);
     EndDispatch(builder);
     ended = true;

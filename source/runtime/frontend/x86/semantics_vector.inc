@@ -108,16 +108,7 @@ static Value VScalarRead(Emitter& builder,
 }
 
 static Value VLowScalar(Emitter& builder, Value scalar, unsigned bits) {
-    if (bits == 32)
-        scalar = Require(builder.ZeroExtend64(Type::U64, {Operand::ValueOf(scalar, Type::U32)}));
-    const auto duplicate = Require(builder.VecDup64(Type::V128, {Operand::ValueOf(scalar)}));
-    const auto zero = Require(builder.VecSharedZero(Type::V128, {}));
-    // Explicitly clear high64, without changing raw BitCast semantics.
-    return Require(builder.VecByteShift(Type::V128,
-                                        {Operand::ValueOf(duplicate),
-                                         Operand::ValueOf(zero),
-                                         Operand::Immediate(8, Type::U8),
-                                         Operand::Immediate(0, Type::U8)}));
+    return Require(builder.VecScalar(Type::V128, {Operand::ValueOf(scalar, ScalarType(bits))}));
 }
 
 static void ScalarDouble(Emitter& builder,
@@ -281,15 +272,16 @@ static void ScalarDouble(Emitter& builder,
     const auto left = VRead(builder, layout, instruction, destination, pc, next_pc, target);
     const auto right = VRegister(source)
                                ? VRead(builder, layout, instruction, source, pc, next_pc, target)
-                               : Require(builder.VecDup64(Type::V128,
-                                                          {Operand::ValueOf(VScalarRead(builder,
-                                                                                        layout,
-                                                                                        instruction,
-                                                                                        source,
-                                                                                        float_bits,
-                                                                                        pc,
-                                                                                        next_pc,
-                                                                                        target))}));
+                               : VLowScalar(builder,
+                                            VScalarRead(builder,
+                                                        layout,
+                                                        instruction,
+                                                        source,
+                                                        float_bits,
+                                                        pc,
+                                                        next_pc,
+                                                        target),
+                                            float_bits);
     Value result;
     switch (instruction.opcode) {
         case Op::ADDSD:
