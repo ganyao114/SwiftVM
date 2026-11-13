@@ -139,6 +139,7 @@ public:
         }
     }
 
+    void MemoryAddress(CellRange::Iterator&, CellRange::Iterator, Reg64&, std::int32_t&);
     void Memory(OpContext&);
     void Arithmetic(OpContext&);
     void Logical(OpContext&);
@@ -156,7 +157,8 @@ public:
     bool ArmNativeFP() const { return options.arm_fpsr_offset != UINT32_MAX; }
 
     void HarvestArmFPStatus(bool saved = false, bool restore = true);
-    void CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& slow);
+    void CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& slow, bool only_nan = false);
+    void EmitIndexedFPBroadcast(u32 rhs_node, unsigned bits, unsigned index);
     void EmitFPConstants();
     void EmitColdPaths();
     void Vector(OpContext&);
@@ -238,6 +240,10 @@ public:
         Label entry, resume;
         u32 stub{};
         FlagsState flags;
+        std::uint8_t dest_reg{};
+        std::int8_t fp_const{-1};
+        u32 bcast_node{NodeId::invalid};
+        std::uint8_t bcast_key{};
     };
 
     struct FPCallStub {
@@ -262,6 +268,10 @@ public:
         CallMasks masks;
         FlagsState flags;
         u64 pc{};
+        std::uint8_t dest_reg{};
+        std::int8_t fp_const{-1};
+        u32 bcast_node{NodeId::invalid};
+        std::uint8_t bcast_key{};
     };
 
     std::vector<NumericColdPath> cold_numeric;
@@ -296,6 +306,13 @@ public:
     std::unordered_map<NumericCallKey, u32, NumericCallHash> numeric_stub_index;
     std::array<Label, 4> fp_constants;
     std::array<bool, 4> fp_constants_used{};
+    std::int8_t xmm15_fp_const{-1};
+    bool kept_xmm15_fp_const{};
+    u32 xmm0_node{NodeId::invalid};
+    bool kept_xmm0{};
+    u32 xmm1_bcast_node{NodeId::invalid};
+    std::uint8_t xmm1_bcast_key{};
+    bool kept_xmm1_bcast{};
 
     bool Linked() const { return options.dispatcher && options.exit_handler; }
 

@@ -8,6 +8,11 @@ void Writer::Handle(Op<OpCode::GuestSafepoint>, OpContext& c) {
     const auto flags_before = flags;
     if (options.local_flags) {
         cold_events.push_back({{}, flags_before, c.Arg(0).Payload()});
+        if (!(flags.dirty && (flags.native || flags.floating))) {
+            cmp(qword[r12 + SVM_X64_CTX_PENDING_EVENTS - SVM_X64_CTX_STATE], 0);
+            jne(cold_events.back().entry, T_NEAR);
+            return;
+        }
         mov(rcx, qword[r12 + SVM_X64_CTX_PENDING_EVENTS - SVM_X64_CTX_STATE]);
         jrcxz(ready);
         jmp(cold_events.back().entry, T_NEAR);

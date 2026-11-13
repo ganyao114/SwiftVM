@@ -27,28 +27,68 @@ void Writer::HarvestArmFPStatus(bool saved, bool restore) {
     L(clean);
 }
 
-void Writer::CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& slow) {
+void Writer::EmitIndexedFPBroadcast(u32 rhs_node, unsigned bits, unsigned index) {
+    const auto& rh = allocation.homes[rhs_node];
+    if (bits == 64 && rh.spilled && rh.uniform_offset != UINT32_MAX) {
+        vmovddup(xmm1, qword[r12 + rh.uniform_offset + index * 8]);
+    } else if (bits == 64 && rh.spilled) {
+        vmovddup(xmm1, qword[rsp + rh.stack_offset + index * 8]);
+    } else if (bits == 64 && !rh.spilled) {
+        if (index == 0)
+            vmovddup(xmm1, Xmm(rh.reg));
+        else
+            vpermilpd(xmm1, Xmm(rh.reg), 3);
+    } else if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
+        vpermilps(xmm1, ptr[r12 + rh.uniform_offset], index * 0x55);
+    } else if (rh.spilled) {
+        vpermilps(xmm1, ptr[rsp + rh.stack_offset], index * 0x55);
+    } else {
+        vpermilps(xmm1, Xmm(rh.reg), index * 0x55);
+    }
+}
+
+void Writer::CheckArmFPResult(
+        OpContext& c, unsigned bits, unsigned lanes, Label& slow, bool only_nan) {
+    const bool keep_flags = options.local_flags && flags.dirty && (flags.native || flags.floating);
     if (options.avx) {
-        const auto index = bits == 32 ? 0u : 2u;
-        fp_constants_used[index] = fp_constants_used[index + 1] = true;
-        if (bits == 32) {
-            vandps(xmm14, xmm0, ptr[rip + fp_constants[index]]);
-            vcmpps(xmm14, xmm14, ptr[rip + fp_constants[index + 1]], 8);
+        if (only_nan) {
+            if (bits == 32)
+                vcmpps(xmm14, c.vector, c.vector, 3);
+            else
+                vcmppd(xmm14, c.vector, c.vector, 3);
         } else {
-            vandpd(xmm14, xmm0, ptr[rip + fp_constants[index]]);
-            vcmppd(xmm14, xmm14, ptr[rip + fp_constants[index + 1]], 8);
+            const auto index = bits == 32 ? 0u : 2u;
+            fp_constants_used[index] = fp_constants_used[index + 1] = true;
+            if (xmm15_fp_const != static_cast<std::int8_t>(index)) {
+                vmovdqu(xmm15, ptr[rip + fp_constants[index]]);
+                xmm15_fp_const = static_cast<std::int8_t>(index);
+            }
+            vpand(xmm14, c.vector, xmm15);
+            if (bits == 32)
+                vcmpps(xmm14, xmm14, ptr[rip + fp_constants[index + 1]], 8);
+            else
+                vcmppd(xmm14, xmm14, ptr[rip + fp_constants[index + 1]], 8);
         }
-        vpmovmskb(ecx, xmm14);
-        Label ready;
-        jrcxz(ready);
-        jmp(slow, T_NEAR);
-        L(ready);
+        if (keep_flags) {
+            vpmovmskb(ecx, xmm14);
+            Label ready;
+            jrcxz(ready);
+            jmp(slow, T_NEAR);
+            L(ready);
+        } else if (lanes > 1) {
+            vptest(xmm14, xmm14);
+            jnz(slow, T_NEAR);
+        } else {
+            vpmovmskb(ecx, xmm14);
+            test(ecx, ecx);
+            jnz(slow, T_NEAR);
+        }
         return;
     }
     if (options.sse41) {
         const auto index = bits == 32 ? 0u : 2u;
         fp_constants_used[index] = fp_constants_used[index + 1] = true;
-        movdqa(xmm14, xmm0);
+        movdqa(xmm14, c.vector);
         movdqu(xmm15, ptr[rip + fp_constants[index]]);
         pand(xmm14, xmm15);
         movdqu(xmm15, ptr[rip + fp_constants[index + 1]]);
@@ -56,21 +96,26 @@ void Writer::CheckArmFPResult(OpContext&, unsigned bits, unsigned lanes, Label& 
             pcmpeqd(xmm14, xmm15);
         else
             pcmpeqq(xmm14, xmm15);
-        movdqa(xmm15, xmm0);
+        movdqa(xmm15, c.vector);
         if (bits == 32)
-            cmpps(xmm15, xmm0, 3);
+            cmpps(xmm15, c.vector, 3);
         else
-            cmppd(xmm15, xmm0, 3);
+            cmppd(xmm15, c.vector, 3);
         por(xmm14, xmm15);
         pmovmskb(ecx, xmm14);
-        Label ready;
-        jrcxz(ready);
-        jmp(slow, T_NEAR);
-        L(ready);
+        if (keep_flags) {
+            Label ready;
+            jrcxz(ready);
+            jmp(slow, T_NEAR);
+            L(ready);
+        } else {
+            test(ecx, ecx);
+            jnz(slow, T_NEAR);
+        }
         return;
     }
     for (unsigned lane = 0; lane < lanes; ++lane) {
-        movdqa(xmm14, xmm0);
+        movdqa(xmm14, c.vector);
         if (lane) psrldq(xmm14, lane * bits / 8);
         movq(rax, xmm14);
         if (bits == 32) {
@@ -109,7 +154,7 @@ void Writer::BeginArmFPRegion(u32 control, u32 status) {
     if (arm_fp_region) return;
     // Exact numerical leaves preserve FPCR. A shared stub reuses the
     // control condition already checked at its original guest call site.
-    const auto tmp = allocation.call_offset + 208 + stack_bias;
+    const auto tmp = allocation.call_offset + 224 + stack_bias;
     constexpr unsigned rounding[]{0, 2, 1, 3};
     stmxcsr(dword[rsp + tmp + 48]);
     mov(dword[rsp + tmp + 52], 0x1f80 | (rounding[(options.arm_fpcr >> 22) & 3] << 13));
@@ -123,7 +168,7 @@ void Writer::EndArmFPRegion() {
     if (!arm_fp_region) return;
     SaveNativeFlags();
     flags.native = false;
-    const auto tmp = allocation.call_offset + 208 + stack_bias;
+    const auto tmp = allocation.call_offset + 224 + stack_bias;
     stmxcsr(dword[rsp + tmp + 52]);
     ldmxcsr(dword[rsp + tmp + 48]);
     mov(r11d, dword[rsp + tmp + 52]);
@@ -184,7 +229,7 @@ void Writer::Float(OpContext& c) {
     ReadVector(c.Arg(0), xmm0);
     ReadVector(c.Arg(1), xmm1);
     if (fused || (round && !options.sse41)) {
-        const unsigned tmp = allocation.call_offset + 208;
+        const unsigned tmp = allocation.call_offset + 224;
         movdqu(ptr[rsp + tmp], xmm0);
         movdqu(ptr[rsp + tmp + 16], xmm1);
         if (fused) {
@@ -249,7 +294,7 @@ void Writer::Float(OpContext& c) {
         if (FloatingCompareNeedsCall(c.Arg(3).Payload())) {
             // SSE2 has no quiet ordered LT/LE predicate. Use the shared pure
             // numerical leaf only for those shapes instead of introducing IE.
-            const auto tmp = allocation.call_offset + 208;
+            const auto tmp = allocation.call_offset + 224;
             movdqu(ptr[rsp + tmp], xmm0);
             movdqu(ptr[rsp + tmp + 16], xmm1);
             mov(dword[rsp + tmp + 64],
@@ -550,8 +595,7 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
                format = c.Arg(4).Payload();
     const bool post_check =
             ArmNativeFP() && options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24));
-    if (options.local_flags && flags.dirty &&
-        (flags.floating || !(post_check && (options.sse41 || options.avx)))) {
+    if (options.local_flags && flags.dirty && (flags.native || flags.floating)) {
         SaveNativeFlags(true);
         flags.native = false;
     }
@@ -563,7 +607,7 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
     if (ArmNativeFP() && (control != options.arm_fpcr_offset || status != options.arm_fpsr_offset))
         Reject(CompileError::UnsupportedOperand);
     const unsigned bits = format & 4 ? 64 : 32, lanes = (format >> 3) & 7, kind = format & 3;
-    const unsigned tmp = allocation.call_offset + 208;
+    const unsigned tmp = allocation.call_offset + 224;
     const bool regional =
             options.arm_fpcr != UINT32_MAX && !ArmNativeFP() && !allocation.fpcr_may_change;
     if (regional) BeginArmFPRegion(control, status);
@@ -594,6 +638,155 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
     if (options.arm_fpcr == UINT32_MAX) {
         cmp(dword[r12 + control], 0);
         jne(slow, T_NEAR);
+    }
+    if (options.avx && post_check && (lanes * bits == 128 || (lanes == 1 && bits == 64))) {
+        const auto& h = allocation.homes[c.node.value];
+        auto aliases = [&](unsigned reg) {
+            for (unsigned idx : {0u, 1u}) {
+                const auto arg = c.Arg(idx);
+                if (arg.Kind() == OperandKind::Value &&
+                    source.Operations()[arg.Payload()].type == ir::Type::V128 &&
+                    !allocation.homes[arg.Payload()].spilled &&
+                    allocation.homes[arg.Payload()].reg == reg)
+                    return true;
+            }
+            return false;
+        };
+        const Xmm dst = (!h.spilled && !h.terminal_only && !aliases(h.reg)) ? Xmm(h.reg) : xmm0;
+        c.vector = dst;
+        path.dest_reg = static_cast<std::uint8_t>(dst.getIdx());
+        bool preserved_bcast = false;
+        if (lanes * bits == 128) {
+            Xmm lhs = xmm0;
+            if (c.Arg(0).Kind() == OperandKind::Value &&
+                source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128 &&
+                !allocation.homes[c.Arg(0).Payload()].spilled) {
+                lhs = Xmm(allocation.homes[c.Arg(0).Payload()].reg);
+            } else {
+                ReadVector(c.Arg(0), xmm0);
+            }
+            auto emit_packed = [&](const Xbyak::Operand& rhs) {
+                if (bits == 32) {
+                    if (kind == 0)
+                        vaddps(dst, lhs, rhs);
+                    else if (kind == 1)
+                        vsubps(dst, lhs, rhs);
+                    else if (kind == 2)
+                        vmulps(dst, lhs, rhs);
+                    else
+                        vdivps(dst, lhs, rhs);
+                } else {
+                    if (kind == 0)
+                        vaddpd(dst, lhs, rhs);
+                    else if (kind == 1)
+                        vsubpd(dst, lhs, rhs);
+                    else if (kind == 2)
+                        vmulpd(dst, lhs, rhs);
+                    else
+                        vdivpd(dst, lhs, rhs);
+                }
+            };
+            const auto arg1 = c.Arg(1);
+            const bool v128_rhs = arg1.Kind() == OperandKind::Value &&
+                                  source.Operations()[arg1.Payload()].type == ir::Type::V128;
+            if (format & 64) {
+                const unsigned index = format >> 7;
+                if (v128_rhs) {
+                    const u32 rhs_id = static_cast<u32>(arg1.Payload());
+                    const std::uint8_t bkey =
+                            static_cast<std::uint8_t>((bits == 64 ? 0x10u : 0x20u) | index);
+                    if (xmm1_bcast_node != rhs_id || xmm1_bcast_key != bkey) {
+                        EmitIndexedFPBroadcast(rhs_id, bits, index);
+                        xmm1_bcast_node = rhs_id;
+                        xmm1_bcast_key = bkey;
+                    }
+                    preserved_bcast = true;
+                } else {
+                    ReadVector(arg1, xmm1);
+                    if (bits == 64) {
+                        if (index == 0)
+                            vmovddup(xmm1, xmm1);
+                        else
+                            vpermilpd(xmm1, xmm1, 3);
+                    } else {
+                        vpermilps(xmm1, xmm1, index * 0x55);
+                    }
+                }
+                emit_packed(xmm1);
+            } else if (v128_rhs) {
+                const auto& rh = allocation.homes[arg1.Payload()];
+                if (rh.spilled && rh.uniform_offset != UINT32_MAX)
+                    emit_packed(ptr[r12 + rh.uniform_offset]);
+                else if (rh.spilled)
+                    emit_packed(ptr[rsp + rh.stack_offset]);
+                else
+                    emit_packed(Xmm(rh.reg));
+                preserved_bcast = true;
+            } else {
+                ReadVector(arg1, xmm1);
+                emit_packed(xmm1);
+            }
+        } else {
+            const auto arg0 = c.Arg(0), arg1 = c.Arg(1);
+            if (arg0.Kind() == OperandKind::Value &&
+                source.Operations()[arg0.Payload()].type == ir::Type::V128) {
+                const auto& lh = allocation.homes[arg0.Payload()];
+                if (lh.spilled && lh.uniform_offset != UINT32_MAX)
+                    vmovq(xmm0, qword[r12 + lh.uniform_offset]);
+                else if (lh.spilled)
+                    vmovq(xmm0, qword[rsp + lh.stack_offset]);
+                else
+                    vmovq(xmm0, Xmm(lh.reg));
+            } else {
+                ReadVector(arg0, xmm0);
+                vmovq(xmm0, xmm0);
+            }
+            auto emit_scalar64 = [&](const Xbyak::Operand& rhs) {
+                if (kind == 0)
+                    vaddsd(dst, xmm0, rhs);
+                else if (kind == 1)
+                    vsubsd(dst, xmm0, rhs);
+                else if (kind == 2)
+                    vmulsd(dst, xmm0, rhs);
+                else
+                    vdivsd(dst, xmm0, rhs);
+            };
+            const unsigned hi_lane = (format & 64) ? (format >> 7) : 0u;
+            if (arg1.Kind() == OperandKind::Value &&
+                source.Operations()[arg1.Payload()].type == ir::Type::V128) {
+                const auto& rh = allocation.homes[arg1.Payload()];
+                if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
+                    emit_scalar64(qword[r12 + rh.uniform_offset + hi_lane * 8]);
+                    preserved_bcast = true;
+                } else if (rh.spilled) {
+                    emit_scalar64(qword[rsp + rh.stack_offset + hi_lane * 8]);
+                    preserved_bcast = true;
+                } else if (hi_lane) {
+                    vpshufd(xmm1, Xmm(rh.reg), 0xee);
+                    emit_scalar64(xmm1);
+                } else {
+                    emit_scalar64(Xmm(rh.reg));
+                    preserved_bcast = true;
+                }
+            } else {
+                ReadVector(arg1, xmm1);
+                if (hi_lane) vpshufd(xmm1, xmm1, 0xee);
+                emit_scalar64(xmm1);
+            }
+        }
+        CheckArmFPResult(c, bits, lanes, slow, kind == 0 || kind == 1);
+        if (!preserved_bcast) xmm1_bcast_node = NodeId::invalid;
+        if (xmm1_bcast_node != NodeId::invalid &&
+            allocation.homes[xmm1_bcast_node].last_use <= h.definition_position)
+            xmm1_bcast_node = NodeId::invalid;
+        path.fp_const = xmm15_fp_const;
+        path.bcast_node = xmm1_bcast_node;
+        path.bcast_key = xmm1_bcast_key;
+        kept_xmm15_fp_const = true;
+        kept_xmm1_bcast = xmm1_bcast_node != NodeId::invalid;
+        L(path.resume);
+        flags = preserved_flags;
+        return;
     }
     ReadVector(c.Arg(0), xmm0);
     ReadVector(c.Arg(1), xmm1);
@@ -704,18 +897,30 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
 }
 
 void Writer::EmitColdPaths() {
-    const auto tmp = allocation.call_offset + 208;
+    const auto tmp = allocation.call_offset + 224;
     for (auto& path : cold_fp) {
         current = path.node;
         L(path.entry);
+        xmm0_node = NodeId::invalid;
         flags = path.flags;
         if (flags.dirty) SaveNativeFlags(true);
         auto input = source.Operands(path.node).begin();
         ReadVector(*input++, xmm0);
         ReadVector(*input, xmm1);
-        movdqu(ptr[rsp + tmp], xmm0);
-        movdqu(ptr[rsp + tmp + 16], xmm1);
+        if (options.avx) {
+            vmovdqu(ptr[rsp + tmp], xmm0);
+            vmovdqu(ptr[rsp + tmp + 16], xmm1);
+        } else {
+            movdqu(ptr[rsp + tmp], xmm0);
+            movdqu(ptr[rsp + tmp + 16], xmm1);
+        }
         call(fp_stubs[path.stub].entry);
+        if (path.dest_reg != 0) {
+            if (options.avx)
+                vmovdqa(Xmm(path.dest_reg), xmm0);
+            else
+                movdqa(Xmm(path.dest_reg), xmm0);
+        }
         if (path.flags.dirty) {
             flags = {true, false, true, false, true};
             if (path.flags.saved && !path.flags.saved_carry) {
@@ -730,6 +935,10 @@ void Writer::EmitColdPaths() {
                 if (flags.carry != path.flags.carry) cmc();
             }
         }
+        if (path.fp_const >= 0) vmovdqu(xmm15, ptr[rip + fp_constants[path.fp_const]]);
+        if (path.bcast_node != NodeId::invalid)
+            EmitIndexedFPBroadcast(
+                    path.bcast_node, (path.bcast_key & 0x10) ? 64 : 32, path.bcast_key & 0xf);
         jmp(path.resume, T_NEAR);
     }
     for (auto& stub : fp_stubs) {
@@ -753,7 +962,10 @@ void Writer::EmitColdPaths() {
         lea(r9, ptr[r12 + stub.key.status]);
         Call(reinterpret_cast<std::uintptr_t>(&runtime::arm64::EvaluateVectorBinaryFP),
              HostSymbol::ArmFPBinary);
-        movdqu(xmm0, ptr[rsp + tmp + stack_bias + 32]);
+        if (options.avx)
+            vmovdqu(xmm0, ptr[rsp + tmp + stack_bias + 32]);
+        else
+            movdqu(xmm0, ptr[rsp + tmp + stack_bias + 32]);
         if (stub.key.flags_saved) ImportPackedFlags();
         if (stub.key.region) BeginArmFPRegion(stub.key.control, stub.key.status);
         add(rsp, 8);
@@ -764,6 +976,7 @@ void Writer::EmitColdPaths() {
     for (auto& path : cold_numeric) {
         current = path.node;
         L(path.entry);
+        xmm0_node = NodeId::invalid;
         OpContext context{source.Operations()[current.value], current, source.Operands(current)};
         for (const auto input : context.operands) context.args[context.count++] = input;
         context.width = TypeBits(context.operation.type);
@@ -779,10 +992,16 @@ void Writer::EmitColdPaths() {
             for (unsigned i = 0; i < inputs; ++i) {
                 if (info.kind == runtime::arm64::FPValueKind::FromInt) {
                     Read(context.Arg(i), rax);
-                    movq(xmm0, rax);
+                    if (options.avx)
+                        vmovq(xmm0, rax);
+                    else
+                        movq(xmm0, rax);
                 } else
                     ReadVector(context.Arg(i), xmm0);
-                movdqu(ptr[rsp + tmp + i * 16], xmm0);
+                if (options.avx)
+                    vmovdqu(ptr[rsp + tmp + i * 16], xmm0);
+                else
+                    movdqu(ptr[rsp + tmp + i * 16], xmm0);
             }
             const NumericCallKey key{runtime::arm64::CanonicalFPValues(encoded, info),
                                      u32(offsets),
@@ -830,8 +1049,14 @@ void Writer::EmitColdPaths() {
                 }
             } else if (info.kind == runtime::arm64::FPValueKind::ToInt)
                 mov(rax, qword[rsp + tmp + 48]);
+            else if (options.avx)
+                vmovdqu(Xmm(path.dest_reg), ptr[rsp + tmp + 48]);
             else
-                movdqu(xmm0, ptr[rsp + tmp + 48]);
+                movdqu(Xmm(path.dest_reg), ptr[rsp + tmp + 48]);
+            if (path.fp_const >= 0) vmovdqu(xmm15, ptr[rip + fp_constants[path.fp_const]]);
+            if (path.bcast_node != NodeId::invalid)
+                EmitIndexedFPBroadcast(
+                        path.bcast_node, (path.bcast_key & 0x10) ? 64 : 32, path.bcast_key & 0xf);
             jmp(path.resume, T_NEAR);
             continue;
         }

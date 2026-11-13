@@ -219,10 +219,6 @@ void Writer::PrepareFlags(OpContext& c) {
     }
     if (flags.floating && HasAnyEffect(EffectsFor(op, c.operation.Metadata()), Effect::MayFault))
         MaterializeFlags();
-    if (op == O::ArmFPBinary && ArmNativeFP() && (options.sse41 || options.avx) &&
-        options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24)) &&
-        !allocation.fpcr_may_change)
-        return;
     const bool arithmetic =
             op == O::Add || op == O::Sub || op == O::Neg || op == O::Adc || op == O::Sbb;
     const bool logical =
@@ -240,8 +236,10 @@ void Writer::PrepareFlags(OpContext& c) {
             flags = {};
         return;
     }
+    if (allocation.homes[c.node.value].rematerialize) return;
     if (op == O::Nop || op == O::UniformBarrier || op == O::XchgBarrier ||
         op == O::BranchOnlyEdges || op == O::VecLoadConst || op == O::VecSharedZero ||
+        op == O::VecDup64 || (op == O::VecExtract64 && (options.avx || options.sse41)) ||
         op == O::MemoryBarrierTSO || op == O::MemoryStoreFence || op == O::MemoryLoadFence ||
         op == O::CpuYield)
         return;
@@ -371,10 +369,20 @@ bool Writer::PreservesFlags(OpContext& c) const {
     if (c.operation.flag_outputs || allocation.homes[c.node.value].auxiliary_offset != UINT32_MAX ||
         (c.width != 32 && c.width != 64))
         return false;
+    if ((op == O::ZeroExtend32 || op == O::ZeroExtend32To64 || op == O::ZeroExtend64) &&
+        TypeBits(View(c.Arg(0))) >= 32)
+        return true;
     std::int32_t immediate;
-    return ((op == O::Add || op == O::Sub) && c.count == 2 &&
-            Immediate32(c.Arg(1), c.width, immediate) &&
-            (op != O::Sub || immediate != INT32_MIN)) ||
+    if (op == O::Add && c.count >= 2 && TypeBits(View(c.Arg(0))) >= 32) {
+        if (c.count == 2 && Immediate32(c.Arg(1), c.width, immediate)) return true;
+        auto at = c.operands.begin();
+        ++at;
+        return ExpressionPreservesFlags(at, c.operands.end());
+    }
+    return (op == O::Sub && c.count == 2 && TypeBits(View(c.Arg(0))) >= 32 &&
+            Immediate32(c.Arg(1), c.width, immediate) && immediate != INT32_MIN) ||
+           (op == O::Or && c.count == 2 && TypeBits(View(c.Arg(0))) >= 32 &&
+            Immediate32(c.Arg(1), c.width, immediate) && immediate == 0) ||
            (op == O::LslImm && (c.Arg(1).Payload() & (c.width - 1)) <= 3);
 }
 
@@ -581,8 +589,8 @@ void Writer::MergeFlags(const Reg64& r, u64 selected) {
     if (!m) return;
     mov(r11, m);
     and_(r11, r);
-    mov(rsi, ~m);
-    and_(rbx, rsi);
+    mov(r10, ~m);
+    and_(rbx, r10);
     or_(rbx, r11);
 }
 

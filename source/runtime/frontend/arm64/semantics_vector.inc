@@ -69,18 +69,21 @@ void VisitNEONModifiedImmediate(const vixl::aarch64::Instruction* instr) overrid
 
     const bool is_logic = cmode < 12 && (cmode & 1) != 0;
     const bool invert_fill = cmode < 14 && op_bit;
+    if (!is_logic) {
+        const u64 low_bits = invert_fill ? ~fill : fill;
+        const u64 high_bits = instr->GetNEONQ() ? low_bits : 0;
+        auto vec = (low_bits == 0 && high_bits == 0)
+                           ? this->VecSharedZero().WithView(Type::V128)
+                           : this->VecLoadConst(Imm{low_bits}, Imm{high_bits}).WithView(Type::V128);
+        WriteQRegister(instr->GetRd(), vec);
+        return;
+    }
     auto apply = [&](bool high) {
-        Value result;
-        if (!is_logic) {
-            result = ImmValue(invert_fill ? ~fill : fill, Type::U64);
-        } else {
-            auto old = ReadVHalf(instr->GetRd(), high);
-            result = op_bit ? this->template And<Type::U64>(old, SingleOperand(Imm{~fill}))
-                                      .WithView(Type::U64)
-                            : this->template Or<Type::U64>(old, SingleOperand(Imm{fill}))
-                                      .WithView(Type::U64);
-        }
-        return result;
+        auto old = ReadVHalf(instr->GetRd(), high);
+        return op_bit ? this->template And<Type::U64>(old, SingleOperand(Imm{~fill}))
+                                .WithView(Type::U64)
+                      : this->template Or<Type::U64>(old, SingleOperand(Imm{fill}))
+                                .WithView(Type::U64);
     };
     auto low = apply(false);
     auto high = instr->GetNEONQ() ? apply(true) : ImmValue(0, Type::U64);

@@ -133,6 +133,143 @@ bool Writer::TryArmNumeric(OpContext& c) {
         return true;
     }
     const bool flush = options.arm_fpcr & (1u << 24);
+    if (options.avx && typed && operation == Operation::Fused && !flush &&
+        (lanes * bits == 128 || (lanes == 1 && bits == 64)) && control == 0) {
+        const auto& h = allocation.homes[c.node.value];
+        auto aliases = [&](unsigned reg) {
+            for (unsigned idx : {0u, 1u, 2u}) {
+                const auto arg = c.Arg(idx);
+                if (arg.Kind() == OperandKind::Value &&
+                    source.Operations()[arg.Payload()].type == ir::Type::V128 &&
+                    !allocation.homes[arg.Payload()].spilled &&
+                    allocation.homes[arg.Payload()].reg == reg)
+                    return true;
+            }
+            return false;
+        };
+        const Xmm dst = (!h.spilled && !h.terminal_only && !aliases(h.reg)) ? Xmm(h.reg) : xmm0;
+        c.vector = dst;
+        path.dest_reg = static_cast<std::uint8_t>(dst.getIdx());
+        Xmm lhs = xmm14;
+        if (c.Arg(0).Kind() == OperandKind::Value &&
+            source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128 &&
+            !allocation.homes[c.Arg(0).Payload()].spilled) {
+            lhs = Xmm(allocation.homes[c.Arg(0).Payload()].reg);
+        } else {
+            ReadVector(c.Arg(0), xmm14);
+        }
+        if (lanes == 1) {
+            const auto arg2 = c.Arg(2);
+            if (arg2.Kind() == OperandKind::Value &&
+                source.Operations()[arg2.Payload()].type == ir::Type::V128) {
+                const auto& h2 = allocation.homes[arg2.Payload()];
+                if (h2.spilled && h2.uniform_offset != UINT32_MAX)
+                    vmovq(dst, qword[r12 + h2.uniform_offset]);
+                else if (h2.spilled)
+                    vmovq(dst, qword[rsp + h2.stack_offset]);
+                else
+                    vmovq(dst, Xmm(h2.reg));
+            } else {
+                ReadVector(arg2, dst);
+                vmovq(dst, dst);
+            }
+        } else {
+            ReadVector(c.Arg(2), dst);
+        }
+        const auto arg1 = c.Arg(1);
+        const bool v128_rhs = arg1.Kind() == OperandKind::Value &&
+                              source.Operations()[arg1.Payload()].type == ir::Type::V128;
+        bool preserved_bcast = false;
+        if (lanes == 1) {
+            const unsigned index = indexed ? ((word >> 11) & 1) : 0u;
+            if (v128_rhs) {
+                const auto& rh = allocation.homes[arg1.Payload()];
+                if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
+                    vfmadd231sd(dst, lhs, qword[r12 + rh.uniform_offset + index * 8]);
+                    preserved_bcast = true;
+                } else if (rh.spilled) {
+                    vfmadd231sd(dst, lhs, qword[rsp + rh.stack_offset + index * 8]);
+                    preserved_bcast = true;
+                } else if (index) {
+                    vpermilpd(xmm1, Xmm(rh.reg), 3);
+                    vfmadd231sd(dst, lhs, xmm1);
+                } else {
+                    vfmadd231sd(dst, lhs, Xmm(rh.reg));
+                    preserved_bcast = true;
+                }
+            } else {
+                ReadVector(arg1, xmm1);
+                if (index) vpermilpd(xmm1, xmm1, 3);
+                vfmadd231sd(dst, lhs, xmm1);
+            }
+        } else if (indexed) {
+            const auto index =
+                    bits == 32 ? (((word >> 11) & 1) << 1) | ((word >> 21) & 1) : (word >> 11) & 1;
+            if (v128_rhs) {
+                const u32 rhs_id = static_cast<u32>(arg1.Payload());
+                const std::uint8_t bkey =
+                        static_cast<std::uint8_t>((bits == 64 ? 0x10u : 0x20u) | index);
+                if (xmm1_bcast_node != rhs_id || xmm1_bcast_key != bkey) {
+                    EmitIndexedFPBroadcast(rhs_id, bits, index);
+                    xmm1_bcast_node = rhs_id;
+                    xmm1_bcast_key = bkey;
+                }
+                preserved_bcast = true;
+            } else {
+                ReadVector(arg1, xmm1);
+                if (bits == 64) {
+                    if (index == 0)
+                        vmovddup(xmm1, xmm1);
+                    else
+                        vpermilpd(xmm1, xmm1, 3);
+                } else {
+                    vpermilps(xmm1, xmm1, index * 0x55);
+                }
+            }
+            if (bits == 32)
+                vfmadd231ps(dst, lhs, xmm1);
+            else
+                vfmadd231pd(dst, lhs, xmm1);
+        } else if (v128_rhs) {
+            const auto& rh = allocation.homes[arg1.Payload()];
+            if (rh.spilled && rh.uniform_offset != UINT32_MAX) {
+                if (bits == 32)
+                    vfmadd231ps(dst, lhs, ptr[r12 + rh.uniform_offset]);
+                else
+                    vfmadd231pd(dst, lhs, ptr[r12 + rh.uniform_offset]);
+            } else if (rh.spilled) {
+                if (bits == 32)
+                    vfmadd231ps(dst, lhs, ptr[rsp + rh.stack_offset]);
+                else
+                    vfmadd231pd(dst, lhs, ptr[rsp + rh.stack_offset]);
+            } else {
+                if (bits == 32)
+                    vfmadd231ps(dst, lhs, Xmm(rh.reg));
+                else
+                    vfmadd231pd(dst, lhs, Xmm(rh.reg));
+            }
+            preserved_bcast = true;
+        } else {
+            ReadVector(arg1, xmm1);
+            if (bits == 32)
+                vfmadd231ps(dst, lhs, xmm1);
+            else
+                vfmadd231pd(dst, lhs, xmm1);
+        }
+        CheckArmFPResult(c, output_bits, lanes, slow);
+        if (!preserved_bcast) xmm1_bcast_node = NodeId::invalid;
+        if (xmm1_bcast_node != NodeId::invalid &&
+            allocation.homes[xmm1_bcast_node].last_use <= h.definition_position)
+            xmm1_bcast_node = NodeId::invalid;
+        path.fp_const = xmm15_fp_const;
+        path.bcast_node = xmm1_bcast_node;
+        path.bcast_key = xmm1_bcast_key;
+        kept_xmm15_fp_const = true;
+        kept_xmm1_bcast = xmm1_bcast_node != NodeId::invalid;
+        L(path.resume);
+        c.scalar_normalized = true;
+        return true;
+    }
     const auto vector_offset = [&](unsigned reg) { return base + offsetof(State, q) + reg * 16; };
     const auto clear_inactive = [&](const Xmm& value) {
         if (lanes * bits == 32) {

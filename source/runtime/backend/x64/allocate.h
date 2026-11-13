@@ -9,10 +9,11 @@ struct Home {
     std::uint32_t definition_position{}, last_use{}, stack_offset{}, auxiliary_offset{UINT32_MAX};
     std::uint8_t reg{}, flag_reads{}, flag_writes{}, flags_need{};
     std::uint32_t uniform_offset{UINT32_MAX};
+    std::uint16_t use_count{};
     bool spilled{}, terminal_only{};
     // A stored value can use its adjacent architectural write as backing.
     std::uint8_t uniform_store_bytes{};
-    bool reuse_rhs{};
+    bool reuse_rhs{}, rematerialize{};
 };
 
 struct Allocation {

@@ -39,9 +39,11 @@ OptimizeResult Optimize(Program&& input,
                                     : stats.words_before + 2 * stats.nodes;
     const bool function_scope = input.ScopeKind() == Scope::Function;
     const bool signed_mul_widen_low = input.Target().Has(TargetFeature::VectorSignedMulWidenLow);
+    const bool fault_locations = input.Target().Has(TargetFeature::FaultLocations);
     auto editor = Builder::Edit(std::move(input), std::min(hard_limit, max_operand_words));
     try {
-        passes::Context context{editor, rows, stats, policy, signed_mul_widen_low};
+        passes::Context context{
+                editor, rows, stats, policy, signed_mul_widen_low, fault_locations};
         passes::FlagGraph flags;
         flags.Prepare(editor.Blocks(), function_scope, stats);
         auto error = passes::AnalyzeLiveness(context, flags);

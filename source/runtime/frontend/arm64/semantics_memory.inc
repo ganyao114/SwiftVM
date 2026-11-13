@@ -202,7 +202,8 @@ void LoadStorePairHelper(const vixl::aarch64::Instruction* instr, AddrMode mode)
         writeback = AddressAdd(base, offset);
         address = (mode == AddrMode::PreIndex) ? writeback : base;
     }
-    auto address2 = AddressAdd(address, element_size);
+    auto address2 = mode == AddrMode::Offset ? AddressAdd(base, offset + element_size)
+                                             : AddressAdd(address, element_size);
 
     auto load = [&](Value addr, Type type) { return ReadMemory(Input{addr}, type); };
 
@@ -247,7 +248,10 @@ void LoadStorePairHelper(const vixl::aarch64::Instruction* instr, AddrMode mode)
         case LDP_q: {
             const auto op = instr->Mask(LoadStorePairMask);
             const auto type = op == LDP_s ? Type::V32 : op == LDP_d ? Type::V64 : Type::V128;
-            const auto first = load(address, type), second = load(address2, type);
+            const auto first = load(address, type);
+            auto second = load(address2, type);
+            if (X64FP() && type != Type::V128)
+                second = Emit<OpCode::BitCast, Type::V128>(Widen(second));
             WriteVRegister(rt, first);
             WriteVRegister(rt2, second);
             break;
@@ -736,6 +740,42 @@ void NEONMultiMemory(const vixl::aarch64::Instruction* instr, bool post_index) {
             WriteMemory(base, low);
             WriteMemory(address(16), high);
         }
+    } else if (registers == 4 && q) {
+        const u32 bits = 8u << size;
+        if (load) {
+            auto m0 = ReadMemory(Input{base}, Type::V128);
+            auto m1 = ReadMemory(Input{address(16)}, Type::V128);
+            auto m2 = ReadMemory(Input{address(32)}, Type::V128);
+            auto m3 = ReadMemory(Input{address(48)}, Type::V128);
+            auto a0 = this->VecUnzip(m0, m1, Imm{bits}, Imm{false}).WithView(Type::V128);
+            auto a1 = this->VecUnzip(m2, m3, Imm{bits}, Imm{false}).WithView(Type::V128);
+            auto a2 = this->VecUnzip(m0, m1, Imm{bits}, Imm{true}).WithView(Type::V128);
+            auto a3 = this->VecUnzip(m2, m3, Imm{bits}, Imm{true}).WithView(Type::V128);
+            auto r0 = this->VecUnzip(a0, a1, Imm{bits}, Imm{false}).WithView(Type::V128);
+            auto r2 = this->VecUnzip(a0, a1, Imm{bits}, Imm{true}).WithView(Type::V128);
+            auto r1 = this->VecUnzip(a2, a3, Imm{bits}, Imm{false}).WithView(Type::V128);
+            auto r3 = this->VecUnzip(a2, a3, Imm{bits}, Imm{true}).WithView(Type::V128);
+            WriteVRegister(rt, r0);
+            WriteVRegister((rt + 1) & 31, r1);
+            WriteVRegister((rt + 2) & 31, r2);
+            WriteVRegister((rt + 3) & 31, r3);
+        } else {
+            auto r0 = ReadVRegister(rt, Type::V128);
+            auto r1 = ReadVRegister((rt + 1) & 31, Type::V128);
+            auto r2 = ReadVRegister((rt + 2) & 31, Type::V128);
+            auto r3 = ReadVRegister((rt + 3) & 31, Type::V128);
+            auto z0 = this->VecZip(r0, r2, Imm{bits}, Imm{false}).WithView(Type::V128);
+            auto z1 = this->VecZip(r0, r2, Imm{bits}, Imm{true}).WithView(Type::V128);
+            auto z2 = this->VecZip(r1, r3, Imm{bits}, Imm{false}).WithView(Type::V128);
+            auto z3 = this->VecZip(r1, r3, Imm{bits}, Imm{true}).WithView(Type::V128);
+            WriteMemory(base, this->VecZip(z0, z2, Imm{bits}, Imm{false}).WithView(Type::V128));
+            WriteMemory(address(16),
+                        this->VecZip(z0, z2, Imm{bits}, Imm{true}).WithView(Type::V128));
+            WriteMemory(address(32),
+                        this->VecZip(z1, z3, Imm{bits}, Imm{false}).WithView(Type::V128));
+            WriteMemory(address(48),
+                        this->VecZip(z1, z3, Imm{bits}, Imm{true}).WithView(Type::V128));
+        }
     } else {
         const u32 lane_bytes = 1u << size, bits = lane_bytes * 8;
         const auto lane_type = size == 0   ? Type::U8
@@ -838,7 +878,12 @@ void NEONSingleMemory(const vixl::aarch64::Instruction* instr, bool post_index) 
                     auto copy = this->LslImm(value, Imm{shift}).WithView(Type::U64);
                     value = this->Or(value, SingleOperand(copy)).WithView(Type::U64);
                 }
-                WriteVHalves(code, value, instr->GetNEONQ() ? value : ImmValue(0, Type::U64));
+                if (X64FP())
+                    WriteVRegister(
+                            code,
+                            instr->GetNEONQ() ? this->VecDup64(value).WithView(Type::V128) : value);
+                else
+                    WriteVHalves(code, value, instr->GetNEONQ() ? value : ImmValue(0, Type::U64));
             } else {
                 auto old = ReadVHalf(code, position >= 64);
                 old = this->And(old, SingleOperand(Imm{~(mask << (position % 64))}))

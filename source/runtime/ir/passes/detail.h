@@ -74,6 +74,7 @@ inline bool Foldable(const Operation& op) {
         case OpCode::ZeroExtend32To64:
         case OpCode::ZeroExtend64:
         case OpCode::SignExtend:
+        case OpCode::VecExtract64:
         case OpCode::TestBit:
         case OpCode::BitExtract:
         case OpCode::BitInsert:
@@ -103,6 +104,7 @@ struct Context {
     OptimizeStats& stats;
     const UniformPolicy& policy;
     bool signed_mul_widen_low{};
+    bool fault_locations{};
     bool needs_final_cleanup{};
 };
 

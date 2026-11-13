@@ -60,7 +60,18 @@ bool TryNEONShiftImmediate(const vixl::aarch64::Instruction* instr) {
     const u32 encoded = instr->GetImmNEONImmhImmb();
     const u32 shift = left ? encoded - bits : 2 * bits - encoded;
     const bool q = instr->GetNEONQ();
-    if (widen || narrow) {
+    if (widen) {
+        auto source = ReadVRegister(instr->GetRn(), Type::V128);
+        if (q) source = this->VecShuffle32(source, Imm{0xee}).WithView(Type::V128);
+        auto result = this->VecExtend(source, Imm{bits}, Imm{bits * 2}, Imm{op == NEON_SSHLL})
+                              .WithView(Type::V128);
+        if (shift) {
+            result = this->VecShiftLeftImm(result, Imm{shift}, Imm{bits * 2}).WithView(Type::V128);
+        }
+        WriteVRegister(instr->GetRd(), result);
+        return true;
+    }
+    if (narrow) {
         const u32 source_bits = narrow ? bits * 2 : bits;
         const u32 result_bits = narrow ? bits : bits * 2;
         auto input_low = ReadVHalf(instr->GetRn(), widen && q);

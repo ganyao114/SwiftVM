@@ -319,6 +319,7 @@ private:
     ARM_OP(VecMin)
     ARM_OP(VecZip)
     ARM_OP(VecUnzip)
+    ARM_OP(VecExtend)
     ARM_OP(VecShiftLeftImm)
     ARM_OP(VecShiftRightImm)
     ARM_OP(VecShiftRightArithmeticImm)

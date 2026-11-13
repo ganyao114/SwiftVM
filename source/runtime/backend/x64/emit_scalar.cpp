@@ -2,11 +2,23 @@
 
 namespace swift::runtime::backend::x64::detail {
 void Writer::Arithmetic(OpContext& c) {
+    if (allocation.homes[c.node.value].rematerialize) {
+        c.saved = true;
+        return;
+    }
     const auto destination = ScalarDestination(c);
+    const bool can_lea = !c.operation.flag_outputs && (c.width == 32 || c.width == 64) &&
+                         allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX;
+    const bool preserve_flags = options.local_flags && flags.native && can_lea;
     if (allocation.homes[c.node.value].reuse_rhs) {
         Reg64 left = rcx;
         if (!ResidentScalar(c.Arg(0), c.width, left)) Read(c.Arg(0), rcx);
         Read(c.Arg(1), destination);
+        if (preserve_flags && c.operation.opcode == OpCode::Add) {
+            lea(R(destination, c.width), ptr[destination + left]);
+            c.scalar_normalized = true;
+            return;
+        }
         add(R(destination, c.width), R(left, c.width));
         c.scalar_normalized = true;
         CaptureFlags(c);
@@ -19,16 +31,22 @@ void Writer::Arithmetic(OpContext& c) {
     if (!negop && c.count == 2 &&
         (c.operation.opcode == OpCode::Add || c.operation.opcode == OpCode::Sub) &&
         Immediate32(c.Arg(1), c.width, immediate)) {
-        Read(c.Arg(0), destination);
         const auto displacement = c.operation.opcode == OpCode::Add ? std::int64_t{immediate}
                                                                     : -std::int64_t{immediate};
-        if (options.local_flags && flags.native && !c.operation.flag_outputs && c.width >= 32 &&
-            allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX &&
-            displacement >= INT32_MIN && displacement <= INT32_MAX) {
-            lea(R(destination, c.width), ptr[destination + displacement]);
-            c.scalar_normalized = true;
-            return;
+        if (can_lea && displacement >= INT32_MIN && displacement <= INT32_MAX) {
+            Reg64 lhs = destination;
+            const bool lhs_resident = ResidentScalar(c.Arg(0), c.width, lhs);
+            if (preserve_flags || (lhs_resident && lhs != destination)) {
+                if (!lhs_resident) {
+                    Read(c.Arg(0), destination);
+                    lhs = destination;
+                }
+                lea(R(destination, c.width), ptr[lhs + displacement]);
+                c.scalar_normalized = true;
+                return;
+            }
         }
+        Read(c.Arg(0), destination);
         if (c.operation.opcode == OpCode::Add)
             add(R(destination, c.width), immediate);
         else
@@ -37,13 +55,28 @@ void Writer::Arithmetic(OpContext& c) {
         CaptureFlags(c);
         return;
     }
+    if (can_lea && c.operation.opcode == OpCode::Add && c.count == 2) {
+        Reg64 lhs = destination, rhs = rcx;
+        if (ResidentScalar(c.Arg(0), c.width, lhs) && ResidentScalar(c.Arg(1), c.width, rhs) &&
+            (preserve_flags || (lhs != destination && rhs != destination))) {
+            lea(R(destination, c.width), ptr[lhs + rhs]);
+            c.scalar_normalized = true;
+            return;
+        }
+    }
     if (negop)
         Read(*at, destination);
     else {
         const auto left = *at++;
-        if (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right))
+        if (c.count != 2 || !ResidentScalar(c.Arg(1), c.width, right) ||
+            (preserve_flags && right == destination))
             Expression(at, c.operands.end(), rcx, 1);
         Read(left, destination);
+    }
+    if (preserve_flags && c.operation.opcode == OpCode::Add) {
+        lea(R(destination, c.width), ptr[destination + right]);
+        c.scalar_normalized = true;
+        return;
     }
     if (!negop && c.width < 8) Mask(rcx, c.width);
     const auto a = R(destination, c.width), b = R(right, c.width);
@@ -109,6 +142,12 @@ void Writer::Logical(OpContext& c) {
          c.operation.opcode == OpCode::Xor) &&
         Immediate32(c.Arg(1), c.width, immediate)) {
         Read(left, destination);
+        if (c.operation.opcode == OpCode::Or && immediate == 0 && !c.operation.flag_outputs &&
+            allocation.homes[c.node.value].auxiliary_offset == UINT32_MAX) {
+            c.scalar_normalized =
+                    c.width == 64 || (c.width == 32 && TypeBits(View(left)) == 32);
+            return;
+        }
         if (c.operation.opcode == OpCode::And)
             and_(R(destination, c.width), immediate);
         else if (c.operation.opcode == OpCode::Or)
@@ -180,6 +219,17 @@ LOG(Not)
 
 void Writer::Handle(Op<OpCode::Mul>, OpContext& c) {
     const auto destination = ScalarDestination(c);
+    std::int32_t immediate;
+    if (c.count == 2 && Immediate32(c.Arg(1), c.width, immediate)) {
+        Reg64 source = destination;
+        if (!ResidentScalar(c.Arg(0), c.width, source)) Read(c.Arg(0), destination);
+        if (c.width == 32)
+            imul(destination.cvt32(), source.cvt32(), immediate);
+        else
+            imul(destination, source, immediate);
+        c.scalar_normalized = true;
+        return;
+    }
     Reg64 right = rcx;
     auto at = c.operands.begin();
     ++at;
@@ -261,7 +311,7 @@ void Writer::Shift(OpContext& c) {
     }
     if (op == OpCode::AsrImm || op == OpCode::AsrValue)
         Sign(destination, std::min(c.width, TypeBits(View(c.Arg(0)))));
-    else
+    else if (c.width < 32 || (c.width == 32 && TypeBits(View(c.Arg(0))) > 32))
         Mask(destination, c.width);
     const auto shift = [&](auto amount) {
         if (op == OpCode::LslImm || op == OpCode::LslValue)
@@ -448,9 +498,9 @@ void Writer::Handle(Op<OpCode::Crc32c>, OpContext& c) {
 void Writer::Handle(Op<OpCode::ParallelBitDeposit>, OpContext& c) {
     Read(c.Arg(0), rax);
     Read(c.Arg(1), rcx);
-    mov(rdi, rax);
+    movq(xmm14, rax);
     xor_(eax, eax);
-    mov(rsi, 1);
+    mov(r11, 1);
     Label loop, done;
     L(loop);
     test(rcx, rcx);
@@ -458,21 +508,23 @@ void Writer::Handle(Op<OpCode::ParallelBitDeposit>, OpContext& c) {
     mov(rdx, rcx);
     neg(rdx);
     and_(rdx, rcx);
-    test(rdi, rsi);
+    movq(r10, xmm14);
+    test(r10, r11);
     mov(r10, 0);
     cmovnz(r10, rdx);
     or_(rax, r10);
     xor_(rcx, rdx);
-    shl(rsi, 1);
+    shl(r11, 1);
     jmp(loop, T_NEAR);
     L(done);
 }
 
 void Writer::Handle(Op<OpCode::ParallelBitExtract>, OpContext& c) {
-    Read(c.Arg(0), rdi);
+    Read(c.Arg(0), rax);
     Read(c.Arg(1), rcx);
+    movq(xmm14, rax);
     xor_(eax, eax);
-    mov(rsi, 1);
+    mov(r11, 1);
     Label loop, done;
     L(loop);
     test(rcx, rcx);
@@ -480,12 +532,13 @@ void Writer::Handle(Op<OpCode::ParallelBitExtract>, OpContext& c) {
     mov(rdx, rcx);
     neg(rdx);
     and_(rdx, rcx);
-    test(rdi, rdx);
+    movq(r10, xmm14);
+    test(r10, rdx);
     mov(r10, 0);
-    cmovnz(r10, rsi);
+    cmovnz(r10, r11);
     or_(rax, r10);
     xor_(rcx, rdx);
-    shl(rsi, 1);
+    shl(r11, 1);
     jmp(loop, T_NEAR);
     L(done);
 }

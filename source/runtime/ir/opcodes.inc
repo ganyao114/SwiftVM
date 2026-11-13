@@ -352,7 +352,7 @@ INST(VecShuffle32TwoSrc, Value, Arg0, (Effect::None), Value, Value, Imm)
 // Block-cached 128-bit constants and an indexed PSHUFD form. Keeping the
 // indexes as SSA lets the constant-folding pass reuse one materialization for
 // repeated controls without pinning an emitter scratch register.
-INST(VecLoadConst, Value, Explicit, (Effect::Unknown), Imm, Imm)
+INST(VecLoadConst, Value, Explicit, (Effect::None), Imm, Imm)
 INST(VecShuffle32Indexed, Value, Arg0, (Effect::None), Value, Value)
 // One-instruction all-zero vector, block-local CSE-able like VecLoadConst.
 INST(VecSharedZero, Value, Explicit, (Effect::None))

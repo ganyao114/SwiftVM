@@ -9,30 +9,30 @@ void Writer::Atomic(OpContext& c) {
                compare = c.operation.opcode == OpCode::CompareAndSwap;
     const auto n = c.width;
     if (n != 8 && n != 16 && n != 32 && n != 64) Reject(CompileError::UnsupportedType);
-    Read(c.Arg(rmw ? 1 : 0), rdi);
-    Read(c.Arg(rmw ? 2 : 1), rsi);
-    Mask(rsi, n);
+    Read(c.Arg(rmw ? 1 : 0), r11);
+    Read(c.Arg(rmw ? 2 : 1), r10);
+    Mask(r10, n);
     if (compare) {
         Read(c.Arg(2), rcx);
-        mov(rax, rsi);
+        mov(rax, r10);
         const auto first = static_cast<u32>(getSize());
         lock();
-        cmpxchg(ptr[rdi], R(rcx, n));
+        cmpxchg(ptr[r11], R(rcx, n));
         RecordGuestAccess(first, 3, n / 8);
         return;
     }
     if (c.operation.opcode == OpCode::AtomicExchange) {
-        mov(rax, rsi);
+        mov(rax, r10);
         const auto first = static_cast<u32>(getSize());
-        xchg(ptr[rdi], R(rax, n));
+        xchg(ptr[r11], R(rax, n));
         RecordGuestAccess(first, 3, n / 8);
         return;
     }
     if (c.operation.opcode == OpCode::AtomicFetchAdd) {
-        mov(rax, rsi);
+        mov(rax, r10);
         const auto first = static_cast<u32>(getSize());
         lock();
-        xadd(ptr[rdi], R(rax, n));
+        xadd(ptr[r11], R(rax, n));
         RecordGuestAccess(first, 3, n / 8);
         return;
     }
@@ -41,61 +41,61 @@ void Writer::Atomic(OpContext& c) {
     Read(c.Arg(3), rdx);
     and_(edx, 1);
     const auto first_load = static_cast<u32>(getSize());
-    Load(rax, rdi, 0, n);
+    Load(rax, r11, 0, n);
     RecordGuestAccess(first_load, 3, n / 8);
     Label repeat;
     L(repeat);
     mov(rcx, rax);
     switch (kind) {
         case AtomicRMWOp::Add:
-            add(rcx, rsi);
+            add(rcx, r10);
             break;
         case AtomicRMWOp::Sub:
-            sub(rcx, rsi);
+            sub(rcx, r10);
             break;
         case AtomicRMWOp::And:
-            and_(rcx, rsi);
+            and_(rcx, r10);
             break;
         case AtomicRMWOp::Or:
-            or_(rcx, rsi);
+            or_(rcx, r10);
             break;
         case AtomicRMWOp::Xor:
-            xor_(rcx, rsi);
+            xor_(rcx, r10);
             break;
         case AtomicRMWOp::Neg:
             neg(rcx);
             break;
         case AtomicRMWOp::AddCarry:
-            add(rcx, rsi);
+            add(rcx, r10);
             add(rcx, rdx);
             break;
         case AtomicRMWOp::SubBorrow:
-            sub(rcx, rsi);
+            sub(rcx, r10);
             sub(rcx, rdx);
             break;
         case AtomicRMWOp::SignedMax:
         case AtomicRMWOp::SignedMin:
-            mov(r10, rsi);
+            mov(rdx, r10);
             Sign(rcx, n);
-            Sign(r10, n);
-            cmp(rcx, r10);
+            Sign(rdx, n);
+            cmp(rcx, rdx);
             if (kind == AtomicRMWOp::SignedMax)
-                cmovl(rcx, r10);
+                cmovl(rcx, rdx);
             else
-                cmovg(rcx, r10);
+                cmovg(rcx, rdx);
             break;
         case AtomicRMWOp::UnsignedMax:
         case AtomicRMWOp::UnsignedMin:
-            cmp(rcx, rsi);
+            cmp(rcx, r10);
             if (kind == AtomicRMWOp::UnsignedMax)
-                cmovb(rcx, rsi);
+                cmovb(rcx, r10);
             else
-                cmova(rcx, rsi);
+                cmova(rcx, r10);
             break;
     }
     const auto first_store = static_cast<u32>(getSize());
     lock();
-    cmpxchg(ptr[rdi], R(rcx, n));
+    cmpxchg(ptr[r11], R(rcx, n));
     RecordGuestAccess(first_store, 3, n / 8);
     jne(repeat, T_NEAR);
 }
@@ -111,23 +111,24 @@ A(AtomicRMW)
 #undef A
 
 void Writer::Handle(Op<OpCode::CompareAndSwap128>, OpContext& c) {
-    Read(c.Arg(0), rdi);
+    Read(c.Arg(0), r11);
     Label aligned;
-    test(rdi, 15);
+    test(r11, 15);
     jz(aligned, T_NEAR);
     Exit(ExitValue(NativeExit::AlignmentFault));
     L(aligned);
     if (options.cx16) {
-        Read(c.Arg(1), rax);
-        Read(c.Arg(2), rdx);
         PublishFlags();
         fault_committed_flags = true;
+        Read(c.Arg(0), r11);
+        Read(c.Arg(1), rax);
+        Read(c.Arg(2), rdx);
         mov(r10, rbx);
         Read(c.Arg(3), rbx);
         Read(c.Arg(4), rcx);
         const auto first = static_cast<u32>(getSize());
         lock();
-        cmpxchg16b(ptr[rdi]);
+        cmpxchg16b(ptr[r11]);
         RecordGuestAccess(first, 3, 16);
         mov(rbx, r10);
         movq(xmm0, rax);
@@ -137,9 +138,9 @@ void Writer::Handle(Op<OpCode::CompareAndSwap128>, OpContext& c) {
     }
     if (Linked()) {
         static_assert(sizeof(runtime::AtomicCall) <= 112);
-        // The first 208 helper bytes hold live XMM/R8/R9 saves. The
+        // The first 224 helper bytes hold live XMM/RSI/RDI/R8/R9 saves. The
         // remaining scratch region owns this one transient service packet.
-        const auto packet = allocation.call_offset + 208;
+        const auto packet = allocation.call_offset + 224;
         constexpr auto expected = offsetof(runtime::AtomicRequest, expected);
         constexpr auto desired = offsetof(runtime::AtomicRequest, desired);
         PrepareCall();

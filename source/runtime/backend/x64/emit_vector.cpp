@@ -144,46 +144,85 @@ void Writer::Vector(OpContext& c) {
     const unsigned n =
             (op == O::Vec4Add || op == O::Vec4Sub || op == O::Vec4Mul) ? 32 : c.Arg(2).Payload();
     if (op == O::VecAnd || op == O::Vec4And) {
-        pand(dst, xmm1);
+        if (options.avx)
+            vpand(dst, dst, xmm1);
+        else
+            pand(dst, xmm1);
         return;
     }
     if (op == O::VecOr || op == O::Vec4Or) {
-        por(dst, xmm1);
+        if (options.avx)
+            vpor(dst, dst, xmm1);
+        else
+            por(dst, xmm1);
         return;
     }
     if (op == O::VecXor) {
-        pxor(dst, xmm1);
+        if (options.avx)
+            vpxor(dst, dst, xmm1);
+        else
+            pxor(dst, xmm1);
         return;
     }
     if (op == O::VecAndNot) {
-        pandn(xmm1, dst);
-        movdqa(dst, xmm1);
+        if (options.avx) {
+            vpandn(dst, xmm1, dst);
+        } else {
+            pandn(xmm1, dst);
+            movdqa(dst, xmm1);
+        }
         return;
     }
     if (op == O::VecAdd || op == O::Vec4Add) {
-        if (n == 8)
-            paddb(dst, xmm1);
-        else if (n == 16)
-            paddw(dst, xmm1);
-        else if (n == 32)
-            paddd(dst, xmm1);
-        else if (n == 64)
-            paddq(dst, xmm1);
-        else
-            Reject(CompileError::UnsupportedOperand);
+        if (options.avx) {
+            if (n == 8)
+                vpaddb(dst, dst, xmm1);
+            else if (n == 16)
+                vpaddw(dst, dst, xmm1);
+            else if (n == 32)
+                vpaddd(dst, dst, xmm1);
+            else if (n == 64)
+                vpaddq(dst, dst, xmm1);
+            else
+                Reject(CompileError::UnsupportedOperand);
+        } else {
+            if (n == 8)
+                paddb(dst, xmm1);
+            else if (n == 16)
+                paddw(dst, xmm1);
+            else if (n == 32)
+                paddd(dst, xmm1);
+            else if (n == 64)
+                paddq(dst, xmm1);
+            else
+                Reject(CompileError::UnsupportedOperand);
+        }
         return;
     }
     if (op == O::VecSub || op == O::Vec4Sub) {
-        if (n == 8)
-            psubb(dst, xmm1);
-        else if (n == 16)
-            psubw(dst, xmm1);
-        else if (n == 32)
-            psubd(dst, xmm1);
-        else if (n == 64)
-            psubq(dst, xmm1);
-        else
-            Reject(CompileError::UnsupportedOperand);
+        if (options.avx) {
+            if (n == 8)
+                vpsubb(dst, dst, xmm1);
+            else if (n == 16)
+                vpsubw(dst, dst, xmm1);
+            else if (n == 32)
+                vpsubd(dst, dst, xmm1);
+            else if (n == 64)
+                vpsubq(dst, dst, xmm1);
+            else
+                Reject(CompileError::UnsupportedOperand);
+        } else {
+            if (n == 8)
+                psubb(dst, xmm1);
+            else if (n == 16)
+                psubw(dst, xmm1);
+            else if (n == 32)
+                psubd(dst, xmm1);
+            else if (n == 64)
+                psubq(dst, xmm1);
+            else
+                Reject(CompileError::UnsupportedOperand);
+        }
         return;
     }
     if (op == O::VecCmpEq) {
@@ -360,30 +399,142 @@ void Writer::Handle(Op<O::VecAbsDiffSum8>, OpContext& c) {
 }
 
 void Writer::Handle(Op<O::VecLoadConst>, OpContext& c) {
-    mov(rax, c.Arg(0).Payload());
-    movq(xmm0, rax);
-    mov(rax, c.Arg(1).Payload());
-    movq(xmm1, rax);
-    punpcklqdq(xmm0, xmm1);
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = (!home.spilled && !home.terminal_only) ? Xmm(home.reg) : xmm0;
+    c.vector = dst;
+    const u64 lo = c.Arg(0).Payload(), hi = c.Arg(1).Payload();
+    if (lo == 0 && hi == 0) {
+        if (options.avx)
+            vpxor(dst, dst, dst);
+        else
+            pxor(dst, dst);
+        return;
+    }
+    if (hi == 0) {
+        mov(rax, lo);
+        if (options.avx)
+            vmovq(dst, rax);
+        else
+            movq(dst, rax);
+        return;
+    }
+    if (lo == hi && options.avx) {
+        mov(rax, lo);
+        vmovq(dst, rax);
+        vmovddup(dst, dst);
+        return;
+    }
+    mov(rax, lo);
+    if (options.avx) {
+        vmovq(dst, rax);
+        mov(rax, hi);
+        vmovq(xmm1, rax);
+        vpunpcklqdq(dst, dst, xmm1);
+    } else {
+        movq(dst, rax);
+        mov(rax, hi);
+        movq(xmm1, rax);
+        punpcklqdq(dst, xmm1);
+    }
 }
 
-void Writer::Handle(Op<O::VecSharedZero>, OpContext&) { pxor(xmm0, xmm0); }
+void Writer::Handle(Op<O::VecSharedZero>, OpContext& c) {
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+    c.vector = dst;
+    if (options.avx)
+        vpxor(dst, dst, dst);
+    else
+        pxor(dst, dst);
+}
 
 void Writer::Handle(Op<O::VecDup64>, OpContext& c) {
-    Read(c.Arg(0), rax, true);
-    movq(xmm0, rax);
-    punpcklqdq(xmm0, xmm0);
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = (!home.spilled && !home.terminal_only) ? Xmm(home.reg) : xmm0;
+    c.vector = dst;
+    if (options.avx) {
+        const auto arg = c.Arg(0);
+        if (arg.Kind() == OperandKind::Value &&
+            TypeBits(source.Operations()[arg.Payload()].type) == 64) {
+            const auto load_id = static_cast<u32>(arg.Payload());
+            const auto& ah = allocation.homes[load_id];
+            const auto& lop = source.Operations()[load_id];
+            if (ah.rematerialize &&
+                (lop.opcode == OpCode::LoadMemory || lop.opcode == OpCode::LoadMemoryTSO)) {
+                const auto ops = source.Operands(NodeId{load_id});
+                auto at = ops.begin();
+                Reg64 base = r11;
+                std::int32_t disp = 0;
+                MemoryAddress(at, ops.end(), base, disp);
+                if (dst.getIdx() == 0) xmm0_node = NodeId::invalid;
+                const auto first = static_cast<u32>(getSize());
+                vmovddup(dst, qword[base + disp]);
+                RecordGuestAccess(first, 1, 8);
+                return;
+            }
+            if (ah.spilled && ah.uniform_offset != UINT32_MAX) {
+                vmovddup(dst, qword[r12 + ah.uniform_offset]);
+                return;
+            }
+            if (ah.spilled && !ah.rematerialize) {
+                vmovddup(dst, qword[rsp + ah.stack_offset]);
+                return;
+            }
+        }
+        ReadVector(arg, dst);
+        vmovddup(dst, dst);
+        return;
+    }
+    ReadVector(c.Arg(0), dst);
+    punpcklqdq(dst, dst);
 }
 
 void Writer::Handle(Op<O::VecScalar>, OpContext& c) {
     Read(c.Arg(0), rax);
-    movq(xmm0, rax);
+    if (options.avx)
+        vmovq(xmm0, rax);
+    else
+        movq(xmm0, rax);
 }
 
 void Writer::Handle(Op<O::VecExtract64>, OpContext& c) {
-    if (c.Arg(1).Payload() > 1) Reject(CompileError::UnsupportedOperand);
+    const auto lane = c.Arg(1).Payload();
+    if (lane > 1) Reject(CompileError::UnsupportedOperand);
+    if (c.Arg(0).Kind() == OperandKind::Value &&
+        source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128) {
+        const auto& ah = allocation.homes[c.Arg(0).Payload()];
+        if (ah.spilled && ah.uniform_offset != UINT32_MAX) {
+            mov(ScalarDestination(c), qword[r12 + ah.uniform_offset + lane * 8]);
+            c.scalar_normalized = true;
+            return;
+        }
+        if (ah.spilled) {
+            mov(ScalarDestination(c), qword[rsp + ah.stack_offset + lane * 8]);
+            c.scalar_normalized = true;
+            return;
+        }
+        if (lane == 0) {
+            if (options.avx)
+                vmovq(ScalarDestination(c), Xmm(ah.reg));
+            else
+                movq(ScalarDestination(c), Xmm(ah.reg));
+            c.scalar_normalized = true;
+            return;
+        }
+        if (options.avx) {
+            vpextrq(ScalarDestination(c), Xmm(ah.reg), 1);
+            c.scalar_normalized = true;
+            return;
+        }
+        if (options.sse41) {
+            pextrq(ScalarDestination(c), Xmm(ah.reg), 1);
+            c.scalar_normalized = true;
+            return;
+        }
+    }
     ReadVector(c.Arg(0), xmm14);
-    ExtractLane(xmm14, c.Arg(1).Payload(), 64, rax);
+    ExtractLane(xmm14, lane, 64, ScalarDestination(c));
+    c.scalar_normalized = true;
 }
 
 void Writer::Handle(Op<O::VecExtract16>, OpContext& c) {
@@ -400,8 +551,17 @@ void Writer::Handle(Op<O::VecInsert16>, OpContext& c) {
 }
 
 void Writer::Handle(Op<O::VecShuffle32>, OpContext& c) {
-    ReadVector(c.Arg(0), xmm1);
-    pshufd(xmm0, xmm1, c.Arg(1).Payload());
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+    c.vector = dst;
+    if (c.Arg(0).Kind() == OperandKind::Value &&
+        source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128 &&
+        !allocation.homes[c.Arg(0).Payload()].spilled) {
+        pshufd(dst, Xmm(allocation.homes[c.Arg(0).Payload()].reg), c.Arg(1).Payload());
+    } else {
+        ReadVector(c.Arg(0), xmm1);
+        pshufd(dst, xmm1, c.Arg(1).Payload());
+    }
 }
 
 void Writer::Handle(Op<O::VecShuffle32TwoSrc>, OpContext& c) {
@@ -425,30 +585,33 @@ void Writer::Handle(Op<O::VecDupPairs32>, OpContext& c) {
 }
 
 void Writer::Handle(Op<O::VecZip>, OpContext& c) {
-    ReadVector(c.Arg(0), xmm0);
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+    c.vector = dst;
     ReadVector(c.Arg(1), xmm1);
+    ReadVector(c.Arg(0), dst);
     const auto n = c.Arg(2).Payload();
     const bool h = c.Arg(3).Payload();
     if (h) {
         if (n == 8)
-            punpckhbw(xmm0, xmm1);
+            punpckhbw(dst, xmm1);
         else if (n == 16)
-            punpckhwd(xmm0, xmm1);
+            punpckhwd(dst, xmm1);
         else if (n == 32)
-            punpckhdq(xmm0, xmm1);
+            punpckhdq(dst, xmm1);
         else if (n == 64)
-            punpckhqdq(xmm0, xmm1);
+            punpckhqdq(dst, xmm1);
         else
             Reject(CompileError::UnsupportedOperand);
     } else {
         if (n == 8)
-            punpcklbw(xmm0, xmm1);
+            punpcklbw(dst, xmm1);
         else if (n == 16)
-            punpcklwd(xmm0, xmm1);
+            punpcklwd(dst, xmm1);
         else if (n == 32)
-            punpckldq(xmm0, xmm1);
+            punpckldq(dst, xmm1);
         else if (n == 64)
-            punpcklqdq(xmm0, xmm1);
+            punpcklqdq(dst, xmm1);
         else
             Reject(CompileError::UnsupportedOperand);
     }
@@ -458,11 +621,44 @@ void Writer::Handle(Op<O::VecUnzip>, OpContext& c) {
     const auto bits = c.Arg(2).Payload();
     if (bits != 8 && bits != 16 && bits != 32 && bits != 64)
         Reject(CompileError::UnsupportedOperand);
+    const bool odd = c.Arg(3).Payload();
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+    if (bits == 64) {
+        c.vector = dst;
+        ReadVector(c.Arg(1), xmm1);
+        ReadVector(c.Arg(0), dst);
+        if (odd)
+            punpckhqdq(dst, xmm1);
+        else
+            punpcklqdq(dst, xmm1);
+        return;
+    }
+    if (bits == 32) {
+        c.vector = dst;
+        ReadVector(c.Arg(1), xmm1);
+        ReadVector(c.Arg(0), dst);
+        shufps(dst, xmm1, odd ? 0xdd : 0x88);
+        return;
+    }
+    if (options.ssse3) {
+        c.vector = dst;
+        ReadVector(c.Arg(1), xmm1);
+        ReadVector(c.Arg(0), dst);
+        const u64 mask = bits == 8 ? (odd ? 0x0f0d0b0907050301ULL : 0x0e0c0a0806040200ULL)
+                                   : (odd ? 0x0f0e0b0a07060302ULL : 0x0d0c090805040100ULL);
+        mov(rax, mask);
+        movq(xmm14, rax);
+        pshufb(dst, xmm14);
+        pshufb(xmm1, xmm14);
+        punpcklqdq(dst, xmm1);
+        return;
+    }
     ReadVector(c.Arg(0), xmm14);
     ReadVector(c.Arg(1), xmm15);
     pxor(xmm0, xmm0);
     for (unsigned i = 0; i < 128 / bits; ++i) {
-        unsigned at = 2 * i + bool(c.Arg(3).Payload());
+        unsigned at = 2 * i + odd;
         ExtractLane(at >= 128 / bits ? xmm15 : xmm14, at % (128 / bits), bits, rax);
         InsertLane(xmm0, i, bits, rax);
     }
@@ -516,38 +712,48 @@ void Writer::Handle(Op<O::VecExtend>, OpContext& c) {
     if ((from != 8 && from != 16 && from != 32) || (to != 16 && to != 32 && to != 64) || from >= to)
         Reject(CompileError::UnsupportedOperand);
     if (options.sse41) {
-        ReadVector(c.Arg(0), xmm1);
+        const auto& home = allocation.homes[c.node.value];
+        const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+        c.vector = dst;
+        Xmm src = xmm1;
+        if (c.Arg(0).Kind() == OperandKind::Value &&
+            source.Operations()[c.Arg(0).Payload()].type == ir::Type::V128 &&
+            !allocation.homes[c.Arg(0).Payload()].spilled) {
+            src = Xmm(allocation.homes[c.Arg(0).Payload()].reg);
+        } else {
+            ReadVector(c.Arg(0), xmm1);
+        }
         const bool sign = c.Arg(3).Payload();
         if (from == 8 && to == 16) {
             if (sign)
-                pmovsxbw(xmm0, xmm1);
+                pmovsxbw(dst, src);
             else
-                pmovzxbw(xmm0, xmm1);
+                pmovzxbw(dst, src);
         } else if (from == 8 && to == 32) {
             if (sign)
-                pmovsxbd(xmm0, xmm1);
+                pmovsxbd(dst, src);
             else
-                pmovzxbd(xmm0, xmm1);
+                pmovzxbd(dst, src);
         } else if (from == 8 && to == 64) {
             if (sign)
-                pmovsxbq(xmm0, xmm1);
+                pmovsxbq(dst, src);
             else
-                pmovzxbq(xmm0, xmm1);
+                pmovzxbq(dst, src);
         } else if (from == 16 && to == 32) {
             if (sign)
-                pmovsxwd(xmm0, xmm1);
+                pmovsxwd(dst, src);
             else
-                pmovzxwd(xmm0, xmm1);
+                pmovzxwd(dst, src);
         } else if (from == 16 && to == 64) {
             if (sign)
-                pmovsxwq(xmm0, xmm1);
+                pmovsxwq(dst, src);
             else
-                pmovzxwq(xmm0, xmm1);
+                pmovzxwq(dst, src);
         } else {
             if (sign)
-                pmovsxdq(xmm0, xmm1);
+                pmovsxdq(dst, src);
             else
-                pmovzxdq(xmm0, xmm1);
+                pmovzxdq(dst, src);
         }
         return;
     }
@@ -670,54 +876,80 @@ namespace {
 void VShift(Writer& w, OpContext& c, bool left, bool arithmetic, bool imm) {
     unsigned n = c.Arg(2).Payload();
     if (n != 8 && n != 16 && n != 32 && n != 64) w.Reject(CompileError::UnsupportedOperand);
+    if (n == 8 && imm && !arithmetic) {
+        const auto& home = w.allocation.homes[c.node.value];
+        const Xmm dst = home.spilled ? w.xmm0 : Xmm(home.reg);
+        c.vector = dst;
+        const u64 raw = c.Arg(1).Payload();
+        if (raw >= 8) {
+            w.pxor(dst, dst);
+            return;
+        }
+        w.ReadVector(c.Arg(0), dst);
+        if (raw == 0) return;
+        const unsigned count = static_cast<unsigned>(raw);
+        const u64 byte_mask = left ? ((0xffu << count) & 0xffu) : (0xffu >> count);
+        if (left)
+            w.psllw(dst, count);
+        else
+            w.psrlw(dst, count);
+        w.mov(w.rax, u64{0x0101010101010101ULL} * byte_mask);
+        w.movq(w.xmm1, w.rax);
+        w.punpcklqdq(w.xmm1, w.xmm1);
+        w.pand(dst, w.xmm1);
+        return;
+    }
     if (n != 8 && (!arithmetic || n != 64) && (imm || w.View(c.Arg(1)) != ir::Type::V128)) {
-        w.ReadVector(c.Arg(0), w.xmm0);
+        const auto& home = w.allocation.homes[c.node.value];
+        const Xmm dst = home.spilled ? w.xmm0 : Xmm(home.reg);
+        c.vector = dst;
         if (!imm) {
             w.Read(c.Arg(1), w.rax);
             w.movq(w.xmm1, w.rax);
         }
+        w.ReadVector(c.Arg(0), dst);
         const unsigned count = imm ? std::min<u64>(c.Arg(1).Payload(), 255) : 0;
         if (imm) {
             if (left) {
                 if (n == 16)
-                    w.psllw(w.xmm0, count);
+                    w.psllw(dst, count);
                 else if (n == 32)
-                    w.pslld(w.xmm0, count);
+                    w.pslld(dst, count);
                 else
-                    w.psllq(w.xmm0, count);
+                    w.psllq(dst, count);
             } else if (arithmetic) {
                 if (n == 16)
-                    w.psraw(w.xmm0, count);
+                    w.psraw(dst, count);
                 else
-                    w.psrad(w.xmm0, count);
+                    w.psrad(dst, count);
             } else {
                 if (n == 16)
-                    w.psrlw(w.xmm0, count);
+                    w.psrlw(dst, count);
                 else if (n == 32)
-                    w.psrld(w.xmm0, count);
+                    w.psrld(dst, count);
                 else
-                    w.psrlq(w.xmm0, count);
+                    w.psrlq(dst, count);
             }
         } else {
             if (left) {
                 if (n == 16)
-                    w.psllw(w.xmm0, w.xmm1);
+                    w.psllw(dst, w.xmm1);
                 else if (n == 32)
-                    w.pslld(w.xmm0, w.xmm1);
+                    w.pslld(dst, w.xmm1);
                 else
-                    w.psllq(w.xmm0, w.xmm1);
+                    w.psllq(dst, w.xmm1);
             } else if (arithmetic) {
                 if (n == 16)
-                    w.psraw(w.xmm0, w.xmm1);
+                    w.psraw(dst, w.xmm1);
                 else
-                    w.psrad(w.xmm0, w.xmm1);
+                    w.psrad(dst, w.xmm1);
             } else {
                 if (n == 16)
-                    w.psrlw(w.xmm0, w.xmm1);
+                    w.psrlw(dst, w.xmm1);
                 else if (n == 32)
-                    w.psrld(w.xmm0, w.xmm1);
+                    w.psrld(dst, w.xmm1);
                 else
-                    w.psrlq(w.xmm0, w.xmm1);
+                    w.psrlq(dst, w.xmm1);
             }
         }
         return;
@@ -727,7 +959,7 @@ void VShift(Writer& w, OpContext& c, bool left, bool arithmetic, bool imm) {
         if (w.View(c.Arg(1)) == ir::Type::V128)
             w.ReadVector(c.Arg(1), w.xmm15);
         else
-            w.Read(c.Arg(1), w.rdi);
+            w.Read(c.Arg(1), w.r11);
     }
     w.pxor(w.xmm0, w.xmm0);
     for (unsigned i = 0; i < 128 / n; ++i) {
@@ -737,7 +969,7 @@ void VShift(Writer& w, OpContext& c, bool left, bool arithmetic, bool imm) {
         else if (w.View(c.Arg(1)) == ir::Type::V128)
             w.ExtractLane(w.xmm15, i, n, w.rcx);
         else
-            w.mov(w.rcx, w.rdi);
+            w.mov(w.rcx, w.r11);
         Label okay, done;
         w.cmp(w.rcx, n);
         w.jb(okay, w.T_NEAR);

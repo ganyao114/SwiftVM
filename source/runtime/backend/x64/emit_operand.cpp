@@ -75,11 +75,11 @@ void Writer::Read(CellView c, const Reg64& r, bool raw) {
     if (c.Kind() == OperandKind::Value) {
         const auto& h = allocation.homes[c.Payload()];
         if (h.spilled && h.uniform_offset != UINT32_MAX) {
-            Load(r,
-                 r12,
-                 h.uniform_offset,
-                 std::min(64u, TypeBits(source.Operations()[c.Payload()].type)));
-            if (!raw) Mask(r, std::min(64u, TypeBits(View(c))));
+            const auto natural_bits = std::min(64u, TypeBits(source.Operations()[c.Payload()].type));
+            const auto view_bits = std::min(64u, TypeBits(View(c)));
+            const auto load_bits = raw ? natural_bits : std::min(natural_bits, view_bits);
+            Load(r, r12, h.uniform_offset, load_bits >= 8 ? load_bits : 8);
+            if (!raw && load_bits < 8) Mask(r, load_bits);
             return;
         }
         if (source.Operations()[c.Payload()].type == ir::Type::V128) {
@@ -88,14 +88,29 @@ void Writer::Read(CellView c, const Reg64& r, bool raw) {
                     mov(r.cvt32(), dword[rsp + h.stack_offset]);
                 else
                     mov(r, qword[rsp + h.stack_offset]);
-            } else if (narrow)
-                movd(r.cvt32(), Xmm(h.reg));
-            else
-                movq(r, Xmm(h.reg));
+            } else if (narrow) {
+                if (options.avx)
+                    vmovd(r.cvt32(), Xmm(h.reg));
+                else
+                    movd(r.cvt32(), Xmm(h.reg));
+            } else {
+                if (options.avx)
+                    vmovq(r, Xmm(h.reg));
+                else
+                    movq(r, Xmm(h.reg));
+            }
         } else {
-            if (h.spilled || (in_call && (h.reg == 8 || h.reg == 9))) {
+            if (h.rematerialize) {
+                u64 imm = source.Operands(NodeId{u32(c.Payload())}).front().Payload();
+                const auto nbits = TypeBits(source.Operations()[c.Payload()].type);
+                if (nbits && nbits < 64) imm &= (u64{1} << nbits) - 1;
+                if (narrow)
+                    mov(r.cvt32(), u32(imm));
+                else
+                    mov(r, imm);
+            } else if (h.spilled || (in_call && h.reg >= 6 && h.reg <= 9)) {
                 const auto offset =
-                        h.spilled ? h.stack_offset : allocation.call_offset + 192 + (h.reg - 8) * 8;
+                        h.spilled ? h.stack_offset : allocation.call_offset + 192 + (h.reg - 6) * 8;
                 if (narrow)
                     mov(r.cvt32(), dword[rsp + offset]);
                 else
@@ -120,18 +135,76 @@ void Writer::Read(CellView c, const Reg64& r, bool raw) {
 }
 
 void Writer::ReadVector(CellView c, const Xmm& r) {
-    if (c.Kind() == OperandKind::Value && source.Operations()[c.Payload()].type == ir::Type::V128) {
+    if (c.Kind() == OperandKind::Value) {
+        const auto natural = source.Operations()[c.Payload()].type;
         const auto& h = allocation.homes[c.Payload()];
-        if (h.spilled && h.uniform_offset != UINT32_MAX)
-            movdqu(r, ptr[r12 + h.uniform_offset]);
-        else if (h.spilled)
-            movdqu(r, ptr[rsp + h.stack_offset]);
-        else if (r.getIdx() != h.reg)
-            movdqa(r, Xmm(h.reg));
-    } else {
-        Read(c, r10, true);
-        movq(r, r10);
+        if (natural == ir::Type::V128) {
+            if (r.getIdx() == 0 && xmm0_node == c.Payload()) return;
+            if (h.spilled && h.uniform_offset != UINT32_MAX) {
+                if (options.avx)
+                    vmovdqu(r, ptr[r12 + h.uniform_offset]);
+                else
+                    movdqu(r, ptr[r12 + h.uniform_offset]);
+            } else if (h.spilled) {
+                if (options.avx)
+                    vmovdqu(r, ptr[rsp + h.stack_offset]);
+                else
+                    movdqu(r, ptr[rsp + h.stack_offset]);
+            } else if (r.getIdx() != h.reg) {
+                if (options.avx)
+                    vmovdqa(r, Xmm(h.reg));
+                else
+                    movdqa(r, Xmm(h.reg));
+            }
+            if (r.getIdx() == 0) xmm0_node = static_cast<u32>(c.Payload());
+            return;
+        }
+        if (r.getIdx() == 0) xmm0_node = NodeId::invalid;
+        if (!h.rematerialize && (natural == ir::Type::U64 || natural == ir::Type::F64)) {
+            if (h.spilled && h.uniform_offset != UINT32_MAX) {
+                if (options.avx)
+                    vmovq(r, qword[r12 + h.uniform_offset]);
+                else
+                    movq(r, qword[r12 + h.uniform_offset]);
+            } else if (h.spilled || (in_call && h.reg >= 6 && h.reg <= 9)) {
+                const auto off =
+                        h.spilled ? h.stack_offset : allocation.call_offset + 192 + (h.reg - 6) * 8;
+                if (options.avx)
+                    vmovq(r, qword[rsp + off]);
+                else
+                    movq(r, qword[rsp + off]);
+            } else if (options.avx)
+                vmovq(r, Reg64(h.reg));
+            else
+                movq(r, Reg64(h.reg));
+            return;
+        }
+        if (!h.rematerialize && (natural == ir::Type::U32 || natural == ir::Type::F32)) {
+            if (h.spilled && h.uniform_offset != UINT32_MAX) {
+                if (options.avx)
+                    vmovd(r, dword[r12 + h.uniform_offset]);
+                else
+                    movd(r, dword[r12 + h.uniform_offset]);
+            } else if (h.spilled || (in_call && h.reg >= 6 && h.reg <= 9)) {
+                const auto off =
+                        h.spilled ? h.stack_offset : allocation.call_offset + 192 + (h.reg - 6) * 8;
+                if (options.avx)
+                    vmovd(r, dword[rsp + off]);
+                else
+                    movd(r, dword[rsp + off]);
+            } else if (options.avx)
+                vmovd(r, Reg32(h.reg));
+            else
+                movd(r, Reg32(h.reg));
+            return;
+        }
     }
+    if (r.getIdx() == 0) xmm0_node = NodeId::invalid;
+    Read(c, r10, true);
+    if (options.avx)
+        vmovq(r, r10);
+    else
+        movq(r, r10);
 }
 
 void Writer::Expression(CellRange::Iterator& at,
@@ -146,7 +219,7 @@ void Writer::Expression(CellRange::Iterator& at,
     }
     Expression(at, end, out, depth);
     if (c.Count() == 1) return;
-    constexpr std::array<unsigned, 5> temp{1, 2, 6, 10, 11};
+    constexpr std::array<unsigned, 4> temp{1, 2, 10, 11};
     while (depth < temp.size() && temp[depth] == unsigned(out.getIdx())) ++depth;
     if (depth >= temp.size()) Reject(CompileError::UnsupportedOperand);
     const Reg64 rhs(temp[depth]);
@@ -192,19 +265,44 @@ void Writer::Expression(CellRange::Iterator& at,
 }
 
 void Writer::Handle(Op<OpCode::LoadImm>, OpContext& c) {
+    if (allocation.homes[c.node.value].rematerialize) {
+        c.saved = true;
+        return;
+    }
+    const auto payload = c.Arg(0).Payload();
+    if (c.vector_result) {
+        if (payload == 0) {
+            if (options.avx)
+                vpxor(xmm0, xmm0, xmm0);
+            else
+                pxor(xmm0, xmm0);
+            return;
+        }
+        mov(rax, payload);
+        if (options.avx)
+            vmovq(xmm0, rax);
+        else
+            movq(xmm0, rax);
+        return;
+    }
     const auto destination = ScalarDestination(c);
-    if (!c.vector_result && c.width == 32) {
-        mov(destination.cvt32(), u32(c.Arg(0).Payload()));
+    if (payload == 0 && !(options.local_flags && flags.dirty && (flags.native || flags.floating))) {
+        xor_(destination.cvt32(), destination.cvt32());
+        c.scalar_normalized = true;
+    } else if (c.width == 32 || (c.width == 64 && payload <= UINT32_MAX)) {
+        mov(destination.cvt32(), u32(payload));
         c.scalar_normalized = true;
     } else
-        mov(destination, c.Arg(0).Payload());
-    if (c.vector_result) movq(xmm0, destination);
+        mov(destination, payload);
 }
 
 void Writer::Handle(Op<OpCode::Zero>, OpContext& c) {
-    if (c.vector_result)
-        pxor(xmm0, xmm0);
-    else {
+    if (c.vector_result) {
+        if (options.avx)
+            vpxor(xmm0, xmm0, xmm0);
+        else
+            pxor(xmm0, xmm0);
+    } else {
         const auto destination = ScalarDestination(c);
         xor_(destination.cvt32(), destination.cvt32());
         c.scalar_normalized = true;
@@ -212,9 +310,41 @@ void Writer::Handle(Op<OpCode::Zero>, OpContext& c) {
 }
 
 void Writer::Handle(Op<OpCode::BitCast>, OpContext& c) {
-    if (c.vector_result)
-        ReadVector(c.Arg(0), xmm0);
-    else
+    if (c.vector_result) {
+        const auto& home = allocation.homes[c.node.value];
+        const Xmm dst = (!home.spilled && !home.terminal_only) ? Xmm(home.reg) : xmm0;
+        c.vector = dst;
+        const auto arg = c.Arg(0);
+        if (arg.Kind() == OperandKind::Value) {
+            const auto load_id = static_cast<u32>(arg.Payload());
+            const auto& lop = source.Operations()[load_id];
+            if (allocation.homes[load_id].rematerialize &&
+                (lop.opcode == OpCode::LoadMemory || lop.opcode == OpCode::LoadMemoryTSO)) {
+                const auto ops = source.Operands(NodeId{load_id});
+                auto at = ops.begin();
+                Reg64 base = r11;
+                std::int32_t disp = 0;
+                MemoryAddress(at, ops.end(), base, disp);
+                if (dst.getIdx() == 0) xmm0_node = NodeId::invalid;
+                const auto bits = TypeBits(lop.type);
+                const auto first = static_cast<u32>(getSize());
+                if (bits == 64) {
+                    if (options.avx)
+                        vmovq(dst, qword[base + disp]);
+                    else
+                        movq(dst, qword[base + disp]);
+                } else {
+                    if (options.avx)
+                        vmovd(dst, dword[base + disp]);
+                    else
+                        movd(dst, dword[base + disp]);
+                }
+                RecordGuestAccess(first, 1, bits / 8);
+                return;
+            }
+        }
+        ReadVector(arg, dst);
+    } else
         Read(c.Arg(0), ScalarDestination(c), true);
 }
 
@@ -226,18 +356,26 @@ void Writer::Handle(Op<OpCode::GetOperand>, OpContext& c) {
 }
 
 void Writer::Handle(Op<OpCode::ZeroExtend32>, OpContext& c) {
-    Read(c.Arg(0), rax);
-    Mask(rax, 32);
+    const auto destination = ScalarDestination(c);
+    Read(c.Arg(0), destination);
+    if (TypeBits(View(c.Arg(0))) > 32) Mask(destination, 32);
+    c.scalar_normalized = true;
 }
 
 void Writer::Handle(Op<OpCode::ZeroExtend32To64>, OpContext& c) {
     Handle(Op<OpCode::ZeroExtend32>{}, c);
 }
 
-void Writer::Handle(Op<OpCode::ZeroExtend64>, OpContext& c) { Read(c.Arg(0), rax); }
+void Writer::Handle(Op<OpCode::ZeroExtend64>, OpContext& c) {
+    const auto destination = ScalarDestination(c);
+    Read(c.Arg(0), destination);
+    c.scalar_normalized = true;
+}
 
 void Writer::Handle(Op<OpCode::SignExtend>, OpContext& c) {
-    Read(c.Arg(0), rax);
-    Sign(rax, TypeBits(View(c.Arg(0))));
+    const auto destination = ScalarDestination(c);
+    Read(c.Arg(0), destination);
+    Sign(destination, TypeBits(View(c.Arg(0))));
+    c.scalar_normalized = c.width == 64;
 }
 }  // namespace swift::runtime::backend::x64::detail

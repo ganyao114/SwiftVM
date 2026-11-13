@@ -125,16 +125,31 @@ class UniformCache {
 public:
     void Clear() {
         Advance(valid_epoch);
-        Advance(pending_epoch);
+        Advance(scalar_pending_epoch);
+        Advance(vector_pending_epoch);
     }
 
-    const Operand* Find(std::uint32_t offset, std::uint32_t bytes, Type type) const {
+    struct UniformMatch {
+        const Operand* value{};
+        int v128_lane{-1};
+    };
+
+    UniformMatch Find(std::uint32_t offset, std::uint32_t bytes, Type type) const {
         const auto& entry = entries[(offset >> 3) & (capacity - 1)];
-        if (entry.valid_epoch != valid_epoch || entry.offset != offset) return nullptr;
-        if ((entry.bytes == bytes && entry.type == type) ||
-            (type == Type::U32 && bytes == 4 && entry.type == Type::U64 && entry.bytes == 8))
-            return &entry.value;
-        return nullptr;
+        if (entry.valid_epoch == valid_epoch && entry.offset == offset) {
+            if ((entry.bytes == bytes && entry.type == type) ||
+                (type == Type::U32 && bytes == 4 && entry.type == Type::U64 && entry.bytes == 8))
+                return {&entry.value, -1};
+            if (type == Type::U64 && bytes == 8 && entry.type == Type::V128 && entry.bytes == 16)
+                return {&entry.value, 0};
+        }
+        if (type == Type::U64 && bytes == 8 && offset >= 8) {
+            const auto& low = entries[((offset - 8) >> 3) & (capacity - 1)];
+            if (low.valid_epoch == valid_epoch && low.offset == offset - 8 &&
+                low.type == Type::V128 && low.bytes == 16)
+                return {&low.value, 1};
+        }
+        return {};
     }
 
     void Invalidate(std::uint32_t offset, std::uint32_t bytes) {
@@ -142,7 +157,12 @@ public:
               [&](UniformEntry& entry) { entry.valid_epoch = entry.pending_epoch = 0; });
     }
 
-    void ClearPending() { Advance(pending_epoch); }
+    void ClearPending() {
+        Advance(scalar_pending_epoch);
+        Advance(vector_pending_epoch);
+    }
+
+    void ClearScalarPending() { Advance(scalar_pending_epoch); }
 
     void Observe(UniformRange range) {
         Visit(range, [](UniformEntry& entry) { entry.pending_epoch = 0; });
@@ -151,7 +171,7 @@ public:
     unsigned Cover(UniformRange range, std::array<NodeId, 8>& stores) {
         unsigned count{};
         Visit(range, [&](UniformEntry& entry) {
-            if (entry.pending_epoch == pending_epoch && range.offset <= entry.offset &&
+            if (entry.pending_epoch == PendingEpoch(entry.bytes) && range.offset <= entry.offset &&
                 std::uint64_t{range.offset} + range.bytes >=
                         std::uint64_t{entry.offset} + entry.bytes)
                 stores[count++] = entry.store;
@@ -167,8 +187,10 @@ public:
              NodeId store = {},
              bool cacheable = true) {
         auto& entry = entries[(offset >> 3) & (capacity - 1)];
+        const auto target_pending = PendingEpoch(bytes);
         const bool same = entry.offset == offset && entry.bytes == bytes && entry.type == type;
-        const auto previous = same && entry.pending_epoch == pending_epoch ? entry.store : NodeId{};
+        const auto previous =
+                same && entry.pending_epoch == target_pending ? entry.store : NodeId{};
         Invalidate(offset, bytes);
         entry = {offset,
                  bytes,
@@ -176,18 +198,22 @@ public:
                  value,
                  store ? store : previous,
                  cacheable ? valid_epoch : 0,
-                 store || previous ? pending_epoch : 0};
+                 store || previous ? target_pending : 0};
     }
 
 private:
     static constexpr unsigned capacity = 128;
     std::array<UniformEntry, capacity> entries{};
-    std::uint64_t valid_epoch{1}, pending_epoch{1};
+    std::uint64_t valid_epoch{1}, scalar_pending_epoch{1}, vector_pending_epoch{1};
+
+    std::uint64_t PendingEpoch(std::uint32_t bytes) const {
+        return bytes > 8 ? vector_pending_epoch : scalar_pending_epoch;
+    }
 
     void Advance(std::uint64_t& epoch) {
         if (++epoch) return;
         entries = {};
-        valid_epoch = pending_epoch = 1;
+        valid_epoch = scalar_pending_epoch = vector_pending_epoch = 1;
     }
 
     template <class F> void Visit(UniformRange range, F visit) {
@@ -200,7 +226,8 @@ private:
         const auto count = std::min<std::uint64_t>(capacity, last - first + 1);
         for (unsigned i = 0; i < count; ++i) {
             auto& entry = entries[(first + i) & (capacity - 1)];
-            if ((entry.valid_epoch == valid_epoch || entry.pending_epoch == pending_epoch) &&
+            if ((entry.valid_epoch == valid_epoch ||
+                 entry.pending_epoch == PendingEpoch(entry.bytes)) &&
                 Overlaps(range, {entry.offset, entry.bytes}))
                 visit(entry);
         }
@@ -211,6 +238,121 @@ std::uint32_t CachedBytes(Type type) {
     return type == Type::U32 || type == Type::U64 || type == Type::V128 ? TypeBits(type) / 8 : 0;
 }
 
+struct ReadableSpan {
+    NodeId base{};
+    std::uint32_t min_offset{}, max_end{};
+};
+
+class ReadableSpanCache {
+public:
+    void Clear() {
+        spans = {};
+        next_slot = 0;
+    }
+
+    bool CheckAndRecord(NodeId base, std::uint32_t offset, std::uint32_t bytes) {
+        if (!base || !bytes || offset > 4096u - bytes) return false;
+        const std::uint32_t end = offset + bytes;
+        for (auto& span : spans) {
+            if (span.base == base) {
+                if (span.min_offset <= offset && end <= span.max_end) return true;
+                span.min_offset = std::min(span.min_offset, offset);
+                span.max_end = std::max(span.max_end, end);
+                return false;
+            }
+        }
+        spans[next_slot] = {base, offset, end};
+        next_slot = (next_slot + 1) & (spans.size() - 1);
+        return false;
+    }
+
+private:
+    std::array<ReadableSpan, 4> spans{};
+    unsigned next_slot{};
+};
+
+bool DecodeLoadMemorySpan(const Builder& editor,
+                          std::span<const Operation> operations,
+                          NodeId id,
+                          const Operation& op,
+                          NodeId& base,
+                          std::uint32_t& offset,
+                          std::uint32_t& bytes) {
+    if (op.opcode != OpCode::LoadMemory || Metadata(op)) return false;
+    bytes = (TypeBits(op.type) + 7) / 8;
+    if (!bytes || bytes > 4096u) return false;
+    const auto unwrap_u64 = [&](std::uint32_t node_id) -> std::uint32_t {
+        const auto& candidate = operations[node_id];
+        if ((candidate.opcode == OpCode::ZeroExtend64 || candidate.opcode == OpCode::BitCast) &&
+            candidate.type == Type::U64 && !Metadata(candidate)) {
+            const auto inner = editor.Operands(NodeId{node_id});
+            auto it = inner.begin();
+            if (it != inner.end()) {
+                const auto src = *it++;
+                if (it == inner.end() && src.Kind() == OperandKind::Value &&
+                    (src.TypeView() == Type::Void || src.TypeView() == Type::U64) &&
+                    operations[src.Payload()].type == Type::U64) {
+                    return static_cast<std::uint32_t>(src.Payload());
+                }
+            }
+        }
+        return node_id;
+    };
+    const auto inputs = editor.Operands(id);
+    auto at = inputs.begin();
+    if (at == inputs.end()) return false;
+    const auto first = *at++;
+    if (first.Kind() == OperandKind::Value && at == inputs.end()) {
+        if (first.TypeView() != Type::Void && first.TypeView() != Type::U64) return false;
+        const auto addr_id = unwrap_u64(static_cast<std::uint32_t>(first.Payload()));
+        const auto& addr_op = operations[addr_id];
+        if (addr_op.type != Type::U64) return false;
+        if (addr_op.opcode == OpCode::Add && !Metadata(addr_op)) {
+            const auto addr_in = editor.Operands(NodeId{addr_id});
+            auto a_it = addr_in.begin();
+            if (a_it != addr_in.end()) {
+                const auto lhs = *a_it++;
+                if (a_it != addr_in.end()) {
+                    const auto rhs = *a_it++;
+                    if (a_it == addr_in.end() && lhs.Kind() == OperandKind::Value &&
+                        (lhs.TypeView() == Type::Void || lhs.TypeView() == Type::U64) &&
+                        rhs.Kind() == OperandKind::Immediate && Scalar(rhs.TypeView())) {
+                        const auto base_id = unwrap_u64(static_cast<std::uint32_t>(lhs.Payload()));
+                        const auto imm = rhs.Payload() & Mask(TypeBits(rhs.TypeView()));
+                        if (operations[base_id].type == Type::U64 && imm <= 4096u - bytes) {
+                            base = NodeId{base_id};
+                            offset = static_cast<std::uint32_t>(imm);
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        base = NodeId{addr_id};
+        offset = 0;
+        return true;
+    }
+    if (first.Kind() == OperandKind::Expression && first.ExpressionOp() == OperandOp::Add &&
+        first.Count() == 2 && !first.ShiftAmount() && at != inputs.end()) {
+        const auto lhs = *at++;
+        if (at != inputs.end()) {
+            const auto rhs = *at++;
+            if (at == inputs.end() && lhs.Kind() == OperandKind::Value &&
+                (lhs.TypeView() == Type::Void || lhs.TypeView() == Type::U64) &&
+                rhs.Kind() == OperandKind::Immediate && Scalar(rhs.TypeView())) {
+                const auto base_id = unwrap_u64(static_cast<std::uint32_t>(lhs.Payload()));
+                const auto imm = rhs.Payload() & Mask(TypeBits(rhs.TypeView()));
+                if (operations[base_id].type == Type::U64 && imm <= 4096u - bytes) {
+                    base = NodeId{base_id};
+                    offset = static_cast<std::uint32_t>(imm);
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 }  // namespace
 
 Error RewriteValues(Context& context) {
@@ -219,12 +361,14 @@ Error RewriteValues(Context& context) {
     auto& stats = context.stats;
     const auto& policy = context.policy;
     const auto signed_mul_widen_low = context.signed_mul_widen_low;
+    const auto fault_locations = context.fault_locations;
     auto& needs_final_cleanup = context.needs_final_cleanup;
     const auto operations = editor.Operations();
     const auto unit = editor.UnitId();
     // 2. Each live operation is considered once. Read current constants,
     // one copy edge or a neighboring extract, without a value cache.
     UniformCache uniforms;
+    ReadableSpanCache readable_spans;
     BlockId block{};
     std::array<NodeId, 2> recent_operands{};
     std::uint8_t next_operand_slot{};
@@ -238,6 +382,7 @@ Error RewriteValues(Context& context) {
         const auto op = operations[at];
         if (op.block != block) {
             uniforms.Clear();
+            readable_spans.Clear();
             recent_operands = {};
             next_operand_slot = 0;
             block = op.block;
@@ -249,6 +394,8 @@ Error RewriteValues(Context& context) {
         }
         const auto meta = op.Metadata();
         const auto effects = EffectsFor(op.opcode, meta);
+        if (HasAnyEffect(effects, Effect::Unknown | Effect::External | Effect::Control))
+            readable_spans.Clear();
         // Value forwarding can survive a disjoint faulting read. A pending
         // store must be committed at every possible architectural observer.
         const bool independent_memory =
@@ -274,9 +421,21 @@ Error RewriteValues(Context& context) {
                     uniforms.Observe(field.range);
             }
         }
-        if (HasAnyEffect(effects, Effect::MayFault | Effect::Ordered) ||
+        bool proven_non_faulting_load = false;
+        if (fault_locations && policy.guest_memory_disjoint && (rows[at] & live_bit) &&
+            !HasAnyEffect(effects, Effect::Ordered | Effect::WriteMemory)) {
+            NodeId load_base{};
+            std::uint32_t load_offset{}, load_bytes{};
+            if (DecodeLoadMemorySpan(
+                        editor, operations, id, op, load_base, load_offset, load_bytes))
+                proven_non_faulting_load =
+                        readable_spans.CheckAndRecord(load_base, load_offset, load_bytes);
+        }
+        if ((!proven_non_faulting_load && HasAnyEffect(effects, Effect::MayFault | Effect::Ordered)) ||
             (!policy.guest_memory_disjoint && HasAnyEffect(effects, Effect::ReadMemory)))
             uniforms.ClearPending();
+        else if (proven_non_faulting_load)
+            uniforms.ClearScalarPending();
         if (!(rows[at] & live_bit)) continue;
         // These records have no rewritable value inputs or fold to do.
         // Effects above still apply; no decoded Operand draft is needed.
@@ -292,8 +451,13 @@ Error RewriteValues(Context& context) {
         if (!editable && op.opcode != OpCode::LoadUniform && op.opcode != OpCode::StoreUniform)
             continue;
         bool folding = editable && !has_metadata && Foldable(op);
-        const bool vector_draft = editable && !has_metadata && signed_mul_widen_low &&
-                                  op.opcode == OpCode::VecMadd16 && op.type == Type::V128;
+        const bool vector_identity =
+                editable && !has_metadata && op.type == Type::V128 &&
+                (op.opcode == OpCode::VecOr || op.opcode == OpCode::VecAnd ||
+                 op.opcode == OpCode::VecXor);
+        const bool vector_draft = vector_identity ||
+                                  (editable && !has_metadata && signed_mul_widen_low &&
+                                   op.opcode == OpCode::VecMadd16 && op.type == Type::V128);
         const bool address_draft =
                 editable && !has_metadata &&
                 ((op.opcode == OpCode::LoadMemoryTSO && op.operand_count == 1 && Scalar(op.type)) ||
@@ -391,11 +555,18 @@ Error RewriteValues(Context& context) {
             if (!has_metadata && op.opcode == OpCode::LoadUniform && count == 1 &&
                 uniform.kind == OperandKind::Uniform && uniform.type == op.type &&
                 CachedBytes(op.type)) {
-                if (const auto* previous =
-                            uniforms.Find(static_cast<std::uint32_t>(uniform.payload),
-                                          CachedBytes(op.type),
-                                          op.type)) {
-                    cells[0] = *previous;
+                const auto previous = uniforms.Find(
+                        static_cast<std::uint32_t>(uniform.payload), CachedBytes(op.type), op.type);
+                if (previous.value && previous.v128_lane >= 0) {
+                    cells[0] = *previous.value;
+                    cells[1] = Operand::Immediate(
+                            static_cast<std::uint64_t>(previous.v128_lane), Type::U32);
+                    opcode = OpCode::VecExtract64;
+                    new_count = 2;
+                    uniform_forward = true;
+                    folding = Scalar(op.type);
+                } else if (previous.value) {
+                    cells[0] = *previous.value;
                     opcode = op.type == Type::V128  ? OpCode::BitCast
                              : op.type == Type::U32 ? OpCode::ZeroExtend32
                                                     : OpCode::ZeroExtend64;
@@ -405,14 +576,16 @@ Error RewriteValues(Context& context) {
             }
             const bool combined =
                     !operand_forward &&
-                    ((folding &&
+                    ((vector_identity &&
+                      FoldIdentity(editor, operations, op, cells, new_count, opcode)) ||
+                     (folding &&
                       (FoldIdentity(editor, operations, op, cells, new_count, opcode) ||
                        (opcode == OpCode::BitInsert &&
                         FoldLowByteMask(editor, operations, id, cells, new_count, opcode)) ||
                        ((opcode == OpCode::BitExtract || opcode == OpCode::LsrImm) &&
                         FoldExtractShift(
                                 editor, operations, id, rows, cells, new_count, opcode)))) ||
-                     (vector_draft &&
+                     (vector_draft && !vector_identity &&
                       FuseSignedMulWidenLow(
                               editor, operations, id, rows, cells, new_count, opcode)) ||
                      (address_draft &&
@@ -455,10 +628,11 @@ Error RewriteValues(Context& context) {
                 continue;
             }
             if (!has_metadata && !(rows[at] & pin_bit)) {
-                const auto* previous = uniforms.Find(
+                const auto previous = uniforms.Find(
                         static_cast<std::uint32_t>(uniform.payload), bytes, uniform.type);
                 Constant old_bits, new_bits;
-                if (previous && ReadConstant(editor, operations, *previous, old_bits) &&
+                if (previous.value && previous.v128_lane < 0 &&
+                    ReadConstant(editor, operations, *previous.value, old_bits) &&
                     ReadConstant(editor, operations, cells[1], new_bits) &&
                     (old_bits.bits & Mask(TypeBits(uniform.type))) ==
                             (new_bits.bits & Mask(TypeBits(uniform.type)))) {
@@ -509,18 +683,14 @@ Error RewriteValues(Context& context) {
         } else if (op.opcode == OpCode::LoadUniform && count == 1 &&
                    uniform.kind == OperandKind::Uniform && uniform.type == op.type &&
                    CachedBytes(op.type)) {
-            // A forwarded read still denotes the cached logical value.
-            // Keep its actual source/view, rather than build a chain of
-            // normalization wrappers for successive reads of one slot.
-            if (!uniform_forward)
+            if (!uniform_forward) {
                 uniforms.Observe(
                         {static_cast<std::uint32_t>(uniform.payload), CachedBytes(op.type)});
-            uniforms.Add(static_cast<std::uint32_t>(uniform.payload),
-                         CachedBytes(op.type),
-                         op.type,
-                         uniform_forward && opcode != OpCode::LoadImm
-                                 ? cells[0]
-                                 : Operand::ValueOf({unit, id}, op.type));
+                uniforms.Add(static_cast<std::uint32_t>(uniform.payload),
+                             CachedBytes(op.type),
+                             op.type,
+                             Operand::ValueOf({unit, id}, op.type));
+            }
         } else if (op.opcode == OpCode::LoadUniform && uniform.kind == OperandKind::Uniform) {
             uniforms.Observe({static_cast<std::uint32_t>(uniform.payload),
                               (TypeBits(uniform.type) + 7) / 8});

@@ -263,6 +263,8 @@ void Writer::Terminal(const StoredTerminal& t) {
         flags.native = false;
         if (home.spilled && home.uniform_offset != UINT32_MAX)
             Load(rax, r12, home.uniform_offset, TypeBits(operation.type));
+        else if (home.rematerialize)
+            mov(rax, source.Operands(t.value).front().Payload());
         else if (home.spilled)
             mov(rax, qword[rsp + home.stack_offset]);
         else
@@ -281,7 +283,10 @@ void Writer::Terminal(const StoredTerminal& t) {
             const auto& h = allocation.homes[t.value.value];
             if (h.spilled && h.uniform_offset != UINT32_MAX)
                 Load(rax, r12, h.uniform_offset, TypeBits(source.Operations()[t.value.value].type));
-            else if (h.spilled)
+            else if (h.rematerialize) {
+                mov(rax, source.Operands(t.value).front().Payload());
+                Mask(rax, TypeBits(source.Operations()[t.value.value].type));
+            } else if (h.spilled)
                 mov(rax, qword[rsp + h.stack_offset]);
             else
                 mov(rax, Reg64(h.reg));
@@ -327,11 +332,18 @@ void Writer::WriteResult(OpContext& c) {
     if (c.saved || c.operation.type == ir::Type::Void) return;
     const auto& h = allocation.homes[c.node.value];
     if (h.terminal_only) return;
+    if (c.vector_result && c.vector.getIdx() == 0) {
+        xmm0_node = c.node.value;
+        kept_xmm0 = true;
+    }
     if (h.spilled && h.uniform_offset != UINT32_MAX) {
         if (h.uniform_store_bytes) {
-            if (c.vector_result)
-                movdqu(ptr[r12 + h.uniform_offset], c.vector);
-            else {
+            if (c.vector_result) {
+                if (options.avx)
+                    vmovdqu(ptr[r12 + h.uniform_offset], c.vector);
+                else
+                    movdqu(ptr[r12 + h.uniform_offset], c.vector);
+            } else {
                 if (!c.scalar_normalized) Mask(c.destination, std::min(64u, c.width));
                 Store(c.destination, r12, h.uniform_offset, h.uniform_store_bytes * 8);
             }
@@ -339,10 +351,17 @@ void Writer::WriteResult(OpContext& c) {
         return;
     }
     if (c.vector_result) {
-        if (h.spilled)
-            movdqu(ptr[rsp + h.stack_offset], c.vector);
-        else if (c.vector.getIdx() != h.reg)
-            movdqa(Xmm(h.reg), c.vector);
+        if (h.spilled) {
+            if (options.avx)
+                vmovdqu(ptr[rsp + h.stack_offset], c.vector);
+            else
+                movdqu(ptr[rsp + h.stack_offset], c.vector);
+        } else if (c.vector.getIdx() != h.reg) {
+            if (options.avx)
+                vmovdqa(Xmm(h.reg), c.vector);
+            else
+                movdqa(Xmm(h.reg), c.vector);
+        }
         if (!h.spilled) vector_residents[h.reg] = c.node.value;
     } else {
         if (!c.scalar_normalized && c.width == 32 && !h.spilled)
@@ -415,6 +434,9 @@ void Writer::Run() {
         terminated = false;
         const auto& body = source.Blocks()[b];
         condition_saved = false;
+        xmm15_fp_const = -1;
+        xmm0_node = NodeId::invalid;
+        xmm1_bcast_node = NodeId::invalid;
         flags = {options.local_flags && allocation.flags_input[b] != 0,
                  options.local_flags && allocation.native_entry[b],
                  options.local_flags && allocation.flags_input[b] != 0 &&
@@ -433,6 +455,9 @@ void Writer::Run() {
                 if (!Linked()) Reject(CompileError::UnsupportedControlFlow);
                 const auto entry_pc = source.Operands(current).front().Payload();
                 if (entry_pc == options.entry_pc) continue;
+                xmm15_fp_const = -1;
+                xmm0_node = NodeId::invalid;
+                xmm1_bcast_node = NodeId::invalid;
                 output.entries.push_back({entry_pc, 0});
                 extra.push_back({unsigned(output.entries.size() - 1), b});
                 continue;
@@ -447,11 +472,60 @@ void Writer::Run() {
             c.destination = rax;
             c.vector = xmm0;
             fault_committed_flags = false;
+            kept_xmm15_fp_const = false;
+            kept_xmm1_bcast = false;
+            const bool scalar_or_mem_safe =
+                    op.opcode == OpCode::Nop || op.opcode == OpCode::SetLocation ||
+                    op.opcode == OpCode::AdvancePC || op.opcode == OpCode::InvertCarry ||
+                    op.opcode == OpCode::SetCarry || op.opcode == OpCode::ClearFlags ||
+                    op.opcode == OpCode::LoadUniform || op.opcode == OpCode::StoreUniform ||
+                    op.opcode == OpCode::LoadMemory || op.opcode == OpCode::LoadMemoryTSO ||
+                    op.opcode == OpCode::StoreMemory || op.opcode == OpCode::StoreMemoryTSO ||
+                    op.opcode == OpCode::LoadImm || op.opcode == OpCode::Zero ||
+                    op.opcode == OpCode::VecSharedZero || op.opcode == OpCode::VecLoadConst ||
+                    op.opcode == OpCode::BitCast || op.opcode == OpCode::GetResult ||
+                    op.opcode == OpCode::VecDup64 ||
+                    (op.opcode == OpCode::VecExtract64 && (options.avx || options.sse41)) ||
+                    op.opcode == OpCode::GuestSafepoint ||
+                    op.opcode == OpCode::GuestDispatchSafepoint ||
+                    op.opcode == OpCode::Add || op.opcode == OpCode::Sub ||
+                    op.opcode == OpCode::Mul || op.opcode == OpCode::And ||
+                    op.opcode == OpCode::Or || op.opcode == OpCode::Xor ||
+                    op.opcode == OpCode::LslImm || op.opcode == OpCode::LsrImm ||
+                    op.opcode == OpCode::AsrImm || op.opcode == OpCode::RorImm ||
+                    op.opcode == OpCode::ZeroExtend32 || op.opcode == OpCode::ZeroExtend32To64 ||
+                    op.opcode == OpCode::ZeroExtend64 || op.opcode == OpCode::SignExtend ||
+                    op.opcode == OpCode::CondSet || op.opcode == OpCode::LocalCondSet;
+            kept_xmm0 = op.opcode == OpCode::Nop || op.opcode == OpCode::SetLocation ||
+                        op.opcode == OpCode::AdvancePC || op.opcode == OpCode::InvertCarry ||
+                        op.opcode == OpCode::SetCarry || op.opcode == OpCode::ClearFlags ||
+                        op.opcode == OpCode::StoreUniform || op.opcode == OpCode::StoreMemory ||
+                        op.opcode == OpCode::StoreMemoryTSO ||
+                        (!c.vector_result &&
+                         (op.opcode == OpCode::LoadImm || op.opcode == OpCode::Zero ||
+                          op.opcode == OpCode::Add || op.opcode == OpCode::Sub ||
+                          op.opcode == OpCode::Mul || op.opcode == OpCode::And ||
+                          op.opcode == OpCode::Or || op.opcode == OpCode::Xor ||
+                          op.opcode == OpCode::LslImm || op.opcode == OpCode::LsrImm ||
+                          op.opcode == OpCode::AsrImm || op.opcode == OpCode::RorImm ||
+                          op.opcode == OpCode::ZeroExtend32 ||
+                          op.opcode == OpCode::ZeroExtend32To64 ||
+                          op.opcode == OpCode::ZeroExtend64 || op.opcode == OpCode::SignExtend ||
+                          op.opcode == OpCode::CondSet || op.opcode == OpCode::LocalCondSet));
             if (allocation.homes[i].terminal_only) continue;
             PrepareArmFPRegion(c);
             PrepareFlags(c);
             Dispatch(c);
             WriteResult(c);
+            if (!kept_xmm15_fp_const && !scalar_or_mem_safe) xmm15_fp_const = -1;
+            if (!kept_xmm1_bcast && !scalar_or_mem_safe) xmm1_bcast_node = NodeId::invalid;
+            if (xmm1_bcast_node != NodeId::invalid &&
+                allocation.homes[xmm1_bcast_node].last_use <= allocation.homes[i].definition_position)
+                xmm1_bcast_node = NodeId::invalid;
+            if (!kept_xmm0 ||
+                (xmm0_node != NodeId::invalid &&
+                 allocation.homes[xmm0_node].last_use <= allocation.homes[i].definition_position))
+                xmm0_node = NodeId::invalid;
             if (op.flag_outputs && op.opcode != OpCode::Add && op.opcode != OpCode::Sub &&
                 op.opcode != OpCode::Adc && op.opcode != OpCode::Sbb && op.opcode != OpCode::Neg &&
                 op.opcode != OpCode::And && op.opcode != OpCode::Or && op.opcode != OpCode::Xor &&
@@ -460,6 +534,9 @@ void Writer::Run() {
         }
         if (!terminated) Terminal(body.terminal);
     }
+    xmm15_fp_const = -1;
+    xmm0_node = NodeId::invalid;
+    xmm1_bcast_node = NodeId::invalid;
     EmitColdPaths();
     for (auto [index, b] : extra) {
         align(16);

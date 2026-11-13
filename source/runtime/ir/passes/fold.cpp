@@ -273,41 +273,172 @@ bool FoldIdentity(const Builder& editor,
                   std::span<Operand> cells,
                   std::size_t& count,
                   OpCode& opcode) {
-    if (count != 2 || Metadata(op) || !Scalar(op.type)) return false;
-    Constant right;
-    if (!ReadConstant(editor, operations, cells[1], right)) return false;
-    if (opcode == OpCode::And && !right.bits) {
-        opcode = OpCode::LoadImm;
-        cells[0] = Operand::Immediate(0, op.type);
-        count = 1;
-        return true;
-    }
-    if ((op.type != Type::U32 && op.type != Type::U64) || ReadType(cells[0], operations) != op.type)
+    if (count != 2 || Metadata(op)) return false;
+    if (op.type == Type::V128) {
+        if ((opcode != OpCode::VecOr && opcode != OpCode::VecAnd && opcode != OpCode::VecXor) ||
+            cells[0].kind != OperandKind::Value || cells[1].kind != OperandKind::Value ||
+            ReadType(cells[0], operations) != Type::V128 ||
+            ReadType(cells[1], operations) != Type::V128)
+            return false;
+        const bool left_zero =
+                operations[static_cast<std::size_t>(cells[0].payload)].opcode == OpCode::VecSharedZero;
+        const bool right_zero =
+                operations[static_cast<std::size_t>(cells[1].payload)].opcode == OpCode::VecSharedZero;
+        if (cells[0].payload == cells[1].payload) {
+            if (opcode == OpCode::VecXor) {
+                opcode = OpCode::VecSharedZero;
+                count = 0;
+            } else {
+                cells[0].type = Type::V128;
+                opcode = OpCode::BitCast;
+                count = 1;
+            }
+            return true;
+        }
+        if (left_zero || right_zero) {
+            if (opcode == OpCode::VecAnd) {
+                opcode = OpCode::VecSharedZero;
+                count = 0;
+            } else {
+                cells[0] = left_zero ? cells[1] : cells[0];
+                cells[0].type = Type::V128;
+                opcode = OpCode::BitCast;
+                count = 1;
+            }
+            return true;
+        }
         return false;
-    bool identity{};
-    switch (opcode) {
-        case OpCode::Add:
-        case OpCode::Sub:
-        case OpCode::Or:
-        case OpCode::Xor:
-            identity = !right.bits;
-            break;
-        case OpCode::And:
-            identity = right.bits == Mask(TypeBits(op.type));
-            break;
-        case OpCode::LslImm:
-        case OpCode::LsrImm:
-        case OpCode::AsrImm:
-        case OpCode::RorImm:
-            identity = !(right.bits & (TypeBits(op.type) - 1));
-            break;
-        default:
-            break;
     }
-    if (!identity) return false;
-    opcode = op.type == Type::U32 ? OpCode::ZeroExtend32 : OpCode::ZeroExtend64;
-    count = 1;
-    return true;
+    if (!Scalar(op.type)) return false;
+    if (opcode == OpCode::VecExtract64 && op.type == Type::U64 &&
+        cells[0].kind == OperandKind::Value && cells[1].kind == OperandKind::Immediate &&
+        cells[1].payload <= 1) {
+        const auto& src = operations[static_cast<std::size_t>(cells[0].payload)];
+        if (src.opcode == OpCode::VecSharedZero) {
+            opcode = OpCode::LoadImm;
+            cells[0] = Operand::Immediate(0, Type::U64);
+            count = 1;
+            return true;
+        }
+        if (src.opcode == OpCode::VecLoadConst) {
+            auto in = editor.Operands(NodeId{static_cast<std::uint32_t>(cells[0].payload)}).begin();
+            if (cells[1].payload == 1) ++in;
+            opcode = OpCode::LoadImm;
+            cells[0] = Operand::Immediate((*in).Payload(), Type::U64);
+            count = 1;
+            return true;
+        }
+    }
+    if (cells[0].kind == OperandKind::Value && cells[1].kind == OperandKind::Value &&
+        cells[0].payload == cells[1].payload && ReadType(cells[0], operations) == op.type &&
+        ReadType(cells[1], operations) == op.type) {
+        if (opcode == OpCode::Xor || opcode == OpCode::Sub) {
+            opcode = OpCode::LoadImm;
+            cells[0] = Operand::Immediate(0, op.type);
+            count = 1;
+            return true;
+        }
+        if ((opcode == OpCode::Or || opcode == OpCode::And) &&
+            (op.type == Type::U32 || op.type == Type::U64)) {
+            opcode = op.type == Type::U32 ? OpCode::ZeroExtend32 : OpCode::ZeroExtend64;
+            count = 1;
+            return true;
+        }
+    }
+    Constant left, right;
+    const bool has_left = ReadConstant(editor, operations, cells[0], left);
+    const bool has_right = ReadConstant(editor, operations, cells[1], right);
+    if (has_left && has_right) return false;
+    const auto fits_imm32 = [&](u64 bits) {
+        return op.type == Type::U32 || bits == u64(std::int64_t(std::int32_t(bits)));
+    };
+    if (has_right) {
+        if ((opcode == OpCode::And || opcode == OpCode::Mul) && !right.bits) {
+            opcode = OpCode::LoadImm;
+            cells[0] = Operand::Immediate(0, op.type);
+            count = 1;
+            return true;
+        }
+        if ((op.type != Type::U32 && op.type != Type::U64) ||
+            ReadType(cells[0], operations) != op.type)
+            return false;
+        bool identity{};
+        switch (opcode) {
+            case OpCode::Add:
+            case OpCode::Sub:
+            case OpCode::Or:
+            case OpCode::Xor:
+                identity = !right.bits;
+                break;
+            case OpCode::Mul:
+                identity = right.bits == 1 && right.type == op.type;
+                break;
+            case OpCode::And:
+                identity = right.bits == Mask(TypeBits(op.type));
+                break;
+            case OpCode::LslImm:
+            case OpCode::LsrImm:
+            case OpCode::AsrImm:
+            case OpCode::RorImm:
+                identity = !(right.bits & (TypeBits(op.type) - 1));
+                break;
+            default:
+                break;
+        }
+        if (identity) {
+            opcode = op.type == Type::U32 ? OpCode::ZeroExtend32 : OpCode::ZeroExtend64;
+            count = 1;
+            return true;
+        }
+        if (cells[0].kind == OperandKind::Value && cells[1].kind == OperandKind::Value &&
+            right.type == op.type && fits_imm32(right.bits) &&
+            (opcode == OpCode::Add || opcode == OpCode::Sub || opcode == OpCode::Mul ||
+             opcode == OpCode::And || opcode == OpCode::Or || opcode == OpCode::Xor)) {
+            cells[1] = Operand::Immediate(right.bits, op.type);
+            return true;
+        }
+        return false;
+    }
+    if (has_left) {
+        if ((opcode == OpCode::And || opcode == OpCode::Mul) && !left.bits) {
+            opcode = OpCode::LoadImm;
+            cells[0] = Operand::Immediate(0, op.type);
+            count = 1;
+            return true;
+        }
+        if ((op.type != Type::U32 && op.type != Type::U64) ||
+            cells[1].kind != OperandKind::Value || ReadType(cells[1], operations) != op.type)
+            return false;
+        bool identity{};
+        switch (opcode) {
+            case OpCode::Add:
+            case OpCode::Xor:
+                identity = !left.bits;
+                break;
+            case OpCode::Mul:
+                identity = left.bits == 1 && left.type == op.type;
+                break;
+            case OpCode::And:
+                identity = left.bits == Mask(TypeBits(op.type));
+                break;
+            default:
+                break;
+        }
+        if (identity) {
+            cells[0] = cells[1];
+            opcode = op.type == Type::U32 ? OpCode::ZeroExtend32 : OpCode::ZeroExtend64;
+            count = 1;
+            return true;
+        }
+        if (left.type == op.type && fits_imm32(left.bits) && left.bits != 0 &&
+            (opcode == OpCode::Add || opcode == OpCode::Mul || opcode == OpCode::And ||
+             opcode == OpCode::Or || opcode == OpCode::Xor)) {
+            cells[0] = cells[1];
+            cells[1] = Operand::Immediate(left.bits, op.type);
+            return true;
+        }
+    }
+    return false;
 }
 
 bool Fold(const Builder& editor,
@@ -317,7 +448,7 @@ bool Fold(const Builder& editor,
           u64& result) {
     const auto bits = TypeBits(op.type);
     const auto mask = Mask(bits);
-    Constant first, second, third;
+    Constant first, second, third, fourth;
     if (op.opcode == OpCode::Zero && cells.empty()) {
         result = 0;
         return true;
@@ -410,6 +541,22 @@ bool Fold(const Builder& editor,
         const auto width = TypeBits(first.type);
         if (second.bits >= width || !third.bits || third.bits > width - second.bits) return false;
         result = (first.bits >> second.bits) & Mask(static_cast<unsigned>(third.bits));
+    } else if (op.opcode == OpCode::BitInsert && cells.size() == 4 &&
+               (cells[0].kind != OperandKind::Value ||
+                first.type == operations[static_cast<std::size_t>(cells[0].payload)].type) &&
+               ReadConstant(editor, operations, cells[1], second) &&
+               (cells[1].kind != OperandKind::Value ||
+                second.type == operations[static_cast<std::size_t>(cells[1].payload)].type) &&
+               ReadConstant(editor, operations, cells[2], third) &&
+               ReadConstant(editor, operations, cells[3], fourth)) {
+        if (third.bits >= 64 || fourth.bits > 64 - third.bits) return false;
+        if (!fourth.bits) {
+            result = first.bits;
+        } else {
+            const auto lsb = static_cast<unsigned>(third.bits);
+            const auto field = Mask(static_cast<unsigned>(fourth.bits));
+            result = (first.bits & ~(field << lsb)) | ((second.bits & field) << lsb);
+        }
     } else
         return false;
     result &= mask;

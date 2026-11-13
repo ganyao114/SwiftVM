@@ -47,6 +47,10 @@ bool DestructiveInput(const Operation& operation) {
         case OpCode::AsrValue:
         case OpCode::RorImm:
         case OpCode::RorValue:
+        case OpCode::ZeroExtend32:
+        case OpCode::ZeroExtend32To64:
+        case OpCode::ZeroExtend64:
+        case OpCode::SignExtend:
             return operation.type == Type::U32 || operation.type == Type::U64;
         case OpCode::VecAnd:
         case OpCode::Vec4And:
@@ -57,6 +61,14 @@ bool DestructiveInput(const Operation& operation) {
         case OpCode::Vec4Add:
         case OpCode::VecSub:
         case OpCode::Vec4Sub:
+        case OpCode::VecShuffle32:
+        case OpCode::VecZip:
+        case OpCode::VecUnzip:
+        case OpCode::VecExtend:
+        case OpCode::VecShiftLeftImm:
+        case OpCode::VecShiftRightImm:
+        case OpCode::VecShiftRightArithmeticImm:
+        case OpCode::BitCast:
             return operation.type == Type::V128;
         default:
             return false;
@@ -95,7 +107,7 @@ public:
             return;
         }
         scalar_register_count = 0;
-        for (unsigned reg : {13u, 14u, 15u, 5u, 8u, 9u}) {
+        for (unsigned reg : {13u, 14u, 15u, 5u, 8u, 9u, 6u, 7u}) {
             bool reserved = false;
             for (unsigned i = 0; i < pinned_slots; ++i) reserved |= pin_registers[i] == reg;
             if (!reserved) scalar_registers[scalar_register_count++] = reg;
@@ -124,7 +136,7 @@ private:
     std::span<const Operation> operations;
     std::span<const BlockRecord> blocks;
     backend::detail::AllocationCFG cfg;
-    std::array<unsigned, 6> scalar_registers{};
+    std::array<unsigned, 8> scalar_registers{};
     unsigned scalar_register_count{};
     unsigned pinned_slots{};
     const CompileOptions* options{};
@@ -468,10 +480,13 @@ private:
             result.homes[definition].definition_position >= at)
             return false;
         auto& home = result.homes[definition];
-        home.last_use = std::max(home.last_use,
-                                 operations[definition].block.value == block
-                                         ? at
-                                         : cfg.UseEnd(home.definition_position, at));
+        const auto end = operations[definition].block.value == block
+                                 ? at
+                                 : cfg.UseEnd(home.definition_position, at);
+        home.last_use = std::max(home.last_use, end);
+        const u32 weight = end > at ? 16u : 1u;
+        home.use_count =
+                static_cast<std::uint16_t>(std::min<u32>(UINT16_MAX, u32{home.use_count} + weight));
         return true;
     }
 
@@ -500,6 +515,117 @@ private:
                     if (saved_flags) result.homes[definition].auxiliary_offset = 0;
                 }
             }
+            for (u32 i = body.first_node; i < body.first_node + body.node_count; ++i) {
+                const auto& op = operations[i];
+                auto& mh = result.homes[i];
+                if ((op.opcode == OpCode::LoadMemory || op.opcode == OpCode::LoadMemoryTSO) &&
+                    (op.type == Type::U32 || op.type == Type::U64) &&
+                    op.Metadata() == OperationMetadata{} && !mh.terminal_only &&
+                    mh.use_count == 1 && mh.auxiliary_offset == UINT32_MAX) {
+                    bool addr_ok = false;
+                    if (op.operand_count == 1) {
+                        const auto mfirst = *program.Operands(NodeId{i}).begin();
+                        addr_ok = mfirst.Kind() == OperandKind::Value &&
+                                  operations[mfirst.Payload()].type == Type::U64 &&
+                                  (mfirst.TypeView() == Type::Void ||
+                                   mfirst.TypeView() == Type::U64);
+                    } else if (op.operand_count == 3) {
+                        auto mit = program.Operands(NodeId{i}).begin();
+                        const auto mfirst = *mit++, mbase = *mit++, mimm = *mit;
+                        if (mfirst.Kind() == OperandKind::Expression && mfirst.Count() == 2 &&
+                            (mfirst.ExpressionOp() == OperandOp::Add ||
+                             mfirst.ExpressionOp() == OperandOp::Sub) &&
+                            mbase.Kind() == OperandKind::Value &&
+                            operations[mbase.Payload()].type == Type::U64 &&
+                            (mbase.TypeView() == Type::Void || mbase.TypeView() == Type::U64) &&
+                            mimm.Kind() == OperandKind::Immediate) {
+                            std::uint64_t val = mimm.Payload();
+                            const auto ibits = TypeBits(mimm.TypeView() != Type::Void
+                                                                ? mimm.TypeView()
+                                                                : Type::U64);
+                            if (ibits && ibits < 64) val &= (std::uint64_t{1} << ibits) - 1;
+                            const std::uint64_t d64 = mfirst.ExpressionOp() == OperandOp::Sub
+                                                              ? (std::uint64_t{0} - val)
+                                                              : val;
+                            const auto d32 = static_cast<std::int32_t>(d64);
+                            addr_ok = d64 == std::uint64_t(std::int64_t(d32));
+                        }
+                    }
+                    u32 next = i + 1;
+                    while (addr_ok && next < body.first_node + body.node_count &&
+                           operations[next].opcode == OpCode::Nop &&
+                           operations[next].Metadata() == OperationMetadata{})
+                        ++next;
+                    if (addr_ok && next < body.first_node + body.node_count &&
+                        mh.last_use == result.homes[next].definition_position) {
+                        const auto& cop = operations[next];
+                        const auto carg = *program.Operands(NodeId{next}).begin();
+                        const auto vbits = TypeBits(carg.TypeView() != Type::Void ? carg.TypeView()
+                                                                                  : op.type);
+                        const bool fuse_bitcast = cop.opcode == OpCode::BitCast &&
+                                                  cop.type == Type::V128 &&
+                                                  cop.Metadata() == OperationMetadata{} &&
+                                                  vbits == TypeBits(op.type);
+                        const bool fuse_dup64 = options && options->avx && op.type == Type::U64 &&
+                                                cop.opcode == OpCode::VecDup64 &&
+                                                cop.type == Type::V128 &&
+                                                cop.Metadata() == OperationMetadata{} &&
+                                                vbits == 64;
+                        if (fuse_bitcast || fuse_dup64) {
+                            mh.rematerialize = true;
+                            mh.spilled = true;
+                            for (const auto in : program.Operands(NodeId{i})) {
+                                if (in.Kind() == OperandKind::Value) {
+                                    auto& dh = result.homes[in.Payload()];
+                                    dh.last_use =
+                                            std::max(dh.last_use, result.homes[next].definition_position);
+                                }
+                            }
+                        }
+                    }
+                }
+                if (op.opcode == OpCode::LoadMemory || op.opcode == OpCode::LoadMemoryTSO ||
+                    op.opcode == OpCode::StoreMemory || op.opcode == OpCode::StoreMemoryTSO) {
+                    const auto first = *program.Operands(NodeId{i}).begin();
+                    const u32 target_pos = mh.rematerialize ? mh.last_use : mh.definition_position;
+                    if (first.Kind() == OperandKind::Value &&
+                        (first.TypeView() == Type::Void || first.TypeView() == Type::U64)) {
+                        const u32 addr_id = static_cast<u32>(first.Payload());
+                        const auto& addr_op = operations[addr_id];
+                        auto& ah = result.homes[addr_id];
+                        if ((addr_op.opcode == OpCode::Add || addr_op.opcode == OpCode::Sub) &&
+                            addr_op.type == Type::U64 &&
+                            addr_op.Metadata() == OperationMetadata{} &&
+                            addr_op.operand_count == 2 && addr_op.block == op.block &&
+                            !ah.terminal_only && ah.use_count == 1 && ah.last_use == target_pos &&
+                            ah.auxiliary_offset == UINT32_MAX && !ah.rematerialize) {
+                            auto ait = program.Operands(NodeId{addr_id}).begin();
+                            const auto base_cell = *ait++, imm_cell = *ait;
+                            if (base_cell.Kind() == OperandKind::Value &&
+                                operations[base_cell.Payload()].type == Type::U64 &&
+                                (base_cell.TypeView() == Type::Void ||
+                                 base_cell.TypeView() == Type::U64) &&
+                                imm_cell.Kind() == OperandKind::Immediate) {
+                                std::uint64_t val = imm_cell.Payload();
+                                const auto ibits = TypeBits(imm_cell.TypeView() != Type::Void
+                                                                    ? imm_cell.TypeView()
+                                                                    : Type::U64);
+                                if (ibits && ibits < 64) val &= (std::uint64_t{1} << ibits) - 1;
+                                const std::uint64_t d64 = addr_op.opcode == OpCode::Sub
+                                                                  ? (std::uint64_t{0} - val)
+                                                                  : val;
+                                const auto d32 = static_cast<std::int32_t>(d64);
+                                if (d64 == std::uint64_t(std::int64_t(d32))) {
+                                    ah.rematerialize = true;
+                                    ah.spilled = true;
+                                    auto& bh = result.homes[base_cell.Payload()];
+                                    bh.last_use = std::max(bh.last_use, target_pos);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         return true;
@@ -526,8 +652,9 @@ private:
                     auto input = inputs.begin();
                     const auto field = *input++, value = *input;
                     if (value.Kind() == OperandKind::Value && value.Payload() < at &&
-                        at - value.Payload() <= 3 &&
-                        operations[value.Payload()].block == op.block) {
+                        at - value.Payload() <= 6 &&
+                        operations[value.Payload()].block == op.block &&
+                        !result.homes[value.Payload()].rematerialize) {
                         const auto& producer = operations[value.Payload()];
                         auto& backing = result.homes[value.Payload()];
                         const auto bits = TypeBits(producer.type),
@@ -543,25 +670,55 @@ private:
                                                   (field.TypeView() == Type::U32 ||
                                                    field.TypeView() == Type::U64);
                         const UniformRange range{u32(field.Payload()), bytes};
+                        const auto is_ordinary_range = [&](UniformRange r) {
+                            const bool pin = pinned_slots &&
+                                             (options->pinned_uniform_offset == UINT32_MAX ||
+                                              Overlaps(r,
+                                                       {options->pinned_uniform_offset,
+                                                        pinned_slots * 8}));
+                            bool ord = !pin;
+                            for (auto offset : {options->flags_offset,
+                                                options->pc_offset,
+                                                options->mxcsr_offset,
+                                                options->arm_fpcr_offset,
+                                                options->arm_fpsr_offset})
+                                ord &= offset == UINT32_MAX || !Overlaps(r, {offset, 8});
+                            return ord;
+                        };
                         bool adjacent =
                                 producer.opcode == OpCode::VecLoadConst ||
                                 !HasAnyEffect(EffectsFor(producer.opcode, producer.Metadata()),
                                               Effect::Control);
-                        for (auto between = value.Payload() + 1; between < at; ++between)
-                            adjacent &= operations[between].opcode == OpCode::Nop &&
-                                        operations[between].Metadata() == OperationMetadata{};
-                        const bool pinned =
-                                pinned_slots &&
-                                (options->pinned_uniform_offset == UINT32_MAX ||
-                                 Overlaps(range,
-                                          {options->pinned_uniform_offset, pinned_slots * 8}));
-                        bool ordinary = !pinned;
-                        for (auto offset : {options->flags_offset,
-                                            options->pc_offset,
-                                            options->mxcsr_offset,
-                                            options->arm_fpcr_offset,
-                                            options->arm_fpsr_offset})
-                            ordinary &= offset == UINT32_MAX || !Overlaps(range, {offset, 8});
+                        for (auto between = value.Payload() + 1; adjacent && between < at;
+                             ++between) {
+                            const auto& bop = operations[between];
+                            if (bop.Metadata() != OperationMetadata{}) {
+                                adjacent = false;
+                                break;
+                            }
+                            if (bop.opcode == OpCode::Nop || bop.opcode == OpCode::VecLoadConst ||
+                                bop.opcode == OpCode::VecSharedZero)
+                                continue;
+                            if (bop.opcode == OpCode::BitCast) {
+                                const auto barg = *program.Operands(NodeId{u32(between)}).begin();
+                                if (!(barg.Kind() == OperandKind::Value &&
+                                      result.homes[barg.Payload()].rematerialize &&
+                                      (operations[barg.Payload()].opcode == OpCode::LoadMemory ||
+                                       operations[barg.Payload()].opcode == OpCode::LoadMemoryTSO)))
+                                    continue;
+                            }
+                            if (bop.opcode == OpCode::StoreUniform) {
+                                const auto bfield = *program.Operands(NodeId{u32(between)}).begin();
+                                const auto bbytes = (TypeBits(bfield.TypeView()) + 7) / 8;
+                                const UniformRange brange{u32(bfield.Payload()), bbytes};
+                                if (bfield.Kind() == OperandKind::Uniform && bbytes &&
+                                    bfield.Payload() < 1024 && brange.offset + bbytes <= 1024 &&
+                                    is_ordinary_range(brange) && !Overlaps(range, brange))
+                                    continue;
+                            }
+                            adjacent = false;
+                        }
+                        const bool ordinary = is_ordinary_range(range);
                         if (adjacent && ordinary && field.Payload() < 1024 && bytes &&
                             range.offset + bytes <= 1024 && bits <= bytes * 8 &&
                             TypeBits(view) >= bits && matching && backing.last_use <= end) {
@@ -586,8 +743,14 @@ private:
                             pinned_slots &&
                             (options->pinned_uniform_offset == UINT32_MAX ||
                              Overlaps(range, {options->pinned_uniform_offset, pinned_slots * 8}));
-                    if (field.Payload() < 1024 && range.offset + range.bytes <= 1024 && !pinned &&
-                        !Overlaps(range, *policy.flags)) {
+                    bool ordinary = !pinned;
+                    for (auto offset : {options->flags_offset,
+                                        options->pc_offset,
+                                        options->mxcsr_offset,
+                                        options->arm_fpcr_offset,
+                                        options->arm_fpsr_offset})
+                        ordinary &= offset == UINT32_MAX || !Overlaps(range, {offset, 8});
+                    if (field.Payload() < 1024 && range.offset + range.bytes <= 1024 && ordinary) {
                         auto limit = barrier;
                         for (auto slot = range.offset / 8;
                              slot <= (range.offset + range.bytes - 1) / 8;
@@ -612,8 +775,18 @@ private:
                         continue;
                     const auto last = std::min<std::uint64_t>(
                             1024, std::uint64_t{access.range.offset} + access.range.bytes);
+                    u32 write_pos = home.definition_position;
+                    if (op.opcode == OpCode::StoreUniform && op.Metadata() == OperationMetadata{}) {
+                        auto sit = inputs.begin();
+                        ++sit;
+                        if (sit != inputs.end() && (*sit).Kind() == OperandKind::Value) {
+                            const auto& bh = result.homes[(*sit).Payload()];
+                            if (bh.uniform_store_bytes && bh.uniform_offset == access.range.offset)
+                                write_pos = std::min(write_pos, bh.definition_position);
+                        }
+                    }
                     for (auto slot = access.range.offset / 8; slot <= (last - 1) / 8; ++slot)
-                        next_write[slot] = home.definition_position;
+                        next_write[slot] = std::min(next_write[slot], write_pos);
                 }
             }
         }
@@ -645,8 +818,12 @@ private:
         const auto spill = [&](u32 id, auto& residents) {
             auto& h = result.homes[id];
             unsigned bytes = operations[id].type == ir::Type::V128 ? 16 : 8;
-            if (h.uniform_offset == UINT32_MAX && !Reserve(bytes, bytes, id, h.stack_offset))
+            if (operations[id].opcode == OpCode::LoadImm && operations[id].type != ir::Type::V128 &&
+                h.uniform_offset == UINT32_MAX && h.auxiliary_offset == UINT32_MAX) {
+                h.rematerialize = true;
+            } else if (h.uniform_offset == UINT32_MAX && !Reserve(bytes, bytes, id, h.stack_offset)) {
                 return false;
+            }
             h.spilled = true;
             for (auto& r : residents)
                 if (r == id) r = NodeId::invalid;
@@ -660,42 +837,96 @@ private:
                 auto& bank = banks[vector];
                 const unsigned count = vector ? 12 : scalar_register_count;
                 auto& h = result.homes[i];
+                for (unsigned j = 0; j < count; ++j)
+                    if (bank[j] != NodeId::invalid &&
+                        result.homes[bank[j]].last_use < h.definition_position)
+                        bank[j] = NodeId::invalid;
+                if (h.rematerialize) continue;
+                const auto reuse = [&](CellView input) {
+                    if (input.Kind() != OperandKind::Value ||
+                        (operations[input.Payload()].type == ir::Type::V128) != vector ||
+                        result.homes[input.Payload()].spilled ||
+                        result.homes[input.Payload()].last_use != h.definition_position)
+                        return count;
+                    for (unsigned j = 0; j < count; ++j)
+                        if (bank[j] == input.Payload()) return j;
+                    return count;
+                };
                 unsigned chosen = count;
                 bool reused{};
+                const auto opcode = operations[i].opcode;
+                if (!vector && opcode == OpCode::LoadImm && h.uniform_offset == UINT32_MAX &&
+                    h.auxiliary_offset == UINT32_MAX && i + 1 < body.first_node + body.node_count &&
+                    operations[i + 1].opcode == OpCode::StoreUniform &&
+                    h.last_use == result.homes[i + 1].definition_position) {
+                    const auto store_uniform = *program.Operands(NodeId{i + 1}).begin();
+                    const auto store_bits = TypeBits(store_uniform.TypeView());
+                    std::uint64_t imm = (*program.Operands(NodeId{i}).begin()).Payload();
+                    const auto nbits = TypeBits(operations[i].type);
+                    if (nbits && nbits < 64) imm &= (std::uint64_t{1} << nbits) - 1;
+                    if (store_uniform.Kind() == OperandKind::Uniform && store_bits >= 8 &&
+                        store_bits <= 64 &&
+                        (store_bits <= 32 ||
+                         imm == std::uint64_t(std::int64_t(static_cast<std::int32_t>(imm))))) {
+                        h.rematerialize = true;
+                        h.spilled = true;
+                        continue;
+                    }
+                }
                 if (DestructiveInput(operations[i])) {
-                    const auto reuse = [&](CellView input) {
-                        if (input.Kind() != OperandKind::Value ||
-                            operations[input.Payload()].type != operations[i].type ||
-                            result.homes[input.Payload()].spilled ||
-                            result.homes[input.Payload()].last_use != h.definition_position)
-                            return count;
-                        for (unsigned j = 0; j < count; ++j)
-                            if (bank[j] == input.Payload()) return j;
-                        return count;
-                    };
                     auto inputs = program.Operands(NodeId{i}).begin();
                     chosen = reuse(*inputs++);
-                    const auto opcode = operations[i].opcode;
                     if (chosen == count && !vector && operations[i].operand_count == 2 &&
-                        (opcode == OpCode::Add || opcode == OpCode::And || opcode == OpCode::Or ||
-                         opcode == OpCode::Xor)) {
+                        (opcode == OpCode::Add || opcode == OpCode::And ||
+                         opcode == OpCode::Or || opcode == OpCode::Xor)) {
                         chosen = reuse(*inputs);
                         h.reuse_rhs = chosen != count;
                     }
                     reused = chosen != count;
                 }
-                u32 far = h.last_use;
                 for (unsigned j = 0; !reused && j < count; ++j) {
-                    if (bank[j] != NodeId::invalid &&
-                        result.homes[bank[j]].last_use < h.definition_position)
-                        bank[j] = NodeId::invalid;
                     if (bank[j] == NodeId::invalid) {
                         chosen = j;
                         break;
                     }
-                    if (result.homes[bank[j]].last_use > far) {
-                        far = result.homes[bank[j]].last_use;
-                        chosen = j;
+                }
+                if (!reused && chosen == count && vector &&
+                    (opcode == OpCode::ArmFPBinary || opcode == OpCode::ArmFPTernary)) {
+                    auto inputs = program.Operands(NodeId{i}).begin();
+                    if (opcode == OpCode::ArmFPTernary && operations[i].operand_count >= 3) {
+                        const auto arg0 = *inputs++;
+                        const auto arg1 = *inputs++;
+                        const auto arg2 = *inputs;
+                        chosen = reuse(arg2);
+                        if (chosen == count) chosen = reuse(arg0);
+                        if (chosen == count) chosen = reuse(arg1);
+                    } else if (opcode == OpCode::ArmFPBinary && operations[i].operand_count >= 2) {
+                        chosen = reuse(*inputs++);
+                        if (chosen == count) chosen = reuse(*inputs);
+                    }
+                    reused = chosen != count;
+                }
+                if (!reused && chosen == count) {
+                    const auto zero_spill_cost = [&](u32 id) -> bool {
+                        const auto& sh = result.homes[id];
+                        if (sh.use_count > 1) return false;
+                        if (operations[id].opcode == OpCode::LoadImm &&
+                            operations[id].type != ir::Type::V128 &&
+                            sh.uniform_offset == UINT32_MAX && sh.auxiliary_offset == UINT32_MAX)
+                            return true;
+                        return sh.uniform_offset != UINT32_MAX;
+                    };
+                    const auto cheaper_to_spill = [&](u32 candidate, u32 best) -> bool {
+                        const bool za = zero_spill_cost(candidate), zb = zero_spill_cost(best);
+                        if (za != zb) return za;
+                        return result.homes[candidate].last_use > result.homes[best].last_use;
+                    };
+                    u32 victim = i;
+                    for (unsigned j = 0; j < count; ++j) {
+                        if (cheaper_to_spill(bank[j], victim)) {
+                            victim = bank[j];
+                            chosen = j;
+                        }
                     }
                 }
                 if (chosen == count) {
@@ -713,7 +944,7 @@ private:
             return;
         result.spill_bytes = (result.spill_bytes + 15) & ~15u;
         result.call_offset = result.spill_bytes;
-        if (result.has_calls) result.spill_bytes += 320;
+        if (result.has_calls) result.spill_bytes += 336;
     }
 };
 }  // namespace

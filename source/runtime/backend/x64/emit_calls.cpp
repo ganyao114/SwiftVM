@@ -10,7 +10,7 @@ namespace swift::runtime::backend::x64::detail {
 Writer::CallMasks Writer::LiveCallMasks() const {
     CallMasks masks;
     const auto position = allocation.homes[current.value].definition_position;
-    for (unsigned reg : {8u, 9u}) {
+    for (unsigned reg : {6u, 7u, 8u, 9u}) {
         const auto id = scalar_residents[reg];
         if (id != NodeId::invalid && allocation.homes[id].last_use >= position)
             masks.scalars |= 1u << reg;
@@ -30,9 +30,9 @@ void Writer::PrepareCall(CallMasks masks) {
     PublishPinned();
     if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_HELPER);
     saved_calls = masks;
-    for (unsigned reg : {8u, 9u})
+    for (unsigned reg : {6u, 7u, 8u, 9u})
         if (masks.scalars & (1u << reg))
-            mov(qword[rsp + stack_bias + allocation.call_offset + 192 + (reg - 8) * 8], Reg64(reg));
+            mov(qword[rsp + stack_bias + allocation.call_offset + 192 + (reg - 6) * 8], Reg64(reg));
     for (unsigned reg = 2; reg < 14; ++reg)
         if (masks.vectors & (1u << reg))
             movdqu(ptr[rsp + stack_bias + allocation.call_offset + (reg - 2) * 16], Xmm(reg));
@@ -61,9 +61,9 @@ void Writer::FinishCall() {
     for (unsigned reg = 2; reg < 14; ++reg)
         if (saved_calls.vectors & (1u << reg))
             movdqu(Xmm(reg), ptr[rsp + stack_bias + allocation.call_offset + (reg - 2) * 16]);
-    for (unsigned reg : {8u, 9u})
+    for (unsigned reg : {6u, 7u, 8u, 9u})
         if (saved_calls.scalars & (1u << reg))
-            mov(Reg64(reg), qword[rsp + stack_bias + allocation.call_offset + 192 + (reg - 8) * 8]);
+            mov(Reg64(reg), qword[rsp + stack_bias + allocation.call_offset + 192 + (reg - 6) * 8]);
     if (options.flags_offset != UINT32_MAX) mov(rbx, qword[r12 + options.flags_offset]);
     ReloadPinned();
     if (Linked()) mov(qword[r12 + SVM_X64_CTX_PHASE - SVM_X64_CTX_STATE], SVM_NATIVE_PHASE_GUEST);
@@ -206,15 +206,15 @@ void Writer::Handle(Op<OpCode::X87Execute>, OpContext& c) { X87(c); }
 
 void Writer::Handle(Op<OpCode::X87CommitMetadata>, OpContext& c) {
     using namespace runtime::x86;
-    Read(c.Arg(0), rdi, true);
+    Read(c.Arg(0), r11, true);
     mov(rax, c.Arg(1).Payload());
-    Store(rax, rdi, X87MetadataOffset(c.Arg(3).Payload(), 0), 64);
+    Store(rax, r11, X87MetadataOffset(c.Arg(3).Payload(), 0), 64);
     if (X87MetadataHasDP(c.Arg(3).Payload())) {
         Read(c.Arg(2), rax, true);
-        Store(rax, rdi, X87MetadataOffset(c.Arg(3).Payload(), 1), 64);
+        Store(rax, r11, X87MetadataOffset(c.Arg(3).Payload(), 1), 64);
     }
     mov(rax, X87MetadataOpcode(c.Arg(3).Payload()));
-    Store(rax, rdi, X87MetadataOffset(c.Arg(3).Payload(), 2), 16);
+    Store(rax, r11, X87MetadataOffset(c.Arg(3).Payload(), 2), 16);
 }
 
 void Writer::String(OpContext& c) {
