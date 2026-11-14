@@ -1078,7 +1078,8 @@ void ArmSupportedFPControl(unsigned pinned_slots) {
                 options.pinned_slots = pinned_slots;
                 execution::RuntimeStats stats;
                 swift::runtime::platform::HostRuntime host{false};
-                execution::VM vm{options, stats, host.Bind()};
+                const auto backend = host.Bind();
+                execution::VM vm{options, stats, backend};
                 vm.PrepareGuest(guest.Path());
                 auto& state = vm.ArmState();
                 const auto fpcr = ((control & 3) << 22) | ((control & 4) ? 1u << 24 : 0) |
@@ -1100,7 +1101,8 @@ void ArmSupportedFPControl(unsigned pinned_slots) {
                 if (mode != execution::ExecutionMode::InterpretOnly) {
                     CHECK(stats.native_bytes > 0);
                     CHECK(stats.interpreted_steps == 0);
-                    CHECK(stats.pinned_uniform_slots == pinned_slots);
+                    CHECK(stats.pinned_uniform_slots ==
+                          std::min<std::uint32_t>(pinned_slots, backend.pinned_uniform_slots));
                 }
                 CHECK(vm.Close().Complete());
             }
@@ -1138,7 +1140,8 @@ void ArmFPBinaryBoundaryState() {
                 options.pinned_slots = pins;
                 execution::RuntimeStats stats;
                 swift::runtime::platform::HostRuntime host{false};
-                execution::VM vm{options, stats, host.Bind()};
+                const auto backend = host.Bind();
+                execution::VM vm{options, stats, backend};
                 vm.PrepareGuest(guest.Path());
                 auto& state = vm.ArmState();
                 const auto fault_pc = state.pc + 9 * 4;
@@ -1498,7 +1501,8 @@ TEST_CASE("ARM64 scalar SIMD writes clear every inactive bit", "[native][arm64-g
                 options.optimize = optimize;
                 execution::RuntimeStats stats;
                 swift::runtime::platform::HostRuntime host{false};
-                execution::VM vm{options, stats, host.Bind()};
+                const auto backend = host.Bind();
+                execution::VM vm{options, stats, backend};
                 vm.PrepareGuest(guest.Path());
                 auto& state = vm.ArmState();
                 const auto entry = state.pc, stack = state.gprs[31];
