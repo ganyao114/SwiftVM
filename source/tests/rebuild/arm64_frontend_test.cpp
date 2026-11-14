@@ -764,3 +764,164 @@ TEST_CASE("ARM NEON LD4/ST4 Q, LD1R, widening shifts, MOVI, and LDP fault atomic
         CHECK(Lane<U64>(fault_ldp, 10, 0) == UINT64_C(0xabcd0123456789ef));
     }
 }
+
+TEST_CASE("ARM scalar MulHigh ByteSwap CLZ Bitfield and SignExtend emit compact native IR",
+          "[compile][arm64-frontend]") {
+    const Code scalar_ops{[](auto& a) {
+        a.umulh(x2, x0, x1);
+        a.smulh(x3, x0, x1);
+        a.mul(x4, x0, x1);
+        a.mneg(x5, x0, x1);
+        a.smull(x6, w0, w1);
+        a.clz(x7, x0);
+        a.clz(w8, w1);
+        a.rev(x9, x0);
+        a.rev(w10, w0);
+        a.rev32(x11, x0);
+        a.rev16(w12, w0);
+        a.rbit(w13, w0);
+        a.sbfx(w14, w0, 2, 1);
+        a.sbfiz(x15, x0, 5, 4);
+        a.ubfx(w16, w0, 4, 8);
+        a.bfi(w17, w1, 8, 8);
+        a.bfc(w18, 4, 8);
+        a.sxtb(x19, w0);
+        a.ldrsb(w20, MemOperand(x21, 0));
+        a.ldrsh(x22, MemOperand(x21, 2));
+        a.svc(0);
+    }};
+    Build(scalar_ops);
+    const std::array<front::BlockWindow, 1> windows{{{CodeBase, scalar_ops.View()}}};
+    const auto built =
+            front::BuildIR(windows, ir::Scope::Block, {}, {ir::TargetMode::Known, 0x8664, 0});
+    REQUIRE(bool(built));
+    unsigned mul_high{}, bswap{}, clz64{}, clz32{}, sext{}, neg{}, adds{};
+    for (const auto& op : built.program.Operations()) {
+        mul_high += op.opcode == ir::OpCode::MulHigh;
+        bswap += op.opcode == ir::OpCode::ByteSwap;
+        clz64 += op.opcode == ir::OpCode::CountLeadingZeros64;
+        clz32 += op.opcode == ir::OpCode::CountLeadingZeros32;
+        sext += op.opcode == ir::OpCode::SignExtend;
+        neg += op.opcode == ir::OpCode::Neg;
+        adds += op.opcode == ir::OpCode::Add;
+    }
+    CHECK(mul_high == 2);
+    CHECK(bswap == 5);
+    CHECK(clz64 == 1);
+    CHECK(clz32 == 1);
+    CHECK(sext >= 5);
+    CHECK(neg == 1);
+    // Only the base+2 address calculation for LDRSH uses Add; MUL/SMULL omit zero-accumulate Add.
+    CHECK(adds <= 1);
+
+    State state;
+    state.pc = CodeBase;
+    // Bit 2 is 1 while bit 1 is 0 (0x9d = 0b10011101), verifying 1-bit SBFX sign-extension.
+    state.gprs[0] = UINT64_C(0xfedcba987654329d);
+    state.gprs[1] = UINT64_C(0x80000000000000ab);
+    state.gprs[17] = 0x12345678u;
+    state.gprs[18] = 0xffffu;
+    state.gprs[21] = DataBase;
+    Memory memory{scalar_ops};
+    memory.data[0] = 0x80;
+    memory.data[2] = 0x34;
+    memory.data[3] = 0x80;
+    REQUIRE(Run(state, memory).kind == front::StepKind::Service);
+    const unsigned __int128 uprod =
+            static_cast<unsigned __int128>(state.gprs[0]) * state.gprs[1];
+    const __int128 sprod = static_cast<__int128>(static_cast<std::int64_t>(state.gprs[0])) *
+                           static_cast<std::int64_t>(state.gprs[1]);
+    CHECK(state.gprs[2] == static_cast<U64>(uprod >> 64));
+    CHECK(state.gprs[3] == static_cast<U64>(static_cast<unsigned __int128>(sprod) >> 64));
+    CHECK(state.gprs[4] == state.gprs[0] * state.gprs[1]);
+    CHECK(state.gprs[5] == 0u - (state.gprs[0] * state.gprs[1]));
+    CHECK(state.gprs[6] ==
+          static_cast<U64>(std::int64_t{std::int32_t(0x7654329du)} * std::int32_t(0xab)));
+    CHECK(state.gprs[7] == 0);
+    CHECK(state.gprs[8] == 24);
+    CHECK(state.gprs[9] == __builtin_bswap64(state.gprs[0]));
+    CHECK(state.gprs[10] == __builtin_bswap32(0x7654329du));
+    CHECK(state.gprs[11] == UINT64_C(0x98badcfe9d325476));
+    CHECK(state.gprs[12] == 0x54769d32u);
+    CHECK(state.gprs[14] == 0xffffffffu);
+    CHECK(state.gprs[15] == static_cast<U64>(std::int64_t{-3} << 5));
+    CHECK(state.gprs[16] == 0x29u);
+    CHECK(state.gprs[17] == 0x1234ab78u);
+    CHECK(state.gprs[18] == 0xf00fu);
+    CHECK(state.gprs[19] == static_cast<U64>(std::int64_t{std::int8_t(0x9du)}));
+    CHECK(state.gprs[20] == 0xffffff80u);
+    CHECK(state.gprs[22] == static_cast<U64>(std::int64_t{std::int16_t(0x8034u)}));
+}
+
+TEST_CASE("ARM NEON DUP BIC ORR AES vector lowering and multi-block DecodeFunction",
+          "[compile][arm64-frontend]") {
+    const Code vec_ops{[](auto& a) {
+        a.dup(v0.V4S(), v1.S(), 2);
+        a.dup(v2.V2D(), v1.D(), 1);
+        a.dup(v3.V16B(), w0);
+        a.orr(v4.V4S(), 0x12, 8);
+        a.bic(v5.V4S(), 0xff, 0);
+        a.dci(0x4e284826);  // aese v6.16b, v1.16b
+        a.svc(0);
+    }};
+    Build(vec_ops);
+    const std::array<front::BlockWindow, 1> windows{{{CodeBase, vec_ops.View()}}};
+    const auto built =
+            front::BuildIR(windows, ir::Scope::Block, {}, {ir::TargetMode::Known, 0x8664, 0});
+    REQUIRE(bool(built));
+    unsigned shuf32{}, dup64{}, shared_zero{};
+    for (const auto& op : built.program.Operations()) {
+        shuf32 += op.opcode == ir::OpCode::VecShuffle32;
+        dup64 += op.opcode == ir::OpCode::VecDup64;
+        shared_zero += op.opcode == ir::OpCode::VecSharedZero;
+    }
+    CHECK(shuf32 == 2);
+    CHECK(dup64 == 1);
+    CHECK(shared_zero == 1);
+
+    State state;
+    state.pc = CodeBase;
+    state.gprs[0] = 0x5au;
+    Set<std::uint32_t>(state, 1, 0x11111111u, 0);
+    Set<std::uint32_t>(state, 1, 0x22222222u, 1);
+    Set<std::uint32_t>(state, 1, 0x33333333u, 2);
+    Set<std::uint32_t>(state, 1, 0x44444444u, 3);
+    for (unsigned i = 0; i < 4; ++i) {
+        Set<std::uint32_t>(state, 4, 0x00000001u, i);
+        Set<std::uint32_t>(state, 5, 0x123456ffu, i);
+    }
+    Memory memory{vec_ops};
+    REQUIRE(Run(state, memory).kind == front::StepKind::Service);
+    for (unsigned i = 0; i < 4; ++i) {
+        CHECK(Lane<std::uint32_t>(state, 0, i) == 0x33333333u);
+        CHECK(Lane<std::uint32_t>(state, 4, i) == 0x00001201u);
+        CHECK(Lane<std::uint32_t>(state, 5, i) == 0x12345600u);
+    }
+    CHECK(Lane<U64>(state, 2, 0) == UINT64_C(0x4444444433333333));
+    CHECK(Lane<U64>(state, 2, 1) == UINT64_C(0x4444444433333333));
+    CHECK(Lane<U64>(state, 3, 0) == UINT64_C(0x5a5a5a5a5a5a5a5a));
+    CHECK(Lane<U64>(state, 3, 1) == UINT64_C(0x5a5a5a5a5a5a5a5a));
+
+    // Exercise >64 basic blocks in DecodeFunction and EmitDecoded to cover heap fallback.
+    const Code many_blocks{[](auto& a) {
+        for (unsigned i = 0; i < 72; ++i) {
+            a.cbz(x0, 2);
+            a.add(x1, x1, Operand(1));
+        }
+        a.ret();
+    }};
+    const auto all_bytes = many_blocks.View();
+    const std::array<front::BlockWindow, 2> split_windows{{
+            {CodeBase, all_bytes.first(128)},
+            {CodeBase + 128, all_bytes.subspan(128)},
+    }};
+    front::DecodeLimits limits;
+    limits.max_blocks = 256;
+    limits.max_instructions = 512;
+    const auto decoded = front::DecodeFunction(split_windows, CodeBase, limits);
+    REQUIRE(bool(decoded));
+    CHECK(decoded.blocks.size() == 145);
+    const auto fn_ir = front::BuildFunctionIR(split_windows, CodeBase, {}, limits);
+    REQUIRE(bool(fn_ir));
+    CHECK(fn_ir.program.Blocks().size() >= 145);
+}
