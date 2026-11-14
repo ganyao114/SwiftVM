@@ -53,6 +53,59 @@ void VectorFinish(Writer& writer, OpContext& ctx) {
     writer.as.MV(ctx.high, a7);
 }
 
+void LoadVR(Writer& writer, VR dst, CellView cell) {
+    if (cell.Kind() == OperandKind::Value &&
+        TypeBits(writer.source.Operations()[cell.Payload()].type) == 128) {
+        const auto& home = writer.allocation.homes[cell.Payload()];
+        if (!home.spilled) {
+            writer.as.VINSGR2VR_D(dst, GPR{home.reg}, 0);
+            writer.as.VINSGR2VR_D(dst, GPR{home.high_reg}, 1);
+            return;
+        }
+        if (home.stack_offset <= 2032) {
+            writer.as.VLD(dst, sp, static_cast<int>(home.stack_offset));
+            return;
+        }
+    }
+    writer.ReadPair(cell, a0, a1);
+    writer.as.VINSGR2VR_D(dst, a0, 0);
+    writer.as.VINSGR2VR_D(dst, a1, 1);
+}
+
+void StoreVR(Writer& writer, OpContext& ctx, VR src) {
+    const auto& home = writer.allocation.homes[ctx.node.value];
+    if (home.spilled && home.stack_offset <= 2032) {
+        writer.as.VST(src, sp, static_cast<int>(home.stack_offset));
+        ctx.saved = true;
+        return;
+    }
+    writer.as.VPICKVE2GR_DU(ctx.destination, src, 0);
+    writer.as.VPICKVE2GR_DU(ctx.high, src, 1);
+}
+
+void EmitByteWindowLSX(Writer& writer,
+                       OpContext& ctx,
+                       CellView low_arg,
+                       CellView high_arg,
+                       unsigned right_bytes) {
+    if (right_bytes == 0) {
+        LoadVR(writer, vr0, low_arg);
+        StoreVR(writer, ctx, vr0);
+        return;
+    }
+    if (right_bytes == 16) {
+        LoadVR(writer, vr0, high_arg);
+        StoreVR(writer, ctx, vr0);
+        return;
+    }
+    LoadVR(writer, vr0, low_arg);
+    LoadVR(writer, vr1, high_arg);
+    writer.as.VBSRL_V(vr0, vr0, right_bytes);
+    writer.as.VBSLL_V(vr1, vr1, 16 - right_bytes);
+    writer.as.VOR_V(vr0, vr0, vr1);
+    StoreVR(writer, ctx, vr0);
+}
+
 void VectorClamp(Writer& writer, GPR value, unsigned bits, bool unsigned_result) {
     auto& as = writer.as;
     as.LI(t3, unsigned_result ? 0 : u64{0} - (u64{1} << (bits - 1)));
@@ -67,20 +120,33 @@ void VectorClamp(Writer& writer, GPR value, unsigned bits, bool unsigned_result)
 }
 
 template <O opcode> void VectorBitwise(Writer& writer, OpContext& ctx) {
-    VectorBegin(writer, ctx);
+    if (writer.options.lsx) {
+        LoadVR(writer, vr0, ctx.Arg(0));
+        LoadVR(writer, vr1, ctx.Arg(1));
+        if constexpr (opcode == O::VecAnd || opcode == O::Vec4And)
+            writer.as.VAND_V(vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecOr || opcode == O::Vec4Or)
+            writer.as.VOR_V(vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecXor)
+            writer.as.VXOR_V(vr0, vr0, vr1);
+        else
+            writer.as.VANDN_V(vr0, vr1, vr0);
+        StoreVR(writer, ctx, vr0);
+        return;
+    }
+    writer.ReadPair(ctx.Arg(0), a0, a1);
+    writer.ReadPair(ctx.Arg(1), a2, a3);
+    const std::array dst{ctx.destination, ctx.high};
     for (unsigned part = 0; part < 2; ++part) {
         if constexpr (opcode == O::VecAnd || opcode == O::Vec4And)
-            writer.as.AND(vector_output[part], left[part], right[part]);
+            writer.as.AND(dst[part], left[part], right[part]);
         else if constexpr (opcode == O::VecOr || opcode == O::Vec4Or)
-            writer.as.OR(vector_output[part], left[part], right[part]);
+            writer.as.OR(dst[part], left[part], right[part]);
         else if constexpr (opcode == O::VecXor)
-            writer.as.XOR(vector_output[part], left[part], right[part]);
-        else {
-            writer.as.NOT(t0, right[part]);
-            writer.as.AND(vector_output[part], left[part], t0);
-        }
+            writer.as.XOR(dst[part], left[part], right[part]);
+        else
+            writer.as.ANDN(dst[part], left[part], right[part]);
     }
-    VectorFinish(writer, ctx);
 }
 
 template <O opcode> void VectorArithmetic(Writer& writer, OpContext& ctx) {
@@ -90,6 +156,33 @@ template <O opcode> void VectorArithmetic(Writer& writer, OpContext& ctx) {
     constexpr bool minmax = opcode == O::VecMin || opcode == O::VecMax;
     constexpr bool saturate = opcode == O::VecSatAdd || opcode == O::VecSatSub;
     const bool sign = opcode == O::VecCmpGt || ((minmax || saturate) && VectorImmediate(ctx, 3));
+    if (writer.options.lsx) {
+        auto& as = writer.as;
+        LoadVR(writer, vr0, ctx.Arg(0));
+        LoadVR(writer, vr1, ctx.Arg(1));
+        if constexpr (opcode == O::VecAdd || opcode == O::Vec4Add)
+            as.VADD(bits, vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecSub || opcode == O::Vec4Sub)
+            as.VSUB(bits, vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecMul || opcode == O::Vec4Mul)
+            as.VMUL(bits, vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecCmpEq)
+            as.VSEQ(bits, vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecCmpGt)
+            as.VSLT(bits, true, vr0, vr1, vr0);
+        else if constexpr (opcode == O::VecAvg)
+            as.VAVGR_U(bits, vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecMin)
+            as.VMIN(bits, sign, vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecMax)
+            as.VMAX(bits, sign, vr0, vr0, vr1);
+        else if constexpr (opcode == O::VecSatAdd)
+            as.VSADD(bits, sign, vr0, vr0, vr1);
+        else
+            as.VSSUB(bits, sign, vr0, vr0, vr1);
+        StoreVR(writer, ctx, vr0);
+        return;
+    }
     VectorBegin(writer, ctx);
     auto& as = writer.as;
     for (unsigned lane = 0; lane < 128 / bits; ++lane) {
@@ -182,6 +275,19 @@ template <O opcode> void VectorWiden(Writer& writer, OpContext& ctx) {
     const unsigned bits = VectorImmediate(ctx, 2);
     if (bits != 8 && bits != 16 && bits != 32) writer.Reject(CompileError::UnsupportedOperand);
     const bool sign = opcode == O::VecSignedMulWidenLow || VectorImmediate(ctx, 3);
+    if (writer.options.lsx) {
+        LoadVR(writer, vr0, ctx.Arg(0));
+        LoadVR(writer, vr1, ctx.Arg(1));
+        if constexpr (opcode == O::VecMulWiden) {
+            writer.as.VMULWEV(bits, sign, vr0, vr0, vr1);
+        } else {
+            writer.as.VSLLWIL_ZERO(bits, true, vr0, vr0);
+            writer.as.VSLLWIL_ZERO(bits, true, vr1, vr1);
+            writer.as.VMUL(bits * 2, vr0, vr0, vr1);
+        }
+        StoreVR(writer, ctx, vr0);
+        return;
+    }
     VectorBegin(writer, ctx);
     for (unsigned lane = 0; lane < 64 / bits; ++lane) {
         const unsigned index = opcode == O::VecMulWiden ? lane * 2 : lane;
@@ -201,8 +307,80 @@ template <O opcode> void VectorShift(Writer& writer, OpContext& ctx) {
     constexpr bool leftward = opcode == O::VecShiftLeftImm || opcode == O::VecShiftLeft;
     const unsigned bits = VectorImmediate(ctx, 2);
     CheckWidth(writer, bits);
-    VectorBegin(writer, ctx, false);
     const bool vector_count = !immediate && writer.View(ctx.Arg(1)) == Type::V128;
+    if (writer.options.lsx) {
+        auto& as = writer.as;
+        if constexpr (immediate) {
+            const unsigned count = VectorImmediate(ctx, 1);
+            if (count == 0) {
+                LoadVR(writer, vr0, ctx.Arg(0));
+            } else if (count >= bits) {
+                if constexpr (arithmetic) {
+                    LoadVR(writer, vr0, ctx.Arg(0));
+                    as.VSRAI(bits, vr0, vr0, bits - 1);
+                } else {
+                    as.VXOR_V(vr0, vr0, vr0);
+                }
+            } else {
+                LoadVR(writer, vr0, ctx.Arg(0));
+                if constexpr (leftward)
+                    as.VSLLI(bits, vr0, vr0, count);
+                else if constexpr (arithmetic)
+                    as.VSRAI(bits, vr0, vr0, count);
+                else
+                    as.VSRLI(bits, vr0, vr0, count);
+            }
+            StoreVR(writer, ctx, vr0);
+            return;
+        }
+        LoadVR(writer, vr0, ctx.Arg(0));
+        if (vector_count) {
+            LoadVR(writer, vr1, ctx.Arg(1));
+            if (bits <= 16) {
+                as.VSLTI_U(bits, vr3, vr1, bits);
+            } else {
+                as.LI(t0, bits);
+                as.VREPLGR2VR(bits, vr2, t0);
+                as.VSLT(bits, false, vr3, vr1, vr2);
+            }
+            if constexpr (arithmetic) {
+                as.VSRA(bits, vr2, vr0, vr1);
+                as.VSRAI(bits, vr4, vr0, bits - 1);
+                as.VAND_V(vr2, vr2, vr3);
+                as.VANDN_V(vr4, vr3, vr4);
+                as.VOR_V(vr0, vr2, vr4);
+            } else {
+                if constexpr (leftward)
+                    as.VSLL(bits, vr0, vr0, vr1);
+                else
+                    as.VSRL(bits, vr0, vr0, vr1);
+                as.VAND_V(vr0, vr0, vr3);
+            }
+        } else {
+            writer.Read(ctx.Arg(1), a2);
+            as.SLTUI(t0, a2, static_cast<int>(bits));
+            if constexpr (arithmetic) {
+                as.LI(t1, bits - 1);
+                as.MASKEQZ(a2, a2, t0);
+                as.MASKNEZ(t1, t1, t0);
+                as.OR(a2, a2, t1);
+                as.VREPLGR2VR(bits, vr1, a2);
+                as.VSRA(bits, vr0, vr0, vr1);
+            } else {
+                as.NEG(t0, t0);
+                as.VREPLGR2VR(bits, vr1, a2);
+                if constexpr (leftward)
+                    as.VSLL(bits, vr0, vr0, vr1);
+                else
+                    as.VSRL(bits, vr0, vr0, vr1);
+                as.VREPLGR2VR(64, vr2, t0);
+                as.VAND_V(vr0, vr0, vr2);
+            }
+        }
+        StoreVR(writer, ctx, vr0);
+        return;
+    }
+    VectorBegin(writer, ctx, false);
     if constexpr (!immediate) {
         if (vector_count)
             writer.ReadPair(ctx.Arg(1), a2, a3);
@@ -258,6 +436,44 @@ template <O opcode> void VectorShuffle(Writer& writer, OpContext& ctx) {
     CheckWidth(writer, bits);
     if constexpr (opcode == O::VecDupPairs32)
         if (VectorImmediate(ctx, 1) > 1) writer.Reject(CompileError::UnsupportedOperand);
+    if (writer.options.lsx) {
+        auto& as = writer.as;
+        LoadVR(writer, vr0, ctx.Arg(0));
+        if constexpr (two) LoadVR(writer, vr1, ctx.Arg(1));
+        if constexpr (opcode == O::VecShuffle32) {
+            as.VSHUF4I_W(vr0, vr0, VectorImmediate(ctx, 1) & 0xffu);
+        } else if constexpr (opcode == O::VecDupPairs32) {
+            as.VSHUF4I_W(vr0, vr0, VectorImmediate(ctx, 1) ? 0xf5u : 0xa0u);
+        } else if constexpr (opcode == O::VecShuffle32TwoSrc) {
+            const unsigned imm = VectorImmediate(ctx, 2) & 0xffu;
+            as.VSHUF4I_W(vr0, vr0, imm & 0x0fu);
+            as.VSHUF4I_W(vr1, vr1, (imm >> 4) & 0x0fu);
+            as.VILVL(64, vr0, vr1, vr0);
+        } else if constexpr (opcode == O::VecShuffle16) {
+            const unsigned imm = VectorImmediate(ctx, 1) & 0xffu;
+            if (VectorImmediate(ctx, 2)) {
+                as.VBSRL_V(vr1, vr0, 8);
+                as.VSHUF4I_H(vr1, vr1, imm);
+                as.VILVL(64, vr0, vr1, vr0);
+            } else {
+                as.VSHUF4I_H(vr1, vr0, imm);
+                as.VBSRL_V(vr0, vr0, 8);
+                as.VILVL(64, vr0, vr0, vr1);
+            }
+        } else if constexpr (opcode == O::VecZip) {
+            if (VectorImmediate(ctx, 3))
+                as.VILVH(bits, vr0, vr1, vr0);
+            else
+                as.VILVL(bits, vr0, vr1, vr0);
+        } else {
+            if (VectorImmediate(ctx, 3))
+                as.VPICKOD(bits, vr0, vr1, vr0);
+            else
+                as.VPICKEV(bits, vr0, vr1, vr0);
+        }
+        StoreVR(writer, ctx, vr0);
+        return;
+    }
     VectorBegin(writer, ctx, two);
     const unsigned lanes = 128 / bits;
     for (unsigned lane = 0; lane < lanes; ++lane) {
@@ -287,6 +503,23 @@ template <O opcode> void VectorShuffle(Writer& writer, OpContext& ctx) {
 }
 
 template <O opcode> void VectorLookup(Writer& writer, OpContext& ctx) {
+    if (writer.options.lsx) {
+        auto& as = writer.as;
+        LoadVR(writer, vr0, ctx.Arg(0));
+        LoadVR(writer, vr1, ctx.Arg(1));
+        if constexpr (opcode == O::VecTableLookup8) {
+            as.VSLTI_B(vr3, vr1, 0);
+            as.VANDI_B(vr2, vr1, 15);
+            as.VSHUF_B(vr2, vr0, vr0, vr2);
+            as.VANDN_V(vr0, vr3, vr2);
+        } else {
+            as.VSLTI_BU(vr3, vr1, 16);
+            as.VSHUF_B(vr2, vr0, vr0, vr1);
+            as.VAND_V(vr0, vr2, vr3);
+        }
+        StoreVR(writer, ctx, vr0);
+        return;
+    }
     VectorBegin(writer, ctx);
     auto& as = writer.as;
     for (unsigned lane = 0; lane < 16; ++lane) {
@@ -400,6 +633,16 @@ LA_ARITHMETIC(VecSatSub)
 #undef LA_ARITHMETIC
 
 void Writer::Handle(Op<O::VecMulHigh16>, OpContext& ctx) {
+    if (options.lsx) {
+        LoadVR(*this, vr0, ctx.Arg(0));
+        LoadVR(*this, vr1, ctx.Arg(1));
+        if (VectorImmediate(ctx, 2))
+            as.VMUH_H(vr0, vr0, vr1);
+        else
+            as.VMUH_HU(vr0, vr0, vr1);
+        StoreVR(*this, ctx, vr0);
+        return;
+    }
     VectorBegin(*this, ctx);
     for (unsigned lane = 0; lane < 8; ++lane) {
         Extract(*this, t0, left, lane, 16, VectorImmediate(ctx, 2));
@@ -420,6 +663,13 @@ void Writer::Handle(Op<O::VecSignedMulWidenLow>, OpContext& ctx) {
 void Writer::Handle(Op<O::VecPack>, OpContext& ctx) {
     const unsigned bits = VectorImmediate(ctx, 2), width = bits / 2;
     if (bits != 16 && bits != 32 && bits != 64) Reject(CompileError::UnsupportedOperand);
+    if (options.lsx) {
+        LoadVR(*this, vr0, ctx.Arg(0));
+        LoadVR(*this, vr1, ctx.Arg(1));
+        as.VSSRANI_ZERO(bits, bool(VectorImmediate(ctx, 3)), vr1, vr0);
+        StoreVR(*this, ctx, vr1);
+        return;
+    }
     VectorBegin(*this, ctx);
     for (unsigned lane = 0; lane < 256 / bits; ++lane) {
         Extract(*this, t2, lane < 128 / bits ? left : right, lane % (128 / bits), bits, true);
@@ -434,6 +684,14 @@ void Writer::Handle(Op<O::VecExtend>, OpContext& ctx) {
     if ((source != 8 && source != 16 && source != 32) ||
         (destination != 16 && destination != 32 && destination != 64) || source >= destination)
         Reject(CompileError::UnsupportedOperand);
+    if (options.lsx) {
+        const bool is_signed = bool(VectorImmediate(ctx, 3));
+        LoadVR(*this, vr0, ctx.Arg(0));
+        for (unsigned cur = source; cur < destination; cur *= 2)
+            as.VSLLWIL_ZERO(cur, is_signed, vr0, vr0);
+        StoreVR(*this, ctx, vr0);
+        return;
+    }
     VectorBegin(*this, ctx, false);
     for (unsigned lane = 0; lane < 128 / destination; ++lane) {
         Extract(*this, t0, left, lane, source, VectorImmediate(ctx, 3));
@@ -443,6 +701,16 @@ void Writer::Handle(Op<O::VecExtend>, OpContext& ctx) {
 }
 
 void Writer::Handle(Op<O::VecAbsDiffSum8>, OpContext& ctx) {
+    if (options.lsx) {
+        LoadVR(*this, vr0, ctx.Arg(0));
+        LoadVR(*this, vr1, ctx.Arg(1));
+        as.VABSD_BU(vr0, vr0, vr1);
+        as.VHADDW_HU_BU(vr0, vr0, vr0);
+        as.VHADDW_WU_HU(vr0, vr0, vr0);
+        as.VHADDW_DU_WU(vr0, vr0, vr0);
+        StoreVR(*this, ctx, vr0);
+        return;
+    }
     VectorBegin(*this, ctx);
     for (unsigned half = 0; half < 2; ++half) {
         for (unsigned lane = 0; lane < 8; ++lane) {
@@ -459,6 +727,14 @@ void Writer::Handle(Op<O::VecAbsDiffSum8>, OpContext& ctx) {
 }
 
 void Writer::Handle(Op<O::VecMadd16>, OpContext& ctx) {
+    if (options.lsx) {
+        LoadVR(*this, vr0, ctx.Arg(0));
+        LoadVR(*this, vr1, ctx.Arg(1));
+        as.VMULWEV(16, true, vr2, vr0, vr1);
+        as.VMADDWOD_W_H(vr2, vr0, vr1);
+        StoreVR(*this, ctx, vr2);
+        return;
+    }
     VectorBegin(*this, ctx);
     for (unsigned lane = 0; lane < 4; ++lane) {
         Extract(*this, t0, left, lane * 2, 16, true);
@@ -484,9 +760,16 @@ LA_SHIFT(VecShiftRightArithmeticImm)
 #undef LA_SHIFT
 
 void Writer::Handle(Op<O::VecByteShift>, OpContext& ctx) {
-    VectorBegin(*this, ctx);
     const unsigned count = VectorImmediate(ctx, 2);
     if (count > 16) Reject(CompileError::UnsupportedOperand);
+    if (options.lsx) {
+        if (VectorImmediate(ctx, 3))
+            EmitByteWindowLSX(*this, ctx, ctx.Arg(1), ctx.Arg(0), 16 - count);
+        else
+            EmitByteWindowLSX(*this, ctx, ctx.Arg(0), ctx.Arg(1), count);
+        return;
+    }
+    VectorBegin(*this, ctx);
     if (VectorImmediate(ctx, 3))
         VectorWindow(*this, {a2, a3, a0, a1}, 128 - count * 8);
     else
@@ -495,9 +778,13 @@ void Writer::Handle(Op<O::VecByteShift>, OpContext& ctx) {
 }
 
 void Writer::Handle(Op<O::VecExtractBytes>, OpContext& ctx) {
-    VectorBegin(*this, ctx);
     const unsigned count = VectorImmediate(ctx, 2);
     if (count > 16) Reject(CompileError::UnsupportedOperand);
+    if (options.lsx) {
+        EmitByteWindowLSX(*this, ctx, ctx.Arg(0), ctx.Arg(1), count);
+        return;
+    }
+    VectorBegin(*this, ctx);
     VectorWindow(*this, {a0, a1, a2, a3}, count * 8);
     VectorFinish(*this, ctx);
 }
@@ -573,6 +860,12 @@ void Writer::Handle(Op<O::VecInsert16>, OpContext& ctx) {
 void Writer::Handle(Op<O::VecMovMask>, OpContext& ctx) {
     const auto bits = VectorImmediate(ctx, 1);
     CheckWidth(*this, bits);
+    if (options.lsx) {
+        LoadVR(*this, vr0, ctx.Arg(0));
+        as.VMSKLTZ(bits, vr0, vr0);
+        as.VPICKVE2GR_DU(ctx.destination, vr0, 0);
+        return;
+    }
     VectorBegin(*this, ctx, false);
     for (unsigned lane = 0; lane < 128 / bits; ++lane) {
         Extract(*this, t0, left, lane, bits);

@@ -186,7 +186,7 @@ private:
                 const auto& incoming = result.homes[i];
                 for (auto& resident : residents)
                     if (resident != NodeId::invalid &&
-                        result.homes[resident].last_use < incoming.definition_position)
+                        result.homes[resident].last_use <= incoming.definition_position)
                         resident = NodeId::invalid;
                 const unsigned width = operations[i].type == Type::V128 ? 2 : 1;
                 unsigned chosen = register_count;

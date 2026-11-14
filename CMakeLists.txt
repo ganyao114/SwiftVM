@@ -211,7 +211,7 @@ add_library(svm_riscv64 STATIC
     source/runtime/backend/riscv64/emit_float.cpp)
 target_link_libraries(svm_riscv64 PRIVATE svm_arm32_numeric)
 target_link_libraries(svm_riscv64 PUBLIC svm_ir PRIVATE svm_biscuit_exact svm_x87 svm_allocation svm_system_query svm_arm64_numeric)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^riscv64" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(riscv64|loongarch64|x86_64|amd64)$")
     target_link_libraries(svm_riscv64 PRIVATE atomic)
 endif()
 
@@ -238,7 +238,7 @@ add_library(svm_loongarch64 STATIC
 target_link_libraries(svm_loongarch64 PRIVATE svm_arm32_numeric)
 target_link_libraries(svm_loongarch64 PUBLIC svm_ir PRIVATE swift_xbyak_loongarch64
     svm_x87 svm_allocation svm_system_query svm_arm64_numeric)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^loongarch64")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(riscv64|loongarch64|x86_64|amd64)$")
     target_link_libraries(svm_loongarch64 PRIVATE atomic)
 endif()
 
@@ -267,7 +267,7 @@ target_link_libraries(svm_x64 PRIVATE svm_arm32_numeric)
 target_include_directories(svm_x64 PRIVATE source/runtime/externals)
 target_link_libraries(svm_x64 PUBLIC svm_ir PRIVATE svm_x87 svm_allocation svm_system_query
     svm_arm64_numeric svm_softfloat_ext80)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64)$")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(riscv64|loongarch64|x86_64|amd64)$")
     target_link_libraries(svm_x64 PRIVATE atomic)
 endif()
 

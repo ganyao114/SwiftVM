@@ -13,7 +13,8 @@ struct Allocation;
 constexpr ir::TargetInfo KnownTargetInfo() noexcept {
     return {ir::TargetMode::Known,
             0x1a64,
-            static_cast<std::uint64_t>(ir::TargetFeature::ConditionalUniformStore) |
+            static_cast<std::uint64_t>(ir::TargetFeature::ShiftedAddress) |
+                    static_cast<std::uint64_t>(ir::TargetFeature::ConditionalUniformStore) |
                     static_cast<std::uint64_t>(ir::TargetFeature::VectorSignedMulWidenLow)};
 }
 
@@ -23,6 +24,7 @@ struct CompileOptions {
     std::uint64_t entry_pc{};
     bool native_fp_environment{}, fault_locations{};
     bool relocatable{};  // Explicit persistence recording; ordinary JIT stays unchanged.
+    bool lbt_x86{}, ual{}, crc32{}, lsx{};
 };
 
 // Exact LA64 words. The caller owns publication, W^X, I-cache synchronization

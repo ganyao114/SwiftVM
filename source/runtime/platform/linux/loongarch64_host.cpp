@@ -33,6 +33,22 @@ const std::uint32_t* FindFCSR(const ucontext_t& machine) noexcept {
     return nullptr;
 }
 
+const std::uint32_t* FindLBT(const ucontext_t& machine) noexcept {
+    const auto* records = reinterpret_cast<const std::byte*>(machine.uc_mcontext.__extcontext);
+    constexpr std::size_t limit = 16384;
+    for (std::size_t at = 0; at + sizeof(sctx_info) <= limit;) {
+        const auto* head = reinterpret_cast<const sctx_info*>(records + at);
+        if (!head->magic || head->size < sizeof(sctx_info) || (head->size & 7) ||
+            head->size > limit - at)
+            return nullptr;
+        const auto* payload = records + at + sizeof(sctx_info);
+        if (head->magic == LBT_CTX_MAGIC && head->size >= sizeof(sctx_info) + sizeof(lbt_context))
+            return &reinterpret_cast<const lbt_context*>(payload)->eflags;
+        at += head->size;
+    }
+    return nullptr;
+}
+
 extern "C" void SvmNativeDispatchL1Probe() noexcept;
 extern "C" void SvmNativeDispatchCountedL1Probe() noexcept;
 
@@ -93,8 +109,17 @@ bool RecoverNative(execution::FaultContext& context,
         }
         const auto* fp = native->fp_environment ? FindFCSR(machine) : nullptr;
         if (native->fp_environment && !fp) return false;
+        const auto lbt_mode = site.recovery[0];
+        const auto lbt_dirty = site.recovery[1];
+        const auto* lbt =
+                (lbt_mode & backend::loongarch64::LbtRecoveryLive) ? FindLBT(machine) : nullptr;
+        if ((lbt_mode & backend::loongarch64::LbtRecoveryLive) && !lbt) return false;
         backend::loongarch64::RestoreGuestState(
-                context, std::as_bytes(std::span{machine.uc_mcontext.__gregs}));
+                context,
+                std::as_bytes(std::span{machine.uc_mcontext.__gregs}),
+                lbt_mode,
+                lbt_dirty,
+                lbt ? *lbt : 0);
         if (fp) native->guest_fpsr = *fp & 0x1f0000;
         execution::RecordGuestFault(context, site, signal, signal_code, pc, address);
         context.exception.native_offset = static_cast<std::uint32_t>(pc - base);

@@ -14,7 +14,10 @@ void Writer::Uniform(OpContext& ctx) {
         if (TypeBits(View(ctx.Arg(1))) < 64) Mask(a0, TypeBits(View(ctx.Arg(1))));
         Store(a0, state, offset, std::min(bits, 64u));
         if (bits == 128) Store(a1, state, offset + 8, 64);
-        if (offset == options.flags_offset && bits == 64) as.MV(packed_flags, a0);
+        if (offset == options.flags_offset && bits == 64) {
+            as.MV(packed_flags, a0);
+            if (options.lbt_x86 && (lbt_live || lbt_canonical_blocks)) ImportPackedToLBT();
+        }
         if (offset == options.pc_offset) {
             static_pc_known = false;
             const auto value = ctx.Arg(1);
@@ -28,9 +31,10 @@ void Writer::Uniform(OpContext& ctx) {
             }
         }
     } else {
-        if (offset == options.flags_offset && bits == 64)
+        if (offset == options.flags_offset && bits == 64) {
+            if (lbt_live) EmitExportLBTToPacked(packed_flags);
             as.MV(ctx.destination, packed_flags);
-        else
+        } else
             Load(ctx.destination, state, offset, std::min(bits, 64u));
         if (bits == 128) Load(ctx.high, state, offset + 8, 64);
     }
@@ -47,21 +51,87 @@ void Writer::Handle(Op<OpCode::GetUniformAddress>, OpContext& ctx) {
 void Writer::Memory(OpContext& ctx) {
     const bool store = ctx.operation.opcode == OpCode::StoreMemory ||
                        ctx.operation.opcode == OpCode::StoreMemoryTSO;
-    const bool ordered = ctx.operation.opcode == OpCode::LoadMemoryTSO ||
-                         ctx.operation.opcode == OpCode::StoreMemoryTSO;
+    const bool load_tso = ctx.operation.opcode == OpCode::LoadMemoryTSO;
+    const bool store_tso = ctx.operation.opcode == OpCode::StoreMemoryTSO;
     auto at = ctx.operands.begin();
-    Expression(at, ctx.operands.end(), a0);
+    std::int64_t signed_disp = 0;
+    bool has_disp = false;
+    if (at != ctx.operands.end()) {
+        const auto root = *at;
+        if (root.Kind() == OperandKind::Expression && root.Count() == 2 &&
+            (root.ExpressionOp() == OperandOp::Add || root.ExpressionOp() == OperandOp::Sub)) {
+            ++at;
+            Expression(at, ctx.operands.end(), a0, 0);
+            if (at == ctx.operands.end()) Reject(CompileError::UnsupportedOperand);
+            if ((*at).Kind() == OperandKind::Immediate) {
+                const auto imm_cell = *at++;
+                const unsigned imm_bits = std::min(64u, TypeBits(View(imm_cell)));
+                const u64 masked_imm = imm_bits == 64
+                                               ? imm_cell.Payload()
+                                               : (imm_cell.Payload() & ((u64{1} << imm_bits) - 1));
+                signed_disp = root.ExpressionOp() == OperandOp::Sub
+                                      ? -static_cast<std::int64_t>(masked_imm)
+                                      : static_cast<std::int64_t>(masked_imm);
+                has_disp = true;
+            } else {
+                Expression(at, ctx.operands.end(), t0, 0);
+                if (root.ExpressionOp() == OperandOp::Sub)
+                    as.SUB(a0, a0, t0);
+                else
+                    as.ADD(a0, a0, t0);
+            }
+        } else {
+            Expression(at, ctx.operands.end(), a0, 0);
+        }
+    } else {
+        Reject(CompileError::UnsupportedOperand);
+    }
     const auto value = store ? *at : CellView{};
     const unsigned bits = std::max(8u, store ? TypeBits(View(value)) : ctx.width);
     if (bits > 128) Reject(CompileError::UnsupportedType);
     // The unaligned byte fallback still reports the logical access width so
     // the fault contract matches the aligned path and the other backends.
-    const unsigned access_bytes = std::min(bits, 64u) / 8;
+    const unsigned access_bytes = bits / 8;
+    std::int32_t disp = 0;
+    if (has_disp) {
+        const std::int64_t max_disp = bits == 128 ? 2039 : 2047;
+        if (options.ual && signed_disp >= -2048 && signed_disp <= max_disp) {
+            disp = static_cast<std::int32_t>(signed_disp);
+        } else if (signed_disp != 0) {
+            Address(a0, a0, signed_disp);
+        }
+    }
     if (store) {
         ReadPair(value, a1, a2);
         Mask(a1, std::min(bits, 64u));
     }
-    if (ordered) as.FENCE(FenceOrder::RW, FenceOrder::RW);
+    if (store_tso) as.FENCE(FenceOrder::RW, FenceOrder::W);
+    if (options.ual) {
+        if (store) {
+            const auto first = static_cast<u32>(output.words.size() * 4);
+            Store(a1, a0, disp, std::min(bits, 64u));
+            RecordGuestAccess(first, 2, access_bytes);
+            if (bits == 128) {
+                const auto first_hi = static_cast<u32>(output.words.size() * 4);
+                Store(a2, a0, disp + 8, 64);
+                RecordGuestAccess(first_hi, 2, access_bytes);
+            }
+        } else if (bits == 128) {
+            const auto first_lo = static_cast<u32>(output.words.size() * 4);
+            Load(a1, a0, disp, 64);
+            RecordGuestAccess(first_lo, 1, access_bytes);
+            const auto first_hi = static_cast<u32>(output.words.size() * 4);
+            Load(ctx.high, a0, disp + 8, 64);
+            RecordGuestAccess(first_hi, 1, access_bytes);
+            as.MV(ctx.destination, a1);
+        } else {
+            const auto first = static_cast<u32>(output.words.size() * 4);
+            Load(ctx.destination, a0, disp, std::min(bits, 64u));
+            RecordGuestAccess(first, 1, access_bytes);
+        }
+        if (load_tso) as.FENCE(FenceOrder::R, FenceOrder::RW);
+        return;
+    }
     Label unaligned, done;
     if (bits >= 16) {
         as.ANDI(t0, a0, std::min(8u, bits / 8) - 1);
@@ -70,20 +140,20 @@ void Writer::Memory(OpContext& ctx) {
     if (store) {
         const auto first = static_cast<u32>(output.words.size() * 4);
         Store(a1, a0, 0, std::min(bits, 64u));
-        RecordGuestAccess(first, store ? 2 : 1, std::min(bits, 64u) / 8);
+        RecordGuestAccess(first, store ? 2 : 1, access_bytes);
         if (bits == 128) {
             const auto first = static_cast<u32>(output.words.size() * 4);
             Store(a2, a0, 8, 64);
-            RecordGuestAccess(first, store ? 2 : 1, 8);
+            RecordGuestAccess(first, store ? 2 : 1, access_bytes);
         }
     } else {
         const auto first = static_cast<u32>(output.words.size() * 4);
         Load(ctx.destination, a0, 0, std::min(bits, 64u));
-        RecordGuestAccess(first, store ? 2 : 1, std::min(bits, 64u) / 8);
+        RecordGuestAccess(first, store ? 2 : 1, access_bytes);
         if (bits == 128) {
             const auto first = static_cast<u32>(output.words.size() * 4);
             Load(ctx.high, a0, 8, 64);
-            RecordGuestAccess(first, store ? 2 : 1, 8);
+            RecordGuestAccess(first, store ? 2 : 1, access_bytes);
         }
     }
     if (bits >= 16) {
@@ -111,7 +181,7 @@ void Writer::Memory(OpContext& ctx) {
         }
         as.Bind(&done);
     }
-    if (ordered) as.FENCE(FenceOrder::RW, FenceOrder::RW);
+    if (load_tso) as.FENCE(FenceOrder::R, FenceOrder::RW);
 }
 
 #define LA_MEMORY(name)                                                                            \
@@ -177,6 +247,9 @@ void Writer::Handle(Op<OpCode::StoreUniformSelectImm>, OpContext& ctx) {
     as.Bind(&done);
     Store(a1, state, ctx.Arg(0).Payload(), 64);
     if (ctx.Arg(0).Payload() == options.pc_offset) static_pc_known = false;
-    if (ctx.Arg(0).Payload() == options.flags_offset) as.MV(packed_flags, a1);
+    if (ctx.Arg(0).Payload() == options.flags_offset) {
+        as.MV(packed_flags, a1);
+        if (options.lbt_x86 && (lbt_live || lbt_canonical_blocks)) ImportPackedToLBT();
+    }
 }
 }  // namespace swift::runtime::backend::loongarch64::detail

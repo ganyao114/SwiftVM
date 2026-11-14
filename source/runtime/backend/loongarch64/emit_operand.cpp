@@ -11,12 +11,27 @@ Type Writer::View(CellView cell) const {
 
 void Writer::Mask(GPR reg, unsigned bits) {
     if (!bits || bits >= 64) return;
-    as.SLLI(reg, reg, 64 - bits);
-    as.SRLI(reg, reg, 64 - bits);
+    if (bits == 8) {
+        as.ANDI(reg, reg, 0xff);
+        return;
+    }
+    as.BSTRPICK_D(reg, reg, bits - 1, 0);
 }
 
 void Writer::SignExtend(GPR reg, unsigned bits) {
-    if (bits >= 64) return;
+    if (!bits || bits >= 64) return;
+    if (bits == 8) {
+        as.EXT_W_B(reg, reg);
+        return;
+    }
+    if (bits == 16) {
+        as.EXT_W_H(reg, reg);
+        return;
+    }
+    if (bits == 32) {
+        as.ADDI_W(reg, reg, 0);
+        return;
+    }
     as.SLLI(reg, reg, 64 - bits);
     as.SRAI(reg, reg, 64 - bits);
 }
@@ -25,8 +40,9 @@ void Writer::Address(GPR destination, GPR base, std::int64_t offset) {
     if (offset >= -2048 && offset <= 2047)
         as.ADDI(destination, base, static_cast<int>(offset));
     else {
-        as.LI(destination, static_cast<u64>(offset));
-        as.ADD(destination, base, destination);
+        const GPR scratch = destination == base ? t8 : destination;
+        as.LI(scratch, static_cast<u64>(offset));
+        as.ADD(destination, base, scratch);
     }
 }
 
@@ -121,10 +137,16 @@ void Writer::Expression(CellRange::Iterator& at,
         case OperandOp::Sub:
             as.SUB(result, result, right);
             return;
-        case OperandOp::AddShift:
-            if (cell.ShiftAmount()) as.SLLI(right, right, cell.ShiftAmount());
-            as.ADD(result, result, right);
+        case OperandOp::AddShift: {
+            const auto shift = cell.ShiftAmount();
+            if (shift >= 1 && shift <= 4) {
+                as.ALSL_D(result, right, result, shift);
+            } else {
+                if (shift) as.SLLI(right, right, shift);
+                as.ADD(result, result, right);
+            }
             return;
+        }
         case OperandOp::Lsl:
             as.SLL(result, result, right);
             return;
@@ -162,13 +184,15 @@ void Writer::Handle(Op<OpCode::GetResult>, OpContext& ctx) { Handle(Op<OpCode::B
 
 void Writer::Handle(Op<OpCode::GetOperand>, OpContext& ctx) {
     auto at = ctx.operands.begin();
-    Expression(at, ctx.operands.end(), ctx.destination);
+    Expression(at, ctx.operands.end(), a0);
+    as.MV(ctx.destination, a0);
     Mask(ctx.destination, ctx.width);
 }
 
 void Writer::Handle(Op<OpCode::ZeroExtend32>, OpContext& ctx) {
-    Read(ctx.Arg(0), ctx.destination);
-    Mask(ctx.destination, 32);
+    const auto src_bits = std::min(64u, TypeBits(View(ctx.Arg(0))));
+    Read(ctx.Arg(0), ctx.destination, true);
+    Mask(ctx.destination, std::min(32u, src_bits));
 }
 
 void Writer::Handle(Op<OpCode::ZeroExtend32To64>, OpContext& ctx) {
@@ -178,7 +202,7 @@ void Writer::Handle(Op<OpCode::ZeroExtend32To64>, OpContext& ctx) {
 void Writer::Handle(Op<OpCode::ZeroExtend64>, OpContext& ctx) { Read(ctx.Arg(0), ctx.destination); }
 
 void Writer::Handle(Op<OpCode::SignExtend>, OpContext& ctx) {
-    Read(ctx.Arg(0), ctx.destination);
+    Read(ctx.Arg(0), ctx.destination, true);
     SignExtend(ctx.destination, std::min(64u, TypeBits(View(ctx.Arg(0)))));
     Mask(ctx.destination, ctx.width);
 }

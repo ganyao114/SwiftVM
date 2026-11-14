@@ -6,6 +6,103 @@
 namespace swift::runtime::backend::loongarch64::detail {
 void Writer::IntegerArithmetic(OpContext& ctx) {
     const auto op = ctx.operation.opcode;
+    const bool need_aux = allocation.homes[ctx.node.value].auxiliary_offset != UINT32_MAX;
+    const bool need_flags = ctx.operation.flag_outputs || need_aux;
+    if (options.lbt_x86 && !need_aux &&
+        (ctx.width == 8 || ctx.width == 16 || ctx.width == 32 || ctx.width == 64)) {
+        const u32 lbt_mask = need_flags ? LbtFlagMask(ctx.operation.flag_outputs) : 0u;
+        auto at = ctx.operands.begin();
+        if (op == OpCode::Neg) {
+            as.MV(a0, x0);
+            Expression(at, ctx.operands.end(), a1);
+        } else {
+            Read(*at++, a0);
+            Expression(at, ctx.operands.end(), a1);
+        }
+        Mask(a0, ctx.width);
+        Mask(a1, ctx.width);
+        const bool subtract = op == OpCode::Sub || op == OpCode::Sbb || op == OpCode::Neg;
+        const bool raw_carry =
+                subtract && ctx.operation.Metadata().profile == FlagProfile::ArithmeticRaw;
+        if (op == OpCode::Adc || op == OpCode::Sbb) {
+            NormalizeLBT();
+            if (subtract)
+                as.SBC(ctx.width, t0, a0, a1);
+            else
+                as.ADC(ctx.width, t0, a0, a1);
+            if (lbt_mask == 0x3f) {
+                if (subtract) {
+                    as.X86SBC(ctx.width, a0, a1);
+                    // Loongson-3A6000 (LA664) silicon quirk: x86sbc.[b|h|w|d] omits -CF_in in its
+                    // 4-bit AF comparator when CF_in=1 and a[3:0]==b[3:0]. Bit 4 of (a0 ^ a1 ^ t0)
+                    // is the exact architectural AF at LBT4.eflags[4].
+                    as.XOR(t1, a0, a1);
+                    as.XOR(t1, t1, t0);
+                    as.X86MTFLAG(t1, 0x04);
+                } else {
+                    as.X86ADC(ctx.width, a0, a1);
+                }
+                lbt_live = true;
+                lbt_dirty_mask |= 0x3fu;
+                carry_xor = raw_carry;
+            } else if (lbt_mask) {
+                as.X86MFFLAG(t7, (~lbt_mask) & 0x3f);
+                if (subtract) {
+                    as.X86SBC(ctx.width, a0, a1);
+                    if (lbt_mask & 0x04u) {
+                        as.XOR(t1, a0, a1);
+                        as.XOR(t1, t1, t0);
+                        as.X86MTFLAG(t1, 0x04);
+                    }
+                } else {
+                    as.X86ADC(ctx.width, a0, a1);
+                }
+                as.X86MTFLAG(t7, (~lbt_mask) & 0x3f);
+                lbt_live = true;
+                lbt_dirty_mask |= lbt_mask;
+                if (lbt_mask & 0x01) carry_xor = raw_carry;
+            }
+            as.MV(ctx.destination, t0);
+            Mask(ctx.destination, ctx.width);
+            return;
+        }
+        const u64 width_mask = ctx.width == 64 ? ~u64{0} : ((u64{1} << ctx.width) - 1);
+        const bool imm_one = (op == OpCode::Add || op == OpCode::Sub) && ctx.count == 2 &&
+                             ctx.Arg(1).Kind() == OperandKind::Immediate &&
+                             (ctx.Arg(1).Payload() & width_mask) == 1;
+        if (lbt_mask == 0x3e && imm_one) {
+            EnsureLBT();
+            if (subtract)
+                as.X86DEC(ctx.width, a0);
+            else
+                as.X86INC(ctx.width, a0);
+            lbt_dirty_mask |= 0x3eu;
+        } else if (lbt_mask == 0x3f) {
+            if (subtract)
+                as.X86SUB(ctx.width, a0, a1);
+            else
+                as.X86ADD(ctx.width, a0, a1);
+            lbt_live = true;
+            lbt_dirty_mask |= 0x3fu;
+            carry_xor = raw_carry;
+        } else if (lbt_mask) {
+            EnsureLBT();
+            as.X86MFFLAG(t7, (~lbt_mask) & 0x3f);
+            if (subtract)
+                as.X86SUB(ctx.width, a0, a1);
+            else
+                as.X86ADD(ctx.width, a0, a1);
+            as.X86MTFLAG(t7, (~lbt_mask) & 0x3f);
+            lbt_dirty_mask |= lbt_mask;
+            if (lbt_mask & 0x01) carry_xor = raw_carry;
+        }
+        if (subtract)
+            as.SUB(ctx.destination, a0, a1);
+        else
+            as.ADD(ctx.destination, a0, a1);
+        Mask(ctx.destination, ctx.width);
+        return;
+    }
     auto at = ctx.operands.begin();
     if (op == OpCode::Neg) {
         as.MV(a0, x0);
@@ -18,6 +115,7 @@ void Writer::IntegerArithmetic(OpContext& ctx) {
     Mask(a1, ctx.width);
     const bool subtract = op == OpCode::Sub || op == OpCode::Sbb || op == OpCode::Neg;
     if (op == OpCode::Adc || op == OpCode::Sbb) {
+        if (lbt_live) EmitExportLBTToPacked(packed_flags);
         as.SRLI(a2, packed_flags, 29);
         as.ANDI(a2, a2, 1);
     } else
@@ -29,8 +127,6 @@ void Writer::IntegerArithmetic(OpContext& ctx) {
         as.ADD(t0, a0, a1);
         as.ADD(ctx.destination, t0, a2);
     }
-    const bool need_flags = ctx.operation.flag_outputs ||
-                            allocation.homes[ctx.node.value].auxiliary_offset != UINT32_MAX;
     if (!need_flags) {
         Mask(ctx.destination, ctx.width);
         return;
@@ -83,6 +179,64 @@ LA_ALU(Neg)
 #undef LA_ALU
 
 void Writer::LogicalArithmetic(OpContext& ctx) {
+    const bool need_aux = allocation.homes[ctx.node.value].auxiliary_offset != UINT32_MAX;
+    if (options.lbt_x86 && !need_aux && ctx.operation.opcode != OpCode::Not &&
+        (ctx.width == 8 || ctx.width == 16 || ctx.width == 32 || ctx.width == 64)) {
+        auto at = ctx.operands.begin();
+        Read(*at++, a0);
+        Expression(at, ctx.operands.end(), a1);
+        const u32 lbt_mask = ctx.operation.flag_outputs ? LbtFlagMask(ctx.operation.flag_outputs) : 0u;
+        const auto emit_lbt = [&] {
+            switch (ctx.operation.opcode) {
+                case OpCode::And:
+                    as.X86AND(ctx.width, a0, a1);
+                    break;
+                case OpCode::Or:
+                    as.X86OR(ctx.width, a0, a1);
+                    break;
+                case OpCode::Xor:
+                    as.X86XOR(ctx.width, a0, a1);
+                    break;
+                case OpCode::AndNot:
+                    as.NOT(t1, a1);
+                    as.X86AND(ctx.width, a0, t1);
+                    break;
+                default:
+                    break;
+            }
+        };
+        if (lbt_mask == 0x3f) {
+            emit_lbt();
+            lbt_live = true;
+            lbt_dirty_mask |= 0x3fu;
+            carry_xor = false;
+        } else if (lbt_mask) {
+            EnsureLBT();
+            as.X86MFFLAG(t7, (~lbt_mask) & 0x3f);
+            emit_lbt();
+            as.X86MTFLAG(t7, (~lbt_mask) & 0x3f);
+            lbt_dirty_mask |= lbt_mask;
+            if (lbt_mask & 0x01) carry_xor = false;
+        }
+        switch (ctx.operation.opcode) {
+            case OpCode::And:
+                as.AND(ctx.destination, a0, a1);
+                break;
+            case OpCode::Or:
+                as.OR(ctx.destination, a0, a1);
+                break;
+            case OpCode::Xor:
+                as.XOR(ctx.destination, a0, a1);
+                break;
+            case OpCode::AndNot:
+                as.ANDN(ctx.destination, a0, a1);
+                break;
+            default:
+                Reject(CompileError::UnsupportedOpcode);
+        }
+        Mask(ctx.destination, ctx.width);
+        return;
+    }
     auto at = ctx.operands.begin();
     Read(*at++, a0);
     const bool unary = at == ctx.operands.end();
@@ -98,8 +252,7 @@ void Writer::LogicalArithmetic(OpContext& ctx) {
             as.XOR(ctx.destination, a0, a1);
             break;
         case OpCode::AndNot:
-            as.NOT(a1, a1);
-            as.AND(ctx.destination, a0, a1);
+            as.ANDN(ctx.destination, a0, a1);
             break;
         case OpCode::Not:
             if (unary)
@@ -111,8 +264,7 @@ void Writer::LogicalArithmetic(OpContext& ctx) {
             Reject(CompileError::UnsupportedOpcode);
     }
     Mask(ctx.destination, ctx.width);
-    if (ctx.operation.flag_outputs ||
-        allocation.homes[ctx.node.value].auxiliary_offset != UINT32_MAX) {
+    if (ctx.operation.flag_outputs || need_aux) {
         as.ANDI(t3, ctx.destination, 255);
         as.SEQZ(t0, ctx.destination);
         as.SLLI(t0, t0, 30);
@@ -200,13 +352,34 @@ void Writer::Handle(Op<OpCode::SignedDiv64>, OpContext& ctx) {
 
 void Writer::Shift(OpContext& ctx) {
     const auto op = ctx.operation.opcode;
-    if (op == OpCode::RorImm && (ctx.width == 32 || ctx.width == 64)) {
-        Read(ctx.Arg(0), a0, true);
+    const bool can_hw_rotr = ctx.width == 32 || ctx.width == 64 ||
+                             (options.lbt_x86 && (ctx.width == 8 || ctx.width == 16));
+    if (op == OpCode::RorImm && can_hw_rotr) {
+        Read(ctx.Arg(0), a0);
         const auto count = static_cast<unsigned>(ctx.Arg(1).Payload()) & (ctx.width - 1);
-        if (ctx.width == 32)
+        if (ctx.width == 8)
+            as.ROTRI_B(ctx.destination, a0, count);
+        else if (ctx.width == 16)
+            as.ROTRI_H(ctx.destination, a0, count);
+        else if (ctx.width == 32)
             as.ROTRI_W(ctx.destination, a0, count);
         else
             as.ROTRI_D(ctx.destination, a0, count);
+        Mask(ctx.destination, ctx.width);
+        return;
+    }
+    if (op == OpCode::RorValue && can_hw_rotr) {
+        Read(ctx.Arg(0), a0);
+        Read(ctx.Arg(1), a1, true);
+        if (ctx.width == 8)
+            as.ROTR_B(ctx.destination, a0, a1);
+        else if (ctx.width == 16)
+            as.ROTR_H(ctx.destination, a0, a1);
+        else if (ctx.width == 32)
+            as.ROTR_W(ctx.destination, a0, a1);
+        else
+            as.ROTR_D(ctx.destination, a0, a1);
+        Mask(ctx.destination, ctx.width);
         return;
     }
     Read(ctx.Arg(0), a0);
@@ -327,10 +500,10 @@ void Writer::BitField(OpContext& ctx) {
     }
     const u64 field = length == 64 ? UINT64_MAX : ((u64{1} << length) - 1) << lsb;
     Read(ctx.Arg(0), a0, true);
+    if (insert) Read(ctx.Arg(1), a1, true);
     as.LI(t0, ~field);
     as.AND(ctx.destination, a0, t0);
     if (insert) {
-        Read(ctx.Arg(1), a1, true);
         as.SLLI(a1, a1, lsb);
         as.LI(t0, field);
         as.AND(a1, a1, t0);
@@ -389,6 +562,13 @@ LA_COUNT(CountTrailingZeros64)
 
 void Writer::Handle(Op<OpCode::PopCount>, OpContext& ctx) {
     Read(ctx.Arg(0), a0, true);
+    if (options.lsx) {
+        as.VINSGR2VR_D(vr0, a0, 0);
+        as.VPCNT_D(vr0, vr0);
+        as.VPICKVE2GR_DU(ctx.destination, vr0, 0);
+        Mask(ctx.destination, ctx.width);
+        return;
+    }
     as.LI(t0, UINT64_C(0x5555555555555555));
     as.SRLI(t1, a0, 1);
     as.AND(t1, t1, t0);
@@ -427,6 +607,28 @@ void Writer::Handle(Op<OpCode::ParallelBitExtract>, OpContext& ctx) {
 }
 
 void Writer::Handle(Op<OpCode::Crc32c>, OpContext& ctx) {
+    const auto data_bits = ctx.Arg(2).Payload();
+    if (options.crc32 &&
+        (data_bits == 8 || data_bits == 16 || data_bits == 32 || data_bits == 64)) {
+        Read(ctx.Arg(0), a0, true);
+        Read(ctx.Arg(1), a1, true);
+        switch (data_bits) {
+            case 8:
+                as.CRCC_W_B_W(ctx.destination, a1, a0);
+                break;
+            case 16:
+                as.CRCC_W_H_W(ctx.destination, a1, a0);
+                break;
+            case 32:
+                as.CRCC_W_W_W(ctx.destination, a1, a0);
+                break;
+            default:
+                as.CRCC_W_D_W(ctx.destination, a1, a0);
+                break;
+        }
+        Mask(ctx.destination, 32);
+        return;
+    }
     Read(ctx.Arg(0), a0, true);
     Read(ctx.Arg(1), a1, true);
     Mask(a0, 32);

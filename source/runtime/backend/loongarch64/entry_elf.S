@@ -134,7 +134,7 @@ add.d $t3, $t3, $t0
 ld.d $t5, $t3, 0
 bne $t5, $a0, 2f
 ld.d $t5, $t3, 8
-dbar 0
+dbar 0x14
 beqz $t5, 3f
 .if \counted
 SVM_LA_COUNT SVM_LA_CTX_HITS

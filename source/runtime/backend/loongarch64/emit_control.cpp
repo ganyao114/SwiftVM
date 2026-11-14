@@ -24,35 +24,32 @@ void Writer::Handle(Op<OpCode::GuestDispatchSafepoint>, OpContext& ctx) {
 
 void Writer::SelectValue(OpContext& ctx) {
     const auto op = ctx.operation.opcode;
-    if (op != OpCode::CondSelect && ctx.operation.type != Type::V128) {
-        Read(ctx.Arg(0), a0, true);
-        Read(ctx.Arg(1), a1, true);
-        Read(ctx.Arg(2), a2, true);
+    if (op == OpCode::CondSelect)
+        Condition(t0, static_cast<ir::Condition>(ctx.Arg(0).Payload()));
+    else {
+        Read(ctx.Arg(0), a0);
         if (op == OpCode::SelectZero)
             as.SEQZ(t0, a0);
         else
             as.SNEZ(t0, a0);
+    }
+    if (ctx.operation.type != Type::V128) {
+        Read(ctx.Arg(1), a1, true);
+        Read(ctx.Arg(2), a2, true);
         as.MASKEQZ(a1, a1, t0);
         as.MASKNEZ(a2, a2, t0);
         as.OR(ctx.destination, a1, a2);
+        Mask(ctx.destination, ctx.width);
         return;
     }
-    if (op == OpCode::CondSelect)
-        Condition(a0, static_cast<ir::Condition>(ctx.Arg(0).Payload()));
-    else
-        Read(ctx.Arg(0), a0);
-    Label other, done;
-    if (op == OpCode::SelectZero)
-        as.BNE(a0, x0, &other);
-    else
-        as.BEQ(a0, x0, &other);
     ReadPair(ctx.Arg(1), a1, a2);
-    as.J(&done);
-    as.Bind(&other);
-    ReadPair(ctx.Arg(2), a1, a2);
-    as.Bind(&done);
-    as.MV(ctx.destination, a1);
-    if (ctx.operation.type == Type::V128) as.MV(ctx.high, a2);
+    ReadPair(ctx.Arg(2), a3, a6);
+    as.MASKEQZ(a1, a1, t0);
+    as.MASKNEZ(a3, a3, t0);
+    as.OR(ctx.destination, a1, a3);
+    as.MASKEQZ(a2, a2, t0);
+    as.MASKNEZ(a6, a6, t0);
+    as.OR(ctx.high, a2, a6);
 }
 
 void Writer::Handle(Op<OpCode::Select>, OpContext& ctx) { SelectValue(ctx); }
