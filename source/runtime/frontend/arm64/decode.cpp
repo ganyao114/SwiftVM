@@ -27,9 +27,8 @@ std::int64_t Signed(std::uint32_t value, unsigned bits) {
     const auto sign = std::uint64_t{1} << (bits - 1);
     return std::int64_t((std::uint64_t(value) ^ sign) - sign);
 }
-}  // namespace
 
-FlowKind Instruction::Flow() const noexcept {
+FlowKind ClassifyFlow(std::uint32_t word) noexcept {
     if ((word & 0x7c000000u) == 0x14000000u)
         return (word & 0x80000000u) ? FlowKind::Call : FlowKind::Jump;
     if ((word & 0xff000010u) == 0x54000000u || (word & 0x7e000000u) == 0x34000000u ||
@@ -42,6 +41,15 @@ FlowKind Instruction::Flow() const noexcept {
     return FlowKind::Linear;
 }
 
+bool IsBoundary(std::uint32_t word, FlowKind flow) noexcept {
+    return flow != FlowKind::Linear ||
+           detail::StateRequest(word).kind != runtime::arm64::StateServiceKind::None ||
+           ((word & 0xffe00000u) == 0xd5000000u && !(word & (1u << 21)) &&
+            ((word >> 5) & 0xffff) == vixl::aarch64::FPCR) ||
+           ((word & vixl::aarch64::MemBarrierMask) == vixl::aarch64::ISB);
+}
+}  // namespace
+
 bool Instruction::RelativeTarget(std::uint64_t& target) const noexcept {
     if ((word & 0x7c000000u) == 0x14000000u)
         target = pc + Signed(word & 0x3ffffff, 26) * 4;
@@ -52,14 +60,6 @@ bool Instruction::RelativeTarget(std::uint64_t& target) const noexcept {
     else
         return false;
     return true;
-}
-
-bool Instruction::Boundary() const noexcept {
-    return Flow() != FlowKind::Linear ||
-           detail::StateRequest(word).kind != runtime::arm64::StateServiceKind::None ||
-           ((word & 0xffe00000u) == 0xd5000000u && !(word & (1u << 21)) &&
-            ((word >> 5) & 0xffff) == vixl::aarch64::FPCR) ||
-           ((word & vixl::aarch64::MemBarrierMask) == vixl::aarch64::ISB);
 }
 
 DecodeOneResult DecodeOne(std::span<const std::uint8_t> bytes,
@@ -79,6 +79,8 @@ DecodeOneResult DecodeOne(std::span<const std::uint8_t> bytes,
         Decoder().Decode(&selector,
                          reinterpret_cast<vixl::aarch64::Instruction*>(&out.instruction.word));
         out.instruction.family = static_cast<std::uint16_t>(selector.family);
+        out.instruction.flow = ClassifyFlow(out.instruction.word);
+        out.instruction.boundary = IsBoundary(out.instruction.word, out.instruction.flow);
         if (selector.family == detail::Family::Unallocated ||
             selector.family == detail::Family::Reserved)
             out.error = DecodeError::InvalidEncoding;

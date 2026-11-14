@@ -23,14 +23,16 @@ public:
 
     std::uint16_t FamilyCode() const noexcept { return family; }
 
-    FlowKind Flow() const noexcept;
+    FlowKind Flow() const noexcept { return flow; }
     bool RelativeTarget(std::uint64_t&) const noexcept;
-    bool Boundary() const noexcept;
+    bool Boundary() const noexcept { return boundary; }
 
 private:
     std::uint64_t pc{};
     std::uint32_t word{};
     std::uint16_t family{};
+    FlowKind flow{FlowKind::Linear};
+    bool boundary{};
     friend DecodeOneResult DecodeOne(std::span<const std::uint8_t>, std::uint64_t, DecodeTiming*);
 };
 

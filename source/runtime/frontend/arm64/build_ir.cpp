@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <vector>
 #include "build_ir.h"
 #include "runtime/frontend/timing.h"
@@ -54,7 +55,20 @@ BuildResult EmitDecoded(std::span<const Instruction> instructions,
                            ? BlockId{u32(i - blocks.begin())}
                            : BlockId{};
         };
-        std::vector<u64> exits;
+        std::array<u64, 64> local_exits;
+        std::size_t exit_count{};
+        std::vector<u64> heap_exits;
+        const auto push_exit = [&](u64 addr) {
+            if (heap_exits.empty() && exit_count < local_exits.size()) {
+                local_exits[exit_count++] = addr;
+                return;
+            }
+            if (heap_exits.empty()) {
+                heap_exits.reserve(local_exits.size() * 2);
+                heap_exits.assign(local_exits.begin(), local_exits.begin() + exit_count);
+            }
+            heap_exits.push_back(addr);
+        };
         if (scope == Scope::Function && !external)
             for (const auto& b : blocks) {
                 if (!b.instruction_count) continue;
@@ -62,12 +76,16 @@ BuildResult EmitDecoded(std::span<const Instruction> instructions,
                 if (last.Flow() != FlowKind::Conditional) continue;
                 u64 taken{};
                 if (last.RelativeTarget(taken)) {
-                    if (!internal(taken)) exits.push_back(taken);
-                    if (!internal(last.PC() + 4)) exits.push_back(last.PC() + 4);
+                    if (!internal(taken)) push_exit(taken);
+                    if (!internal(last.PC() + 4)) push_exit(last.PC() + 4);
                 }
             }
-        std::sort(exits.begin(), exits.end());
-        exits.erase(std::unique(exits.begin(), exits.end()), exits.end());
+        u64* exits_begin = heap_exits.empty() ? local_exits.data() : heap_exits.data();
+        std::size_t exits_size = heap_exits.empty() ? exit_count : heap_exits.size();
+        std::sort(exits_begin, exits_begin + exits_size);
+        exits_size = static_cast<std::size_t>(
+                std::unique(exits_begin, exits_begin + exits_size) - exits_begin);
+        const std::span<const u64> exits{exits_begin, exits_size};
         for (std::size_t i = 0; i < blocks.size() + exits.size(); ++i) {
             const auto r = sink.CreateBlock();
             Require(r.error);
@@ -256,6 +274,10 @@ BuildResult BuildIR(std::span<const BlockWindow> windows,
         return {BuildError::InvalidInput};
     std::vector<Instruction> instructions;
     std::vector<DecodedBlock> blocks;
+    blocks.reserve(windows.size());
+    instructions.reserve(scope == Scope::Block
+                                 ? std::min<std::size_t>(windows[0].bytes.size() / 4, 64)
+                                 : std::min<std::size_t>(windows.size() * 8, 256));
     {
         runtime::frontend::ScopedBuildTimer formation{
                 timing && timing->stages ? &timing->formation_ns : nullptr};

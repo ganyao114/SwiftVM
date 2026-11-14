@@ -9,7 +9,7 @@ void VisitCryptoAES(const vixl::aarch64::Instruction* instr) override {
         return;
     }
     auto source = ReadVRegister(instr->GetRn(), Type::V128);
-    auto zero = this->VecDup64(ImmValue(0, Type::U64)).WithView(Type::V128);
+    auto zero = this->VecSharedZero().WithView(Type::V128);
     Value result;
     if (op == aese || op == aesd) {
         // ARM adds the key before substitution; shared AES IR follows x86 and

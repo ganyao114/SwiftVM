@@ -78,16 +78,20 @@ void VisitNEONModifiedImmediate(const vixl::aarch64::Instruction* instr) overrid
         WriteQRegister(instr->GetRd(), vec);
         return;
     }
-    auto apply = [&](bool high) {
-        auto old = ReadVHalf(instr->GetRd(), high);
-        return op_bit ? this->template And<Type::U64>(old, SingleOperand(Imm{~fill}))
+    const u64 mask_bits = op_bit ? ~fill : fill;
+    if (instr->GetNEONQ()) {
+        auto old = ReadVRegister(instr->GetRd(), Type::V128);
+        auto cvec = this->VecLoadConst(Imm{mask_bits}, Imm{mask_bits}).WithView(Type::V128);
+        auto res = (op_bit ? this->VecAnd(old, cvec) : this->VecOr(old, cvec)).WithView(Type::V128);
+        WriteQRegister(instr->GetRd(), res);
+        return;
+    }
+    auto old = ReadVHalf(instr->GetRd(), false);
+    auto low = op_bit ? this->template And<Type::U64>(old, SingleOperand(Imm{mask_bits}))
                                 .WithView(Type::U64)
-                      : this->template Or<Type::U64>(old, SingleOperand(Imm{fill}))
+                      : this->template Or<Type::U64>(old, SingleOperand(Imm{mask_bits}))
                                 .WithView(Type::U64);
-    };
-    auto low = apply(false);
-    auto high = instr->GetNEONQ() ? apply(true) : ImmValue(0, Type::U64);
-    WriteVHalves(instr->GetRd(), low, high);
+    WriteDRegister(instr->GetRd(), low);
 }
 
 void VisitNEON2RegMisc(const vixl::aarch64::Instruction* instr) override {

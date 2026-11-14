@@ -46,13 +46,25 @@ void VisitNEONCopy(const vixl::aarch64::Instruction* instr) override {
             Interrupt(InterruptReason::ILL_CODE, current_pc);
             return;
         }
-        auto half = op == NEON_DUP_ELEMENT ? extract(index) : ReadXRegister(rn);
-        half = this->template And<Type::U64>(half, SingleOperand(Imm{mask})).WithView(Type::U64);
-        for (u32 shift = bits; shift < 64; shift *= 2) {
-            auto shifted = this->template LslImm<Type::U64>(half, Imm{shift}).WithView(Type::U64);
-            half = this->template Or<Type::U64>(half, SingleOperand(shifted)).WithView(Type::U64);
+        if (op == NEON_DUP_ELEMENT && is_q && (bits == 32 || bits == 64)) {
+            const u32 shuf = bits == 32 ? index * 0x55u : (index ? 0xEEu : 0x44u);
+            auto vec = this->VecShuffle32(ReadVRegister(rn, Type::V128), Imm{shuf})
+                               .WithView(Type::V128);
+            WriteQRegister(rd, vec);
+            return;
         }
-        WriteVHalves(rd, half, is_q ? half : ImmValue(0, Type::U64));
+        Value half = op == NEON_DUP_ELEMENT
+                             ? extract(index)
+                             : (bits == 64 ? ReadXRegister(rn)
+                                           : this->template And<Type::U64>(
+                                                         ReadXRegister(rn),
+                                                         SingleOperand(Imm{mask}))
+                                                     .WithView(Type::U64));
+        half = ReplicateTo64(half, bits);
+        if (is_q)
+            WriteQRegister(rd, this->VecDup64(half).WithView(Type::V128));
+        else
+            WriteDRegister(rd, half);
         return;
     }
     if (op == NEON_UMOV || op == NEON_SMOV) {

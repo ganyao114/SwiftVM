@@ -89,13 +89,34 @@ void WriteVRegister(u8 code, Value value) {
 }
 
 Value SignExtendValue(Value value, u32 from_bits) {
+    if (from_bits >= 64) {
+        return Widen(value);
+    }
+    if (from_bits == 8 || from_bits == 16 || from_bits == 32) {
+        return this->template SignExtend<Type::U64>(value.WithView(ScalarType(from_bits)));
+    }
     auto wide = Widen(value);
     u32 shift = 64 - from_bits;
-    if (shift == 0) {
-        return wide;
-    }
     auto shifted = this->template LslImm<Type::U64>(wide, Imm{shift}).WithView(Type::U64);
     return this->template AsrImm<Type::U64>(shifted, Imm{shift}).WithView(Type::U64);
+}
+
+Value ReplicateTo64(Value masked, u32 bits) {
+    if (bits == 8) {
+        return this
+                ->template Mul<Type::U64>(masked, SingleOperand(Imm{UINT64_C(0x0101010101010101)}))
+                .WithView(Type::U64);
+    }
+    if (bits == 16) {
+        return this
+                ->template Mul<Type::U64>(masked, SingleOperand(Imm{UINT64_C(0x0001000100010001)}))
+                .WithView(Type::U64);
+    }
+    if (bits == 32) {
+        auto high = this->template LslImm<Type::U64>(masked, Imm{32u}).WithView(Type::U64);
+        return this->template Or<Type::U64>(masked, SingleOperand(high)).WithView(Type::U64);
+    }
+    return masked;
 }
 
 Value ShiftOperand(bool is64, Value value, Shift shift, u32 amount) {

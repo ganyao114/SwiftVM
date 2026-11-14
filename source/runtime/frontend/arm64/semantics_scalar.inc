@@ -263,86 +263,129 @@ void VisitMoveWideImmediate(const vixl::aarch64::Instruction* instr) override {
 }
 
 void VisitBitfield(const vixl::aarch64::Instruction* instr) override {
-    bool is64 = instr->GetSixtyFourBits();
-    u32 reg_size = is64 ? 64 : 32;
-    u64 reg_mask = is64 ? kXRegMask : kWRegMask;
-    int R = instr->GetImmR();
-    int S = instr->GetImmS();
-    int diff = S - R;
-    u64 mask;
-    if (diff >= 0) {
-        mask = ~UINT64_C(0) >> (64 - (diff + 1));
-        mask = (static_cast<unsigned>(diff) < (reg_size - 1)) ? mask : reg_mask;
-    } else {
-        mask = ~UINT64_C(0) >> (64 - (S + 1));
-        mask = vixl::RotateRight(mask, R, reg_size);
-        diff += reg_size;
+    const bool is64 = instr->GetSixtyFourBits();
+    const u32 reg_size = is64 ? 64u : 32u;
+    const u64 reg_mask = is64 ? kXRegMask : kWRegMask;
+    const u32 R = u32(instr->GetImmR());
+    const u32 S = u32(instr->GetImmS());
+    if (((instr->GetInstructionBits() >> 22) & 1u) != u32(is64) || R >= reg_size || S >= reg_size) {
+        Interrupt(InterruptReason::ILL_CODE, current_pc);
+        return;
     }
 
-    // inzero indicates if the extracted bitfield is inserted into the
-    // destination register value or in zero. If extend is true, the sign of
-    // the extracted bitfield is extended.
-    bool inzero = false;
-    bool extend = false;
+    const auto type = GPRType(is64);
+    const auto lsl = [&](Value v, u32 amt) {
+        return is64 ? this->template LslImm<Type::U64>(v, Imm{amt}).WithView(type)
+                    : this->template LslImm<Type::U32>(v, Imm{amt}).WithView(type);
+    };
+    const auto lsr = [&](Value v, u32 amt) {
+        return is64 ? this->template LsrImm<Type::U64>(v, Imm{amt}).WithView(type)
+                    : this->template LsrImm<Type::U32>(v, Imm{amt}).WithView(type);
+    };
+    const auto asr = [&](Value v, u32 amt) {
+        return is64 ? this->template AsrImm<Type::U64>(v, Imm{amt}).WithView(type)
+                    : this->template AsrImm<Type::U32>(v, Imm{amt}).WithView(type);
+    };
+    const auto bit_and = [&](Value v, u64 m) {
+        return is64 ? this->template And<Type::U64>(v, SingleOperand(Imm{m})).WithView(type)
+                    : this->template And<Type::U32>(v, SingleOperand(Imm{u32(m)})).WithView(type);
+    };
+    const auto bit_or = [&](Value a, Value b) {
+        return is64 ? this->template Or<Type::U64>(a, SingleOperand(b)).WithView(type)
+                    : this->template Or<Type::U32>(a, SingleOperand(b)).WithView(type);
+    };
+
+    Value result;
     switch (instr->Mask(BitfieldMask)) {
-        case BFM_x:
-        case BFM_w:
-            break;
-        case SBFM_x:
-        case SBFM_w:
-            inzero = true;
-            extend = true;
-            break;
-        case UBFM_x:
         case UBFM_w:
-            inzero = true;
+        case UBFM_x: {
+            auto rn = ReadRegister(instr->GetRn(), type);
+            if (S >= R) {
+                if (R == 0 && S == reg_size - 1) {
+                    result = rn;
+                } else if (S == reg_size - 1) {
+                    result = lsr(rn, R);
+                } else {
+                    const u64 fmask = (UINT64_C(1) << (S - R + 1)) - 1;
+                    result = bit_and(R ? lsr(rn, R) : rn, fmask);
+                }
+            } else {
+                const u32 shift = reg_size - R;
+                if (S + 1 == R) {
+                    result = lsl(rn, shift);
+                } else {
+                    const u64 fmask = (UINT64_C(1) << (S + 1)) - 1;
+                    result = lsl(bit_and(rn, fmask), shift);
+                }
+            }
             break;
+        }
+        case SBFM_w:
+        case SBFM_x: {
+            auto rn = ReadRegister(instr->GetRn(), type);
+            if (S >= R) {
+                if (R == 0 && S == reg_size - 1) {
+                    result = rn;
+                } else if (S == reg_size - 1) {
+                    result = asr(rn, R);
+                } else if (R == 0 && (S == 7 || S == 15 || S == 31)) {
+                    auto narrow = rn.WithView(ScalarType(S + 1));
+                    result = is64 ? this->template SignExtend<Type::U64>(narrow)
+                                  : this->template SignExtend<Type::U32>(narrow);
+                } else {
+                    const u32 lsh = reg_size - 1 - S;
+                    const u32 rsh = reg_size - (S - R + 1);
+                    result = asr(lsh ? lsl(rn, lsh) : rn, rsh);
+                }
+            } else {
+                const u32 shift = reg_size - R;
+                if (S + 1 == R) {
+                    result = lsl(rn, shift);
+                } else {
+                    const u32 lsh = reg_size - 1 - S;
+                    const u32 rsh = R - 1 - S;
+                    result = asr(lsl(rn, lsh), rsh);
+                }
+            }
+            break;
+        }
+        case BFM_w:
+        case BFM_x: {
+            if (S >= R && R == 0 && S == reg_size - 1) {
+                result = ReadRegister(instr->GetRn(), type);
+                break;
+            }
+            auto rd = ReadRegister(instr->GetRd(), type);
+            if (S >= R) {
+                const u32 width = S - R + 1;
+                const u64 fmask = (UINT64_C(1) << width) - 1;
+                auto kept = bit_and(rd, ~fmask & reg_mask);
+                if (instr->GetRn() == kZeroRegCode) {
+                    result = kept;
+                } else {
+                    auto rn = ReadRegister(instr->GetRn(), type);
+                    auto src = R ? lsr(rn, R) : rn;
+                    if (S < reg_size - 1) src = bit_and(src, fmask);
+                    result = bit_or(kept, src);
+                }
+            } else {
+                const u32 shift = reg_size - R;
+                const u32 width = S + 1;
+                const u64 fmask = ((UINT64_C(1) << width) - 1) << shift;
+                auto kept = bit_and(rd, ~fmask & reg_mask);
+                if (instr->GetRn() == kZeroRegCode) {
+                    result = kept;
+                } else {
+                    auto rn = ReadRegister(instr->GetRn(), type);
+                    auto src = lsl(rn, shift);
+                    if (S + 1 < R) src = bit_and(src, fmask);
+                    result = bit_or(kept, src);
+                }
+            }
+            break;
+        }
         default:
             VIXL_UNIMPLEMENTED();
-    }
-
-    auto type = GPRType(is64);
-    auto src = Widen(ReadRegister(instr->GetRn(), type));
-
-    // Rotate the source bitfield into place.
-    Value rotated;
-    if (R == 0) {
-        rotated = src;
-    } else if (is64) {
-        rotated = this->template RorImm<Type::U64>(src, Imm{u32(R)}).WithView(Type::U64);
-    } else {
-        // 32 bit rotate of a zero extended value.
-        auto lo = this->template LsrImm<Type::U64>(src, Imm{u32(R)}).WithView(Type::U64);
-        auto hi = this->template LslImm<Type::U64>(src, Imm{u32(reg_size - R)}).WithView(Type::U64);
-        rotated = this->template Or<Type::U64>(lo, SingleOperand(hi)).WithView(Type::U64);
-    }
-
-    Value result =
-            this->template And<Type::U64>(rotated, SingleOperand(Imm{mask})).WithView(Type::U64);
-
-    if (extend) {
-        // Sign bits: replicate bit S of the source across all bits above it,
-        // then keep only the bits above the extracted field.
-        u64 topbits = (diff == 63) ? 0 : (~UINT64_C(0) << (diff + 1));
-        Value sign_extended;
-        if (S == 63) {
-            sign_extended = src;
-        } else {
-            auto shl = this->template LslImm<Type::U64>(src, Imm{u32(63 - S)}).WithView(Type::U64);
-            sign_extended =
-                    this->template AsrImm<Type::U64>(shl, Imm{u32(63 - S)}).WithView(Type::U64);
-        }
-        auto signbits = this->template And<Type::U64>(sign_extended, SingleOperand(Imm{topbits}))
-                                .WithView(Type::U64);
-        result = this->template Or<Type::U64>(result, SingleOperand(signbits)).WithView(Type::U64);
-    }
-
-    if (!inzero) {
-        auto dst = Widen(ReadRegister(instr->GetRd(), type));
-        auto dst_masked =
-                this->template And<Type::U64>(dst, SingleOperand(Imm{~mask})).WithView(Type::U64);
-        result =
-                this->template Or<Type::U64>(result, SingleOperand(dst_masked)).WithView(Type::U64);
     }
 
     if (is64) {
@@ -473,19 +516,23 @@ void VisitDataProcessing2Source(const vixl::aarch64::Instruction* instr) overrid
 void VisitDataProcessing3Source(const vixl::aarch64::Instruction* instr) override {
     bool is64 = instr->GetSixtyFourBits();
     auto type = GPRType(is64);
+    const u8 ra_code = instr->GetRa();
 
-    Value result{};
     switch (instr->Mask(DataProcessing3SourceMask)) {
         case MADD_w:
         case MADD_x: {
-            // MUL alias when Ra == XZR.
             auto rn = ReadRegister(instr->GetRn(), type);
             auto rm = ReadRegister(instr->GetRm(), type);
-            auto ra = ReadRegister(instr->GetRa(), type);
             auto mul = is64 ? this->template Mul<Type::U64>(rn, SingleOperand(rm)).WithView(type)
                             : this->template Mul<Type::U32>(rn, SingleOperand(rm)).WithView(type);
-            result = is64 ? this->template Add<Type::U64>(ra, SingleOperand(mul)).WithView(type)
-                          : this->template Add<Type::U32>(ra, SingleOperand(mul)).WithView(type);
+            Value result = mul;
+            if (ra_code != kZeroRegCode) {
+                auto ra = ReadRegister(ra_code, type);
+                result = is64 ? this->template Add<Type::U64>(ra, SingleOperand(mul))
+                                        .WithView(type)
+                              : this->template Add<Type::U32>(ra, SingleOperand(mul))
+                                        .WithView(type);
+            }
             if (is64) {
                 WriteXRegister(instr->GetRd(), result);
             } else {
@@ -497,11 +544,19 @@ void VisitDataProcessing3Source(const vixl::aarch64::Instruction* instr) overrid
         case MSUB_x: {
             auto rn = ReadRegister(instr->GetRn(), type);
             auto rm = ReadRegister(instr->GetRm(), type);
-            auto ra = ReadRegister(instr->GetRa(), type);
             auto mul = is64 ? this->template Mul<Type::U64>(rn, SingleOperand(rm)).WithView(type)
                             : this->template Mul<Type::U32>(rn, SingleOperand(rm)).WithView(type);
-            result = is64 ? this->template Sub<Type::U64>(ra, SingleOperand(mul)).WithView(type)
-                          : this->template Sub<Type::U32>(ra, SingleOperand(mul)).WithView(type);
+            Value result;
+            if (ra_code == kZeroRegCode) {
+                result = is64 ? this->template Neg<Type::U64>(mul).WithView(type)
+                              : this->template Neg<Type::U32>(mul).WithView(type);
+            } else {
+                auto ra = ReadRegister(ra_code, type);
+                result = is64 ? this->template Sub<Type::U64>(ra, SingleOperand(mul))
+                                        .WithView(type)
+                              : this->template Sub<Type::U32>(ra, SingleOperand(mul))
+                                        .WithView(type);
+            }
             if (is64) {
                 WriteXRegister(instr->GetRd(), result);
             } else {
@@ -509,107 +564,49 @@ void VisitDataProcessing3Source(const vixl::aarch64::Instruction* instr) overrid
             }
             return;
         }
-        case UMADDL_x: {
-            // Widening multiply: sources are W registers.
-            auto rn = ReadWRegister(instr->GetRn());
-            auto rm = ReadWRegister(instr->GetRm());
-            auto ra = ReadXRegister(instr->GetRa());
-            auto l = this->ZeroExtend64(rn).WithView(Type::U64);
-            auto r = this->ZeroExtend64(rm).WithView(Type::U64);
-            auto mul = this->template Mul<Type::U64>(l, SingleOperand(r)).WithView(Type::U64);
-            WriteXRegister(
-                    instr->GetRd(),
-                    this->template Add<Type::U64>(ra, SingleOperand(mul)).WithView(Type::U64));
-            return;
-        }
+        case UMADDL_x:
         case UMSUBL_x: {
-            auto rn = ReadWRegister(instr->GetRn());
-            auto rm = ReadWRegister(instr->GetRm());
-            auto ra = ReadXRegister(instr->GetRa());
-            auto l = this->ZeroExtend64(rn).WithView(Type::U64);
-            auto r = this->ZeroExtend64(rm).WithView(Type::U64);
+            const bool is_sub = instr->Mask(DataProcessing3SourceMask) == UMSUBL_x;
+            auto l = this->ZeroExtend64(ReadWRegister(instr->GetRn())).WithView(Type::U64);
+            auto r = this->ZeroExtend64(ReadWRegister(instr->GetRm())).WithView(Type::U64);
             auto mul = this->template Mul<Type::U64>(l, SingleOperand(r)).WithView(Type::U64);
-            WriteXRegister(
-                    instr->GetRd(),
-                    this->template Sub<Type::U64>(ra, SingleOperand(mul)).WithView(Type::U64));
+            Value result;
+            if (ra_code == kZeroRegCode) {
+                result = is_sub ? this->template Neg<Type::U64>(mul).WithView(Type::U64) : mul;
+            } else {
+                auto ra = ReadXRegister(ra_code);
+                result = (is_sub ? this->template Sub<Type::U64>(ra, SingleOperand(mul))
+                                 : this->template Add<Type::U64>(ra, SingleOperand(mul)))
+                                 .WithView(Type::U64);
+            }
+            WriteXRegister(instr->GetRd(), result);
             return;
         }
-        case SMADDL_x: {
-            auto rn = ReadWRegister(instr->GetRn());
-            auto rm = ReadWRegister(instr->GetRm());
-            auto ra = ReadXRegister(instr->GetRa());
-            auto l = SignExtendValue(rn, 32);
-            auto r = SignExtendValue(rm, 32);
-            auto mul = this->template Mul<Type::U64>(l, SingleOperand(r));
-            WriteXRegister(
-                    instr->GetRd(),
-                    this->template Add<Type::U64>(ra, SingleOperand(mul)).WithView(Type::U64));
-            return;
-        }
+        case SMADDL_x:
         case SMSUBL_x: {
-            auto rn = ReadWRegister(instr->GetRn());
-            auto rm = ReadWRegister(instr->GetRm());
-            auto ra = ReadXRegister(instr->GetRa());
-            auto l = SignExtendValue(rn, 32);
-            auto r = SignExtendValue(rm, 32);
-            auto mul = this->template Mul<Type::U64>(l, SingleOperand(r));
-            WriteXRegister(
-                    instr->GetRd(),
-                    this->template Sub<Type::U64>(ra, SingleOperand(mul)).WithView(Type::U64));
+            const bool is_sub = instr->Mask(DataProcessing3SourceMask) == SMSUBL_x;
+            auto l = SignExtendValue(ReadWRegister(instr->GetRn()), 32);
+            auto r = SignExtendValue(ReadWRegister(instr->GetRm()), 32);
+            auto mul = this->template Mul<Type::U64>(l, SingleOperand(r)).WithView(Type::U64);
+            Value result;
+            if (ra_code == kZeroRegCode) {
+                result = is_sub ? this->template Neg<Type::U64>(mul).WithView(Type::U64) : mul;
+            } else {
+                auto ra = ReadXRegister(ra_code);
+                result = (is_sub ? this->template Sub<Type::U64>(ra, SingleOperand(mul))
+                                 : this->template Add<Type::U64>(ra, SingleOperand(mul)))
+                                 .WithView(Type::U64);
+            }
+            WriteXRegister(instr->GetRd(), result);
             return;
         }
         case SMULH_x:
         case UMULH_x: {
             auto left = ReadXRegister(instr->GetRn());
             auto right = ReadXRegister(instr->GetRm());
-            auto low32 = [&](Value value) {
-                return this->template And<Type::U64>(value, SingleOperand(Imm{0xFFFFFFFF}))
-                        .WithView(Type::U64);
-            };
-            auto left_high = this->template LsrImm<Type::U64>(left, Imm{32}).WithView(Type::U64);
-            auto right_high = this->template LsrImm<Type::U64>(right, Imm{32}).WithView(Type::U64);
-            auto product00 = this->template Mul<Type::U64>(low32(left), SingleOperand(low32(right)))
-                                     .WithView(Type::U64);
-            auto product01 = this->template Mul<Type::U64>(low32(left), SingleOperand(right_high))
-                                     .WithView(Type::U64);
-            auto product10 = this->template Mul<Type::U64>(left_high, SingleOperand(low32(right)))
-                                     .WithView(Type::U64);
-            auto product11 = this->template Mul<Type::U64>(left_high, SingleOperand(right_high))
-                                     .WithView(Type::U64);
-            auto middle = this->template Add<Type::U64>(
-                                      this->template LsrImm<Type::U64>(product00, Imm{32}),
-                                      SingleOperand(low32(product01)))
-                                  .WithView(Type::U64);
-            middle = this->template Add<Type::U64>(middle, SingleOperand(low32(product10)))
-                             .WithView(Type::U64);
-            auto high =
-                    this->template Add<Type::U64>(
-                                product11,
-                                SingleOperand(this->template LsrImm<Type::U64>(product01, Imm{32})))
-                            .WithView(Type::U64);
-            high = this->template Add<Type::U64>(
-                               high,
-                               SingleOperand(this->template LsrImm<Type::U64>(product10, Imm{32})))
-                           .WithView(Type::U64);
-            high = this->template Add<Type::U64>(
-                               high,
-                               SingleOperand(this->template LsrImm<Type::U64>(middle, Imm{32})))
-                           .WithView(Type::U64);
-            if (instr->Mask(DataProcessing3SourceMask) == SMULH_x) {
-                auto left_sign =
-                        this->template AsrImm<Type::U64>(left, Imm{63}).WithView(Type::U64);
-                auto right_sign =
-                        this->template AsrImm<Type::U64>(right, Imm{63}).WithView(Type::U64);
-                high = this->template Sub<Type::U64>(high,
-                                                     SingleOperand(this->template And<Type::U64>(
-                                                             left_sign, SingleOperand(right))))
-                               .WithView(Type::U64);
-                high = this->template Sub<Type::U64>(high,
-                                                     SingleOperand(this->template And<Type::U64>(
-                                                             right_sign, SingleOperand(left))))
-                               .WithView(Type::U64);
-            }
-            WriteXRegister(instr->GetRd(), high);
+            const u32 is_signed = instr->Mask(DataProcessing3SourceMask) == SMULH_x ? 1u : 0u;
+            WriteXRegister(instr->GetRd(),
+                           this->template MulHigh<Type::U64>(left, right, Imm{is_signed}));
             return;
         }
         default:
@@ -751,7 +748,7 @@ void VisitDataProcessing1Source(const vixl::aarch64::Instruction* instr) overrid
     auto rd = u8(instr->GetRd());
     u32 opcode = u32(instr->GetInstructionBits() >> 10) & 0x3F;
 
-    // Helper: byte-swap within each 16-bit half-pair (REV16 step).
+    // Helper: byte-swap within each 16-bit half-pair (REV16_x step).
     auto swap_bytes_in_pairs = [&](Value x) -> Value {
         return this
                 ->template Or<Type::U64>(
@@ -769,33 +766,6 @@ void VisitDataProcessing1Source(const vixl::aarch64::Instruction* instr) overrid
                                                     .WithView(Type::U64),
                                             Imm{8})
                                         .WithView(Type::U64)))
-                .WithView(Type::U64);
-    };
-    auto swap16 = [&](Value x) -> Value {
-        return this
-                ->template Or<Type::U64>(
-                        this->template LsrImm<Type::U64>(
-                                    this->template And<Type::U64>(
-                                                x, SingleOperand(Imm{u64(0xFFFF0000FFFF0000)}))
-                                            .WithView(Type::U64),
-                                    Imm{16})
-                                .WithView(Type::U64),
-                        SingleOperand(
-                                this->template LslImm<Type::U64>(
-                                            this->template And<Type::U64>(
-                                                        x,
-                                                        SingleOperand(Imm{u64(0x0000FFFF0000FFFF)}))
-                                                    .WithView(Type::U64),
-                                            Imm{16})
-                                        .WithView(Type::U64)))
-                .WithView(Type::U64);
-    };
-    auto swap32 = [&](Value x) -> Value {
-        return this
-                ->template Or<Type::U64>(
-                        this->template LsrImm<Type::U64>(x, Imm{32}).WithView(Type::U64),
-                        SingleOperand(
-                                this->template LslImm<Type::U64>(x, Imm{32}).WithView(Type::U64)))
                 .WithView(Type::U64);
     };
 
@@ -853,99 +823,46 @@ void VisitDataProcessing1Source(const vixl::aarch64::Instruction* instr) overrid
                                                       Imm{4})
                                                   .WithView(Type::U64)))
                         .WithView(Type::U64);
-            x = swap_bytes_in_pairs(x);
-            x = swap16(x);
-            if (is64) x = swap32(x);
-            if (is64)
-                WriteXRegister(rd, x);
-            else
-                WriteWRegister(rd, x);
+            if (is64) {
+                WriteXRegister(rd, this->template ByteSwap<Type::U64>(x, Imm{64u}));
+            } else {
+                WriteWRegister(rd,
+                               this->template ByteSwap<Type::U32>(x.WithView(Type::U32), Imm{32u}));
+            }
             break;
         }
         case 0x01: {  // REV16
-            auto x = swap_bytes_in_pairs(Widen(rn));
-            if (is64)
-                WriteXRegister(rd, x);
-            else
-                WriteWRegister(rd, x);
+            if (is64) {
+                WriteXRegister(rd, swap_bytes_in_pairs(rn));
+            } else {
+                auto swapped = this->template ByteSwap<Type::U32>(rn, Imm{32u});
+                WriteWRegister(rd, this->template RorImm<Type::U32>(swapped, Imm{16u}));
+            }
             break;
         }
         case 0x02: {  // REV (32-bit) / REV32 (64-bit)
-            auto x = swap_bytes_in_pairs(Widen(rn));
-            x = swap16(x);
-            if (is64)
-                WriteXRegister(rd, x);
-            else
-                WriteWRegister(rd, x);
+            if (is64) {
+                auto swapped = this->template ByteSwap<Type::U64>(rn, Imm{64u});
+                WriteXRegister(rd, this->template RorImm<Type::U64>(swapped, Imm{32u}));
+            } else {
+                WriteWRegister(rd, this->template ByteSwap<Type::U32>(rn, Imm{32u}));
+            }
             break;
         }
         case 0x03: {  // REV (64-bit only)
-            auto x = swap_bytes_in_pairs(Widen(rn));
-            x = swap16(x);
-            x = swap32(x);
-            WriteXRegister(rd, x);
+            if (!is64) {
+                Interrupt(InterruptReason::ILL_CODE, current_pc);
+                return;
+            }
+            WriteXRegister(rd, this->template ByteSwap<Type::U64>(rn, Imm{64u}));
             break;
         }
         case 0x04: {  // CLZ
-            auto x = Widen(rn);
-            x = this->template Or<Type::U64>(
-                            x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{1})))
-                        .WithView(Type::U64);
-            x = this->template Or<Type::U64>(
-                            x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{2})))
-                        .WithView(Type::U64);
-            x = this->template Or<Type::U64>(
-                            x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{4})))
-                        .WithView(Type::U64);
-            x = this->template Or<Type::U64>(
-                            x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{8})))
-                        .WithView(Type::U64);
-            x = this->template Or<Type::U64>(
-                            x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{16})))
-                        .WithView(Type::U64);
             if (is64) {
-                x = this->template Or<Type::U64>(
-                                x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{32})))
-                            .WithView(Type::U64);
+                WriteXRegister(rd, this->CountLeadingZeros64(rn));
+            } else {
+                WriteWRegister(rd, this->CountLeadingZeros32(rn));
             }
-            auto pairs = this->template And<Type::U64>(this->template LsrImm<Type::U64>(x, Imm{1}),
-                                                       SingleOperand(Imm{u64(0x5555555555555555)}))
-                                 .WithView(Type::U64);
-            x = this->template Sub<Type::U64>(x, SingleOperand(pairs)).WithView(Type::U64);
-            auto quarters =
-                    this->template And<Type::U64>(this->template LsrImm<Type::U64>(x, Imm{2}),
-                                                  SingleOperand(Imm{u64(0x3333333333333333)}))
-                            .WithView(Type::U64);
-            x = this->template Add<Type::U64>(
-                            this->template And<Type::U64>(
-                                    x, SingleOperand(Imm{u64(0x3333333333333333)})),
-                            SingleOperand(quarters))
-                        .WithView(Type::U64);
-            x = this->template And<Type::U64>(
-                            this->template Add<Type::U64>(
-                                    x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{4}))),
-                            SingleOperand(Imm{u64(0x0F0F0F0F0F0F0F0F)}))
-                        .WithView(Type::U64);
-            x = this->template Add<Type::U64>(
-                            x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{8})))
-                        .WithView(Type::U64);
-            x = this->template Add<Type::U64>(
-                            x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{16})))
-                        .WithView(Type::U64);
-            if (is64) {
-                x = this->template Add<Type::U64>(
-                                x, SingleOperand(this->template LsrImm<Type::U64>(x, Imm{32})))
-                            .WithView(Type::U64);
-            }
-            auto pop = this->template And<Type::U64>(x, SingleOperand(Imm{is64 ? 0x7F : 0x3F}))
-                               .WithView(Type::U64);
-            auto count = this->template Sub<Type::U64>(ImmValue(is64 ? 64 : 32, Type::U64),
-                                                       SingleOperand(pop))
-                                 .WithView(Type::U64);
-            if (is64)
-                WriteXRegister(rd, count);
-            else
-                WriteWRegister(rd, count);
             break;
         }
         case 0x05: {  // CLS

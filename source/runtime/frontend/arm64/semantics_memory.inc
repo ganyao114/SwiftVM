@@ -83,10 +83,13 @@ void LoadStoreHelper(const vixl::aarch64::Instruction* instr, const Input& offse
             WriteXRegister(rt, ReadMemory(Input{address}, Type::U64));
             break;
         case LDRSB_w:
-            WriteWRegister(rt, SignExtendValue(ReadMemory(Input{address}, Type::U8), 8));
+            WriteWRegister(
+                    rt, this->template SignExtend<Type::U32>(ReadMemory(Input{address}, Type::U8)));
             break;
         case LDRSH_w:
-            WriteWRegister(rt, SignExtendValue(ReadMemory(Input{address}, Type::U16), 16));
+            WriteWRegister(
+                    rt,
+                    this->template SignExtend<Type::U32>(ReadMemory(Input{address}, Type::U16)));
             break;
         case LDRSB_x:
             WriteXRegister(rt, SignExtendValue(ReadMemory(Input{address}, Type::U8), 8));
@@ -874,10 +877,7 @@ void NEONSingleMemory(const vixl::aarch64::Instruction* instr, bool post_index) 
         if (load) {
             auto value = Widen(loaded[reg]);
             if (replicate) {
-                for (u32 shift = bits; shift < 64; shift *= 2) {
-                    auto copy = this->LslImm(value, Imm{shift}).WithView(Type::U64);
-                    value = this->Or(value, SingleOperand(copy)).WithView(Type::U64);
-                }
+                value = ReplicateTo64(value, bits);
                 if (X64FP())
                     WriteVRegister(
                             code,
