@@ -31,6 +31,7 @@ void Writer::Handle(Op<OpCode::GuestSafepoint>, OpContext& c) {
 }
 
 void Writer::Handle(Op<OpCode::GuestDispatchSafepoint>, OpContext& ctx) {
+    if (InterruptibleDispatch()) return;
     Handle(Op<OpCode::GuestSafepoint>{}, ctx);
 }
 

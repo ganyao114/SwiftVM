@@ -464,9 +464,14 @@ void VM::Execute() {
 void VM::MergeFPStatus() noexcept {
     if (ISA() == GuestISA::X86_64 && backend.floating_status)
         NumericControl() |= backend.floating_status(thread.native);
-    if (ISA() == GuestISA::Arm64 && backend.target.target == 0x8664) {
+    if ((ISA() == GuestISA::Arm64 || ISA() == GuestISA::Arm32) &&
+        backend.target.target == 0x8664) {
         const auto raised = thread.native.guest_fpcr & 0x3d;
-        ArmState().fpsr |= static_cast<std::uint32_t>((raised & 1) | ((raised >> 1) & 0x1e));
+        const auto bits = static_cast<std::uint32_t>((raised & 1) | ((raised >> 1) & 0x1e));
+        if (ISA() == GuestISA::Arm64)
+            ArmState().fpsr |= bits;
+        else
+            Arm32State().fpscr |= bits;
         thread.native.guest_fpcr &= ~std::uint64_t{63};
     }
 }
@@ -503,15 +508,19 @@ void VM::UpdateFPEnvironment(bool architectural_write) {
                                ((fpcr & (1u << 24)) ? 0x8040u : 0u);
         }
     }
-    if (ISA() == GuestISA::Arm32 && architectural_write) {
+    if (ISA() == GuestISA::Arm32) {
         auto& state = thread.native.arm32_state;
-        if (!arm32::IsSupportedFPSCR(state.fpscr))
-            swift::ThrowError("ARM32 FPSCR exception enables are unsupported",
-                              ErrorKind::Unsupported);
-        state.RekeyFPSCR();
-        constexpr unsigned rounding[]{0, 2, 1, 3};
-        NumericControl() = 0x1f80u | (rounding[(state.fpscr >> 22) & 3] << 13) |
-                           ((state.fpscr & (1u << 24)) ? 0x8040u : 0u);
+        if (architectural_write) {
+            if (!arm32::IsSupportedFPSCR(state.fpscr))
+                swift::ThrowError("ARM32 FPSCR exception enables are unsupported",
+                                  ErrorKind::Unsupported);
+            state.RekeyFPSCR();
+        }
+        if (arm32::IsSupportedFPSCR(state.fpscr)) {
+            constexpr unsigned rounding[]{0, 2, 1, 3};
+            NumericControl() = 0x1f80u | (rounding[(state.fpscr >> 22) & 3] << 13) |
+                               ((state.fpscr & (1u << 24)) ? 0x8040u : 0u);
+        }
     }
     const auto mxcsr = NumericControl();
     if (mxcsr & ~u64{0xffff})

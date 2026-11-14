@@ -141,7 +141,8 @@ void Allocator::ObserveFPCR(const Operation& operation, NodeId id) {
         const auto offsets = (*at++).Payload();
         const auto control = static_cast<u32>(offsets);
         const auto status = static_cast<u32>(binary ? (*at).Payload() : offsets >> 32);
-        result.fpcr_may_change |= Overlaps({control, 4}, {status, 4});
+        if (!IsImmediateArmFPCR(control))
+            result.fpcr_may_change |= Overlaps({control, 4}, {status, 4});
         return;
     }
     if (opcode == OpCode::CallLambda) {
@@ -166,7 +167,8 @@ void Allocator::ObserveFPCR(const Operation& operation, NodeId id) {
                                    ? 8u
                                    : (TypeBits(field.TypeView()) + 7) / 8;
         result.fpcr_may_change |= options->arm_fpcr_offset == UINT32_MAX ||
-                                  (field.Payload() < std::uint64_t{options->arm_fpcr_offset} + 4 &&
+                                  (!IsImmediateArmFPCR(options->arm_fpcr_offset) &&
+                                   field.Payload() < std::uint64_t{options->arm_fpcr_offset} + 4 &&
                                    options->arm_fpcr_offset < field.Payload() + bytes);
         return;
     }

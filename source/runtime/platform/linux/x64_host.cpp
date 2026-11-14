@@ -55,6 +55,26 @@ void ReturnToHost(execution::NativeRunContext& native,
     machine.uc_mcontext.gregs[REG_RSP] = native.root_sp;
     machine.uc_mcontext.gregs[REG_RIP] = exit;
 }
+
+bool RecoverDispatchInterrupt(execution::FaultContext& context, ucontext_t& machine) noexcept {
+    if (!context.guest_pc) return false;
+    auto* native = context.native;
+    backend::FaultSite dispatch_state{};
+    if (native->native_eflags) {
+        dispatch_state.recovery[0] = 2 | 4;
+        dispatch_state.recovery[1] = 15;
+    }
+    auto dispatch_machine = machine;
+    if (native->native_eflags)
+        dispatch_machine.uc_mcontext.gregs[REG_EFL] =
+                native->native_eflags == 2 ? backend::x64::FlagsImageToNative(native->eflags)
+                                           : native->eflags;
+    if (!RestoreSignalState(context, dispatch_state, dispatch_machine)) return false;
+    *context.guest_pc = static_cast<std::uint64_t>(machine.uc_mcontext.gregs[REG_RDI]);
+    context.dispatch_interrupts.fetch_add(1, std::memory_order_relaxed);
+    ReturnToHost(*native, machine, reinterpret_cast<std::uintptr_t>(&execution::SvmNativeEventExit));
+    return true;
+}
 #endif
 
 bool RecoverNative(execution::FaultContext& context,
@@ -69,32 +89,14 @@ bool RecoverNative(execution::FaultContext& context,
     if (phase != SVM_NATIVE_PHASE_GUEST && phase != SVM_NATIVE_PHASE_ENTERING) return false;
     auto& machine = *static_cast<ucontext_t*>(raw);
     const auto pc = static_cast<std::uintptr_t>(machine.uc_mcontext.gregs[REG_RIP]);
+    const bool interrupt = signal == SIGSEGV && signal_code == SEGV_ACCERR &&
+                           execution::IsDispatchInterrupt(context, address);
     const bool dispatch_probe =
             pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchL1Probe) ||
             pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchCountedL1Probe) ||
             pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchNZCVL1Probe) ||
             pc == reinterpret_cast<std::uintptr_t>(&SvmNativeDispatchNZCVCountedL1Probe);
-    if (dispatch_probe && signal == SIGSEGV && signal_code == SEGV_ACCERR &&
-        execution::IsDispatchInterrupt(context, address)) {
-        // The dispatcher has committed the previous unit. RDI is its next
-        // guest target, including the root probe before active becomes non-null.
-        backend::FaultSite dispatch_state{};
-        if (native->native_eflags) {
-            dispatch_state.recovery[0] = 2 | 4;
-            dispatch_state.recovery[1] = 15;
-        }
-        auto dispatch_machine = machine;
-        if (native->native_eflags)
-            dispatch_machine.uc_mcontext.gregs[REG_EFL] =
-                    native->native_eflags == 2 ? backend::x64::FlagsImageToNative(native->eflags)
-                                               : native->eflags;
-        if (!RestoreSignalState(context, dispatch_state, dispatch_machine)) return false;
-        *context.guest_pc = static_cast<std::uint64_t>(machine.uc_mcontext.gregs[REG_RDI]);
-        context.dispatch_interrupts.fetch_add(1, std::memory_order_relaxed);
-        ReturnToHost(
-                *native, machine, reinterpret_cast<std::uintptr_t>(&execution::SvmNativeEventExit));
-        return true;
-    }
+    if (dispatch_probe && interrupt) return RecoverDispatchInterrupt(context, machine);
     if (phase != SVM_NATIVE_PHASE_GUEST) return false;
     const auto* code = context.active.load();
     if (!code) return false;
@@ -104,6 +106,10 @@ bool RecoverNative(execution::FaultContext& context,
     if (pc < base || pc - base >= code->bytes) return false;
     for (const auto& site : code->faults) {
         if (pc - base < site.first_offset || pc - base >= site.last_offset) continue;
+        if (site.Kind() == backend::FaultSiteKind::DispatchInterrupt) {
+            if (interrupt) return RecoverDispatchInterrupt(context, machine);
+            continue;
+        }
         if (site.Kind() != backend::FaultSiteKind::GuestMemory || !(site.recovery[4] & 7)) continue;
         if (signal == SIGSEGV && signal_code == SEGV_ACCERR && context.recover_code_write) {
             SignalTimer timer{context.service_ns};

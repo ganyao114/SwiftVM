@@ -17,11 +17,13 @@ struct ArmNumericRequest {
     runtime::arm64::FPValueInfo info{};
     runtime::arm64::Numeric family{};
     u32 word{};
+    u32 inst_fpcr{UINT32_MAX};
     unsigned rd{};
     unsigned rn{};
     unsigned rm{};
     bool typed{};
     bool flush{};
+    bool host_flush{};
 
     unsigned IndexedLane() const noexcept {
         return info.bits == 32 ? (((word >> 11) & 1) << 1) | ((word >> 21) & 1)
@@ -30,7 +32,42 @@ struct ArmNumericRequest {
 };
 
 void Writer::CheckArmFPInput(
-        const Xmm& input, unsigned bits, unsigned lanes, bool central, Label& slow) {
+        const Xmm& input, unsigned bits, unsigned lanes, unsigned mode, Label& slow) {
+    xmm15_fp_const = -1;
+    if (bits == 32 && lanes > 1) {
+        const u32 active = (1u << lanes) - 1u;
+        movdqa(xmm15, input);
+        pslld(xmm15, 1);
+        if (mode == 0) {
+            mov(eax, 0x7fffffffu);
+            movd(xmm14, eax);
+            pshufd(xmm14, xmm14, 0);
+            paddd(xmm15, xmm14);
+            mov(eax, 0x80ffffffu);
+            movd(xmm14, eax);
+            pshufd(xmm14, xmm14, 0);
+            pcmpgtd(xmm14, xmm15);
+            movmskps(ecx, xmm14);
+        } else {
+            pxor(xmm14, xmm14);
+            pcmpeqd(xmm14, xmm15);
+            movmskps(edx, xmm14);
+            mov(eax, mode == 1 ? 0x3f000000u : 0x29000000u);
+            movd(xmm14, eax);
+            pshufd(xmm14, xmm14, 0);
+            paddd(xmm15, xmm14);
+            mov(eax, mode == 1 ? 0xfcffffffu : 0xe6ffffffu);
+            movd(xmm14, eax);
+            pshufd(xmm14, xmm14, 0);
+            pcmpgtd(xmm15, xmm14);
+            movmskps(ecx, xmm15);
+            not_(edx);
+            and_(ecx, edx);
+        }
+        test(ecx, active);
+        jnz(slow, T_NEAR);
+        return;
+    }
     for (unsigned lane = 0; lane < lanes; ++lane) {
         Label zero;
         movdqa(xmm15, input);
@@ -39,25 +76,25 @@ void Writer::CheckArmFPInput(
         if (bits == 32) {
             add(eax, eax);
             jz(zero, T_NEAR);
-            if (!central) {
+            if (mode == 0) {
                 cmp(eax, 0x01000000);
                 jb(slow, T_NEAR);
             } else {
                 shr(eax, 24);
-                sub(eax, 65);
-                cmp(eax, 124);
+                sub(eax, mode == 2 ? 87 : 65);
+                cmp(eax, mode == 2 ? 102 : 124);
                 ja(slow, T_NEAR);
             }
         } else {
             add(rax, rax);
             jz(zero, T_NEAR);
             shr(rax, 53);
-            if (!central) {
+            if (mode == 0) {
                 test(eax, eax);
                 jz(slow, T_NEAR);
             } else {
-                sub(eax, 513);
-                cmp(eax, 1020);
+                sub(eax, mode == 2 ? 733 : 513);
+                cmp(eax, mode == 2 ? 800 : 1020);
                 ja(slow, T_NEAR);
             }
         }
@@ -75,6 +112,8 @@ bool Writer::DecodeArmNumericRequest(OpContext& c, ArmNumericRequest& req) {
             c.Arg(c.count - 2).Kind() != OperandKind::Immediate)
             Reject(CompileError::UnsupportedOperand);
         req.encoded = c.Arg(c.count - 1).Payload();
+        const u32 ctrl = u32(c.Arg(c.count - 2).Payload());
+        req.inst_fpcr = IsImmediateArmFPCR(ctrl) ? (ctrl & ~kArmImmediateFPCR) : options.arm_fpcr;
     } else {
         if (!ArmNativeFP() || options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
             c.count != 5 || c.Arg(1).Kind() != OperandKind::Immediate ||
@@ -95,6 +134,7 @@ bool Writer::DecodeArmNumericRequest(OpContext& c, ArmNumericRequest& req) {
             instruction = source.Operands(NodeId{u32(instruction.Payload())}).front();
         if (instruction.Kind() != OperandKind::Immediate) return false;
         req.encoded = instruction.Payload();
+        req.inst_fpcr = options.arm_fpcr;
     }
     req.info = runtime::arm64::DescribeFPValues(req.encoded);
     if (req.info.kind == Operation::Invalid) return false;
@@ -103,7 +143,8 @@ bool Writer::DecodeArmNumericRequest(OpContext& c, ArmNumericRequest& req) {
     req.rd = req.word & 31;
     req.rn = (req.word >> 5) & 31;
     req.rm = (req.word >> 16) & 31;
-    req.flush = (options.arm_fpcr & (1u << 24)) != 0;
+    req.host_flush = options.arm_fpcr != UINT32_MAX && (options.arm_fpcr & (1u << 24)) != 0;
+    req.flush = req.inst_fpcr != UINT32_MAX && (req.inst_fpcr & (1u << 24)) != 0;
     return true;
 }
 
@@ -122,18 +163,24 @@ void Writer::ValidateTypedArmNumeric(OpContext& c, const ArmNumericRequest& req)
                     : op == OpCode::ArmFPUnary &&
                               (operation == Operation::Sqrt || operation == Operation::Precision);
     const auto offsets = c.Arg(c.count - 2).Payload();
-    if (!valid || c.count != inputs + 2 || u32(offsets) > INT32_MAX - 4 ||
-        (offsets >> 32) > INT32_MAX - 4 ||
-        (operation == Operation::Compare ? c.operation.type != ir::Type::Void
-         : operation == Operation::ToInt ? c.operation.type != ir::Type::U64
-                                         : c.operation.type != ir::Type::V128))
+    const u32 ctrl = u32(offsets);
+    const bool imm_ctrl = IsImmediateArmFPCR(ctrl);
+    const bool valid_ctrl = imm_ctrl ? runtime::arm64::IsSupportedFPCR(ctrl & ~kArmImmediateFPCR)
+                                     : ctrl <= INT32_MAX - 4;
+    const auto expected_result_type =
+            operation == Operation::Compare                           ? ir::Type::Void
+            : (operation == Operation::ToInt && !req.info.vector_int) ? ir::Type::U64
+                                                                      : ir::Type::V128;
+    if (!valid || c.count != inputs + 2 || !valid_ctrl || (offsets >> 32) > INT32_MAX - 4 ||
+        c.operation.type != expected_result_type)
         Reject(CompileError::UnsupportedOperand);
     const auto expected_input_type =
-            operation == Operation::FromInt ? ir::Type::U64 : ir::Type::V128;
+            (operation == Operation::FromInt && !req.info.vector_int) ? ir::Type::U64
+                                                                      : ir::Type::V128;
     for (unsigned i = 0; i < inputs; ++i)
         if (View(c.Arg(i)) != expected_input_type) Reject(CompileError::UnsupportedOperand);
-    if (ArmNativeFP() &&
-        (u32(offsets) != options.arm_fpcr_offset || (offsets >> 32) != options.arm_fpsr_offset))
+    if (ArmNativeFP() && ((offsets >> 32) != options.arm_fpsr_offset ||
+                          (!imm_ctrl && ctrl != options.arm_fpcr_offset)))
         Reject(CompileError::UnsupportedOperand);
 }
 
@@ -402,13 +449,16 @@ void Writer::LoadSseArmNumericInputs(OpContext& c, Label& slow, const ArmNumeric
         if (operation == Operation::Precision && bits == 64) {
             jmp(slow, T_NEAR);
         } else {
-            const bool central = operation == Operation::Fused || operation == Operation::Divide ||
-                                 operation == Operation::Sqrt;
-            CheckArmFPInput(xmm0, bits, lanes, central, slow);
+            const unsigned mode = (operation == Operation::Fused && !req.host_flush) ? 2u
+                                  : (operation == Operation::Fused ||
+                                     operation == Operation::Divide || operation == Operation::Sqrt)
+                                          ? 1u
+                                          : 0u;
+            CheckArmFPInput(xmm0, bits, lanes, mode, slow);
             if (operation == Operation::Compare || operation == Operation::Divide ||
                 operation == Operation::Fused)
-                CheckArmFPInput(xmm1, bits, lanes, central, slow);
-            if (operation == Operation::Fused) CheckArmFPInput(xmm14, bits, lanes, central, slow);
+                CheckArmFPInput(xmm1, bits, lanes, mode, slow);
+            if (operation == Operation::Fused) CheckArmFPInput(xmm14, bits, lanes, mode, slow);
         }
     }
 }
@@ -443,9 +493,77 @@ void Writer::EmitSseArmNumericCompare(const ArmNumericRequest& req) {
     }
 }
 
+void Writer::EmitSseArmNumericVectorToInt(Label& slow, const ArmNumericRequest& req) {
+    const auto bits = req.info.bits, lanes = req.info.lanes, fbits = req.info.fractional_bits;
+    if (bits == 32) {
+        const u32 active = (1u << lanes) - 1u;
+        if (req.info.is_unsigned) {
+            movmskps(eax, xmm0);
+            test(eax, active);
+            jnz(slow, T_NEAR);
+            movdqa(xmm1, xmm0);
+        } else {
+            mov(eax, 0x7fffffffu);
+            movd(xmm1, eax);
+            pshufd(xmm1, xmm1, 0);
+            pand(xmm1, xmm0);
+        }
+        mov(eax, ((127u + 31u - fbits) << 23) - 1u);
+        movd(xmm14, eax);
+        pshufd(xmm14, xmm14, 0);
+        pcmpgtd(xmm1, xmm14);
+        movmskps(eax, xmm1);
+        test(eax, active);
+        jnz(slow, T_NEAR);
+        if (fbits > 0) {
+            mov(eax, (127u + fbits) << 23);
+            movd(xmm1, eax);
+            pshufd(xmm1, xmm1, 0);
+            mulps(xmm0, xmm1);
+        }
+        cvttps2dq(xmm0, xmm0);
+        return;
+    }
+    movq(rax, xmm0);
+    movdqa(xmm1, xmm0);
+    psrldq(xmm1, 8);
+    movq(rcx, xmm1);
+    if (req.info.is_unsigned) {
+        mov(rdx, rax);
+        or_(rdx, rcx);
+        js(slow, T_NEAR);
+    }
+    mov(rdx, UINT64_C(0x7fffffffffffffff));
+    and_(rax, rdx);
+    and_(rcx, rdx);
+    mov(rdx, u64(1023u + 63u - fbits) << 52);
+    cmp(rax, rdx);
+    jae(slow, T_NEAR);
+    cmp(rcx, rdx);
+    jae(slow, T_NEAR);
+    if (fbits > 0) {
+        mov(rax, u64(1023u + fbits) << 52);
+        movq(xmm1, rax);
+        punpcklqdq(xmm1, xmm1);
+        mulpd(xmm0, xmm1);
+    }
+    movdqa(xmm1, xmm0);
+    psrldq(xmm1, 8);
+    cvttsd2si(rax, xmm0);
+    cvttsd2si(rcx, xmm1);
+    movq(xmm0, rax);
+    movq(xmm1, rcx);
+    punpcklqdq(xmm0, xmm1);
+}
+
 void Writer::EmitSseArmNumericToInt(Label& slow, const ArmNumericRequest& req) {
+    if (req.info.vector_int && req.info.lanes > 1) {
+        EmitSseArmNumericVectorToInt(slow, req);
+        return;
+    }
     const auto bits = req.info.bits, integer_bits = req.info.integer_bits;
-    const bool is_unsigned = req.word & (1u << 16);
+    const auto fbits = req.info.fractional_bits;
+    const bool is_unsigned = req.info.is_unsigned;
     movq(rax, xmm0);
     if (bits == 32) mov(eax, eax);
     if (is_unsigned) {
@@ -458,14 +576,30 @@ void Writer::EmitSseArmNumericToInt(Label& slow, const ArmNumericRequest& req) {
     mov(rdx, bits == 32 ? u64{0x7fffffff} : UINT64_C(0x7fffffffffffffff));
     and_(rax, rdx);
     const auto limit = is_unsigned && integer_bits == 32 ? 32u : integer_bits - 1;
-    mov(rdx, bits == 32 ? u64{127 + limit} << 23 : u64{1023 + limit} << 52);
+    const u32 exp_limit = (bits == 32 ? 127u : 1023u) + limit - fbits;
+    mov(rdx, bits == 32 ? u64(exp_limit) << 23 : u64(exp_limit) << 52);
     cmp(rax, rdx);
     jae(slow, T_NEAR);
+    if (fbits > 0) {
+        if (bits == 32) {
+            mov(eax, (127u + fbits) << 23);
+            movd(xmm1, eax);
+            mulss(xmm0, xmm1);
+        } else {
+            mov(rax, u64(1023u + fbits) << 52);
+            movq(xmm1, rax);
+            mulsd(xmm0, xmm1);
+        }
+    }
     if (bits == 32)
         cvttss2si(rax, xmm0);
     else
         cvttsd2si(rax, xmm0);
     if (integer_bits == 32) mov(eax, eax);
+    if (req.info.vector_int) {
+        movq(xmm0, rax);
+        return;
+    }
     if (!req.typed && req.rd != 31) {
         const auto offset = req.base + req.rd * 8;
         const auto pin = PinnedSlot(offset, 8);
@@ -477,6 +611,118 @@ void Writer::EmitSseArmNumericToInt(Label& slow, const ArmNumericRequest& req) {
     if (!req.typed) mov(eax, 0);
 }
 
+void Writer::EmitSseArmNumericVectorFromInt(OpContext& c,
+                                            Label& slow,
+                                            const ArmNumericRequest& req) {
+    using State = runtime::arm64::GuestState;
+    const auto bits = req.info.bits, lanes = req.info.lanes, fbits = req.info.fractional_bits;
+    if (req.typed)
+        ReadVector(c.Arg(0), xmm0);
+    else
+        movdqu(xmm0, ptr[r12 + req.base + offsetof(State, q) + req.rn * 16]);
+    if (lanes * bits == 32) {
+        movd(eax, xmm0);
+        if (!req.info.is_unsigned) movsxd(rax, eax);
+        pxor(xmm0, xmm0);
+        cvtsi2ss(xmm0, rax);
+        if (fbits > 0) {
+            mov(eax, (127u - fbits) << 23);
+            movd(xmm1, eax);
+            mulss(xmm0, xmm1);
+        }
+        return;
+    }
+    if (lanes * bits == 64) movq(xmm0, xmm0);
+    if (bits == 32) {
+        if (req.info.is_unsigned) {
+            movmskps(eax, xmm0);
+            test(eax, (1u << lanes) - 1u);
+            jnz(slow, T_NEAR);
+        }
+        cvtdq2ps(xmm0, xmm0);
+        if (fbits > 0) {
+            mov(eax, (127u - fbits) << 23);
+            movd(xmm1, eax);
+            pshufd(xmm1, xmm1, 0);
+            mulps(xmm0, xmm1);
+        }
+        return;
+    }
+    if (req.info.is_unsigned) {
+        movmskpd(eax, xmm0);
+        test(eax, (1u << lanes) - 1u);
+        jnz(slow, T_NEAR);
+    }
+    movq(rax, xmm0);
+    if (lanes == 1) {
+        pxor(xmm0, xmm0);
+        cvtsi2sd(xmm0, rax);
+        if (fbits > 0) {
+            mov(rax, u64(1023u - fbits) << 52);
+            movq(xmm1, rax);
+            mulsd(xmm0, xmm1);
+        }
+        return;
+    }
+    psrldq(xmm0, 8);
+    movq(rcx, xmm0);
+    pxor(xmm0, xmm0);
+    pxor(xmm1, xmm1);
+    cvtsi2sd(xmm0, rax);
+    cvtsi2sd(xmm1, rcx);
+    punpcklqdq(xmm0, xmm1);
+    if (fbits > 0) {
+        mov(rax, u64(1023u - fbits) << 52);
+        movq(xmm1, rax);
+        punpcklqdq(xmm1, xmm1);
+        mulpd(xmm0, xmm1);
+    }
+}
+
+void Writer::EmitSseArmNumericFromInt(OpContext& c, Label& slow, const ArmNumericRequest& req) {
+    if (req.info.vector_int) {
+        EmitSseArmNumericVectorFromInt(c, slow, req);
+        return;
+    }
+    if (req.typed) {
+        Read(c.Arg(0), rax);
+    } else if (req.rn == 31) {
+        mov(eax, 0);
+    } else {
+        const auto offset = req.base + req.rn * 8;
+        const auto pin = PinnedSlot(offset, 8);
+        if (pin >= 0)
+            mov(rax, Reg64(PinnedRegister(pin)));
+        else
+            mov(rax, qword[r12 + offset]);
+    }
+    if (req.info.integer_bits == 32) {
+        if (req.info.is_unsigned)
+            mov(eax, eax);
+        else
+            movsxd(rax, eax);
+    } else if (req.info.is_unsigned) {
+        test(rax, rax);
+        js(slow, T_NEAR);
+    }
+    pxor(xmm0, xmm0);
+    if (req.info.bits == 32)
+        cvtsi2ss(xmm0, rax);
+    else
+        cvtsi2sd(xmm0, rax);
+    if (req.info.fractional_bits > 0) {
+        if (req.info.bits == 32) {
+            mov(eax, (127u - req.info.fractional_bits) << 23);
+            movd(xmm1, eax);
+            mulss(xmm0, xmm1);
+        } else {
+            mov(rax, u64(1023u - req.info.fractional_bits) << 52);
+            movq(xmm1, rax);
+            mulsd(xmm0, xmm1);
+        }
+    }
+}
+
 void Writer::EmitSseArmNumericValueOp(OpContext& c, Label& slow, const ArmNumericRequest& req) {
     using Operation = runtime::arm64::FPValueKind;
     const auto operation = req.info.kind;
@@ -485,6 +731,7 @@ void Writer::EmitSseArmNumericValueOp(OpContext& c, Label& slow, const ArmNumeri
     if (operation == Operation::Fused) {
         // Negate only the active lanes before ARM NaN source selection.
         const auto negate = [&](const Xmm& value) {
+            xmm15_fp_const = -1;
             mov(rax, bits == 32 ? UINT64_C(0x8000000080000000) : UINT64_C(0x8000000000000000));
             movq(xmm15, rax);
             punpcklqdq(xmm15, xmm15);
@@ -509,10 +756,17 @@ void Writer::EmitSseArmNumericValueOp(OpContext& c, Label& slow, const ArmNumeri
         else
             divsd(xmm0, xmm1);
     } else if (operation == Operation::Sqrt) {
-        if (bits == 32)
-            sqrtss(xmm0, xmm0);
-        else
-            sqrtsd(xmm0, xmm0);
+        if (bits == 32) {
+            if (lanes == 1)
+                sqrtss(xmm0, xmm0);
+            else
+                sqrtps(xmm0, xmm0);
+        } else {
+            if (lanes == 1)
+                sqrtsd(xmm0, xmm0);
+            else
+                sqrtpd(xmm0, xmm0);
+        }
     } else if (operation == Operation::Precision) {
         if (bits == 32)
             cvtss2sd(xmm0, xmm0);
@@ -548,39 +802,13 @@ void Writer::EmitSseArmNumericFastPath(OpContext& c,
     using Operation = runtime::arm64::FPValueKind;
     using State = runtime::arm64::GuestState;
     auto& slow = path.entry;
-    if (req.info.kind == Operation::FromInt) {
-        if (req.typed) {
-            Read(c.Arg(0), rax);
-        } else if (req.rn == 31) {
-            mov(eax, 0);
-        } else {
-            const auto offset = req.base + req.rn * 8;
-            const auto pin = PinnedSlot(offset, 8);
-            if (pin >= 0)
-                mov(rax, Reg64(PinnedRegister(pin)));
-            else
-                mov(rax, qword[r12 + offset]);
-        }
-        const bool is_unsigned = req.word & (1u << 16);
-        if (req.info.integer_bits == 32) {
-            if (is_unsigned)
-                mov(eax, eax);
-            else
-                movsxd(rax, eax);
-        } else if (is_unsigned) {
-            test(rax, rax);
-            js(slow, T_NEAR);
-        }
-        pxor(xmm0, xmm0);
-        if (req.info.bits == 32)
-            cvtsi2ss(xmm0, rax);
-        else
-            cvtsi2sd(xmm0, rax);
-    } else {
+    if (req.info.kind == Operation::FromInt)
+        EmitSseArmNumericFromInt(c, slow, req);
+    else
         EmitSseArmNumericBody(c, slow, req);
-    }
     if (!req.typed) {
-        if (req.info.kind != Operation::Compare && req.info.kind != Operation::ToInt) {
+        if (req.info.kind != Operation::Compare &&
+            !(req.info.kind == Operation::ToInt && !req.info.vector_int)) {
             movdqu(ptr[r12 + req.base + offsetof(State, q) + req.rd * 16], xmm0);
             mov(eax, 0);
         }
@@ -596,7 +824,13 @@ bool Writer::TryArmNumeric(OpContext& c) {
     if (!DecodeArmNumericRequest(c, req)) return false;
     if (req.typed) ValidateTypedArmNumeric(c, req);
 
-    const bool native = ArmNativeFP() && options.arm_fpcr != UINT32_MAX &&
+    const u32 ctrl = req.typed ? u32(c.Arg(c.count - 2).Payload()) : options.arm_fpcr_offset;
+    const bool compatible =
+            ctrl == options.arm_fpcr_offset ||
+            (IsImmediateArmFPCR(ctrl) && options.arm_fpcr != UINT32_MAX &&
+             ((req.inst_fpcr ^ options.arm_fpcr) & (3u << 22)) == 0 &&
+             !(req.host_flush && !req.flush));
+    const bool native = ArmNativeFP() && options.arm_fpcr != UINT32_MAX && compatible &&
                         !allocation.fpcr_may_change &&
                         (req.info.kind != Operation::Fused || options.fma);
     if (!req.typed && !native) return false;

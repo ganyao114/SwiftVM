@@ -771,7 +771,8 @@ bool Allocator::IsOrdinaryUniformRange(UniformRange range) const {
                         options->mxcsr_offset,
                         options->arm_fpcr_offset,
                         options->arm_fpsr_offset})
-        ordinary &= offset == UINT32_MAX || !Overlaps(range, {offset, 8});
+        ordinary &= offset == UINT32_MAX || IsImmediateArmFPCR(offset) ||
+                    !Overlaps(range, {offset, 8});
     return ordinary;
 }
 

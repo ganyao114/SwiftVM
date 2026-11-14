@@ -149,7 +149,7 @@ public:
     bool TryArmNumeric(OpContext&);
     void ArmFPValues(OpContext&);
     void MaterializeFPFlags();
-    void CheckArmFPInput(const Xmm&, unsigned bits, unsigned lanes, bool central, Label&);
+    void CheckArmFPInput(const Xmm&, unsigned bits, unsigned lanes, unsigned mode, Label&);
     void PrepareCall();
 
     struct CallMasks {
@@ -430,6 +430,7 @@ private:
                                     u64 mask_payload,
                                     bool needs_flags);
     void EmitReturnTerminal(const StoredTerminal& t);
+    bool InterruptibleDispatch() const;
     void EmitDispatchTerminal();
 
     // Operand & home read helpers (emit_operand.cpp)
@@ -492,6 +493,8 @@ private:
 
     // Vector helpers (emit_vector.cpp)
     void EmitVectorLaneOp(OpCode op, unsigned bits, bool uns);
+    void EmitAvxVectorBinaryInsn(
+            OpContext& c, const Xmm& dst, const Xmm& s1, const Xbyak::Operand& s2, unsigned n);
     bool TryEmitAvxVectorBinary(OpContext& c, const Xmm& dst, unsigned lane_bits);
     bool TryEmitSseVectorBitwiseOrAddSub(OpCode op, const Xmm& dst, unsigned lane_bits);
     bool TryEmitSseVectorCompareOrMinMax(OpContext& c, const Xmm& dst, unsigned lane_bits);
@@ -521,6 +524,7 @@ private:
     void EmitAvxArmFPBinary2S(OpContext& c, const Xmm& dst, u64 format, unsigned kind);
     bool EmitAvxArmFPBinaryScalar32(OpContext& c, const Xmm& dst, u64 format, unsigned kind);
     bool EmitAvxArmFPBinaryScalar64(OpContext& c, const Xmm& dst, u64 format, unsigned kind);
+    void CheckSseArmFPBinaryCentralInputs(unsigned bits, unsigned lanes, Label& slow);
     void EmitSseArmFPBinary(OpContext& c,
                             FPColdPath& path,
                             u64 status,
@@ -558,7 +562,10 @@ private:
                               const ArmNumericRequest& req);
     void LoadSseArmNumericInputs(OpContext& c, Label& slow, const ArmNumericRequest& req);
     void EmitSseArmNumericCompare(const ArmNumericRequest& req);
+    void EmitSseArmNumericVectorToInt(Label& slow, const ArmNumericRequest& req);
     void EmitSseArmNumericToInt(Label& slow, const ArmNumericRequest& req);
+    void EmitSseArmNumericVectorFromInt(OpContext& c, Label& slow, const ArmNumericRequest& req);
+    void EmitSseArmNumericFromInt(OpContext& c, Label& slow, const ArmNumericRequest& req);
     void EmitSseArmNumericValueOp(OpContext& c, Label& slow, const ArmNumericRequest& req);
     void EmitSseArmNumericFastPath(OpContext& c,
                                    NumericColdPath& path,

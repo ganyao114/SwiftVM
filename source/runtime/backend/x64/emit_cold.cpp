@@ -78,7 +78,10 @@ void Writer::EmitFPCallStubs(u32 tmp) {
         lea(rsi, ptr[rsp + tmp + stack_bias]);
         lea(rdx, ptr[rsp + tmp + stack_bias + 16]);
         mov(ecx, stub.key.format);
-        if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change)
+        if (IsImmediateArmFPCR(stub.key.control))
+            mov(r8d, stub.key.control & ~kArmImmediateFPCR);
+        else if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
+                 stub.key.control != options.arm_fpcr_offset)
             mov(r8d, dword[r12 + stub.key.control]);
         else
             mov(r8d, options.arm_fpcr);
@@ -121,7 +124,7 @@ void Writer::EmitNumericColdPaths(u32 tmp) {
         const auto offsets = context.Arg(context.count - 2).Payload();
         const unsigned inputs = context.count - 2;
         for (unsigned i = 0; i < inputs; ++i) {
-            if (info.kind == runtime::arm64::FPValueKind::FromInt) {
+            if (info.kind == runtime::arm64::FPValueKind::FromInt && !info.vector_int) {
                 Read(context.Arg(i), rax);
                 if (options.avx)
                     vmovq(xmm0, rax);
@@ -146,8 +149,9 @@ void Writer::EmitNumericColdPaths(u32 tmp) {
         if (inserted) numeric_stubs.push_back({key, {}});
         call(numeric_stubs[stub->second].entry);
         flags = {};
-        if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
-            key.control != options.arm_fpcr_offset) {
+        if (!IsImmediateArmFPCR(key.control) &&
+            (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
+             key.control != options.arm_fpcr_offset)) {
             Label ready;
             test(eax, eax);
             jz(ready, T_NEAR);
@@ -179,7 +183,7 @@ void Writer::EmitNumericColdPaths(u32 tmp) {
                 shl(rdx, 28);
                 MergeFlags(rdx, 15);
             }
-        } else if (info.kind == runtime::arm64::FPValueKind::ToInt) {
+        } else if (info.kind == runtime::arm64::FPValueKind::ToInt && !info.vector_int) {
             mov(rax, qword[rsp + tmp + 48]);
         } else if (options.avx) {
             vmovdqu(Xmm(path.dest_reg), ptr[rsp + tmp + 48]);
@@ -205,8 +209,10 @@ void Writer::EmitNumericCallStubs(u32 tmp) {
         lea(rdi, ptr[rsp + tmp + stack_bias + 48]);
         lea(rsi, ptr[rsp + tmp + stack_bias]);
         mov(rdx, stub.key.encoded);
-        if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
-            stub.key.control != options.arm_fpcr_offset)
+        if (IsImmediateArmFPCR(stub.key.control))
+            mov(ecx, stub.key.control & ~kArmImmediateFPCR);
+        else if (options.arm_fpcr == UINT32_MAX || allocation.fpcr_may_change ||
+                 stub.key.control != options.arm_fpcr_offset)
             mov(ecx, dword[r12 + stub.key.control]);
         else
             mov(ecx, options.arm_fpcr);

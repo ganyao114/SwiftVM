@@ -6,7 +6,8 @@ namespace swift::runtime::backend::x64::detail {
 using O = OpCode;
 
 namespace {
-constexpr bool IsAvxVectorBinaryOp(OpCode op) noexcept {
+constexpr bool CanEmitAvxVectorBinary(
+        OpCode op, unsigned n, bool sign, bool sse41, bool sse42) noexcept {
     switch (op) {
         case O::VecAnd:
         case O::Vec4And:
@@ -14,11 +15,27 @@ constexpr bool IsAvxVectorBinaryOp(OpCode op) noexcept {
         case O::Vec4Or:
         case O::VecXor:
         case O::VecAndNot:
+            return true;
         case O::VecAdd:
         case O::Vec4Add:
         case O::VecSub:
         case O::Vec4Sub:
-            return true;
+            return n == 8 || n == 16 || n == 32 || n == 64;
+        case O::VecCmpEq:
+            return n == 8 || n == 16 || n == 32 || (n == 64 && sse41);
+        case O::VecCmpGt:
+            return n == 8 || n == 16 || n == 32 || (n == 64 && sse42);
+        case O::VecAvg:
+        case O::VecSatAdd:
+        case O::VecSatSub:
+            return n == 8 || n == 16;
+        case O::VecMul:
+        case O::Vec4Mul:
+            return n == 16 || (n == 32 && sse41);
+        case O::VecMin:
+        case O::VecMax:
+            return (n == 8 && (!sign || sse41)) || (n == 16 && (sign || sse41)) ||
+                   (n == 32 && sse41);
         default:
             return false;
     }
@@ -190,42 +207,101 @@ void Writer::VectorLanes(OpContext& c) {
     }
 }
 
+void Writer::EmitAvxVectorBinaryInsn(
+        OpContext& c, const Xmm& dst, const Xmm& s1, const Xbyak::Operand& s2, unsigned n) {
+    const auto op = c.operation.opcode;
+    const bool sign = c.count > 3 && c.Arg(3).Payload() != 0;
+    if (op == O::VecAnd || op == O::Vec4And) {
+        vpand(dst, s1, s2);
+    } else if (op == O::VecOr || op == O::Vec4Or) {
+        vpor(dst, s1, s2);
+    } else if (op == O::VecXor) {
+        vpxor(dst, s1, s2);
+    } else if (op == O::VecAndNot) {
+        vpandn(dst, s1, s2);
+    } else if (op == O::VecAdd || op == O::Vec4Add) {
+        if (n == 8)
+            vpaddb(dst, s1, s2);
+        else if (n == 16)
+            vpaddw(dst, s1, s2);
+        else if (n == 32)
+            vpaddd(dst, s1, s2);
+        else
+            vpaddq(dst, s1, s2);
+    } else if (op == O::VecSub || op == O::Vec4Sub) {
+        if (n == 8)
+            vpsubb(dst, s1, s2);
+        else if (n == 16)
+            vpsubw(dst, s1, s2);
+        else if (n == 32)
+            vpsubd(dst, s1, s2);
+        else
+            vpsubq(dst, s1, s2);
+    } else if (op == O::VecCmpEq) {
+        if (n == 8)
+            vpcmpeqb(dst, s1, s2);
+        else if (n == 16)
+            vpcmpeqw(dst, s1, s2);
+        else if (n == 32)
+            vpcmpeqd(dst, s1, s2);
+        else
+            vpcmpeqq(dst, s1, s2);
+    } else if (op == O::VecCmpGt) {
+        if (n == 8)
+            vpcmpgtb(dst, s1, s2);
+        else if (n == 16)
+            vpcmpgtw(dst, s1, s2);
+        else if (n == 32)
+            vpcmpgtd(dst, s1, s2);
+        else
+            vpcmpgtq(dst, s1, s2);
+    } else if (op == O::VecAvg) {
+        if (n == 8)
+            vpavgb(dst, s1, s2);
+        else
+            vpavgw(dst, s1, s2);
+    } else if (op == O::VecMul || op == O::Vec4Mul) {
+        if (n == 16)
+            vpmullw(dst, s1, s2);
+        else
+            vpmulld(dst, s1, s2);
+    } else if (op == O::VecMin || op == O::VecMax) {
+        const bool mx = op == O::VecMax;
+        if (n == 8) {
+            if (sign)
+                mx ? vpmaxsb(dst, s1, s2) : vpminsb(dst, s1, s2);
+            else
+                mx ? vpmaxub(dst, s1, s2) : vpminub(dst, s1, s2);
+        } else if (n == 16) {
+            if (sign)
+                mx ? vpmaxsw(dst, s1, s2) : vpminsw(dst, s1, s2);
+            else
+                mx ? vpmaxuw(dst, s1, s2) : vpminuw(dst, s1, s2);
+        } else if (sign) {
+            mx ? vpmaxsd(dst, s1, s2) : vpminsd(dst, s1, s2);
+        } else {
+            mx ? vpmaxud(dst, s1, s2) : vpminud(dst, s1, s2);
+        }
+    } else if (op == O::VecSatAdd) {
+        if (n == 8)
+            sign ? vpaddsb(dst, s1, s2) : vpaddusb(dst, s1, s2);
+        else
+            sign ? vpaddsw(dst, s1, s2) : vpaddusw(dst, s1, s2);
+    } else {
+        if (n == 8)
+            sign ? vpsubsb(dst, s1, s2) : vpsubusb(dst, s1, s2);
+        else
+            sign ? vpsubsw(dst, s1, s2) : vpsubusw(dst, s1, s2);
+    }
+}
+
 bool Writer::TryEmitAvxVectorBinary(OpContext& c, const Xmm& dst, unsigned n) {
     const auto op = c.operation.opcode;
-    if (!options.avx || !IsAvxVectorBinaryOp(op)) return false;
-    const auto emit_vex_bin = [&](const Xmm& s1, const Xbyak::Operand& s2) {
-        if (op == O::VecAnd || op == O::Vec4And) {
-            vpand(dst, s1, s2);
-        } else if (op == O::VecOr || op == O::Vec4Or) {
-            vpor(dst, s1, s2);
-        } else if (op == O::VecXor) {
-            vpxor(dst, s1, s2);
-        } else if (op == O::VecAndNot) {
-            vpandn(dst, s1, s2);
-        } else if (op == O::VecAdd || op == O::Vec4Add) {
-            if (n == 8)
-                vpaddb(dst, s1, s2);
-            else if (n == 16)
-                vpaddw(dst, s1, s2);
-            else if (n == 32)
-                vpaddd(dst, s1, s2);
-            else if (n == 64)
-                vpaddq(dst, s1, s2);
-            else
-                Reject(CompileError::UnsupportedOperand);
-        } else {
-            if (n == 8)
-                vpsubb(dst, s1, s2);
-            else if (n == 16)
-                vpsubw(dst, s1, s2);
-            else if (n == 32)
-                vpsubd(dst, s1, s2);
-            else if (n == 64)
-                vpsubq(dst, s1, s2);
-            else
-                Reject(CompileError::UnsupportedOperand);
-        }
-    };
+    if ((op == O::VecAdd || op == O::VecSub) && n != 8 && n != 16 && n != 32 && n != 64)
+        Reject(CompileError::UnsupportedOperand);
+    const bool sign = c.count > 3 && c.Arg(3).Payload() != 0;
+    if (!options.avx || !CanEmitAvxVectorBinary(op, n, sign, options.sse41, options.sse42))
+        return false;
     if (op == O::VecAndNot) {
         Xmm b_xmm = xmm1;
         if (!ResidentVector(c.Arg(1), b_xmm)) {
@@ -235,17 +311,18 @@ bool Writer::TryEmitAvxVectorBinary(OpContext& c, const Xmm& dst, unsigned n) {
         Xbyak::Address mem;
         Xmm a_xmm = dst;
         if (MemoryVectorOperand(c.Arg(0), mem)) {
-            emit_vex_bin(b_xmm, mem);
+            EmitAvxVectorBinaryInsn(c, dst, b_xmm, mem, n);
         } else if (ResidentVector(c.Arg(0), a_xmm)) {
-            emit_vex_bin(b_xmm, a_xmm);
+            EmitAvxVectorBinaryInsn(c, dst, b_xmm, a_xmm, n);
         } else {
             const Xmm tmp = b_xmm.getIdx() == 0 ? xmm1 : xmm0;
             ReadVector(c.Arg(0), tmp);
-            emit_vex_bin(b_xmm, tmp);
+            EmitAvxVectorBinaryInsn(c, dst, b_xmm, tmp, n);
         }
         return true;
     }
-    const bool comm = op != O::VecSub && op != O::Vec4Sub;
+    const bool comm = op != O::VecSub && op != O::Vec4Sub && op != O::VecCmpGt &&
+                      op != O::VecSatSub;
     Xbyak::Address mem;
     if (MemoryVectorOperand(c.Arg(1), mem)) {
         Xmm s1 = dst;
@@ -253,7 +330,7 @@ bool Writer::TryEmitAvxVectorBinary(OpContext& c, const Xmm& dst, unsigned n) {
             ReadVector(c.Arg(0), dst);
             s1 = dst;
         }
-        emit_vex_bin(s1, mem);
+        EmitAvxVectorBinaryInsn(c, dst, s1, mem, n);
         return true;
     }
     if (comm && MemoryVectorOperand(c.Arg(0), mem)) {
@@ -262,7 +339,7 @@ bool Writer::TryEmitAvxVectorBinary(OpContext& c, const Xmm& dst, unsigned n) {
             ReadVector(c.Arg(1), dst);
             s1 = dst;
         }
-        emit_vex_bin(s1, mem);
+        EmitAvxVectorBinaryInsn(c, dst, s1, mem, n);
         return true;
     }
     Xmm s1 = xmm1, s2 = xmm0;
@@ -276,7 +353,7 @@ bool Writer::TryEmitAvxVectorBinary(OpContext& c, const Xmm& dst, unsigned n) {
         s2 = s1.getIdx() == 1 ? xmm0 : xmm1;
         ReadVector(c.Arg(1), s2);
     }
-    emit_vex_bin(s1, s2);
+    EmitAvxVectorBinaryInsn(c, dst, s1, s2, n);
     return true;
 }
 
@@ -497,8 +574,8 @@ void Writer::Vector(OpContext& c) {
     const unsigned n =
             (op == O::Vec4Add || op == O::Vec4Sub || op == O::Vec4Mul) ? 32 : c.Arg(2).Payload();
     if (TryEmitAvxVectorBinary(c, dst, n)) return;
-    ReadVector(c.Arg(0), dst);
     ReadVector(c.Arg(1), xmm1);
+    ReadVector(c.Arg(0), dst);
     if (TryEmitSseVectorBitwiseOrAddSub(op, dst, n)) return;
     if (TryEmitSseVectorCompareOrMinMax(c, dst, n)) return;
     c.vector = xmm0;
@@ -641,11 +718,38 @@ void Writer::Handle(Op<O::VecDup64>, OpContext& c) {
 }
 
 void Writer::Handle(Op<O::VecScalar>, OpContext& c) {
-    Read(c.Arg(0), rax);
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = (!home.spilled && !home.terminal_only) ? Xmm(home.reg) : xmm0;
+    c.vector = dst;
+    const auto arg = c.Arg(0);
+    if (arg.Kind() == OperandKind::Value) {
+        const auto def_bits = TypeBits(source.Operations()[arg.Payload()].type);
+        const auto bits = std::min(def_bits, TypeBits(View(arg)));
+        const auto& ah = allocation.homes[arg.Payload()];
+        if ((bits == 32 || bits == 64) && ah.spilled && ah.uniform_offset != UINT32_MAX) {
+            if (bits == 32)
+                options.avx ? vmovd(dst, dword[r12 + ah.uniform_offset])
+                            : movd(dst, dword[r12 + ah.uniform_offset]);
+            else
+                options.avx ? vmovq(dst, qword[r12 + ah.uniform_offset])
+                            : movq(dst, qword[r12 + ah.uniform_offset]);
+            return;
+        }
+        if ((bits == 32 || bits == 64) && ah.spilled && !ah.rematerialize) {
+            if (bits == 32)
+                options.avx ? vmovd(dst, dword[rsp + ah.stack_offset])
+                            : movd(dst, dword[rsp + ah.stack_offset]);
+            else
+                options.avx ? vmovq(dst, qword[rsp + ah.stack_offset])
+                            : movq(dst, qword[rsp + ah.stack_offset]);
+            return;
+        }
+    }
+    Read(arg, rax);
     if (options.avx)
-        vmovq(xmm0, rax);
+        vmovq(dst, rax);
     else
-        movq(xmm0, rax);
+        movq(dst, rax);
 }
 
 void Writer::Handle(Op<O::VecExtract64>, OpContext& c) {
@@ -956,12 +1060,44 @@ void Writer::Handle(Op<O::VecPack>, OpContext& c) {
 void Writer::Handle(Op<O::VecMulWiden>, OpContext& c) {
     const unsigned n = c.Arg(2).Payload();
     if (n != 8 && n != 16 && n != 32) Reject(CompileError::UnsupportedOperand);
+    const bool sign = c.Arg(3).Payload() != 0;
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+    if (n == 32 && (!sign || options.sse41)) {
+        c.vector = dst;
+        ReadVector(c.Arg(1), xmm1);
+        ReadVector(c.Arg(0), dst);
+        if (sign)
+            options.avx ? vpmuldq(dst, dst, xmm1) : pmuldq(dst, xmm1);
+        else
+            options.avx ? vpmuludq(dst, dst, xmm1) : pmuludq(dst, xmm1);
+        return;
+    }
+    if (n == 8 || (n == 16 && options.sse41)) {
+        c.vector = dst;
+        ReadVector(c.Arg(1), xmm1);
+        ReadVector(c.Arg(0), dst);
+        if (n == 8) {
+            psllw(dst, 8);
+            psllw(xmm1, 8);
+            sign ? psraw(dst, 8) : psrlw(dst, 8);
+            sign ? psraw(xmm1, 8) : psrlw(xmm1, 8);
+            pmullw(dst, xmm1);
+        } else {
+            pslld(dst, 16);
+            pslld(xmm1, 16);
+            sign ? psrad(dst, 16) : psrld(dst, 16);
+            sign ? psrad(xmm1, 16) : psrld(xmm1, 16);
+            pmulld(dst, xmm1);
+        }
+        return;
+    }
     ReadVector(c.Arg(0), xmm14);
     ReadVector(c.Arg(1), xmm15);
     pxor(xmm0, xmm0);
     for (unsigned i = 0; i < 64 / n; ++i) {
-        ExtractLane(xmm14, i * 2, n, rax, c.Arg(3).Payload());
-        ExtractLane(xmm15, i * 2, n, rdx, c.Arg(3).Payload());
+        ExtractLane(xmm14, i * 2, n, rax, sign);
+        ExtractLane(xmm15, i * 2, n, rdx, sign);
         imul(rax, rdx);
         InsertLane(xmm0, i, n * 2, rax);
     }
@@ -970,6 +1106,37 @@ void Writer::Handle(Op<O::VecMulWiden>, OpContext& c) {
 void Writer::Handle(Op<O::VecSignedMulWidenLow>, OpContext& c) {
     const unsigned n = c.Arg(2).Payload();
     if (n != 8 && n != 16 && n != 32) Reject(CompileError::UnsupportedOperand);
+    const auto& home = allocation.homes[c.node.value];
+    const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+    if (options.sse41) {
+        c.vector = dst;
+        ReadVector(c.Arg(1), xmm1);
+        ReadVector(c.Arg(0), dst);
+        if (n == 8) {
+            options.avx ? vpmovsxbw(dst, dst) : pmovsxbw(dst, dst);
+            options.avx ? vpmovsxbw(xmm1, xmm1) : pmovsxbw(xmm1, xmm1);
+            options.avx ? vpmullw(dst, dst, xmm1) : pmullw(dst, xmm1);
+        } else if (n == 16) {
+            options.avx ? vpmovsxwd(dst, dst) : pmovsxwd(dst, dst);
+            options.avx ? vpmovsxwd(xmm1, xmm1) : pmovsxwd(xmm1, xmm1);
+            options.avx ? vpmulld(dst, dst, xmm1) : pmulld(dst, xmm1);
+        } else {
+            options.avx ? vpshufd(dst, dst, 0x50) : pshufd(dst, dst, 0x50);
+            options.avx ? vpshufd(xmm1, xmm1, 0x50) : pshufd(xmm1, xmm1, 0x50);
+            options.avx ? vpmuldq(dst, dst, xmm1) : pmuldq(dst, xmm1);
+        }
+        return;
+    }
+    if (n == 16) {
+        c.vector = dst;
+        ReadVector(c.Arg(1), xmm1);
+        ReadVector(c.Arg(0), dst);
+        movdqa(xmm14, dst);
+        pmullw(dst, xmm1);
+        pmulhw(xmm14, xmm1);
+        punpcklwd(dst, xmm14);
+        return;
+    }
     ReadVector(c.Arg(0), xmm14);
     ReadVector(c.Arg(1), xmm15);
     pxor(xmm0, xmm0);
@@ -983,15 +1150,40 @@ void Writer::Handle(Op<O::VecSignedMulWidenLow>, OpContext& c) {
 
 void Writer::Handle(Op<O::VecTableLookup8>, OpContext& c) {
     if (options.ssse3) {
-        ReadVector(c.Arg(0), xmm0);
+        const auto& home = allocation.homes[c.node.value];
+        const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+        c.vector = dst;
         ReadVector(c.Arg(1), xmm1);
-        pshufb(xmm0, xmm1);
+        ReadVector(c.Arg(0), dst);
+        options.avx ? vpshufb(dst, dst, xmm1) : pshufb(dst, xmm1);
     } else {
         Lookup(*this, c, true);
     }
 }
 
-void Writer::Handle(Op<O::VecShuffle32Indexed>, OpContext& c) { Lookup(*this, c, false); }
+void Writer::Handle(Op<O::VecShuffle32Indexed>, OpContext& c) {
+    if (options.ssse3) {
+        const auto& home = allocation.homes[c.node.value];
+        const Xmm dst = home.spilled ? xmm0 : Xmm(home.reg);
+        c.vector = dst;
+        ReadVector(c.Arg(1), xmm1);
+        ReadVector(c.Arg(0), dst);
+        mov(rax, UINT64_C(0x7070707070707070));
+        if (options.avx) {
+            vmovq(xmm14, rax);
+            vmovddup(xmm14, xmm14);
+            vpaddusb(xmm1, xmm1, xmm14);
+            vpshufb(dst, dst, xmm1);
+        } else {
+            movq(xmm14, rax);
+            punpcklqdq(xmm14, xmm14);
+            paddusb(xmm1, xmm14);
+            pshufb(dst, xmm1);
+        }
+        return;
+    }
+    Lookup(*this, c, false);
+}
 
 void Writer::EmitByteImmVectorShift(OpContext& c, bool left) {
     const auto& home = allocation.homes[c.node.value];
@@ -1023,52 +1215,56 @@ void Writer::EmitHardwareVectorShift(
     c.vector = dst;
     if (!imm) {
         Read(c.Arg(1), rax);
-        movq(xmm1, rax);
+        options.avx ? vmovq(xmm1, rax) : movq(xmm1, rax);
     }
-    ReadVector(c.Arg(0), dst);
+    Xmm src = dst;
+    if (!options.avx || !ResidentVector(c.Arg(0), src)) {
+        ReadVector(c.Arg(0), dst);
+        src = dst;
+    }
     if (imm) {
         const unsigned count = std::min<u64>(c.Arg(1).Payload(), 255);
         if (left) {
             if (n == 16)
-                psllw(dst, count);
+                options.avx ? vpsllw(dst, src, count) : psllw(dst, count);
             else if (n == 32)
-                pslld(dst, count);
+                options.avx ? vpslld(dst, src, count) : pslld(dst, count);
             else
-                psllq(dst, count);
+                options.avx ? vpsllq(dst, src, count) : psllq(dst, count);
         } else if (arithmetic) {
             if (n == 16)
-                psraw(dst, count);
+                options.avx ? vpsraw(dst, src, count) : psraw(dst, count);
             else
-                psrad(dst, count);
+                options.avx ? vpsrad(dst, src, count) : psrad(dst, count);
         } else {
             if (n == 16)
-                psrlw(dst, count);
+                options.avx ? vpsrlw(dst, src, count) : psrlw(dst, count);
             else if (n == 32)
-                psrld(dst, count);
+                options.avx ? vpsrld(dst, src, count) : psrld(dst, count);
             else
-                psrlq(dst, count);
+                options.avx ? vpsrlq(dst, src, count) : psrlq(dst, count);
         }
         return;
     }
     if (left) {
         if (n == 16)
-            psllw(dst, xmm1);
+            options.avx ? vpsllw(dst, src, xmm1) : psllw(dst, xmm1);
         else if (n == 32)
-            pslld(dst, xmm1);
+            options.avx ? vpslld(dst, src, xmm1) : pslld(dst, xmm1);
         else
-            psllq(dst, xmm1);
+            options.avx ? vpsllq(dst, src, xmm1) : psllq(dst, xmm1);
     } else if (arithmetic) {
         if (n == 16)
-            psraw(dst, xmm1);
+            options.avx ? vpsraw(dst, src, xmm1) : psraw(dst, xmm1);
         else
-            psrad(dst, xmm1);
+            options.avx ? vpsrad(dst, src, xmm1) : psrad(dst, xmm1);
     } else {
         if (n == 16)
-            psrlw(dst, xmm1);
+            options.avx ? vpsrlw(dst, src, xmm1) : psrlw(dst, xmm1);
         else if (n == 32)
-            psrld(dst, xmm1);
+            options.avx ? vpsrld(dst, src, xmm1) : psrld(dst, xmm1);
         else
-            psrlq(dst, xmm1);
+            options.avx ? vpsrlq(dst, src, xmm1) : psrlq(dst, xmm1);
     }
 }
 

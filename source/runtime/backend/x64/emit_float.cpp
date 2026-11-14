@@ -200,9 +200,11 @@ void Writer::BeginArmFPRegion(u32 control, u32 status) {
     // Exact numerical leaves preserve FPCR. A shared stub reuses the
     // control condition already checked at its original guest call site.
     const auto tmp = allocation.call_offset + 224 + stack_bias;
+    const u32 fpcr = IsImmediateArmFPCR(control) ? (control & ~kArmImmediateFPCR)
+                                                 : options.arm_fpcr;
     constexpr unsigned rounding[]{0, 2, 1, 3};
     stmxcsr(dword[rsp + tmp + 48]);
-    mov(dword[rsp + tmp + 52], 0x1f80 | (rounding[(options.arm_fpcr >> 22) & 3] << 13));
+    mov(dword[rsp + tmp + 52], 0x1f80 | (rounding[(fpcr >> 22) & 3] << 13));
     ldmxcsr(dword[rsp + tmp + 52]);
     arm_fp_region = true;
     arm_fp_control = control;
@@ -238,8 +240,11 @@ void Writer::PrepareArmFPRegion(OpContext& c) {
     if (c.operation.opcode == O::LoadUniform || c.operation.opcode == O::StoreUniform) {
         const auto field = c.Arg(0);
         const auto bytes = (TypeBits(field.TypeView()) + 7) / 8;
-        for (auto offset : {arm_fp_control, arm_fp_status})
-            boundary |= field.Payload() < u64{offset} + 4 && offset < field.Payload() + bytes;
+        if (!IsImmediateArmFPCR(arm_fp_control))
+            boundary |= field.Payload() < u64{arm_fp_control} + 4 &&
+                        arm_fp_control < field.Payload() + bytes;
+        boundary |= field.Payload() < u64{arm_fp_status} + 4 &&
+                    arm_fp_status < field.Payload() + bytes;
     } else if (HasAnyEffect(effects, Effect::ReadGuestState | Effect::WriteGuestState)) {
         boundary = true;
     }
@@ -828,6 +833,64 @@ bool Writer::TryEmitAvxArmFPBinary(OpContext& c,
     return true;
 }
 
+void Writer::CheckSseArmFPBinaryCentralInputs(unsigned bits, unsigned lanes, Label& slow) {
+    // Zero or central finite exponents only. For F32 e in [65,189],
+    // F64 e in [513,1533]: even a product remains normal, and the smallest
+    // nonzero sum/difference is normal. Add/sub/mul can only raise IXC here.
+    if (bits == 32 && lanes > 1) {
+        xmm15_fp_const = -1;
+        const u32 active = (1u << lanes) - 1u;
+        for (const auto input : {xmm0, xmm1}) {
+            movdqa(xmm14, input);
+            pslld(xmm14, 1);
+            pxor(xmm15, xmm15);
+            pcmpeqd(xmm15, xmm14);
+            movmskps(edx, xmm15);
+            mov(eax, 0x3f000000u);
+            movd(xmm15, eax);
+            pshufd(xmm15, xmm15, 0);
+            paddd(xmm14, xmm15);
+            mov(eax, 0xfcffffffu);
+            movd(xmm15, eax);
+            pshufd(xmm15, xmm15, 0);
+            pcmpgtd(xmm14, xmm15);
+            movmskps(ecx, xmm14);
+            not_(edx);
+            and_(ecx, edx);
+            test(ecx, active);
+            jnz(slow, T_NEAR);
+        }
+        return;
+    }
+    for (const auto input : {xmm0, xmm1}) {
+        for (unsigned lane = 0; lane < lanes; ++lane) {
+            Label zero;
+            if (lane) {
+                movdqa(xmm14, input);
+                psrldq(xmm14, lane * bits / 8);
+                movq(rax, xmm14);
+            } else {
+                movq(rax, input);
+            }
+            if (bits == 32) {
+                add(eax, eax);
+                jz(zero, T_SHORT);
+                shr(eax, 24);
+                sub(eax, 65);
+                cmp(eax, 124);
+            } else {
+                add(rax, rax);
+                jz(zero, T_SHORT);
+                shr(rax, 53);
+                sub(eax, 513);
+                cmp(eax, 1020);
+            }
+            ja(slow, T_NEAR);
+            L(zero);
+        }
+    }
+}
+
 void Writer::EmitSseArmFPBinary(OpContext& c,
                                 FPColdPath& path,
                                 u64 status,
@@ -848,40 +911,7 @@ void Writer::EmitSseArmFPBinary(OpContext& c,
         else
             pshufd(xmm1, xmm1, index ? 0xee : 0x44);
     }
-    // Zero or central finite exponents only. For F32 e in [65,189],
-    // F64 e in [513,1533]: even a product remains normal, and the smallest
-    // nonzero sum/difference is normal. Add/sub/mul can only raise IXC here.
-    // Division also admits zero divisors through native FPSR accumulation
-    // and checks its result for NaN before committing the destination.
-    if (!post_check) {
-        for (const auto input : {xmm0, xmm1}) {
-            for (unsigned lane = 0; lane < lanes; ++lane) {
-                Label zero;
-                if (lane) {
-                    movdqa(xmm14, input);
-                    psrldq(xmm14, lane * bits / 8);
-                    movq(rax, xmm14);
-                } else {
-                    movq(rax, input);
-                }
-                if (bits == 32) {
-                    add(eax, eax);
-                    jz(zero, T_SHORT);
-                    shr(eax, 24);
-                    sub(eax, 65);
-                    cmp(eax, 124);
-                } else {
-                    add(rax, rax);
-                    jz(zero, T_SHORT);
-                    shr(rax, 53);
-                    sub(eax, 513);
-                    cmp(eax, 1020);
-                }
-                ja(slow, T_NEAR);
-                L(zero);
-            }
-        }
-    }
+    if (!post_check) CheckSseArmFPBinaryCentralInputs(bits, lanes, slow);
     // Clear inactive inputs before packed execution: they must not create
     // exceptions. Scalar instructions also explicitly zero their upper result.
     if (lanes * bits <= 64) {
@@ -954,23 +984,34 @@ void Writer::EmitSseArmFPBinary(OpContext& c,
 void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
     const auto control = c.Arg(2).Payload(), status = c.Arg(3).Payload(),
                format = c.Arg(4).Payload();
-    const bool post_check =
-            ArmNativeFP() && options.arm_fpcr != UINT32_MAX && !(options.arm_fpcr & (1u << 24));
+    const bool imm_ctrl = IsImmediateArmFPCR(control);
+    const u32 inst_fpcr = imm_ctrl ? u32(control & ~kArmImmediateFPCR) : options.arm_fpcr;
     if (options.local_flags && flags.dirty && (flags.native || flags.floating)) {
         SaveNativeFlags(true);
         flags.native = false;
     }
     const auto preserved_flags = flags;
+    const bool valid_ctrl =
+            imm_ctrl ? (control <= UINT32_MAX && runtime::arm64::IsSupportedFPCR(inst_fpcr))
+                     : control <= INT32_MAX - 4;
     if (!c.vector_result || View(c.Arg(0)) != ir::Type::V128 || View(c.Arg(1)) != ir::Type::V128 ||
-        control > INT32_MAX - 4 || status > INT32_MAX - 4 || format > UINT32_MAX ||
+        !valid_ctrl || status > INT32_MAX - 4 || format > UINT32_MAX ||
         !runtime::arm64::ValidArmFPBinaryMode(format))
         Reject(CompileError::UnsupportedOperand);
-    if (ArmNativeFP() && (control != options.arm_fpcr_offset || status != options.arm_fpsr_offset))
+    if (ArmNativeFP() &&
+        (status != options.arm_fpsr_offset || (!imm_ctrl && control != options.arm_fpcr_offset)))
         Reject(CompileError::UnsupportedOperand);
+    const bool compatible =
+            control == options.arm_fpcr_offset ||
+            (imm_ctrl && options.arm_fpcr != UINT32_MAX &&
+             ((inst_fpcr ^ options.arm_fpcr) & (3u << 22)) == 0 &&
+             !((options.arm_fpcr & (1u << 24)) && !(inst_fpcr & (1u << 24))));
+    const bool post_check = ArmNativeFP() && compatible && options.arm_fpcr != UINT32_MAX &&
+                            !(inst_fpcr & (1u << 24));
     const unsigned bits = format & 4 ? 64 : 32, lanes = (format >> 3) & 7, kind = format & 3;
     const bool regional =
             options.arm_fpcr != UINT32_MAX && !ArmNativeFP() && !allocation.fpcr_may_change;
-    if (regional) BeginArmFPRegion(control, status);
+    if (regional) BeginArmFPRegion(u32(control), u32(status));
     const auto masks = LiveCallMasks();
     const FPCallKey key{u32(control),
                         u32(status),
@@ -988,13 +1029,14 @@ void Writer::Handle(Op<O::ArmFPBinary>, OpContext& c) {
         L(path.resume);
         return;
     }
-    if (kind == 3 && !ArmNativeFP()) {
+    if ((kind == 3 && !ArmNativeFP()) || (ArmNativeFP() && !compatible) ||
+        (options.arm_fpcr == UINT32_MAX && imm_ctrl && (inst_fpcr & (3u << 22)) != 0)) {
         jmp(path.entry, T_NEAR);
         L(path.resume);
         flags = preserved_flags;
         return;
     }
-    if (options.arm_fpcr == UINT32_MAX) {
+    if (options.arm_fpcr == UINT32_MAX && !imm_ctrl) {
         cmp(dword[r12 + control], 0);
         jne(path.entry, T_NEAR);
     }

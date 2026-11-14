@@ -16,6 +16,7 @@ private:
     CompileResult output;
     Allocation allocation;
     std::uint64_t features{};
+    GuestISA guest_isa{GuestISA::X86_64};
     bool diagnostic{};
 };
 

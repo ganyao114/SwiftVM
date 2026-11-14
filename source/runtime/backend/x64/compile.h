@@ -8,6 +8,12 @@ class Program;
 namespace swift::runtime::backend::x64 {
 struct Allocation;
 
+inline constexpr std::uint32_t kArmImmediateFPCR = 0x80000000u;
+
+constexpr bool IsImmediateArmFPCR(std::uint64_t control) noexcept {
+    return (control & ~std::uint64_t{0xffffffffu}) == 0 && (control & kArmImmediateFPCR) != 0;
+}
+
 constexpr ir::TargetInfo KnownTargetInfo() noexcept {
     return {ir::TargetMode::Known,
             0x8664,
@@ -20,13 +26,13 @@ struct CompileOptions {
     // Linked guest-register pins: slots 0..1 live in r13 and r14.
     std::uint32_t pinned_uniform_offset{UINT32_MAX};
     std::uint8_t pinned_uniform_slots{};
-    std::uintptr_t dispatcher{}, exit_handler{};
+    std::uintptr_t dispatcher{}, l2_dispatcher{}, exit_handler{};
     std::uint64_t entry_pc{};
     std::uint32_t arm_fpcr{UINT32_MAX};
     std::uint32_t arm_fpcr_offset{UINT32_MAX};
     std::uint32_t arm_fpsr_offset{UINT32_MAX};
     bool native_fp_environment{}, fault_locations{}, relocatable{}, local_flags{}, linked_flags{};
-    bool private_state{};
+    bool private_state{}, counted_dispatch{};
     bool cx16{true}, ssse3{}, sse41{}, sse42{}, fma{}, aes{}, pclmul{}, sha{}, lahf{}, avx{};
     bool bmi1{}, bmi2{};
 };

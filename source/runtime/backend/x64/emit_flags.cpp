@@ -861,8 +861,22 @@ void Writer::PackedCondition(const Reg64& out, ir::Condition c) {
 void Writer::Handle(Op<OpCode::GetFlags>, OpContext&) { mov(rax, rbx); }
 
 void Writer::Handle(Op<OpCode::RestoreFlags>, OpContext& c) {
+    const auto mask = c.Arg(1).Payload();
+    CellView src = c.Arg(0);
+    if (src.Kind() == OperandKind::Value &&
+        source.Operations()[src.Payload()].opcode == OpCode::LoadImm)
+        src = source.Operands(NodeId{u32(src.Payload())}).front();
+    if (options.local_flags && options.lahf && mask == 15 &&
+        src.Kind() == OperandKind::Immediate) {
+        const auto p = src.Payload();
+        const auto img = static_cast<std::uint16_t>(
+                ((p >> 16) & 0xc000u) | (((p >> 21) & 0x100u) ^ 0x100u) | ((p >> 28) & 1u));
+        mov(word[rsp + allocation.flags_slot + stack_bias], img);
+        flags = {true, false, true, false, true};
+        return;
+    }
     Read(c.Arg(0), rax, true);
-    MergeFlags(rax, c.Arg(1).Payload());
+    MergeFlags(rax, mask);
 }
 
 void Writer::Handle(Op<OpCode::SaveFlags>, OpContext& c) {

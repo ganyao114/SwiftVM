@@ -493,15 +493,8 @@ void VisitConditionalSelect(const vixl::aarch64::Instruction* instr) override {
     WriteGPR(instr->GetRd(), is64, this->CondSelect(cond, rn, false_val).WithView(type));
 }
 
-void ConditionalCompareHelper(const vixl::aarch64::Instruction* instr, const Input& op2) {
-    const bool is64 = instr->GetSixtyFourBits();
+void EmitImmediateNzcvFallback(bool is64, u32 nzcv) {
     const auto type = GPRType(is64);
-    auto rn = ReadRegister(instr->GetRn(), type);
-
-    auto compare =
-            this->Goto(CondPassed(static_cast<vixl::aarch64::Condition>(instr->GetCondition())));
-
-    const u32 nzcv = instr->GetNzcv();
     const bool n = (nzcv & 8) != 0;
     const bool z = (nzcv & 4) != 0;
     const u8 c = (nzcv >> 1) & 1;
@@ -521,6 +514,20 @@ void ConditionalCompareHelper(const vixl::aarch64::Instruction* instr, const Inp
         this->SetCarry(ImmValue(c, Type::U8));
     }
     this->SetOverflow(ImmValue(v, Type::U8));
+}
+
+void ConditionalCompareHelper(const vixl::aarch64::Instruction* instr, const Input& op2) {
+    const bool is64 = instr->GetSixtyFourBits();
+    const auto type = GPRType(is64);
+    auto rn = ReadRegister(instr->GetRn(), type);
+
+    auto compare =
+            this->Goto(CondPassed(static_cast<vixl::aarch64::Condition>(instr->GetCondition())));
+
+    if (target.mode == TargetMode::Known && target.target == 0x8664)
+        Emit<OpCode::RestoreFlags>(ImmValue(u64(instr->GetNzcv()) << 28, Type::U64), Flag::NZCV);
+    else
+        EmitImmediateNzcvFallback(is64, instr->GetNzcv());
     auto done = this->Goto(Value{ImmValue(1, Type::U8)});
 
     this->BindLabel(compare);

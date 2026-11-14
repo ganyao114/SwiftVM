@@ -53,8 +53,9 @@ bool EmitX64Numeric(const vixl::aarch64::Instruction* instr, Numeric family) {
     const Imm offsets{runtime::arm64::FPStateOffsets(layout.fpcr_offset, layout.fpsr_offset)};
     const Imm mode{encoded};
     const u32 rn = instr->GetRn(), rm = (word >> 16) & 31, rd = instr->GetRd();
-    const auto lhs =
-            info.kind == FPValueKind::FromInt ? ReadXRegister(rn) : ReadVRegister(rn, Type::V128);
+    const auto lhs = (info.kind == FPValueKind::FromInt && !info.vector_int)
+                             ? ReadXRegister(rn)
+                             : ReadVRegister(rn, Type::V128);
     if (info.kind == FPValueKind::Compare) {
         const auto rhs = ReadVRegister(rm, Type::V128);
         Emit<OpCode::ArmFPCompare>(lhs, rhs, offsets, mode);
@@ -64,10 +65,10 @@ bool EmitX64Numeric(const vixl::aarch64::Instruction* instr, Numeric family) {
                 ReadVRegister(family == Numeric::Scalar ? instr->GetRa() : rd, Type::V128);
         const auto result = Emit<OpCode::ArmFPTernary, Type::V128>(lhs, rhs, addend, offsets, mode);
         WriteVRegister(rd, result);
-    } else if (info.kind == FPValueKind::FromInt) {
-        WriteVRegister(rd, Emit<OpCode::ArmFPConvert, Type::V128>(lhs, offsets, mode));
-    } else if (info.kind == FPValueKind::ToInt) {
+    } else if (info.kind == FPValueKind::ToInt && !info.vector_int) {
         WriteXRegister(rd, Emit<OpCode::ArmFPConvert, Type::U64>(lhs, offsets, mode));
+    } else if (info.kind == FPValueKind::FromInt || info.kind == FPValueKind::ToInt) {
+        WriteVRegister(rd, Emit<OpCode::ArmFPConvert, Type::V128>(lhs, offsets, mode));
     } else
         WriteVRegister(rd, Emit<OpCode::ArmFPUnary, Type::V128>(lhs, offsets, mode));
     return true;

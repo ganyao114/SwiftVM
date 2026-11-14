@@ -151,21 +151,16 @@ SVM_FUNCTION SvmRunNative
  jne SvmNativeDispatchNZCV
  jmp SvmNativeDispatch
 SVM_END SvmRunNative
-.macro DISPATCH name,counted,native
+.macro DISPATCH name,l2_name,counted,native
 SVM_FUNCTION \name
 .if \counted
  add qword ptr [r12+SVM_X64_CTX_DISPATCHES-SVM_X64_CTX_STATE],1
-.endif
- mov eax,dword ptr [r12+SVM_X64_CTX_PC-SVM_X64_CTX_STATE]
- mov qword ptr [r12+rax],rdi
-.if !\native
- PUBLISH_FLAGS
 .endif
  // R8 is only a scratch borrow of this thread's selected L1 slot. A null
  // base retains the bare NativeRunContext callback ABI; VM entries have L1.
  mov r8,qword ptr [r12+SVM_X64_CTX_L1-SVM_X64_CTX_STATE]
  test r8,r8
- jz .Ll2\@
+ jz \l2_name
  mov eax,edi
  and eax,(1<<SVM_DISPATCH_L1_BITS)-1
  shl rax,SVM_DISPATCH_L1_ENTRY_SHIFT
@@ -174,13 +169,30 @@ SVM_FUNCTION \name
  .hidden \name\()L1Probe
 \name\()L1Probe:
  cmp qword ptr [r8],rdi
- jne .Ll2\@
+ jne \l2_name
  mov r11,qword ptr [r8+8]
+ mov eax,dword ptr [r12+SVM_X64_CTX_PC-SVM_X64_CTX_STATE]
+ mov qword ptr [r12+rax],rdi
+.if !\native
+ PUBLISH_FLAGS
+.endif
 .if \counted
  add qword ptr [r12+SVM_X64_CTX_HITS-SVM_X64_CTX_STATE],1
 .endif
- jmp .Lenter\@
-.Ll2\@:
+ mov rax,qword ptr [r12+SVM_X64_CTX_ACTIVE-SVM_X64_CTX_STATE]
+ mov rcx,qword ptr [r12+SVM_X64_CTX_ANCHOR-SVM_X64_CTX_STATE]
+ mov qword ptr [rax],rcx
+ mov qword ptr [r12+SVM_X64_CTX_PHASE-SVM_X64_CTX_STATE],SVM_NATIVE_PHASE_GUEST
+ jmp r11
+SVM_END \name
+.endm
+.macro L2_DISPATCH name,counted,native
+SVM_FUNCTION \name
+ mov eax,dword ptr [r12+SVM_X64_CTX_PC-SVM_X64_CTX_STATE]
+ mov qword ptr [r12+rax],rdi
+.if !\native
+ PUBLISH_FLAGS
+.endif
  mov rsi,qword ptr [r12+SVM_X64_CTX_SLOTS-SVM_X64_CTX_STATE]
  mov rdx,qword ptr [r12+SVM_X64_CTX_MASK-SVM_X64_CTX_STATE]
  mov rax,rdi
@@ -229,10 +241,14 @@ SVM_FUNCTION \name
  jmp r11
 SVM_END \name
 .endm
-DISPATCH SvmNativeDispatch,0,0
-DISPATCH SvmNativeDispatchCounted,1,0
-DISPATCH SvmNativeDispatchNZCV,0,1
-DISPATCH SvmNativeDispatchNZCVCounted,1,1
+DISPATCH SvmNativeDispatch,SvmNativeL2Dispatch,0,0
+DISPATCH SvmNativeDispatchCounted,SvmNativeL2DispatchCounted,1,0
+DISPATCH SvmNativeDispatchNZCV,SvmNativeL2DispatchNZCV,0,1
+DISPATCH SvmNativeDispatchNZCVCounted,SvmNativeL2DispatchNZCVCounted,1,1
+L2_DISPATCH SvmNativeL2Dispatch,0,0
+L2_DISPATCH SvmNativeL2DispatchCounted,1,0
+L2_DISPATCH SvmNativeL2DispatchNZCV,0,1
+L2_DISPATCH SvmNativeL2DispatchNZCVCounted,1,1
 SVM_FUNCTION SvmNativePendingCounted
  sub qword ptr [r12+SVM_X64_CTX_HITS-SVM_X64_CTX_STATE],1
  jmp .Lcold

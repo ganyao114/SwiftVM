@@ -4,6 +4,8 @@
 #include "patch.h"
 #include "relocate.h"
 #include "runtime.h"
+#include "runtime/arch/arm32/location.h"
+#include "runtime/arch/arm32/state.h"
 #include "runtime/arch/arm64/numeric.h"
 #include "runtime/execution/dispatch.h"
 #include "runtime/execution/fault.h"
@@ -12,8 +14,11 @@
 #endif
 namespace swift::runtime::backend::x64 {
 Runtime::Runtime(bool diagnostic) noexcept : diagnostic(diagnostic) {
+    options.counted_dispatch = diagnostic;
     options.dispatcher = reinterpret_cast<std::uintptr_t>(
             diagnostic ? &execution::SvmNativeDispatchCounted : &execution::SvmNativeDispatch);
+    options.l2_dispatcher = reinterpret_cast<std::uintptr_t>(
+            diagnostic ? &execution::SvmNativeL2DispatchCounted : &execution::SvmNativeL2Dispatch);
     options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
     options.native_fp_environment = true;
 #if defined(__x86_64__)
@@ -60,6 +65,7 @@ execution::HostBackendOps Runtime::Bind() noexcept {
     o.specializes_arm_fpcr = true;
     o.configure = [](void* p, const GuestLayout& l) noexcept {
         auto& v = *static_cast<Runtime*>(p);
+        v.guest_isa = l.isa;
         v.options.flags_offset = l.flags_offset;
         v.options.pc_offset = l.pc_offset;
         v.options.mxcsr_offset = l.numeric_control_offset;
@@ -72,12 +78,19 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         v.options.arm_fpcr_offset =
                 l.isa == GuestISA::Arm64 ? offsetof(runtime::arm64::GuestState, fpcr) : UINT32_MAX;
         v.options.arm_fpsr_offset =
-                l.isa == GuestISA::Arm64 ? offsetof(runtime::arm64::GuestState, fpsr) : UINT32_MAX;
+                l.isa == GuestISA::Arm64   ? offsetof(runtime::arm64::GuestState, fpsr)
+                : l.isa == GuestISA::Arm32 ? offsetof(runtime::arm32::GuestState, fpscr)
+                                           : UINT32_MAX;
         v.options.dispatcher = reinterpret_cast<std::uintptr_t>(
                 v.options.linked_flags ? (v.diagnostic ? &execution::SvmNativeDispatchNZCVCounted
                                                        : &execution::SvmNativeDispatchNZCV)
                                        : (v.diagnostic ? &execution::SvmNativeDispatchCounted
                                                        : &execution::SvmNativeDispatch));
+        v.options.l2_dispatcher = reinterpret_cast<std::uintptr_t>(
+                v.options.linked_flags ? (v.diagnostic ? &execution::SvmNativeL2DispatchNZCVCounted
+                                                       : &execution::SvmNativeL2DispatchNZCV)
+                                       : (v.diagnostic ? &execution::SvmNativeL2DispatchCounted
+                                                       : &execution::SvmNativeL2Dispatch));
     };
     o.compile =
             [](void* p, const ir::Program& s, execution::HostCompileRequest r) -> CompileResult& {
@@ -94,8 +107,16 @@ execution::HostBackendOps Runtime::Bind() noexcept {
         }
         c.local_flags &= r.private_state && r.fault_locations;
         c.linked_flags &= c.local_flags;
-        if (v.options.arm_fpcr_offset != UINT32_MAX)
+        if (v.guest_isa == GuestISA::Arm64 && v.options.arm_fpcr_offset != UINT32_MAX) {
             c.arm_fpcr = runtime::arm64::FPCRForDomain(r.fp_mode >> 2);
+        } else if (v.guest_isa == GuestISA::Arm32) {
+            const runtime::arm32::Location loc{r.entry_pc};
+            const std::uint32_t fpcr = loc.FPSCR().Value() & 0x07c00000u;
+            if (runtime::arm64::IsSupportedFPCR(fpcr)) {
+                c.arm_fpcr = fpcr;
+                c.arm_fpcr_offset = kArmImmediateFPCR | fpcr;
+            }
+        }
         Compile(s, c, v.output, v.allocation);
         return v.output;
     };

@@ -719,12 +719,47 @@ FPValueInfo DescribeFPValues(u64 encoded) noexcept {
                  (word & FPDataProcessing1SourceMask) == FCVT_sd) {
             info.kind = FPValueKind::Precision;
             info.output_bits = info.bits == 32 ? 64 : 32;
-        } else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
-                   (((word >> 16) & 31) == 2 || ((word >> 16) & 31) == 3))
-            info.kind = FPValueKind::FromInt;
-        else if ((word & FPIntegerConvertFMask) == FPIntegerConvertFixed &&
-                 (((word >> 16) & 31) == 24 || ((word >> 16) & 31) == 25))
-            info.kind = FPValueKind::ToInt;
+        } else if (((word & FPIntegerConvertFMask) == FPIntegerConvertFixed ||
+                    FixedPointConvert(word)) &&
+                   (((word >> 16) & 31) == 2 || ((word >> 16) & 31) == 3 ||
+                    ((word >> 16) & 31) == 24 || ((word >> 16) & 31) == 25)) {
+            const u32 opcode = (word >> 16) & 31;
+            info.kind = (opcode == 2 || opcode == 3) ? FPValueKind::FromInt : FPValueKind::ToInt;
+            info.is_unsigned = (opcode & 1u) != 0;
+            if (FixedPointConvert(word)) info.fractional_bits = 64u - ((word >> 10) & 63u);
+        }
+    } else if (family == Numeric::VectorUnary && (word & NEON2RegMiscFPMask) == NEON_FSQRT) {
+        info.kind = FPValueKind::Sqrt;
+        info.bits = word & (1u << 22) ? 64 : 32;
+        info.lanes = (word & NEON_Q ? 128 : 64) / info.bits;
+        info.output_bits = info.bits;
+    } else if (family == Numeric::Integer) {
+        const u32 op = (word & ~(NEONScalar | NEON_Q)) & NEON2RegMiscFPMask;
+        if (op == NEON_SCVTF || op == NEON_UCVTF || op == NEON_FCVTZS || op == NEON_FCVTZU) {
+            info.kind = (op == NEON_SCVTF || op == NEON_UCVTF) ? FPValueKind::FromInt
+                                                               : FPValueKind::ToInt;
+            info.bits = word & (1u << 22) ? 64 : 32;
+            info.output_bits = info.integer_bits = info.bits;
+            info.lanes = (word & NEONScalar) ? 1 : (word & NEON_Q ? 128 : 64) / info.bits;
+            info.is_unsigned = op == NEON_UCVTF || op == NEON_FCVTZU;
+            info.vector_int = true;
+        }
+    } else if (family == Numeric::Fixed) {
+        const u32 op = (word & ~(NEON_Q | NEONScalar)) & NEONShiftImmediateMask;
+        const u32 imm = (word >> 16) & 127, immh = imm >> 3;
+        const int highest = int(std::bit_width(immh)) - 1;
+        const u32 bits = highest >= 0 ? (8u << highest) : 0u;
+        if ((bits == 32 || bits == 64) &&
+            (op == NEON_SCVTF_imm || op == NEON_UCVTF_imm || op == NEON_FCVTZS_imm ||
+             op == NEON_FCVTZU_imm)) {
+            info.kind = (op == NEON_SCVTF_imm || op == NEON_UCVTF_imm) ? FPValueKind::FromInt
+                                                                       : FPValueKind::ToInt;
+            info.bits = info.output_bits = info.integer_bits = bits;
+            info.lanes = (word & NEONScalar) ? 1 : (word & NEON_Q ? 128 : 64) / bits;
+            info.fractional_bits = 2 * bits - imm;
+            info.is_unsigned = op == NEON_UCVTF_imm || op == NEON_FCVTZU_imm;
+            info.vector_int = true;
+        }
     } else if (family == Numeric::Fused &&
                ((word & NEON3SameFPMask) == NEON_FMLA || (word & NEON3SameFPMask) == NEON_FMLS)) {
         info.kind = FPValueKind::Fused;
@@ -782,7 +817,7 @@ u64 EvaluateFPValues(void* output, const void* inputs, u64 encoded, u32 fpcr, vo
     const u32 rd = word & 31, rn = (word >> 5) & 31, rm = (word >> 16) & 31;
     const bool zero = info.kind == FPValueKind::Compare &&
                       (word & FPCompareFMask) == FPCompareFixed && (word & 8);
-    if (info.kind == FPValueKind::FromInt)
+    if (info.kind == FPValueKind::FromInt && !info.vector_int)
         std::memcpy(&state.gprs[rn], values, 8);
     else
         std::memcpy(state.q[rn], values, 16);
@@ -798,7 +833,7 @@ u64 EvaluateFPValues(void* output, const void* inputs, u64 encoded, u32 fpcr, vo
     u8 value[16]{};
     if (info.kind == FPValueKind::Compare)
         std::memcpy(value, &result, 8);
-    else if (info.kind == FPValueKind::ToInt)
+    else if (info.kind == FPValueKind::ToInt && !info.vector_int)
         std::memcpy(value, &state.gprs[rd], 8);
     else
         std::memcpy(value, state.q[rd], 16);

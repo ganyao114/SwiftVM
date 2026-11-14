@@ -125,8 +125,8 @@ enum class FPValueKind { Invalid, Compare, Fused, Divide, Sqrt, Precision, FromI
 
 struct FPValueInfo {
     FPValueKind kind{FPValueKind::Invalid};
-    u32 bits{32}, lanes{1}, output_bits{32}, integer_bits{32}, control{};
-    bool indexed{};
+    u32 bits{32}, lanes{1}, output_bits{32}, integer_bits{32}, control{}, fractional_bits{};
+    bool indexed{}, is_unsigned{}, vector_int{};
 };
 
 FPValueInfo DescribeFPValues(u64 encoded) noexcept;

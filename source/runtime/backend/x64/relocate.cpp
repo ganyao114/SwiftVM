@@ -28,6 +28,8 @@ std::uintptr_t ResolveSymbol(HostSymbol s, const CompileOptions& o) noexcept {
     switch (s) {
         case HostSymbol::Dispatcher:
             return o.dispatcher;
+        case HostSymbol::DispatcherL2:
+            return o.l2_dispatcher;
         case HostSymbol::Exit:
             return o.exit_handler;
         case HostSymbol::GuestCpuQuery:

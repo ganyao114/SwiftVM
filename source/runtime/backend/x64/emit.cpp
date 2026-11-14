@@ -1,6 +1,8 @@
+#include "abi_layout.inc"
 #include "emit.h"
 
 #include "runtime/arch/arm64/numeric.h"
+#include "runtime/backend/dispatch_layout.inc"
 #include "runtime/ir/flag_effects.h"
 
 #include <algorithm>
@@ -152,10 +154,12 @@ void Writer::Exit(u64 reason) {
 void Writer::StaticExit(u64 pc) {
     const auto previous_flags = flags;
     ExportLinkedFlags();
-    mov(rdi, pc);
-    if (options.pc_offset != UINT32_MAX) mov(qword[r12 + options.pc_offset], rdi);
     Restore();
     if (!Linked()) {
+        if (options.pc_offset != UINT32_MAX) {
+            mov(rdi, pc);
+            mov(qword[r12 + options.pc_offset], rdi);
+        }
         xor_(eax, eax);
         ret();
         flags = previous_flags;
@@ -173,6 +177,7 @@ void Writer::StaticExit(u64 pc) {
     dq(0);
     dq(0);
     site.fallback_offset = getSize();
+    mov(rdi, pc);
     HostAddress(r11, options.dispatcher, HostSymbol::Dispatcher);
     jmp(r11);
     output.links.push_back(site);
@@ -333,25 +338,82 @@ void Writer::EmitReturnTerminal(const StoredTerminal& t) {
     }
 }
 
+bool Writer::InterruptibleDispatch() const {
+    if (!Linked() || !options.fault_locations || !options.l2_dispatcher) return false;
+    const auto& body = source.Blocks()[block.value];
+    if (body.terminal.kind != TerminalKind::Dispatch || !body.node_count) return false;
+    const NodeId tail{body.first_node + body.node_count - 1};
+    const auto& operation = source.Operations()[tail.value];
+    if (operation.opcode != OpCode::StoreUniform || operation.Metadata() != OperationMetadata{})
+        return false;
+    auto operands = source.Operands(tail).begin();
+    const auto uniform = *operands++, value = *operands;
+    if (uniform.TypeView() != ir::Type::U64 || uniform.Payload() != options.pc_offset ||
+        value.Kind() != OperandKind::Value || TypeBits(View(value)) != 64)
+        return false;
+    return source.Operations()[value.Payload()].opcode != OpCode::LoadImm;
+}
+
 void Writer::EmitDispatchTerminal() {
     if (static_pc_known) {
         StaticExit(static_pc);
         return;
     }
+    Reg64 pc_reg = rax;
+    bool have_pc_reg = false;
+    const auto& body = source.Blocks()[block.value];
+    if (options.pc_offset != UINT32_MAX && body.node_count) {
+        const NodeId tail{body.first_node + body.node_count - 1};
+        const auto& op = source.Operations()[tail.value];
+        if (op.opcode == OpCode::StoreUniform && op.Metadata() == OperationMetadata{}) {
+            auto it = source.Operands(tail).begin();
+            const auto u = *it++, val = *it;
+            if (u.TypeView() == ir::Type::U64 && u.Payload() == options.pc_offset &&
+                TypeBits(View(val)) == 64 && ResidentScalar(val, 64, pc_reg))
+                have_pc_reg = true;
+        }
+    }
     ExportLinkedFlags();
-    if (options.pc_offset != UINT32_MAX)
+    if (have_pc_reg) {
+        if (pc_reg != rdi) mov(rdi, pc_reg);
+    } else if (options.pc_offset != UINT32_MAX) {
         mov(rdi, qword[r12 + options.pc_offset]);
-    else
-        xor_(edi, edi);
-    Restore();
-    if (Linked()) {
-        output.has_indirect_dispatch = true;
-        HostAddress(r11, options.dispatcher, HostSymbol::Dispatcher);
-        jmp(r11);
     } else {
+        xor_(edi, edi);
+    }
+    Restore();
+    if (!Linked()) {
         xor_(eax, eax);
         ret();
+        return;
     }
+    output.has_indirect_dispatch = true;
+    if (!options.l2_dispatcher) {
+        HostAddress(r11, options.dispatcher, HostSymbol::Dispatcher);
+        jmp(r11);
+        return;
+    }
+    if (options.counted_dispatch)
+        add(qword[r12 + SVM_X64_CTX_DISPATCHES - SVM_X64_CTX_STATE], 1);
+    mov(r8, qword[r12 + SVM_X64_CTX_L1 - SVM_X64_CTX_STATE]);
+    mov(eax, edi);
+    and_(eax, (1u << SVM_DISPATCH_L1_BITS) - 1);
+    shl(rax, SVM_DISPATCH_L1_ENTRY_SHIFT);
+    add(r8, rax);
+    const auto probe = static_cast<u32>(getSize());
+    cmp(qword[r8], rdi);
+    if (options.fault_locations) {
+        output.faults.push_back({probe, static_cast<u32>(getSize())});
+        output.faults.back().SetKind(FaultSiteKind::DispatchInterrupt);
+    }
+    Label miss;
+    jne(miss, T_SHORT);
+    if (options.counted_dispatch)
+        add(qword[r12 + SVM_X64_CTX_HITS - SVM_X64_CTX_STATE], 1);
+    jmp(ptr[r8 + 8]);
+    L(miss);
+    HostAddress(r11, options.l2_dispatcher, HostSymbol::DispatcherL2);
+    jmp(r11);
 }
 
 void Writer::Terminal(const StoredTerminal& t) {
@@ -470,6 +532,7 @@ bool Writer::PreservesScratchFpCaches(OpCode opcode) const {
 }
 
 void Writer::ValidateCompileOptions() {
+    if (options.l2_dispatcher && !Linked()) Reject(CompileError::UnsupportedOperand);
     if (options.arm_fpcr != UINT32_MAX && !runtime::arm64::IsSupportedFPCR(options.arm_fpcr))
         Reject(CompileError::UnsupportedOperand);
     if (!Pinned()) return;
@@ -586,7 +649,8 @@ void Writer::EmitBlock(u32 b, ExtraEntryList& extra_entries) {
 void Writer::Run() {
     ValidateCompileOptions();
     const bool fp_guard = allocation.uses_fpcr && options.arm_fpcr != UINT32_MAX &&
-                          options.arm_fpcr_offset != UINT32_MAX;
+                          options.arm_fpcr_offset != UINT32_MAX &&
+                          !IsImmediateArmFPCR(options.arm_fpcr_offset);
     EmitUnitEntry(source.EntryBlock().value, options.entry_pc, fp_guard);
     ExtraEntryList extra_entries;
     for (std::size_t order_idx = 0; order_idx < allocation.block_order.size(); ++order_idx) {
