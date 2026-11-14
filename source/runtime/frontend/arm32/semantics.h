@@ -3,6 +3,7 @@
 #include "build_ir.h"
 #include "instruction.h"
 #include "runtime/arch/arm32/numeric.h"
+#include "runtime/arch/arm64/numeric.h"
 #include "runtime/arch/arm32/service.h"
 #include "runtime/arch/arm32/state.h"
 #include "runtime/exit.h"

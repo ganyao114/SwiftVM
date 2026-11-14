@@ -19,8 +19,46 @@ void SetFpscrNZCV(Value nzcv) {
                 And(nzcv.WithView(Type::U32), Imm32(0xf0000000))));
 }
 
+bool CanEmitX64FP() const noexcept {
+    if constexpr (Sink::IsDirect) {
+        return false;
+    } else {
+        const u32 fpcr = current_location.FPSCR().Value() & 0x07c00000u;
+        return target.mode == TargetMode::Known && target.target == 0x8664 &&
+               !current_location.FPSCR().AHP() && runtime::arm64::IsSupportedFPCR(fpcr);
+    }
+}
+
+u32 CurrentX64ImmediateFPCR(bool standard = false) const noexcept {
+    constexpr u32 kImmediateTag = 0x80000000u;
+    const u32 fpscr = current_location.FPSCR().Value();
+    const u32 fpcr = standard ? ((fpscr & (1u << 26)) | (3u << 24)) : (fpscr & 0x07c00000u);
+    return kImmediateTag | fpcr;
+}
+
+u64 CurrentX64FPOffsets(bool standard = false) const noexcept {
+    return u64{CurrentX64ImmediateFPCR(standard)} | (u64{layout.fpscr_offset} << 32);
+}
+
 template <Numeric operation> Value ScalarFPBinary(Value a, Value b) {
-    return NumericScalar<operation>(ScalarWidth(a), a, b).WithView(a.ViewType());
+    const unsigned bits = ScalarWidth(a);
+    if constexpr (operation == Numeric::Add || operation == Numeric::Sub ||
+                  operation == Numeric::Mul || operation == Numeric::Div) {
+        if (CanEmitX64FP() && (bits == 32 || bits == 64)) {
+            constexpr u32 kind = operation == Numeric::Add   ? 0u
+                                 : operation == Numeric::Sub ? 1u
+                                 : operation == Numeric::Mul ? 2u
+                                                             : 3u;
+            const u32 mode = runtime::arm64::ArmFPBinaryMode(kind, bits, 1);
+            auto res = Emit<OpCode::ArmFPBinary, Type::V128>(ZeroExtendToQuad(a),
+                                                             ZeroExtendToQuad(b),
+                                                             u64(CurrentX64ImmediateFPCR()),
+                                                             u64(layout.fpscr_offset),
+                                                             u64(mode));
+            return VecExtract64(res, Literal{0u}).WithView(a.ViewType());
+        }
+    }
+    return NumericScalar<operation>(bits, a, b).WithView(a.ViewType());
 }
 
 #define ARM32_FP_BINARY(name, operation)                                                           \
@@ -44,7 +82,15 @@ Value FPNeg(Value a) {
 }
 
 Value FPSqrt(Value a) {
-    return NumericScalar<Numeric::Sqrt>(ScalarWidth(a), a, Imm64(0)).WithView(a.ViewType());
+    const unsigned bits = ScalarWidth(a);
+    if (CanEmitX64FP() && (bits == 32 || bits == 64)) {
+        const u64 encoded = (u64(runtime::arm64::Numeric::Scalar) << 32) |
+                            (bits == 64 ? 0x1e61c000u : 0x1e21c000u);
+        auto res = Emit<OpCode::ArmFPUnary, Type::V128>(
+                ZeroExtendToQuad(a), CurrentX64FPOffsets(), encoded);
+        return VecExtract64(res, Literal{0u}).WithView(a.ViewType());
+    }
+    return NumericScalar<Numeric::Sqrt>(bits, a, Imm64(0)).WithView(a.ViewType());
 }
 
 Value FPCompare(Value a, Value b, bool signal) {
@@ -62,8 +108,17 @@ Value FPRoundInt(Value a, RoundingMode rounding, bool exact) {
 }
 
 Value FPPrecision(Value a, unsigned destination, RoundingMode rounding) {
+    const unsigned src = ScalarWidth(a);
+    if (CanEmitX64FP() && ((src == 32 && destination == 64) || (src == 64 && destination == 32)) &&
+        static_cast<unsigned>(rounding) == current_location.FPSCR().RMode()) {
+        const u64 encoded = (u64(runtime::arm64::Numeric::Scalar) << 32) |
+                            (src == 32 ? 0x1e22c000u : 0x1e624000u);
+        auto res = Emit<OpCode::ArmFPUnary, Type::V128>(
+                ZeroExtendToQuad(a), CurrentX64FPOffsets(), encoded);
+        return VecExtract64(res, Literal{0u}).WithView(NeonIntegerType(destination));
+    }
     return NumericScalar<Numeric::Precision>(
-                   ScalarWidth(a), a, Imm64(runtime::arm32::NumericConvert(destination, rounding)))
+                   src, a, Imm64(runtime::arm32::NumericConvert(destination, rounding)))
             .WithView(NeonIntegerType(destination));
 }
 
@@ -85,11 +140,24 @@ Value FPDoubleToSingle(Value a, RoundingMode r) {
 
 template <bool unsign>
 Value FPFromInteger(Value a, unsigned destination, size_t fbits, RoundingMode rounding) {
+    const unsigned int_bits = ScalarWidth(a);
+    if (CanEmitX64FP() && (destination == 32 || destination == 64) && int_bits <= 32 &&
+        fbits <= 32 && static_cast<unsigned>(rounding) == current_location.FPSCR().RMode()) {
+        const auto input = int_bits == 16 ? (unsign ? ZeroExtendHalfToWord(a)
+                                                    : SignExtendHalfToWord(a))
+                                          : a;
+        const u32 type_bit = destination == 64 ? (1u << 22) : 0u;
+        const u32 word = fbits == 0 ? (0x1e220000u | (u32(unsign) << 16) | type_bit)
+                                    : (0x1e020000u | (u32(unsign) << 16) | type_bit |
+                                       (u32(64 - fbits) << 10));
+        const u64 encoded = (u64(runtime::arm64::Numeric::Scalar) << 32) | word;
+        auto res = Emit<OpCode::ArmFPConvert, Type::V128>(
+                input.WithView(Type::U64), CurrentX64FPOffsets(), encoded);
+        return VecExtract64(res, Literal{0u}).WithView(NeonIntegerType(destination));
+    }
     constexpr auto operation = unsign ? Numeric::FromUnsigned : Numeric::FromSigned;
     return NumericScalar<operation>(
-                   destination,
-                   a,
-                   Imm64(runtime::arm32::NumericConvert(ScalarWidth(a), rounding, fbits)))
+                   destination, a, Imm64(runtime::arm32::NumericConvert(int_bits, rounding, fbits)))
             .WithView(NeonIntegerType(destination));
 }
 
@@ -111,11 +179,21 @@ Value FPUnsignedFixedToDouble(Value a, size_t f, RoundingMode r) {
 
 template <bool unsign>
 Value FPToInteger(Value a, unsigned destination, size_t fbits, RoundingMode rounding) {
+    const unsigned src = ScalarWidth(a);
+    if (CanEmitX64FP() && (src == 32 || src == 64) && destination == 32 && fbits <= 32 &&
+        rounding == RoundingMode::TowardsZero) {
+        const u32 type_bit = src == 64 ? (1u << 22) : 0u;
+        const u32 word = fbits == 0 ? (0x1e380000u | (u32(unsign) << 16) | type_bit)
+                                    : (0x1e180000u | (u32(unsign) << 16) | type_bit |
+                                       (u32(64 - fbits) << 10));
+        const u64 encoded = (u64(runtime::arm64::Numeric::Scalar) << 32) | word;
+        return Emit<OpCode::ArmFPConvert, Type::U64>(
+                       ZeroExtendToQuad(a), CurrentX64FPOffsets(), encoded)
+                .WithView(Type::U32);
+    }
     constexpr auto operation = unsign ? Numeric::ToUnsigned : Numeric::ToSigned;
     return NumericScalar<operation>(
-                   ScalarWidth(a),
-                   a,
-                   Imm64(runtime::arm32::NumericConvert(destination, rounding, fbits)))
+                   src, a, Imm64(runtime::arm32::NumericConvert(destination, rounding, fbits)))
             .WithView(NeonIntegerType(destination));
 }
 
@@ -128,10 +206,24 @@ Value FPToFixedS32(Value a, size_t f, RoundingMode r) { return FPToInteger<false
 Value FPToFixedU32(Value a, size_t f, RoundingMode r) { return FPToInteger<true>(a, 32, f, r); }
 
 template <Numeric operation, bool standard = false> Value FusedFP(Value addend, Value a, Value b) {
+    const unsigned bits = ScalarWidth(a);
+    if constexpr (operation == Numeric::Fused || operation == Numeric::FusedSubtract) {
+        if (CanEmitX64FP() && (bits == 32 || bits == 64)) {
+            const u32 word = (bits == 64 ? 0x1f400000u : 0x1f000000u) |
+                             (operation == Numeric::FusedSubtract ? 0x8000u : 0u);
+            const u64 encoded = (u64(runtime::arm64::Numeric::Scalar) << 32) | word;
+            auto res = Emit<OpCode::ArmFPTernary, Type::V128>(ZeroExtendToQuad(a),
+                                                              ZeroExtendToQuad(b),
+                                                              ZeroExtendToQuad(addend),
+                                                              CurrentX64FPOffsets(standard),
+                                                              encoded);
+            return VecExtract64(res, Literal{0u}).WithView(a.ViewType());
+        }
+    }
     Emit<OpCode::StoreUniform, Type::Void>(
             Uniform{u32(layout.gprs_offset + offsetof(GuestState, numeric_addend)), Type::U64},
             addend.WithView(Type::U64));
-    return NumericScalar<operation, standard>(ScalarWidth(a), a, b).WithView(a.ViewType());
+    return NumericScalar<operation, standard>(bits, a, b).WithView(a.ViewType());
 }
 
 Value FPMulAdd(Value addend, Value a, Value b) { return FusedFP<Numeric::Fused>(addend, a, b); }
@@ -140,14 +232,40 @@ Value FPMulSub(Value addend, Value a, Value b) {
     return FusedFP<Numeric::FusedSubtract>(addend, a, b);
 }
 
+template <Numeric operation>
+Value FPVectorArith(size_t bits, Value a, Value b, bool controlled) {
+    if (CanEmitX64FP() && bits == 32) {
+        constexpr u32 kind = operation == Numeric::Add ? 0u : operation == Numeric::Sub ? 1u : 2u;
+        const u32 lanes = NeonWidth(a) / 32;
+        const u32 mode = runtime::arm64::ArmFPBinaryMode(kind, 32, lanes);
+        return Emit<OpCode::ArmFPBinary, Type::V128>(a.WithView(Type::V128),
+                                                     b.WithView(Type::V128),
+                                                     u64(CurrentX64ImmediateFPCR(!controlled)),
+                                                     u64(layout.fpscr_offset),
+                                                     u64(mode))
+                .WithView(a.ViewType());
+    }
+    return controlled ? NumericVector<operation>(bits, a, b)
+                      : NumericVector<operation, true>(bits, a, b);
+}
+
+Value FPVectorAdd(size_t bits, Value a, Value b, bool controlled = true) {
+    return FPVectorArith<Numeric::Add>(bits, a, b, controlled);
+}
+
+Value FPVectorSub(size_t bits, Value a, Value b, bool controlled = true) {
+    return FPVectorArith<Numeric::Sub>(bits, a, b, controlled);
+}
+
+Value FPVectorMul(size_t bits, Value a, Value b, bool controlled = true) {
+    return FPVectorArith<Numeric::Mul>(bits, a, b, controlled);
+}
+
 #define ARM32_FP_VECTOR_BINARY(name, operation)                                                    \
     Value name(size_t bits, Value a, Value b, bool controlled = true) {                            \
         return controlled ? NumericVector<Numeric::operation>(bits, a, b)                          \
                           : NumericVector<Numeric::operation, true>(bits, a, b);                   \
     }
-ARM32_FP_VECTOR_BINARY(FPVectorAdd, Add)
-ARM32_FP_VECTOR_BINARY(FPVectorSub, Sub)
-ARM32_FP_VECTOR_BINARY(FPVectorMul, Mul)
 ARM32_FP_VECTOR_BINARY(FPVectorEqual, CompareEqual)
 ARM32_FP_VECTOR_BINARY(FPVectorGreater, CompareGreater)
 ARM32_FP_VECTOR_BINARY(FPVectorGreaterEqual, CompareGreaterEqual)
@@ -168,6 +286,16 @@ Value FPVectorNeg(size_t bits, Value a) {
 }
 
 Value FPVectorMulAdd(size_t bits, Value addend, Value a, Value b, bool controlled = true) {
+    if (CanEmitX64FP() && bits == 32) {
+        const u32 q = NeonWidth(a) == 128 ? 0x40000000u : 0u;
+        const u64 encoded = (u64(runtime::arm64::Numeric::Fused) << 32) | q | 0x0e20cc00u;
+        return Emit<OpCode::ArmFPTernary, Type::V128>(a.WithView(Type::V128),
+                                                      b.WithView(Type::V128),
+                                                      addend.WithView(Type::V128),
+                                                      CurrentX64FPOffsets(!controlled),
+                                                      encoded)
+                .WithView(a.ViewType());
+    }
     auto result = ZeroVector().WithView(a.ViewType());
     for (size_t lane = 0; lane < NeonWidth(a) / bits; ++lane) {
         auto acc = VectorGetElement(bits, addend, lane), x = VectorGetElement(bits, a, lane),
@@ -202,6 +330,32 @@ template <Numeric operation> Value FPVectorConvert(size_t bits,
                                                    RoundingMode rounding,
                                                    bool controlled,
                                                    bool exact = false) {
+    if constexpr (operation == Numeric::FromSigned || operation == Numeric::FromUnsigned ||
+                  operation == Numeric::ToSigned || operation == Numeric::ToUnsigned) {
+        const bool from_int =
+                operation == Numeric::FromSigned || operation == Numeric::FromUnsigned;
+        const bool unsign =
+                operation == Numeric::FromUnsigned || operation == Numeric::ToUnsigned;
+        const unsigned expected_rmode =
+                controlled ? current_location.FPSCR().RMode()
+                           : static_cast<unsigned>(RoundingMode::ToNearest_TieEven);
+        const bool mode_ok = from_int ? (static_cast<unsigned>(rounding) == expected_rmode)
+                                      : (rounding == RoundingMode::TowardsZero);
+        if (CanEmitX64FP() && !exact && bits == 32 && destination == 32 && fbits <= 32 && mode_ok) {
+            const u32 q = NeonWidth(a) == 128 ? 0x40000000u : 0u;
+            const u32 u = unsign ? 0x20000000u : 0u;
+            const auto family = fbits == 0 ? runtime::arm64::Numeric::Integer
+                                           : runtime::arm64::Numeric::Fixed;
+            const u32 word = fbits == 0
+                                     ? (q | u | (from_int ? 0x0e21d800u : 0x0ea1b800u))
+                                     : (q | u | (from_int ? 0x0f00e400u : 0x0f00fc00u) |
+                                        (u32(64 - fbits) << 16));
+            const u64 encoded = (u64(family) << 32) | word;
+            return Emit<OpCode::ArmFPConvert, Type::V128>(
+                           a.WithView(Type::V128), CurrentX64FPOffsets(!controlled), encoded)
+                    .WithView(a.ViewType());
+        }
+    }
     const auto descriptor =
             Imm64(runtime::arm32::NumericConvert(destination, rounding, fbits, exact));
     auto result = ZeroVector().WithView(a.ViewType());

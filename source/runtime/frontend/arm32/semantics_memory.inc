@@ -915,15 +915,18 @@ bool arm_STRH_reg(Cond cond, bool P, bool U, bool W, Reg n, Reg t, Reg m) {
 
 static bool load_store_LDMHelper(
         Semantics& ir, bool W, Reg n, RegList list, Value start_address, Value writeback_address) {
-    auto address = start_address;
+    u32 offset = 0;
+    const auto word_at = [&] {
+        const auto addr = offset == 0 ? start_address : ir.Add(start_address, ir.Imm32(offset));
+        const auto acc = offset == 0 ? AccType::ATOMIC : AccType::NORMAL;
+        offset += 4;
+        return ir.ReadMemory32(addr, acc);
+    };
     for (size_t i = 0; i <= 14; i++) {
-        if (bits::get_bit(i, list)) {
-            ir.SetRegister(static_cast<Reg>(i), ir.ReadMemory32(address, AccType::ATOMIC));
-            address = ir.Add(address, ir.Imm32(4));
-        }
+        if (bits::get_bit(i, list)) ir.SetRegister(static_cast<Reg>(i), word_at());
     }
     Value branch_pc;
-    if (bits::get_bit<15>(list)) branch_pc = ir.ReadMemory32(address, AccType::ATOMIC);
+    if (bits::get_bit<15>(list)) branch_pc = word_at();
     if (W && !bits::get_bit(RegNumber(n), list)) {
         ir.SetRegister(n, writeback_address);
     }
@@ -1018,16 +1021,17 @@ bool arm_LDM_eret() { return UndefinedInstruction(); }
 
 static bool load_store_STMHelper(
         Semantics& ir, bool W, Reg n, RegList list, Value start_address, Value writeback_address) {
-    auto address = start_address;
+    u32 offset = 0;
+    const auto store_word = [&](Value val) {
+        const auto addr = offset == 0 ? start_address : ir.Add(start_address, ir.Imm32(offset));
+        const auto acc = offset == 0 ? AccType::ATOMIC : AccType::NORMAL;
+        offset += 4;
+        ir.WriteMemory32(addr, val, acc);
+    };
     for (size_t i = 0; i <= 14; i++) {
-        if (bits::get_bit(i, list)) {
-            ir.WriteMemory32(address, ir.GetRegister(static_cast<Reg>(i)), AccType::ATOMIC);
-            address = ir.Add(address, ir.Imm32(4));
-        }
+        if (bits::get_bit(i, list)) store_word(ir.GetRegister(static_cast<Reg>(i)));
     }
-    if (bits::get_bit<15>(list)) {
-        ir.WriteMemory32(address, ir.Imm32(ir.PC()), AccType::ATOMIC);
-    }
+    if (bits::get_bit<15>(list)) store_word(ir.Imm32(ir.PC()));
     if (W) {
         ir.SetRegister(n, writeback_address);
     }
@@ -2271,15 +2275,18 @@ static bool thumb32_load_store_multiple_LDMHelper(Semantics& ir,
                                                   u32 list,
                                                   const Value& start_address,
                                                   const Value& writeback_address) {
-    auto address = start_address;
+    u32 offset = 0;
+    const auto word_at = [&] {
+        const auto addr = offset == 0 ? start_address : ir.Add(start_address, ir.Imm32(offset));
+        const auto acc = offset == 0 ? AccType::ATOMIC : AccType::NORMAL;
+        offset += 4;
+        return ir.ReadMemory32(addr, acc);
+    };
     for (size_t i = 0; i <= 14; i++) {
-        if (bits::get_bit(i, list)) {
-            ir.SetRegister(static_cast<Reg>(i), ir.ReadMemory32(address, AccType::ATOMIC));
-            address = ir.Add(address, ir.Imm32(4));
-        }
+        if (bits::get_bit(i, list)) ir.SetRegister(static_cast<Reg>(i), word_at());
     }
     Value branch_pc;
-    if (bits::get_bit<15>(list)) branch_pc = ir.ReadMemory32(address, AccType::ATOMIC);
+    if (bits::get_bit<15>(list)) branch_pc = word_at();
     if (W && !bits::get_bit(RegNumber(n), list)) {
         ir.SetRegister(n, writeback_address);
     }
@@ -2302,11 +2309,14 @@ static bool thumb32_load_store_multiple_STMHelper(Semantics& ir,
                                                   u32 list,
                                                   const Value& start_address,
                                                   const Value& writeback_address) {
-    auto address = start_address;
+    u32 offset = 0;
     for (size_t i = 0; i <= 14; i++) {
         if (bits::get_bit(i, list)) {
-            ir.WriteMemory32(address, ir.GetRegister(static_cast<Reg>(i)), AccType::ATOMIC);
-            address = ir.Add(address, ir.Imm32(4));
+            const auto addr =
+                    offset == 0 ? start_address : ir.Add(start_address, ir.Imm32(offset));
+            const auto acc = offset == 0 ? AccType::ATOMIC : AccType::NORMAL;
+            offset += 4;
+            ir.WriteMemory32(addr, ir.GetRegister(static_cast<Reg>(i)), acc);
         }
     }
     if (W) {
@@ -2566,18 +2576,18 @@ bool thumb16_PUSH(bool M, RegList reg_list) {
 
     const u32 num_bytes_to_push = static_cast<u32>(4 * bits::count_ones(reg_list));
     const auto final_address = ir.Sub(ir.GetRegister(Reg::SP), ir.Imm32(num_bytes_to_push));
-    auto address = final_address;
+    u32 offset = 0;
     for (size_t i = 0; i < 16; i++) {
         if (bits::get_bit(i, reg_list)) {
-            // TODO: Deal with alignment
-            const auto Ri = ir.GetRegister(static_cast<Reg>(i));
-            ir.WriteMemory32(address, Ri, AccType::ATOMIC);
-            address = ir.Add(address, ir.Imm32(4));
+            const auto addr =
+                    offset == 0 ? final_address : ir.Add(final_address, ir.Imm32(offset));
+            const auto acc = offset == 0 ? AccType::ATOMIC : AccType::NORMAL;
+            offset += 4;
+            ir.WriteMemory32(addr, ir.GetRegister(static_cast<Reg>(i)), acc);
         }
     }
 
     ir.SetRegister(Reg::SP, final_address);
-    // TODO(optimization): Possible location for an RSB push.
     return true;
 }
 
@@ -2589,29 +2599,28 @@ bool thumb16_POP(bool P, RegList reg_list) {
         return UnpredictableInstruction();
     }
 
-    auto address = ir.GetRegister(Reg::SP);
+    const auto start_address = ir.GetRegister(Reg::SP);
+    u32 offset = 0;
+    const auto word_at = [&] {
+        const auto addr = offset == 0 ? start_address : ir.Add(start_address, ir.Imm32(offset));
+        const auto acc = offset == 0 ? AccType::ATOMIC : AccType::NORMAL;
+        offset += 4;
+        return ir.ReadMemory32(addr, acc);
+    };
     for (size_t i = 0; i < 15; i++) {
-        if (bits::get_bit(i, reg_list)) {
-            // TODO: Deal with alignment
-            const auto data = ir.ReadMemory32(address, AccType::ATOMIC);
-            ir.SetRegister(static_cast<Reg>(i), data);
-            address = ir.Add(address, ir.Imm32(4));
-        }
+        if (bits::get_bit(i, reg_list)) ir.SetRegister(static_cast<Reg>(i), word_at());
     }
 
     if (bits::get_bit<15>(reg_list)) {
-        // TODO(optimization): Possible location for an RSB pop.
-        const auto data = ir.ReadMemory32(address, AccType::ATOMIC);
+        const auto data = word_at();
         ir.UpdateUpperLocationDescriptor();
         ir.LoadWritePC(data);
-        address = ir.Add(address, ir.Imm32(4));
-        ir.SetRegister(Reg::SP, address);
+        ir.SetRegister(Reg::SP, ir.Add(start_address, ir.Imm32(offset)));
         ir.SetTerm(Term::PopRSBHint{});
         return false;
-    } else {
-        ir.SetRegister(Reg::SP, address);
-        return true;
     }
+    ir.SetRegister(Reg::SP, ir.Add(start_address, ir.Imm32(offset)));
+    return true;
 }
 
 bool thumb16_STMIA(Reg n, RegList reg_list) {
@@ -2623,16 +2632,19 @@ bool thumb16_STMIA(Reg n, RegList reg_list) {
         return UnpredictableInstruction();
     }
 
-    auto address = ir.GetRegister(n);
+    const auto start_address = ir.GetRegister(n);
+    u32 offset = 0;
     for (size_t i = 0; i < 8; i++) {
         if (bits::get_bit(i, reg_list)) {
-            const auto Ri = ir.GetRegister(static_cast<Reg>(i));
-            ir.WriteMemory32(address, Ri, AccType::ATOMIC);
-            address = ir.Add(address, ir.Imm32(4));
+            const auto addr =
+                    offset == 0 ? start_address : ir.Add(start_address, ir.Imm32(offset));
+            const auto acc = offset == 0 ? AccType::ATOMIC : AccType::NORMAL;
+            offset += 4;
+            ir.WriteMemory32(addr, ir.GetRegister(static_cast<Reg>(i)), acc);
         }
     }
 
-    ir.SetRegister(n, address);
+    ir.SetRegister(n, ir.Add(start_address, ir.Imm32(offset)));
     return true;
 }
 
@@ -2642,18 +2654,21 @@ bool thumb16_LDMIA(Reg n, RegList reg_list) {
     }
 
     const bool write_back = !bits::get_bit(static_cast<size_t>(n), reg_list);
-    auto address = ir.GetRegister(n);
+    const auto start_address = ir.GetRegister(n);
+    u32 offset = 0;
 
     for (size_t i = 0; i < 8; i++) {
         if (bits::get_bit(i, reg_list)) {
-            const auto data = ir.ReadMemory32(address, AccType::ATOMIC);
-            ir.SetRegister(static_cast<Reg>(i), data);
-            address = ir.Add(address, ir.Imm32(4));
+            const auto addr =
+                    offset == 0 ? start_address : ir.Add(start_address, ir.Imm32(offset));
+            const auto acc = offset == 0 ? AccType::ATOMIC : AccType::NORMAL;
+            offset += 4;
+            ir.SetRegister(static_cast<Reg>(i), ir.ReadMemory32(addr, acc));
         }
     }
 
     if (write_back) {
-        ir.SetRegister(n, address);
+        ir.SetRegister(n, ir.Add(start_address, ir.Imm32(offset)));
     }
     return true;
 }

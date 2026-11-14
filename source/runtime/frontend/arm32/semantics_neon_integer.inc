@@ -47,8 +47,9 @@ static unsigned ScalarWidth(Value value) {
 Value ZeroVector() { return Emit<OpCode::VecSharedZero, Type::V128>(); }
 
 Value ZeroExtendToQuad(Value value) {
-    auto duplicate = Emit<OpCode::VecDup64, Type::V128>(value.WithView(Type::U64));
-    return Emit<OpCode::VecZip, Type::V128>(duplicate, ZeroVector(), u64(64), u64(0));
+    const unsigned width = ScalarWidth(value);
+    const Type scalar_type = width == 64 ? Type::U64 : width == 16 ? Type::U16 : Type::U32;
+    return Emit<OpCode::VecScalar, Type::V128>(value.WithView(scalar_type));
 }
 
 Value VectorGetElement(size_t esize, Value vector, size_t index) {
@@ -448,12 +449,68 @@ Value NumericVector(size_t bits, Value a, Value b, size_t output_bits = 0) {
     return result;
 }
 
+Value BroadcastConst(size_t bits, u64 lane_value) {
+    const u64 masked = bits == 64 ? lane_value : (lane_value & ((u64{1} << bits) - 1));
+    const u64 word = bits == 8    ? masked * 0x0101010101010101ULL
+                     : bits == 16 ? masked * 0x0001000100010001ULL
+                     : bits == 32 ? masked * 0x0000000100000001ULL
+                                  : masked;
+    return Emit<OpCode::VecLoadConst, Type::V128>(word, word);
+}
+
+Value VectorSelectMask(Value mask, Value yes, Value no) {
+    return VectorOr(VectorAnd(yes, mask), VectorAndNot(no, mask));
+}
+
+Value VectorVariableShift(size_t bits, Value a, Value b, bool is_signed) {
+    const auto view = a.ViewType();
+    const auto va = a.WithView(Type::V128);
+    const auto vb = b.WithView(Type::V128);
+    const auto zero = ZeroVector();
+    auto s = vb;
+    if (bits > 8) {
+        const auto m80 = BroadcastConst(bits, 0x80);
+        s = VectorSub(bits, VectorEor(VectorAnd(vb, BroadcastConst(bits, 0xff)), m80), m80);
+    }
+    const auto neg = VectorGreaterSigned(bits, zero, s);
+    const auto in_left = VectorGreaterSigned(bits, BroadcastConst(bits, bits), s);
+    auto left_val = va;
+    for (unsigned bit = 0; (1u << bit) < bits; ++bit) {
+        const auto bit_mask =
+                VectorGreaterSigned(bits, zero, VectorLogicalShiftLeft(bits, s, bits - 1 - bit));
+        left_val = VectorSelectMask(
+                bit_mask, VectorLogicalShiftLeft(bits, left_val, 1u << bit), left_val);
+    }
+    const auto left_res = VectorAnd(left_val, in_left);
+
+    const auto in_right = VectorGreaterSigned(bits, s, BroadcastConst(bits, u64(-s64(bits))));
+    const auto r = VectorSub(bits, zero, s);
+    const auto sign_fill = is_signed ? VectorGreaterSigned(bits, zero, va) : zero;
+    auto right_val = VectorEor(va, sign_fill);
+    for (unsigned bit = 0; (1u << bit) < bits; ++bit) {
+        const auto bit_mask =
+                VectorGreaterSigned(bits, zero, VectorLogicalShiftLeft(bits, r, bits - 1 - bit));
+        right_val = VectorSelectMask(
+                bit_mask, VectorLogicalShiftRight(bits, right_val, 1u << bit), right_val);
+    }
+    const auto right_res = VectorEor(VectorAnd(right_val, in_right), sign_fill);
+    auto res = VectorSelectMask(neg, right_res, left_res);
+    if (view == Type::V64) res = VectorAnd(res, Emit<OpCode::VecLoadConst, Type::V128>(~u64{}, 0));
+    return res.WithView(view);
+}
+
+Value VectorArithmeticVShift(size_t bits, Value a, Value b) {
+    return VectorVariableShift(bits, a, b, true);
+}
+
+Value VectorLogicalVShift(size_t bits, Value a, Value b) {
+    return VectorVariableShift(bits, a, b, false);
+}
+
 #define ARM32_VECTOR_NUMERIC_BINARY(name, operation)                                               \
     Value name(size_t bits, Value a, Value b) {                                                    \
         return NumericVector<Numeric::operation>(bits, a, b);                                      \
     }
-ARM32_VECTOR_NUMERIC_BINARY(VectorArithmeticVShift, ShiftSigned)
-ARM32_VECTOR_NUMERIC_BINARY(VectorLogicalVShift, ShiftUnsigned)
 ARM32_VECTOR_NUMERIC_BINARY(VectorRoundingShiftLeftSigned, RoundingShiftSigned)
 ARM32_VECTOR_NUMERIC_BINARY(VectorRoundingShiftLeftUnsigned, RoundingShiftUnsigned)
 ARM32_VECTOR_NUMERIC_BINARY(VectorSignedSaturatedShiftLeft, SaturatingShiftSigned)
@@ -469,7 +526,18 @@ ARM32_VECTOR_NUMERIC_BINARY(VectorSignedSaturatedDoublingMultiplyHighRounding,
 #undef ARM32_VECTOR_NUMERIC_UNARY
 
 Value VectorPopulationCount(Value a) {
-    return NumericVector<Numeric::PopulationCount>(8, a, ZeroVector());
+    const auto view = a.ViewType();
+    auto v = a.WithView(Type::V128);
+    const auto m55 = Emit<OpCode::VecLoadConst, Type::V128>(0x5555555555555555ULL,
+                                                            0x5555555555555555ULL);
+    const auto m33 = Emit<OpCode::VecLoadConst, Type::V128>(0x3333333333333333ULL,
+                                                            0x3333333333333333ULL);
+    const auto m0f = Emit<OpCode::VecLoadConst, Type::V128>(
+            0x0f0f0f0f0f0f0f0fULL, view == Type::V64 ? 0ULL : 0x0f0f0f0f0f0f0f0fULL);
+    v = VectorSub(8, v, VectorAnd(VectorLogicalShiftRight(64, v, 1), m55));
+    v = VectorAdd(8, VectorAnd(v, m33), VectorAnd(VectorLogicalShiftRight(64, v, 2), m33));
+    v = VectorAnd(VectorAdd(8, v, VectorLogicalShiftRight(64, v, 4)), m0f);
+    return v.WithView(view);
 }
 
 Value VectorUnsignedRecipEstimate(Value a) {
