@@ -447,3 +447,124 @@ TEST_CASE("ARM32 native floating and vector paths preserve FPSCR and shared D Q 
         }
     }
 }
+
+TEST_CASE("ARM32 VCNT and variable VSHL lower without helper calls and preserve D/Q lanes",
+          "[native][arm32-semantics]") {
+    const auto isa = swift::tests::HostISA();
+    REQUIRE(isa != NativeISA::None);
+    auto verify_run = [&](const std::vector<U8>& code, const arch::GuestState& initial) {
+        auto expected = initial;
+        for (std::size_t off = 0; off < code.size();) {
+            const auto decoded = front::DecodeOne(std::span{code}.subspan(off), expected.pc);
+            REQUIRE(bool(decoded));
+            const auto step = front::InterpretDecoded(
+                    decoded.instruction, std::span{code}.subspan(off), expected, {});
+            off += decoded.instruction.Length();
+            if (step.kind == front::StepKind::Service) break;
+            REQUIRE(step.kind == front::StepKind::Completed);
+        }
+        const front::BlockWindow window{Base, code};
+        const auto built = front::BuildIR({&window, 1}, Base, ir::Scope::Block, {}, Target(isa));
+        REQUIRE(bool(built));
+        for (const auto& op : built.program.Operations()) CHECK(op.opcode != ir::OpCode::CallLambda);
+        const auto compiled = Compile(built.program, isa);
+        REQUIRE(bool(compiled));
+        swift::tests::NativeCode published{compiled.words, isa};
+        auto actual = initial;
+        (void)published.Run(reinterpret_cast<U8*>(&actual));
+        CHECK(std::memcmp(actual.q, expected.q, sizeof(actual.q)) == 0);
+        CHECK(actual.fpscr == expected.fpscr);
+    };
+
+    arch::GuestState pop_init{};
+    pop_init.pc = Base;
+    const U8 sample[16]{0x00, 0x01, 0x03, 0x55, 0xaa, 0x80, 0x7f, 0xff,
+                        0x0f, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc};
+    std::memcpy(pop_init.q[0] + 8, sample, 8);  // D1 (upper half of Q0; must stay intact!)
+    std::memcpy(pop_init.q[3], sample, 16);     // Q3
+    verify_run(ARM({0xf3b00501, 0xf3b04546, 0xef000000}), pop_init);
+
+    constexpr int shifts[]{0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 127,
+                           -1, -7, -8, -15, -16, -31, -32, -63, -64, -127, -128};
+    for (unsigned sz = 0; sz < 4; ++sz) {
+        for (unsigned u = 0; u < 2; ++u) {
+            arch::GuestState s_init{};
+            s_init.pc = Base;
+            std::memset(s_init.q[0] + 8, 0xc3, 8);  // D1 sentinel
+            for (unsigned b = 0; b < 16; ++b) {
+                s_init.q[1][b] = static_cast<U8>(0x85u + b * 17u);
+                s_init.q[2][b] = static_cast<U8>(shifts[(b + sz * 3 + u) % 22]);
+            }
+            const U32 d_word = 0xf2040402u | (u << 24) | (sz << 20);
+            const U32 q_word = 0xf2040442u | (u << 24) | (sz << 20);
+            verify_run(ARM({d_word, 0xef000000}), s_init);
+            verify_run(ARM({q_word, 0xef000000}), s_init);
+        }
+    }
+}
+
+TEST_CASE("ARM32 scalar VFP and NEON float ops emit x64 native FP IR and match interpreter",
+          "[native][arm32-semantics]") {
+    const auto code = ARM({
+            0xee300a81, 0xee701ac1, 0xee202a81, 0xeec02a81, 0xeeb13ae0,
+            0xeeb74ae0, 0xeef73bc4, 0xeeb84ae4, 0xeeb85a64, 0xeefd5ae0,
+            0xeebc6ae0, 0xeefa6acc, 0xeebe7acc, 0xeee07a81, 0xeea08ac1,
+            0xee3bab0c, 0xee3bdb4c, 0xee2beb0c, 0xee8bfb0c, 0xeef10bcb,
+            0xeeeb1b0c, 0xeeeb2b4c,
+            0xf2420de4, 0xf2626de4, 0xf3428df4, 0xf242acf4, 0xf262ccf4,
+            0xf3fbe662, 0xf3fb0762, 0xf3fc0e32, 0xf3fc1f33, 0xef000000});
+    const front::BlockWindow window{Base, code};
+    const auto x64_ir =
+            front::BuildIR({&window, 1}, Base, ir::Scope::Block, {}, Target(NativeISA::X64));
+    REQUIRE(bool(x64_ir));
+    for (const auto& op : x64_ir.program.Operations()) CHECK(op.opcode != ir::OpCode::CallLambda);
+
+    const auto isa = swift::tests::HostISA();
+    REQUIRE(isa != NativeISA::None);
+    for (bool exceptional : {false, true}) {
+        arch::GuestState init{};
+        init.pc = Base;
+        init.packed_flags = UINT64_C(0xa0000001);
+        init.fpscr = (1u << 27) | 0x30000000u;  // QC=1 and FPSCR NZCV preserved
+        WriteLane(init, 0, exceptional ? U32{0x00400000} : std::bit_cast<U32>(6.25f), 1);  // S1
+        WriteLane(init, 0, exceptional ? U32{0x00000000} : std::bit_cast<U32>(2.5f), 2);   // S2
+        WriteLane(init, 2, std::int32_t{-42}, 1);                                          // S9
+        WriteLane(init, 3, std::int32_t{-384}, 1);                                         // S13
+        WriteLane(init, 3, -3.75f, 2);                                                     // S14
+        WriteLane(init, 3, 1.25f, 3);                                                      // S15
+        WriteLane(init, 4, 10.0f, 0);                                                      // S16
+        WriteLane(init, 5, exceptional ? -1.0 : 9.0, 1);                                   // D11
+        WriteLane(init, 6, exceptional ? 1e308 : 1.5, 0);                                  // D12
+        WriteLane(init, 8, 2.0, 1);                                                        // D17
+        WriteLane(init, 9, 5.0, 0);                                                        // D18
+        for (unsigned lane = 0; lane < 4; ++lane) {
+            const U32 a = (exceptional && lane == 1) ? 0x00400000u
+                          : (exceptional && lane == 2) ? 0x7f800011u
+                                                       : std::bit_cast<U32>(1.5f + lane);
+            WriteLane(init, 9, a, lane);                            // Q9
+            WriteLane(init, 10, std::bit_cast<U32>(-2.0f + lane), lane);  // Q10
+            WriteLane(init, 13, 0.5f * lane, lane);                 // Q13
+            WriteLane(init, 14, 4.0f - lane, lane);                 // Q14
+        }
+        auto expected = init;
+        for (std::size_t off = 0; off < code.size();) {
+            const auto decoded = front::DecodeOne(std::span{code}.subspan(off), expected.pc);
+            REQUIRE(bool(decoded));
+            const auto step = front::InterpretDecoded(
+                    decoded.instruction, std::span{code}.subspan(off), expected, {});
+            off += decoded.instruction.Length();
+            if (step.kind == front::StepKind::Service) break;
+            REQUIRE(step.kind == front::StepKind::Completed);
+        }
+        const auto built = front::BuildIR({&window, 1}, Base, ir::Scope::Block, {}, Target(isa));
+        REQUIRE(bool(built));
+        const auto compiled = Compile(built.program, isa);
+        REQUIRE(bool(compiled));
+        swift::tests::NativeCode published{compiled.words, isa};
+        auto actual = init;
+        (void)published.Run(reinterpret_cast<U8*>(&actual));
+        CHECK(std::memcmp(actual.q, expected.q, sizeof(actual.q)) == 0);
+        CHECK(actual.fpscr == expected.fpscr);
+        CHECK(actual.packed_flags == expected.packed_flags);
+    }
+}

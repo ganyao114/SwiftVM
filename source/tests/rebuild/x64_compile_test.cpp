@@ -3865,3 +3865,274 @@ TEST_CASE("Resident AVX single-precision and 2S fused/binary FP match ARM oracle
         }
     }
 }
+
+TEST_CASE("Dynamic dispatch defers its event poll to the inline L1 probe",
+          "[compile][x64-compile]") {
+    using swift::runtime::backend::FaultSiteKind;
+    using swift::runtime::backend::HostSymbol;
+    for (const auto scope : {Scope::Block, Scope::Function}) {
+        const auto build = [scope](OpCode marker, bool constant_tail) {
+            Builder builder{scope};
+            Need(builder.BeginBlock(Block(builder)));
+            if (marker != OpCode::Nop) Emit(builder, marker, Type::Void, {Imm(0x1200)});
+            const auto target = constant_tail ? Literal(builder, 0x1400) : Load(builder, 0);
+            Emit(builder,
+                 OpCode::StoreUniform,
+                 Type::Void,
+                 {Operand::Uniform(offsetof(State, pc), Type::U64), Operand::ValueOf(target)});
+            Need(builder.EndBlock(Terminal::Dispatch()));
+            return Submit(builder);
+        };
+        auto options = Options();
+        options.dispatcher = 0x1000;
+        options.exit_handler = 0x2000;
+        options.l2_dispatcher = 0x3000;
+        options.local_flags = options.linked_flags = options.private_state = true;
+        options.relocatable = true;
+        for (const bool counted : {false, true}) {
+            options.counted_dispatch = counted;
+            const auto bare = x64::Compile(build(OpCode::Nop, false), options);
+            const auto interruptible =
+                    x64::Compile(build(OpCode::GuestDispatchSafepoint, false), options);
+            const auto explicit_poll =
+                    x64::Compile(build(OpCode::GuestSafepoint, false), options);
+            REQUIRE(bool(bare));
+            REQUIRE(bool(interruptible));
+            REQUIRE(bool(explicit_poll));
+            CHECK(interruptible.words == bare.words);
+            CHECK(explicit_poll.words.size() > interruptible.words.size());
+            CHECK(interruptible.has_indirect_dispatch);
+            REQUIRE(interruptible.faults.size() == 1);
+            const auto& site = interruptible.faults.front();
+            CHECK(site.Kind() == FaultSiteKind::DispatchInterrupt);
+            CHECK(site.last_offset == site.first_offset + 3);
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(interruptible.words.data());
+            CHECK(bytes[site.first_offset] == 0x49);
+            CHECK(bytes[site.first_offset + 1] == 0x39);
+            CHECK(bytes[site.first_offset + 2] == 0x38);
+            const bool has_l2 = std::any_of(
+                    interruptible.relocations.begin(),
+                    interruptible.relocations.end(),
+                    [](const auto& r) { return r.symbol == HostSymbol::DispatcherL2; });
+            CHECK(has_l2);
+            auto relocated = interruptible.words;
+            CHECK(x64::Relocate(
+                    {reinterpret_cast<std::uint8_t*>(relocated.data()), relocated.size() * 4},
+                    interruptible.relocations,
+                    options));
+            const auto fallback =
+                    x64::Compile(build(OpCode::GuestDispatchSafepoint, true), options);
+            const auto ordinary = x64::Compile(build(OpCode::GuestSafepoint, true), options);
+            REQUIRE(bool(fallback));
+            REQUIRE(bool(ordinary));
+            CHECK(fallback.words == ordinary.words);
+        }
+    }
+}
+
+TEST_CASE("Vector widen multiply, TBL32 shuffle, and AVX 3-operand lanes match baseline",
+          "[compile][x64-compile][native]") {
+    bool ssse3_ok = false, sse41_ok = false, avx_ok = false;
+#if defined(__x86_64__) && defined(__linux__)
+    ssse3_ok = __builtin_cpu_supports("ssse3");
+    sse41_ok = __builtin_cpu_supports("sse4.1");
+    avx_ok = __builtin_cpu_supports("avx");
+#endif
+    const auto build_suite = [] {
+        Builder builder{Scope::Block};
+        Begin(builder);
+        const auto z = Vector(builder, {0, 0});
+        const auto a = Emit(builder, OpCode::VecXor, Type::V128,
+                            {Operand::ValueOf(LoadVector(builder, 0)), Operand::ValueOf(z)});
+        const auto b = Emit(builder, OpCode::VecXor, Type::V128,
+                            {Operand::ValueOf(LoadVector(builder, 1)), Operand::ValueOf(z)});
+        StoreVector(builder, 2, Emit(builder, OpCode::VecMulWiden, Type::V128,
+                                     {Operand::ValueOf(a), Operand::ValueOf(b), Imm(8), Imm(0)}));
+        StoreVector(builder, 3, Emit(builder, OpCode::VecMulWiden, Type::V128,
+                                     {Operand::ValueOf(a), Operand::ValueOf(b), Imm(8), Imm(1)}));
+        StoreVector(builder, 4, Emit(builder, OpCode::VecMulWiden, Type::V128,
+                                     {Operand::ValueOf(a), Operand::ValueOf(b), Imm(16), Imm(0)}));
+        StoreVector(builder, 5, Emit(builder, OpCode::VecMulWiden, Type::V128,
+                                     {Operand::ValueOf(a), Operand::ValueOf(b), Imm(32), Imm(1)}));
+        StoreVector(builder, 6, Emit(builder, OpCode::VecSignedMulWidenLow, Type::V128,
+                                     {Operand::ValueOf(a), Operand::ValueOf(b), Imm(8)}));
+        StoreVector(builder, 7, Emit(builder, OpCode::VecSignedMulWidenLow, Type::V128,
+                                     {Operand::ValueOf(a), Operand::ValueOf(b), Imm(32)}));
+        StoreVector(builder, 8, Emit(builder, OpCode::VecShuffle32Indexed, Type::V128,
+                                     {Operand::ValueOf(a), Operand::ValueOf(b)}));
+        StoreVector(builder, 9, Emit(builder, OpCode::VecAvg, Type::V128,
+                                     {Operand::ValueOf(a), Operand::ValueOf(b), Imm(16)}));
+        StoreVector(builder, 10, Emit(builder, OpCode::VecSatSub, Type::V128,
+                                      {Operand::ValueOf(a), Operand::ValueOf(b), Imm(8), Imm(0)}));
+        StoreVector(builder, 11, Emit(builder, OpCode::VecMul, Type::V128,
+                                      {Operand::ValueOf(a), Operand::ValueOf(b), Imm(32)}));
+        StoreVector(builder, 12, Emit(builder, OpCode::VecShiftRightArithmeticImm, Type::V128,
+                                      {Operand::ValueOf(a), Imm(3), Imm(16)}));
+        StoreVector(builder, 13, a);
+        StoreVector(builder, 14, b);
+        return Return(builder);
+    };
+    const auto program = build_suite();
+    auto base_opts = Options();
+    base_opts.ssse3 = base_opts.sse41 = base_opts.avx = false;
+    const auto ref_code = x64::Compile(program, base_opts);
+    REQUIRE(bool(ref_code));
+
+    for (unsigned tier = 1; tier <= 3; ++tier) {
+        if (NativeMode() && ((tier == 1 && !ssse3_ok) || (tier == 2 && !sse41_ok) ||
+                             (tier == 3 && !avx_ok)))
+            continue;
+        auto opts = base_opts;
+        opts.ssse3 = tier >= 1;
+        opts.sse41 = tier >= 2;
+        opts.avx = tier >= 3;
+        const auto opt_code = x64::Compile(program, opts);
+        REQUIRE(bool(opt_code));
+        if (!NativeMode()) continue;
+        State ref_state, opt_state;
+        ref_state.vectors[0] = {UINT64_C(0x80ff7f01fedcba98), UINT64_C(0x800000017fffffff)};
+        ref_state.vectors[1] = {UINT64_C(0x100f00ff03020100), UINT64_C(0xff80110e0d0c0b0a)};
+        opt_state = ref_state;
+        REQUIRE(Run(ref_code, ref_state));
+        REQUIRE(Run(opt_code, opt_state));
+        for (unsigned slot = 2; slot <= 14; ++slot)
+            CHECK(opt_state.vectors[slot] == ref_state.vectors[slot]);
+    }
+}
+
+TEST_CASE("Fixed-point, NEON FP conversions, vector FSQRT, and RestoreFlags match ARM oracle",
+          "[compile][x64-compile][native]") {
+    namespace arm = swift::runtime::arm64;
+    using namespace vixl::aarch64;
+
+    using IrCond = swift::runtime::ir::Condition;
+    // 1. Immediate RestoreFlags under local_flags + lahf across all 16 NZCV states.
+    for (u64 nzcv = 0; nzcv < 16; ++nzcv) {
+        Builder builder{Scope::Block};
+        Begin(builder);
+        Emit(builder,
+             OpCode::RestoreFlags,
+             Type::Void,
+             {Operand::ValueOf(Literal(builder, nzcv << 28)), Operand::Flags(15)});
+        Store(builder, 0, Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(IrCond::EQ)}));
+        Store(builder, 1, Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(IrCond::CS)}));
+        Store(builder, 2, Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(IrCond::MI)}));
+        Store(builder, 3, Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(IrCond::VS)}));
+        auto opts = Options();
+        opts.local_flags = true;
+        opts.lahf = true;
+        const auto code = x64::Compile(Return(builder), opts);
+        REQUIRE(bool(code));
+        State state;
+        state.flags = (~nzcv & 15) << 28;
+        if (Run(code, state)) {
+            CHECK(state.scalars[0] == ((nzcv >> 2) & 1));
+            CHECK(state.scalars[1] == ((nzcv >> 1) & 1));
+            CHECK(state.scalars[2] == ((nzcv >> 3) & 1));
+            CHECK(state.scalars[3] == (nzcv & 1));
+            CHECK(((state.flags >> 28) & 15) == nzcv);
+        }
+    }
+
+    // 2. Scalar fixed-point + NEON Integer/Fixed/VectorUnary across FPCR rounding & FZ domains.
+    const auto offsets = Imm(arm::FPStateOffsets(offsetof(State, fpcr), offsetof(State, fpsr)));
+    const u64 s_scvtf = arm::NumericCall(
+            arm::Numeric::Scalar,
+            u32(FPFixedPointConvertFixed) | (1u << 31) | (2u << 16) | ((64u - 16u) << 10) | 32u);
+    const u64 s_fcvtzs = arm::NumericCall(
+            arm::Numeric::Scalar,
+            u32(FPFixedPointConvertFixed) | (24u << 16) | ((64u - 8u) << 10) | 32u);
+    const u64 v_scvtf_4s =
+            arm::NumericCall(arm::Numeric::Integer, u32(NEON_SCVTF) | u32(NEON_Q) | 32u);
+    const u64 v_ucvtf_2d = arm::NumericCall(
+            arm::Numeric::Integer, u32(NEON_UCVTF) | u32(NEON_Q) | (1u << 22) | 32u);
+    const u64 v_fcvtzs_4s_imm = arm::NumericCall(
+            arm::Numeric::Fixed, u32(NEON_FCVTZS_imm) | u32(NEON_Q) | ((64u - 12u) << 16) | 32u);
+    const u64 v_fcvtzu_2d_imm = arm::NumericCall(
+            arm::Numeric::Fixed, u32(NEON_FCVTZU_imm) | u32(NEON_Q) | ((128u - 20u) << 16) | 32u);
+    const u64 v_fsqrt_4s =
+            arm::NumericCall(arm::Numeric::VectorUnary, u32(NEON_FSQRT) | u32(NEON_Q) | 32u);
+    const u64 v_fsqrt_2d = arm::NumericCall(
+            arm::Numeric::VectorUnary, u32(NEON_FSQRT) | u32(NEON_Q) | (1u << 22) | 32u);
+    for (u64 enc : {s_scvtf, s_fcvtzs, v_scvtf_4s, v_ucvtf_2d,
+                    v_fcvtzs_4s_imm, v_fcvtzu_2d_imm, v_fsqrt_4s, v_fsqrt_2d}) {
+        REQUIRE(arm::DescribeFPValues(enc).kind != arm::FPValueKind::Invalid);
+    }
+
+    for (u32 fpcr : {0u, 1u << 22, 2u << 22, 3u << 22, 1u << 24}) {
+        Builder builder{Scope::Block};
+        Begin(builder);
+        StoreVector(builder, 4, Emit(builder, OpCode::ArmFPConvert, Type::V128,
+                                     {Operand::ValueOf(Load(builder, 0)), offsets, Imm(s_scvtf)}));
+        Store(builder, 1, Emit(builder, OpCode::ArmFPConvert, Type::U64,
+                               {Operand::ValueOf(LoadVector(builder, 0)), offsets, Imm(s_fcvtzs)}));
+        StoreVector(builder, 5, Emit(builder, OpCode::ArmFPConvert, Type::V128,
+                                     {Operand::ValueOf(LoadVector(builder, 1)), offsets,
+                                      Imm(v_scvtf_4s)}));
+        StoreVector(builder, 6, Emit(builder, OpCode::ArmFPConvert, Type::V128,
+                                     {Operand::ValueOf(LoadVector(builder, 2)), offsets,
+                                      Imm(v_ucvtf_2d)}));
+        StoreVector(builder, 7, Emit(builder, OpCode::ArmFPConvert, Type::V128,
+                                     {Operand::ValueOf(LoadVector(builder, 0)), offsets,
+                                      Imm(v_fcvtzs_4s_imm)}));
+        StoreVector(builder, 8, Emit(builder, OpCode::ArmFPConvert, Type::V128,
+                                     {Operand::ValueOf(LoadVector(builder, 3)), offsets,
+                                      Imm(v_fcvtzu_2d_imm)}));
+        StoreVector(builder, 9, Emit(builder, OpCode::ArmFPUnary, Type::V128,
+                                     {Operand::ValueOf(LoadVector(builder, 0)), offsets,
+                                      Imm(v_fsqrt_4s)}));
+        StoreVector(builder, 10, Emit(builder, OpCode::ArmFPUnary, Type::V128,
+                                      {Operand::ValueOf(LoadVector(builder, 3)), offsets,
+                                       Imm(v_fsqrt_2d)}));
+
+        auto opts = Options();
+        opts.local_flags = true;
+        opts.arm_fpcr = fpcr;
+        opts.arm_fpcr_offset = offsetof(State, fpcr);
+        opts.arm_fpsr_offset = offsetof(State, fpsr);
+        const auto code = x64::Compile(Return(builder), opts);
+        REQUIRE(bool(code));
+        if (!NativeMode()) continue;
+
+        for (bool edge_case : {false, true}) {
+            State state;
+            state.fpcr = fpcr;
+            state.scalars[0] = edge_case ? UINT64_C(0x7fffffffffffffff) : UINT64_C(0xfffffffffffe8000);
+            state.vectors[0] = edge_case ? Lanes32(0x7fc00001, 0x00000001, 0xbf800000, 0x4f000000)
+                                         : Lanes32(0x3fc00000, 0x40900000, 0x41820000, 0x3e800000);
+            state.vectors[1] = edge_case ? Lanes32(0x80000000, 0x7fffffff, 0x00000000, 0xffffffff)
+                                         : Lanes32(100, static_cast<u32>(-250), 16777217, 42);
+            state.vectors[2] = edge_case ? Pair{UINT64_C(0x8000000000000005), UINT64_C(999)}
+                                         : Pair{UINT64_C(123456789), UINT64_C(0x7fffffffffffffff)};
+            state.vectors[3] = edge_case
+                                       ? Pair{UINT64_C(0xfff0000000000000), UINT64_C(0x43f0000000000000)}
+                                       : Pair{UINT64_C(0x4002000000000000), UINT64_C(0x4022000000000000)};
+            REQUIRE(Run(code, state));
+
+            u32 expected_fpsr = 0;
+            const auto eval = [&](u64 enc, const void* in, void* out) {
+                REQUIRE(arm::EvaluateFPValues(out, in, enc, fpcr, &expected_fpsr) == 0);
+            };
+            Pair out_v4{}, out_v5{}, out_v6{}, out_v7{}, out_v8{}, out_v9{}, out_v10{};
+            Pair out_s1{};
+            eval(s_scvtf, &state.scalars[0], &out_v4);
+            eval(s_fcvtzs, &state.vectors[0], &out_s1);
+            eval(v_scvtf_4s, &state.vectors[1], &out_v5);
+            eval(v_ucvtf_2d, &state.vectors[2], &out_v6);
+            eval(v_fcvtzs_4s_imm, &state.vectors[0], &out_v7);
+            eval(v_fcvtzu_2d_imm, &state.vectors[3], &out_v8);
+            eval(v_fsqrt_4s, &state.vectors[0], &out_v9);
+            eval(v_fsqrt_2d, &state.vectors[3], &out_v10);
+
+            CHECK(state.scalars[1] == out_s1.low);
+            CHECK(state.vectors[4] == out_v4);
+            CHECK(state.vectors[5] == out_v5);
+            CHECK(state.vectors[6] == out_v6);
+            CHECK(state.vectors[7] == out_v7);
+            CHECK(state.vectors[8] == out_v8);
+            CHECK(state.vectors[9] == out_v9);
+            CHECK(state.vectors[10] == out_v10);
+            CHECK(state.fpsr == expected_fpsr);
+        }
+    }
+}

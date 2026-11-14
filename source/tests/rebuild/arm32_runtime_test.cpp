@@ -293,6 +293,111 @@ TEST_CASE("ARM32 overlapping NEON permutations remain executable on x64", "[nati
             CHECK(vm.Close().Complete());
         }
 }
+
+TEST_CASE("ARM32 VM executes mixed VFP and NEON float fast paths with exact FPSCR state",
+          "[native][arm32][x64]") {
+    constexpr std::uint32_t code_words[]{
+            0xee300a81, 0xeec02a81, 0xeeb13ae0, 0xeee07a81, 0xeefd5ae0,
+            0xf2420de4, 0xf242acf4, 0xf3fbe662,
+            0xe3a0002a, 0xe3a07001, 0xef000000};
+    const std::span<const std::uint8_t> code{
+            reinterpret_cast<const std::uint8_t*>(code_words), sizeof(code_words)};
+    const auto run_mode = [&](exe::ExecutionMode mode, ir::Scope scope, bool subnormal) {
+        platform::HostRuntime host{false};
+        exe::RuntimeOptions options;
+        options.mode = mode;
+        options.scope = scope;
+        exe::RuntimeStats stats;
+        exe::VM vm{options, stats, host.Bind()};
+        vm.PrepareGuest(Image(code), "arm32-mixed-vfp-neon");
+        auto& st = vm.Arm32State();
+        st.SetCpsr(0x90000010u);
+        st.fpscr = (1u << 27) | 0x60000000u;  // FZ=0 for VFP, QC=1, FPSCR NZCV=0b0110
+        const std::uint32_t s1 = subnormal ? 0x00400000u : 0x41100000u;  // subnorm or 9.0f
+        const std::uint32_t s2 = 0x40000000u;                            // 2.0f
+        const std::uint32_t s15 = 0x3fc00000u;                           // 1.5f
+        std::memcpy(st.q[0] + 4, &s1, 4);
+        std::memcpy(st.q[0] + 8, &s2, 4);
+        std::memcpy(st.q[3] + 12, &s15, 4);
+        for (unsigned lane = 0; lane < 4; ++lane) {
+            const std::uint32_t a = (subnormal && lane == 1) ? 0x00400000u
+                                                             : (0x40400000u + (lane << 23));
+            const float b = -1.5f + float(lane);
+            const float acc = 0.25f * float(lane + 1);
+            std::memcpy(st.q[9] + lane * 4, &a, 4);
+            std::memcpy(st.q[10] + lane * 4, &b, 4);
+            std::memcpy(st.q[13] + lane * 4, &acc, 4);
+        }
+        REQUIRE(vm.RunPrepared() == 42);
+        if (mode == exe::ExecutionMode::JitOnly)
+            CHECK((stats.native_bytes > 0 && stats.interpreted_steps == 0));
+        const auto out = st;
+        CHECK(vm.Close().Complete());
+        return out;
+    };
+    for (const bool subnormal : {false, true}) {
+        const auto ref = run_mode(exe::ExecutionMode::InterpretOnly, ir::Scope::Block, subnormal);
+        for (const auto scope : {ir::Scope::Block, ir::Scope::Function}) {
+            const auto jit = run_mode(exe::ExecutionMode::JitOnly, scope, subnormal);
+            CHECK(std::memcmp(jit.q, ref.q, sizeof(ref.q)) == 0);
+            CHECK(jit.fpscr == ref.fpscr);
+            CHECK(jit.Cpsr() == ref.Cpsr());
+        }
+    }
+}
+
+TEST_CASE("ARM32 multi-register and VFP transfers preserve values and unaligned faults",
+          "[native][arm32][memory][x64]") {
+    constexpr std::uint32_t arm_words[]{
+            0xe8a100f0, 0xe8b00f00, 0xed2d0b06, 0xecbd3b06,
+            0xeca20a04, 0xecb42a04, 0xed833b02, 0xed936b02,
+            0xe3a0002a, 0xe3a07001, 0xef000000};
+    const std::span<const std::uint8_t> arm_code{
+            reinterpret_cast<const std::uint8_t*>(arm_words), sizeof(arm_words)};
+    struct TransferRun {
+        int rc;
+        GuestStopReason stop;
+        int sig;
+        arm32::GuestState st;
+        exe::RuntimeStats stats;
+    };
+    const auto run_transfer = [&](exe::ExecutionMode mode, std::uint32_t misalign) {
+        platform::HostRuntime host{false};
+        exe::RuntimeOptions options;
+        options.mode = mode;
+        exe::RuntimeStats stats;
+        exe::VM vm{options, stats, host.Bind()};
+        vm.PrepareGuest(Image(arm_code), "arm32-multi-transfer");
+        const auto buf =
+                vm.Memory().Map(0, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS);
+        REQUIRE(buf < (UINT64_C(1) << 32));
+        auto& st = vm.Arm32State();
+        st.r[0] = st.r[1] = std::uint32_t(buf + 64 + misalign);
+        st.r[2] = st.r[4] = std::uint32_t(buf + 192);
+        st.r[3] = std::uint32_t(buf + 320);
+        st.r[5] = 0x22334455;
+        st.r[6] = 0x66778899;
+        st.r[7] = 0xaabbccdd;
+        for (unsigned b = 0; b < 32; ++b) st.q[b / 16][b % 16] = static_cast<std::uint8_t>(b + 1);
+        const int rc = vm.RunPrepared();
+        const auto reason = vm.StopReason();
+        const int sig = vm.TerminationSignal();
+        const auto out = st;
+        CHECK(vm.Close().Complete());
+        return TransferRun{rc, reason, sig, out, stats};
+    };
+    const auto ref = run_transfer(exe::ExecutionMode::InterpretOnly, 0);
+    const auto jit = run_transfer(exe::ExecutionMode::JitOnly, 0);
+    CHECK((ref.rc == 42 && jit.rc == 42 && jit.stop == ref.stop));
+    CHECK((jit.stats.native_bytes > 0 && jit.stats.interpreted_steps == 0));
+    CHECK(std::memcmp(jit.st.r, ref.st.r, sizeof(ref.st.r)) == 0);
+    CHECK(std::memcmp(jit.st.q, ref.st.q, sizeof(ref.st.q)) == 0);
+
+    const auto u_ref = run_transfer(exe::ExecutionMode::InterpretOnly, 2);
+    const auto u_jit = run_transfer(exe::ExecutionMode::JitOnly, 2);
+    CHECK((u_ref.stop == GuestStopReason::GuestSignalTermination && u_jit.stop == u_ref.stop));
+    CHECK(u_jit.sig == u_ref.sig);
+}
 #endif
 
 TEST_CASE("ARM32 signal frame restores edited integer, VFP and full Thumb IT location",

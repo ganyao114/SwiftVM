@@ -324,3 +324,42 @@ TEST_CASE("ARM32 operand-invalid instructions submit their valid prefix and exce
     CHECK(state.r[3] == 0);
     CHECK(state.pc == CodeBase + 4);
 }
+
+TEST_CASE("ARM32 DecodeFunction scales past inline slice capacity and splits mixed Thumb32",
+          "[compile][arm32-frontend]") {
+    std::vector<U8> arm_cfg;
+    for (unsigned i = 0; i < 45; ++i) {
+        for (const U32 word : {0xe3500000u, 0x0a000000u}) {  // cmp r0, #0; beq pc+8
+            for (unsigned byte = 0; byte < 4; ++byte) arm_cfg.push_back(word >> (byte * 8));
+        }
+    }
+    for (unsigned s = 0; s < 2; ++s) {
+        for (unsigned byte = 0; byte < 4; ++byte) arm_cfg.push_back(0xef000000u >> (byte * 8));
+    }
+    const front::BlockWindow arm_win{CodeBase, arm_cfg};
+    front::DecodeLimits limits;
+    limits.max_blocks = 128;
+    limits.max_instructions = 256;
+    front::DecodeTiming arm_timing;
+    const auto arm_fn = front::DecodeFunction({&arm_win, 1}, CodeBase, limits, &arm_timing);
+    REQUIRE(bool(arm_fn));
+    CHECK(arm_fn.blocks.size() == 91);
+    CHECK(arm_fn.instructions.size() == 92);
+    CHECK(arm_timing.calls == 92);
+    CHECK(bool(front::BuildFunctionIR({&arm_win, 1}, CodeBase, {}, limits)));
+
+    const auto thumb_mix = Thumb({0xf240, 0x0002, 0xf102, 0x0203, 0x3801, 0xd1fb, 0xdf00});
+    const auto thumb_entry = arch::Location::Make(CodeBase, true).Key();
+    const front::BlockWindow thumb_win{CodeBase, thumb_mix};
+    front::DecodeTiming thumb_timing;
+    const auto thumb_fn = front::DecodeFunction({&thumb_win, 1}, thumb_entry, {}, &thumb_timing);
+    REQUIRE(bool(thumb_fn));
+    CHECK(thumb_fn.instructions.size() == 5);
+    CHECK(thumb_fn.splits == 1);
+    CHECK(thumb_timing.calls == 5);
+    arch::GuestState state{};
+    state.pc = thumb_entry;
+    Memory memory{thumb_mix};
+    CHECK(Run(state, memory).kind == front::StepKind::Service);
+    CHECK(state.r[0] == 0 && state.r[2] == 6);
+}
