@@ -161,7 +161,7 @@ bool TryNEONIndexedFP(const vixl::aarch64::Instruction* instr) {
         const bool scalar = word & NEONScalar;
         const u32 mask =
                 scalar ? u32(NEONScalarByIndexedElementMask) : u32(NEONByIndexedElementMask);
-        const u32 flags = scalar ? u32(NEON_Q | NEONScalar) : 0;
+        const u32 flags = scalar ? (u32(NEON_Q) | u32(NEONScalar)) : 0u;
         const u32 size = (word >> 22) & 3;
         if ((word & mask) == (u32(NEON_FMUL_H_byelement) | flags) && size >= 2 &&
             runtime::arm64::SupportsNumeric(Numeric::Indexed, word)) {

@@ -104,6 +104,55 @@ private:
     std::vector<u64> heap;
     bool using_heap{};
 };
+bool ValidateWindows(std::span<const BlockWindow> windows, u64& bad_pc) noexcept {
+    for (std::size_t i = 0; i < windows.size(); ++i) {
+        const auto& w = windows[i];
+        if (w.bytes.empty() || w.pc > UINT64_MAX - w.bytes.size() ||
+            (i && windows[i - 1].pc + windows[i - 1].bytes.size() > w.pc)) {
+            bad_pc = w.pc;
+            return false;
+        }
+    }
+    return true;
+}
+
+void QueueSlice(u64 pc,
+                u64 entry,
+                std::span<const BlockWindow> windows,
+                DecodeLimits limits,
+                ReadyEntryLookup ready,
+                SliceDirectory& slices,
+                PendingSet& pending,
+                DecodedFunction& out) {
+    if ((pc & 3) || ((pc != entry) && ready.Contains(pc))) return;
+    const auto* w = FindWindow(windows, pc);
+    if (!w || w->bytes.size() - (pc - w->pc) < 4) return;
+    auto* next = slices.lower_bound(pc);
+    const auto next_idx = static_cast<std::size_t>(next - slices.begin());
+    if (next != slices.end() && next->pc == pc) return;
+    if (next_idx != 0) {
+        auto& owner = slices.begin()[next_idx - 1];
+        if (owner.first != UINT32_MAX && pc < owner.end) {
+            if (slices.size() >= limits.max_blocks) {
+                ++out.budget_exits;
+                return;
+            }
+            const auto count = u32((pc - owner.pc) / 4);
+            const SliceEntry tail{pc, owner.end, owner.first + count, owner.count - count};
+            owner.count = count;
+            owner.end = pc;
+            slices.insert_at(next_idx, tail);
+            ++out.splits;
+            return;
+        }
+    }
+    if (slices.size() >= limits.max_blocks) {
+        ++out.budget_exits;
+        return;
+    }
+    slices.insert_at(next_idx, SliceEntry{pc});
+    pending.insert(pc);
+}
 }  // namespace
 
 DecodedFunction DecodeFunction(std::span<const BlockWindow> windows,
@@ -122,46 +171,16 @@ DecodedFunction DecodeFunction(std::span<const BlockWindow> windows,
         fail(DecodeError::InvalidInput, entry);
         return out;
     }
-    for (std::size_t i = 0; i < windows.size(); ++i) {
-        const auto& w = windows[i];
-        if (w.bytes.empty() || w.pc > UINT64_MAX - w.bytes.size() ||
-            (i && windows[i - 1].pc + windows[i - 1].bytes.size() > w.pc)) {
-            fail(DecodeError::InvalidInput, w.pc);
-            return out;
-        }
+    u64 bad_pc{};
+    if (!ValidateWindows(windows, bad_pc)) {
+        fail(DecodeError::InvalidInput, bad_pc);
+        return out;
     }
 
     SliceDirectory slices;
     PendingSet pending;
     const auto queue = [&](u64 pc) {
-        if ((pc & 3) || ((pc != entry) && ready.Contains(pc))) return;
-        const auto* w = FindWindow(windows, pc);
-        if (!w || w->bytes.size() - (pc - w->pc) < 4) return;
-        auto* next = slices.lower_bound(pc);
-        const auto next_idx = static_cast<std::size_t>(next - slices.begin());
-        if (next != slices.end() && next->pc == pc) return;
-        if (next_idx != 0) {
-            auto& owner = slices.begin()[next_idx - 1];
-            if (owner.first != UINT32_MAX && pc < owner.end) {
-                if (slices.size() >= limits.max_blocks) {
-                    ++out.budget_exits;
-                    return;
-                }
-                const auto count = u32((pc - owner.pc) / 4);
-                const SliceEntry tail{pc, owner.end, owner.first + count, owner.count - count};
-                owner.count = count;
-                owner.end = pc;
-                slices.insert_at(next_idx, tail);
-                ++out.splits;
-                return;
-            }
-        }
-        if (slices.size() >= limits.max_blocks) {
-            ++out.budget_exits;
-            return;
-        }
-        slices.insert_at(next_idx, SliceEntry{pc});
-        pending.insert(pc);
+        QueueSlice(pc, entry, windows, limits, ready, slices, pending, out);
     };
 
     queue(entry);

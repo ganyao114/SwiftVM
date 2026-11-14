@@ -1,3 +1,88 @@
+void EmitSystemRegisterAccess(const vixl::aarch64::Instruction* instr) {
+    auto sysreg = instr->GetImmSystemRegister();
+    const bool is_read = instr->Mask(SystemSysRegMask) == MRS;
+    const auto rt = instr->GetRt();
+    switch (sysreg) {
+        case NZCV: {
+            if (is_read) {
+                auto value = ImmValue(0, Type::U64);
+                const Flag flags[] = {Flag::Overflow, Flag::Carry, Flag::Zero, Flag::Negate};
+                for (u32 i = 0; i < 4; ++i) {
+                    auto bit = this->TestFlags(flags[i]).WithView(Type::U8);
+                    auto shifted = this->template LslImm<Type::U64>(Widen(bit), Imm{28u + i})
+                                           .WithView(Type::U64);
+                    value = this->template Or<Type::U64>(value, SingleOperand(shifted))
+                                    .WithView(Type::U64);
+                }
+                WriteXRegister(rt, value);
+            } else {
+                auto source = ReadXRegister(rt);
+                auto bit = [&](u32 position) {
+                    auto shifted = this->template LsrImm<Type::U64>(source, Imm{position})
+                                           .WithView(Type::U64);
+                    return this->template And<Type::U64>(shifted, SingleOperand(Imm{u64{1}}))
+                            .WithView(Type::U64);
+                };
+                // N and Z can be set independently, including N=Z=1.
+                auto n = this->template LslImm<Type::U64>(bit(31), Imm{63u}).WithView(Type::U64);
+                auto z = this->template Xor<Type::U64>(bit(30), SingleOperand(Imm{u64{1}}))
+                                 .WithView(Type::U64);
+                n = this->template Sub<Type::U64>(ImmValue(0, Type::U64), SingleOperand(n))
+                            .WithView(Type::U64);
+                z = this->template Sub<Type::U64>(z, SingleOperand(Imm{u64{0}}))
+                            .WithView(Type::U64);
+                this->SaveFlags(n, Flag::Negate);
+                this->SaveFlags(z, Flag::Zero);
+                this->SetCarry(bit(29));
+                this->SetOverflow(bit(28));
+            }
+            return;
+        }
+        case TPIDR_EL0:
+        case TPIDRRO_EL0: {
+            Uniform uni{u32(offsetof(GuestState, tpidr_el0)), Type::U64};
+            if (is_read) {
+                WriteXRegister(rt, this->template LoadUniform<Type::U64>(uni));
+            } else {
+                this->StoreUniform(uni, ReadXRegister(rt));
+            }
+            return;
+        }
+        case FPCR: {
+            Uniform uni{u32(offsetof(GuestState, fpcr)), Type::U32};
+            if (is_read) {
+                WriteWRegister(rt, this->template LoadUniform<Type::U32>(uni));
+            } else {
+                this->StoreUniform(uni, ReadRegister(rt, Type::U32));
+                control.kind = Control::Kind::Service;
+                control.yes = NextPC();
+                control.service = runtime::ExitValue(runtime::NativeExit::FPEnvironment);
+                end_decode_ = true;
+            }
+            return;
+        }
+        case FPSR: {
+            Uniform uni{u32(offsetof(GuestState, fpsr)), Type::U32};
+            if (is_read) {
+                WriteWRegister(rt, this->template LoadUniform<Type::U32>(uni));
+            } else {
+                this->StoreUniform(uni, ReadRegister(rt, Type::U32));
+            }
+            return;
+        }
+        case SystemRegisterEncoder<3, 3, 0, 0, 7>::value:
+            if (is_read) {
+                // DZP=1: DC ZVA is prohibited. Returning zero would
+                // advertise a supported four-byte zeroing block.
+                WriteXRegister(rt, ImmValue(1u << 4, Type::U64));
+            }
+            return;
+        default:
+            Interrupt(InterruptReason::FALLBACK, current_pc);
+            return;
+    }
+}
+
 void VisitSystem(const vixl::aarch64::Instruction* instr) override {
     const auto request = StateRequest(instr->GetInstructionBits());
     if (request.kind != runtime::arm64::StateServiceKind::None) {
@@ -9,7 +94,6 @@ void VisitSystem(const vixl::aarch64::Instruction* instr) override {
         // These hints require no IR operation in the current execution profile.
         return;
     }
-
     if (instr->Mask(MemBarrierFMask) == MemBarrierFixed) {
         switch (instr->Mask(MemBarrierMask)) {
             case DMB:
@@ -30,93 +114,10 @@ void VisitSystem(const vixl::aarch64::Instruction* instr) override {
         }
         return;
     }
-
     if (instr->Mask(SystemSysRegFMask) == SystemSysRegFixed) {
-        auto sysreg = instr->GetImmSystemRegister();
-        bool is_read = instr->Mask(SystemSysRegMask) == MRS;
-        auto rt = instr->GetRt();
-        switch (sysreg) {
-            case NZCV: {
-                if (is_read) {
-                    auto value = ImmValue(0, Type::U64);
-                    const Flag flags[] = {Flag::Overflow, Flag::Carry, Flag::Zero, Flag::Negate};
-                    for (u32 i = 0; i < 4; ++i) {
-                        auto bit = this->TestFlags(flags[i]).WithView(Type::U8);
-                        auto shifted = this->template LslImm<Type::U64>(Widen(bit), Imm{28u + i})
-                                               .WithView(Type::U64);
-                        value = this->template Or<Type::U64>(value, SingleOperand(shifted))
-                                        .WithView(Type::U64);
-                    }
-                    WriteXRegister(rt, value);
-                } else {
-                    auto source = ReadXRegister(rt);
-                    auto bit = [&](u32 position) {
-                        auto shifted = this->template LsrImm<Type::U64>(source, Imm{position})
-                                               .WithView(Type::U64);
-                        return this->template And<Type::U64>(shifted, SingleOperand(Imm{u64{1}}))
-                                .WithView(Type::U64);
-                    };
-                    // N and Z can be set independently, including N=Z=1.
-                    auto n =
-                            this->template LslImm<Type::U64>(bit(31), Imm{63u}).WithView(Type::U64);
-                    auto z = this->template Xor<Type::U64>(bit(30), SingleOperand(Imm{u64{1}}))
-                                     .WithView(Type::U64);
-                    n = this->template Sub<Type::U64>(ImmValue(0, Type::U64), SingleOperand(n))
-                                .WithView(Type::U64);
-                    z = this->template Sub<Type::U64>(z, SingleOperand(Imm{u64{0}}))
-                                .WithView(Type::U64);
-                    this->SaveFlags(n, Flag::Negate);
-                    this->SaveFlags(z, Flag::Zero);
-                    this->SetCarry(bit(29));
-                    this->SetOverflow(bit(28));
-                }
-                return;
-            }
-            case TPIDR_EL0:
-            case TPIDRRO_EL0: {
-                Uniform uni{u32(offsetof(GuestState, tpidr_el0)), Type::U64};
-                if (is_read) {
-                    WriteXRegister(rt, this->template LoadUniform<Type::U64>(uni));
-                } else {
-                    this->StoreUniform(uni, ReadXRegister(rt));
-                }
-                return;
-            }
-            case FPCR: {
-                Uniform uni{u32(offsetof(GuestState, fpcr)), Type::U32};
-                if (is_read) {
-                    WriteWRegister(rt, this->template LoadUniform<Type::U32>(uni));
-                } else {
-                    this->StoreUniform(uni, ReadRegister(rt, Type::U32));
-                    control.kind = Control::Kind::Service;
-                    control.yes = NextPC();
-                    control.service = runtime::ExitValue(runtime::NativeExit::FPEnvironment);
-                    end_decode_ = true;
-                }
-                return;
-            }
-            case FPSR: {
-                Uniform uni{u32(offsetof(GuestState, fpsr)), Type::U32};
-                if (is_read) {
-                    WriteWRegister(rt, this->template LoadUniform<Type::U32>(uni));
-                } else {
-                    this->StoreUniform(uni, ReadRegister(rt, Type::U32));
-                }
-                return;
-            }
-            case SystemRegisterEncoder<3, 3, 0, 0, 7>::value:
-                if (is_read) {
-                    // DZP=1: DC ZVA is prohibited. Returning zero would
-                    // advertise a supported four-byte zeroing block.
-                    WriteXRegister(rt, ImmValue(1u << 4, Type::U64));
-                }
-                return;
-            default:
-                Interrupt(InterruptReason::FALLBACK, current_pc);
-                return;
-        }
+        EmitSystemRegisterAccess(instr);
+        return;
     }
-
     Interrupt(InterruptReason::FALLBACK, current_pc);
 }
 

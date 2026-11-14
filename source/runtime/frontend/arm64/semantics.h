@@ -69,12 +69,13 @@ public:
 
         Type ViewType() const { return view; }
 
-        Value WithView(Type type) {
-            view = type;
-            return *this;
+        [[nodiscard]] Value WithView(Type type) const noexcept {
+            Value copy = *this;
+            copy.view = type;
+            return copy;
         }
 
-        Value SetCastType(Type type) { return WithView(type); }
+        [[nodiscard]] Value SetCastType(Type type) const noexcept { return WithView(type); }
     };
 
     struct Imm {
@@ -190,6 +191,8 @@ private:
 
     static Input SingleOperand(Input input) { return input; }
 
+    static Imm ImmGPR(bool is64, u64 bits) { return is64 ? Imm{bits} : Imm{u32(bits)}; }
+
     u32 MapOffset(u32 offset) const {
         if (offset < 256) return layout.gprs_offset + offset;
         if (offset < 264) return layout.pc_offset + offset - 256;
@@ -261,6 +264,12 @@ private:
         if (!result) throw Rejected{BuildError::IRRejected, result.error};
         if constexpr (op == OpCode::StoreMemory || op == OpCode::StoreMemoryTSO) ClearReservation();
         return {result.GetValue(), type, op};
+    }
+
+    template <OpCode op, class... Args> Value EmitGPR(bool is64, Args... input) {
+        const auto type = GPRType(is64);
+        return is64 ? Emit<op, Type::U64>(input...).WithView(type)
+                    : Emit<op, Type::U32>(input...).WithView(type);
     }
 
 #define ARM_OP(name)                                                                               \

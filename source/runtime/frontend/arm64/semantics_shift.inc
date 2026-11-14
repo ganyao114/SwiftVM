@@ -39,6 +39,37 @@ void VisitNEONShiftImmediate(const vixl::aarch64::Instruction* instr) override {
     }
 }
 
+void EmitNEONRoundingShiftRightNarrow(const vixl::aarch64::Instruction* instr,
+                                      u32 bits,
+                                      u32 shift,
+                                      bool q) {
+    const u32 source_bits = bits * 2;
+    auto input_low = ReadVHalf(instr->GetRn(), false);
+    auto input_high = ReadVHalf(instr->GetRn(), true);
+    const u64 result_mask = (u64{1} << bits) - 1;
+    const u64 source_mask = source_bits == 64 ? ~u64{0} : (u64{1} << source_bits) - 1;
+    auto zero = ImmValue(0, Type::U64), low = zero;
+    for (u32 lane = 0; lane < 64u / bits; ++lane) {
+        const u32 source_position = lane * source_bits;
+        auto value = this->LsrImm(source_position < 64 ? input_low : input_high,
+                                  Imm{source_position % 64})
+                             .WithView(Type::U64);
+        value = this->And(value, SingleOperand(Imm{source_mask})).WithView(Type::U64);
+        auto round = this->LsrImm(value, Imm{shift - 1}).WithView(Type::U64);
+        round = this->And(round, SingleOperand(Imm{u64{1}})).WithView(Type::U64);
+        value = this->LsrImm(value, Imm{shift}).WithView(Type::U64);
+        value = this->Add(value, SingleOperand(round)).WithView(Type::U64);
+        value = this->And(value, SingleOperand(Imm{result_mask})).WithView(Type::U64);
+        value = this->LslImm(value, Imm{lane * bits}).WithView(Type::U64);
+        low = this->Or(low, SingleOperand(value)).WithView(Type::U64);
+    }
+    if (q) {
+        WriteVHalves(instr->GetRd(), ReadVHalf(instr->GetRd(), false), low);
+    } else {
+        WriteVHalves(instr->GetRd(), low, zero);
+    }
+}
+
 bool TryNEONShiftImmediate(const vixl::aarch64::Instruction* instr) {
     const auto op = instr->Mask(NEONShiftImmediateMask);
     const bool widen = op == NEON_SSHLL || op == NEON_USHLL;
@@ -72,37 +103,7 @@ bool TryNEONShiftImmediate(const vixl::aarch64::Instruction* instr) {
         return true;
     }
     if (narrow) {
-        const u32 source_bits = narrow ? bits * 2 : bits;
-        const u32 result_bits = narrow ? bits : bits * 2;
-        auto input_low = ReadVHalf(instr->GetRn(), widen && q);
-        auto input_high = narrow ? ReadVHalf(instr->GetRn(), true) : input_low;
-        const u64 result_mask = result_bits == 64 ? ~u64{0} : (u64{1} << result_bits) - 1;
-        const u64 source_mask = source_bits == 64 ? ~u64{0} : (u64{1} << source_bits) - 1;
-        auto low = ImmValue(0, Type::U64), high = low;
-        for (u32 lane = 0; lane < (narrow ? 64u : 128u) / result_bits; ++lane) {
-            const u32 source_position = lane * source_bits;
-            auto value = this->LsrImm(source_position < 64 ? input_low : input_high,
-                                      Imm{source_position % 64})
-                                 .WithView(Type::U64);
-            value = this->And(value, SingleOperand(Imm{source_mask})).WithView(Type::U64);
-            if (narrow) {
-                auto round = this->LsrImm(value, Imm{shift - 1}).WithView(Type::U64);
-                round = this->And(round, SingleOperand(Imm{u64{1}})).WithView(Type::U64);
-                value = this->LsrImm(value, Imm{shift}).WithView(Type::U64);
-                value = this->Add(value, SingleOperand(round)).WithView(Type::U64);
-            } else {
-                if (op == NEON_SSHLL) value = SignExtendValue(value, bits);
-                value = this->LslImm(value, Imm{shift}).WithView(Type::U64);
-            }
-            value = this->And(value, SingleOperand(Imm{result_mask})).WithView(Type::U64);
-            value = this->LslImm(value, Imm{lane * result_bits % 64}).WithView(Type::U64);
-            auto& half = lane * result_bits < 64 ? low : high;
-            half = this->Or(half, SingleOperand(value)).WithView(Type::U64);
-        }
-        if (narrow && q)
-            WriteVHalves(instr->GetRd(), ReadVHalf(instr->GetRd(), false), low);
-        else
-            WriteVHalves(instr->GetRd(), low, high);
+        EmitNEONRoundingShiftRightNarrow(instr, bits, shift, q);
         return true;
     }
     if (bits == 64 && !q) {
@@ -110,10 +111,10 @@ bool TryNEONShiftImmediate(const vixl::aarch64::Instruction* instr) {
         return true;
     }
     auto input = ReadVRegister(instr->GetRn(), Type::V128);
-    auto result = left   ? this->VecShiftLeftImm(input, Imm{shift}, Imm{bits})
-                  : sign ? this->VecShiftRightArithmeticImm(input, Imm{shift}, Imm{bits})
-                         : this->VecShiftRightImm(input, Imm{shift}, Imm{bits});
-    result.WithView(Type::V128);
+    auto result = (left   ? this->VecShiftLeftImm(input, Imm{shift}, Imm{bits})
+                   : sign ? this->VecShiftRightArithmeticImm(input, Imm{shift}, Imm{bits})
+                          : this->VecShiftRightImm(input, Imm{shift}, Imm{bits}))
+                          .WithView(Type::V128);
     auto constant = [&](u64 lane) {
         u64 half{};
         for (u32 position = 0; position < 64; position += bits) half |= lane << position;
@@ -183,9 +184,9 @@ bool TryNEONVariableShift(const vixl::aarch64::Instruction* instr, bool scalar =
             auto narrowed = this->And(shifted_left, SingleOperand(Imm{mask})).WithView(Type::U64);
             auto original = sign ? SignExtendValue(input, bits) : input;
             auto extended = sign ? SignExtendValue(narrowed, bits) : narrowed;
-            auto restored = sign ? this->AsrValue(extended, magnitude)
-                                 : this->LsrValue(extended, magnitude);
-            restored.WithView(Type::U64);
+            auto restored = (sign ? this->AsrValue(extended, magnitude)
+                                  : this->LsrValue(extended, magnitude))
+                                    .WithView(Type::U64);
             auto mismatch = this->Xor(restored, SingleOperand(original)).WithView(Type::U64);
             auto changed = this->TestNotZero(mismatch).WithView(Type::U8);
             auto nonzero = this->TestNotZero(input).WithView(Type::U8);
@@ -229,16 +230,115 @@ bool TryNEONVariableShift(const vixl::aarch64::Instruction* instr, bool scalar =
         half = this->Or(half, SingleOperand(value)).WithView(Type::U64);
     }
     WriteVHalves(instr->GetRd(), low, high);
-    if (saturating) {
-        Uniform status{u32(offsetof(GuestState, fpsr)), Type::U32};
-        auto old = this->template LoadUniform<Type::U32>(status);
-        auto qc = this->Select(any_saturation,
-                               ImmValue(u64{1} << 27, Type::U32),
-                               ImmValue(0, Type::U32))
-                          .WithView(Type::U32);
-        this->StoreUniform(status, this->template Or<Type::U32>(old, SingleOperand(qc)));
-    }
+    if (saturating) AccumulateQC(any_saturation);
     return true;
+}
+
+Value EmitNEONScalarShiftLeft(u32 op,
+                              u32 bits,
+                              u32 shift,
+                              u64 mask,
+                              bool saturating_left,
+                              bool insert,
+                              Value input,
+                              Value old,
+                              Value zero,
+                              Value& saturated) {
+    auto result = this->template LslImm<Type::U64>(input, Imm{shift}).WithView(Type::U64);
+    result = this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
+    if (saturating_left) {
+        const bool signed_result = op == NEON_SQSHL_imm_scalar;
+        auto original = signed_result ? SignExtendValue(input, bits) : input;
+        auto shifted = signed_result ? SignExtendValue(result, bits) : result;
+        auto recovered = signed_result
+                                 ? this->template AsrImm<Type::U64>(shifted, Imm{shift})
+                                           .WithView(Type::U64)
+                                 : this->template LsrImm<Type::U64>(shifted, Imm{shift})
+                                           .WithView(Type::U64);
+        auto changed = this->template Xor<Type::U64>(original, SingleOperand(recovered))
+                               .WithView(Type::U64);
+        saturated = this->TestNotZero(changed).WithView(Type::U8);
+        auto negative = this->TestBit(input, Imm{bits - 1}).WithView(Type::U8);
+        Value limit = ImmValue(mask, Type::U64);
+        if (signed_result) {
+            limit = this->Select(negative,
+                                 ImmValue(u64{1} << (bits - 1), Type::U64),
+                                 ImmValue((u64{1} << (bits - 1)) - 1, Type::U64))
+                            .WithView(Type::U64);
+        } else if (op == NEON_SQSHLU_scalar) {
+            // Negative signed inputs saturate to zero, including shift=0.
+            saturated = this->template Or<Type::U8>(saturated, SingleOperand(negative))
+                                .WithView(Type::U8);
+            limit = this->Select(negative, zero, limit).WithView(Type::U64);
+        }
+        result = this->Select(saturated, limit, result).WithView(Type::U64);
+    } else if (insert) {
+        const u64 keep = shift == 0 ? 0 : (u64{1} << shift) - 1;
+        auto preserved =
+                this->template And<Type::U64>(old, SingleOperand(Imm{keep})).WithView(Type::U64);
+        result = this->template Or<Type::U64>(preserved, SingleOperand(result)).WithView(Type::U64);
+    }
+    return result;
+}
+
+Value EmitNEONScalarShiftRight(u32 op,
+                               u32 bits,
+                               u32 source_bits,
+                               u32 shift,
+                               u64 mask,
+                               bool signed_right,
+                               bool rounded,
+                               bool narrow,
+                               bool accumulate,
+                               bool insert,
+                               Value input,
+                               Value old,
+                               Value zero,
+                               Value& saturated) {
+    auto extended = signed_right ? SignExtendValue(input, source_bits) : input;
+    Value result;
+    if (signed_right) {
+        // IR/x64 immediates mask a shift of 64; explicitly use the sign fill.
+        result = this->template AsrImm<Type::U64>(extended, Imm{shift == 64 ? 63u : shift})
+                         .WithView(Type::U64);
+    } else if (shift == 64) {
+        result = zero;
+    } else {
+        result = this->template LsrImm<Type::U64>(extended, Imm{shift}).WithView(Type::U64);
+    }
+    if (rounded) {
+        auto round = this->template LsrImm<Type::U64>(input, Imm{shift - 1}).WithView(Type::U64);
+        round = this->template And<Type::U64>(round, SingleOperand(Imm{u64{1}}))
+                        .WithView(Type::U64);
+        result = this->template Add<Type::U64>(result, SingleOperand(round)).WithView(Type::U64);
+    }
+    if (narrow) {
+        const bool signed_result = op == NEON_SQSHRN_scalar || op == NEON_SQRSHRN_scalar;
+        auto trimmed =
+                this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
+        if (signed_result) trimmed = SignExtendValue(trimmed, bits);
+        auto changed =
+                this->template Xor<Type::U64>(result, SingleOperand(trimmed)).WithView(Type::U64);
+        saturated = this->TestNotZero(changed).WithView(Type::U8);
+        auto limit = ImmValue(mask, Type::U64);
+        if (signed_right) {
+            auto negative = this->TestBit(result, Imm{63u}).WithView(Type::U8);
+            limit = this->Select(negative,
+                                 ImmValue(signed_result ? u64{1} << (bits - 1) : 0, Type::U64),
+                                 ImmValue(signed_result ? (u64{1} << (bits - 1)) - 1 : mask,
+                                          Type::U64))
+                            .WithView(Type::U64);
+        }
+        result = this->Select(saturated, limit, result).WithView(Type::U64);
+    } else if (accumulate) {
+        result = this->template Add<Type::U64>(old, SingleOperand(result)).WithView(Type::U64);
+    } else if (insert) {
+        const u64 keep = shift == 64 ? ~u64{0} : mask ^ (mask >> shift);
+        auto preserved =
+                this->template And<Type::U64>(old, SingleOperand(Imm{keep})).WithView(Type::U64);
+        result = this->template Or<Type::U64>(preserved, SingleOperand(result)).WithView(Type::U64);
+    }
+    return result;
 }
 
 void VisitNEONScalarShiftImmediate(const vixl::aarch64::Instruction* instr) override {
@@ -283,98 +383,32 @@ void VisitNEONScalarShiftImmediate(const vixl::aarch64::Instruction* instr) over
                          .WithView(Type::U64);
     auto old = (insert || accumulate) ? ReadVHalf(instr->GetRd(), false) : ImmValue(0, Type::U64);
     auto zero = ImmValue(0, Type::U64);
-    Value result, saturated;
-    if (left) {
-        result = this->template LslImm<Type::U64>(input, Imm{shift}).WithView(Type::U64);
-        result =
-                this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
-        if (saturating_left) {
-            const bool signed_result = op == NEON_SQSHL_imm_scalar;
-            auto original = signed_result ? SignExtendValue(input, bits) : input;
-            auto shifted = signed_result ? SignExtendValue(result, bits) : result;
-            auto recovered = signed_result ? this->template AsrImm<Type::U64>(shifted, Imm{shift})
-                                                     .WithView(Type::U64)
-                                           : this->template LsrImm<Type::U64>(shifted, Imm{shift})
-                                                     .WithView(Type::U64);
-            auto changed = this->template Xor<Type::U64>(original, SingleOperand(recovered))
-                                   .WithView(Type::U64);
-            saturated = this->TestNotZero(changed).WithView(Type::U8);
-            auto negative = this->TestBit(input, Imm{bits - 1}).WithView(Type::U8);
-            Value limit = ImmValue(mask, Type::U64);
-            if (signed_result) {
-                limit = this->Select(negative,
-                                     ImmValue(u64{1} << (bits - 1), Type::U64),
-                                     ImmValue((u64{1} << (bits - 1)) - 1, Type::U64))
-                                .WithView(Type::U64);
-            } else if (op == NEON_SQSHLU_scalar) {
-                // Negative signed inputs saturate to zero, including shift=0.
-                saturated = this->template Or<Type::U8>(saturated, SingleOperand(negative))
-                                    .WithView(Type::U8);
-                limit = this->Select(negative, zero, limit).WithView(Type::U64);
-            }
-            result = this->Select(saturated, limit, result).WithView(Type::U64);
-        } else if (insert) {
-            const u64 keep = shift == 0 ? 0 : (u64{1} << shift) - 1;
-            auto preserved = this->template And<Type::U64>(old, SingleOperand(Imm{keep}))
-                                     .WithView(Type::U64);
-            result = this->template Or<Type::U64>(preserved, SingleOperand(result))
-                             .WithView(Type::U64);
-        }
-    } else {
-        auto extended = signed_right ? SignExtendValue(input, source_bits) : input;
-        if (signed_right) {
-            // IR/x64 immediates mask a shift of 64; explicitly use the sign fill.
-            result = this->template AsrImm<Type::U64>(extended, Imm{shift == 64 ? 63u : shift})
-                             .WithView(Type::U64);
-        } else if (shift == 64)
-            result = zero;
-        else
-            result = this->template LsrImm<Type::U64>(extended, Imm{shift}).WithView(Type::U64);
-        if (rounded) {
-            auto round =
-                    this->template LsrImm<Type::U64>(input, Imm{shift - 1}).WithView(Type::U64);
-            round = this->template And<Type::U64>(round, SingleOperand(Imm{u64{1}}))
-                            .WithView(Type::U64);
-            result =
-                    this->template Add<Type::U64>(result, SingleOperand(round)).WithView(Type::U64);
-        }
-        if (narrow) {
-            const bool signed_result = op == NEON_SQSHRN_scalar || op == NEON_SQRSHRN_scalar;
-            auto trimmed = this->template And<Type::U64>(result, SingleOperand(Imm{mask}))
-                                   .WithView(Type::U64);
-            if (signed_result) trimmed = SignExtendValue(trimmed, bits);
-            auto changed = this->template Xor<Type::U64>(result, SingleOperand(trimmed))
-                                   .WithView(Type::U64);
-            saturated = this->TestNotZero(changed).WithView(Type::U8);
-            auto limit = ImmValue(mask, Type::U64);
-            if (signed_right) {
-                auto negative = this->TestBit(result, Imm{63u}).WithView(Type::U8);
-                limit = this->Select(negative,
-                                     ImmValue(signed_result ? u64{1} << (bits - 1) : 0, Type::U64),
-                                     ImmValue(signed_result ? (u64{1} << (bits - 1)) - 1 : mask,
-                                              Type::U64))
-                                .WithView(Type::U64);
-            }
-            result = this->Select(saturated, limit, result).WithView(Type::U64);
-        } else if (accumulate) {
-            result = this->template Add<Type::U64>(old, SingleOperand(result)).WithView(Type::U64);
-        } else if (insert) {
-            const u64 keep = shift == 64 ? ~u64{0} : mask ^ (mask >> shift);
-            auto preserved = this->template And<Type::U64>(old, SingleOperand(Imm{keep}))
-                                     .WithView(Type::U64);
-            result = this->template Or<Type::U64>(preserved, SingleOperand(result))
-                             .WithView(Type::U64);
-        }
-    }
-    if (narrow || saturating_left) {
-        Uniform status{u32(offsetof(GuestState, fpsr)), Type::U32};
-        auto previous = this->template LoadUniform<Type::U32>(status);
-        auto qc = this->Select(saturated, ImmValue(1u << 27, Type::U32), ImmValue(0, Type::U32))
-                          .WithView(Type::U32);
-        this->StoreUniform(
-                status,
-                this->template Or<Type::U32>(previous, SingleOperand(qc)).WithView(Type::U32));
-    }
+    Value saturated;
+    Value result = left ? EmitNEONScalarShiftLeft(op,
+                                                  bits,
+                                                  shift,
+                                                  mask,
+                                                  saturating_left,
+                                                  insert,
+                                                  input,
+                                                  old,
+                                                  zero,
+                                                  saturated)
+                        : EmitNEONScalarShiftRight(op,
+                                                   bits,
+                                                   source_bits,
+                                                   shift,
+                                                   mask,
+                                                   signed_right,
+                                                   rounded,
+                                                   narrow,
+                                                   accumulate,
+                                                   insert,
+                                                   input,
+                                                   old,
+                                                   zero,
+                                                   saturated);
+    if (narrow || saturating_left) AccumulateQC(saturated);
     result = this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
     WriteVRegister(instr->GetRd(), result);
 }

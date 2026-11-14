@@ -26,6 +26,195 @@ Value Constant(detail::IRSink& sink, u64 bits) {
     return Require(sink.Emit<OpCode::LoadImm>(Type::U64, {Operand::Immediate(bits, Type::U64)}));
 }
 
+struct InlineExitList {
+    std::array<u64, 64> local{};
+    std::size_t local_count{};
+    std::vector<u64> heap;
+
+    void Push(u64 addr) {
+        if (heap.empty() && local_count < local.size()) {
+            local[local_count++] = addr;
+            return;
+        }
+        if (heap.empty()) {
+            heap.reserve(local.size() * 2);
+            heap.assign(local.begin(), local.begin() + local_count);
+        }
+        heap.push_back(addr);
+    }
+
+    std::span<const u64> FinalizeSortedUnique() {
+        u64* begin = heap.empty() ? local.data() : heap.data();
+        std::size_t size = heap.empty() ? local_count : heap.size();
+        std::sort(begin, begin + size);
+        size = static_cast<std::size_t>(std::unique(begin, begin + size) - begin);
+        if (heap.empty())
+            local_count = size;
+        else
+            heap.resize(size);
+        return {begin, size};
+    }
+};
+
+BlockId LookupInternalBlock(std::span<const DecodedBlock> blocks,
+                            Scope scope,
+                            bool external,
+                            u64 address) {
+    if (external || scope == Scope::Block) return BlockId{};
+    const auto i = std::lower_bound(
+            blocks.begin(), blocks.end(), address, [](const auto& b, u64 p) { return b.pc < p; });
+    return i != blocks.end() && i->pc == address && i->instruction_count
+                   ? BlockId{u32(i - blocks.begin())}
+                   : BlockId{};
+}
+
+InlineExitList CollectExternalExits(std::span<const Instruction> instructions,
+                                    std::span<const DecodedBlock> blocks,
+                                    Scope scope,
+                                    bool external) {
+    InlineExitList exits;
+    if (scope != Scope::Function || external) return exits;
+    for (const auto& b : blocks) {
+        if (!b.instruction_count) continue;
+        const auto& last = instructions[b.first_instruction + b.instruction_count - 1];
+        if (last.Flow() != FlowKind::Conditional) continue;
+        u64 taken{};
+        if (last.RelativeTarget(taken)) {
+            if (!LookupInternalBlock(blocks, scope, external, taken)) exits.Push(taken);
+            if (!LookupInternalBlock(blocks, scope, external, last.PC() + 4))
+                exits.Push(last.PC() + 4);
+        }
+    }
+    return exits;
+}
+
+struct DecodedEmitter {
+    using OwnerId = decltype(std::declval<detail::IRSink>().UnitId());
+
+    detail::IRSink& sink;
+    std::span<const DecodedBlock> blocks;
+    std::span<const u64> exits;
+    Scope scope;
+    StateLayout layout;
+    TargetInfo target;
+    OwnerId owner;
+    bool external;
+
+    BlockId Internal(u64 address) const {
+        return LookupInternalBlock(blocks, scope, external, address);
+    }
+
+    BlockRef TargetBlock(u64 address) const {
+        if (const auto id = Internal(address)) return BlockRef{owner, id};
+        const auto i = std::lower_bound(exits.begin(), exits.end(), address);
+        return BlockRef{owner, BlockId{u32(blocks.size() + std::size_t(i - exits.begin()))}};
+    }
+
+    void StorePC(Value value) {
+        Require(sink.Emit<OpCode::StoreUniform>(
+                Type::Void,
+                {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(value)}));
+    }
+
+    void DispatchTo(u64 address) {
+        StorePC(Constant(sink, address));
+        Require(sink.EndBlock(Terminal::Dispatch()));
+    }
+
+    void JumpOrDispatch(u64 address) {
+        if (const auto id = Internal(address))
+            Require(sink.EndBlock(Terminal::Jump({owner, id})));
+        else
+            DispatchTo(address);
+    }
+
+    bool EmitControl(const Sem::Control& control) {
+        using K = Sem::Control::Kind;
+        switch (control.kind) {
+            case K::None:
+                return false;
+            case K::Jump:
+                JumpOrDispatch(control.yes);
+                return true;
+            case K::Conditional:
+                if (scope == Scope::Block || external) {
+                    if (target.Has(TargetFeature::ConditionalUniformStore)) {
+                        Require(sink.Emit<OpCode::StoreUniformSelectImm>(
+                                Type::Void,
+                                {Operand::Uniform(layout.pc_offset, Type::U64),
+                                 Operand::ValueOf(control.condition.raw, control.condition.view),
+                                 Operand::Immediate(control.yes, Type::U64),
+                                 Operand::Immediate(control.no, Type::U64)}));
+                    } else {
+                        const auto yes = Constant(sink, control.yes);
+                        const auto no = Constant(sink, control.no);
+                        StorePC(Require(sink.Emit<OpCode::Select>(
+                                Type::U64,
+                                {Operand::ValueOf(control.condition.raw),
+                                 Operand::ValueOf(yes),
+                                 Operand::ValueOf(no)})));
+                    }
+                    Require(sink.EndBlock(Terminal::Dispatch()));
+                } else {
+                    Require(sink.EndBlock(Terminal::Branch(control.condition.raw,
+                                                           TargetBlock(control.yes),
+                                                           TargetBlock(control.no))));
+                }
+                return true;
+            case K::Dispatch:
+                StorePC(control.destination.IsImm() ? Constant(sink, control.destination.imm.bits)
+                                                    : control.destination.value.raw);
+                Require(sink.EndBlock(Terminal::Dispatch()));
+                return true;
+            case K::Service:
+                StorePC(Constant(sink, control.yes));
+                Require(sink.EndBlock(Terminal::Return(Constant(sink, control.service))));
+                return true;
+        }
+        return false;
+    }
+
+    void EmitBlock(u32 index,
+                   std::span<const Instruction> instructions,
+                   u32 entry,
+                   Sem& semantics,
+                   u64& pc,
+                   std::size_t& total,
+                   std::size_t& bytes,
+                   std::vector<runtime::SourceSpan>* sources,
+                   std::vector<u64>* continuations) {
+        const auto& b = blocks[index];
+        pc = b.pc;
+        if (b.first_instruction > instructions.size() ||
+            b.instruction_count > instructions.size() - b.first_instruction)
+            throw detail::Rejected{BuildError::InvalidInput};
+        Require(sink.BeginBlock({owner, BlockId{index}}));
+        if (scope == Scope::Function && index != entry && b.instruction_count &&
+            target.Has(TargetFeature::ExternalEntries))
+            Require(sink.Emit<OpCode::EntryPoint>(Type::Void, {Operand::Immediate(pc, Type::U64)}));
+        bool ended{};
+        for (u32 j = 0; j < b.instruction_count; ++j) {
+            const auto& inst = instructions[b.first_instruction + j];
+            if (inst.PC() != pc) throw detail::Rejected{BuildError::InvalidInput};
+            semantics.Execute(inst, j && j % runtime::frontend::GuestEventInstructionBudget == 0);
+            ++total;
+            bytes += 4;
+            pc += 4;
+            if (continuations &&
+                (inst.Flow() == FlowKind::Call || inst.Flow() == FlowKind::Service ||
+                 (inst.Boundary() && inst.Flow() == FlowKind::Linear)))
+                continuations->push_back(pc);
+            ended = EmitControl(semantics.control);
+            if (ended) {
+                if (j + 1 != b.instruction_count) throw detail::Rejected{BuildError::InvalidInput};
+                break;
+            }
+        }
+        if (!ended) JumpOrDispatch(pc);
+        if (sources && pc > b.pc) sources->push_back({b.pc, pc - b.pc});
+    }
+};
+
 BuildResult EmitDecoded(std::span<const Instruction> instructions,
                         std::span<const DecodedBlock> blocks,
                         Scope scope,
@@ -45,150 +234,23 @@ BuildResult EmitDecoded(std::span<const Instruction> instructions,
     std::size_t total{}, bytes{};
     u64 pc = blocks[entry].pc;
     try {
-        const auto internal = [&](u64 address) {
-            if (external || scope == Scope::Block) return BlockId{};
-            const auto i = std::lower_bound(
-                    blocks.begin(), blocks.end(), address, [](const auto& b, u64 p) {
-                        return b.pc < p;
-                    });
-            return i != blocks.end() && i->pc == address && i->instruction_count
-                           ? BlockId{u32(i - blocks.begin())}
-                           : BlockId{};
-        };
-        std::array<u64, 64> local_exits;
-        std::size_t exit_count{};
-        std::vector<u64> heap_exits;
-        const auto push_exit = [&](u64 addr) {
-            if (heap_exits.empty() && exit_count < local_exits.size()) {
-                local_exits[exit_count++] = addr;
-                return;
-            }
-            if (heap_exits.empty()) {
-                heap_exits.reserve(local_exits.size() * 2);
-                heap_exits.assign(local_exits.begin(), local_exits.begin() + exit_count);
-            }
-            heap_exits.push_back(addr);
-        };
-        if (scope == Scope::Function && !external)
-            for (const auto& b : blocks) {
-                if (!b.instruction_count) continue;
-                const auto& last = instructions[b.first_instruction + b.instruction_count - 1];
-                if (last.Flow() != FlowKind::Conditional) continue;
-                u64 taken{};
-                if (last.RelativeTarget(taken)) {
-                    if (!internal(taken)) push_exit(taken);
-                    if (!internal(last.PC() + 4)) push_exit(last.PC() + 4);
-                }
-            }
-        u64* exits_begin = heap_exits.empty() ? local_exits.data() : heap_exits.data();
-        std::size_t exits_size = heap_exits.empty() ? exit_count : heap_exits.size();
-        std::sort(exits_begin, exits_begin + exits_size);
-        exits_size = static_cast<std::size_t>(
-                std::unique(exits_begin, exits_begin + exits_size) - exits_begin);
-        const std::span<const u64> exits{exits_begin, exits_size};
+        auto exit_storage = CollectExternalExits(instructions, blocks, scope, external);
+        const auto exits = exit_storage.FinalizeSortedUnique();
         for (std::size_t i = 0; i < blocks.size() + exits.size(); ++i) {
             const auto r = sink.CreateBlock();
             Require(r.error);
         }
         const auto owner = sink.UnitId();
         Require(sink.SetEntry({owner, BlockId{entry}}));
-        const auto store = [&](Value value) {
-            Require(sink.Emit<OpCode::StoreUniform>(
-                    Type::Void,
-                    {Operand::Uniform(layout.pc_offset, Type::U64), Operand::ValueOf(value)}));
-        };
-        const auto dispatch = [&](u64 address) {
-            store(Constant(sink, address));
-            Require(sink.EndBlock(Terminal::Dispatch()));
-        };
-        const auto jump = [&](u64 address) {
-            if (const auto id = internal(address))
-                Require(sink.EndBlock(Terminal::Jump({owner, id})));
-            else
-                dispatch(address);
-        };
-        const auto target_block = [&](u64 address) {
-            if (const auto id = internal(address)) return BlockRef{owner, id};
-            const auto i = std::lower_bound(exits.begin(), exits.end(), address);
-            return BlockRef{owner, BlockId{u32(blocks.size() + std::size_t(i - exits.begin()))}};
-        };
+        DecodedEmitter emitter{sink, blocks, exits, scope, layout, target, owner, external};
         Sem semantics{sink, layout, target};
         for (u32 n = 0; n < blocks.size(); ++n) {
-            const auto& b = blocks[n];
-            pc = b.pc;
-            if (b.first_instruction > instructions.size() ||
-                b.instruction_count > instructions.size() - b.first_instruction)
-                throw detail::Rejected{BuildError::InvalidInput};
-            Require(sink.BeginBlock({owner, BlockId{n}}));
-            if (scope == Scope::Function && n != entry && b.instruction_count &&
-                target.Has(TargetFeature::ExternalEntries))
-                Require(sink.Emit<OpCode::EntryPoint>(Type::Void,
-                                                      {Operand::Immediate(pc, Type::U64)}));
-            bool ended{};
-            for (u32 j = 0; j < b.instruction_count; ++j) {
-                const auto& inst = instructions[b.first_instruction + j];
-                if (inst.PC() != pc) throw detail::Rejected{BuildError::InvalidInput};
-                semantics.Execute(inst,
-                                  j && j % runtime::frontend::GuestEventInstructionBudget == 0);
-                ++total;
-                bytes += 4;
-                pc += 4;
-                if (continuations &&
-                    (inst.Flow() == FlowKind::Call || inst.Flow() == FlowKind::Service ||
-                     (inst.Boundary() && inst.Flow() == FlowKind::Linear)))
-                    continuations->push_back(pc);
-                const auto& control = semantics.control;
-                using K = Sem::Control::Kind;
-                if (control.kind == K::Jump) {
-                    jump(control.yes);
-                    ended = true;
-                } else if (control.kind == K::Conditional) {
-                    if (scope == Scope::Block || external) {
-                        if (target.Has(TargetFeature::ConditionalUniformStore))
-                            Require(sink.Emit<OpCode::StoreUniformSelectImm>(
-                                    Type::Void,
-                                    {Operand::Uniform(layout.pc_offset, Type::U64),
-                                     Operand::ValueOf(control.condition.raw,
-                                                      control.condition.view),
-                                     Operand::Immediate(control.yes, Type::U64),
-                                     Operand::Immediate(control.no, Type::U64)}));
-                        else {
-                            const auto yes = Constant(sink, control.yes),
-                                       no = Constant(sink, control.no);
-                            store(Require(sink.Emit<OpCode::Select>(
-                                    Type::U64,
-                                    {Operand::ValueOf(control.condition.raw),
-                                     Operand::ValueOf(yes),
-                                     Operand::ValueOf(no)})));
-                        }
-                        Require(sink.EndBlock(Terminal::Dispatch()));
-                    } else
-                        Require(sink.EndBlock(Terminal::Branch(control.condition.raw,
-                                                               target_block(control.yes),
-                                                               target_block(control.no))));
-                    ended = true;
-                } else if (control.kind == K::Dispatch) {
-                    store(control.destination.IsImm() ? Constant(sink, control.destination.imm.bits)
-                                                      : control.destination.value.raw);
-                    Require(sink.EndBlock(Terminal::Dispatch()));
-                    ended = true;
-                } else if (control.kind == K::Service) {
-                    store(Constant(sink, control.yes));
-                    Require(sink.EndBlock(Terminal::Return(Constant(sink, control.service))));
-                    ended = true;
-                }
-                if (ended) {
-                    if (j + 1 != b.instruction_count)
-                        throw detail::Rejected{BuildError::InvalidInput};
-                    break;
-                }
-            }
-            if (!ended) jump(pc);
-            if (sources && pc > b.pc) sources->push_back({b.pc, pc - b.pc});
+            emitter.EmitBlock(
+                    n, instructions, entry, semantics, pc, total, bytes, sources, continuations);
         }
         for (std::size_t i = 0; i < exits.size(); ++i) {
             Require(sink.BeginBlock({owner, BlockId{u32(blocks.size() + i)}}));
-            dispatch(exits[i]);
+            emitter.DispatchTo(exits[i]);
         }
         if (counts) *counts = sink.CountWork();
         auto submitted = sink.Submit();

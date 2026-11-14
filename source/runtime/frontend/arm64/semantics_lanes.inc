@@ -1,3 +1,23 @@
+Value EmitNEONScalar3SameShift(u32 op, Value a, Value b, Value zero) {
+    auto count = SignExtendValue(b, 8);
+    auto right = this->TestBit(count, Imm{63u}).WithView(Type::U8);
+    auto negative = this->Sub(zero, SingleOperand(count)).WithView(Type::U64);
+    auto amount = this->Select(right, negative, count).WithView(Type::U64);
+    auto difference = this->Sub(amount, SingleOperand(Imm{u64{64}})).WithView(Type::U64);
+    auto in_range = this->TestBit(difference, Imm{63u}).WithView(Type::U8);
+    auto left_result = this->LslValue(a, amount).WithView(Type::U64);
+    left_result = this->Select(in_range, left_result, zero).WithView(Type::U64);
+    Value right_result;
+    if (op == NEON_SSHL_scalar) {
+        auto clamped = this->Select(in_range, amount, ImmValue(63, Type::U64)).WithView(Type::U64);
+        right_result = this->AsrValue(a, clamped).WithView(Type::U64);
+    } else {
+        right_result = this->LsrValue(a, amount).WithView(Type::U64);
+        right_result = this->Select(in_range, right_result, zero).WithView(Type::U64);
+    }
+    return this->Select(right, right_result, left_result).WithView(Type::U64);
+}
+
 void VisitNEONScalar3Same(const vixl::aarch64::Instruction* instr) override {
     if (TryNEONVariableShift(instr, true)) return;
     if (TryNEONFPCompare(instr, false, false)) return;
@@ -62,11 +82,7 @@ void VisitNEONScalar3Same(const vixl::aarch64::Instruction* instr) override {
                 limit = ImmValue(add ? mask : 0, Type::U64);
             }
             result = this->Select(overflow, limit, result).WithView(Type::U64);
-            Uniform status{u32(offsetof(GuestState, fpsr)), Type::U32};
-            auto old = this->template LoadUniform<Type::U32>(status);
-            auto qc = this->Select(overflow, ImmValue(1u << 27, Type::U32), ImmValue(0, Type::U32))
-                              .WithView(Type::U32);
-            this->StoreUniform(status, this->Or(old, SingleOperand(qc)).WithView(Type::U32));
+            AccumulateQC(overflow);
         }
     } else if (compare) {
         Value condition;
@@ -90,24 +106,7 @@ void VisitNEONScalar3Same(const vixl::aarch64::Instruction* instr) override {
         }
         result = this->Select(condition, ImmValue(mask, Type::U64), zero).WithView(Type::U64);
     } else {
-        auto count = SignExtendValue(b, 8);
-        auto right = this->TestBit(count, Imm{63u}).WithView(Type::U8);
-        auto negative = this->Sub(zero, SingleOperand(count)).WithView(Type::U64);
-        auto amount = this->Select(right, negative, count).WithView(Type::U64);
-        auto difference = this->Sub(amount, SingleOperand(Imm{u64{64}})).WithView(Type::U64);
-        auto in_range = this->TestBit(difference, Imm{63u}).WithView(Type::U8);
-        auto left_result = this->LslValue(a, amount).WithView(Type::U64);
-        left_result = this->Select(in_range, left_result, zero).WithView(Type::U64);
-        Value right_result;
-        if (op == NEON_SSHL_scalar) {
-            auto clamped =
-                    this->Select(in_range, amount, ImmValue(63, Type::U64)).WithView(Type::U64);
-            right_result = this->AsrValue(a, clamped).WithView(Type::U64);
-        } else {
-            right_result = this->LsrValue(a, amount).WithView(Type::U64);
-            right_result = this->Select(in_range, right_result, zero).WithView(Type::U64);
-        }
-        result = this->Select(right, right_result, left_result).WithView(Type::U64);
+        result = EmitNEONScalar3SameShift(op, a, b, zero);
     }
     WriteVRegister(instr->GetRd(), result);
 }
@@ -198,14 +197,7 @@ void VisitNEONScalar2RegMisc(const vixl::aarch64::Instruction* instr) override {
                             .WithView(Type::U64);
         }
     }
-    if (narrow || saturate_unary) {
-        Uniform status{u32(offsetof(GuestState, fpsr)), Type::U32};
-        auto old = this->template LoadUniform<Type::U32>(status);
-        auto qc = this->Select(saturated, ImmValue(1u << 27, Type::U32), ImmValue(0, Type::U32))
-                          .WithView(Type::U32);
-        this->StoreUniform(
-                status, this->template Or<Type::U32>(old, SingleOperand(qc)).WithView(Type::U32));
-    }
+    if (narrow || saturate_unary) AccumulateQC(saturated);
     result = this->template And<Type::U64>(result, SingleOperand(Imm{mask})).WithView(Type::U64);
     WriteVRegister(instr->GetRd(), result);
 }
@@ -285,13 +277,22 @@ Value ScalarDoublingMultiply(
         saturated =
                 this->template Or<Type::U8>(saturated, SingleOperand(overflow)).WithView(Type::U8);
     }
-    const Uniform status{u32(offsetof(GuestState, fpsr)), Type::U32};
-    auto previous = this->template LoadUniform<Type::U32>(status);
-    auto qc = this->Select(saturated, ImmValue(1u << 27, Type::U32), ImmValue(0, Type::U32))
-                      .WithView(Type::U32);
-    this->StoreUniform(
-            status, this->template Or<Type::U32>(previous, SingleOperand(qc)).WithView(Type::U32));
+    AccumulateQC(saturated);
     return this->template And<Type::U64>(result, SingleOperand(Imm{out_mask})).WithView(Type::U64);
+}
+
+struct NEONIndexedElement {
+    u32 rm;
+    u32 index;
+};
+
+static NEONIndexedElement DecodeNEONIndexedElement(const vixl::aarch64::Instruction* instr,
+                                                   u32 bits) {
+    const u32 rm = bits == 16 ? instr->GetRmLow16() : instr->GetRm();
+    const u32 index =
+            bits == 16 ? (instr->GetNEONH() << 2) | (instr->GetNEONL() << 1) | instr->GetNEONM()
+                       : (instr->GetNEONH() << 1) | instr->GetNEONL();
+    return {rm, index};
 }
 
 void VisitNEONScalar3Diff(const vixl::aarch64::Instruction* instr) override {
@@ -330,10 +331,7 @@ void VisitNEONScalarByIndexedElement(const vixl::aarch64::Instruction* instr) ov
         Interrupt(InterruptReason::ILL_CODE, current_pc);
         return;
     }
-    const u32 rm = bits == 16 ? instr->GetRmLow16() : instr->GetRm();
-    const u32 index =
-            bits == 16 ? (instr->GetNEONH() << 2) | (instr->GetNEONL() << 1) | instr->GetNEONM()
-                       : (instr->GetNEONH() << 1) | instr->GetNEONL();
+    const auto [rm, index] = DecodeNEONIndexedElement(instr, bits);
     const bool accumulate = op != NEON_SQDMULL_byelement_scalar;
     auto lhs = ReadVHalf(instr->GetRn(), false);
     auto rhs = ReadVHalf(rm, index * bits >= 64);
@@ -366,10 +364,7 @@ void VisitNEONByIndexedElement(const vixl::aarch64::Instruction* instr) override
         return;
     }
     const bool upper = instr->GetNEONQ();
-    const u32 rm = bits == 16 ? instr->GetRmLow16() : instr->GetRm();
-    const u32 index =
-            bits == 16 ? (instr->GetNEONH() << 2) | (instr->GetNEONL() << 1) | instr->GetNEONM()
-                       : (instr->GetNEONH() << 1) | instr->GetNEONL();
+    const auto [rm, index] = DecodeNEONIndexedElement(instr, bits);
     const u64 mask = (u64{1} << bits) - 1;
     auto element = ReadVHalf(rm, index * bits >= 64);
     element = this->LsrImm(element, Imm{index * bits % 64}).WithView(Type::U64);
@@ -427,7 +422,6 @@ void VisitNEONByIndexedElement(const vixl::aarch64::Instruction* instr) override
 }
 
 bool TryNEONPolynomial(const vixl::aarch64::Instruction* instr, bool widening) {
-    const u32 word = instr->GetInstructionBits();
     const u32 op =
             instr->Mask(widening ? u32(NEON3DifferentMask) : u32(NEON3SameMask)) & ~u32(NEON_Q);
     if (op != u32(widening ? u32(NEON_PMULL) : u32(NEON_PMUL))) return false;
@@ -477,7 +471,8 @@ bool TryNEONPolynomial(const vixl::aarch64::Instruction* instr, bool widening) {
 }
 
 bool TryNEONMixedSaturating(const vixl::aarch64::Instruction* instr, bool scalar) {
-    const u32 op = instr->GetInstructionBits() & NEON2RegMiscMask & ~u32(NEON_Q | NEONScalar);
+    const u32 op =
+            instr->GetInstructionBits() & NEON2RegMiscMask & ~(u32(NEON_Q) | u32(NEONScalar));
     const bool mixed = op == NEON_SUQADD || op == NEON_USQADD;
     const bool unary = !scalar && (op == NEON_SQABS || op == NEON_SQNEG);
     if (!mixed && !unary) return false;
@@ -555,11 +550,7 @@ bool TryNEONMixedSaturating(const vixl::aarch64::Instruction* instr, bool scalar
         auto& half = position < 64 ? low : high;
         half = this->Or(half, SingleOperand(result)).WithView(Type::U64);
     }
-    Uniform status{u32(offsetof(GuestState, fpsr)), Type::U32};
-    auto previous = this->template LoadUniform<Type::U32>(status);
-    auto qc = this->Select(any_saturation, ImmValue(1u << 27, Type::U32), ImmValue(0, Type::U32))
-                      .WithView(Type::U32);
-    this->StoreUniform(status, this->Or(previous, SingleOperand(qc)).WithView(Type::U32));
+    AccumulateQC(any_saturation);
     WriteVHalves(instr->GetRd(), low, high);
     return true;
 }
@@ -790,10 +781,7 @@ bool TryNEONVectorDoublingLong(const vixl::aarch64::Instruction* instr, bool ind
     auto lhs = ReadVHalf(instr->GetRn(), upper);
     Value rhs;
     if (indexed) {
-        const u32 rm = bits == 16 ? instr->GetRmLow16() : instr->GetRm();
-        const u32 index =
-                bits == 16 ? (instr->GetNEONH() << 2) | (instr->GetNEONL() << 1) | instr->GetNEONM()
-                           : (instr->GetNEONH() << 1) | instr->GetNEONL();
+        const auto [rm, index] = DecodeNEONIndexedElement(instr, bits);
         rhs = ReadVHalf(rm, index * bits >= 64);
         if (index * bits % 64)
             rhs = this->template LsrImm<Type::U64>(rhs, Imm{index * bits % 64}).WithView(Type::U64);
@@ -856,29 +844,20 @@ bool TryNEONSaturatingMultiplyHigh(const vixl::aarch64::Instruction* instr,
             : extra ? (scalar ? u32(NEONScalar3SameExtraMask) : u32(NEON3SameExtraMask))
                     : (scalar ? u32(NEONScalar3SameMask) : u32(NEON3SameMask));
     const u32 op = instr->Mask(mask);
-    const u32 scalar_bits = scalar ? NEON_Q | NEONScalar : 0;
+    const u32 scalar_bits = scalar ? (u32(NEON_Q) | u32(NEONScalar)) : 0u;
     const u32 plain = (indexed ? u32(NEON_SQDMULH_byelement) : u32(NEON_SQDMULH)) | scalar_bits;
     const u32 rounded = (indexed ? u32(NEON_SQRDMULH_byelement) : u32(NEON_SQRDMULH)) | scalar_bits;
     const u32 add = (indexed ? u32(NEON_SQRDMLAH_byelement) : u32(NEON_SQRDMLAH)) | scalar_bits;
     const u32 sub = (indexed ? u32(NEON_SQRDMLSH_byelement) : u32(NEON_SQRDMLSH)) | scalar_bits;
-    u32 mode;
-    if ((!extra || indexed) && op == plain)
-        mode = 0;
-    else if ((!extra || indexed) && op == rounded)
-        mode = 1;
-    else if ((extra || indexed) && op == add)
-        mode = 2;
-    else if ((extra || indexed) && op == sub)
-        mode = 3;
-    else
-        return false;
+    const bool valid = ((!extra || indexed) && (op == plain || op == rounded)) ||
+                       ((extra || indexed) && (op == add || op == sub));
+    if (!valid) return false;
     const u32 bits = 8u << instr->GetNEONSize();
     if (bits != 16 && bits != 32) {
         Interrupt(InterruptReason::ILL_CODE, current_pc);
         return true;
     }
 
-    (void)mode;
     Helper(Numeric::SatMultiply, u32(scalar) | (u32(indexed) << 1) | (u32(extra) << 2));
     return true;
 }

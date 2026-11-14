@@ -29,22 +29,6 @@ void WriteVHalves(u8 code, Value low, Value high) {
     this->StoreUniform(Uniform{offset + 8, Type::U64}, high);
 }
 
-Value ZeroByteMask(Value value) {
-    constexpr u64 low_bits = 0x7F7F7F7F7F7F7F7F;
-    constexpr u64 high_bits = 0x8080808080808080;
-    auto low =
-            this->template And<Type::U64>(value, SingleOperand(Imm{low_bits})).WithView(Type::U64);
-    auto sum = this->template Add<Type::U64>(low, SingleOperand(Imm{low_bits})).WithView(Type::U64);
-    auto set = this->template Or<Type::U64>(sum, SingleOperand(value)).WithView(Type::U64);
-    set = this->template Or<Type::U64>(set, SingleOperand(Imm{low_bits})).WithView(Type::U64);
-    auto inverted =
-            this->template Xor<Type::U64>(set, SingleOperand(Imm{u64(-1)})).WithView(Type::U64);
-    auto msb = this->template And<Type::U64>(inverted, SingleOperand(Imm{high_bits}))
-                       .WithView(Type::U64);
-    auto bits = this->template LsrImm<Type::U64>(msb, Imm{7}).WithView(Type::U64);
-    return this->template Mul<Type::U64>(bits, SingleOperand(Imm{0xFF})).WithView(Type::U64);
-}
-
 void WriteXRegister(u8 code, Value value, Reg31Mode r31mode = Reg31IsZeroRegister) {
     if (r31mode == Reg31IsZeroRegister && code == kZeroRegCode) {
         return;
@@ -70,6 +54,24 @@ void WriteWRegister(u8 code, Value value, Reg31Mode r31mode = Reg31IsZeroRegiste
             break;
     }
     this->StoreUniform(Uniform{GPROffset(code), Type::U64}, wide);
+}
+
+void WriteGPR(u8 code, bool is64, Value value, Reg31Mode r31mode = Reg31IsZeroRegister) {
+    if (is64) {
+        WriteXRegister(code, value, r31mode);
+    } else {
+        WriteWRegister(code, value, r31mode);
+    }
+}
+
+void AccumulateQC(Value saturated) {
+    constexpr u32 kFPSRQCBit = 1u << 27;
+    const Uniform status{u32(offsetof(GuestState, fpsr)), Type::U32};
+    auto old = this->template LoadUniform<Type::U32>(status);
+    auto qc = this->Select(saturated, ImmValue(kFPSRQCBit, Type::U32), ImmValue(0, Type::U32))
+                      .WithView(Type::U32);
+    this->StoreUniform(status,
+                       this->template Or<Type::U32>(old, SingleOperand(qc)).WithView(Type::U32));
 }
 
 void WriteVRegister(u8 code, Value value) {
@@ -120,48 +122,18 @@ Value ReplicateTo64(Value masked, u32 bits) {
 }
 
 Value ShiftOperand(bool is64, Value value, Shift shift, u32 amount) {
-    if (is64) {
-        switch (shift) {
-            case LSL:
-                return amount ? this->template LslImm<Type::U64>(value, Imm{amount})
-                                        .WithView(Type::U64)
-                              : value;
-            case LSR:
-                return amount ? this->template LsrImm<Type::U64>(value, Imm{amount})
-                                        .WithView(Type::U64)
-                              : value;
-            case ASR:
-                return amount ? this->template AsrImm<Type::U64>(value, Imm{amount})
-                                        .WithView(Type::U64)
-                              : value;
-            case ROR:
-                return amount ? this->template RorImm<Type::U64>(value, Imm{amount})
-                                        .WithView(Type::U64)
-                              : value;
-            default:
-                VIXL_UNREACHABLE();
-        }
-    } else {
-        switch (shift) {
-            case LSL:
-                return amount ? this->template LslImm<Type::U32>(value, Imm{amount})
-                                        .WithView(Type::U32)
-                              : value;
-            case LSR:
-                return amount ? this->template LsrImm<Type::U32>(value, Imm{amount})
-                                        .WithView(Type::U32)
-                              : value;
-            case ASR:
-                return amount ? this->template AsrImm<Type::U32>(value, Imm{amount})
-                                        .WithView(Type::U32)
-                              : value;
-            case ROR:
-                return amount ? this->template RorImm<Type::U32>(value, Imm{amount})
-                                        .WithView(Type::U32)
-                              : value;
-            default:
-                VIXL_UNREACHABLE();
-        }
+    if (!amount) return value;
+    switch (shift) {
+        case LSL:
+            return EmitGPR<OpCode::LslImm>(is64, value, Imm{amount});
+        case LSR:
+            return EmitGPR<OpCode::LsrImm>(is64, value, Imm{amount});
+        case ASR:
+            return EmitGPR<OpCode::AsrImm>(is64, value, Imm{amount});
+        case ROR:
+            return EmitGPR<OpCode::RorImm>(is64, value, Imm{amount});
+        default:
+            VIXL_UNREACHABLE();
     }
     return {};
 }

@@ -1,24 +1,26 @@
 void VisitCryptoAES(const vixl::aarch64::Instruction* instr) override {
     // VIXL's AES visitor does not validate the opcode or size field. All four
     // allocated encodings operate on exactly sixteen bytes.
-    const u32 op = instr->GetInstructionBits() & 0xFFFFFC00u;
-    constexpr u32 aese = 0x4E284800, aesd = 0x4E285800;
-    constexpr u32 aesmc = 0x4E286800, aesimc = 0x4E287800;
-    if (op != aese && op != aesd && op != aesmc && op != aesimc) {
+    constexpr u32 kCrypto2RegMask = 0xFFFFFC00u;
+    constexpr u32 kAeseOp = 0x4E284800u, kAesdOp = 0x4E285800u;
+    constexpr u32 kAesmcOp = 0x4E286800u, kAesimcOp = 0x4E287800u;
+    const u32 op = instr->GetInstructionBits() & kCrypto2RegMask;
+    if (op != kAeseOp && op != kAesdOp && op != kAesmcOp && op != kAesimcOp) {
         Interrupt(InterruptReason::ILL_CODE, current_pc);
         return;
     }
     auto source = ReadVRegister(instr->GetRn(), Type::V128);
     auto zero = this->VecSharedZero().WithView(Type::V128);
     Value result;
-    if (op == aese || op == aesd) {
+    if (op == kAeseOp || op == kAesdOp) {
         // ARM adds the key before substitution; shared AES IR follows x86 and
         // adds it afterward. Snapshot both operands before an aliased write.
         auto old = ReadVRegister(instr->GetRd(), Type::V128);
         auto keyed = this->VecXor(old, source).WithView(Type::V128);
-        result = (op == aese ? this->VecAesEncLast(keyed, zero) : this->VecAesDecLast(keyed, zero))
+        result = (op == kAeseOp ? this->VecAesEncLast(keyed, zero)
+                                : this->VecAesDecLast(keyed, zero))
                          .WithView(Type::V128);
-    } else if (op == aesmc) {
+    } else if (op == kAesmcOp) {
         // Inverse ShiftRows/SubBytes followed by the forward transforms cancel,
         // leaving MixColumns. This keeps AES-capable hosts on native vector IR.
         auto inverse = this->VecAesDecLast(source, zero).WithView(Type::V128);
@@ -30,13 +32,25 @@ void VisitCryptoAES(const vixl::aarch64::Instruction* instr) override {
     WriteVRegister(instr->GetRd(), result);
 }
 
+void WritePackedWords32(u8 rd, const std::array<Value, 4>& words) {
+    auto pair = [&](u32 i) {
+        auto upper = this->template LslImm<Type::U64>(Widen(words[i + 1]), Imm{32u})
+                             .WithView(Type::U64);
+        return this->template Or<Type::U64>(Widen(words[i]), SingleOperand(upper))
+                .WithView(Type::U64);
+    };
+    WriteVHalves(rd, pair(0), pair(2));
+}
+
 void VisitCrypto2RegSHA(const vixl::aarch64::Instruction* instr) override {
-    const u32 op = instr->GetInstructionBits() & 0xFFFFFC00u;
-    if (op != 0x5E280800 && op != 0x5E281800 && op != 0x5E282800) {
+    constexpr u32 kCrypto2RegMask = 0xFFFFFC00u;
+    constexpr u32 kSha1hOp = 0x5E280800u, kSha1su1Op = 0x5E281800u, kSha256su0Op = 0x5E282800u;
+    const u32 op = instr->GetInstructionBits() & kCrypto2RegMask;
+    if (op != kSha1hOp && op != kSha1su1Op && op != kSha256su0Op) {
         Interrupt(InterruptReason::ILL_CODE, current_pc);
         return;
     }
-    if (op == 0x5E282800) {
+    if (op == kSha256su0Op) {
         auto old = ReadVRegister(instr->GetRd(), Type::V128);
         auto source = ReadVRegister(instr->GetRn(), Type::V128);
         WriteVRegister(instr->GetRd(), this->VecSha256Msg1(old, source).WithView(Type::V128));
@@ -57,7 +71,7 @@ void VisitCrypto2RegSHA(const vixl::aarch64::Instruction* instr) override {
     auto rotate = [&](Value word, u32 right) {
         return this->template RorImm<Type::U32>(word, Imm{right}).WithView(Type::U32);
     };
-    if (op == 0x5E280800) {
+    if (op == kSha1hOp) {
         WriteVRegister(instr->GetRd(), rotate(source[0], 2));
         return;
     }
@@ -69,49 +83,51 @@ void VisitCrypto2RegSHA(const vixl::aarch64::Instruction* instr) override {
                 this->template Xor<Type::U32>(old[i], SingleOperand(other)).WithView(Type::U32),
                 31);
     }
-    auto pair = [&](u32 i) {
-        auto upper = this->template LslImm<Type::U64>(Widen(result[i + 1]), Imm{32u})
-                             .WithView(Type::U64);
-        return this->template Or<Type::U64>(Widen(result[i]), SingleOperand(upper))
-                .WithView(Type::U64);
-    };
-    WriteVHalves(instr->GetRd(), pair(0), pair(2));
+    WritePackedWords32(instr->GetRd(), result);
+}
+
+Value EmitSha256Rounds(bool high_half, Value old, Value source, Value message) {
+    auto abcd = high_half ? source : old;
+    auto efgh = high_half ? old : source;
+    auto reversed_a = this->VecShuffle32(abcd, Imm{0x1Bu}).WithView(Type::V128);
+    auto reversed_e = this->VecShuffle32(efgh, Imm{0x1Bu}).WithView(Type::V128);
+    auto packed_source =
+            this->VecShuffle32TwoSrc(reversed_e, reversed_a, Imm{0xEEu}).WithView(Type::V128);
+    auto packed_destination =
+            this->VecShuffle32TwoSrc(reversed_e, reversed_a, Imm{0x44u}).WithView(Type::V128);
+    auto first =
+            this->VecSha256Rnds2(packed_destination, packed_source, message).WithView(Type::V128);
+    // After two rounds the other packed half equals the original source.
+    auto second_keys = this->VecShuffle32(message, Imm{0x0Eu}).WithView(Type::V128);
+    auto second = this->VecSha256Rnds2(packed_source, first, second_keys).WithView(Type::V128);
+    return this->VecShuffle32TwoSrc(second, first, Imm{high_half ? 0x11u : 0xBBu})
+            .WithView(Type::V128);
 }
 
 void VisitCrypto3RegSHA(const vixl::aarch64::Instruction* instr) override {
-    const u32 op = instr->GetInstructionBits() & 0xFFE0FC00u;
-    if (op < 0x5E000000 || op > 0x5E006000 || ((op - 0x5E000000) & 0xFFF)) {
+    constexpr u32 kCrypto3RegMask = 0xFFE0FC00u;
+    constexpr u32 kSha1cOp = 0x5E000000u, kSha1pOp = 0x5E001000u, kSha1mOp = 0x5E002000u;
+    constexpr u32 kSha1su0Op = 0x5E003000u, kSha256hOp = 0x5E004000u, kSha256h2Op = 0x5E005000u;
+    constexpr u32 kSha256su1Op = 0x5E006000u;
+    const u32 op = instr->GetInstructionBits() & kCrypto3RegMask;
+    if (op < kSha1cOp || op > kSha256su1Op || ((op - kSha1cOp) & 0xFFFu)) {
         Interrupt(InterruptReason::ILL_CODE, current_pc);
         return;
     }
     auto old = ReadVRegister(instr->GetRd(), Type::V128);
     auto source = ReadVRegister(instr->GetRn(), Type::V128);
     auto message = ReadVRegister(instr->GetRm(), Type::V128);
-    if (op == 0x5E006000) {
+    if (op == kSha256su1Op) {
         auto addend = this->VecExtractBytes(source, message, Imm{4u}).WithView(Type::V128);
         auto partial = this->VecAdd(old, addend, Imm{32u}).WithView(Type::V128);
         WriteVRegister(instr->GetRd(), this->VecSha256Msg2(partial, message).WithView(Type::V128));
         return;
     }
-    if (op == 0x5E004000 || op == 0x5E005000) {
-        auto abcd = op == 0x5E004000 ? old : source;
-        auto efgh = op == 0x5E004000 ? source : old;
-        auto reversed_a = this->VecShuffle32(abcd, Imm{0x1Bu}).WithView(Type::V128);
-        auto reversed_e = this->VecShuffle32(efgh, Imm{0x1Bu}).WithView(Type::V128);
-        auto packed_source =
-                this->VecShuffle32TwoSrc(reversed_e, reversed_a, Imm{0xEEu}).WithView(Type::V128);
-        auto packed_destination =
-                this->VecShuffle32TwoSrc(reversed_e, reversed_a, Imm{0x44u}).WithView(Type::V128);
-        auto first = this->VecSha256Rnds2(packed_destination, packed_source, message)
-                             .WithView(Type::V128);
-        // After two rounds the other packed half equals the original source.
-        auto second_keys = this->VecShuffle32(message, Imm{0x0Eu}).WithView(Type::V128);
-        auto second = this->VecSha256Rnds2(packed_source, first, second_keys).WithView(Type::V128);
-        auto result = this->VecShuffle32TwoSrc(second, first, Imm{op == 0x5E004000 ? 0xBBu : 0x11u})
-                              .WithView(Type::V128);
-        WriteVRegister(instr->GetRd(), result);
+    if (op == kSha256hOp || op == kSha256h2Op) {
+        WriteVRegister(instr->GetRd(), EmitSha256Rounds(op == kSha256h2Op, old, source, message));
         return;
     }
+    (void)kSha1mOp;
     auto words = [&](Value vector) {
         std::array<Value, 4> result;
         auto low = this->VecExtract64(vector, Imm{0u}).WithView(Type::U64);
@@ -135,7 +151,7 @@ void VisitCrypto3RegSHA(const vixl::aarch64::Instruction* instr) override {
     auto add32 = [&](Value a, Value b) {
         return this->template Add<Type::U32>(a, SingleOperand(b)).WithView(Type::U32);
     };
-    if (op == 0x5E003000) {
+    if (op == kSha1su0Op) {
         const auto initial = d;
         for (u32 i = 0; i < 4; ++i)
             d[i] = xor32(xor32(initial[i], i < 2 ? initial[i + 2] : n[i - 2]), m[i]);
@@ -143,9 +159,9 @@ void VisitCrypto3RegSHA(const vixl::aarch64::Instruction* instr) override {
         auto e = n[0];
         for (u32 round = 0; round < 4; ++round) {
             Value function;
-            if (op == 0x5E000000) {
+            if (op == kSha1cOp) {
                 function = xor32(d[3], and32(d[1], xor32(d[2], d[3])));
-            } else if (op == 0x5E001000) {
+            } else if (op == kSha1pOp) {
                 function = xor32(xor32(d[1], d[2]), d[3]);
             } else {
                 auto first = and32(d[1], d[2]);
@@ -164,10 +180,5 @@ void VisitCrypto3RegSHA(const vixl::aarch64::Instruction* instr) override {
                  d[2]};
         }
     }
-    auto pair = [&](u32 i) {
-        auto upper =
-                this->template LslImm<Type::U64>(Widen(d[i + 1]), Imm{32u}).WithView(Type::U64);
-        return this->template Or<Type::U64>(Widen(d[i]), SingleOperand(upper)).WithView(Type::U64);
-    };
-    WriteVHalves(instr->GetRd(), pair(0), pair(2));
+    WritePackedWords32(instr->GetRd(), d);
 }

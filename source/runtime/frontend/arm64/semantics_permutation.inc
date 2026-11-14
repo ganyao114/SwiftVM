@@ -243,6 +243,33 @@ void VisitNEONTable(const vixl::aarch64::Instruction* instr) override {
     WriteVRegister(instr->GetRd(), result);
 }
 
+Value EmitNEONByteCountOrBitReverse(u32 op, Value value) {
+    if (op == NEON_CNT) {
+        auto shifted = this->LsrImm(value, Imm{1}).WithView(Type::U64);
+        shifted = this->And(shifted, SingleOperand(Imm{u64{0x5555555555555555}}))
+                          .WithView(Type::U64);
+        value = this->Sub(value, SingleOperand(shifted)).WithView(Type::U64);
+        shifted = this->LsrImm(value, Imm{2}).WithView(Type::U64);
+        shifted = this->And(shifted, SingleOperand(Imm{u64{0x3333333333333333}}))
+                          .WithView(Type::U64);
+        value = this->And(value, SingleOperand(Imm{u64{0x3333333333333333}})).WithView(Type::U64);
+        value = this->Add(value, SingleOperand(shifted)).WithView(Type::U64);
+        shifted = this->LsrImm(value, Imm{4}).WithView(Type::U64);
+        value = this->Add(value, SingleOperand(shifted)).WithView(Type::U64);
+        return this->And(value, SingleOperand(Imm{u64{0x0F0F0F0F0F0F0F0F}})).WithView(Type::U64);
+    }
+    constexpr std::array<u64, 3> kBitSwapMasks{
+            0x5555555555555555ULL, 0x3333333333333333ULL, 0x0F0F0F0F0F0F0F0FULL};
+    for (u32 stage = 0; stage < kBitSwapMasks.size(); ++stage) {
+        auto right = this->LsrImm(value, Imm{1u << stage}).WithView(Type::U64);
+        right = this->And(right, SingleOperand(Imm{kBitSwapMasks[stage]})).WithView(Type::U64);
+        auto left = this->And(value, SingleOperand(Imm{kBitSwapMasks[stage]})).WithView(Type::U64);
+        left = this->LslImm(left, Imm{1u << stage}).WithView(Type::U64);
+        value = this->Or(left, SingleOperand(right)).WithView(Type::U64);
+    }
+    return value;
+}
+
 bool TryNEONBitMisc(const vixl::aarch64::Instruction* instr) {
     const auto op = instr->Mask(NEON2RegMiscMask);
     const u32 size = instr->GetNEONSize(), bits = 8u << size;
@@ -270,35 +297,8 @@ bool TryNEONBitMisc(const vixl::aarch64::Instruction* instr) {
     auto zero = ImmValue(0, Type::U64);
     auto low = zero, high = zero;
     if (op == NEON_CNT || reverse_bits) {
-        auto apply = [&](Value value) {
-            if (op == NEON_CNT) {
-                auto shifted = this->LsrImm(value, Imm{1}).WithView(Type::U64);
-                shifted = this->And(shifted, SingleOperand(Imm{u64{0x5555555555555555}}))
-                                  .WithView(Type::U64);
-                value = this->Sub(value, SingleOperand(shifted)).WithView(Type::U64);
-                shifted = this->LsrImm(value, Imm{2}).WithView(Type::U64);
-                shifted = this->And(shifted, SingleOperand(Imm{u64{0x3333333333333333}}))
-                                  .WithView(Type::U64);
-                value = this->And(value, SingleOperand(Imm{u64{0x3333333333333333}}))
-                                .WithView(Type::U64);
-                value = this->Add(value, SingleOperand(shifted)).WithView(Type::U64);
-                shifted = this->LsrImm(value, Imm{4}).WithView(Type::U64);
-                value = this->Add(value, SingleOperand(shifted)).WithView(Type::U64);
-                return this->And(value, SingleOperand(Imm{u64{0x0F0F0F0F0F0F0F0F}}))
-                        .WithView(Type::U64);
-            }
-            const u64 masks[] = {0x5555555555555555, 0x3333333333333333, 0x0F0F0F0F0F0F0F0F};
-            for (u32 stage = 0; stage < 3; ++stage) {
-                auto right = this->LsrImm(value, Imm{1u << stage}).WithView(Type::U64);
-                right = this->And(right, SingleOperand(Imm{masks[stage]})).WithView(Type::U64);
-                auto left = this->And(value, SingleOperand(Imm{masks[stage]})).WithView(Type::U64);
-                left = this->LslImm(left, Imm{1u << stage}).WithView(Type::U64);
-                value = this->Or(left, SingleOperand(right)).WithView(Type::U64);
-            }
-            return value;
-        };
-        low = apply(input_low);
-        if (q) high = apply(input_high);
+        low = EmitNEONByteCountOrBitReverse(op, input_low);
+        if (q) high = EmitNEONByteCountOrBitReverse(op, input_high);
     } else {
         const u32 source_bits = narrow ? bits * 2 : bits;
         const u64 mask = (u64{1} << bits) - 1;
@@ -351,13 +351,7 @@ bool TryNEONBitMisc(const vixl::aarch64::Instruction* instr) {
             auto& half = lane * bits < 64 ? low : high;
             half = this->Or(half, SingleOperand(value)).WithView(Type::U64);
         }
-        if (narrow && op != NEON_XTN) {
-            Uniform status{u32(offsetof(GuestState, fpsr)), Type::U32};
-            auto old = this->template LoadUniform<Type::U32>(status);
-            auto qc = this->Select(saturated, ImmValue(1u << 27, Type::U32), ImmValue(0, Type::U32))
-                              .WithView(Type::U32);
-            this->StoreUniform(status, this->template Or<Type::U32>(old, SingleOperand(qc)));
-        }
+        if (narrow && op != NEON_XTN) AccumulateQC(saturated);
     }
     if (narrow && q)
         WriteVHalves(instr->GetRd(), ReadVHalf(instr->GetRd(), false), low);
