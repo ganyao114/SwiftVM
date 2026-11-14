@@ -4,7 +4,16 @@ namespace swift::runtime::backend::riscv64::detail {
 namespace {
 using O = OpCode;
 using u64 = std::uint64_t;
-constexpr std::array first{a0, a1}, second{a2, a3}, third{a4, a5}, result{a6, a7};
+constexpr std::array result{a6, a7};
+
+constexpr u32 kFClassSubnormalMask = 0x24;
+constexpr u32 kFClassSNaNMask = 0x100;
+constexpr u32 kFClassNaNMask = 0x300;
+constexpr unsigned kMxcsrDazBit = 6;
+constexpr unsigned kMxcsrFtzBit = 15;
+constexpr u32 kMxcsrDenormalFlag = 2;
+constexpr unsigned kRvFlagUnderflowInexact = 3;
+constexpr unsigned kRvFlagInvalid = 16;
 
 unsigned Immediate(OpContext& ctx, unsigned index) {
     return static_cast<unsigned>(ctx.Arg(index).Payload());
@@ -12,6 +21,16 @@ unsigned Immediate(OpContext& ctx, unsigned index) {
 
 void CheckFloatWidth(Writer& writer, unsigned bits) {
     if (bits != 32 && bits != 64) writer.Reject(CompileError::UnsupportedOperand);
+}
+
+std::array<GPR, 2> ReadVecRef(Writer& writer, CellView cell, GPR scratch_lo, GPR scratch_hi) {
+    if (cell.Kind() == OperandKind::Value &&
+        TypeBits(writer.source.Operations()[cell.Payload()].type) == 128) {
+        const auto& home = writer.allocation.homes[cell.Payload()];
+        if (!home.spilled) return {GPR{home.reg}, GPR{home.high_reg}};
+    }
+    writer.ReadPair(cell, scratch_lo, scratch_hi);
+    return {scratch_lo, scratch_hi};
 }
 
 void ToFloat(Assembler& as, FPR destination, GPR input, unsigned bits) {
@@ -35,7 +54,10 @@ void Lane(Writer& writer,
           unsigned index,
           unsigned bits) {
     const unsigned bit = index * bits;
-    writer.as.SRLI(destination, input[bit / 64], bit % 64);
+    if (bit % 64)
+        writer.as.SRLI(destination, input[bit / 64], bit % 64);
+    else if (destination != input[bit / 64])
+        writer.as.MV(destination, input[bit / 64]);
     writer.Mask(destination, bits);
 }
 
@@ -43,7 +65,17 @@ void Put(Writer& writer, GPR value, unsigned index, unsigned bits, bool merge = 
     const unsigned bit = index * bits;
     writer.Mask(value, bits);
     if (merge) {
-        const auto mask = bits == 64 ? UINT64_MAX : u64{UINT32_MAX} << (bit % 64);
+        if (bits == 64) {
+            if (result[bit / 64] != value) writer.as.MV(result[bit / 64], value);
+            return;
+        }
+        if (bit % 64 == 0) {
+            writer.as.SRLI(result[bit / 64], result[bit / 64], 32);
+            writer.as.SLLI(result[bit / 64], result[bit / 64], 32);
+            writer.as.OR(result[bit / 64], result[bit / 64], value);
+            return;
+        }
+        const auto mask = u64{UINT32_MAX} << (bit % 64);
         writer.as.LI(t4, ~mask);
         writer.as.AND(result[bit / 64], result[bit / 64], t4);
     }
@@ -65,10 +97,7 @@ void ReadStatus(Writer& writer, GPR destination) { writer.as.FRFLAGS(destination
 void WriteStatus(Writer& writer, GPR source) { writer.as.FSFLAGS(source); }
 
 void RaiseNative(Writer& writer, unsigned flags) {
-    ReadStatus(writer, t4);
-    writer.as.LI(t5, u64{flags});
-    writer.as.OR(t4, t4, t5);
-    WriteStatus(writer, t4);
+    writer.as.CSRRSI(x0, CSR::FFlags, flags);
 }
 
 void ReadControl(Writer& writer) {
@@ -79,12 +108,12 @@ void ReadControl(Writer& writer) {
 void RaiseDenormal(Writer& writer) {
     if (writer.options.mxcsr_offset == UINT32_MAX) return;
     ReadControl(writer);
-    writer.as.ORI(t4, t4, 2);
+    writer.as.ORI(t4, t4, kMxcsrDenormalFlag);
     writer.Store(t4, t5, 0, 32);
 }
 
-// Only t4/t5 are temporary; t6 may retain an instruction's old FP status.
-// DE has no native RV/LA exception bit, so it lives in the canonical word.
+// Only t4/t5 and ft4 are temporary; t6 may retain an instruction's old FP status.
+// DE has no native RV exception bit, so it lives in the canonical MXCSR word.
 void Flush(Writer& writer,
            GPR raw,
            unsigned bits,
@@ -94,23 +123,25 @@ void Flush(Writer& writer,
     if (!force && writer.options.mxcsr_offset == UINT32_MAX) return;
     auto& as = writer.as;
     Label complete, flush;
-    as.LI(t5, bits == 32 ? UINT64_C(0x7f800000) : UINT64_C(0x7ff0000000000000));
-    as.AND(t4, raw, t5);
-    as.BNE(t4, x0, &complete);
-    as.LI(t5, bits == 32 ? UINT64_C(0x7fffff) : UINT64_C(0xfffffffffffff));
-    as.AND(t4, raw, t5);
+    ToFloat(as, ft4, raw, bits);
+    Classify(writer, t4, ft4, bits);
+    as.ANDI(t4, t4, kFClassSubnormalMask);
     as.BEQ(t4, x0, &complete);
     if (!force) {
         ReadControl(writer);
-        as.SRLI(t4, t4, control_bit);
-        as.ANDI(t4, t4, 1);
-        if (control_bit == 6) {
+        if (writer.options.zbs) {
+            as.BEXTI(t4, t4, control_bit);
+        } else {
+            as.SRLI(t4, t4, control_bit);
+            as.ANDI(t4, t4, 1);
+        }
+        if (control_bit == kMxcsrDazBit) {
             as.BNE(t4, x0, &flush);
             if (report_denormal) RaiseDenormal(writer);
             as.J(&complete);
         } else {
             as.BEQ(t4, x0, &complete);
-            RaiseNative(writer, 3);  // An FTZ flush raises underflow and precision.
+            RaiseNative(writer, kRvFlagUnderflowInexact);
         }
     }
     as.Bind(&flush);
@@ -122,29 +153,38 @@ void Flush(Writer& writer,
 void PropagateNaN(Writer& writer, GPR destination, FPR input, GPR raw, unsigned bits) {
     auto& as = writer.as;
     Classify(writer, t4, input, bits);
-    as.ANDI(t4, t4, 768);
+    as.ANDI(t4, t4, kFClassNaNMask);
     Label finite;
     as.BEQ(t4, x0, &finite);
-    as.LI(t5, u64{1} << (bits == 32 ? 22 : 51));
-    as.OR(destination, raw, t5);
+    if (writer.options.zbs) {
+        as.BSETI(destination, raw, bits == 32 ? 22 : 51);
+    } else {
+        as.LI(t5, u64{1} << (bits == 32 ? 22 : 51));
+        as.OR(destination, raw, t5);
+    }
     as.Bind(&finite);
 }
 
 void RepairArithmeticNaN(Writer& writer, unsigned bits, bool binary, bool fused) {
     auto& as = writer.as;
     Classify(writer, t4, ft0, bits);
-    as.ANDI(t4, t4, 768);
-    Label numeric;
-    as.BEQ(t4, x0, &numeric);
+    as.ANDI(t4, t4, kFClassNaNMask);
+    Label done;
+    // If the hardware result is not NaN, none of the inputs could have been NaN.
+    as.BEQ(t4, x0, &done);
     // Invalid arithmetic with finite inputs has the guest's negative QNaN.
-    as.LI(t5, u64{1} << (bits - 1));
-    as.OR(t3, t3, t5);
-    as.Bind(&numeric);
+    if (writer.options.zbs) {
+        as.BSETI(t3, t3, bits - 1);
+    } else {
+        as.LI(t5, u64{1} << (bits - 1));
+        as.OR(t3, t3, t5);
+    }
     // RISC-V canonicalizes NaNs. Recover the earliest input's sign/payload
     // rather than exposing the host's canonical NaN as the guest result.
     if (fused) PropagateNaN(writer, t3, ft3, t2, bits);
     if (binary) PropagateNaN(writer, t3, ft2, t1, bits);
     PropagateNaN(writer, t3, ft1, t0, bits);
+    as.Bind(&done);
 }
 
 void FloatToInteger(Writer& writer, unsigned float_bits, unsigned integer_bits, bool truncate) {
@@ -152,7 +192,7 @@ void FloatToInteger(Writer& writer, unsigned float_bits, unsigned integer_bits, 
     CheckFloatWidth(writer, float_bits);
     if (integer_bits != 32 && integer_bits != 64) writer.Reject(CompileError::UnsupportedOperand);
     // CVT and CVTT both apply DAZ; neither reports a denormal exception.
-    Flush(writer, t0, float_bits, 6, false, false);
+    Flush(writer, t0, float_bits, kMxcsrDazBit, false, false);
     ToFloat(as, ft1, t0, float_bits);
     const auto rounding = truncate ? RMode::RTZ : RMode::DYN;
     as.FSFLAGSI(t6, 0);
@@ -169,8 +209,8 @@ void FloatToInteger(Writer& writer, unsigned float_bits, unsigned integer_bits, 
     }
     as.FRFLAGS(t4);
     as.OR(t5, t4, t6);
-    as.FSFLAGS(t5);       // Retain old sticky flags and this conversion's exceptions.
-    as.ANDI(t4, t4, 16);  // Invalid includes NaN and either signed overflow.
+    as.FSFLAGS(t5);
+    as.ANDI(t4, t4, kRvFlagInvalid);
     Label valid;
     as.BEQ(t4, x0, &valid);
     as.LI(t3, u64{1} << (integer_bits - 1));
@@ -196,14 +236,14 @@ void IntegerToFloat(Writer& writer, unsigned integer_bits, unsigned float_bits) 
             as.FCVT_D_W(ft0, t0, RMode::DYN);
     }
     FromFloat(writer, t3, ft0, float_bits);
-    Flush(writer, t3, float_bits, 15);
+    Flush(writer, t3, float_bits, kMxcsrFtzBit);
 }
 
 void ConvertFloat(Writer& writer, unsigned source_bits) {
     CheckFloatWidth(writer, source_bits);
     const unsigned destination_bits = 96 - source_bits;
     auto& as = writer.as;
-    Flush(writer, t0, source_bits, 6);
+    Flush(writer, t0, source_bits, kMxcsrDazBit);
     ToFloat(as, ft1, t0, source_bits);
     if (source_bits == 32)
         as.FCVT_D_S(ft0, ft1, RMode::DYN);
@@ -211,7 +251,7 @@ void ConvertFloat(Writer& writer, unsigned source_bits) {
         as.FCVT_S_D(ft0, ft1, RMode::DYN);
     FromFloat(writer, t3, ft0, destination_bits);
     Classify(writer, t4, ft1, source_bits);
-    as.ANDI(t4, t4, 768);
+    as.ANDI(t4, t4, kFClassNaNMask);
     Label numeric;
     as.BEQ(t4, x0, &numeric);
     if (source_bits == 32) {
@@ -232,7 +272,7 @@ void ConvertFloat(Writer& writer, unsigned source_bits) {
     as.OR(t3, t3, t4);
     as.OR(t3, t3, t5);
     as.Bind(&numeric);
-    Flush(writer, t3, destination_bits, 15);
+    Flush(writer, t3, destination_bits, kMxcsrFtzBit);
 }
 
 void RoundIntegral(Writer& writer, unsigned bits, unsigned mode) {
@@ -243,8 +283,12 @@ void RoundIntegral(Writer& writer, unsigned bits, unsigned mode) {
     const bool suppress_precision = (mode & 8) != 0;
     if (suppress_precision) ReadStatus(writer, t6);
     Label unchanged, done;
-    as.LI(t4, ~(u64{1} << (bits - 1)));
-    as.AND(t4, t0, t4);
+    if (writer.options.zbs) {
+        as.BCLRI(t4, t0, bits - 1);
+    } else {
+        as.LI(t4, ~(u64{1} << (bits - 1)));
+        as.AND(t4, t0, t4);
+    }
     as.LI(t5, bits == 32 ? UINT64_C(0x4b000000) : UINT64_C(0x4330000000000000));
     as.BGEU(t4, t5, &unchanged);
     if (bits == 32) {
@@ -259,20 +303,18 @@ void RoundIntegral(Writer& writer, unsigned bits, unsigned mode) {
     as.J(&done);
     as.Bind(&unchanged);
     Classify(writer, t4, ft1, bits);
-    as.ANDI(t4, t4, 256);
+    as.ANDI(t4, t4, kFClassSNaNMask);
     Label quiet;
     as.BEQ(t4, x0, &quiet);
-    RaiseNative(writer, 16);
+    RaiseNative(writer, kRvFlagInvalid);
     as.Bind(&quiet);
     as.MV(t3, t0);
     PropagateNaN(writer, t3, ft1, t0, bits);
     as.Bind(&done);
     if (suppress_precision) {
         ReadStatus(writer, t4);
-        as.LI(t5, ~u64{1});
-        as.AND(t4, t4, t5);
-        as.LI(t5, u64{1});
-        as.AND(t5, t6, t5);
+        as.ANDI(t4, t4, static_cast<u32>(-2));
+        as.ANDI(t5, t6, 1);
         as.OR(t4, t4, t5);
         WriteStatus(writer, t4);
     }
@@ -282,16 +324,16 @@ void CompareNaNs(Writer& writer, unsigned bits) {
     Classify(writer, t4, ft1, bits);
     Classify(writer, t5, ft2, bits);
     writer.as.OR(t4, t4, t5);
-    writer.as.ANDI(t5, t4, 768);
+    writer.as.ANDI(t5, t4, kFClassNaNMask);
 }
 
 void ComparisonInvalid(Writer& writer, bool signaling) {
     Label quiet;
     if (!signaling) {
-        writer.as.ANDI(t4, t4, 256);
+        writer.as.ANDI(t4, t4, kFClassSNaNMask);
         writer.as.BEQ(t4, x0, &quiet);
     }
-    RaiseNative(writer, 16);
+    RaiseNative(writer, kRvFlagInvalid);
     writer.as.Bind(&quiet);
 }
 
@@ -318,6 +360,61 @@ void CompareMask(Writer& writer, unsigned bits, unsigned relations) {
     as.NEG(t3, t3);
 }
 
+template <O opcode>
+void EmitLaneArithmetic(Writer& writer,
+                        unsigned bits,
+                        unsigned lane,
+                        unsigned kind,
+                        unsigned flags) {
+    constexpr bool unary = opcode == O::VecFUnary;
+    constexpr bool fused = opcode == O::VecFMulAdd;
+    auto& as = writer.as;
+    const auto precision = bits == 32 ? Precision::S : Precision::D;
+
+    if constexpr (fused) {
+        const bool negate_addend =
+                bool(flags & 2) ^ (bool(flags & 8) && ((lane & 1) == ((flags >> 4) & 1)));
+        if (flags & 1) {
+            if (negate_addend)
+                as.FNMADD(ft0, ft1, ft2, ft3, precision, RMode::DYN);
+            else
+                as.FNMSUB(ft0, ft1, ft2, ft3, precision, RMode::DYN);
+        } else {
+            if (negate_addend)
+                as.FMSUB(ft0, ft1, ft2, ft3, precision, RMode::DYN);
+            else
+                as.FMADD(ft0, ft1, ft2, ft3, precision, RMode::DYN);
+        }
+    } else if constexpr (unary) {
+        if (kind == 0) {
+            as.FSQRT(ft0, ft1, precision, RMode::DYN);
+        } else {
+            as.LI(t3, bits == 32 ? UINT64_C(0x3f800000) : UINT64_C(0x3ff0000000000000));
+            ToFloat(as, ft2, t3, bits);
+            if (kind == 1) {
+                as.FDIV(ft0, ft2, ft1, precision, RMode::DYN);
+            } else {
+                as.FSQRT(ft0, ft1, precision, RMode::DYN);
+                as.FDIV(ft0, ft2, ft0, precision, RMode::DYN);
+            }
+        }
+    } else if constexpr (opcode == O::VecFAdd || opcode == O::VecFAddScalar32 ||
+                         opcode == O::VecFAddScalar64) {
+        as.FADD(ft0, ft1, ft2, precision, RMode::DYN);
+    } else if constexpr (opcode == O::VecFSub || opcode == O::VecFSubScalar32 ||
+                         opcode == O::VecFSubScalar64) {
+        as.FSUB(ft0, ft1, ft2, precision, RMode::DYN);
+    } else if constexpr (opcode == O::VecFMul || opcode == O::VecFMulScalar32 ||
+                         opcode == O::VecFMulScalar64) {
+        as.FMUL(ft0, ft1, ft2, precision, RMode::DYN);
+    } else {
+        as.FDIV(ft0, ft1, ft2, precision, RMode::DYN);
+    }
+
+    FromFloat(writer, t3, ft0, bits);
+    RepairArithmeticNaN(writer, bits, !unary, fused);
+}
+
 template <O opcode> void Floating(Writer& writer, OpContext& ctx) {
     constexpr bool single_scalar = opcode == O::VecFAddScalar32 || opcode == O::VecFSubScalar32 ||
                                    opcode == O::VecFMulScalar32 || opcode == O::VecFDivScalar32;
@@ -337,25 +434,27 @@ template <O opcode> void Floating(Writer& writer, OpContext& ctx) {
                         ((unary || round || minmax || mask) && Immediate(ctx, 4)) ||
                         (fused && (flags & 4));
     auto& as = writer.as;
-    writer.ReadPair(ctx.Arg(0), a0, a1);
-    writer.ReadPair(ctx.Arg(1), a2, a3);
-    if constexpr (fused) writer.ReadPair(ctx.Arg(2), a4, a5);
-    as.MV(a6, scalar ? a0 : x0);
-    as.MV(a7, scalar ? a1 : x0);
+    const auto in0 = ReadVecRef(writer, ctx.Arg(0), a0, a1);
+    const auto in1 = ReadVecRef(writer, ctx.Arg(1), a2, a3);
+    std::array<GPR, 2> in2{a4, a5};
+    if constexpr (fused) in2 = ReadVecRef(writer, ctx.Arg(2), a4, a5);
+    as.MV(a6, scalar ? in0[0] : x0);
+    as.MV(a7, scalar ? in0[1] : x0);
     const auto precision = bits == 32 ? Precision::S : Precision::D;
     if (approximate) ReadStatus(writer, t6);
+
     for (unsigned lane = 0; lane < (scalar ? 1 : 128 / bits); ++lane) {
-        Lane(writer, t0, unary || round ? second : first, lane, bits);
-        Flush(writer, t0, bits, 6, approximate, !round);
+        Lane(writer, t0, unary || round ? in1 : in0, lane, bits);
+        Flush(writer, t0, bits, kMxcsrDazBit, approximate, !round);
         ToFloat(as, ft1, t0, bits);
         if constexpr (!unary && !round) {
-            Lane(writer, t1, second, lane, bits);
-            Flush(writer, t1, bits, 6);
+            Lane(writer, t1, in1, lane, bits);
+            Flush(writer, t1, bits, kMxcsrDazBit);
             ToFloat(as, ft2, t1, bits);
         }
         if constexpr (fused) {
-            Lane(writer, t2, third, lane, bits);
-            Flush(writer, t2, bits, 6);
+            Lane(writer, t2, in2, lane, bits);
+            Flush(writer, t2, bits, kMxcsrDazBit);
             ToFloat(as, ft3, t2, bits);
         }
         if constexpr (minmax) {
@@ -363,60 +462,28 @@ template <O opcode> void Floating(Writer& writer, OpContext& ctx) {
                 as.FLT(t4, ft2, ft1, precision);
             else
                 as.FLT(t4, ft1, ft2, precision);
-            Label other, done;
-            as.BEQ(t4, x0, &other);
-            as.MV(t3, t0);
-            as.J(&done);
-            as.Bind(&other);
-            as.MV(t3, t1);
-            as.Bind(&done);
-        } else if constexpr (mask)
+            if (writer.options.zicond) {
+                as.CZERO_EQZ(t5, t0, t4);
+                as.CZERO_NEZ(t3, t1, t4);
+                as.OR(t3, t3, t5);
+            } else {
+                Label other, done;
+                as.BEQ(t4, x0, &other);
+                as.MV(t3, t0);
+                as.J(&done);
+                as.Bind(&other);
+                as.MV(t3, t1);
+                as.Bind(&done);
+            }
+        } else if constexpr (mask) {
             CompareMask(writer, bits, Immediate(ctx, 3));
-        else if constexpr (round)
+        } else if constexpr (round) {
             RoundIntegral(writer, bits, kind);
-        else {
-            if constexpr (fused) {
-                const bool negate_addend =
-                        bool(flags & 2) ^ (bool(flags & 8) && ((lane & 1) == ((flags >> 4) & 1)));
-                if (flags & 1) {
-                    if (negate_addend)
-                        as.FNMADD(ft0, ft1, ft2, ft3, precision, RMode::DYN);
-                    else
-                        as.FNMSUB(ft0, ft1, ft2, ft3, precision, RMode::DYN);
-                } else {
-                    if (negate_addend)
-                        as.FMSUB(ft0, ft1, ft2, ft3, precision, RMode::DYN);
-                    else
-                        as.FMADD(ft0, ft1, ft2, ft3, precision, RMode::DYN);
-                }
-            } else if constexpr (unary) {
-                if (kind == 0)
-                    as.FSQRT(ft0, ft1, precision, RMode::DYN);
-                else {
-                    as.LI(t3, bits == 32 ? UINT64_C(0x3f800000) : UINT64_C(0x3ff0000000000000));
-                    ToFloat(as, ft2, t3, bits);
-                    if (kind == 1)
-                        as.FDIV(ft0, ft2, ft1, precision, RMode::DYN);
-                    else {
-                        as.FSQRT(ft0, ft1, precision, RMode::DYN);
-                        as.FDIV(ft0, ft2, ft0, precision, RMode::DYN);
-                    }
-                }
-            } else if constexpr (opcode == O::VecFAdd || opcode == O::VecFAddScalar32 ||
-                                 opcode == O::VecFAddScalar64)
-                as.FADD(ft0, ft1, ft2, precision, RMode::DYN);
-            else if constexpr (opcode == O::VecFSub || opcode == O::VecFSubScalar32 ||
-                               opcode == O::VecFSubScalar64)
-                as.FSUB(ft0, ft1, ft2, precision, RMode::DYN);
-            else if constexpr (opcode == O::VecFMul || opcode == O::VecFMulScalar32 ||
-                               opcode == O::VecFMulScalar64)
-                as.FMUL(ft0, ft1, ft2, precision, RMode::DYN);
-            else
-                as.FDIV(ft0, ft1, ft2, precision, RMode::DYN);
-            FromFloat(writer, t3, ft0, bits);
-            RepairArithmeticNaN(writer, bits, !unary, fused);
+        } else {
+            EmitLaneArithmetic<opcode>(writer, bits, lane, kind, flags);
         }
-        if constexpr (!mask && !minmax && !round) Flush(writer, t3, bits, 15, approximate);
+        if constexpr (!mask && !minmax && !round)
+            Flush(writer, t3, bits, kMxcsrFtzBit, approximate);
         Put(writer, t3, lane, bits, scalar);
     }
     if (approximate) WriteStatus(writer, t6);
@@ -468,8 +535,8 @@ void Writer::Handle(Op<O::VecFCmp>, OpContext& ctx) {
     Read(ctx.Arg(1), t1, true);
     Mask(t0, bits);
     Mask(t1, bits);
-    Flush(*this, t0, bits, 6);
-    Flush(*this, t1, bits, 6);
+    Flush(*this, t0, bits, kMxcsrDazBit);
+    Flush(*this, t1, bits, kMxcsrDazBit);
     ToFloat(as, ft1, t0, bits);
     ToFloat(as, ft2, t1, bits);
     const auto precision = bits == 32 ? Precision::S : Precision::D;
@@ -515,12 +582,12 @@ void Writer::Handle(Op<O::VecFCvtPacked>, OpContext& ctx) {
     if (kind > 7) Reject(CompileError::UnsupportedOperand);
     const unsigned source_bits = kind == 4 || kind == 5 || kind == 7 ? 64 : 32;
     const unsigned destination_bits = kind == 1 || kind == 6 ? 64 : 32;
-    ReadPair(ctx.Arg(0), a0, a1);
+    const auto in0 = ReadVecRef(*this, ctx.Arg(0), a0, a1);
     as.MV(a6, x0);
     as.MV(a7, x0);
     const unsigned count = source_bits == 64 || destination_bits == 64 ? 2 : 4;
     for (unsigned lane = 0; lane < count; ++lane) {
-        Lane(*this, t0, first, lane, source_bits);
+        Lane(*this, t0, in0, lane, source_bits);
         if (kind <= 1)
             IntegerToFloat(*this, 32, destination_bits);
         else if (kind <= 5)

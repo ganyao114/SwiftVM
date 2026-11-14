@@ -1,4 +1,5 @@
 #include "abi_layout.inc"
+#include "host_features.h"
 #include "patch.h"
 #include "relocate.h"
 #include "runtime.h"
@@ -19,12 +20,25 @@ Runtime::Runtime(bool diagnostic) noexcept {
     options.dispatcher = reinterpret_cast<std::uintptr_t>(
             diagnostic ? &execution::SvmNativeDispatchCounted : &execution::SvmNativeDispatch);
     options.exit_handler = reinterpret_cast<std::uintptr_t>(&execution::SvmNativeExit);
+    const auto host = HostFeatures::Detect();
+    options.zba = host.zba;
+    options.zbb = host.zbb;
+    options.zbs = host.zbs;
+    options.zicond = host.zicond;
+    options.zbc = host.zbc;
+    options.zbkb = host.zbkb;
+    options.zbkc = host.zbkc;
+    options.ual = host.ual;
+    options.ztso = host.ztso;
+    isa_features = host.IsaFeatureMask();
 }
 
 execution::HostBackendOps Runtime::Bind() noexcept {
     execution::HostBackendOps ops;
     ops.context = this;
     ops.target = backend::riscv64::KnownTargetInfo();
+    ops.isa_features = isa_features;
+    ops.capabilities.crc32c = options.zbc || options.zbkc;
     ops.thread_dispatch_cache = true;
     ops.pinned_uniform_slots = 0;
     ops.pinned_vectors = false;

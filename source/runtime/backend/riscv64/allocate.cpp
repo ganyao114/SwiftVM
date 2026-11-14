@@ -10,8 +10,9 @@ namespace {
 using namespace ir;
 using u32 = std::uint32_t;
 
-constexpr unsigned first_register = 18;  // s2..s10; s1 is state and s11 is flags.
-constexpr unsigned register_count = 9;
+// s0 and s2..s10 (10 GPRs = 5 V128 pairs); s1 is guest state and s11 is flags.
+constexpr std::array<std::uint8_t, 10> kCalleeRegisters{8, 18, 19, 20, 21, 22, 23, 24, 25, 26};
+constexpr unsigned register_count = static_cast<unsigned>(kCalleeRegisters.size());
 
 bool SupportedType(Type type) {
     return type == Type::Void || IntegerType(type) || type == Type::F32 || type == Type::F64 ||
@@ -215,8 +216,8 @@ private:
                     if (resident != NodeId::invalid && !spill(resident)) return;
                 }
                 auto& home = result.homes[i];
-                home.reg = static_cast<std::uint8_t>(first_register + chosen);
-                if (width == 2) home.high_reg = static_cast<std::uint8_t>(home.reg + 1);
+                home.reg = kCalleeRegisters[chosen];
+                if (width == 2) home.high_reg = kCalleeRegisters[chosen + 1];
                 for (unsigned half = 0; half < width; ++half) residents[chosen + half] = i;
             }
         }

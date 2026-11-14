@@ -9,6 +9,12 @@ using u64 = std::uint64_t;
 using O = OpCode;
 constexpr std::array left{a0, a1}, right{a2, a3}, vector_output{a6, a7};
 
+constexpr u64 BroadcastMask(unsigned bits, u64 lane_val) noexcept {
+    u64 out = 0;
+    for (unsigned i = 0; i < 64; i += bits) out |= lane_val << i;
+    return out;
+}
+
 u64 LaneMask(unsigned bits) { return bits == 64 ? UINT64_MAX : (u64{1} << bits) - 1; }
 
 unsigned VectorImmediate(OpContext& ctx, unsigned index) {
@@ -20,6 +26,38 @@ void CheckWidth(Writer& writer, unsigned bits) {
         writer.Reject(CompileError::UnsupportedOperand);
 }
 
+std::array<GPR, 2> ReadVecRef(Writer& writer, CellView cell, GPR scratch_lo, GPR scratch_hi) {
+    if (cell.Kind() == OperandKind::Value &&
+        TypeBits(writer.source.Operations()[cell.Payload()].type) == 128) {
+        const auto& home = writer.allocation.homes[cell.Payload()];
+        if (!home.spilled) return {GPR{home.reg}, GPR{home.high_reg}};
+    }
+    writer.ReadPair(cell, scratch_lo, scratch_hi);
+    return {scratch_lo, scratch_hi};
+}
+
+template <typename Fn>
+void EmitPairHalves(Assembler& as,
+                    OpContext& ctx,
+                    const std::array<GPR, 2>& lhs,
+                    const std::array<GPR, 2>& rhs,
+                    Fn&& emit_half) {
+    const std::array<GPR, 2> out{ctx.destination, ctx.high};
+    const bool out0_clobbers_hi = out[0] == lhs[1] || out[0] == rhs[1];
+    const bool out1_clobbers_lo = out[1] == lhs[0] || out[1] == rhs[0];
+    if (out0_clobbers_hi && out1_clobbers_lo) {
+        emit_half(a6, lhs[0], rhs[0]);
+        emit_half(out[1], lhs[1], rhs[1]);
+        as.MV(out[0], a6);
+    } else if (out0_clobbers_hi) {
+        emit_half(out[1], lhs[1], rhs[1]);
+        emit_half(out[0], lhs[0], rhs[0]);
+    } else {
+        emit_half(out[0], lhs[0], rhs[0]);
+        emit_half(out[1], lhs[1], rhs[1]);
+    }
+}
+
 void Extract(Writer& writer,
              GPR target,
              const std::array<GPR, 2>& source,
@@ -27,7 +65,10 @@ void Extract(Writer& writer,
              unsigned bits,
              bool sign = false) {
     const auto bit = index * bits;
-    writer.as.SRLI(target, source[bit / 64], bit % 64);
+    if (bit % 64)
+        writer.as.SRLI(target, source[bit / 64], bit % 64);
+    else if (target != source[bit / 64])
+        writer.as.MV(target, source[bit / 64]);
     if (sign)
         writer.SignExtend(target, bits);
     else
@@ -67,18 +108,159 @@ void VectorClamp(Writer& writer, GPR value, unsigned bits, bool unsigned_result)
 }
 
 template <O opcode> void VectorBitwise(Writer& writer, OpContext& ctx) {
-    VectorBegin(writer, ctx);
-    for (unsigned part = 0; part < 2; ++part) {
+    auto& as = writer.as;
+    const auto lhs = ReadVecRef(writer, ctx.Arg(0), a0, a1);
+    const auto rhs = ReadVecRef(writer, ctx.Arg(1), a2, a3);
+    EmitPairHalves(as, ctx, lhs, rhs, [&](GPR dst, GPR a, GPR b) {
         if constexpr (opcode == O::VecAnd || opcode == O::Vec4And)
-            writer.as.AND(vector_output[part], left[part], right[part]);
+            as.AND(dst, a, b);
         else if constexpr (opcode == O::VecOr || opcode == O::Vec4Or)
-            writer.as.OR(vector_output[part], left[part], right[part]);
+            as.OR(dst, a, b);
         else if constexpr (opcode == O::VecXor)
-            writer.as.XOR(vector_output[part], left[part], right[part]);
+            as.XOR(dst, a, b);
+        else if (writer.options.zbb)
+            as.ANDN(dst, a, b);
         else {
-            writer.as.NOT(t0, right[part]);
-            writer.as.AND(vector_output[part], left[part], t0);
+            as.NOT(t0, b);
+            as.AND(dst, a, t0);
         }
+    });
+}
+
+void EmitVectorSwarAddSub(Writer& writer, OpContext& ctx, unsigned bits, bool subtract) {
+    auto& as = writer.as;
+    const auto lhs = ReadVecRef(writer, ctx.Arg(0), a0, a1);
+    const auto rhs = ReadVecRef(writer, ctx.Arg(1), a2, a3);
+    if (bits == 64) {
+        EmitPairHalves(as, ctx, lhs, rhs, [&](GPR dst, GPR a, GPR b) {
+            if (subtract)
+                as.SUB(dst, a, b);
+            else
+                as.ADD(dst, a, b);
+        });
+        return;
+    }
+    const u64 msb = BroadcastMask(bits, u64{1} << (bits - 1));
+    as.LI(t3, msb);
+    as.LI(t4, ~msb);
+    EmitPairHalves(as, ctx, lhs, rhs, [&](GPR dst, GPR a, GPR b) {
+        if (subtract) {
+            as.OR(t0, a, t3);
+            as.AND(t1, b, t4);
+            as.SUB(t0, t0, t1);
+            if (writer.options.zbb) {
+                as.XNOR(t1, a, b);
+            } else {
+                as.XOR(t1, a, b);
+                as.NOT(t1, t1);
+            }
+            as.AND(t1, t1, t3);
+            as.XOR(dst, t0, t1);
+        } else {
+            as.AND(t0, a, t4);
+            as.AND(t1, b, t4);
+            as.ADD(t0, t0, t1);
+            as.XOR(t1, a, b);
+            as.AND(t1, t1, t3);
+            as.XOR(dst, t0, t1);
+        }
+    });
+}
+
+void EmitVectorSwarAvg(Writer& writer, OpContext& ctx, unsigned bits) {
+    auto& as = writer.as;
+    const auto lhs = ReadVecRef(writer, ctx.Arg(0), a0, a1);
+    const auto rhs = ReadVecRef(writer, ctx.Arg(1), a2, a3);
+    if (bits < 64) as.LI(t3, ~BroadcastMask(bits, 1));
+    EmitPairHalves(as, ctx, lhs, rhs, [&](GPR dst, GPR a, GPR b) {
+        as.XOR(t0, a, b);
+        if (bits == 64)
+            as.ANDI(t0, t0, static_cast<u32>(-2));
+        else
+            as.AND(t0, t0, t3);
+        as.SRLI(t0, t0, 1);
+        as.OR(t1, a, b);
+        as.SUB(dst, t1, t0);
+    });
+}
+
+void EmitVectorSwarCmpEq(Writer& writer, OpContext& ctx, unsigned bits) {
+    auto& as = writer.as;
+    const auto lhs = ReadVecRef(writer, ctx.Arg(0), a0, a1);
+    const auto rhs = ReadVecRef(writer, ctx.Arg(1), a2, a3);
+    if (bits == 64) {
+        EmitPairHalves(as, ctx, lhs, rhs, [&](GPR dst, GPR a, GPR b) {
+            as.XOR(t0, a, b);
+            as.SEQZ(t0, t0);
+            as.NEG(dst, t0);
+        });
+        return;
+    }
+    const u64 msb = BroadcastMask(bits, u64{1} << (bits - 1));
+    as.LI(t3, msb);
+    as.LI(t4, ~msb);
+    EmitPairHalves(as, ctx, lhs, rhs, [&](GPR dst, GPR a, GPR b) {
+        as.XOR(t0, a, b);
+        as.AND(t1, t0, t4);
+        as.ADD(t1, t1, t4);
+        as.OR(t0, t1, t0);
+        as.AND(t0, t0, t3);
+        as.XOR(t0, t0, t3);
+        as.SRLI(t1, t0, bits - 1);
+        as.SUB(t1, t0, t1);
+        as.OR(dst, t1, t0);
+    });
+}
+
+template <O opcode> void EmitVectorSaturate(Writer& writer, OpContext& ctx, unsigned bits) {
+    const bool sign = VectorImmediate(ctx, 3) != 0;
+    VectorBegin(writer, ctx);
+    auto& as = writer.as;
+    for (unsigned lane = 0; lane < 128 / bits; ++lane) {
+        Extract(writer, t0, left, lane, bits, sign);
+        Extract(writer, t1, right, lane, bits, sign);
+        if constexpr (opcode == O::VecSatAdd)
+            as.ADD(t2, t0, t1);
+        else
+            as.SUB(t2, t0, t1);
+        if (bits < 64) {
+            if (sign)
+                VectorClamp(writer, t2, bits, false);
+            else if constexpr (opcode == O::VecSatAdd)
+                VectorClamp(writer, t2, bits, true);
+            else {
+                Label nonnegative;
+                as.BGEU(t0, t1, &nonnegative);
+                as.MV(t2, x0);
+                as.Bind(&nonnegative);
+            }
+        } else if (sign) {
+            if constexpr (opcode == O::VecSatAdd) {
+                as.XOR(t3, t0, t2);
+                as.XOR(t4, t1, t2);
+            } else {
+                as.XOR(t3, t0, t1);
+                as.XOR(t4, t0, t2);
+            }
+            as.AND(t3, t3, t4);
+            Label ordinary;
+            as.BGE(t3, x0, &ordinary);
+            as.SRAI(t3, t0, 63);
+            as.LI(t4, UINT64_C(0x7fffffffffffffff));
+            as.XOR(t2, t3, t4);
+            as.Bind(&ordinary);
+        } else {
+            Label ordinary;
+            if constexpr (opcode == O::VecSatAdd) {
+                as.BGEU(t2, t0, &ordinary);
+                as.LI(t2, UINT64_MAX);
+            } else {
+                as.BGEU(t0, t1, &ordinary);
+                as.MV(t2, x0);
+            }
+            as.Bind(&ordinary);
+        }
+        Insert(writer, t2, lane, bits);
     }
     VectorFinish(writer, ctx);
 }
@@ -87,90 +269,68 @@ template <O opcode> void VectorArithmetic(Writer& writer, OpContext& ctx) {
     constexpr bool legacy = opcode == O::Vec4Add || opcode == O::Vec4Sub || opcode == O::Vec4Mul;
     const unsigned bits = legacy ? 32 : VectorImmediate(ctx, 2);
     CheckWidth(writer, bits);
+
+    if constexpr (opcode == O::VecAdd || opcode == O::Vec4Add) {
+        EmitVectorSwarAddSub(writer, ctx, bits, false);
+        return;
+    }
+    if constexpr (opcode == O::VecSub || opcode == O::Vec4Sub) {
+        EmitVectorSwarAddSub(writer, ctx, bits, true);
+        return;
+    }
+    if constexpr (opcode == O::VecAvg) {
+        EmitVectorSwarAvg(writer, ctx, bits);
+        return;
+    }
+    if constexpr (opcode == O::VecCmpEq) {
+        EmitVectorSwarCmpEq(writer, ctx, bits);
+        return;
+    }
+    if constexpr (opcode == O::VecSatAdd || opcode == O::VecSatSub) {
+        EmitVectorSaturate<opcode>(writer, ctx, bits);
+        return;
+    }
+
     constexpr bool minmax = opcode == O::VecMin || opcode == O::VecMax;
-    constexpr bool saturate = opcode == O::VecSatAdd || opcode == O::VecSatSub;
-    const bool sign = opcode == O::VecCmpGt || ((minmax || saturate) && VectorImmediate(ctx, 3));
+    const bool sign = opcode == O::VecCmpGt || (minmax && VectorImmediate(ctx, 3));
     VectorBegin(writer, ctx);
     auto& as = writer.as;
     for (unsigned lane = 0; lane < 128 / bits; ++lane) {
         Extract(writer, t0, left, lane, bits, sign);
         Extract(writer, t1, right, lane, bits, sign);
-        if constexpr (opcode == O::VecAdd || opcode == O::Vec4Add || opcode == O::VecSatAdd)
-            as.ADD(t2, t0, t1);
-        else if constexpr (opcode == O::VecSub || opcode == O::Vec4Sub || opcode == O::VecSatSub)
-            as.SUB(t2, t0, t1);
-        else if constexpr (opcode == O::VecMul || opcode == O::Vec4Mul)
+        if constexpr (opcode == O::VecMul || opcode == O::Vec4Mul) {
             as.MUL(t2, t0, t1);
-        else if constexpr (opcode == O::VecCmpEq) {
-            as.XOR(t2, t0, t1);
-            as.SEQZ(t2, t2);
-            as.NEG(t2, t2);
         } else if constexpr (opcode == O::VecCmpGt) {
             as.SLT(t2, t1, t0);
             as.NEG(t2, t2);
-        } else if constexpr (opcode == O::VecAvg) {
-            // Ceil((a+b)/2), without overflowing a 64-bit lane.
-            as.XOR(t2, t0, t1);
-            as.ANDI(t3, t2, 1);
-            as.SRLI(t2, t2, 1);
-            as.AND(t4, t0, t1);
-            as.ADD(t2, t2, t4);
-            as.ADD(t2, t2, t3);
         } else if constexpr (minmax) {
-            if (sign)
-                as.SLT(t3, t0, t1);
-            else
-                as.SLTU(t3, t0, t1);
-            Label other, done;
-            if constexpr (opcode == O::VecMin)
-                as.BEQ(t3, x0, &other);
-            else
-                as.BNE(t3, x0, &other);
-            as.MV(t2, t0);
-            as.J(&done);
-            as.Bind(&other);
-            as.MV(t2, t1);
-            as.Bind(&done);
-        }
-        if constexpr (saturate) {
-            if (bits < 64) {
-                if (sign)
-                    VectorClamp(writer, t2, bits, false);
-                else if constexpr (opcode == O::VecSatAdd)
-                    VectorClamp(writer, t2, bits, true);
-                else {
-                    Label nonnegative;
-                    as.BGEU(t0, t1, &nonnegative);
-                    as.MV(t2, x0);
-                    as.Bind(&nonnegative);
-                }
-            } else if (sign) {
-                // A wrapped 64-bit result cannot be clamped by comparisons
-                // against the limits; the operand/result signs expose overflow.
-                if constexpr (opcode == O::VecSatAdd) {
-                    as.XOR(t3, t0, t2);
-                    as.XOR(t4, t1, t2);
+            if (writer.options.zbb) {
+                if constexpr (opcode == O::VecMin) {
+                    if (sign)
+                        as.MIN(t2, t0, t1);
+                    else
+                        as.MINU(t2, t0, t1);
                 } else {
-                    as.XOR(t3, t0, t1);
-                    as.XOR(t4, t0, t2);
+                    if (sign)
+                        as.MAX(t2, t0, t1);
+                    else
+                        as.MAXU(t2, t0, t1);
                 }
-                as.AND(t3, t3, t4);
-                Label ordinary;
-                as.BGE(t3, x0, &ordinary);
-                as.SRAI(t3, t0, 63);
-                as.LI(t4, UINT64_C(0x7fffffffffffffff));
-                as.XOR(t2, t3, t4);
-                as.Bind(&ordinary);
             } else {
-                Label ordinary;
-                if constexpr (opcode == O::VecSatAdd) {
-                    as.BGEU(t2, t0, &ordinary);
-                    as.LI(t2, UINT64_MAX);
-                } else {
-                    as.BGEU(t0, t1, &ordinary);
-                    as.MV(t2, x0);
-                }
-                as.Bind(&ordinary);
+                if (sign)
+                    as.SLT(t3, t0, t1);
+                else
+                    as.SLTU(t3, t0, t1);
+                Label other, done;
+                if constexpr (opcode == O::VecMin)
+                    as.BEQ(t3, x0, &other);
+                else
+                    as.BNE(t3, x0, &other);
+                as.MV(t2, t0);
+                as.J(&done);
+                as.Bind(&other);
+                as.MV(t2, t1);
+                as.Bind(&done);
             }
         }
         Insert(writer, t2, lane, bits);
@@ -218,6 +378,8 @@ template <O opcode> void VectorShift(Writer& writer, OpContext& ctx) {
                 as.SRAI(t2, t0, std::min(count, bits - 1));
             else if (count == bits)
                 as.MV(t2, x0);
+            else if (count == 0)
+                as.MV(t2, t0);
             else if constexpr (leftward)
                 as.SLLI(t2, t0, count);
             else
@@ -319,10 +481,12 @@ template <O opcode> void VectorLookup(Writer& writer, OpContext& ctx) {
 void VectorWindow(Writer& writer, const std::array<GPR, 4>& source, unsigned shift) {
     const unsigned whole = shift / 64, part = shift % 64;
     for (unsigned half = 0; half < 2; ++half) {
-        writer.as.SRLI(vector_output[half], source[whole + half], part);
         if (part) {
+            writer.as.SRLI(vector_output[half], source[whole + half], part);
             writer.as.SLLI(t0, source[whole + half + 1], 64 - part);
             writer.as.OR(vector_output[half], vector_output[half], t0);
+        } else {
+            writer.as.MV(vector_output[half], source[whole + half]);
         }
     }
 }
@@ -531,29 +695,34 @@ void Writer::Handle(Op<O::VecSharedZero>, OpContext& ctx) {
 }
 
 void Writer::Handle(Op<O::VecDup64>, OpContext& ctx) {
-    Read(ctx.Arg(0), a0, true);
-    as.MV(ctx.destination, a0);
-    as.MV(ctx.high, a0);
+    const GPR src = ReadRef(ctx.Arg(0), a0, true);
+    if (ctx.destination == src) {
+        if (ctx.high != src) as.MV(ctx.high, src);
+    } else if (ctx.high == src) {
+        as.MV(ctx.destination, src);
+    } else {
+        as.MV(ctx.destination, src);
+        as.MV(ctx.high, src);
+    }
 }
 
 void Writer::Handle(Op<O::VecScalar>, OpContext& ctx) {
-    Read(ctx.Arg(0), a0);
-    as.MV(ctx.destination, a0);
+    Read(ctx.Arg(0), ctx.destination);
     as.MV(ctx.high, x0);
 }
 
 void Writer::Handle(Op<O::VecExtract64>, OpContext& ctx) {
-    ReadPair(ctx.Arg(0), a0, a1);
     const auto index = VectorImmediate(ctx, 1);
     if (index > 1) Reject(CompileError::UnsupportedOperand);
-    as.MV(ctx.destination, left[index]);
+    const auto vec = ReadVecRef(*this, ctx.Arg(0), a0, a1);
+    if (ctx.destination != vec[index]) as.MV(ctx.destination, vec[index]);
 }
 
 void Writer::Handle(Op<O::VecExtract16>, OpContext& ctx) {
-    ReadPair(ctx.Arg(0), a0, a1);
     const auto index = VectorImmediate(ctx, 1);
     if (index > 7) Reject(CompileError::UnsupportedOperand);
-    Extract(*this, ctx.destination, left, index, 16);
+    const auto vec = ReadVecRef(*this, ctx.Arg(0), a0, a1);
+    Extract(*this, ctx.destination, vec, index, 16);
 }
 
 void Writer::Handle(Op<O::VecInsert16>, OpContext& ctx) {
@@ -573,14 +742,40 @@ void Writer::Handle(Op<O::VecInsert16>, OpContext& ctx) {
 void Writer::Handle(Op<O::VecMovMask>, OpContext& ctx) {
     const auto bits = VectorImmediate(ctx, 1);
     CheckWidth(*this, bits);
-    VectorBegin(*this, ctx, false);
+    const auto vec = ReadVecRef(*this, ctx.Arg(0), a0, a1);
+    if (bits == 8) {
+        as.LI(t2, 0x0101010101010101ULL);
+        as.LI(t3, 0x0102040810204080ULL);
+        as.SRLI(t0, vec[0], 7);
+        as.AND(t0, t0, t2);
+        as.MUL(t0, t0, t3);
+        as.SRLI(t0, t0, 56);
+        as.SRLI(t1, vec[1], 7);
+        as.AND(t1, t1, t2);
+        as.MUL(t1, t1, t3);
+        as.SRLI(t1, t1, 56);
+        as.SLLI(t1, t1, 8);
+        as.OR(ctx.destination, t0, t1);
+        Mask(ctx.destination, ctx.width);
+        return;
+    }
+    if (bits == 64) {
+        as.SRLI(t0, vec[0], 63);
+        as.SRLI(t1, vec[1], 63);
+        as.SLLI(t1, t1, 1);
+        as.OR(ctx.destination, t0, t1);
+        Mask(ctx.destination, ctx.width);
+        return;
+    }
+    as.MV(a6, x0);
     for (unsigned lane = 0; lane < 128 / bits; ++lane) {
-        Extract(*this, t0, left, lane, bits);
+        Extract(*this, t0, vec, lane, bits);
         as.SRLI(t0, t0, bits - 1);
         as.SLLI(t0, t0, lane);
         as.OR(a6, a6, t0);
     }
     as.MV(ctx.destination, a6);
+    Mask(ctx.destination, ctx.width);
 }
 
 #define RV_CRYPTO(name)                                                                            \

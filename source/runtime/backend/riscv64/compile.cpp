@@ -24,24 +24,35 @@ void Compile(const ir::Program& program,
     result.block = {};
     result.frame_bytes = result.spill_slots = 0;
     ClearCode(result);
-    result.relocatable = options.relocatable;
     if (program.ScopeKind() == ir::Scope::Block)
         AllocateBlock(program, allocation);
     else
         AllocateFunction(program, allocation);
     if (!allocation) {
-        result.relocatable = false;
         result.error = allocation.error;
         result.node = allocation.node;
         result.block = allocation.block;
         return;
     }
-    result.frame_bytes =
-            allocation.spill_bytes + (options.dispatcher && options.exit_handler ? 0 : 112);
+    const bool linked = options.dispatcher != 0 && options.exit_handler != 0;
+    result.frame_bytes = allocation.spill_bytes + (linked ? 0 : detail::kStandaloneSaveBytes);
     result.spill_slots = allocation.spill_bytes / 8;
     result.words.reserve(std::max<std::size_t>(256, program.Operations().size() * 4 + 32));
     try {
-        detail::Writer(program, allocation, result, options).Run();
+        for (unsigned jump_mode = 2;; --jump_mode) {
+            result.relocatable = options.relocatable;
+            try {
+                detail::Writer(program, allocation, result, options, jump_mode).Run();
+                break;
+            } catch (const detail::ShortJumpOverflow&) {
+                if (jump_mode == 0) {
+                    result.error = CompileError::CodeTooLarge;
+                    ClearCode(result);
+                    break;
+                }
+                ClearCode(result);
+            }
+        }
     } catch (const detail::Rejected& error) {
         result.error = error.error;
         result.node = error.node;

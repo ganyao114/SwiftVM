@@ -19,6 +19,7 @@ public:
 
 private:
     CompileOptions options;
+    std::uint64_t isa_features{};
     backend::CompileResult output;
     Allocation allocation;
 };

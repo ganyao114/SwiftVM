@@ -11,8 +11,8 @@ namespace swift::runtime::backend::riscv64 {
 using backend::CompileError;
 
 // One invariant home for the complete native unit. Scalar/FP bits use a
-// callee-saved GPR; V128 uses two adjacent GPRs or an aligned 16-byte spill.
-// No live SSA register is caller-saved, including across helper calls.
+// callee-saved GPR; V128 uses two distinct callee-saved GPRs or an aligned
+// 16-byte spill. No live SSA register is caller-saved across helper calls.
 struct Home {
     std::uint32_t definition_position{}, last_use{}, stack_offset{};
     // Optional 16-byte producer payload: packed flags at +0 and an extra

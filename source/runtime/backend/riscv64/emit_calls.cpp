@@ -30,6 +30,7 @@ void Writer::Handle(Op<OpCode::Div128>, OpContext& ctx) {
     as.Bind(&valid);
     FrameStore(a1, auxiliary + 8);
     as.MV(ctx.destination, a0);
+    Mask(ctx.destination, ctx.width);
 }
 
 void Writer::Handle(Op<OpCode::Div128Remainder>, OpContext& ctx) {
@@ -38,6 +39,7 @@ void Writer::Handle(Op<OpCode::Div128Remainder>, OpContext& ctx) {
         source.Operations()[producer.Payload()].opcode != OpCode::Div128)
         Reject(CompileError::UnsupportedOperand);
     FrameLoad(ctx.destination, allocation.homes[producer.Payload()].auxiliary_offset + 8);
+    Mask(ctx.destination, ctx.width);
 }
 
 void Writer::CpuQuery(OpContext& ctx) {
