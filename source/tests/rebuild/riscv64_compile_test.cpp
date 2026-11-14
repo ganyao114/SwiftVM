@@ -2,6 +2,7 @@
 #include "runtime/arch/x86/flags.h"
 #include "runtime/backend/riscv64/allocate.h"
 #include "runtime/backend/riscv64/compile.h"
+#include "runtime/backend/riscv64/host_features.h"
 #include "runtime/ir/builder.h"
 #include "tests/support/check.h"
 #include "tests/support/guest_memory.h"
@@ -487,12 +488,12 @@ void LocalControlResults() {
                                               : "NotGoto spilled result at local join";
         Builder builder{Scope::Block};
         Begin(builder);
-        std::array<Value, 8> prefix;
+        std::array<Value, 9> prefix;
         for (unsigned i = 0; i < prefix.size(); ++i) prefix[i] = Load(builder, i);
-        const auto condition = Load(builder, 8);
+        const auto condition = Load(builder, 9);
         const auto gate = Emit(builder, opcode, Type::U64, {Operand::ValueOf(condition)});
         const auto body = Literal(builder, changed);
-        Store(builder, 9, body);
+        Store(builder, 10, body);
         Emit(builder, OpCode::BindLabel, Type::Void, {Operand::ValueOf(gate)});
         auto sum = prefix.front();
         for (unsigned i = 1; i < prefix.size(); ++i)
@@ -500,24 +501,24 @@ void LocalControlResults() {
                        OpCode::Add,
                        Type::U64,
                        {Operand::ValueOf(sum), Operand::ValueOf(prefix[i])});
-        Store(builder, 10, sum);
+        Store(builder, 11, sum);
         auto program = Return(builder, gate);
         rv::Allocation allocation;
         swift::runtime::backend::CompileResult code;
         rv::Compile(program, Options(), code, allocation);
         Check(bool(code) && !code.words.empty() && bool(allocation), "local-control compilation");
         Check(allocation.homes[gate.node.value].spilled && code.spill_slots,
-              "eight live prefix values force the local branch result into a spill home");
+              "nine live prefix values force the local branch result into a spill home");
         for (const auto input : conditions) {
             State state;
             for (unsigned i = 0; i < prefix.size(); ++i) state.scalars[i] = i + 1;
-            state.scalars[8] = input;
-            state.scalars[9] = sentinel;
+            state.scalars[9] = input;
+            state.scalars[10] = sentinel;
             if (Run(code, state, input)) {
                 const bool skip = opcode == OpCode::Goto ? input != 0 : input == 0;
-                Check(state.scalars[9] == (skip ? sentinel : changed),
+                Check(state.scalars[10] == (skip ? sentinel : changed),
                       "local branch polarity controls the body store");
-                Check(state.scalars[10] == 36,
+                Check(state.scalars[11] == 45,
                       "all prefix values remain valid after both local paths join");
             }
         }
@@ -766,7 +767,443 @@ void FaultMetadata() {
     State state;
     Run(code, state, memory);
 }
+
+u32 RefCrc32c(u32 crc, u64 data, unsigned bits) {
+    for (unsigned byte = 0; byte < bits / 8; ++byte) {
+        crc ^= static_cast<u32>(data & 0xffu);
+        data >>= 8;
+        for (unsigned b = 0; b < 8; ++b)
+            crc = (crc >> 1) ^ ((crc & 1u) ? 0x82f63b78u : 0u);
+    }
+    return crc;
+}
+
+void VectorSwarAndMovMask() {
+    current_case = "SWAR vector add/sub/cmpeq/avg and movmask";
+    constexpr Pair va{0x7f80feff01007f80ULL, 0xff00807f0203fd01ULL};
+    constexpr Pair vb{0x01800201ff008080ULL, 0x01ff807ffefd03ffULL};
+
+    Builder builder{Scope::Block};
+    Begin(builder);
+    const auto a = LoadVector(builder, 0);
+    const auto b = LoadVector(builder, 1);
+    unsigned out_idx = 2;
+    for (const unsigned bits : {8u, 16u, 32u, 64u}) {
+        StoreVector(builder,
+                    out_idx++,
+                    Emit(builder, OpCode::VecAdd, Type::V128, {Operand::ValueOf(a), Operand::ValueOf(b), Imm(bits)}));
+        StoreVector(builder,
+                    out_idx++,
+                    Emit(builder, OpCode::VecSub, Type::V128, {Operand::ValueOf(a), Operand::ValueOf(b), Imm(bits)}));
+        StoreVector(builder,
+                    out_idx++,
+                    Emit(builder, OpCode::VecCmpEq, Type::V128, {Operand::ValueOf(a), Operand::ValueOf(b), Imm(bits)}));
+        StoreVector(builder,
+                    out_idx++,
+                    Emit(builder, OpCode::VecAvg, Type::V128, {Operand::ValueOf(a), Operand::ValueOf(b), Imm(bits)}));
+    }
+    const auto andnot =
+            Emit(builder, OpCode::VecAndNot, Type::V128, {Operand::ValueOf(a), Operand::ValueOf(b)});
+    Store(builder, 0, Emit(builder, OpCode::VecMovMask, Type::U32, {Operand::ValueOf(a), Imm(8)}));
+    Store(builder, 1, Emit(builder, OpCode::VecMovMask, Type::U32, {Operand::ValueOf(b), Imm(32)}));
+    Store(builder, 2, Emit(builder, OpCode::VecMovMask, Type::U32, {Operand::ValueOf(andnot), Imm(64)}));
+    Store(builder, 3, Emit(builder, OpCode::VecExtract64, Type::U64, {Operand::ValueOf(andnot), Imm(0)}));
+    Store(builder, 4, Emit(builder, OpCode::VecExtract64, Type::U64, {Operand::ValueOf(andnot), Imm(1)}));
+    auto program = Return(builder);
+
+    auto ext_opts = Options();
+    ext_opts.zbb = true;
+    const auto base_code = Compile(program);
+    const auto ext_code = rv::Compile(program, ext_opts);
+    Check(bool(ext_code) && !ext_code.words.empty(), "Zbb vector compile");
+
+    auto check_state = [&](const State& st) {
+        unsigned idx = 2;
+        const std::array<u64, 2> raw_a{va.low, va.high}, raw_b{vb.low, vb.high};
+        for (const unsigned bits : {8u, 16u, 32u, 64u}) {
+            const u64 mask = bits == 64 ? UINT64_MAX : ((u64{1} << bits) - 1);
+            Pair exp_add{}, exp_sub{}, exp_eq{}, exp_avg{};
+            for (unsigned h = 0; h < 2; ++h) {
+                u64 r_add = 0, r_sub = 0, r_eq = 0, r_avg = 0;
+                for (unsigned pos = 0; pos < 64; pos += bits) {
+                    const u64 la = (raw_a[h] >> pos) & mask;
+                    const u64 lb = (raw_b[h] >> pos) & mask;
+                    r_add |= ((la + lb) & mask) << pos;
+                    r_sub |= ((la - lb) & mask) << pos;
+                    r_eq |= ((la == lb) ? mask : 0ULL) << pos;
+                    if (bits == 64) {
+                        const u64 avg = (la | lb) - (((la ^ lb) & ~u64{1}) >> 1);
+                        r_avg |= avg;
+                    } else {
+                        r_avg |= (((la + lb + 1) >> 1) & mask) << pos;
+                    }
+                }
+                (h ? exp_add.high : exp_add.low) = r_add;
+                (h ? exp_sub.high : exp_sub.low) = r_sub;
+                (h ? exp_eq.high : exp_eq.low) = r_eq;
+                (h ? exp_avg.high : exp_avg.low) = r_avg;
+            }
+            Check(st.vectors[idx++] == exp_add, "SWAR VecAdd matches lane reference");
+            Check(st.vectors[idx++] == exp_sub, "SWAR VecSub matches lane reference");
+            Check(st.vectors[idx++] == exp_eq, "SWAR VecCmpEq matches lane reference");
+            Check(st.vectors[idx++] == exp_avg, "SWAR VecAvg matches lane reference");
+        }
+        u64 mask8 = 0, mask32 = 0;
+        for (unsigned i = 0; i < 16; ++i) {
+            const u64 w = i < 8 ? va.low : va.high;
+            mask8 |= ((w >> ((i % 8) * 8 + 7)) & 1ULL) << i;
+        }
+        for (unsigned i = 0; i < 4; ++i) {
+            const u64 w = i < 2 ? vb.low : vb.high;
+            mask32 |= ((w >> ((i % 2) * 32 + 31)) & 1ULL) << i;
+        }
+        const u64 andnot_lo = va.low & ~vb.low;
+        const u64 andnot_hi = va.high & ~vb.high;
+        const u64 mask64 = ((andnot_lo >> 63) & 1ULL) | (((andnot_hi >> 63) & 1ULL) << 1);
+        Check(st.scalars[0] == mask8, "SWAR VecMovMask 8-bit");
+        Check(st.scalars[1] == mask32, "VecMovMask 32-bit");
+        Check(st.scalars[2] == mask64, "VecMovMask 64-bit");
+        Check(st.scalars[3] == andnot_lo && st.scalars[4] == andnot_hi, "VecAndNot halves");
+    };
+
+    State st;
+    st.vectors[0] = va;
+    st.vectors[1] = vb;
+    if (Run(base_code, st)) check_state(st);
+    if (rv::HostFeatures::Detect().zbb) {
+        State st_ext;
+        st_ext.vectors[0] = va;
+        st_ext.vectors[1] = vb;
+        if (Run(ext_code, st_ext)) check_state(st_ext);
+    }
+}
+
+void UnalignedColdAndFastMemory() {
+    current_case = "cold unaligned memory stubs and fast UAL/Ztso";
+    Builder builder{Scope::Block};
+    Begin(builder);
+    const auto base = Load(builder, 0);
+    const auto end_ptr = Load(builder, 1);
+    const auto v16 = Literal(builder, 0xbeef, Type::U16);
+    const auto v32 = Literal(builder, 0x89abcdefu, Type::U32);
+    const auto v64 = Literal(builder, 0x0123456789abcdefULL, Type::U64);
+    const auto v128 = LoadVector(builder, 0);
+    Emit(builder, OpCode::FaultLocation, Type::Void, {Imm(0x401000)});
+
+    auto addr_add = [&](Value b, u64 off) {
+        return std::array<Operand, 3>{Operand::Expression(OperandOp::Add, 2),
+                                      Operand::ValueOf(b),
+                                      Imm(off)};
+    };
+    (void)addr_add;
+    Emit(builder,
+         OpCode::StoreMemory,
+         Type::Void,
+         {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(base), Imm(1), Operand::ValueOf(v16)});
+    Emit(builder,
+         OpCode::StoreMemoryTSO,
+         Type::Void,
+         {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(base), Imm(5), Operand::ValueOf(v32)});
+    Emit(builder,
+         OpCode::StoreMemoryTSO,
+         Type::Void,
+         {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(base), Imm(13), Operand::ValueOf(v64)});
+    Emit(builder,
+         OpCode::StoreMemory,
+         Type::Void,
+         {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(base), Imm(27), Operand::ValueOf(v128)});
+    Emit(builder,
+         OpCode::StoreMemory,
+         Type::Void,
+         {Operand::Expression(OperandOp::Sub, 2), Operand::ValueOf(end_ptr), Imm(16), Operand::ValueOf(v64)});
+
+    const auto r16 = Emit(
+            builder,
+            OpCode::LoadMemory,
+            Type::U16,
+            {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(base), Imm(1)});
+    const auto r32 = Emit(
+            builder,
+            OpCode::LoadMemoryTSO,
+            Type::U32,
+            {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(base), Imm(5)});
+    const auto r64 = Emit(
+            builder,
+            OpCode::LoadMemoryTSO,
+            Type::U64,
+            {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(base), Imm(13)});
+    const auto r128 = Emit(
+            builder,
+            OpCode::LoadMemory,
+            Type::V128,
+            {Operand::Expression(OperandOp::Add, 2), Operand::ValueOf(base), Imm(27)});
+    const auto r_aligned = Emit(
+            builder,
+            OpCode::LoadMemory,
+            Type::U64,
+            {Operand::Expression(OperandOp::Sub, 2), Operand::ValueOf(end_ptr), Imm(16)});
+    Store(builder, 2, Emit(builder, OpCode::ZeroExtend64, Type::U64, {Operand::ValueOf(r16)}));
+    Store(builder, 3, Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(r32)}));
+    Store(builder, 4, r64);
+    Store(builder, 5, r_aligned);
+    StoreVector(builder, 1, r128);
+    auto program = Return(builder, r64);
+
+    auto cold_opts = Options();
+    cold_opts.ual = false;
+    cold_opts.ztso = false;
+    const auto cold_code = rv::Compile(program, cold_opts);
+    Check(bool(cold_code) && !cold_code.faults.empty(), "cold unaligned memory compile");
+
+    auto fast_opts = Options();
+    fast_opts.ual = true;
+    fast_opts.ztso = true;
+    const auto fast_code = rv::Compile(program, fast_opts);
+    Check(bool(fast_code) && !fast_code.faults.empty(), "fast UAL/Ztso memory compile");
+    Check(fast_code.words.size() < cold_code.words.size(),
+          "UAL + Ztso eliminates alignment branches, byte stubs, and TSO fences");
+
+    auto run_and_verify = [&](const swift::runtime::backend::CompileResult& code) {
+        alignas(16) std::array<std::uint8_t, 128> buffer{};
+        buffer.fill(0xa5);
+        State st;
+        st.scalars[0] = reinterpret_cast<std::uintptr_t>(buffer.data());
+        st.scalars[1] = reinterpret_cast<std::uintptr_t>(buffer.data() + buffer.size());
+        st.vectors[0] = {0x1122334455667788ULL, 0x99aabbccddeeff00ULL};
+        if (Run(code, st, 0x0123456789abcdefULL)) {
+            Check(st.scalars[2] == 0xbeef, "unaligned 16-bit roundtrip");
+            Check(st.scalars[3] == 0x89abcdefu, "unaligned 32-bit TSO roundtrip");
+            Check(st.scalars[4] == 0x0123456789abcdefULL, "unaligned 64-bit TSO roundtrip");
+            Check(st.scalars[5] == 0x0123456789abcdefULL, "folded negative displacement roundtrip");
+            Check(st.vectors[1] == st.vectors[0], "unaligned 128-bit roundtrip");
+        }
+    };
+    run_and_verify(cold_code);
+    if (rv::HostFeatures::Detect().ual) run_and_verify(fast_code);
+}
+
+void ExtensionFastPathsAndCodeSize() {
+    current_case = "Zba/Zbb/Zbs/Zicond/Zbc fast paths and code size";
+    Check(rv::KnownTargetInfo().Has(TargetFeature::ShiftedAddress),
+          "RV64 target info advertises ShiftedAddress");
+    Builder builder{Scope::Block, rv::KnownTargetInfo()};
+    Begin(builder);
+    const auto x = Load(builder, 0);
+    const auto y = Load(builder, 1);
+    const auto cond_nz = Load(builder, 2);
+    const auto cond_z = Load(builder, 3);
+    const auto v_true = LoadVector(builder, 0);
+    const auto v_false = LoadVector(builder, 1);
+
+    const auto sh1 = Emit(builder,
+                          OpCode::GetOperand,
+                          Type::U64,
+                          {Operand::Expression(OperandOp::AddShift, 2, 1),
+                           Operand::ValueOf(x),
+                           Operand::ValueOf(y)});
+    const auto sh3 = Emit(builder,
+                          OpCode::GetOperand,
+                          Type::U64,
+                          {Operand::Expression(OperandOp::AddShift, 2, 3),
+                           Operand::ValueOf(sh1),
+                           Operand::ValueOf(y)});
+    Store(builder, 4, sh3);
+
+    const auto sub_zf = Emit(builder,
+                             OpCode::Sub,
+                             Type::U32,
+                             {Operand::ValueOf(x, Type::U32), Imm(0x12345678u, Type::U32)},
+                             {FlagBits(Flag::Zero), FlagProfile::ArithmeticRaw});
+    const auto eq_set = Emit(builder, OpCode::CondSet, Type::Bool, {Operand::Condition(Condition::EQ)});
+    Store(builder, 5, Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(sub_zf)}));
+    Store(builder, 6, Emit(builder, OpCode::ZeroExtend64, Type::U64, {Operand::ValueOf(eq_set)}));
+
+    const auto sext8 = Emit(builder, OpCode::SignExtend, Type::U64, {Operand::ValueOf(x, Type::U8)});
+    const auto sext16 = Emit(builder, OpCode::SignExtend, Type::U64, {Operand::ValueOf(x, Type::U16)});
+    const auto sext32 = Emit(builder, OpCode::SignExtend, Type::U64, {Operand::ValueOf(x, Type::U32)});
+    const auto andn_v =
+            Emit(builder, OpCode::AndNot, Type::U64, {Operand::ValueOf(sext8), Operand::ValueOf(sext16)});
+    Store(builder, 7, Emit(builder, OpCode::Xor, Type::U64, {Operand::ValueOf(andn_v), Operand::ValueOf(sext32)}));
+
+    const auto ror64 = Emit(builder, OpCode::RorImm, Type::U64, {Operand::ValueOf(x), Imm(13)});
+    const auto ror32 = Emit(
+            builder, OpCode::RorValue, Type::U32, {Operand::ValueOf(x, Type::U32), Operand::ValueOf(y, Type::U32)});
+    const auto asr32 = Emit(builder, OpCode::AsrImm, Type::U32, {Operand::ValueOf(x, Type::U32), Imm(7)});
+    Store(builder, 8, ror64);
+    Store(builder, 9, Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(ror32)}));
+    Store(builder, 10, Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(asr32)}));
+
+    const auto tbit = Emit(builder, OpCode::TestBit, Type::Bool, {Operand::ValueOf(x), Imm(31)});
+    const auto bclr1 = Emit(builder, OpCode::BitClear, Type::U64, {Operand::ValueOf(x), Imm(31), Imm(1)});
+    const auto bins = Emit(
+            builder, OpCode::BitInsert, Type::U64, {Operand::ValueOf(bclr1), Operand::ValueOf(y), Imm(8), Imm(12)});
+    Store(builder, 11, Emit(builder, OpCode::ZeroExtend64, Type::U64, {Operand::ValueOf(tbit)}));
+    Store(builder, 12, bins);
+
+    const auto sel_s1 = Emit(builder,
+                             OpCode::Select,
+                             Type::U64,
+                             {Operand::ValueOf(cond_nz), Operand::ValueOf(x), Operand::ValueOf(y)});
+    const auto sel_s0 = Emit(builder,
+                             OpCode::Select,
+                             Type::U64,
+                             {Operand::ValueOf(cond_z), Operand::ValueOf(x), Operand::ValueOf(y)});
+    const auto sel_v = Emit(builder,
+                            OpCode::Select,
+                            Type::V128,
+                            {Operand::ValueOf(cond_nz), Operand::ValueOf(v_true), Operand::ValueOf(v_false)});
+    Store(builder, 13, sel_s1);
+    Store(builder, 14, sel_s0);
+    StoreVector(builder, 2, sel_v);
+
+    const auto bs16 = Emit(builder, OpCode::ByteSwap, Type::U16, {Operand::ValueOf(x, Type::U16), Imm(16)});
+    const auto bs32 = Emit(builder, OpCode::ByteSwap, Type::U32, {Operand::ValueOf(x, Type::U32), Imm(32)});
+    const auto bs64 = Emit(builder, OpCode::ByteSwap, Type::U64, {Operand::ValueOf(x), Imm(64)});
+    Store(builder, 15, Emit(builder, OpCode::ZeroExtend64, Type::U64, {Operand::ValueOf(bs16)}));
+    Store(builder, 16, Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(bs32)}));
+    Store(builder, 17, bs64);
+
+    const auto zero64 = Literal(builder, 0);
+    const auto clz64 = Emit(builder, OpCode::CountLeadingZeros64, Type::U64, {Operand::ValueOf(x)});
+    const auto ctz64 = Emit(builder, OpCode::CountTrailingZeros64, Type::U64, {Operand::ValueOf(y)});
+    const auto clz32_z =
+            Emit(builder, OpCode::CountLeadingZeros32, Type::U32, {Operand::ValueOf(zero64, Type::U32)});
+    const auto ctz32_z =
+            Emit(builder, OpCode::CountTrailingZeros32, Type::U32, {Operand::ValueOf(zero64, Type::U32)});
+    const auto pop = Emit(builder, OpCode::PopCount, Type::U64, {Operand::ValueOf(x)});
+    Store(builder, 18, clz64);
+    Store(builder, 19, ctz64);
+    Store(builder, 20, Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(clz32_z)}));
+    Store(builder, 21, Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(ctz32_z)}));
+    Store(builder, 22, pop);
+
+    const auto c8 = Emit(builder, OpCode::Crc32c, Type::U32, {Operand::ValueOf(x), Operand::ValueOf(y), Imm(8)});
+    const auto c16 = Emit(builder, OpCode::Crc32c, Type::U32, {Operand::ValueOf(c8), Operand::ValueOf(y), Imm(16)});
+    const auto c32 = Emit(builder, OpCode::Crc32c, Type::U32, {Operand::ValueOf(c16), Operand::ValueOf(y), Imm(32)});
+    const auto c64 = Emit(builder, OpCode::Crc32c, Type::U32, {Operand::ValueOf(c32), Operand::ValueOf(x), Imm(64)});
+    const auto c64_z = Emit(builder, OpCode::ZeroExtend32To64, Type::U64, {Operand::ValueOf(c64)});
+    Store(builder, 23, c64_z);
+
+    auto program = Return(builder, c64_z);
+    const auto base_code = Compile(program);
+
+    auto ext_opts = Options();
+    ext_opts.zba = true;
+    ext_opts.zbb = true;
+    ext_opts.zbs = true;
+    ext_opts.zicond = true;
+    ext_opts.zbc = true;
+    ext_opts.zbkc = true;
+    ext_opts.ual = true;
+    ext_opts.ztso = true;
+    const auto ext_code = rv::Compile(program, ext_opts);
+    Check(bool(ext_code) && !ext_code.words.empty(), "full RV64 extension compile");
+    Check(ext_code.words.size() < base_code.words.size(),
+          "extension fast paths shrink emitted instruction count");
+
+    constexpr u64 in_x = 0x0007fedcba98f085ULL;
+    constexpr u64 in_y = 0x123456789abcde08ULL;
+    const u32 exp_c8 = RefCrc32c(static_cast<u32>(in_x), in_y, 8);
+    const u32 exp_c16 = RefCrc32c(exp_c8, in_y, 16);
+    const u32 exp_c32 = RefCrc32c(exp_c16, in_y, 32);
+    const u32 exp_c64 = RefCrc32c(exp_c32, in_x, 64);
+
+    auto verify = [&](const swift::runtime::backend::CompileResult& code) {
+        State st;
+        st.scalars[0] = in_x;
+        st.scalars[1] = in_y;
+        st.scalars[2] = 42;
+        st.scalars[3] = 0;
+        st.vectors[0] = {0xaaaa5555aaaa5555ULL, 0x1111222233334444ULL};
+        st.vectors[1] = {0x9999888877776666ULL, 0x5555666677778888ULL};
+        if (!Run(code, st, exp_c64)) return;
+        Check(st.scalars[4] == in_x + (in_y << 1) + (in_y << 3), "AddShift SH1ADD/SH3ADD");
+        Check(st.scalars[5] == static_cast<u32>(static_cast<u32>(in_x) - 0x12345678u),
+              "32-bit Sub result");
+        Check(st.scalars[6] == 0, "partial Zero flag cleared on non-equal Sub");
+        const u64 s8 = static_cast<u64>(static_cast<std::int64_t>(static_cast<std::int8_t>(in_x)));
+        const u64 s16 =
+                static_cast<u64>(static_cast<std::int64_t>(static_cast<std::int16_t>(in_x)));
+        const u64 s32 =
+                static_cast<u64>(static_cast<std::int64_t>(static_cast<std::int32_t>(in_x)));
+        Check(st.scalars[7] == ((s8 & ~s16) ^ s32), "SignExtend 8/16/32 and AndNot");
+        Check(st.scalars[8] == ((in_x >> 13) | (in_x << 51)), "64-bit RorImm");
+        const u32 x32 = static_cast<u32>(in_x);
+        const unsigned r_amt = static_cast<unsigned>(in_y) & 31u;
+        const u32 exp_ror32 = (x32 >> r_amt) | (x32 << ((32u - r_amt) & 31u));
+        Check(st.scalars[9] == exp_ror32, "32-bit RorValue");
+        Check(st.scalars[10] == static_cast<u32>(static_cast<std::int32_t>(x32) >> 7),
+              "32-bit AsrImm");
+        Check(st.scalars[11] == ((in_x >> 31) & 1ULL), "TestBit");
+        const u64 cleared = in_x & ~(u64{1} << 31);
+        const u64 inserted = (cleared & ~(u64{0xfff} << 8)) | ((in_y & 0xfffULL) << 8);
+        Check(st.scalars[12] == inserted, "BitClear single-bit and BitInsert");
+        Check(st.scalars[13] == in_x && st.scalars[14] == in_y, "scalar Select");
+        Check(st.vectors[2] == st.vectors[0], "V128 Select");
+        Check(st.scalars[15] == __builtin_bswap16(static_cast<std::uint16_t>(in_x)), "ByteSwap 16");
+        Check(st.scalars[16] == __builtin_bswap32(static_cast<u32>(in_x)), "ByteSwap 32");
+        Check(st.scalars[17] == __builtin_bswap64(in_x), "ByteSwap 64");
+        Check(st.scalars[18] == static_cast<u64>(__builtin_clzll(in_x)), "CLZ64");
+        Check(st.scalars[19] == static_cast<u64>(__builtin_ctzll(in_y)), "CTZ64");
+        Check(st.scalars[20] == 32 && st.scalars[21] == 32, "CLZ32(0) and CTZ32(0)");
+        Check(st.scalars[22] == static_cast<u64>(__builtin_popcountll(in_x)), "PopCount");
+        Check(st.scalars[23] == exp_c64, "CRC32C 8/16/32/64 chain");
+    };
+
+    verify(base_code);
+    const auto hw = rv::HostFeatures::Detect();
+    if (hw.zba && hw.zbb && hw.zbs && hw.zicond && (hw.zbc || hw.zbkc)) verify(ext_code);
+}
 }  // namespace
+
+TEST_CASE("HostFeaturePolicy", "[compile][riscv64-compile]") {
+    const auto probed = rv::HostFeatures::FromHwprobe((1ULL << 3) | (1ULL << 4) | (1ULL << 5), true);
+    CHECK(probed.zba);
+    CHECK(probed.zbb);
+    CHECK(probed.zbs);
+    CHECK(probed.ual);
+    CHECK(!probed.zicond);
+    CHECK(probed.IsaFeatureMask() != 0);
+
+    const auto off = rv::HostFeatures::ApplyEnvOverride("off", probed);
+    CHECK(off.IsaFeatureMask() == 0);
+
+    const auto forced = rv::HostFeatures::ApplyEnvOverride("force_all", {});
+    CHECK(forced.zba);
+    CHECK(forced.zbb);
+    CHECK(forced.zbs);
+    CHECK(forced.zicond);
+    CHECK(forced.zbc);
+    CHECK(forced.zbkb);
+    CHECK(forced.zbkc);
+    CHECK(forced.ual);
+    CHECK(forced.ztso);
+
+    const auto custom = rv::HostFeatures::ApplyEnvOverride("+zicond,+zbc,-zbb,!ual", probed);
+    CHECK(custom.zba);
+    CHECK(!custom.zbb);
+    CHECK(custom.zbs);
+    CHECK(custom.zicond);
+    CHECK(custom.zbc);
+    CHECK(!custom.ual);
+
+    const auto bm = rv::HostFeatures::ApplyEnvOverride("bitmanip", {});
+    CHECK(bm.zba);
+    CHECK(bm.zbb);
+    CHECK(bm.zbs);
+}
+
+TEST_CASE("VectorSwarAndMovMask", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(VectorSwarAndMovMask());
+}
+
+TEST_CASE("UnalignedColdAndFastMemory", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(UnalignedColdAndFastMemory());
+}
+
+TEST_CASE("ExtensionFastPathsAndCodeSize", "[compile][riscv64-compile][native]") {
+    CHECK_NOTHROW(ExtensionFastPathsAndCodeSize());
+}
 
 TEST_CASE("ArithmeticFlags", "[compile][riscv64-compile][native]") {
     CHECK_NOTHROW(ArithmeticFlags());
